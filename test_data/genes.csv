@@ -1,0 +1,6 @@
+gene_id,reference_id,symbol,short_id,short_description,long_description,species_id
+AT3G07760.3.Araport11.447,1,WEEP,AT3G07760,"the WEEP gene","a longer description of the WEEP gene",1
+AT1G11610.Araport11.447,2,CYP71A23,AT3G48300,"cytochrome P450%2C family 71%2C subfamily A%2C polypeptide 23, putative cytochrome P450 protein_coding CYTOCHROME P450, FAMILY 71, SUBFAMILY A, POLYPEPTIDE 23 (CYP71A23) CYTOCHROME P450, FAMILY 71, SUBFAMILY A, POLYPEPTIDE 23 (CYP71A23)","",1
+AT4G13290.Araport11.447,2,CYP71A19,AT4G13290,"cytochrome P450%2C family 71%2C subfamily A%2C polypeptide 19, putative cytochrome P450 protein_coding CYTOCHROME P450, FAMILY 71, SUBFAMILY A, POLYPEPTIDE 19 (CYP71A19)","",2
+AT5G24950.Araport11.447,2,CYP71A15,AT5G24950,"cytochrome P450%2C family 71%2C subfamily A%2C polypeptide 15, putative cytochrome P450 protein_coding CYTOCHROME P450, FAMILY 71, SUBFAMILY A, POLYPEPTIDE 15 (CYP71A15)","",1
+AT5G24950.Araport11.447,2,CYP71A24,AT3G48290,"cytochrome P450%2C family 71%2C subfamily A%2C polypeptide 24, putative cytochrome P450 protein_coding CYTOCHROME P450, FAMILY 71, SUBFAMILY A, POLYPEPTIDE 24 (CYP71A24)","",2
