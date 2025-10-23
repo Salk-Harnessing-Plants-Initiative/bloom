@@ -1,0 +1,1 @@
+ALTER TABLE gene_candidate_scientists ENABLE ROW LEVEL SECURITY;

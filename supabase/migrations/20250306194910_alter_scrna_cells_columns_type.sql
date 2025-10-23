@@ -1,0 +1,2 @@
+ALTER TABLE scrna_cells
+ALTER COLUMN cluster_id SET DATA TYPE TEXT;

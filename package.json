@@ -1,0 +1,25 @@
+{
+  "name": "bloom-v2",
+  "private": true,
+  "workspaces": [
+    "bloom-v2/*",
+    "web",
+    "packages/*"
+  ],
+  "dependencies": {
+    "@salk-hpi/bloom-fs": "^0.1.0",
+    "dotenv": "^17.2.3",
+    "fs-extra": "^11.3.2",
+    "jsonwebtoken": "^9.0.2",
+    "supabase": "^2.53.6"
+  },
+  "overrides": {
+  "react": "18.2.0",
+  "react-dom": "18.2.0"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^24.7.1",
+    "turbo": "^2.5.8"
+  }
+}

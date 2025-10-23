@@ -1,0 +1,8 @@
+id,common_name,genus,species,illustration_path
+1,Arabidopsis,Arabidopsis,thaliana,species/species_e1cc878a-a370-4bfc-9649-fb4071276ee0.png
+2,Canola,Brassica,napus,species/species_0141e60c-e813-4427-befe-756c90bf3ec8.png
+3,Pennycress,Thlaspi,arvense,species/species_0141e60c-e813-4427-befe-756c90bf3ec8.png
+4,Rice,Oryza,sativa,species/species_0141e60c-e813-4427-befe-756c90bf3ec8.png
+5,Soybean,Glycine,max,species/species_391652fc-a86e-4ea8-be6f-e48fd1604842.png
+6,Sorghum,Sorghum,bicolor,species/species_dd9977be-468c-4c32-8f68-a9822542af7e.png
+7,Wheat,Triticum,aestivum,species/species_e4a8b864-8386-433d-b6f3-9b7bea79e57a.png

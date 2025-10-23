@@ -1,0 +1,17 @@
+{
+  "name": "@salk-hpi/bloom-js",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --watch"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "typescript": "^4.5.5",
+    "uuid": "^9.0.0"
+  }
+}
