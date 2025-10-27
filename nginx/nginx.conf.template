@@ -1,0 +1,126 @@
+
+user nginx;
+worker_processes auto;
+
+events {
+  worker_connections 1024;
+}
+
+http {
+  include       mime.types;
+  default_type  application/octet-stream;
+  sendfile      on;
+  keepalive_timeout  65;
+  client_max_body_size 100M;
+
+  # ----------------- 
+  # Upstreams
+  # ----------------- 
+
+  upstream bloom_web {
+    server bloom-web:3000;
+  }
+
+  upstream /kong/ {
+    server supabase-kong:8000;
+  }
+
+  upstream studio_ui {
+    server supabase-studio-prod:3000;
+  }
+
+
+  upstream minio_console {
+    server supabase-minio:9001;
+  }
+
+  # -----------------
+  # Server
+  # -----------------
+  server {
+    listen 80;
+    server_name _;
+
+    # TODO : ? SSL setup and routing through https route
+
+    # Test homepage
+    location /test/ {
+        return 200 "Nginx is up and running\n";
+        add_header Content-Type text/plain;
+    }
+
+    location /test1/ {
+        return 200 "Nginx is up and running\n";
+        add_header Content-Type text/plain;
+    }
+
+    # ----------- Bloom Frontend -----------
+    location / {
+      proxy_pass http://bloom_web;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+# --- Supabase API (Kong Gateway) ---
+    location /kong/ {
+      proxy_pass http://supabase-kong:8000/;
+      proxy_set_header apikey "${ANON_KEY}";
+      proxy_set_header Authorization "Bearer ${ANON_KEY}";
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection 'upgrade';
+      proxy_set_header Host $host;
+      proxy_cache_bypass $http_upgrade;
+    }
+
+    location /studio/ {
+        proxy_pass http://supabase-studio-prod:3000/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    # ----------- MinIO Console -----------
+  location /minio/ {
+      proxy_pass http://supabase-minio:9001/;
+      sub_filter_types text/html text/javascript;
+      sub_filter 'href="/'  'href="/minio/';
+      sub_filter 'src="/'   'src="/minio/';
+      sub_filter_once off;
+
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+  }
+
+
+  #   # ----------- Supabase Studio -----------
+  # location /studio/ {
+  #       proxy_pass http://supabase-studio-prod:3000;
+  #       proxy_set_header Host $host;
+  #       proxy_set_header X-Real-IP $remote_addr;
+  #       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  #       proxy_set_header X-Forwarded-Proto $scheme;
+
+  #       proxy_http_version 1.1;
+  #       proxy_set_header Upgrade $http_upgrade;
+  #       proxy_set_header Connection "upgrade";
+
+  #       sub_filter_once off;
+  #       sub_filter_types text/html text/javascript;
+  #       sub_filter 'href="/'  'href="/studio/';
+  #       sub_filter 'src="/'   'src="/studio/';
+  #   }
+
+    # ----------- Fallback -----------
+    error_page 502 503 504 /50x.html;
+    location = /50x.html {
+      root /usr/share/nginx/html;
+    }
+  }
+}

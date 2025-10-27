@@ -4,21 +4,37 @@ import {
     SupabaseUploader,
     SupabaseStore
 } from "@salk-hpi/bloom-js";
-
+import * as dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
-
 import { mkdirp, outputFile } from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
+import * as fs from 'fs';
+import { fileURLToPath } from "url";
+
 
 const supabaseUrl = "http://localhost:8000"
 const supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJhdWQiOiJhdXRoZW50aWNhdGVkIiwiaWF0IjoxNzYwNDA3NTYzLCJleHAiOjIwNzU5ODM1NjN9.MQtGFnfpIKzWTvUIDTH7IUyym8TXDW_kjcWcl-_LNgA";
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+const bucketName = "images";
+const sampleImagesDir = "../test_data/sample_cyl_scan/";
+const imagesPathPrefix = "sample_cyl_scan/";
 
 const table_load_order = [
     "species",
     "people",
     "assemblies",
     "genes",
+    "cyl_experiments",
+    "cyl_waves",
+    "accessions",
+    "cyl_camera_settings",
+    "cyl_plants",
+    "phenotypers",
+    "cyl_scientists",
+    "cyl_scans",
+    "cyl_images",
     "gene_candidates",
     "gene_candidate_scientists",
     "gene_candidate_support",
@@ -26,11 +42,8 @@ const table_load_order = [
     "cyl_scanners"
 ]
 
-
-
 async function addDevUser(user: string, password: string) {
     try {
-        // Using the auth.admin.createUser method to add a new user
         const supabase = createClient(
             supabaseUrl,
             supabaseKey,
@@ -46,7 +59,7 @@ async function addDevUser(user: string, password: string) {
             if (error.status === 422 && error.message.includes("already been registered")) {
                 console.warn(`User with email ${user}@salk.edu already exists. Skipping creation.`);
             } else {
-                throw error; // Re-throw other types of errors
+                throw error;
             }
         } else {
             console.log('User created successfully:', data);
@@ -55,7 +68,6 @@ async function addDevUser(user: string, password: string) {
         console.error('Error creating user:', error);
     }
 }
-
 
 async function writeProfile(username: string, password: string, ext: string) {
     const bloomDir = path.join(os.homedir(), '.bloom');
@@ -69,28 +81,99 @@ async function writeProfile(username: string, password: string, ext: string) {
     await outputFile(filePath, content);
 }
 
+async function listBuckets(supabase: any) {
+  console.log("Listing storage buckets...");
+  const { data, error } = await supabase.storage.listBuckets();
+  if (error) {
+    console.error('Error listing buckets:', error);
+    
+  } else {
+    console.log('Buckets:', data);
+  }
+
+  const testBucket = 'images';
+  const testPath = 'sample_cyl_scan/test_upload.png';
+  const testContent = Buffer.from('hello world');
+
+  try {
+    const { data, error } = await supabase
+      .storage
+      .from(testBucket)
+      .upload(testPath, testContent, { contentType: 'image/png', upsert: true });
+
+    if (error) {
+      console.error(`Test upload failed:`, error);
+    } else {
+      console.log(`Test upload succeeded:`, data);
+    }
+  } catch (err) {
+    console.error('Unexpected error during test upload:', err);
+  }
+}
+
+async function uploadSampleImages() {
+  try {
+
+    const files = fs.readdirSync(sampleImagesDir).filter(f => f.endsWith(".png"));
+    for (const file of files) {
+      const localPath = path.join(sampleImagesDir, file);
+      const objectPath = `${imagesPathPrefix}${file}`;
+      console.log(`Uploading ${file} → ${bucketName}/${objectPath}`);
+
+      const fileData = fs.readFileSync(localPath);
+
+      const { data, error } = await supabase
+        .storage
+        .from(bucketName)
+        .upload(objectPath, fileData, { contentType: "image/png", upsert: true });
+
+      if (error) console.error(`Failed to upload ${file}:`, error);
+      else console.log(`Uploaded ${file} successfully`);
+    }
+
+    console.log("Finished uploading images!");
+  } catch (err) {
+    console.error("Upload process failed:", err);
+  }
+}
+
+
+async function loadTestTables(supabase: any) {
+  const db = new SupabaseStore(supabase);
+  for (const name of table_load_order) {
+    const csvPath = `../test_data/${name}.csv`;
+    if (!fs.existsSync(csvPath)) {
+      console.warn(` CSV not found for ${name}, skipping`);
+      continue;
+    }
+    console.log(`Loading table: ${name}`);
+    await processCSV(csvPath, async (row: Record<string, any>): Promise<void> => {
+      const { error }: { error: any } = await db.supabase.from(name as any).insert([row]);
+      if (error) console.error(`Error inserting into ${name}:`, error);
+    });
+  }
+}
 
 async function main() {
+    
     await writeProfile("testuser5", "testuser5", "dev1");
     await writeProfile("testuser6", "testuser6", "dev2");
     await addDevUser("testuser5", "testuser5");
     await addDevUser("testuser6", "testuser6");
-
+    
     const supabase = createClient(
         supabaseUrl,
         supabaseKey,
         { auth: { persistSession: false } }
     );
+    // await listBuckets(supabase);
+    // await uploadSampleImages();
+    await loadTestTables(supabase);
 
-    // const supabase = await createSupabaseClient("dev1");
-    // console.log(supabase)
-    // const uploader = new SupabaseUploader(supabase);
     const db = new SupabaseStore(supabase);
     for (const name of table_load_order) {
         await processCSV(`test_data/${name}.csv`, async (row) => {
-            // code to insert this row into `name` table
             try {
-                // Insert each row into the corresponding table
                 const { error } = await db.supabase
                     .from(name as any)
                     .insert([row]);
@@ -108,3 +191,4 @@ async function main() {
 }
 
 main()
+

@@ -32,35 +32,36 @@ export async function GET(request: NextRequest) {
     // add other fields if needed
   };
 
-  const { data: response, error } = (await supabase
-  .from("oauth_tokens")
-  .select("*")
-  .eq("user_id", user.id)
-  .eq("provider", provider)
-  .single()) as {
-    data: { encrypted_access_token: string } | null
-    error: any
-  }
+  // const { data: response, error } = (await supabase
+  // .from("oauth_tokens")
+  // .select("*")
+  // .eq("user_id", user.id)
+  // .eq("provider", provider)
+  // .single()) as {
+  //   data: { encrypted_access_token: string } | null
+  //   error: any
+  // }
 
-  if (error || !response) {
-    return new NextResponse("Not Authorized", { status: 401 });
-  }
+  // if (error || !response) {
+  //   return new NextResponse("Not Authorized", { status: 401 });
+  // }
   // decrypt the access token
   
-  const access_token = decryptToken(response.encrypted_access_token);
+  // const access_token = decryptToken(response.encrypted_access_token);
   // get gitlab user from API
-  const gitlab_user_url = "https://gitlab.com/api/v4/user";
-  const gitlab_headers = {
-    Authorization: `Bearer ${access_token}`,
-  };
-  const gitlab_user_response = await fetch(gitlab_user_url, {
-    headers: gitlab_headers,
-  }).then((res) => res.json());
-  const user_id = gitlab_user_response.id;
-  // get gitlab projects from API (set membership to true)
-  const gitlab_projects_url = `https://gitlab.com/api/v4/projects?membership=true`;
-  const gitlab_projects_response = await fetch(gitlab_projects_url, {
-    headers: gitlab_headers,
-  }).then((res) => res.json());
-  return NextResponse.json(gitlab_projects_response);
+  // const gitlab_user_url = "https://gitlab.com/api/v4/user";
+  // const gitlab_headers = {
+  //   Authorization: `Bearer ${access_token}`,
+  // };
+  // const gitlab_user_response = await fetch(gitlab_user_url, {
+  //   headers: gitlab_headers,
+  // }).then((res) => res.json());
+  // const user_id = gitlab_user_response.id;
+  // // get gitlab projects from API (set membership to true)
+  // const gitlab_projects_url = `https://gitlab.com/api/v4/projects?membership=true`;
+  // const gitlab_projects_response = await fetch(gitlab_projects_url, {
+  //   headers: gitlab_headers,
+  // }).then((res) => res.json());
+  // return NextResponse.json(gitlab_projects_response);
+  return NextResponse.json(null);
 }

@@ -1,13 +1,13 @@
 "use client";
 
-import { cookies } from "next/headers";
+// import { cookies } from "next/headers";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 // import { createServerComponentClient } from '@supabase/auth-helpers-nextjs'
-import Image from "next/image";
+// import Image from "next/image";
 import { Database } from "@/lib/database.types";
 import { useEffect, useState } from "react";
 import { CylScanWithImages } from "@/lib/custom.types";
-import { get } from "http";
+// import { get } from "http";
 import Link from "next/link";
 
 async function getImageUrl(path: string, thumb: boolean, height: number) {

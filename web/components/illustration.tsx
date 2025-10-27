@@ -5,7 +5,6 @@ import { createServerComponentClient } from '@supabase/auth-helpers-nextjs'
 import Image from 'next/image'
 
 async function getObjectUrl(path: string) {
-
   const supabase = createServerComponentClient({ cookies })
 
   const { data, error } = await supabase

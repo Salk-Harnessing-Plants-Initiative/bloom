@@ -1,0 +1,11 @@
+# 1. Run everything
+make dev
+
+# 2. Stop everything
+make down
+
+# 3. View logs
+make logs
+
+# 4. Run prod stack (on your server)
+make prod

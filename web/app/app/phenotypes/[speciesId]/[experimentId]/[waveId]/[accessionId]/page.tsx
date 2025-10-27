@@ -4,7 +4,7 @@ import {
   getUser,
 } from "@salk-hpi/bloom-nextjs-auth";
 
-import PlantImage from "@/components/plant-image";
+// import PlantImage from "@/components/plant-image";
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
 import PlantScan from "@/components/plant-scan";

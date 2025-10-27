@@ -26,14 +26,15 @@ export async function GET(request: NextRequest) {
   // hardcode provider as gitlab for now
   const provider = "gitlab";
   // get encrypted access token from the database
-  const { data: response, error } = await supabase
-    .from("oauth_tokens")
-    .select("*")
-    .eq("user_id", user.id)
-    .eq("provider", provider);
-  if (error) {
-    return new NextResponse("Not Authorized", { status: 401 });
-  }
-  const logged_in = response !== null && response.length > 0;
-  return NextResponse.json({ logged_in });
+  // const { data: response, error } = await supabase
+  //   .from("oauth_tokens")
+  //   .select("*")
+  //   .eq("user_id", user.id)
+  //   .eq("provider", provider);
+  // if (error) {
+  //   return new NextResponse("Not Authorized", { status: 401 });
+  // }
+  // const logged_in = response !== null && response.length > 0;
+  // return NextResponse.json({ logged_in });
+  return NextResponse.json({ logged_in: false });
 }

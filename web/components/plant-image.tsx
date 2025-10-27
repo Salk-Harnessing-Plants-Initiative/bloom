@@ -1,9 +1,9 @@
 "use client";
 
-import { cookies } from "next/headers";
+// import { cookies } from "next/headers";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 // import { createServerComponentClient } from '@supabase/auth-helpers-nextjs'
-import Image from "next/image";
+// import Image from "next/image";
 import { Database } from "@/lib/database.types";
 import { useEffect, useState } from "react";
 
