@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { createServerSupabaseClient } from '@salk-hpi/bloom-nextjs-auth'
 
 import PlantImage from '@/components/plant-image';
-import type { Database } from "@/lib/database.types";
+// import type { Database } from "@/lib/database.types";
 import { Key } from 'react';
 
 

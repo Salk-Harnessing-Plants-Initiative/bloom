@@ -2,29 +2,39 @@
 # Bloom Web PROD Dockerfile
 # ------------------------
 
+# ---- Builder Stage ----
 FROM node:20-bookworm AS builder
 
 WORKDIR /app
+
 COPY package*.json ./
 COPY web/package*.json ./web/
 COPY packages/*/package*.json ./packages/
 
-RUN npm install --workspaces
+# Install system deps for sharp
+RUN apt-get update && \
+    apt-get install -y build-essential libcairo2-dev libjpeg-dev libpango1.0-dev libgif-dev librsvg2-dev python3 make g++ && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN npm cache clean --force
+RUN npm install
 COPY web ./web
 COPY packages ./packages
 
+# Build the Next.js app
 WORKDIR /app/web
 RUN npm run build
 
-# --- Production runtime ---
+# ---- Runner Stage ----
 FROM node:20-bookworm AS runner
-WORKDIR /app/web
 
-# Copy built output and production deps only
+WORKDIR /app/web
 COPY --from=builder /app/web/.next ./.next
 COPY --from=builder /app/web/package*.json ./
 COPY --from=builder /app/node_modules /app/node_modules
 
 EXPOSE 3000
 ENV NODE_ENV=production
+
 CMD ["npm", "run", "start", "--", "-H", "0.0.0.0"]
+

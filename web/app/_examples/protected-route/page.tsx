@@ -1,4 +1,3 @@
-// TODO: Duplicate or move this file outside the `_examples` folder to make it a route
 
 import {
   createServerActionClient,
@@ -9,7 +8,8 @@ import Image from 'next/image'
 import { redirect } from 'next/navigation'
 
 export default async function ProtectedRoute() {
-  const supabase = createServerComponentClient({ cookies })
+  const cookieStore = cookies()
+  const supabase = createServerComponentClient({ cookies: () => cookieStore })
 
   const {
     data: { user },
@@ -21,9 +21,10 @@ export default async function ProtectedRoute() {
     redirect('/login')
   }
 
-  const signOut = async () => {
+    const signOut = async () => {
     'use server'
-    const supabase = createServerActionClient({ cookies })
+    const cookieStore = cookies()
+    const supabase = createServerActionClient({ cookies : ()=> cookieStore })
     await supabase.auth.signOut()
     redirect('/login')
   }

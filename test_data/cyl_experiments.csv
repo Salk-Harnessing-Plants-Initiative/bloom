@@ -1,0 +1,2 @@
+id,name,description,species_id,created_at,slack_channel_url,scientist_id,deleted
+1,Experiment 1,Description of experiment 1,1,2025-10-26T00:00:00Z,http://example.com/slack_channel/1,1,false

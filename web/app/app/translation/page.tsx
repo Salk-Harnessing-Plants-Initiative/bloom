@@ -3,7 +3,7 @@ import Mixpanel from "mixpanel";
 
 import { createServerSupabaseClient } from "@salk-hpi/bloom-nextjs-auth";
 import Link from "next/link";
-import { Key, ReactElement, JSXElementConstructor, ReactNode, ReactPortal, AwaitedReactNode } from "react";
+import { Key, ReactElement, JSXElementConstructor, ReactNode, ReactPortal } from "react";
 
 // import type { TranslationProject } from "@/lib/custom.types";
 
@@ -28,9 +28,6 @@ export default async function Translation() {
         Information about different translation projects.
       </div>
       <div>
-        {/* <div className="text-sm text-neutral-600">
-          Translation projects for {user?.email}:
-        </div> */}
         <table className="mt-6">
           <thead>
             <tr>
@@ -49,9 +46,9 @@ export default async function Translation() {
                 <td className="text-sm text-neutral-600 italic pl-4">None</td>
               </tr>
             ) : (
-              projects?.map((project: { id: Key | null | undefined; name: string | number | bigint | boolean | ReactElement<any, string | JSXElementConstructor<any>> | Iterable<ReactNode> | ReactPortal | Promise<AwaitedReactNode> | null | undefined; spreadsheet_url: any; }) => (
+              projects?.map((project: { id: Key | null | undefined; name: string | number | ReactElement<any, string | JSXElementConstructor<any>> | ReactPortal | Iterable<ReactNode> | null | undefined; spreadsheet_url: any; }) => (
                 <tr key={project.id}>
-                  <td className="text-sm mt-2">{project.name}</td>
+                  <td className="text-sm mt-2">{project.name as React.ReactNode}</td>
                   <td className="text-sm mt-2 pl-4 text-lime-700 hover:underline">
                     <Link href={project.spreadsheet_url || "#"} target="_blank">
                       Link &#x2197;
@@ -71,16 +68,6 @@ export default async function Translation() {
       </div>
     </div>
   );
-}
-
-{
-  /* <div className='text-sm italic text-neutral-600'>
-                    <span className='capitalize'>{species.genus}</span>
-                    &nbsp;
-                    <span className='lowercase'>{species.species}</span>
-                  </div>
-                </div>
-                <div className='text-sm mt-2 text-neutral-400'> */
 }
 
 async function getProjectsList() {

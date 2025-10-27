@@ -5,7 +5,7 @@ import { cookies } from 'next/headers'
 
 export default async function ServerComponent() {
   // Create a Supabase client configured to use cookies
-  const supabase = createServerComponentClient({ cookies })
+  const supabase = createServerComponentClient({ cookies})
 
   // This assumes you have a `todos` table in Supabase. Check out
   // the `Create Table and seed with data` section of the README 👇
