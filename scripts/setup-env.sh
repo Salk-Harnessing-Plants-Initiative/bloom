@@ -8,38 +8,38 @@ set -e
 ENV_TYPE="${1:-dev}"
 
 if [[ "$ENV_TYPE" != "dev" && "$ENV_TYPE" != "prod" ]]; then
-    echo "❌ Invalid environment type. Use 'dev' or 'prod'"
+    echo "[ERROR] Invalid environment type. Use 'dev' or 'prod'"
     echo "Usage: ./scripts/setup-env.sh [dev|prod]"
     exit 1
 fi
 
-echo "🔧 Setting up Bloom environment files for: $ENV_TYPE"
+echo "Setting up Bloom environment files for: $ENV_TYPE"
 echo ""
 
 # Check if .env file already exists
 if [ -f ".env.$ENV_TYPE" ]; then
-    echo "⚠️  Warning: .env.$ENV_TYPE already exists"
+    echo "[WARNING] .env.$ENV_TYPE already exists"
     read -p "Do you want to overwrite it? (y/N): " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "❌ Aborted. Existing .env.$ENV_TYPE was not modified."
+        echo "[ABORTED] Existing .env.$ENV_TYPE was not modified."
         exit 0
     fi
 fi
 
 # Copy example file
 if [ ! -f ".env.dev.example" ]; then
-    echo "❌ Error: .env.dev.example not found!"
+    echo "[ERROR] .env.dev.example not found!"
     echo "This file should be in the repository root."
     exit 1
 fi
 
-echo "📋 Copying .env.dev.example to .env.$ENV_TYPE..."
+echo "Copying .env.dev.example to .env.$ENV_TYPE..."
 cp .env.dev.example ".env.$ENV_TYPE"
 
-echo "✅ Created .env.$ENV_TYPE"
+echo "[SUCCESS] Created .env.$ENV_TYPE"
 echo ""
-echo "⚙️  Generating secure random values..."
+echo "Generating secure random values..."
 
 # Generate random values
 JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')
@@ -62,7 +62,7 @@ sed -i.bak "s|<your-dashboard-password>|$DASHBOARD_PASSWORD|g" ".env.$ENV_TYPE"
 # Clean up backup file
 rm -f ".env.$ENV_TYPE.bak"
 
-echo "✅ Generated secure random values for:"
+echo "[SUCCESS] Generated secure random values for:"
 echo "   - JWT_SECRET"
 echo "   - SUPAVISOR_ENC_KEY"
 echo "   - VAULT_ENC_KEY"
@@ -71,7 +71,7 @@ echo "   - POSTGRES_PASSWORD"
 echo "   - MINIO_ROOT_PASSWORD"
 echo "   - DASHBOARD_PASSWORD"
 echo ""
-echo "⚠️  IMPORTANT: You still need to manually configure:"
+echo "[IMPORTANT] You still need to manually configure:"
 echo ""
 echo "1. Generate Supabase API keys:"
 echo "   Visit: https://supabase.com/docs/guides/self-hosting#api-keys"
@@ -95,13 +95,13 @@ echo "   - STUDIO_DEFAULT_ORGANIZATION"
 echo "   - STUDIO_DEFAULT_PROJECT"
 echo "   - OPENAI_API_KEY (if using AI features)"
 echo ""
-echo "📝 Edit .env.$ENV_TYPE to complete the setup"
+echo "Edit .env.$ENV_TYPE to complete the setup"
 echo ""
-echo "🚀 After editing, start the stack with:"
+echo "After editing, start the stack with:"
 if [ "$ENV_TYPE" == "dev" ]; then
     echo "   make dev-up"
 else
     echo "   make prod-up"
 fi
 echo ""
-echo "⚠️  REMEMBER: NEVER commit .env.$ENV_TYPE to git!"
+echo "[WARNING] NEVER commit .env.$ENV_TYPE to git!"
