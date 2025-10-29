@@ -29,11 +29,10 @@ sudo mkdir -p /data/minio
 sudo chmod 777 /data/minio 
 
 ## Starting the Full Stack in Development
-make dev
+make dev-up  
 
 ## Starting the Full Stack in Production
-make dev
-
+make prod-up  
 
 ### To stop all containers:
 make prod
@@ -42,6 +41,12 @@ make prod
 make logs
 
 ### To rebuild everything from scratch:
-make rebuild
+make rebuild-dev
+make rebuild-prod
+
+### To rebuild --no-cache
+make rebuild-dev-fresh
+make rebuild-prod-fresh
+
 
 

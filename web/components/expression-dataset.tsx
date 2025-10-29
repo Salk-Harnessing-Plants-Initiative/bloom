@@ -69,9 +69,10 @@ export default function ExpressionDataset({ name }: { name: string }) {
   const [counts, setCounts] = useState<any | null>({});
 
   useEffect(() => {
+    console.log("FECTHIN DATASET");
     const fetchData = async () => {
       const supabase = createClientComponentClient<Database>();
-      supabase
+        supabase
         .from("scrna_datasets")
         .select(
           "*, scrna_genes(gene_name), scrna_cells(x, y, cluster_id, cell_number)"
@@ -82,11 +83,12 @@ export default function ExpressionDataset({ name }: { name: string }) {
           scrna_cells: SCRNACell[]; 
         }>()
         .then((data) => {
+          console.log("FECTHIN DATASET DONE", data );
           const dataset = data?.data!;
-          console.log("received data");
           setGenes(dataset.scrna_genes);
           setCells(dataset.scrna_cells);
         });
+        console.log("FECTHIN DONE");
     };
     fetchData();
   }, [name]);

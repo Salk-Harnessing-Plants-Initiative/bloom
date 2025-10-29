@@ -63,7 +63,7 @@ export default async function AllSpecies() {
 }
 
 async function getSpeciesList() {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data  } = await supabase
     .from("species")

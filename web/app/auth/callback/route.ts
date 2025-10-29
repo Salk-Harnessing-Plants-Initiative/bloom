@@ -15,7 +15,7 @@ export async function GET(request: Request) {
 
   if (code) {
     console.log(`code ${code}`);
-    const supabase = createRouteHandlerSupabaseClient();
+    const supabase = await createRouteHandlerSupabaseClient();
     console.log("created supabase client");
     await supabase.auth.exchangeCodeForSession(code);
     console.log("exchanged code for session");

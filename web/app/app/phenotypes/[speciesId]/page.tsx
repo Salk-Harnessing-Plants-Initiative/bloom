@@ -9,9 +9,10 @@ import { Key } from "react";
 export default async function Species({
   params,
 }: {
-  params: { speciesId: number };
+  params: Promise<{ speciesId: string }>
 }) {
-  const species : any = await getSpeciesWithExperiments(params.speciesId);
+  const speciesId = await params;
+  const species : any = await getSpeciesWithExperiments(Number(speciesId));
 
   const user = await getUser();
 
@@ -21,7 +22,7 @@ export default async function Species({
 
   mixpanel?.track("Page view", {
     distinct_id: user?.email,
-    url: `/app/phenotypes/${params.speciesId}`,
+    url: `/app/phenotypes/${speciesId}`,
   });
 
   return (
@@ -183,7 +184,7 @@ function getAccessionCount(experiment: any) {
 }
 
 async function getSpeciesWithExperiments(speciesId: number) {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("species")

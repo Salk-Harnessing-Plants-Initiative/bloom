@@ -81,13 +81,15 @@ export default function ExportScatterPlot({ file_id, file_name }: { file_id: num
     };
 
     useEffect(() => {
+        console.log("FETCHING DATA FOR FILE ID:", file_id);
         const fetchData = async () => {
             try {
                 setLoading(true);
                 let allData: any[] = [];
                 let from = 0;
                 const batchSize = 1000;
-
+                console.log("FETCHING DATA FOR FILE ID:", file_id);
+                console.log("SIZE OF DATA FETCHED:", barcode_data.length);
                 while (true) {
                     const { data, error } = await supabase
                         .from("scrna_cells")
@@ -99,6 +101,8 @@ export default function ExportScatterPlot({ file_id, file_name }: { file_id: num
                         console.error("Error fetching data:", error.message);
                         break;
                     }
+                    console.log("SIZE OF DATA FETCHED1:", data.length);
+                    console.log(data);
                     if (data.length === 0) break;
                     allData = [...allData, ...data];
                     from += batchSize;
@@ -107,6 +111,7 @@ export default function ExportScatterPlot({ file_id, file_name }: { file_id: num
             } catch (error) {
                 console.error("Error in fetching data:", error);
             } finally {
+                console.log("DONE FETCHING DATA FOR FILE ID:", file_id);
                 setLoading(false);
             }
         };

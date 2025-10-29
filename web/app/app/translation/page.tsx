@@ -71,7 +71,7 @@ export default async function Translation() {
 }
 
 async function getProjectsList() {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("translation_projects")

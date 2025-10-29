@@ -9,10 +9,10 @@ import ExpressionPage from "@/components/expression-page";
 export default async function Species({
   params,
 }: {
-  params: { speciesId: number };
+  params: Promise<{ speciesId: string }>;
 }) {
-  const species : any = await getSpeciesWithDatasets(params.speciesId);
-
+  const { speciesId } = await params;
+  const species : any = await getSpeciesWithDatasets(Number(speciesId));
   const user = await getUser();
 
   const mixpanel = process.env.MIXPANEL_TOKEN
@@ -21,7 +21,7 @@ export default async function Species({
 
   mixpanel?.track("Page view", {
     distinct_id: user?.email,
-    url: `/app/expression/${params.speciesId}`,
+    url: `/app/expression/${speciesId}`,
   });
 
   return (
@@ -48,7 +48,7 @@ function capitalizeFirstLetter(string: String) {
 }
 
 async function getSpeciesWithDatasets(speciesId: number) {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("species")

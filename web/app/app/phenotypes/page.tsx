@@ -5,7 +5,6 @@ import {
   getUser,
 } from "@salk-hpi/bloom-nextjs-auth";
 import Mixpanel from "mixpanel";
-import SearchComponent from "../../../components/searchPage";
 
 import type { SpeciesWithExperiments } from "@/lib/custom.types";
 
@@ -66,7 +65,7 @@ export default async function AllSpecies() {
 }
 
 async function getSpeciesList() {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("species")

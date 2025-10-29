@@ -79,7 +79,7 @@ export default async function DashboardLayout({
 
   const signOut = async () => {
     "use server";
-    const supabase = createServerActionSupabaseClient();
+    const supabase = await createServerActionSupabaseClient();
     await supabase.auth.signOut();
     redirect("/login");
   };

@@ -110,7 +110,7 @@ function capitalizeFirstLetter(string: String) {
 }
 
 async function getDataset(datasetId: number) {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("scrna_datasets")

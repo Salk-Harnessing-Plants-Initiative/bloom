@@ -44,15 +44,24 @@ export default function Login() {
       password,
     })
 
-    console.log("_____________________________________________>>>>")
-    console.log("RESPONSE", { data, error })
-    console.log("CLEAN RESPONSE", JSON.stringify(data, null, 2));
-
+    // if (error) {
+    //   setError(error.message)
+    // }
+    // else {
+    //   router.push('/app')
+    // }
     if (error) {
-      setError(error.message)
-    }
-    else {
-      router.push('/app')
+    setError(error.message);
+    } else {
+      await fetch("/api/auth/set-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          access_token: data.session?.access_token,
+          refresh_token: data.session?.refresh_token,
+        }),
+      });
+      router.push("/app");
     }
   }
 

@@ -1,11 +1,11 @@
 export const revalidate = 60 // revalidate this page every 60 seconds
 
 import { cookies } from 'next/headers'
-import { createServerComponentClient } from '@supabase/auth-helpers-nextjs'
+import { createServerSupabaseClient } from "@salk-hpi/bloom-nextjs-auth";
 import Image from 'next/image'
 
 async function getObjectUrl(path: string) {
-  const supabase = createServerComponentClient({ cookies })
+  const supabase = await createServerSupabaseClient();
 
   const { data, error } = await supabase
     .storage

@@ -11,7 +11,11 @@
     "dist"
   ],
   "dependencies": {
-    "@supabase/auth-helpers-nextjs": "^0.7.4",
-    "typescript": "^4.5.5"
+    "@supabase/ssr": "^0.7.0",
+    "@supabase/supabase-js": "^2.76.1",
+    "ajv": "^8.17.1"
+  },
+  "devDependencies": {
+    "@types/uuid": "^11.0.0"
   }
 }

@@ -82,7 +82,7 @@ function capitalizeFirstLetter(string: String) {
 
 async function getExperimentWithSpecies(experimentId: number) {
 
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient()
 
   const { data } = await supabase
     .from('cyl_experiments')
@@ -96,7 +96,7 @@ async function getExperimentWithSpecies(experimentId: number) {
 
 async function getPlants(lineName: string, experimentId: number) {
 
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient()
 
   const { data } = await supabase
     .from('cyl_plants')

@@ -1,16 +1,15 @@
 "use client";
 import { useState, useEffect } from 'react';
 import { TextField, Box, CircularProgress, List, ListItem, ListItemText } from '@mui/material';
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import { Database } from "@/lib/database.types";
+// import { createBrowserSupabaseClient } from "@supabase/auth-helpers-nextjs";
+import { createBrowserSupabaseClient } from "@salk-hpi/bloom-nextjs-auth";
 import { Divider } from '@mui/material';
 
 export default function SearchComponent() {
   const [searchQuery, setSearchQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const supabase = createClientComponentClient<Database>();
-
+  const supabase = createBrowserSupabaseClient();
   useEffect(() => {
     const delayDebounce = setTimeout(() => {
       if (searchQuery.trim() !== '') {

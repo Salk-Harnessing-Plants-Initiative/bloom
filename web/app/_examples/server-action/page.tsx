@@ -11,7 +11,8 @@ export default async function ServerAction() {
 
     if (title) {
       // Create a Supabase client configured to use cookies
-      const supabase = createServerActionClient({ cookies })
+      const cookieStore = await cookies()
+      const supabase = createServerActionClient({ cookies: async () => cookieStore })
 
       // This assumes you have a `todos` table in Supabase. Check out
       // the `Create Table and seed with data` section of the README 👇
