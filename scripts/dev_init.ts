@@ -4,7 +4,7 @@ import {
     SupabaseUploader,
     SupabaseStore
 } from "@salk-hpi/bloom-js";
-import * as dotenv from 'dotenv';
+import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import { mkdirp, outputFile } from 'fs-extra';
 import * as os from 'os';
@@ -12,9 +12,12 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from "url";
 
+const envFile = process.env.NODE_ENV === 'production' ? '.env.prod' : '.env.dev';
+dotenv.config({ path: envFile });
+console.log(`Loaded ${envFile}`);
 
-const supabaseUrl = "http://localhost:8000"
-const supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJhdWQiOiJhdXRoZW50aWNhdGVkIiwiaWF0IjoxNzYwNDA3NTYzLCJleHAiOjIwNzU5ODM1NjN9.MQtGFnfpIKzWTvUIDTH7IUyym8TXDW_kjcWcl-_LNgA";
+const supabaseUrl = process.env.SUPABASE_URL!;
+const supabaseKey = process.env.SUPABASE_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const bucketName = "images";
