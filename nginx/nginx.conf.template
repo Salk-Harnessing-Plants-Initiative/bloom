@@ -38,22 +38,30 @@ http {
     #  proxy_set_header X-Forwarded-Proto $scheme;
     # }
 
-    # --- Supabase API (Kong Gateway) ---
+    # --- Supabase Studio Dashboard ---
+    # Serves Supabase Studio dashboard under /supabase_kong/ subpath
+    # Studio is configured via NEXT_PUBLIC_BASE_PATH env var to generate
+    # correct URLs for assets and API calls without nginx path manipulation
     location /supabase_kong/ {
-      rewrite ^/supabase_kong(/.*)$ $1 break;
-      proxy_pass http://kong:8000;
+      proxy_pass http://studio:3000/;
+
+      # Standard reverse proxy headers
       proxy_set_header Host $host;
       proxy_set_header X-Real-IP $remote_addr;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
       proxy_set_header X-Forwarded-Proto $scheme;
-      
-      sub_filter_types text/html text/css text/javascript application/javascript;
-      sub_filter 'href="/'  'href="/supabase_kong/';
-      sub_filter 'src="/'   'src="/supabase_kong/';
-      sub_filter_once off;
-      proxy_redirect / /supabase_kong/;
+
+      # Inform the application about the subpath for correct URL generation
+      proxy_set_header X-Forwarded-Prefix /supabase_kong;
+
+      # Prevent errors from being intercepted by nginx
       proxy_intercept_errors off;
     }
+
+    # --- Supabase API (Kong Gateway) ---
+    # Kong Gateway handles API routing to backend services (auth, rest, storage, etc.)
+    # Accessible directly at port 8000 for container-to-container communication
+    # For external API access, consider adding: location /api/ { proxy_pass http://kong:8000/; }
 
     # ----------- MinIO Console -----------
     location /minio/ {
