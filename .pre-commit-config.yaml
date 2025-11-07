@@ -31,7 +31,13 @@ repos:
     hooks:
       - id: mypy
         files: ^flask/
-        additional_dependencies: [types-all]
+        additional_dependencies: [
+          types-flask,
+          types-boto3,
+          types-pillow,
+          types-pyjwt,
+          types-requests,
+        ]
 
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: v3.1.0
