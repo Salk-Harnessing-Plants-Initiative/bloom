@@ -70,3 +70,4 @@ next-env.d.ts
 
 # minio
 minio/data/
+minio_data/
