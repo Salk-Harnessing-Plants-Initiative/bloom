@@ -13,8 +13,8 @@ This repository contains:
 ## Prerequisites
 ###  1: Root-level environment files (for Docker)
 These are used when running the full stack with Docker:
-- `.env.dev` → for local development (used by `make dev`)
-- `.env.prod` → for production / deployment (used by `make prod`)
+- `.env.dev` → for local development (used by `make dev-up`)
+- `.env.prod` → for production / deployment (used by `make prod-up`)
 
 ###  2: Web app environment file (for running frontend locally)
 - `.env.dev` → for local development  
@@ -29,19 +29,21 @@ sudo mkdir -p /data/minio
 sudo chmod 777 /data/minio 
 
 ## Starting the Full Stack in Development
-make dev
+make dev-up
 
 ## Starting the Full Stack in Production
-make dev
-
+make dev-up
 
 ### To stop all containers:
-make prod
+make dev-down
+make prod-down
 
 ### To follow logs:
-make logs
+make dev-logs
+make prod-logs
 
 ### To rebuild everything from scratch:
-make rebuild
+make rebuild-dev-fresh
+make rebuild-prod-fresh
 
 

@@ -67,9 +67,13 @@ prod-down:
 	@echo "All containers stopped."
 
 # View logs for all services
-.PHONY: logs
+.PHONY: dev-logs
 logs:
 	docker compose -f docker-compose.dev.yml logs -f
+
+.PHONY: prod-logs
+prod-logs:
+	docker compose -f docker-compose.prod.yml logs -f
 
 # Force rebuild (even without changes)
 .PHONY: rebuild
