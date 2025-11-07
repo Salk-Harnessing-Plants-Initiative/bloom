@@ -1,6 +1,7 @@
 
 user nginx;
 worker_processes auto;
+error_log /var/log/nginx/error.log debug;
 
 events {
   worker_connections 1024;
@@ -13,27 +14,6 @@ http {
   keepalive_timeout  65;
   client_max_body_size 100M;
 
-  # ----------------- 
-  # Upstreams
-  # ----------------- 
-
-  upstream bloom_web {
-    server bloom-web:3000;
-  }
-
-  upstream /kong/ {
-    server supabase-kong:8000;
-  }
-
-  upstream studio_ui {
-    server supabase-studio-prod:3000;
-  }
-
-
-  upstream minio_console {
-    server supabase-minio:9001;
-  }
-
   # -----------------
   # Server
   # -----------------
@@ -45,82 +25,54 @@ http {
 
     # Test homepage
     location /test/ {
-        return 200 "Nginx is up and running\n";
-        add_header Content-Type text/plain;
-    }
-
-    location /test1/ {
-        return 200 "Nginx is up and running\n";
+        return 200 "Nginx is up and running Test 2\n";
         add_header Content-Type text/plain;
     }
 
     # ----------- Bloom Frontend -----------
-    location / {
-      proxy_pass http://bloom_web;
+    # location / {
+    #  proxy_pass http://bloom_web;
+    #  proxy_set_header Host $host;
+    #  proxy_set_header X-Real-IP $remote_addr;
+    #  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    #  proxy_set_header X-Forwarded-Proto $scheme;
+    # }
+
+    # --- Supabase API (Kong Gateway) ---
+    location /supabase_kong/ {
+      rewrite ^/supabase_kong(/.*)$ $1 break;
+      proxy_pass http://kong:8000;
       proxy_set_header Host $host;
       proxy_set_header X-Real-IP $remote_addr;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
       proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-# --- Supabase API (Kong Gateway) ---
-    location /kong/ {
-      proxy_pass http://supabase-kong:8000/;
-      proxy_set_header apikey "${ANON_KEY}";
-      proxy_set_header Authorization "Bearer ${ANON_KEY}";
-      proxy_http_version 1.1;
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection 'upgrade';
-      proxy_set_header Host $host;
-      proxy_cache_bypass $http_upgrade;
-    }
-
-    location /studio/ {
-        proxy_pass http://supabase-studio-prod:3000/;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
+      
+      sub_filter_types text/html text/css text/javascript application/javascript;
+      sub_filter 'href="/'  'href="/supabase_kong/';
+      sub_filter 'src="/'   'src="/supabase_kong/';
+      sub_filter_once off;
+      proxy_redirect / /supabase_kong/;
+      proxy_intercept_errors off;
     }
 
     # ----------- MinIO Console -----------
-  location /minio/ {
-      proxy_pass http://supabase-minio:9001/;
-      sub_filter_types text/html text/javascript;
-      sub_filter 'href="/'  'href="/minio/';
-      sub_filter 'src="/'   'src="/minio/';
-      sub_filter_once off;
+    location /minio/ {
+        proxy_pass http://supabase-minio:9001/;
+        sub_filter_types text/html text/javascript;
+        sub_filter 'href="/'  'href="/minio/';
+        sub_filter 'src="/'   'src="/minio/';
+        sub_filter_once off;
 
-      proxy_set_header Host $host;
-      proxy_set_header X-Real-IP $remote_addr;
-      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
-  }
-
-
-  #   # ----------- Supabase Studio -----------
-  # location /studio/ {
-  #       proxy_pass http://supabase-studio-prod:3000;
-  #       proxy_set_header Host $host;
-  #       proxy_set_header X-Real-IP $remote_addr;
-  #       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-  #       proxy_set_header X-Forwarded-Proto $scheme;
-
-  #       proxy_http_version 1.1;
-  #       proxy_set_header Upgrade $http_upgrade;
-  #       proxy_set_header Connection "upgrade";
-
-  #       sub_filter_once off;
-  #       sub_filter_types text/html text/javascript;
-  #       sub_filter 'href="/'  'href="/studio/';
-  #       sub_filter 'src="/'   'src="/studio/';
-  #   }
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 
     # ----------- Fallback -----------
     error_page 502 503 504 /50x.html;
-    location = /50x.html {
-      root /usr/share/nginx/html;
-    }
+      location = /50x.html {
+        root /usr/share/nginx/html;
+      }
   }
 }

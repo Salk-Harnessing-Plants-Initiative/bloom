@@ -14,14 +14,10 @@ import jwt
 app = Flask(__name__)
 decimate = 4
 
-
+# Basic Test route 1 to check if the Flask app is running
 @app.route("/")
 def index():
     return jsonify({"message": "Flask app is running!"})
-
-@app.route("/test")
-def test():
-    return jsonify({"message": "Test route works!"})
 
 # Test route to check supabase connection
 @app.route("/supabaseconnection")

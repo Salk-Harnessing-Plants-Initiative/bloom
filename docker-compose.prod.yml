@@ -19,39 +19,23 @@ services:
       - ./nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
       - ./web/out:/usr/share/nginx/html:ro
     depends_on:
-      - bloom-web
-      - supabase-kong
+      - kong
     command: /bin/sh -c "envsubst '\$ANON_KEY' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"
-    networks:
-      - supanet
-
-  # -------------------
-  # Bloom Web (Next.js)
-  # -------------------
-  bloom-web:
-    container_name: bloom-web
-    env_file:
-      - ./web/.env
-    build:
-      context: .
-      dockerfile: ./web/Dockerfile.bloom-web.prod
-    environment:
-      NODE_ENV: development
-      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
-      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
     networks:
       - supanet
 
   # -------------------
   #  Kong Gateway
   # -------------------
-  supabase-kong:
+  kong:
     container_name: supabase-kong
     image: kong:2.8.1
     restart: unless-stopped
     networks:
       - supanet
+    ports:
+      - "8000:8000"
+      - "8443:8443"
     expose:
       - "8000:8000"
       - "8443:8443"
@@ -62,12 +46,14 @@ services:
       KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
       KONG_DNS_ORDER: LAST,A,CNAME
       KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
     entrypoint: bash -c 'eval "echo \"$$(cat ~/temp.yml)\"" > ~/kong.yml && /docker-entrypoint.sh kong docker-start'
-
+  
   # -------------------
   # Auth (GoTrue)
   # -------------------
@@ -110,6 +96,10 @@ services:
       PGRST_DB_USE_LEGACY_GUCS: "false"
       PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
       PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
+    command:
+      [
+        "postgrest"
+      ]
   
   # -------------------
   # Realtime Analytics
@@ -272,8 +262,8 @@ services:
   # -------------------
   # Supabase Studio
   # -------------------
-  supabase-studio-prod:
-    container_name: supabase-studio-prod
+  studio:
+    container_name: studio
     image: supabase/studio:2025.06.30-sha-6f5982d
     restart: unless-stopped
     networks:
@@ -283,10 +273,21 @@ services:
     ports:
       - "55323:3000"
     environment:
-      SUPABASE_URL: http://supabase-kong:8000
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+      DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
+      DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_PUBLIC_URL: http://kong:8000
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      AUTH_JWT_SECRET: ${JWT_SECRET}
+      NEXT_PUBLIC_ENABLE_LOGS: true
+      NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
+      SUPABASE_PROJECT_REF: default
 
   # -------------------
   # ImgProxy
@@ -302,6 +303,63 @@ services:
       IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
       IMGPROXY_USE_ETAG: "true"
       IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
+  
+  meta:
+    container_name: supabase-meta-dev
+    image: supabase/postgres-meta:v0.91.6
+    restart: unless-stopped
+    networks:
+      - supanet
+    depends_on:
+      db-prod:
+        condition: service_healthy
+      analytics:
+        condition: service_healthy
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: ${POSTGRES_HOST}
+      PG_META_DB_PORT: ${POSTGRES_PORT}
+      PG_META_DB_NAME: ${POSTGRES_DB}
+      PG_META_DB_USER: supabase_admin
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+  
+  analytics:
+    container_name: supabase-analytics-dev
+    image: supabase/logflare:1.14.2
+    restart: unless-stopped
+    networks:
+      - supanet
+    ports:
+      - 4000:4000
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "http://localhost:4000/health"
+        ]
+      timeout: 5s
+      interval: 5s
+      retries: 10
+    depends_on:
+      db-prod:
+        condition: service_healthy
+    environment:
+      LOGFLARE_NODE_HOST: 127.0.0.1
+      DB_USERNAME: supabase_admin
+      DB_DATABASE: _supabase
+      DB_HOSTNAME: ${POSTGRES_HOST}
+      DB_PORT: ${POSTGRES_PORT}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_SCHEMA: _analytics
+      LOGFLARE_PUBLIC_ACCESS_TOKEN: ${LOGFLARE_PUBLIC_ACCESS_TOKEN}
+      LOGFLARE_PRIVATE_ACCESS_TOKEN: ${LOGFLARE_PRIVATE_ACCESS_TOKEN}
+      LOGFLARE_SINGLE_TENANT: true
+      LOGFLARE_SUPABASE_MODE: true
+      LOGFLARE_MIN_CLUSTER_SIZE: 1
+      POSTGRES_BACKEND_URL: postgresql://supabase_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/_supabase
+      POSTGRES_BACKEND_SCHEMA: _analytics
+      LOGFLARE_FEATURE_FLAG_OVERRIDE: multibackend=true
   
 volumes:
   db-config:
