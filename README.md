@@ -46,4 +46,16 @@ make prod-logs
 make rebuild-dev-fresh
 make rebuild-prod-fresh
 
+## Load test files into the database
+
+Use the `dev_init.ts` script to populate the database with test files.
+
+```bash
+# Load using .env.dev
+NODE_ENV=development ts-node scripts/dev_init.ts
+
+# Load using .env.prod
+NODE_ENV=production ts-node scripts/dev_init.ts
+
+
 
