@@ -52,3 +52,4 @@ htmlcov/
 /extra
 volumes/
 minio/data/
+minio_data/

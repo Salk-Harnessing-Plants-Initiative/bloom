@@ -9,10 +9,10 @@ name: bloom_v2_dev
 version : "1.0"
 
 services:
-  
+
   bloom-web:
     env_file:
-        - ./web/.env 
+        - ./web/.env
     build:
       context: .
       dockerfile: ./web/Dockerfile.bloom-web.dev
@@ -26,14 +26,16 @@ services:
     volumes:
       - ./web:/app/web
       - ./packages:/app/packages
-      - /app/node_modules        
+      - /app/node_modules
     networks:
       - supanet
     command: sh -c "apt-get update >/dev/null && apt-get install -y --no-install-recommends socat >/dev/null && socat TCP-LISTEN:8000,fork,reuseaddr TCP:kong:8000 &npm run dev"
 
   flask-app:
     container_name: flask-app
-    build: ./flask
+    build:
+      context: ./flask
+      target: dev
     ports:
       - "5002:5002"
     environment:
@@ -394,7 +396,7 @@ services:
   db-dev:
     container_name: db-dev
     image: supabase/postgres:15.8.1.060
-    restart: unless-stopped 
+    restart: unless-stopped
     volumes:
       - ./volumes/db/_supabase.sh:/docker-entrypoint-initdb.d/96-_supabase.sh:Z
       - ./volumes/db/_analytics.sh:/docker-entrypoint-initdb.d/97-_analytics.sh:Z
@@ -443,7 +445,7 @@ services:
         "log_min_messages=fatal"
       ]
 
-  # TODO : 
+  # TODO :
   # vector:
   #   container_name: supabase-vector
   #   image: timberio/vector:0.28.1-alpine
@@ -536,5 +538,3 @@ volumes:
 networks:
   supanet:
     driver: bridge
-
-
