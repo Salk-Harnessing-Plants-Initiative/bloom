@@ -93,6 +93,10 @@ services:
       NEXT_PUBLIC_ENABLE_LOGS: true
       NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
 
+      # Configure Studio to be aware of the /supabase_kong subpath
+      # This ensures correct URL generation for assets and API calls
+      NEXT_PUBLIC_BASE_PATH: /supabase_kong
+
   kong:
     container_name: supabase-kong
     image: kong:2.8.1

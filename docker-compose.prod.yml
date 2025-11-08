@@ -289,6 +289,10 @@ services:
       NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
       SUPABASE_PROJECT_REF: default
 
+      # Configure Studio to be aware of the /supabase_kong subpath
+      # This ensures correct URL generation for assets and API calls when served behind nginx
+      NEXT_PUBLIC_BASE_PATH: /supabase_kong
+
   # -------------------
   # ImgProxy
   # -------------------
