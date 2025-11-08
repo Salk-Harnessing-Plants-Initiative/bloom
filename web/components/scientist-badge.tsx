@@ -1,6 +1,6 @@
-import { Database } from "@/lib/database.types";
+import { Database } from '@/lib/database.types'
 
-type People = Database["public"]["Tables"]["people"]["Row"];
+type People = Database['public']['Tables']['people']['Row']
 
 export default function ScientistBadge({ person }: { person: People }) {
   return (
@@ -29,5 +29,5 @@ export default function ScientistBadge({ person }: { person: People }) {
         </div>
       </div>
     </div>
-  );
+  )
 }

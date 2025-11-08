@@ -1,33 +1,28 @@
-import Link from "next/link";
-import Illustration from "@/components/illustration";
-import {
-  createServerSupabaseClient,
-  getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
-import Mixpanel from "mixpanel";
+import Link from 'next/link'
+import Illustration from '@/components/illustration'
+import { createServerSupabaseClient, getUser } from '@salk-hpi/bloom-nextjs-auth'
+import Mixpanel from 'mixpanel'
 
-import type { SpeciesWithExperiments } from "@/lib/custom.types";
+import type { SpeciesWithExperiments } from '@/lib/custom.types'
 
 export default async function AllSpecies() {
-  const user = await getUser();
+  const user = await getUser()
 
-  const mixpanel = process.env.MIXPANEL_TOKEN
-    ? Mixpanel.init(process.env.MIXPANEL_TOKEN)
-    : null;
+  const mixpanel = process.env.MIXPANEL_TOKEN ? Mixpanel.init(process.env.MIXPANEL_TOKEN) : null
 
-  mixpanel?.track("Page view", {
+  mixpanel?.track('Page view', {
     distinct_id: user?.email,
-    url: "/app/traits",
-  });
+    url: '/app/traits',
+  })
 
-  const speciesList = await getSpeciesList();
+  const speciesList = await getSpeciesList()
 
   const getSpeciesInfo = (species: SpeciesWithExperiments) => {
-    const numExps = species.cyl_experiments.length;
-    const suffix = numExps == 1 ? "" : "s";
-    const text = numExps + " experiment" + suffix + "";
-    return <span>{text}</span>;
-  };
+    const numExps = species.cyl_experiments.length
+    const suffix = numExps == 1 ? '' : 's'
+    const text = numExps + ' experiment' + suffix + ''
+    return <span>{text}</span>
+  }
 
   return (
     <div>
@@ -51,29 +46,27 @@ export default async function AllSpecies() {
                   <span className="lowercase">{species.species}</span>
                 </div>
               </div>
-              <div className="text-sm mt-2 text-neutral-400">
-                {getSpeciesInfo(species)}
-              </div>
+              <div className="text-sm mt-2 text-neutral-400">{getSpeciesInfo(species)}</div>
             </div>
           </div>
         ))}
       </div>
     </div>
-  );
+  )
 }
 
 async function getSpeciesList() {
-  const supabase = createServerSupabaseClient();
+  const supabase = createServerSupabaseClient()
 
-  const { data  } = await supabase
-    .from("species")
-    .select("*, cyl_experiments!inner(*)")
-    .neq("cyl_experiments.deleted", true);
+  const { data } = await supabase
+    .from('species')
+    .select('*, cyl_experiments!inner(*)')
+    .neq('cyl_experiments.deleted', true)
 
   // sort by length of cyl_experiments
-  data?.sort((a: { cyl_experiments: string | any[]; }, b: { cyl_experiments: string | any[]; }) => {
-    return b.cyl_experiments.length - a.cyl_experiments.length;
-  });
+  data?.sort((a: { cyl_experiments: string | any[] }, b: { cyl_experiments: string | any[] }) => {
+    return b.cyl_experiments.length - a.cyl_experiments.length
+  })
 
-  return data;
+  return data
 }

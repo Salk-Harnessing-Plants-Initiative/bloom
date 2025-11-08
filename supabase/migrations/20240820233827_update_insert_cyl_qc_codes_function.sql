@@ -7,13 +7,13 @@ DECLARE
     qc_code_id bigint;
 BEGIN
     -- Loop through each element in the JSON array
-    FOR qc_code_data IN 
-    SELECT 
+    FOR qc_code_data IN
+    SELECT
         (elem->>'experiment_id')::bigint AS experiment_id,
         elem->>'plant_qr_code' AS plant_qr_code,
         elem->>'qc_code' AS qc_code,
         (elem->>'qc_set_id')::bigint AS qc_set_id
-    FROM 
+    FROM
         json_array_elements(qc_codes) AS elem
     LOOP
         -- Insert data into cyl_qc_codes table and capture the generated id

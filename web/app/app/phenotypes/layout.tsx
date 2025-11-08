@@ -1,5 +1,5 @@
-import React from 'react';
-import SearchBar from '../../../components/searchPage';
+import React from 'react'
+import SearchBar from '../../../components/searchPage'
 
 export default function PhenotypesLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -7,5 +7,5 @@ export default function PhenotypesLayout({ children }: { children: React.ReactNo
       <SearchBar />
       <main>{children}</main>
     </div>
-  );
+  )
 }

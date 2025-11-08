@@ -1,20 +1,20 @@
-"use client";
+'use client'
 
-import { Database } from "@/lib/database.types";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import { useState, useEffect, useRef } from "react";
-import createREGL from "regl";
+import { Database } from '@/lib/database.types'
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+import { useState, useEffect, useRef } from 'react'
+import createREGL from 'regl'
 
 type SCRNAGene = {
-  gene_name: string;
-};
+  gene_name: string
+}
 
 type SCRNACell = {
-  cluster_id: number | null;
-  cell_number: number | null;
-  x: number | null;
-  y: number | null;
-};
+  cluster_id: number | null
+  cell_number: number | null
+  x: number | null
+  y: number | null
+}
 
 // List of 30 pastel colors for different clusters
 const clusterColors = [
@@ -58,107 +58,99 @@ const clusterColors = [
   [0.9922, 0.9569, 0.8, 1],
   [0.7098, 0.5059, 0.6078, 1],
   [0.9922, 0.9569, 0.8314, 1],
-];
+]
 
 export default function ExpressionDataset({ name }: { name: string }) {
-  const [genes, setGenes] = useState<SCRNAGene[] | null>(null);
-  const [cells, setCells] = useState<SCRNACell[] | null>(null);
-  const [numClusters, setNumClusters] = useState<number | null>(null);
-  const [selectedCluster, setSelectedCluster] = useState<number | null>(null);
-  const [selectedGene, setSelectedGene] = useState<string | null>(null);
-  const [counts, setCounts] = useState<any | null>({});
+  const [genes, setGenes] = useState<SCRNAGene[] | null>(null)
+  const [cells, setCells] = useState<SCRNACell[] | null>(null)
+  const [numClusters, setNumClusters] = useState<number | null>(null)
+  const [selectedCluster, setSelectedCluster] = useState<number | null>(null)
+  const [selectedGene, setSelectedGene] = useState<string | null>(null)
+  const [counts, setCounts] = useState<any | null>({})
 
   useEffect(() => {
     const fetchData = async () => {
-      const supabase = createClientComponentClient<Database>();
+      const supabase = createClientComponentClient<Database>()
       supabase
-        .from("scrna_datasets")
-        .select(
-          "*, scrna_genes(gene_name), scrna_cells(x, y, cluster_id, cell_number)"
-        )
-        .eq("name", name)
-        .single<{ 
-          scrna_genes: SCRNAGene[]; 
-          scrna_cells: SCRNACell[]; 
+        .from('scrna_datasets')
+        .select('*, scrna_genes(gene_name), scrna_cells(x, y, cluster_id, cell_number)')
+        .eq('name', name)
+        .single<{
+          scrna_genes: SCRNAGene[]
+          scrna_cells: SCRNACell[]
         }>()
         .then((data) => {
-          const dataset = data?.data!;
-          console.log("received data");
-          setGenes(dataset.scrna_genes);
-          setCells(dataset.scrna_cells);
-        });
-    };
-    fetchData();
-  }, [name]);
+          const dataset = data?.data!
+          console.log('received data')
+          setGenes(dataset.scrna_genes)
+          setCells(dataset.scrna_cells)
+        })
+    }
+    fetchData()
+  }, [name])
 
   useEffect(() => {
     const fetchData = async () => {
-      const supabase = createClientComponentClient<Database>();
+      const supabase = createClientComponentClient<Database>()
       // get the counts
       supabase.storage
-        .from("scrna")
+        .from('scrna')
         .download(`counts/${name}/${selectedGene}.json`)
         .then((data) => {
           data.data?.text().then((text) => {
-            const counts = JSON.parse(text);
-            setCounts(counts);
-          });
-        });
-    };
-    if (selectedGene) {
-      fetchData();
+            const counts = JSON.parse(text)
+            setCounts(counts)
+          })
+        })
     }
-  }, [name, selectedGene]);
+    if (selectedGene) {
+      fetchData()
+    }
+  }, [name, selectedGene])
 
   useEffect(() => {
     if (cells) {
-      const numClusters = new Set(cells.map((cell) => cell.cluster_id)).size;
-      setNumClusters(numClusters);
+      const numClusters = new Set(cells.map((cell) => cell.cluster_id)).size
+      setNumClusters(numClusters)
     }
-  }, [cells]);
+  }, [cells])
 
   useEffect(() => {
-    document.addEventListener("mousedown", (e) => {
-      setSelectedCluster(null);
-    });
+    document.addEventListener('mousedown', (e) => {
+      setSelectedCluster(null)
+    })
     return () => {
-      document.removeEventListener("mousedown", (e) => {
-        setSelectedCluster(null);
-      });
-    };
-  });
+      document.removeEventListener('mousedown', (e) => {
+        setSelectedCluster(null)
+      })
+    }
+  })
 
   // Define points
 
   const xAbsMax =
-    cells?.reduce(
-      (acc, cell) => (Math.abs(cell.x!) > acc ? Math.abs(cell.x!) : acc),
-      0
-    ) || 1;
+    cells?.reduce((acc, cell) => (Math.abs(cell.x!) > acc ? Math.abs(cell.x!) : acc), 0) || 1
   const yAbsMax =
-    cells?.reduce(
-      (acc, cell) => (Math.abs(cell.y!) > acc ? Math.abs(cell.y!) : acc),
-      0
-    ) || 1;
+    cells?.reduce((acc, cell) => (Math.abs(cell.y!) > acc ? Math.abs(cell.y!) : acc), 0) || 1
 
-  const scale = 0.9 / Math.max(xAbsMax, yAbsMax);
+  const scale = 0.9 / Math.max(xAbsMax, yAbsMax)
 
-  console.log(Math.max(xAbsMax, yAbsMax));
+  console.log(Math.max(xAbsMax, yAbsMax))
 
-  const position = cells?.map((cell) => [cell.x! * scale, cell.y! * scale]);
+  const position = cells?.map((cell) => [cell.x! * scale, cell.y! * scale])
 
-  console.log(cells);
+  console.log(cells)
 
   // Define colors
   const clusterColor = cells?.map((cell) => {
-    const colorIdx = cell.cluster_id! % clusterColors.length;
-    const color = clusterColors[colorIdx];
+    const colorIdx = cell.cluster_id! % clusterColors.length
+    const color = clusterColors[colorIdx]
     return selectedCluster === null
       ? color
       : cell.cluster_id === selectedCluster
-      ? color
-      : [0.9, 0.9, 0.9, 1.0];
-  });
+        ? color
+        : [0.9, 0.9, 0.9, 1.0]
+  })
 
   const geneColor = cells?.map((cell) => {
     // const colorIdx = cell.cluster_id! % clusterColors.length;
@@ -170,41 +162,31 @@ export default function ExpressionDataset({ name }: { name: string }) {
           Math.max(0.9 - 0.3 * counts[cell.cell_number!], 0),
           1,
         ]
-      : [0.9, 0.9, 0.9, 1.0];
-  });
+      : [0.9, 0.9, 0.9, 1.0]
+  })
 
   // Define sizes
   const clusterSize = cells?.map((cell) => {
-    return selectedCluster !== null && cell.cluster_id === selectedCluster
-      ? 4.0
-      : 2.0;
-  });
+    return selectedCluster !== null && cell.cluster_id === selectedCluster ? 4.0 : 2.0
+  })
 
   const geneSize = cells?.map((cell) => {
-    return counts !== null && cell.cell_number!.toString() in counts
-      ? 4.0
-      : 2.0;
-  });
+    return counts !== null && cell.cell_number!.toString() in counts ? 4.0 : 2.0
+  })
 
   // indices of cells with the selected gene
   const geneIndices = cells
     ?.map((cell) => cell.cell_number!)
-    .filter((cellNumber) => cellNumber.toString() in counts);
+    .filter((cellNumber) => cellNumber.toString() in counts)
   // indices of cells without the selected gene
   const nonGeneIndices = cells
     ?.map((cell) => cell.cell_number!)
-    .filter((cellNumber) => !(cellNumber.toString() in counts));
+    .filter((cellNumber) => !(cellNumber.toString() in counts))
 
   // recombined positions, colors, and sizes
-  const positionsRecombined = position
-    ? recombine(position!, geneIndices!, nonGeneIndices!)
-    : [];
-  const colorsRecombined = position
-    ? recombine(geneColor!, geneIndices!, nonGeneIndices!)
-    : [];
-  const sizesRecombined = position
-    ? recombine(geneSize!, geneIndices!, nonGeneIndices!)
-    : [];
+  const positionsRecombined = position ? recombine(position!, geneIndices!, nonGeneIndices!) : []
+  const colorsRecombined = position ? recombine(geneColor!, geneIndices!, nonGeneIndices!) : []
+  const sizesRecombined = position ? recombine(geneSize!, geneIndices!, nonGeneIndices!) : []
 
   return (
     <div>
@@ -216,7 +198,7 @@ export default function ExpressionDataset({ name }: { name: string }) {
           <Autocomplete
             values={genes.map((gene) => gene.gene_name)}
             onSelect={(gene) => {
-              setSelectedGene(gene);
+              setSelectedGene(gene)
             }}
           />
           <div className="flex flex-row mt-4">
@@ -233,11 +215,7 @@ export default function ExpressionDataset({ name }: { name: string }) {
             </div>
             <div>
               {cells ? (
-                <ExpressionView
-                  position={position!}
-                  size={clusterSize!}
-                  color={clusterColor!}
-                />
+                <ExpressionView position={position!} size={clusterSize!} color={clusterColor!} />
               ) : (
                 <div>Loading...</div>
               )}
@@ -248,31 +226,27 @@ export default function ExpressionDataset({ name }: { name: string }) {
                   <div
                     key={i}
                     className={
-                      "pr-2 " +
-                      (selectedCluster !== null
-                        ? selectedCluster === i
-                          ? ""
-                          : "opacity-30"
-                        : "")
+                      'pr-2 ' +
+                      (selectedCluster !== null ? (selectedCluster === i ? '' : 'opacity-30') : '')
                     }
                   >
                     <div
                       className="w-2 h-2 inline-block rounded-full mr-2"
                       style={{
-                        backgroundColor: `rgba(${color[0] * 255}, ${
-                          color[1] * 255
-                        }, ${color[2] * 255}, ${color[3]})`,
+                        backgroundColor: `rgba(${color[0] * 255}, ${color[1] * 255}, ${
+                          color[2] * 255
+                        }, ${color[3]})`,
                       }}
                     ></div>
                     <div
-                      className={"inline text-xs cursor-pointer"}
+                      className={'inline text-xs cursor-pointer'}
                       onClick={(e) => {
-                        e.stopPropagation();
-                        console.log(`toggling cluster ${i}`);
+                        e.stopPropagation()
+                        console.log(`toggling cluster ${i}`)
                         if (selectedCluster === i) {
-                          setSelectedCluster(null);
+                          setSelectedCluster(null)
                         } else {
-                          setSelectedCluster(i);
+                          setSelectedCluster(i)
                         }
                       }}
                     >
@@ -303,13 +277,11 @@ export default function ExpressionDataset({ name }: { name: string }) {
         ))}
       </div> */}
     </div>
-  );
+  )
 }
 
 function recombine(arr: any[], indices1: number[], indices2: number[]) {
-  return indices1
-    .map((index) => arr[index])
-    .concat(indices2.map((index) => arr[index]));
+  return indices1.map((index) => arr[index]).concat(indices2.map((index) => arr[index]))
 }
 
 function ExpressionView({
@@ -317,18 +289,18 @@ function ExpressionView({
   color,
   size,
 }: {
-  position: number[][];
-  color: number[][];
-  size: number[];
+  position: number[][]
+  color: number[][]
+  size: number[]
 }) {
-  const reglContainerRef = useRef(null);
+  const reglContainerRef = useRef(null)
 
   useEffect(() => {
-    var regl: createREGL.Regl | null = null;
+    var regl: createREGL.Regl | null = null
     if (reglContainerRef.current) {
       regl = createREGL({
         container: reglContainerRef.current,
-      });
+      })
 
       // Define the draw command
       const drawPoints = regl({
@@ -359,52 +331,52 @@ function ExpressionView({
 
         count: position.length,
 
-        primitive: "points",
-      });
+        primitive: 'points',
+      })
 
       // Render the points
       regl?.frame(() => {
         regl?.clear({
           color: [0, 0, 0, 0],
           depth: 1,
-        });
+        })
 
-        drawPoints();
-      });
+        drawPoints()
+      })
     }
 
     // Cleanup function to stop regl's animation loop when the component unmounts
     return () => {
-      regl && regl.destroy();
-    };
-  }, [position, color, size]);
+      regl && regl.destroy()
+    }
+  }, [position, color, size])
 
   return (
     <div
       ref={reglContainerRef}
       className="border border-1 rounded-md"
-      style={{ width: "300px", height: "300px" }}
+      style={{ width: '300px', height: '300px' }}
     ></div>
-  );
+  )
 }
 
 function Autocomplete({
   values,
   onSelect,
 }: {
-  values: string[];
-  onSelect: (value: string) => void;
+  values: string[]
+  onSelect: (value: string) => void
 }) {
-  const [input, setInput] = useState("");
-  const [focused, setFocused] = useState(false);
-  const [filteredValues, setFilteredValues] = useState<string[]>([]);
-  const [selectedIdx, setSelectedIdx] = useState<number>(0);
+  const [input, setInput] = useState('')
+  const [focused, setFocused] = useState(false)
+  const [filteredValues, setFilteredValues] = useState<string[]>([])
+  const [selectedIdx, setSelectedIdx] = useState<number>(0)
 
   useEffect(() => {
     setFilteredValues(
       values.filter((value) => value.startsWith(input)) //.slice(0, 20)
-    );
-  }, [input, values]);
+    )
+  }, [input, values])
 
   return (
     <div>
@@ -413,28 +385,26 @@ function Autocomplete({
         value={input}
         onChange={(e) => {
           if (e.target.value in values) {
-            onSelect(e.target.value);
+            onSelect(e.target.value)
           }
-          setInput(e.target.value);
+          setInput(e.target.value)
         }}
         onFocus={() => {
-          setFocused(true);
+          setFocused(true)
         }}
         onBlur={(e) => {
-          setFocused(false);
+          setFocused(false)
         }}
         onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            onSelect(filteredValues[selectedIdx]);
-            setInput(filteredValues[selectedIdx]);
+          if (e.key === 'Enter') {
+            onSelect(filteredValues[selectedIdx])
+            setInput(filteredValues[selectedIdx])
           }
-          if (e.key === "ArrowDown") {
-            setSelectedIdx((selectedIdx + 1) % filteredValues.length);
+          if (e.key === 'ArrowDown') {
+            setSelectedIdx((selectedIdx + 1) % filteredValues.length)
           }
-          if (e.key === "ArrowUp") {
-            setSelectedIdx(
-              selectedIdx === 0 ? filteredValues.length - 1 : selectedIdx - 1
-            );
+          if (e.key === 'ArrowUp') {
+            setSelectedIdx(selectedIdx === 0 ? filteredValues.length - 1 : selectedIdx - 1)
           }
         }}
         className="border border-1 rounded-md p-2 w-60"
@@ -445,13 +415,13 @@ function Autocomplete({
             <div
               key={value}
               className={
-                "hover:bg-gray-200 cursor-pointer p-1 rounded-md" +
-                (index === selectedIdx ? " bg-gray-200" : "")
+                'hover:bg-gray-200 cursor-pointer p-1 rounded-md' +
+                (index === selectedIdx ? ' bg-gray-200' : '')
               }
               onMouseDown={() => {
-                console.log(`selected ${value}`);
-                onSelect(value);
-                setInput(value);
+                console.log(`selected ${value}`)
+                onSelect(value)
+                setInput(value)
               }}
             >
               {value}
@@ -460,5 +430,5 @@ function Autocomplete({
         </div>
       )}
     </div>
-  );
+  )
 }

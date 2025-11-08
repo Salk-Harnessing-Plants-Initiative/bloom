@@ -1,15 +1,12 @@
-import { redirect } from "next/navigation";
-import { Navigation } from "@/components/navigation";
-import {
-  createServerActionSupabaseClient,
-  getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
-import Link from "next/link";
+import { redirect } from 'next/navigation'
+import { Navigation } from '@/components/navigation'
+import { createServerActionSupabaseClient, getUser } from '@salk-hpi/bloom-nextjs-auth'
+import Link from 'next/link'
 
 export const metadata = {
-  title: "Bloom",
-  description: "Web app for Salk Harnessing Plants Initiative",
-};
+  title: 'Bloom',
+  description: 'Web app for Salk Harnessing Plants Initiative',
+}
 
 const navLinks = [
   // {
@@ -21,28 +18,28 @@ const navLinks = [
   //   href: "/app/genotypes",
   // },
   {
-    name: "Phenotypes",
-    href: "/app/phenotypes",
+    name: 'Phenotypes',
+    href: '/app/phenotypes',
   },
   // {
   //   name: "Pipelines",
   //   href: "/app/pipelines",
   // },
   {
-    name: "Traits",
-    href: "/app/traits",
+    name: 'Traits',
+    href: '/app/traits',
   },
   {
-    name: "Genes",
-    href: "/app/genes",
+    name: 'Genes',
+    href: '/app/genes',
   },
   {
-    name: "Genomes",
-    href: "/app/jbrowse",
+    name: 'Genomes',
+    href: '/app/jbrowse',
   },
   {
-    name: "Expression",
-    href: "/app/expression",
+    name: 'Expression',
+    href: '/app/expression',
   },
   // {
   //   name: "PyGCMS",
@@ -53,39 +50,35 @@ const navLinks = [
   //   href: "/app/greenhouse",
   // },
   {
-    name: "Timeline",
-    href: "/app/timeline",
+    name: 'Timeline',
+    href: '/app/timeline',
   },
   {
-    name: "Translation",
-    href: "/app/translation",
+    name: 'Translation',
+    href: '/app/translation',
   },
   {
-    name: "Software",
-    href: "/app/software",
+    name: 'Software',
+    href: '/app/software',
   },
   // {
   //   name: "Settings",
   //   href: "/app/settings",
   // },
-];
+]
 
-export default async function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  const user = await getUser();
+export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const user = await getUser()
 
   const signOut = async () => {
-    "use server";
-    const supabase = createServerActionSupabaseClient();
-    await supabase.auth.signOut();
-    redirect("/login");
-  };
+    'use server'
+    const supabase = createServerActionSupabaseClient()
+    await supabase.auth.signOut()
+    redirect('/login')
+  }
 
   if (!user) {
-    redirect("/login");
+    redirect('/login')
   } else {
     return (
       <main className="min-h-screen flex flex-col bg-stone-100">
@@ -98,7 +91,7 @@ export default async function DashboardLayout({
           <div className="flex text-sm">
             <span className="ml-auto">
               <span className="flex gap-4">
-                {user.email} <span className="border-r"></span>{" "}
+                {user.email} <span className="border-r"></span>{' '}
                 <form action={signOut}>
                   <button className="hover:underline">Logout</button>
                 </form>
@@ -115,6 +108,6 @@ export default async function DashboardLayout({
           </div>
         </div>
       </main>
-    );
+    )
   }
 }

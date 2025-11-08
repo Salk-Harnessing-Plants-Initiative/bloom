@@ -13,6 +13,7 @@ The Bloom project currently lacks automated quality assurance and deployment pro
 - **Package manager inconsistency**: pnpm specified but npm used in practice
 
 These gaps lead to:
+
 - Production bugs that could be caught earlier
 - Inconsistent code quality and style
 - Slower code reviews (reviewers must check style manually)
@@ -23,6 +24,7 @@ These gaps lead to:
 ## What Changes
 
 ### 1. Python Package Management Migration
+
 - **BREAKING**: Migrate from pip/requirements.txt to uv with pyproject.toml
 - Add pyproject.toml with PEP 621 project metadata
 - Configure black, ruff, mypy in pyproject.toml
@@ -31,6 +33,7 @@ These gaps lead to:
 - Update development workflows to use uv commands
 
 ### 2. Testing Framework Implementation
+
 - **Frontend (Next.js/React)**: Jest + React Testing Library + Playwright
 - **Backend (Flask/Python)**: pytest + pytest-cov + pytest-flask + pytest-mock
 - **Shared Packages**: Jest with TypeScript support
@@ -38,12 +41,14 @@ These gaps lead to:
 - **Type annotations**: 100% type coverage in Python with Google-style docstrings
 
 ### 3. Code Quality & Linting
+
 - **TypeScript/JavaScript**: ESLint + Prettier with Next.js config
 - **Python**: black (formatting) + ruff (linting) + mypy (type checking)
 - **Configuration files**: .eslintrc.js, .prettierrc.json, pyproject.toml
 - **Enforcement**: Pre-commit hooks and CI checks
 
 ### 4. Pre-commit Hooks
+
 - Install pre-commit framework
 - Configure hooks for trailing whitespace, YAML validation, large files
 - Add Python hooks: black, ruff, mypy
@@ -51,6 +56,7 @@ These gaps lead to:
 - Automatic formatting on commit
 
 ### 5. CI/CD Pipeline (GitHub Actions)
+
 - **CI Workflow**: Lint, test, build for all components in parallel
 - **CD Workflow**: Build and push Docker images to GHCR on main branch/tags
 - **Dependency Review**: Automated security scanning on PRs
@@ -58,11 +64,13 @@ These gaps lead to:
 - **Coverage Reporting**: Codecov integration with 70% threshold
 
 ### 6. Docker Integration
+
 - Update Flask Dockerfile to use uv for faster, reproducible builds
 - Multi-stage builds (base, dev) for optimized images
 - Cache GitHub Actions runners for faster CI
 
 ### 7. Turbo Configuration
+
 - Add test, lint, and coverage tasks to turbo.json
 - Configure proper task dependencies and caching
 - Enable parallel execution across workspace packages
@@ -71,6 +79,7 @@ These gaps lead to:
 
 - **Affected specs**: `development-workflow` (new capability spec)
 - **Affected code**:
+
   - **New files**:
     - `flask/pyproject.toml` - Python project configuration
     - `flask/uv.lock` - Python dependency lockfile
@@ -95,6 +104,7 @@ These gaps lead to:
     - `flask/requirements.txt` - Replaced by pyproject.toml
 
 - **Breaking changes**:
+
   - Python development workflow changes from pip to uv
   - Developers must run `uv sync` instead of `pip install`
   - Docker build process changes (backward compatible in runtime)
@@ -102,12 +112,14 @@ These gaps lead to:
   - CI will fail PRs that don't meet coverage thresholds
 
 - **Dependencies**:
+
   - uv (Python package manager)
   - pre-commit framework
   - GitHub Actions runners (free tier sufficient)
   - Codecov account (free for open source)
 
 - **Migration required**:
+
   - Team training on uv commands (1-2 hours)
   - Initial test writing effort (3 weeks, 2 developers 50% time)
   - Existing code formatting pass (1-2 days)

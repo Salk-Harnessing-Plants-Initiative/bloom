@@ -1,10 +1,9 @@
 import { usePathname } from 'next/navigation'
 import Link from 'next/link'
- 
 
 export default function PhenoBreadcrumbs({ params }: { params: { speciesId: number } }) {
   return (
-    <div className='text-xl mb-8 select-none'>
+    <div className="text-xl mb-8 select-none">
       {/* <span className='text-stone-400'>
         <span className='hover:underline'><Link href='/app/phenotypes'>All species</Link></span>
         &nbsp;▸&nbsp;
@@ -27,4 +26,3 @@ export default function PhenoBreadcrumbs({ params }: { params: { speciesId: numb
     </div>
   )
 }
-

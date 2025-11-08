@@ -1,36 +1,30 @@
-export const runtime = 'nodejs';
-import { NextRequest, NextResponse } from "next/server";
-import {
-  getUser,
-  createServiceRoleSupabaseClient,
-} from "@salk-hpi/bloom-nextjs-auth";
-import { encryptToken, decryptToken } from "@salk-hpi/bloom-js";
+export const runtime = 'nodejs'
+import { NextRequest, NextResponse } from 'next/server'
+import { getUser, createServiceRoleSupabaseClient } from '@salk-hpi/bloom-nextjs-auth'
+import { encryptToken, decryptToken } from '@salk-hpi/bloom-js'
 
 export async function GET(request: NextRequest) {
-  const user = await getUser();
+  const user = await getUser()
   // return 401 if user is not logged in.
   if (!user) {
-    return new NextResponse("Unauthorized", { status: 401 });
+    return new NextResponse('Unauthorized', { status: 401 })
   }
   // get the supabase_url and service_role_key from the environment variables
-  const supabase_url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const service_role_key = process.env.SERVICE_ROLE_KEY;
+  const supabase_url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const service_role_key = process.env.SERVICE_ROLE_KEY
   // return 500 if supabase_url or service_role_key is not set.
   if (!supabase_url || !service_role_key) {
-    return new NextResponse("Internal Server Error", { status: 500 });
+    return new NextResponse('Internal Server Error', { status: 500 })
   }
   // create a supabase client with the service role key
-  const supabase = createServiceRoleSupabaseClient(
-    supabase_url,
-    service_role_key
-  );
+  const supabase = createServiceRoleSupabaseClient(supabase_url, service_role_key)
   // hardcode provider as gitlab for now
-  const provider = "gitlab";
+  const provider = 'gitlab'
   // get encrypted access token from the database
   type OAuthTokenRow = {
-    encrypted_access_token: string;
+    encrypted_access_token: string
     // add other fields if needed
-  };
+  }
 
   // const { data: response, error } = (await supabase
   // .from("oauth_tokens")
@@ -46,7 +40,7 @@ export async function GET(request: NextRequest) {
   //   return new NextResponse("Not Authorized", { status: 401 });
   // }
   // decrypt the access token
-  
+
   // const access_token = decryptToken(response.encrypted_access_token);
   // get gitlab user from API
   // const gitlab_user_url = "https://gitlab.com/api/v4/user";
@@ -63,5 +57,5 @@ export async function GET(request: NextRequest) {
   //   headers: gitlab_headers,
   // }).then((res) => res.json());
   // return NextResponse.json(gitlab_projects_response);
-  return NextResponse.json(null);
+  return NextResponse.json(null)
 }

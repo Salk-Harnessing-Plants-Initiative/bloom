@@ -23,7 +23,7 @@ BEGIN
 
     -- Create the set
     INSERT INTO cyl_datasets (name, experiment_id, timepoints, cyl_qc_set_id, trait_source_id) VALUES (_name, _experiment_id, _timepoints, qc_set_id, _trait_source_id) RETURNING id INTO cyl_dataset_id;
-    
+
 
     -- Insert data into cyl_qc_codes table and capture the generated id
     INSERT INTO cyl_dataset_traits (trait_id, dataset_id)
@@ -42,7 +42,7 @@ BEGIN
     AND cyl_scans_extended.experiment_id = _experiment_id
     AND (_timepoints IS NULL OR cyl_scans_extended.plant_age_days IN (SELECT json_array_elements_text(_timepoints)::int))
     AND (qc_set_id IS NULL OR qc_filtered.plant_id IS NULL);
-    
+
 END;
 $$
 set statement_timeout TO '0';

@@ -1,4 +1,4 @@
-import * as fs from "fs/promises";
+import * as fs from 'fs/promises'
 
 export async function initCylMetadata(
   dir: string,
@@ -9,25 +9,17 @@ export async function initCylMetadata(
   qrCodeCol: string,
   accessionCol: string
 ) {
-  const outputFile = `${dir}/cyl-metadata.yml`;
+  const outputFile = `${dir}/cyl-metadata.yml`
 
   await fs.writeFile(
     outputFile,
-    initMetadata(
-      dir,
-      species,
-      experiment,
-      spreadsheet,
-      sheet,
-      qrCodeCol,
-      accessionCol
-    )
-  );
+    initMetadata(dir, species, experiment, spreadsheet, sheet, qrCodeCol, accessionCol)
+  )
 
-  console.log();
-  console.log(`Initialized ${outputFile}`);
-  console.log();
-  console.log(`Edit ${outputFile} to reflect the correct metadata format.`);
+  console.log()
+  console.log(`Initialized ${outputFile}`)
+  console.log()
+  console.log(`Edit ${outputFile} to reflect the correct metadata format.`)
   console.log(`
 Then, run any of the following commands.
 
@@ -36,7 +28,7 @@ To validate the metadata:     bloom cyl validate ${dir}
 To upload the scans:          bloom cyl upload ${dir}
 
 Note that these commands can also be run on subdirectories of ${dir}.
-  `);
+  `)
 }
 
 function initMetadata(
@@ -138,5 +130,5 @@ accession_info:
 # 'accession_info' contains spreadsheet information for mapping plant
 # QR codes to accession IDs.
 
-`;
+`
 }

@@ -1,5 +1,5 @@
 CREATE TABLE experiment_progress_logs (
-    id BIGSERIAL PRIMARY KEY,    
+    id BIGSERIAL PRIMARY KEY,
     gene TEXT NOT NULL,
     message TEXT NOT NULL,
     timestamp TIMESTAMP NOT NULL DEFAULT now(),
@@ -13,4 +13,3 @@ ALTER TABLE experiment_progress_logs
 ADD CONSTRAINT fk_gene
 FOREIGN KEY (gene) REFERENCES gene_candidates(gene)
 ON DELETE CASCADE;
-

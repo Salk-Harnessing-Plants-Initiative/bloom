@@ -9,11 +9,11 @@ BEGIN
       cyl_plants_extended.plant_id AS plant_id,
       qc_code_data.qc_code AS value
     FROM
-    (SELECT 
+    (SELECT
         (elem->>'experiment_id')::bigint AS experiment_id,
         elem->>'plant_qr_code' AS plant_qr_code,
         elem->>'qc_code' AS qc_code
-    FROM 
+    FROM
         json_array_elements(qc_codes) AS elem
     ) AS qc_code_data
     JOIN cyl_plants_extended
