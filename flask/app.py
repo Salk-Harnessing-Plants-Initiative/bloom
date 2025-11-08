@@ -1,23 +1,24 @@
-import tempfile
-from urllib import request
-from flask import Flask, request, jsonify
-from config import supabase, s3, s3_bucket_name, jwt_secret
-from supabase import create_client, Client
-from videoWriter import VideoWriter
-import boto3
-import numpy as np
-import os
 import io
-from PIL import Image
+import os
+import tempfile
+
 import jwt
+import numpy as np
+from flask import Flask, jsonify, request
+from PIL import Image
+
+from config import jwt_secret, s3, s3_bucket_name, supabase
+from videoWriter import VideoWriter
 
 app = Flask(__name__)
 decimate = 4
+
 
 # Basic Test route 1 to check if the Flask app is running
 @app.route("/")
 def index():
     return jsonify({"message": "Flask app is running!"})
+
 
 # Test route to check supabase connection
 @app.route("/supabaseconnection")
@@ -28,6 +29,7 @@ def get_species():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 # Test route to check S3 connection.
 @app.route("/list_buckets", methods=["GET"])
 def list_buckets():
@@ -37,8 +39,6 @@ def list_buckets():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 # Generate video from cyl_images associated with a cyl_scan
 @app.route("/generate_video", methods=["POST"])
@@ -57,7 +57,7 @@ def generate_video():
         if not scan.data:
             return jsonify({"error": "Scan not found"}), 404
 
-        cyl_images = sorted(scan.data[0]["cyl_images"], key=lambda x: x['frame_number'])
+        cyl_images = sorted(scan.data[0]["cyl_images"], key=lambda x: x["frame_number"])
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             video_path = os.path.join(tmp_dir, f"{scan_id}.mp4")
@@ -68,13 +68,15 @@ def generate_video():
 
             for cyl_image in cyl_images:
                 object_prefix = f"{images_path}/{cyl_image['object_path']}"
-                response = s3.list_objects_v2(Bucket=s3_bucket_name, Prefix=object_prefix)
+                response = s3.list_objects_v2(
+                    Bucket=s3_bucket_name, Prefix=object_prefix
+                )
                 if "Contents" not in response or len(response["Contents"]) != 1:
                     continue
 
                 object_path = response["Contents"][0]["Key"]
                 obj = s3.get_object(Bucket=s3_bucket_name, Key=object_path)
-                image_bytes = obj['Body'].read()
+                image_bytes = obj["Body"].read()
                 image_array = np.array(Image.open(io.BytesIO(image_bytes)))
                 image_array = image_array[::decimate, ::decimate]
 
@@ -94,30 +96,33 @@ def generate_video():
                 Filename=video_path,
                 Bucket=s3_bucket_name,
                 Key=s3_key,
-                ExtraArgs={"ContentType": "video/mp4"}
+                ExtraArgs={"ContentType": "video/mp4"},
             )
 
             url = s3.generate_presigned_url(
-                ClientMethod='get_object',
-                Params={'Bucket': s3_bucket_name, 'Key': s3_key},
-                ExpiresIn=3600  # 1 hour
+                ClientMethod="get_object",
+                Params={"Bucket": s3_bucket_name, "Key": s3_key},
+                ExpiresIn=3600,  # 1 hour
             )
 
-        return jsonify({
-            "message": "Video generated successfully",
-            "scan_id": scan_id,
-            "total_frames": len(cyl_images),
-            "download_url": url
-        })
+        return jsonify(
+            {
+                "message": "Video generated successfully",
+                "scan_id": scan_id,
+                "total_frames": len(cyl_images),
+                "download_url": url,
+            }
+        )
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 # Helper function to get presigned URL for a given object path
 def get_presigned_url(object_path):
     if not object_path:
         return None
-    
+
     s3_bucket_name = "bloom-storage"
     object_prefix = object_path
     print("Generating presigned URL for object path:", object_prefix)
@@ -125,7 +130,7 @@ def get_presigned_url(object_path):
         print("S3 object prefix:", object_prefix)
         response = s3.list_objects_v2(Bucket=s3_bucket_name, Prefix=object_prefix)
 
-        print("S3 list_objects_v2 response:", response) 
+        print("S3 list_objects_v2 response:", response)
         if "Contents" not in response or not response["Contents"]:
             return None
 
@@ -140,6 +145,7 @@ def get_presigned_url(object_path):
     except Exception as e:
         print(f"Error generating presigned URL: {e}")
         return None
+
 
 # Route to generate presigned URLs for given object paths
 @app.route("/get_presigned_urls", methods=["POST"])
@@ -181,11 +187,14 @@ def generate_presigned_urls():
             invalid_urls.append(True)
             skipped_paths.append(object_path)
 
-    return jsonify({
-        "presigned_urls": presigned_urls,
-        "invalid_urls": invalid_urls,
-        "skipped_paths": skipped_paths
-    })
+    return jsonify(
+        {
+            "presigned_urls": presigned_urls,
+            "invalid_urls": invalid_urls,
+            "skipped_paths": skipped_paths,
+        }
+    )
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5002, debug=True)

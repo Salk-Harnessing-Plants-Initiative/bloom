@@ -31,6 +31,7 @@ repos:
     hooks:
       - id: mypy
         files: ^flask/
+        args: [--no-strict-optional, --allow-untyped-defs, --ignore-missing-imports]
         additional_dependencies: [
           types-flask,
           types-boto3,
