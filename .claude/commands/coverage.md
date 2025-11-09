@@ -13,6 +13,16 @@ Run tests with coverage analysis to identify untested code and ensure quality st
 
 ### Flask API Coverage
 
+**⚠️ Note**: Phase 1 (Foundation) does not include test infrastructure. These commands will work after Phase 2 (Testing Infrastructure) is merged.
+
+To verify pytest is installed:
+
+```bash
+cd flask && uv run pytest --version
+```
+
+Once Phase 2 is complete, use these commands:
+
 ```bash
 # Run all tests with coverage
 cd flask && uv run pytest --cov

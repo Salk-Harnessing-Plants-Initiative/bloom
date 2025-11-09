@@ -55,14 +55,17 @@ pnpm type-check
 ### Pre-commit Hooks
 
 ```bash
-# Run all pre-commit hooks manually
-pre-commit run --all-files
+# Run all pre-commit hooks manually (from repo root)
+cd flask && uv run pre-commit run --all-files
 
 # Run pre-commit on staged files only
-pre-commit run
+cd flask && uv run pre-commit run
 
 # Update pre-commit hook versions
-pre-commit autoupdate
+cd flask && uv run pre-commit autoupdate
+
+# Install pre-commit hooks (one-time setup)
+cd flask && uv run pre-commit install
 ```
 
 ## Configuration Files
@@ -95,9 +98,10 @@ Our linting configuration is defined in:
 
 ### mypy (Type Checker)
 
-- **Strict mode**: Enabled
-- **Checks**: return types, unused configs, untyped defs
+- **Strict mode**: Relaxed for Phase 1 (existing code without full type annotations)
+- **Checks**: return types, unused configs, warn on issues
 - **Config**: `[tool.mypy]` in `flask/pyproject.toml`
+- **Note**: `disallow_untyped_defs` and `strict_optional` are currently disabled for existing code. Will enable in Phase 2.
 
 ## JavaScript/TypeScript Linting Details
 

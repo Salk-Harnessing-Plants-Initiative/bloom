@@ -32,7 +32,8 @@ repos:
     hooks:
       - id: mypy
         files: ^flask/
-        args: [--no-strict-optional, --allow-untyped-defs, --ignore-missing-imports]
+        # Args aligned with flask/pyproject.toml [tool.mypy] configuration
+        args: [--ignore-missing-imports]
         additional_dependencies: [
           types-flask,
           types-boto3,

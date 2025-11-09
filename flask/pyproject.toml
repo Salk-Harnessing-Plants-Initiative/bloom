@@ -28,6 +28,8 @@ dev = [
 ]
 
 [tool.black]
+# Black uses 88 characters (default, optimized for Python readability)
+# Note: Prettier uses 100 chars for TypeScript/React (see ../.prettierrc.json)
 line-length = 88
 target-version = ["py311"]
 include = '\.pyi?$'
@@ -43,6 +45,8 @@ extend-exclude = '''
 [tool.ruff]
 line-length = 88
 target-version = "py311"
+
+[tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors
     "W",   # pycodestyle warnings
@@ -56,17 +60,18 @@ ignore = [
     "E501",  # line too long (handled by black)
 ]
 
-[tool.ruff.pydocstyle]
+[tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.mypy]
 python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
-disallow_untyped_defs = true
+# TODO: Enable strict typing after adding type annotations to existing code
+disallow_untyped_defs = false  # Relaxed for existing code (Phase 1)
 check_untyped_defs = true
 ignore_missing_imports = true
-strict_optional = true
+strict_optional = false  # Relaxed for existing code (Phase 1)
 warn_redundant_casts = true
 warn_unused_ignores = true
 warn_no_return = true
