@@ -95,8 +95,8 @@ def generate_video() -> Response | tuple[Response, int]:
             return jsonify({"error": "Scan not found"}), 404
 
         cyl_images = sorted(
-            scan.data[0]["cyl_images"],
-            key=lambda x: x["frame_number"],  # type: ignore[index, arg-type, call-overload]
+            scan.data[0]["cyl_images"],  # type: ignore[index, arg-type, call-overload]
+            key=lambda x: x["frame_number"],
         )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
