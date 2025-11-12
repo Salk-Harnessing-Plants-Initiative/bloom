@@ -252,3 +252,9 @@ Configure settings:
   }
 }
 ```
+
+## Related Commands
+
+- `/fix-formatting` - Auto-fix formatting issues instead of just checking
+- `/run-ci-locally` - Run full CI suite including linting
+- `/validate-env` - Ensure linting tools are installed correctly

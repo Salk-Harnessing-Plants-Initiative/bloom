@@ -390,3 +390,10 @@ gh pr close
 6. **Test thoroughly**: Check all boxes honestly, don't skip testing
 7. **Think about reviewers**: What context do they need to review effectively?
 8. **Update as you go**: Add new changes to description as you push commits
+
+## Related Commands
+
+- `/run-ci-locally` - Run all CI checks before creating PR
+- `/lint` - Check code style before PR
+- `/coverage` - Verify test coverage meets thresholds
+- `/review-pr` - Review PR checklist

@@ -1455,5 +1455,6 @@ Documentation is complete when:
 - `/review-pr` - PR review includes documentation check
 - `/coverage` - Test coverage analysis (Phase 2+)
 - `/openspec/proposal` - Create documentation for new features
+- `/validate-env` - Ensure environment is correct for docs testing
 - `/openspec/apply` - Implement approved changes
 - `/openspec/archive` - Archive completed changes
