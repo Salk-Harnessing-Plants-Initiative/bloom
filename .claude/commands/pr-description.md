@@ -393,6 +393,7 @@ gh pr close
 
 ## Related Commands
 
+- `/pre-merge` - Comprehensive pre-merge checklist before merging
 - `/run-ci-locally` - Run all CI checks before creating PR
 - `/lint` - Check code style before PR
 - `/coverage` - Verify test coverage meets thresholds

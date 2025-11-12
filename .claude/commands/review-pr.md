@@ -398,3 +398,10 @@ If a PR discussion is getting stuck:
 6. **Explain why** - Help the author learn, don't just point out issues
 7. **Approve quickly** - If it's good, say so and approve
 8. **Ask questions** - "Why X?" is better than "X is wrong"
+
+## Related Commands
+
+- `/pre-merge` - Comprehensive pre-merge checklist for PR authors
+- `/pr-description` - Generate comprehensive PR description
+- `/run-ci-locally` - Run CI checks before requesting review
+- `/docs-review` - Review documentation changes
