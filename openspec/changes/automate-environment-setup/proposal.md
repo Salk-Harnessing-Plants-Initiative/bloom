@@ -12,6 +12,7 @@ The project currently requires manual configuration of 40+ environment variables
 - **No production deployment guide**: No clear process for generating production credentials securely
 
 These gaps lead to:
+
 - Actual security incidents (credentials in git history)
 - Frustrated new developers unable to start the stack
 - Weak credentials in development (copy-paste defaults)
@@ -21,12 +22,14 @@ These gaps lead to:
 ## What Changes
 
 ### 1. Environment File Templates
+
 - Create `.env.dev.example` with placeholder values for all 40+ required variables
 - Create `.env.prod.example` with placeholder values and production-specific settings
 - Templates include comments explaining each variable's purpose
 - No actual secrets in template files (safe to commit)
 
 ### 2. Automated Setup Script
+
 - Create `scripts/setup-env.sh` bash script for environment generation
 - Automatically generates cryptographically secure random values:
   - **Database passwords** (32 characters, alphanumeric)
@@ -39,12 +42,14 @@ These gaps lead to:
 - Idempotent: Won't overwrite existing `.env.dev` unless forced
 
 ### 3. Security Improvements
+
 - **Update `.gitignore`**: Properly exclude `.env.dev`, `.env.prod`, `.env*` (not just `.env`)
 - **Remove duplicates**: Clean up duplicate gitignore entries
 - **Prevent future incidents**: Ensure env files can never be committed
 - **Audit git history**: Document that sensitive commits have been removed (if needed)
 
 ### 4. Documentation Updates
+
 - **Update README.md**:
   - Fix incorrect commands (`make dev` → `make dev-up`)
   - Add security warnings about environment files
@@ -59,6 +64,7 @@ These gaps lead to:
 
 - **Affected specs**: `development-environment` (new capability spec)
 - **Affected code**:
+
   - **New files**:
     - `.env.dev.example` - Development environment template
     - `.env.prod.example` - Production environment template
@@ -73,10 +79,12 @@ These gaps lead to:
 - **Breaking changes**: None (additive only)
 
 - **Dependencies**:
+
   - OpenSSL (already installed on macOS/Linux)
   - Bash 4.0+ (standard on most systems)
 
 - **Migration required**:
+
   - Existing developers: Keep their `.env.dev` files (script won't overwrite)
   - New developers: Run setup script during onboarding
   - Production: Generate new `.env.prod` with script before deployment

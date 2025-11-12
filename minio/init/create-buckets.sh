@@ -15,4 +15,3 @@ mc anonymous set public local/bloom-storage
 mc anonymous set public local/bloom-images
 
 echo " Buckets created and policies applied successfully."
-

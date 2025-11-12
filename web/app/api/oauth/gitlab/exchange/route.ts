@@ -1,19 +1,15 @@
-import { NextRequest, NextResponse } from "next/server";
-import {
-  getUser,
-  getSession,
-  createServiceRoleSupabaseClient,
-} from "@salk-hpi/bloom-nextjs-auth";
-import { encryptToken } from "@salk-hpi/bloom-js";
-import crypto from "crypto";
+import { NextRequest, NextResponse } from 'next/server'
+import { getUser, getSession, createServiceRoleSupabaseClient } from '@salk-hpi/bloom-nextjs-auth'
+import { encryptToken } from '@salk-hpi/bloom-js'
+import crypto from 'crypto'
 
 type GitlabTokenResponse = {
-  access_token: string;
-  token_type: string;
-  expires_in: number;
-  refresh_token: string;
-  created_at: number;
-};
+  access_token: string
+  token_type: string
+  expires_in: number
+  refresh_token: string
+  created_at: number
+}
 
 type OauthFlowState = {
   id: string
@@ -153,7 +149,6 @@ export async function GET(request: NextRequest) {
   //     },
   //   ])
 
-
   // // return 500 if there is an error.
   // if (insertError) {
   //   return new NextResponse("Internal Server Error", { status: 500 });
@@ -161,5 +156,5 @@ export async function GET(request: NextRequest) {
 
   // const finalRedirect = new URL("/app/pipelines", app_url);
   // return NextResponse.redirect(finalRedirect);
-  return NextResponse.redirect("/");
+  return NextResponse.redirect('/')
 }

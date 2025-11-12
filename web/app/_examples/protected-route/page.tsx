@@ -1,4 +1,3 @@
-
 import {
   createServerActionClient,
   createServerComponentClient,
@@ -21,10 +20,10 @@ export default async function ProtectedRoute() {
     redirect('/login')
   }
 
-    const signOut = async () => {
+  const signOut = async () => {
     'use server'
     const cookieStore = cookies()
-    const supabase = createServerActionClient({ cookies : ()=> cookieStore })
+    const supabase = createServerActionClient({ cookies: () => cookieStore })
     await supabase.auth.signOut()
     redirect('/login')
   }
@@ -37,9 +36,7 @@ export default async function ProtectedRoute() {
 
       <div className="flex border-b py-3 text-sm text-neutral-100">
         <div className="flex items-center justify-between w-full">
-          <code className="bg-neutral-700 px-3 py-1 rounded-lg text-sm">
-            Protected page
-          </code>
+          <code className="bg-neutral-700 px-3 py-1 rounded-lg text-sm">Protected page</code>
           <span className="flex gap-4">
             Hey, {user.email}! <span className="border-r"></span>{' '}
             <form action={signOut}>
@@ -50,26 +47,14 @@ export default async function ProtectedRoute() {
       </div>
 
       <div className="flex gap-8 justify-center mt-12">
-        <Image
-          src="/supabase.svg"
-          alt="Supabase Logo"
-          width={225}
-          height={45}
-          priority
-        />
+        <Image src="/supabase.svg" alt="Supabase Logo" width={225} height={45} priority />
         <div className="border-l rotate-45 h-10"></div>
-        <Image
-          src="/next.svg"
-          alt="Vercel Logo"
-          width={150}
-          height={36}
-          priority
-        />
+        <Image src="/next.svg" alt="Vercel Logo" width={150} height={36} priority />
       </div>
 
       <p className="text-3xl mx-auto max-w-2xl text-center mt-8 text-white">
-        The fastest way to get started building apps with{' '}
-        <strong>Supabase</strong> and <strong>Next.js</strong>
+        The fastest way to get started building apps with <strong>Supabase</strong> and{' '}
+        <strong>Next.js</strong>
       </p>
 
       <div className="flex justify-center mt-12">

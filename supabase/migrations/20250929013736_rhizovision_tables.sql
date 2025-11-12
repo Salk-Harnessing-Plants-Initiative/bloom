@@ -5,7 +5,7 @@ CREATE TABLE rhizovision_experiments (
     scientist_name TEXT,
     scientist_email TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-); 
+);
 
 CREATE TABLE rhizovision_settings (
     id BIGSERIAL PRIMARY KEY,
@@ -25,7 +25,7 @@ CREATE TABLE rhizovision_images (
 CREATE TABLE rhizovision_accessions (
     id SERIAL PRIMARY KEY,
     accession TEXT,
-    type TEXT 
+    type TEXT
 );
 
 CREATE TABLE rhizovision_results (

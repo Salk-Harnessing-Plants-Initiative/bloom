@@ -1,28 +1,19 @@
-import Link from "next/link";
-import {
-  createServerSupabaseClient,
-  getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
-import Mixpanel from "mixpanel";
-import { Key } from "react";
+import Link from 'next/link'
+import { createServerSupabaseClient, getUser } from '@salk-hpi/bloom-nextjs-auth'
+import Mixpanel from 'mixpanel'
+import { Key } from 'react'
 
-export default async function Species({
-  params,
-}: {
-  params: { speciesId: number };
-}) {
-  const species : any = await getSpeciesWithExperiments(params.speciesId);
+export default async function Species({ params }: { params: { speciesId: number } }) {
+  const species: any = await getSpeciesWithExperiments(params.speciesId)
 
-  const user = await getUser();
+  const user = await getUser()
 
-  const mixpanel = process.env.MIXPANEL_TOKEN
-    ? Mixpanel.init(process.env.MIXPANEL_TOKEN)
-    : null;
+  const mixpanel = process.env.MIXPANEL_TOKEN ? Mixpanel.init(process.env.MIXPANEL_TOKEN) : null
 
-  mixpanel?.track("Page view", {
+  mixpanel?.track('Page view', {
     distinct_id: user?.email,
     url: `/app/phenotypes/${params.speciesId}`,
-  });
+  })
 
   return (
     <div className="">
@@ -55,11 +46,8 @@ export default async function Species({
         <div>
           <div className="mb-1">
             Each experiment below has a Slack channel (
-            <img
-              src="/slack.svg"
-              className="w-8 h-8 inline pb-1 opacity-70 -my-2 -mx-2"
-            />
-            ) and the lead scientist's email address (
+            <img src="/slack.svg" className="w-8 h-8 inline pb-1 opacity-70 -my-2 -mx-2" />) and the
+            lead scientist's email address (
             <svg
               xmlns="http://www.w3.org/2000/svg"
               fill="none"
@@ -79,120 +67,122 @@ export default async function Species({
         </div>
       </div>
       <div className="table-auto select-none">
-        {species?.cyl_experiments.map((experiment: { id: Key | null | undefined; name: string; slack_channel_url: string | undefined; people: any; description: string; }) => (
-          <div className="table-row" key={experiment.id}>
-            <div className="table-cell text-lg align-middle p-4">
-              <div className="align-middle">
-                <Link
-                  href={`/app/phenotypes/${species.id}/${experiment.id}`}
-                  key={experiment.id}
-                  className="mr-4"
-                >
-                  <span className="text-lime-700 hover:underline">
-                    {capitalizeFirstLetter(
-                      experiment.name.replaceAll("-", " ")
-                    )}
-                  </span>
-                </Link>
-                {experiment.slack_channel_url && (
-                  <a href={experiment.slack_channel_url} target="_blank">
-                    <img
-                      src="/slack.svg"
-                      className="w-8 h-8 inline pb-1 opacity-70 hover:opacity-100 -my-2"
-                    />
-                  </a>
-                )}
-                {(
-                  experiment.people as any as {
-                    email: string | null;
-                    id: number;
-                    name: string | null;
-                  }
-                )?.email && (
-                  <a
-                    href={`mailto:${
-                      (
-                        experiment.people as any as {
-                          email: string | null;
-                          id: number;
-                          name: string | null;
-                        }
-                      )?.email
-                    }`}
+        {species?.cyl_experiments.map(
+          (experiment: {
+            id: Key | null | undefined
+            name: string
+            slack_channel_url: string | undefined
+            people: any
+            description: string
+          }) => (
+            <div className="table-row" key={experiment.id}>
+              <div className="table-cell text-lg align-middle p-4">
+                <div className="align-middle">
+                  <Link
+                    href={`/app/phenotypes/${species.id}/${experiment.id}`}
+                    key={experiment.id}
+                    className="mr-4"
                   >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      strokeWidth={1.5}
-                      stroke="currentColor"
-                      className="w-4 h-4 inline-block -mt-1 ml-2 opacity-50 hover:opacity-100 "
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75"
+                    <span className="text-lime-700 hover:underline">
+                      {capitalizeFirstLetter(experiment.name.replaceAll('-', ' '))}
+                    </span>
+                  </Link>
+                  {experiment.slack_channel_url && (
+                    <a href={experiment.slack_channel_url} target="_blank">
+                      <img
+                        src="/slack.svg"
+                        className="w-8 h-8 inline pb-1 opacity-70 hover:opacity-100 -my-2"
                       />
-                    </svg>
-                  </a>
-                )}
-                <div className="text-sm mt-2 text-neutral-400">
-                  {getAccessionCount(experiment)}
-                  &nbsp;/&nbsp;
-                  {getPlantCount(experiment)}
-                </div>
-                <div>
-                  <span className="text-sm text-neutral-400 italic">
-                    {experiment.description
-                      ? experiment.description.slice(0, 100) +
-                        (experiment.description.length > 100 ? "..." : "")
-                      : "No description provided."}
-                  </span>
+                    </a>
+                  )}
+                  {(
+                    experiment.people as any as {
+                      email: string | null
+                      id: number
+                      name: string | null
+                    }
+                  )?.email && (
+                    <a
+                      href={`mailto:${(
+                        experiment.people as any as {
+                          email: string | null
+                          id: number
+                          name: string | null
+                        }
+                      )?.email}`}
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        strokeWidth={1.5}
+                        stroke="currentColor"
+                        className="w-4 h-4 inline-block -mt-1 ml-2 opacity-50 hover:opacity-100 "
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75"
+                        />
+                      </svg>
+                    </a>
+                  )}
+                  <div className="text-sm mt-2 text-neutral-400">
+                    {getAccessionCount(experiment)}
+                    &nbsp;/&nbsp;
+                    {getPlantCount(experiment)}
+                  </div>
+                  <div>
+                    <span className="text-sm text-neutral-400 italic">
+                      {experiment.description
+                        ? experiment.description.slice(0, 100) +
+                          (experiment.description.length > 100 ? '...' : '')
+                        : 'No description provided.'}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        ))}
+          )
+        )}
       </div>
     </div>
-  );
+  )
 }
 
 function capitalizeFirstLetter(string: String) {
-  return string.charAt(0).toUpperCase() + string.slice(1);
+  return string.charAt(0).toUpperCase() + string.slice(1)
 }
 
 function getPlantCount(experiment: any) {
-  let plantCount = 0;
+  let plantCount = 0
   experiment.cyl_waves.forEach((wave: any) => {
-    plantCount += wave.cyl_plants.length;
-  });
-  return `${plantCount} replicates`;
+    plantCount += wave.cyl_plants.length
+  })
+  return `${plantCount} replicates`
 }
 
 function getAccessionCount(experiment: any) {
   // empty array of strings
-  let accessionNames: string[] = [];
+  let accessionNames: string[] = []
   experiment.cyl_waves.forEach((wave: any) => {
     wave.cyl_plants.forEach((plant: any) => {
-      accessionNames.push(plant.accessions.name);
-    });
-  });
-  const lineCount = new Set(accessionNames).size;
-  return `${lineCount} accessions`;
+      accessionNames.push(plant.accessions.name)
+    })
+  })
+  const lineCount = new Set(accessionNames).size
+  return `${lineCount} accessions`
 }
 
 async function getSpeciesWithExperiments(speciesId: number) {
-  const supabase = createServerSupabaseClient();
+  const supabase = createServerSupabaseClient()
 
   const { data } = await supabase
-    .from("species")
-    .select(
-      "*, cyl_experiments!inner(*, people(*), cyl_waves(*, cyl_plants(*, accessions(*))))"
-    )
-    .eq("id", speciesId)
-    .neq("cyl_experiments.deleted", true)
-    .single();
+    .from('species')
+    .select('*, cyl_experiments!inner(*, people(*), cyl_waves(*, cyl_plants(*, accessions(*))))')
+    .eq('id', speciesId)
+    .neq('cyl_experiments.deleted', true)
+    .single()
 
-  return data;
+  return data
 }

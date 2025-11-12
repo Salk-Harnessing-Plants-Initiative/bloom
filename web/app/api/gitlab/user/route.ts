@@ -1,9 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
-import {
-  getUser,
-  createServiceRoleSupabaseClient,
-} from "@salk-hpi/bloom-nextjs-auth";
-import { encryptToken, decryptToken } from "@salk-hpi/bloom-js";
+import { NextRequest, NextResponse } from 'next/server'
+import { getUser, createServiceRoleSupabaseClient } from '@salk-hpi/bloom-nextjs-auth'
+import { encryptToken, decryptToken } from '@salk-hpi/bloom-js'
 
 // export async function GET(request: NextRequest) {
 //   const user = await getUser();

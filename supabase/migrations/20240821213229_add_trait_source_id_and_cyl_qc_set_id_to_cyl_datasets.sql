@@ -44,7 +44,6 @@ BEGIN
       JOIN cyl_qc_sets ON cyl_qc_sets.id = cyl_qc_set_codes.set_id
       WHERE cyl_qc_sets.name = qc_set_name::text
     ));
-    
+
 END;
 $$;
-

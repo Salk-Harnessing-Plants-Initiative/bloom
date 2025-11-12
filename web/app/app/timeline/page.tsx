@@ -1,34 +1,29 @@
-import {
-  createServerSupabaseClient,
-  getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
+import { createServerSupabaseClient, getUser } from '@salk-hpi/bloom-nextjs-auth'
 
-import Calendar from "@/components/calendar";
+import Calendar from '@/components/calendar'
 
-import Mixpanel from "mixpanel";
+import Mixpanel from 'mixpanel'
 
 export default async function Timeline() {
-  const user = await getUser();
+  const user = await getUser()
 
-  const mixpanel = process.env.MIXPANEL_TOKEN
-    ? Mixpanel.init(process.env.MIXPANEL_TOKEN)
-    : null;
+  const mixpanel = process.env.MIXPANEL_TOKEN ? Mixpanel.init(process.env.MIXPANEL_TOKEN) : null
 
-  mixpanel?.track("Page view", {
+  mixpanel?.track('Page view', {
     distinct_id: user?.email,
-    url: "/app/timeline",
-  });
+    url: '/app/timeline',
+  })
 
   // const scanTimeline = await getScanTimeline();
-  const waveTimeline = (await getWaveTimeline()) as WaveRow[] | null;
+  const waveTimeline = (await getWaveTimeline()) as WaveRow[] | null
 
   const data =
     (waveTimeline as WaveRow[] | null)?.map((x) => {
       return {
-        date: new Date(x.date_scanned || ""),
+        date: new Date(x.date_scanned || ''),
         count: x.count || 0,
-      };
-    }) || [];
+      }
+    }) || []
 
   return (
     <div>
@@ -59,37 +54,33 @@ export default async function Timeline() {
         </table>
       </div>
       <div>
-        <div className="mb-6 mt-6 select-none">
-          Total cylinders scanned on each day.
-        </div>
-        <div className="bg-white rounded-md w-[1000px]">
-          {<Calendar data={data} />}
-        </div>
+        <div className="mb-6 mt-6 select-none">Total cylinders scanned on each day.</div>
+        <div className="bg-white rounded-md w-[1000px]">{<Calendar data={data} />}</div>
       </div>
     </div>
-  );
+  )
 }
 
-import type { Database } from "@/lib/database.types";
+import type { Database } from '@/lib/database.types'
 
-type WaveRow = Database["public"]["Views"]["cyl_wave_timeline"]["Row"];
+type WaveRow = Database['public']['Views']['cyl_wave_timeline']['Row']
 
 function generateKey(row: WaveRow) {
-  return row.date_scanned + "-" + row.experiment_name + "-" + row.wave_number;
+  return row.date_scanned + '-' + row.experiment_name + '-' + row.wave_number
 }
 
 async function getScanTimeline() {
-  const supabase = createServerSupabaseClient();
+  const supabase = createServerSupabaseClient()
 
-  const { data } = await supabase.from("cyl_scan_timeline").select("*");
+  const { data } = await supabase.from('cyl_scan_timeline').select('*')
 
-  return data;
+  return data
 }
 
 async function getWaveTimeline() {
-  const supabase = createServerSupabaseClient();
+  const supabase = createServerSupabaseClient()
 
-  const { data } = await supabase.from("cyl_wave_timeline").select("*");
+  const { data } = await supabase.from('cyl_wave_timeline').select('*')
 
-  return data;
+  return data
 }

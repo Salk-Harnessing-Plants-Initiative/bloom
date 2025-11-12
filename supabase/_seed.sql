@@ -11,6 +11,6 @@ ON CONFLICT (provider, id) DO NOTHING;
 -- scanners
 
 INSERT INTO cyl_scanners (id, name)
-VALUES 
+VALUES
   (1, 'FastScanner'),
   (2, 'SlowScanner');

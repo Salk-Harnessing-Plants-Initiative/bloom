@@ -1,10 +1,4 @@
-export type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | { [key: string]: Json | undefined }
-  | Json[]
+export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
 
 export type Database = {
   public: {
@@ -69,25 +63,25 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "assemblies_species_id_fkey"
-            columns: ["species_id"]
+            foreignKeyName: 'assemblies_species_id_fkey'
+            columns: ['species_id']
             isOneToOne: false
-            referencedRelation: "cyl_plants_extended"
-            referencedColumns: ["species_id"]
+            referencedRelation: 'cyl_plants_extended'
+            referencedColumns: ['species_id']
           },
           {
-            foreignKeyName: "assemblies_species_id_fkey"
-            columns: ["species_id"]
+            foreignKeyName: 'assemblies_species_id_fkey'
+            columns: ['species_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["species_id"]
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['species_id']
           },
           {
-            foreignKeyName: "assemblies_species_id_fkey"
-            columns: ["species_id"]
+            foreignKeyName: 'assemblies_species_id_fkey'
+            columns: ['species_id']
             isOneToOne: false
-            referencedRelation: "species"
-            referencedColumns: ["id"]
+            referencedRelation: 'species'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -136,18 +130,18 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_dataset_traits_dataset_id_fkey"
-            columns: ["dataset_id"]
+            foreignKeyName: 'cyl_dataset_traits_dataset_id_fkey'
+            columns: ['dataset_id']
             isOneToOne: false
-            referencedRelation: "cyl_datasets"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_datasets'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_dataset_traits_trait_id_fkey"
-            columns: ["trait_id"]
+            foreignKeyName: 'cyl_dataset_traits_trait_id_fkey'
+            columns: ['trait_id']
             isOneToOne: false
-            referencedRelation: "cyl_scan_traits"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_scan_traits'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -181,39 +175,39 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_datasets_cyl_qc_set_id_fkey"
-            columns: ["cyl_qc_set_id"]
+            foreignKeyName: 'cyl_datasets_cyl_qc_set_id_fkey'
+            columns: ['cyl_qc_set_id']
             isOneToOne: false
-            referencedRelation: "cyl_qc_sets"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_qc_sets'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_datasets_experiment_id_fkey"
-            columns: ["experiment_id"]
+            foreignKeyName: 'cyl_datasets_experiment_id_fkey'
+            columns: ['experiment_id']
             isOneToOne: false
-            referencedRelation: "cyl_experiments"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_experiments'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_datasets_experiment_id_fkey"
-            columns: ["experiment_id"]
+            foreignKeyName: 'cyl_datasets_experiment_id_fkey'
+            columns: ['experiment_id']
             isOneToOne: false
-            referencedRelation: "cyl_plants_extended"
-            referencedColumns: ["experiment_id"]
+            referencedRelation: 'cyl_plants_extended'
+            referencedColumns: ['experiment_id']
           },
           {
-            foreignKeyName: "cyl_datasets_experiment_id_fkey"
-            columns: ["experiment_id"]
+            foreignKeyName: 'cyl_datasets_experiment_id_fkey'
+            columns: ['experiment_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["experiment_id"]
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['experiment_id']
           },
           {
-            foreignKeyName: "cyl_datasets_trait_source_id_fkey"
-            columns: ["trait_source_id"]
+            foreignKeyName: 'cyl_datasets_trait_source_id_fkey'
+            columns: ['trait_source_id']
             isOneToOne: false
-            referencedRelation: "cyl_trait_sources"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_trait_sources'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -250,32 +244,32 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_experiments_scientist_id_fkey"
-            columns: ["scientist_id"]
+            foreignKeyName: 'cyl_experiments_scientist_id_fkey'
+            columns: ['scientist_id']
             isOneToOne: false
-            referencedRelation: "people"
-            referencedColumns: ["id"]
+            referencedRelation: 'people'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_experiments_species_id_fkey"
-            columns: ["species_id"]
+            foreignKeyName: 'cyl_experiments_species_id_fkey'
+            columns: ['species_id']
             isOneToOne: false
-            referencedRelation: "cyl_plants_extended"
-            referencedColumns: ["species_id"]
+            referencedRelation: 'cyl_plants_extended'
+            referencedColumns: ['species_id']
           },
           {
-            foreignKeyName: "cyl_experiments_species_id_fkey"
-            columns: ["species_id"]
+            foreignKeyName: 'cyl_experiments_species_id_fkey'
+            columns: ['species_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["species_id"]
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['species_id']
           },
           {
-            foreignKeyName: "cyl_experiments_species_id_fkey"
-            columns: ["species_id"]
+            foreignKeyName: 'cyl_experiments_species_id_fkey'
+            columns: ['species_id']
             isOneToOne: false
-            referencedRelation: "species"
-            referencedColumns: ["id"]
+            referencedRelation: 'species'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -300,11 +294,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_image_traits_image_id_fkey"
-            columns: ["image_id"]
+            foreignKeyName: 'cyl_image_traits_image_id_fkey'
+            columns: ['image_id']
             isOneToOne: false
-            referencedRelation: "cyl_images"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_images'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -338,18 +332,18 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_images_scan_id_fkey"
-            columns: ["scan_id"]
+            foreignKeyName: 'cyl_images_scan_id_fkey'
+            columns: ['scan_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_scans'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_images_scan_id_fkey"
-            columns: ["scan_id"]
+            foreignKeyName: 'cyl_images_scan_id_fkey'
+            columns: ['scan_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["scan_id"]
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['scan_id']
           },
         ]
       }
@@ -407,32 +401,32 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_plants_accession_id_fkey"
-            columns: ["accession_id"]
+            foreignKeyName: 'cyl_plants_accession_id_fkey'
+            columns: ['accession_id']
             isOneToOne: false
-            referencedRelation: "accessions"
-            referencedColumns: ["id"]
+            referencedRelation: 'accessions'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_plants_wave_id_fkey"
-            columns: ["wave_id"]
+            foreignKeyName: 'cyl_plants_wave_id_fkey'
+            columns: ['wave_id']
             isOneToOne: false
-            referencedRelation: "cyl_plants_extended"
-            referencedColumns: ["wave_id"]
+            referencedRelation: 'cyl_plants_extended'
+            referencedColumns: ['wave_id']
           },
           {
-            foreignKeyName: "cyl_plants_wave_id_fkey"
-            columns: ["wave_id"]
+            foreignKeyName: 'cyl_plants_wave_id_fkey'
+            columns: ['wave_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["wave_id"]
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['wave_id']
           },
           {
-            foreignKeyName: "cyl_plants_wave_id_fkey"
-            columns: ["wave_id"]
+            foreignKeyName: 'cyl_plants_wave_id_fkey'
+            columns: ['wave_id']
             isOneToOne: false
-            referencedRelation: "cyl_waves"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_waves'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -511,25 +505,25 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_qc_codes_plant_id_fkey"
-            columns: ["plant_id"]
+            foreignKeyName: 'cyl_qc_codes_plant_id_fkey'
+            columns: ['plant_id']
             isOneToOne: false
-            referencedRelation: "cyl_plants"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_plants'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_qc_codes_plant_id_fkey"
-            columns: ["plant_id"]
+            foreignKeyName: 'cyl_qc_codes_plant_id_fkey'
+            columns: ['plant_id']
             isOneToOne: false
-            referencedRelation: "cyl_plants_extended"
-            referencedColumns: ["plant_id"]
+            referencedRelation: 'cyl_plants_extended'
+            referencedColumns: ['plant_id']
           },
           {
-            foreignKeyName: "cyl_qc_codes_plant_id_fkey"
-            columns: ["plant_id"]
+            foreignKeyName: 'cyl_qc_codes_plant_id_fkey'
+            columns: ['plant_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["plant_id"]
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['plant_id']
           },
         ]
       }
@@ -551,18 +545,18 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_qc_set_codes_code_id_fkey"
-            columns: ["code_id"]
+            foreignKeyName: 'cyl_qc_set_codes_code_id_fkey'
+            columns: ['code_id']
             isOneToOne: false
-            referencedRelation: "cyl_qc_codes"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_qc_codes'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_qc_set_codes_set_id_fkey"
-            columns: ["set_id"]
+            foreignKeyName: 'cyl_qc_set_codes_set_id_fkey'
+            columns: ['set_id']
             isOneToOne: false
-            referencedRelation: "cyl_qc_sets"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_qc_sets'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -590,25 +584,25 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_qc_sets_experiment_id_fkey"
-            columns: ["experiment_id"]
+            foreignKeyName: 'cyl_qc_sets_experiment_id_fkey'
+            columns: ['experiment_id']
             isOneToOne: false
-            referencedRelation: "cyl_experiments"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_experiments'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_qc_sets_experiment_id_fkey"
-            columns: ["experiment_id"]
+            foreignKeyName: 'cyl_qc_sets_experiment_id_fkey'
+            columns: ['experiment_id']
             isOneToOne: false
-            referencedRelation: "cyl_plants_extended"
-            referencedColumns: ["experiment_id"]
+            referencedRelation: 'cyl_plants_extended'
+            referencedColumns: ['experiment_id']
           },
           {
-            foreignKeyName: "cyl_qc_sets_experiment_id_fkey"
-            columns: ["experiment_id"]
+            foreignKeyName: 'cyl_qc_sets_experiment_id_fkey'
+            columns: ['experiment_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["experiment_id"]
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['experiment_id']
           },
         ]
       }
@@ -636,32 +630,32 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_scan_traits_scan_id_fkey"
-            columns: ["scan_id"]
+            foreignKeyName: 'cyl_scan_traits_scan_id_fkey'
+            columns: ['scan_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_scans'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_scan_traits_scan_id_fkey"
-            columns: ["scan_id"]
+            foreignKeyName: 'cyl_scan_traits_scan_id_fkey'
+            columns: ['scan_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["scan_id"]
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['scan_id']
           },
           {
-            foreignKeyName: "cyl_scan_traits_source_id_fkey"
-            columns: ["source_id"]
+            foreignKeyName: 'cyl_scan_traits_source_id_fkey'
+            columns: ['source_id']
             isOneToOne: false
-            referencedRelation: "cyl_trait_sources"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_trait_sources'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_scan_traits_trait_id_fkey"
-            columns: ["trait_id"]
+            foreignKeyName: 'cyl_scan_traits_trait_id_fkey'
+            columns: ['trait_id']
             isOneToOne: false
-            referencedRelation: "cyl_traits"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_traits'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -716,53 +710,53 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_scans_cyl_camera_settings_id_fkey"
-            columns: ["cyl_camera_settings_id"]
+            foreignKeyName: 'cyl_scans_cyl_camera_settings_id_fkey'
+            columns: ['cyl_camera_settings_id']
             isOneToOne: false
-            referencedRelation: "cyl_camera_settings"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_camera_settings'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_scans_phenotyper_id_fkey"
-            columns: ["phenotyper_id"]
+            foreignKeyName: 'cyl_scans_phenotyper_id_fkey'
+            columns: ['phenotyper_id']
             isOneToOne: false
-            referencedRelation: "phenotypers"
-            referencedColumns: ["id"]
+            referencedRelation: 'phenotypers'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_scans_plant_id_fkey"
-            columns: ["plant_id"]
+            foreignKeyName: 'cyl_scans_plant_id_fkey'
+            columns: ['plant_id']
             isOneToOne: false
-            referencedRelation: "cyl_plants"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_plants'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_scans_plant_id_fkey"
-            columns: ["plant_id"]
+            foreignKeyName: 'cyl_scans_plant_id_fkey'
+            columns: ['plant_id']
             isOneToOne: false
-            referencedRelation: "cyl_plants_extended"
-            referencedColumns: ["plant_id"]
+            referencedRelation: 'cyl_plants_extended'
+            referencedColumns: ['plant_id']
           },
           {
-            foreignKeyName: "cyl_scans_plant_id_fkey"
-            columns: ["plant_id"]
+            foreignKeyName: 'cyl_scans_plant_id_fkey'
+            columns: ['plant_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["plant_id"]
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['plant_id']
           },
           {
-            foreignKeyName: "cyl_scans_scanner_id_fkey"
-            columns: ["scanner_id"]
+            foreignKeyName: 'cyl_scans_scanner_id_fkey'
+            columns: ['scanner_id']
             isOneToOne: false
-            referencedRelation: "cyl_scanners"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_scanners'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "fk_cyl_scans_scientist"
-            columns: ["scientist_id"]
+            foreignKeyName: 'fk_cyl_scans_scientist'
+            columns: ['scientist_id']
             isOneToOne: false
-            referencedRelation: "cyl_scientists"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_scientists'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -835,25 +829,25 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_waves_experiment_id_fkey"
-            columns: ["experiment_id"]
+            foreignKeyName: 'cyl_waves_experiment_id_fkey'
+            columns: ['experiment_id']
             isOneToOne: false
-            referencedRelation: "cyl_experiments"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_experiments'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_waves_experiment_id_fkey"
-            columns: ["experiment_id"]
+            foreignKeyName: 'cyl_waves_experiment_id_fkey'
+            columns: ['experiment_id']
             isOneToOne: false
-            referencedRelation: "cyl_plants_extended"
-            referencedColumns: ["experiment_id"]
+            referencedRelation: 'cyl_plants_extended'
+            referencedColumns: ['experiment_id']
           },
           {
-            foreignKeyName: "cyl_waves_experiment_id_fkey"
-            columns: ["experiment_id"]
+            foreignKeyName: 'cyl_waves_experiment_id_fkey'
+            columns: ['experiment_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["experiment_id"]
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['experiment_id']
           },
         ]
       }
@@ -890,11 +884,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "fk_gene"
-            columns: ["gene"]
+            foreignKeyName: 'fk_gene'
+            columns: ['gene']
             isOneToOne: false
-            referencedRelation: "gene_candidates"
-            referencedColumns: ["gene"]
+            referencedRelation: 'gene_candidates'
+            referencedColumns: ['gene']
           },
         ]
       }
@@ -916,18 +910,18 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "gene_candidate_scientists_gene_candidate_id_fkey"
-            columns: ["gene_candidate_id"]
+            foreignKeyName: 'gene_candidate_scientists_gene_candidate_id_fkey'
+            columns: ['gene_candidate_id']
             isOneToOne: false
-            referencedRelation: "gene_candidates"
-            referencedColumns: ["gene"]
+            referencedRelation: 'gene_candidates'
+            referencedColumns: ['gene']
           },
           {
-            foreignKeyName: "gene_candidate_scientists_scientist_id_fkey"
-            columns: ["scientist_id"]
+            foreignKeyName: 'gene_candidate_scientists_scientist_id_fkey'
+            columns: ['scientist_id']
             isOneToOne: false
-            referencedRelation: "people"
-            referencedColumns: ["id"]
+            referencedRelation: 'people'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -952,11 +946,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "gene_candidate_support_gene_fkey"
-            columns: ["candidate_id"]
+            foreignKeyName: 'gene_candidate_support_gene_fkey'
+            columns: ['candidate_id']
             isOneToOne: false
-            referencedRelation: "gene_candidates"
-            referencedColumns: ["gene"]
+            referencedRelation: 'gene_candidates'
+            referencedColumns: ['gene']
           },
         ]
       }
@@ -1002,11 +996,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "gene_candidates_gene_fkey"
-            columns: ["gene"]
+            foreignKeyName: 'gene_candidates_gene_fkey'
+            columns: ['gene']
             isOneToOne: true
-            referencedRelation: "genes"
-            referencedColumns: ["gene_id"]
+            referencedRelation: 'genes'
+            referencedColumns: ['gene_id']
           },
         ]
       }
@@ -1025,18 +1019,18 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "gene_orthologs_gene_x_fkey"
-            columns: ["gene_x"]
+            foreignKeyName: 'gene_orthologs_gene_x_fkey'
+            columns: ['gene_x']
             isOneToOne: false
-            referencedRelation: "genes"
-            referencedColumns: ["gene_id"]
+            referencedRelation: 'genes'
+            referencedColumns: ['gene_id']
           },
           {
-            foreignKeyName: "gene_orthologs_gene_y_fkey"
-            columns: ["gene_y"]
+            foreignKeyName: 'gene_orthologs_gene_y_fkey'
+            columns: ['gene_y']
             isOneToOne: false
-            referencedRelation: "genes"
-            referencedColumns: ["gene_id"]
+            referencedRelation: 'genes'
+            referencedColumns: ['gene_id']
           },
         ]
       }
@@ -1076,11 +1070,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "gene_patents_gene_fkey"
-            columns: ["gene"]
+            foreignKeyName: 'gene_patents_gene_fkey'
+            columns: ['gene']
             isOneToOne: false
-            referencedRelation: "genes"
-            referencedColumns: ["gene_id"]
+            referencedRelation: 'genes'
+            referencedColumns: ['gene_id']
           },
         ]
       }
@@ -1105,11 +1099,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "gene_progress_notes_gene_fkey"
-            columns: ["gene"]
+            foreignKeyName: 'gene_progress_notes_gene_fkey'
+            columns: ['gene']
             isOneToOne: false
-            referencedRelation: "genes"
-            referencedColumns: ["gene_id"]
+            referencedRelation: 'genes'
+            referencedColumns: ['gene_id']
           },
         ]
       }
@@ -1149,11 +1143,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "genes_reference_id_fkey"
-            columns: ["reference_id"]
+            foreignKeyName: 'genes_reference_id_fkey'
+            columns: ['reference_id']
             isOneToOne: false
-            referencedRelation: "assemblies"
-            referencedColumns: ["id"]
+            referencedRelation: 'assemblies'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -1286,11 +1280,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "plates_exp_blob_storage_path_fkey"
-            columns: ["blob_storage_path"]
+            foreignKeyName: 'plates_exp_blob_storage_path_fkey'
+            columns: ['blob_storage_path']
             isOneToOne: false
-            referencedRelation: "plates_source_table"
-            referencedColumns: ["id"]
+            referencedRelation: 'plates_source_table'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -1321,25 +1315,25 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "plates_scan_trait_plate_id_fkey"
-            columns: ["plate_id"]
+            foreignKeyName: 'plates_scan_trait_plate_id_fkey'
+            columns: ['plate_id']
             isOneToOne: false
-            referencedRelation: "plates_exp"
-            referencedColumns: ["id"]
+            referencedRelation: 'plates_exp'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "plates_scan_trait_source_id_fkey"
-            columns: ["source_id"]
+            foreignKeyName: 'plates_scan_trait_source_id_fkey'
+            columns: ['source_id']
             isOneToOne: false
-            referencedRelation: "plates_trait_source"
-            referencedColumns: ["id"]
+            referencedRelation: 'plates_trait_source'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "plates_scan_trait_trait_id_fkey"
-            columns: ["trait_id"]
+            foreignKeyName: 'plates_scan_trait_trait_id_fkey'
+            columns: ['trait_id']
             isOneToOne: false
-            referencedRelation: "plate_plant_traits_list"
-            referencedColumns: ["id"]
+            referencedRelation: 'plate_plant_traits_list'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -1493,11 +1487,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "scrna_cells_dataset_id_fkey"
-            columns: ["dataset_id"]
+            foreignKeyName: 'scrna_cells_dataset_id_fkey'
+            columns: ['dataset_id']
             isOneToOne: false
-            referencedRelation: "scrna_datasets"
-            referencedColumns: ["id"]
+            referencedRelation: 'scrna_datasets'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -1522,18 +1516,18 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "scrna_counts_dataset_id_fkey"
-            columns: ["dataset_id"]
+            foreignKeyName: 'scrna_counts_dataset_id_fkey'
+            columns: ['dataset_id']
             isOneToOne: false
-            referencedRelation: "scrna_datasets"
-            referencedColumns: ["id"]
+            referencedRelation: 'scrna_datasets'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "scrna_counts_gene_id_fkey"
-            columns: ["gene_id"]
+            foreignKeyName: 'scrna_counts_gene_id_fkey'
+            columns: ['gene_id']
             isOneToOne: false
-            referencedRelation: "scrna_genes"
-            referencedColumns: ["id"]
+            referencedRelation: 'scrna_genes'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -1573,32 +1567,32 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "scrna_datasets_scientist_id_fkey"
-            columns: ["scientist_id"]
+            foreignKeyName: 'scrna_datasets_scientist_id_fkey'
+            columns: ['scientist_id']
             isOneToOne: false
-            referencedRelation: "people"
-            referencedColumns: ["id"]
+            referencedRelation: 'people'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "scrna_datasets_species_id_fkey"
-            columns: ["species_id"]
+            foreignKeyName: 'scrna_datasets_species_id_fkey'
+            columns: ['species_id']
             isOneToOne: false
-            referencedRelation: "cyl_plants_extended"
-            referencedColumns: ["species_id"]
+            referencedRelation: 'cyl_plants_extended'
+            referencedColumns: ['species_id']
           },
           {
-            foreignKeyName: "scrna_datasets_species_id_fkey"
-            columns: ["species_id"]
+            foreignKeyName: 'scrna_datasets_species_id_fkey'
+            columns: ['species_id']
             isOneToOne: false
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["species_id"]
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['species_id']
           },
           {
-            foreignKeyName: "scrna_datasets_species_id_fkey"
-            columns: ["species_id"]
+            foreignKeyName: 'scrna_datasets_species_id_fkey'
+            columns: ['species_id']
             isOneToOne: false
-            referencedRelation: "species"
-            referencedColumns: ["id"]
+            referencedRelation: 'species'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -1623,11 +1617,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "scrna_de_dataset_id_fkey"
-            columns: ["dataset_id"]
+            foreignKeyName: 'scrna_de_dataset_id_fkey'
+            columns: ['dataset_id']
             isOneToOne: false
-            referencedRelation: "scrna_datasets"
-            referencedColumns: ["id"]
+            referencedRelation: 'scrna_datasets'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -1652,11 +1646,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "scrna_genes_dataset_id_fkey"
-            columns: ["dataset_id"]
+            foreignKeyName: 'scrna_genes_dataset_id_fkey'
+            columns: ['dataset_id']
             isOneToOne: false
-            referencedRelation: "scrna_datasets"
-            referencedColumns: ["id"]
+            referencedRelation: 'scrna_datasets'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -1702,18 +1696,18 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "translation_candidates_gene_candidate_fkey"
-            columns: ["gene_candidate"]
+            foreignKeyName: 'translation_candidates_gene_candidate_fkey'
+            columns: ['gene_candidate']
             isOneToOne: false
-            referencedRelation: "gene_candidates"
-            referencedColumns: ["gene"]
+            referencedRelation: 'gene_candidates'
+            referencedColumns: ['gene']
           },
           {
-            foreignKeyName: "translation_candidates_translation_candidate_fkey"
-            columns: ["translation_candidate"]
+            foreignKeyName: 'translation_candidates_translation_candidate_fkey'
+            columns: ['translation_candidate']
             isOneToOne: false
-            referencedRelation: "genes"
-            referencedColumns: ["gene_id"]
+            referencedRelation: 'genes'
+            referencedColumns: ['gene_id']
           },
         ]
       }
@@ -1741,18 +1735,18 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "translation_lines_accession_id_fkey"
-            columns: ["accession_id"]
+            foreignKeyName: 'translation_lines_accession_id_fkey'
+            columns: ['accession_id']
             isOneToOne: false
-            referencedRelation: "accessions"
-            referencedColumns: ["id"]
+            referencedRelation: 'accessions'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "translation_lines_gene_id_fkey"
-            columns: ["gene_id"]
+            foreignKeyName: 'translation_lines_gene_id_fkey'
+            columns: ['gene_id']
             isOneToOne: false
-            referencedRelation: "genes"
-            referencedColumns: ["gene_id"]
+            referencedRelation: 'genes'
+            referencedColumns: ['gene_id']
           },
         ]
       }
@@ -1774,11 +1768,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "translation_project_users_translation_project_id_fkey"
-            columns: ["translation_project_id"]
+            foreignKeyName: 'translation_project_users_translation_project_id_fkey'
+            columns: ['translation_project_id']
             isOneToOne: false
-            referencedRelation: "translation_projects"
-            referencedColumns: ["id"]
+            referencedRelation: 'translation_projects'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -1825,11 +1819,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_plants_accession_id_fkey"
-            columns: ["accession_id"]
+            foreignKeyName: 'cyl_plants_accession_id_fkey'
+            columns: ['accession_id']
             isOneToOne: false
-            referencedRelation: "accessions"
-            referencedColumns: ["id"]
+            referencedRelation: 'accessions'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -1878,25 +1872,25 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_plants_accession_id_fkey"
-            columns: ["accession_id"]
+            foreignKeyName: 'cyl_plants_accession_id_fkey'
+            columns: ['accession_id']
             isOneToOne: false
-            referencedRelation: "accessions"
-            referencedColumns: ["id"]
+            referencedRelation: 'accessions'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_scans_phenotyper_id_fkey"
-            columns: ["phenotyper_id"]
+            foreignKeyName: 'cyl_scans_phenotyper_id_fkey'
+            columns: ['phenotyper_id']
             isOneToOne: false
-            referencedRelation: "phenotypers"
-            referencedColumns: ["id"]
+            referencedRelation: 'phenotypers'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_scans_scanner_id_fkey"
-            columns: ["scanner_id"]
+            foreignKeyName: 'cyl_scans_scanner_id_fkey'
+            columns: ['scanner_id']
             isOneToOne: false
-            referencedRelation: "cyl_scanners"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_scanners'
+            referencedColumns: ['id']
           },
         ]
       }
@@ -1927,17 +1921,17 @@ export type Database = {
         }
         Returns: undefined
       }
-      dblink: { Args: { "": string }; Returns: Record<string, unknown>[] }
-      dblink_cancel_query: { Args: { "": string }; Returns: string }
-      dblink_close: { Args: { "": string }; Returns: string }
-      dblink_connect: { Args: { "": string }; Returns: string }
-      dblink_connect_u: { Args: { "": string }; Returns: string }
+      dblink: { Args: { '': string }; Returns: Record<string, unknown>[] }
+      dblink_cancel_query: { Args: { '': string }; Returns: string }
+      dblink_close: { Args: { '': string }; Returns: string }
+      dblink_connect: { Args: { '': string }; Returns: string }
+      dblink_connect_u: { Args: { '': string }; Returns: string }
       dblink_current_query: { Args: never; Returns: string }
       dblink_disconnect:
         | { Args: never; Returns: string }
-        | { Args: { "": string }; Returns: string }
-      dblink_error_message: { Args: { "": string }; Returns: string }
-      dblink_exec: { Args: { "": string }; Returns: string }
+        | { Args: { '': string }; Returns: string }
+      dblink_error_message: { Args: { '': string }; Returns: string }
+      dblink_exec: { Args: { '': string }; Returns: string }
       dblink_fdw_validator: {
         Args: { catalog: unknown; options: string[] }
         Returns: undefined
@@ -1947,20 +1941,20 @@ export type Database = {
         | { Args: never; Returns: Record<string, unknown>[] }
         | { Args: { conname: string }; Returns: Record<string, unknown>[] }
       dblink_get_pkey: {
-        Args: { "": string }
-        Returns: Database["public"]["CompositeTypes"]["dblink_pkey_results"][]
+        Args: { '': string }
+        Returns: Database['public']['CompositeTypes']['dblink_pkey_results'][]
         SetofOptions: {
-          from: "*"
-          to: "dblink_pkey_results"
+          from: '*'
+          to: 'dblink_pkey_results'
           isOneToOne: false
           isSetofReturn: true
         }
       }
       dblink_get_result: {
-        Args: { "": string }
+        Args: { '': string }
         Returns: Record<string, unknown>[]
       }
-      dblink_is_busy: { Args: { "": string }; Returns: number }
+      dblink_is_busy: { Args: { '': string }; Returns: number }
       get_scan_traits: {
         Args: { experiment_id_: number; trait_name_: string }
         Returns: {
@@ -2065,33 +2059,31 @@ export type Database = {
   }
 }
 
-type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
+type DatabaseWithoutInternals = Omit<Database, '__InternalSupabase'>
 
-type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, 'public'>]
 
 export type Tables<
   DefaultSchemaTableNameOrOptions extends
-    | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
+    | keyof (DefaultSchema['Tables'] & DefaultSchema['Views'])
     | { schema: keyof DatabaseWithoutInternals },
   TableName extends DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
-    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
-        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
+    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions['schema']]['Tables'] &
+        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions['schema']]['Views'])
     : never = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
-  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
-      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
+  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions['schema']]['Tables'] &
+      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions['schema']]['Views'])[TableName] extends {
       Row: infer R
     }
     ? R
     : never
-  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema["Tables"] &
-        DefaultSchema["Views"])
-    ? (DefaultSchema["Tables"] &
-        DefaultSchema["Views"])[DefaultSchemaTableNameOrOptions] extends {
+  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema['Tables'] & DefaultSchema['Views'])
+    ? (DefaultSchema['Tables'] & DefaultSchema['Views'])[DefaultSchemaTableNameOrOptions] extends {
         Row: infer R
       }
       ? R
@@ -2100,23 +2092,23 @@ export type Tables<
 
 export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
-    | keyof DefaultSchema["Tables"]
+    | keyof DefaultSchema['Tables']
     | { schema: keyof DatabaseWithoutInternals },
   TableName extends DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
-    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions['schema']]['Tables']
     : never = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
-  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions['schema']]['Tables'][TableName] extends {
       Insert: infer I
     }
     ? I
     : never
-  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
-    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema['Tables']
+    ? DefaultSchema['Tables'][DefaultSchemaTableNameOrOptions] extends {
         Insert: infer I
       }
       ? I
@@ -2125,23 +2117,23 @@ export type TablesInsert<
 
 export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
-    | keyof DefaultSchema["Tables"]
+    | keyof DefaultSchema['Tables']
     | { schema: keyof DatabaseWithoutInternals },
   TableName extends DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
-    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions['schema']]['Tables']
     : never = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
-  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions['schema']]['Tables'][TableName] extends {
       Update: infer U
     }
     ? U
     : never
-  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
-    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema['Tables']
+    ? DefaultSchema['Tables'][DefaultSchemaTableNameOrOptions] extends {
         Update: infer U
       }
       ? U
@@ -2150,36 +2142,36 @@ export type TablesUpdate<
 
 export type Enums<
   DefaultSchemaEnumNameOrOptions extends
-    | keyof DefaultSchema["Enums"]
+    | keyof DefaultSchema['Enums']
     | { schema: keyof DatabaseWithoutInternals },
   EnumName extends DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
-    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
+    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions['schema']]['Enums']
     : never = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
-  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
-  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
-    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
+  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions['schema']]['Enums'][EnumName]
+  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema['Enums']
+    ? DefaultSchema['Enums'][DefaultSchemaEnumNameOrOptions]
     : never
 
 export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
-    | keyof DefaultSchema["CompositeTypes"]
+    | keyof DefaultSchema['CompositeTypes']
     | { schema: keyof DatabaseWithoutInternals },
   CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
-    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
+    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions['schema']]['CompositeTypes']
     : never = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
-  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
-  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
-    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
+  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions['schema']]['CompositeTypes'][CompositeTypeName]
+  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema['CompositeTypes']
+    ? DefaultSchema['CompositeTypes'][PublicCompositeTypeNameOrOptions]
     : never
 
 export const Constants = {
@@ -2187,4 +2179,3 @@ export const Constants = {
     Enums: {},
   },
 } as const
-

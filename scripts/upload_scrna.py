@@ -30,7 +30,7 @@ def process_gene(gene_idx, csr, dataset_id, dataset_name, gene_ids, supabase_url
 
     gene_name = gene_ids[gene_idx]
     storage_path = f'counts/{dataset_name}/{gene_name}.json'
-    
+
     bucket_name = 'scrna'
     json_string = json.dumps(d)
     buffer = json_string.encode('utf-8')
@@ -63,7 +63,7 @@ def upload_scrna(dataset_dir, dataset_name, species_name):
     # insert rows into scrna_genes table (SQLAlchemy for bulk insert)
     gene_ids_path = os.path.join(dataset_dir, f'{dataset_name}.gene_ids.txt')
     print("GeneIds Pathway"+gene_ids_path+"\n")
-   
+
     gene_ids = [s.strip() for s in open(gene_ids_path).read().splitlines()]
     gene_info = [{'dataset_id': dataset_id, 'gene_name': gene_id, 'gene_number': i} for (i, gene_id) in enumerate(gene_ids)]
     df = pd.DataFrame(gene_info)
@@ -82,7 +82,7 @@ def upload_scrna(dataset_dir, dataset_name, species_name):
     } for (i, row) in cell_embeddings.iterrows()]
     df = pd.DataFrame(cell_info)
     df.to_sql('scrna_cells', engine, if_exists='append', index=False)
-    
+
     # insert rows into scrna_counts table (SQLAlchemy for bulk insert)
     mtx_file = os.path.join(dataset_dir, f'{dataset_name}.counts.mtx')
     coo = mmread(mtx_file)

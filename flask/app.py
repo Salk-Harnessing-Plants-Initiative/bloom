@@ -1,52 +1,89 @@
-import tempfile
-from urllib import request
-from flask import Flask, request, jsonify
-from config import supabase, s3, s3_bucket_name, jwt_secret
-from supabase import create_client, Client
-from videoWriter import VideoWriter
-import boto3
-import numpy as np
-import os
 import io
-from PIL import Image
+import logging
+import os
+import tempfile
+
 import jwt
+import numpy as np
+from flask import Flask, Response, jsonify, request
+from jwt import DecodeError, ExpiredSignatureError, InvalidTokenError
+from PIL import Image
+
+from config import jwt_secret, s3, s3_bucket_name, supabase
+from videoWriter import VideoWriter
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 decimate = 4
 
+
 # Basic Test route 1 to check if the Flask app is running
 @app.route("/")
-def index():
+def index() -> Response:
     return jsonify({"message": "Flask app is running!"})
+
 
 # Test route to check supabase connection
 @app.route("/supabaseconnection")
-def get_species():
+def get_species() -> Response | tuple[Response, int]:
     try:
         response = supabase.table("cyl_scanners").select("*").limit(5).execute()
         return jsonify(response.data)
     except Exception as e:
+        logger.error("Supabase connection test failed: %s", e, exc_info=True)
         return jsonify({"error": str(e)}), 500
+
 
 # Test route to check S3 connection.
 @app.route("/list_buckets", methods=["GET"])
-def list_buckets():
+def list_buckets() -> Response | tuple[Response, int]:
     try:
         response = s3.list_buckets()
         return jsonify({"buckets": [bucket["Name"] for bucket in response["Buckets"]]})
     except Exception as e:
+        logger.error("S3 list buckets failed: %s", e, exc_info=True)
         return jsonify({"error": str(e)}), 500
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 # Generate video from cyl_images associated with a cyl_scan
 @app.route("/generate_video", methods=["POST"])
-def generate_video():
-    try:
-        body = request.get_json()
-        scan_id = int(body.get("scan_id"))
+def generate_video() -> Response | tuple[Response, int]:
+    # Validate JWT authentication
+    headers = request.headers
+    authorization = headers.get("Authorization", "")
+    if not authorization.startswith("Bearer "):
+        return jsonify({"message": "Unauthorized"}), 401
 
+    _, jwt_key = authorization.split(" ", 1)
+    try:
+        jwt.decode(jwt_key, jwt_secret, audience="authenticated", algorithms=["HS256"])
+    except (DecodeError, ExpiredSignatureError, InvalidTokenError) as e:
+        logger.warning("JWT validation failed: %s", type(e).__name__)
+        return jsonify({"message": "Unauthorized"}), 401
+
+    # Validate request body
+    body = request.get_json()
+    if not body:
+        return jsonify({"error": "Invalid JSON"}), 400
+
+    scan_id_raw = body.get("scan_id")
+    if scan_id_raw is None:
+        return jsonify({"error": "Missing scan_id"}), 400
+
+    try:
+        scan_id = int(scan_id_raw)
+    except (ValueError, TypeError):
+        return jsonify({"error": "scan_id must be an integer"}), 400
+
+    if scan_id <= 0:
+        return jsonify({"error": "scan_id must be positive"}), 400
+
+    try:
         scan = (
             supabase.table("cyl_scans")
             .select("*, cyl_images(*)")
@@ -57,7 +94,10 @@ def generate_video():
         if not scan.data:
             return jsonify({"error": "Scan not found"}), 404
 
-        cyl_images = sorted(scan.data[0]["cyl_images"], key=lambda x: x['frame_number'])
+        cyl_images = sorted(
+            scan.data[0]["cyl_images"],  # type: ignore[index, arg-type, call-overload]
+            key=lambda x: x["frame_number"],
+        )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             video_path = os.path.join(tmp_dir, f"{scan_id}.mp4")
@@ -68,13 +108,15 @@ def generate_video():
 
             for cyl_image in cyl_images:
                 object_prefix = f"{images_path}/{cyl_image['object_path']}"
-                response = s3.list_objects_v2(Bucket=s3_bucket_name, Prefix=object_prefix)
+                response = s3.list_objects_v2(
+                    Bucket=s3_bucket_name, Prefix=object_prefix
+                )
                 if "Contents" not in response or len(response["Contents"]) != 1:
                     continue
 
                 object_path = response["Contents"][0]["Key"]
                 obj = s3.get_object(Bucket=s3_bucket_name, Key=object_path)
-                image_bytes = obj['Body'].read()
+                image_bytes = obj["Body"].read()
                 image_array = np.array(Image.open(io.BytesIO(image_bytes)))
                 image_array = image_array[::decimate, ::decimate]
 
@@ -94,79 +136,83 @@ def generate_video():
                 Filename=video_path,
                 Bucket=s3_bucket_name,
                 Key=s3_key,
-                ExtraArgs={"ContentType": "video/mp4"}
+                ExtraArgs={"ContentType": "video/mp4"},
             )
 
             url = s3.generate_presigned_url(
-                ClientMethod='get_object',
-                Params={'Bucket': s3_bucket_name, 'Key': s3_key},
-                ExpiresIn=3600  # 1 hour
+                ClientMethod="get_object",
+                Params={"Bucket": s3_bucket_name, "Key": s3_key},
+                ExpiresIn=3600,  # 1 hour
             )
 
-        return jsonify({
-            "message": "Video generated successfully",
-            "scan_id": scan_id,
-            "total_frames": len(cyl_images),
-            "download_url": url
-        })
+        return jsonify(
+            {
+                "message": "Video generated successfully",
+                "scan_id": scan_id,
+                "total_frames": len(cyl_images),
+                "download_url": url,
+            }
+        )
 
     except Exception as e:
+        logger.error(
+            "Video generation failed for scan_id %s: %s", scan_id, e, exc_info=True
+        )
         return jsonify({"error": str(e)}), 500
 
+
 # Helper function to get presigned URL for a given object path
-def get_presigned_url(object_path):
+def get_presigned_url(object_path: str | None) -> str | None:
     if not object_path:
         return None
-    
-    s3_bucket_name = "bloom-storage"
+
     object_prefix = object_path
-    print("Generating presigned URL for object path:", object_prefix)
+    logger.debug("Generating presigned URL for object path: %s", object_prefix)
     try:
-        print("S3 object prefix:", object_prefix)
         response = s3.list_objects_v2(Bucket=s3_bucket_name, Prefix=object_prefix)
 
-        print("S3 list_objects_v2 response:", response) 
         if "Contents" not in response or not response["Contents"]:
+            logger.debug("No S3 objects found for prefix: %s", object_prefix)
             return None
 
         s3_path = response["Contents"][0]["Key"]
 
-        url = s3.generate_presigned_url(
+        url: str = s3.generate_presigned_url(
             "get_object",
             Params={"Bucket": s3_bucket_name, "Key": s3_path},
             ExpiresIn=3600,
         )
         return url
     except Exception as e:
-        print(f"Error generating presigned URL: {e}")
+        logger.error("Error generating presigned URL for %s: %s", object_path, e)
         return None
+
 
 # Route to generate presigned URLs for given object paths
 @app.route("/get_presigned_urls", methods=["POST"])
-def generate_presigned_urls():
-    print("Received request for presigned URLs")
+def generate_presigned_urls() -> Response | tuple[Response, int]:
+    logger.debug("Received request for presigned URLs")
     headers = request.headers
     authorization = headers.get("Authorization", "")
     if not authorization.startswith("Bearer "):
-        return jsonify({"message": "Unauthorized--header missing or invalid"}), 403
+        return jsonify({"message": "Unauthorized"}), 401
 
     _, jwt_key = authorization.split(" ", 1)
-    print("Received request for presigned URLs")
     try:
         jwt.decode(jwt_key, jwt_secret, audience="authenticated", algorithms=["HS256"])
-    except Exception as e:
-        print("JWT decoding failed:", e)
-        return jsonify({"message": "Unauthorized--JWT decoding failed"}), 403
-    print("Received request for presigned URLs")
+    except (DecodeError, ExpiredSignatureError, InvalidTokenError) as e:
+        logger.warning("JWT validation failed: %s", type(e).__name__)
+        return jsonify({"message": "Unauthorized"}), 401
+
     body = request.get_json() or {}
     object_paths = body.get("object_paths", [])
 
     presigned_urls = []
     skipped_paths = []
     invalid_urls = []
-    print("Received request for presigned URLs")
+
     for object_path in object_paths:
-        print("Processing object path:", object_path)
+        logger.debug("Processing object path: %s", object_path)
         if object_path:
             url = get_presigned_url(object_path)
             if url:
@@ -181,11 +227,14 @@ def generate_presigned_urls():
             invalid_urls.append(True)
             skipped_paths.append(object_path)
 
-    return jsonify({
-        "presigned_urls": presigned_urls,
-        "invalid_urls": invalid_urls,
-        "skipped_paths": skipped_paths
-    })
+    return jsonify(
+        {
+            "presigned_urls": presigned_urls,
+            "invalid_urls": invalid_urls,
+            "skipped_paths": skipped_paths,
+        }
+    )
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5002, debug=True)

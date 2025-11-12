@@ -1,11 +1,13 @@
 # Project Context
 
 ## Purpose
+
 Bloom is a full-stack web application for biological/scientific data visualization and management, specifically designed for handling cylindrical scan data. The application provides capabilities for storing, managing, and visualizing scientific imaging data, with specialized video generation functionality for cylindrical scan sequences.
 
 ## Tech Stack
 
 ### Frontend
+
 - **Framework**: Next.js 16.0.0 with React 18.2.0 (overridden from 19.2.0)
 - **Language**: TypeScript 5.9.3 (ES6 target, strict mode enabled)
 - **UI Library**: Material-UI
@@ -13,6 +15,7 @@ Bloom is a full-stack web application for biological/scientific data visualizati
 - **Package Manager**: pnpm 10.19.0 (specified), though npm is used in practice
 
 ### Backend
+
 - **API Framework**: Flask (Python 3.11)
 - **Database**: PostgreSQL (via Supabase)
 - **Auth/Backend Services**: Supabase (self-hosted)
@@ -23,6 +26,7 @@ Bloom is a full-stack web application for biological/scientific data visualizati
   - Studio UI
 
 ### Storage & Infrastructure
+
 - **Object Storage**: MinIO (S3-compatible) on port 9100-9101
 - **API Gateway**: Kong (port 8000)
 - **Reverse Proxy**: Nginx (production only)
@@ -30,6 +34,7 @@ Bloom is a full-stack web application for biological/scientific data visualizati
 - **Volume Management**: Persistent volumes for Supabase and MinIO data
 
 ### Key Ports (Development)
+
 - Web: 3000
 - Flask API: 5002
 - Kong Gateway: 8000
@@ -42,6 +47,7 @@ Bloom is a full-stack web application for biological/scientific data visualizati
 ### Code Style
 
 #### TypeScript/JavaScript
+
 - **Strict mode**: Enabled
 - **Module system**: ESNext with Node resolution
 - **JSX**: react-jsx transform
@@ -52,6 +58,7 @@ Bloom is a full-stack web application for biological/scientific data visualizati
   - UPPER_SNAKE_CASE for constants
 
 #### Python/Flask
+
 - **Version**: Python 3.11
 - **Naming**:
   - snake_case for functions and variables
@@ -60,6 +67,7 @@ Bloom is a full-stack web application for biological/scientific data visualizati
 - **Note**: No formal linting configuration currently enforced
 
 #### Missing Tooling
+
 - ESLint configuration (should be added)
 - Prettier configuration (should be added)
 - Python linting tools (black, flake8, mypy recommended)
@@ -68,6 +76,7 @@ Bloom is a full-stack web application for biological/scientific data visualizati
 ### Architecture Patterns
 
 #### Monorepo Structure
+
 ```
 /
 ├── web/              # Next.js frontend application
@@ -85,21 +94,25 @@ Bloom is a full-stack web application for biological/scientific data visualizati
 ```
 
 #### Service Architecture
+
 - **Microservices approach**: Frontend, Flask API, and Supabase services run as separate containers
 - **API Gateway pattern**: Kong sits in front of backend services
 - **Environment separation**: Distinct docker-compose files for dev and prod
 - **Volume persistence**: Data persists across container restarts
 
 #### Key Design Patterns
+
 - **Multi-stage Docker builds** for production optimization
 - **Volume mounts** in development for hot reload
 - **Environment-based configuration** via .env files
 - **Service naming convention**: `{service}-{env}` pattern
 
 ### Testing Strategy
+
 **Current State**: No automated testing framework configured
 
 **Recommended Setup**:
+
 - Frontend: Jest + React Testing Library
 - Backend: pytest for Flask API
 - E2E: Playwright or Cypress
@@ -108,12 +121,14 @@ Bloom is a full-stack web application for biological/scientific data visualizati
 ### Git Workflow
 
 #### Branching Strategy
+
 - **Main branch**: `main` (default and production branch)
 - **Development**: Work directly on feature branches
 - **Commit style**: Descriptive, imperative mood
   - Examples from history: "Update README to include test data loading instructions", "add routes for video generation"
 
 #### Environment Management
+
 - `.env.dev` for local development
 - `.env.prod` for production deployment
 - Separate environment files for web app and Docker stack
@@ -121,6 +136,7 @@ Bloom is a full-stack web application for biological/scientific data visualizati
 ## Domain Context
 
 ### Scientific Imaging Domain
+
 - **Primary data type**: Cylindrical scan images
 - **Data workflow**:
   1. Scan data stored in PostgreSQL (`cyl_scanners`, `cyl_images` tables)
@@ -129,10 +145,12 @@ Bloom is a full-stack web application for biological/scientific data visualizati
   4. Frontend provides visualization and management interface
 
 ### Key Database Tables
+
 - `cyl_scanners`: Scanner metadata
 - `cyl_images`: Individual scan images with S3 references
 
 ### Video Generation
+
 - Custom `VideoWriter` class for creating videos from scan sequences
 - Decimation factor: 4 (reduces frame count for performance)
 - Processes images stored in S3 bucket
@@ -141,17 +159,20 @@ Bloom is a full-stack web application for biological/scientific data visualizati
 ## Important Constraints
 
 ### Technical Constraints
+
 - **React version locked**: Overridden to 18.2.0 (compatibility requirement)
 - **Python version**: Must use Python 3.11 for Flask app
 - **Storage requirement**: MinIO needs `/data/minio` directory with 777 permissions
 - **Package manager inconsistency**: Specified pnpm but npm used in Docker/Makefile
 
 ### Infrastructure Constraints
+
 - **Self-hosted Supabase**: Requires full stack deployment, not using Supabase cloud
 - **MinIO configuration**: Requires proper initialization and bucket setup
 - **Volume persistence**: Critical data stored in Docker volumes
 
 ### Development Constraints
+
 - **Environment files required**: Must have `.env.dev` and `.env.prod` configured
 - **Test data**: Use `dev_init.ts` script with appropriate NODE_ENV
 - **Port availability**: Multiple services require specific ports (see Tech Stack section)
@@ -159,6 +180,7 @@ Bloom is a full-stack web application for biological/scientific data visualizati
 ## External Dependencies
 
 ### Required External Services
+
 - **Docker & Docker Compose**: For running the full stack
 - **MinIO**: S3-compatible object storage (self-hosted)
 - **Supabase**: Full backend platform (self-hosted)
@@ -170,17 +192,20 @@ Bloom is a full-stack web application for biological/scientific data visualizati
   - Studio UI
 
 ### External Packages
+
 - **Frontend**: Next.js, React, Material-UI, TypeScript
 - **Backend**: Flask, boto3 (S3 client), Pillow (image processing), numpy, PyJWT
 - **Shared**: Supabase client libraries, custom bloom packages
 - **Build**: Turbo for monorepo orchestration
 
 ### Network Dependencies
+
 - **Kong API Gateway**: Routes requests to appropriate backend services
 - **Nginx**: Reverse proxy in production environment
 - **Inter-service communication**: Services communicate via Docker network
 
 ### Development Tools
+
 - **ts-node**: For running TypeScript scripts
 - **Make**: Orchestration via Makefile commands
   - `make dev-up` / `make prod-up`

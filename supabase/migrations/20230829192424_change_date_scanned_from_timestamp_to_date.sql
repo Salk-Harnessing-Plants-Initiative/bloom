@@ -1,4 +1,4 @@
-ALTER TABLE cyl_scans 
+ALTER TABLE cyl_scans
 ALTER COLUMN date_scanned TYPE DATE USING date_scanned::DATE;
 
 -- Function for inserting an image into the database with all the necessary relations

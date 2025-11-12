@@ -1,33 +1,28 @@
-import Link from "next/link";
-import Illustration from "@/components/illustration";
-import {
-  createServerSupabaseClient,
-  getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
-import Mixpanel from "mixpanel";
+import Link from 'next/link'
+import Illustration from '@/components/illustration'
+import { createServerSupabaseClient, getUser } from '@salk-hpi/bloom-nextjs-auth'
+import Mixpanel from 'mixpanel'
 
-import type { SpeciesWithRNADatasets } from "@/lib/custom.types";
+import type { SpeciesWithRNADatasets } from '@/lib/custom.types'
 
 export default async function AllSpecies() {
-  const user = await getUser();
+  const user = await getUser()
 
-  const mixpanel = process.env.MIXPANEL_TOKEN
-    ? Mixpanel.init(process.env.MIXPANEL_TOKEN)
-    : null;
+  const mixpanel = process.env.MIXPANEL_TOKEN ? Mixpanel.init(process.env.MIXPANEL_TOKEN) : null
 
-  mixpanel?.track("Page view", {
+  mixpanel?.track('Page view', {
     distinct_id: user?.email,
-    url: "/app/expression",
-  });
+    url: '/app/expression',
+  })
 
-  const speciesList: SpeciesWithRNADatasets[] = await getSpeciesList();
+  const speciesList: SpeciesWithRNADatasets[] = await getSpeciesList()
 
   const getSpeciesInfo = (species: SpeciesWithRNADatasets) => {
-    const numExps = species.scrna_datasets.length;
-    const suffix = numExps == 1 ? "" : "s";
-    const text = numExps + " dataset" + suffix + "";
-    return <span>{text}</span>;
-  };
+    const numExps = species.scrna_datasets.length
+    const suffix = numExps == 1 ? '' : 's'
+    const text = numExps + ' dataset' + suffix + ''
+    return <span>{text}</span>
+  }
 
   return (
     <div>
@@ -51,28 +46,24 @@ export default async function AllSpecies() {
                   <span className="lowercase">{species.species}</span>
                 </div>
               </div>
-              <div className="text-sm mt-2 text-neutral-400">
-                {getSpeciesInfo(species)}
-              </div>
+              <div className="text-sm mt-2 text-neutral-400">{getSpeciesInfo(species)}</div>
             </div>
           </div>
         ))}
       </div>
     </div>
-  );
+  )
 }
 
 async function getSpeciesList(): Promise<SpeciesWithRNADatasets[]> {
-  const supabase = createServerSupabaseClient();
+  const supabase = createServerSupabaseClient()
 
-  const { data } = await supabase
-    .from("species")
-    .select("*, scrna_datasets(*)");
+  const { data } = await supabase.from('species').select('*, scrna_datasets(*)')
 
   // sort by length of scrna_datasets
-  (data as SpeciesWithRNADatasets[] | undefined)?.sort((a, b) => {
-    return b.scrna_datasets.length - a.scrna_datasets.length;
-  });
+  ;(data as SpeciesWithRNADatasets[] | undefined)?.sort((a, b) => {
+    return b.scrna_datasets.length - a.scrna_datasets.length
+  })
 
-  return (data ?? []) as SpeciesWithRNADatasets[];
+  return (data ?? []) as SpeciesWithRNADatasets[]
 }

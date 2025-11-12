@@ -1,19 +1,19 @@
-"use client";
+'use client'
 
 // import { cookies } from "next/headers";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 // import { createServerComponentClient } from '@supabase/auth-helpers-nextjs'
 // import Image from "next/image";
-import { Database } from "@/lib/database.types";
-import { useEffect, useState } from "react";
-import { CylScanWithImages } from "@/lib/custom.types";
+import { Database } from '@/lib/database.types'
+import { useEffect, useState } from 'react'
+import { CylScanWithImages } from '@/lib/custom.types'
 // import { get } from "http";
-import Link from "next/link";
+import Link from 'next/link'
 
 async function getImageUrl(path: string, thumb: boolean, height: number) {
-  const supabase = createClientComponentClient<Database>();
+  const supabase = createClientComponentClient<Database>()
 
-  const { data, error } = await supabase.storage.from("images").createSignedUrl(
+  const { data, error } = await supabase.storage.from('images').createSignedUrl(
     path,
     120,
     thumb
@@ -24,26 +24,24 @@ async function getImageUrl(path: string, thumb: boolean, height: number) {
           },
         }
       : {}
-  );
+  )
 
-  const signedUrl = data?.signedUrl ?? "";
-  return signedUrl;
+  const signedUrl = data?.signedUrl ?? ''
+  return signedUrl
 }
 
 async function getVideoUrl(scan: CylScanWithImages) {
-  const supabase = createClientComponentClient<Database>();
+  const supabase = createClientComponentClient<Database>()
 
-  const path = `cyl-videos/${scan.id}.mp4`;
+  const path = `cyl-videos/${scan.id}.mp4`
 
-  const { data, error } = await supabase.storage
-    .from("videos")
-    .createSignedUrl(path, 3600);
+  const { data, error } = await supabase.storage.from('videos').createSignedUrl(path, 3600)
 
-  const signedUrl = data?.signedUrl ?? "";
-  return signedUrl;
+  const signedUrl = data?.signedUrl ?? ''
+  return signedUrl
 }
 
-const defaultHeight = 100;
+const defaultHeight = 100
 
 export default function PlantScan({
   scan,
@@ -53,40 +51,40 @@ export default function PlantScan({
   height,
   label,
 }: {
-  scan: CylScanWithImages;
-  thumb: boolean;
-  href?: string;
-  target?: string;
-  height?: number;
-  label?: string;
+  scan: CylScanWithImages
+  thumb: boolean
+  href?: string
+  target?: string
+  height?: number
+  label?: string
 }) {
-  const [objectUrl, setObjectUrl] = useState<string | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [imageIsLoaded, setImageIsLoaded] = useState<boolean>(false);
+  const [objectUrl, setObjectUrl] = useState<string | null>(null)
+  const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState<boolean>(true)
+  const [imageIsLoaded, setImageIsLoaded] = useState<boolean>(false)
 
   useEffect(() => {
-    const path = scan.cyl_images[0].object_path;
+    const path = scan.cyl_images[0].object_path
     if (path === null) {
-      setLoading(false);
-      return;
+      setLoading(false)
+      return
     }
     getImageUrl(path, thumb, height || defaultHeight).then((url) => {
-      setObjectUrl(url);
-      setLoading(false);
-    });
+      setObjectUrl(url)
+      setLoading(false)
+    })
     getVideoUrl(scan).then((url) => {
-      setVideoUrl(url);
-    });
-  }, [scan]);
+      setVideoUrl(url)
+    })
+  }, [scan])
 
   return (
     <div className="group">
       <div
         className={
-          "relative bg-stone-300 box-content rounded-lg border-4 border-neutral-300" +
-          (thumb ? ` h-[${height || defaultHeight}px]` : " flex flex-col") +
-          (objectUrl === null || loading ? " animate-pulse" : "")
+          'relative bg-stone-300 box-content rounded-lg border-4 border-neutral-300' +
+          (thumb ? ` h-[${height || defaultHeight}px]` : ' flex flex-col') +
+          (objectUrl === null || loading ? ' animate-pulse' : '')
         }
       >
         {imageIsLoaded && (
@@ -119,11 +117,7 @@ export default function PlantScan({
         {objectUrl !== null ? (
           href ? (
             <Link href={href} target={target}>
-              <img
-                src={objectUrl}
-                className="rounded-md"
-                onLoad={() => setImageIsLoaded(true)}
-              />
+              <img src={objectUrl} className="rounded-md" onLoad={() => setImageIsLoaded(true)} />
             </Link>
           ) : (
             <img src={objectUrl} className="rounded-md" />
@@ -131,5 +125,5 @@ export default function PlantScan({
         ) : null}
       </div>
     </div>
-  );
+  )
 }

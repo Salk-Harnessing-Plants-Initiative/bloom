@@ -7,6 +7,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER check_email_trigger 
-BEFORE INSERT OR UPDATE OF email ON auth.users 
+CREATE TRIGGER check_email_trigger
+BEFORE INSERT OR UPDATE OF email ON auth.users
 FOR EACH ROW EXECUTE PROCEDURE check_email_domain();
