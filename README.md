@@ -15,52 +15,78 @@ This repository contains:
 
 ## Prerequisites
 
-### 1: Root-level environment files (for Docker)
+### 1. Environment Setup
 
-These are used when running the full stack with Docker:
+**IMPORTANT:** This project requires environment files with sensitive credentials. **NEVER commit these files to git!**
 
-- `.env.dev` → for local development (used by `make dev-up`)
-- `.env.prod` → for production / deployment (used by `make prod-up`)
+Run the setup script to create your environment file:
 
-### 2: Web app environment file (for running frontend locally)
+```bash
+./scripts/setup-env.sh dev
+```
 
-- `.env.dev` → for local development
-- `.env.prod` → for production / deployment
+This script will:
 
-### 3: Setting up a folder for minio service to access
+- Create `.env.dev` from the example template
+- Generate secure random passwords and encryption keys
+- Provide instructions for completing the setup
 
-This project uses MinIO for object storage. To ensure the service runs correctly, you need to create a folder on your host machine for MinIO to store data.
+After running the script, edit `.env.dev` to add your Supabase API keys (see instructions in terminal output).
 
-#### Create folder
+For production:
 
-sudo mkdir -p /data/minio
+```bash
+./scripts/setup-env.sh prod
+```
 
-#### Give full access to the folder for Docker containers can read/write to this folder
+### 2. Docker & Docker Compose
 
-sudo chmod 777 /data/minio
+Ensure Docker Desktop (macOS) or Docker Engine (Linux) is installed and running.
 
-## Starting the Full Stack in Development
+### 3. MinIO Storage (Optional)
 
+The default configuration uses a local Docker volume. To use a custom path:
+
+1. Edit `.env.dev` and set `MINIO_DATA_PATH=/your/custom/path`
+2. Ensure the directory exists and is writable
+
+## Starting the Full Stack
+
+### Development
+
+```bash
 make dev-up
+```
 
-## Starting the Full Stack in Production
+Access the application at http://localhost:3000
 
-make dev-up
+### Production
 
-### To stop all containers:
+```bash
+make prod-up
+```
 
-make dev-down
-make prod-down
+### Management Commands
 
-### To follow logs:
+**Stop containers:**
 
-make dev-logs
-make prod-logs
+```bash
+make dev-down   # Stop development stack
+make prod-down  # Stop production stack
+```
 
-### To rebuild everything from scratch:
+**View logs:**
 
-make rebuild-dev-fresh
-make rebuild-prod-fresh
+```bash
+make logs
+```
+
+**Rebuild from scratch:**
+
+```bash
+make rebuild-dev-fresh   # Development
+make rebuild-prod-fresh  # Production
+```
 
 ## Load test files into the database
 
