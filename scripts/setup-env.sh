@@ -28,14 +28,15 @@ if [ -f ".env.$ENV_TYPE" ]; then
 fi
 
 # Copy example file
-if [ ! -f ".env.dev.example" ]; then
-    echo "[ERROR] .env.dev.example not found!"
+EXAMPLE_FILE=".env.${ENV_TYPE}.example"
+if [ ! -f "$EXAMPLE_FILE" ]; then
+    echo "[ERROR] $EXAMPLE_FILE not found!"
     echo "This file should be in the repository root."
     exit 1
 fi
 
-echo "Copying .env.dev.example to .env.$ENV_TYPE..."
-cp .env.dev.example ".env.$ENV_TYPE"
+echo "Copying $EXAMPLE_FILE to .env.$ENV_TYPE..."
+cp "$EXAMPLE_FILE" ".env.$ENV_TYPE"
 
 echo "[SUCCESS] Created .env.$ENV_TYPE"
 echo ""
