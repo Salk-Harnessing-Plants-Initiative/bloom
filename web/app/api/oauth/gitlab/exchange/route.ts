@@ -3,7 +3,7 @@ import {
   getUser,
   getSession,
   createServiceRoleSupabaseClient,
-} from "@salk-hpi/bloom-nextjs-auth";
+} from "@/lib/supabase/server";
 import { encryptToken } from "@salk-hpi/bloom-js";
 import crypto from "crypto";
 

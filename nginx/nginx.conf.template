@@ -15,11 +15,12 @@ http {
   client_max_body_size 100M;
 
   # -----------------
-  # Server
+  # Main Application Server (default)
   # -----------------
   server {
-    listen 80;
-    server_name _;
+    listen 80 default_server;
+    server_name ${DOMAIN_MAIN};
+    merge_slashes off;
 
     # TODO : ? SSL setup and routing through https route
 
@@ -29,44 +30,46 @@ http {
         add_header Content-Type text/plain;
     }
 
-    # ----------- Bloom Frontend -----------
-    # location / {
-    #  proxy_pass http://bloom_web;
-    #  proxy_set_header Host $host;
-    #  proxy_set_header X-Real-IP $remote_addr;
-    #  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    #  proxy_set_header X-Forwarded-Proto $scheme;
-    # }
+    # ----------- Supabase API (Kong Gateway) -----------
+    location /api/ {
+        rewrite ^/api(/.*)$ $1 break;
+        proxy_pass http://kong:8000;
+        proxy_redirect off;
+        proxy_intercept_errors off;
 
-    # --- Supabase API (Kong Gateway) ---
-    location /supabase_kong/ {
-      rewrite ^/supabase_kong(/.*)$ $1 break;
-      proxy_pass http://kong:8000;
-      proxy_set_header Host $host;
-      proxy_set_header X-Real-IP $remote_addr;
-      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
-      
-      sub_filter_types text/html text/css text/javascript application/javascript;
-      sub_filter 'href="/'  'href="/supabase_kong/';
-      sub_filter 'src="/'   'src="/supabase_kong/';
-      sub_filter_once off;
-      proxy_redirect / /supabase_kong/;
-      proxy_intercept_errors off;
-    }
+        proxy_pass_header Set-Cookie;
+        proxy_pass_request_headers on;
 
-    # ----------- MinIO Console -----------
-    location /minio/ {
-        proxy_pass http://supabase-minio:9001/;
-        sub_filter_types text/html text/javascript;
-        sub_filter 'href="/'  'href="/minio/';
-        sub_filter 'src="/'   'src="/minio/';
-        sub_filter_once off;
+        if ($request_method = OPTIONS) {
+          return 204;
+        }
 
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # ----------- MinIO Console (redirect to subdomain) -----------
+    location /minio {
+        return 301 http://${DOMAIN_MINIO}$request_uri;
+    }
+    
+    location /minio/ {
+        return 301 http://${DOMAIN_MINIO}$request_uri;
+    }
+
+    # ----------- Bloom Frontend (Default) -----------
+    location / {
+      proxy_pass http://bloom-web:3000;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection 'upgrade';
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_cache_bypass $http_upgrade;
     }
 
     # ----------- Fallback -----------
@@ -75,4 +78,189 @@ http {
         root /usr/share/nginx/html;
       }
   }
+
+  # -----------------
+  # Supabase Studio (subdomain) 
+  # -----------------
+  server {
+    listen 80;
+    server_name ${DOMAIN_STUDIO};
+    
+    # ----------- Supabase Backend APIs (proxy to Kong) -----------
+    # Auth API
+    location /auth/ {
+        proxy_pass http://kong:8000/auth/;
+        proxy_redirect off;
+        proxy_intercept_errors off;
+        proxy_pass_header Set-Cookie;
+        proxy_pass_request_headers on;
+
+        if ($request_method = OPTIONS) {
+          return 204;
+        }
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # REST API
+    location /rest/ {
+        proxy_pass http://kong:8000/rest/;
+        proxy_redirect off;
+        proxy_intercept_errors off;
+        proxy_pass_header Set-Cookie;
+        proxy_pass_request_headers on;
+
+        if ($request_method = OPTIONS) {
+          return 204;
+        }
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Storage API
+    location /storage/ {
+        proxy_pass http://kong:8000/storage/;
+        proxy_redirect off;
+        proxy_intercept_errors off;
+        proxy_pass_header Set-Cookie;
+        proxy_pass_request_headers on;
+
+        if ($request_method = OPTIONS) {
+          return 204;
+        }
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Realtime API
+    location /realtime/ {
+        proxy_pass http://kong:8000/realtime/;
+        proxy_redirect off;
+        proxy_intercept_errors off;
+        proxy_pass_header Set-Cookie;
+        proxy_pass_request_headers on;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+
+        if ($request_method = OPTIONS) {
+          return 204;
+        }
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    
+    # ----------- Studio UI (includes Studio's internal APIs) -----------
+    location / {
+        proxy_pass http://studio:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+  }
+
+  # -----------------
+  # MinIO Console (subdomain)
+  # -----------------
+  server {
+    listen 80;
+    server_name ${DOMAIN_MINIO};
+    
+    # Ignore favicon.ico requests
+    location = /favicon.ico {
+        return 204;
+        access_log off;
+        log_not_found off;
+    }
+
+    location / {
+        proxy_pass http://supabase-minio:9001;
+        proxy_http_version 1.1;
+        
+        # WebSocket support
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        
+        # Standard proxy headers
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        
+        # MinIO specific
+        proxy_set_header X-NginX-Proxy true;
+        
+        # Disable buffering for WebSockets and real-time updates
+        proxy_buffering off;
+        proxy_cache_bypass $http_upgrade;
+        proxy_request_buffering off;
+        
+        # Increase timeouts for long-lived connections
+        proxy_connect_timeout 300;
+        proxy_send_timeout 300;
+        proxy_read_timeout 300;
+        send_timeout 300;
+    }
+  }
+
+  # -----------------
+  # Flask API (subdomain)
+  # -----------------
+  server {
+    listen 80;
+    server_name ${DOMAIN_FLASK};
+    
+    # Ignore favicon.ico requests
+    location = /favicon.ico {
+        return 204;
+        access_log off;
+        log_not_found off;
+    }
+
+    location / {
+        proxy_pass http://flask-app:5002;
+        proxy_http_version 1.1;
+        
+        # Standard proxy headers
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        
+        # Pass through CORS headers from Flask
+        proxy_pass_header Access-Control-Allow-Origin;
+        proxy_pass_header Access-Control-Allow-Methods;
+        proxy_pass_header Access-Control-Allow-Headers;
+        proxy_pass_header Access-Control-Allow-Credentials;
+        
+        # Don't buffer for API responses
+        proxy_buffering off;
+        
+        # Increase timeouts for long-running requests (video generation, etc.)
+        proxy_connect_timeout 300;
+        proxy_send_timeout 300;
+        proxy_read_timeout 300;
+        send_timeout 300;
+    }
+  }
 }
+

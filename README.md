@@ -1,6 +1,12 @@
 # bloom
 Packages and infrastructure for bloom web application.
 
+## 📚 Documentation
+
+- **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** - Complete guide for debugging authentication, nginx routing, and SSR issues
+- **[.env.example](./.env.example)** - Environment variable template with explanations
+- **[Production Deployment Checklist](./TROUBLESHOOTING.md#production-deployment-checklist)** - Step-by-step guide for deploying to production
+
 # Overview 
 This repository contains:
 - **web/** – Next.js frontend

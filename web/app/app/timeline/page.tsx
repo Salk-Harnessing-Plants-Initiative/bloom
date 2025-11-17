@@ -1,7 +1,7 @@
 import {
   createServerSupabaseClient,
   getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
+} from "@/lib/supabase/server";
 
 import Calendar from "@/components/calendar";
 
@@ -79,7 +79,7 @@ function generateKey(row: WaveRow) {
 }
 
 async function getScanTimeline() {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase.from("cyl_scan_timeline").select("*");
 
@@ -87,7 +87,7 @@ async function getScanTimeline() {
 }
 
 async function getWaveTimeline() {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase.from("cyl_wave_timeline").select("*");
 

@@ -1,8 +1,8 @@
 "use client";
 
 // import { cookies } from "next/headers";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-// import { createServerComponentClient } from '@supabase/auth-helpers-nextjs'
+import { createClientSupabaseClient } from "@/lib/supabase/client";
+// import { createServerSupabaseClient } from '@/lib/supabase/server'
 // import Image from "next/image";
 import { Database } from "@/lib/database.types";
 import { useEffect, useState } from "react";
@@ -11,7 +11,7 @@ import { CylScanWithImages } from "@/lib/custom.types";
 import Link from "next/link";
 
 async function getImageUrl(path: string, thumb: boolean, height: number) {
-  const supabase = createClientComponentClient<Database>();
+  const supabase = createClientSupabaseClient();
 
   const { data, error } = await supabase.storage.from("images").createSignedUrl(
     path,
@@ -31,7 +31,7 @@ async function getImageUrl(path: string, thumb: boolean, height: number) {
 }
 
 async function getVideoUrl(scan: CylScanWithImages) {
-  const supabase = createClientComponentClient<Database>();
+  const supabase = createClientSupabaseClient();
 
   const path = `cyl-videos/${scan.id}.mp4`;
 

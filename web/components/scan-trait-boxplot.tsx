@@ -2,8 +2,8 @@
 
 import {
   // SupabaseClient,
-  createClientComponentClient,
-} from "@supabase/auth-helpers-nextjs";
+  createClientSupabaseClient,
+} from "@/lib/supabase/client";
 import PlantScan from "@/components/plant-scan";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { Database } from "@/lib/database.types";
@@ -19,8 +19,8 @@ export default function ScanTraitBoxplot({
   traitMax: number;
 }) {
   //   // Create a Supabase client configured to use cookies
-  // const supabase = createClientComponentClient<Database>();
-  const supabase = createClientComponentClient<Database>() as unknown as SupabaseClient<Database>;
+  // const supabase = createClientSupabaseClient();
+  const supabase = createClientSupabaseClient() as unknown as SupabaseClient<Database>;
 
   const ySpacing = 20;
   const xOrigin = 150;

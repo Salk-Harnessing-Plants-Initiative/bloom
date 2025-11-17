@@ -2,7 +2,7 @@ import Link from "next/link";
 import {
   createServerSupabaseClient,
   getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
+} from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
 import ExpressionDataset from "@/components/expression-dataset";
@@ -110,7 +110,7 @@ function capitalizeFirstLetter(string: String) {
 }
 
 async function getDataset(datasetId: number) {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("scrna_datasets")

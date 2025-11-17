@@ -2,7 +2,7 @@ import Link from "next/link";
 import {
   createServerSupabaseClient,
   getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
+} from "@/lib/supabase/server";
 
 import PlantImage from "@/components/plant-image";
 import PlantScan from "@/components/plant-scan";
@@ -89,7 +89,7 @@ function capitalizeFirstLetter(string: String) {
 }
 
 async function getExperimentWithPlants(experimentId: number) {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("cyl_experiments")
@@ -103,7 +103,7 @@ async function getExperimentWithPlants(experimentId: number) {
 }
 
 async function getAccession(id: number) {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("accessions")
@@ -114,20 +114,20 @@ async function getAccession(id: number) {
   return data;
 }
 
-async function getImage(imageId: string) {
-  const supabase = createServerSupabaseClient();
+async function getImage(imageId: number) {
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("cyl_images")
     .select("*, cyl_scans(*, cyl_plants(*, cyl_waves(*)))")
-    .eq("id", imageId)
+    .eq("id", Number(imageId))
     .single();
 
   return data;
 }
 
 async function getScan(scanId: number) {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("cyl_scans")

@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+import { createClientSupabaseClient } from '@/lib/supabase/client'
 
 export default function Login() {
   const [email, setEmail] = useState('')
@@ -10,7 +10,7 @@ export default function Login() {
   const [view, setView] = useState('sign-in')
   const [error, setError] = useState('')
   const router = useRouter()
-  const supabase = createClientComponentClient()
+  const supabase = createClientSupabaseClient()
 
   const handleSignUp = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -48,10 +48,16 @@ export default function Login() {
     console.log("RESPONSE", { data, error })
     console.log("CLEAN RESPONSE", JSON.stringify(data, null, 2));
 
+    const { data: sessionData } = await supabase.auth.getSession()
+    console.log("Session persisted?", sessionData)
+
     if (error) {
       setError(error.message)
     }
     else {
+      // Use window.location instead of router.push to force a full page reload
+      // This ensures the middleware picks up the new auth cookies
+      // window.location.href = '/app'
       router.push('/app')
     }
   }

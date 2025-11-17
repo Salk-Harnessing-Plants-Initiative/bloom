@@ -3,8 +3,8 @@
 import {
   //   createServerSupabaseClient,
   getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+} from "@/lib/supabase/server";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 
 
 import "./styles.css";
@@ -196,8 +196,8 @@ function AlertDialog({ openDialouge, sample_name, handleSubmitForm }: { openDial
 }
 
 function FormContent({ ortho_group, nick_name, closeModalBox, selected_gene }: FormContentProps) {
-  // const supabase = createClientComponentClient<Database>();
-  const supabase = createClientComponentClient<Database>() as unknown as SupabaseClient<Database>;
+  // const supabase = createClientSupabaseClient();
+  const supabase = createClientSupabaseClient() as unknown as SupabaseClient<Database>;
   const [loading, setLoading] = useState(false);
   const [openDialouge, setOpenDialouge] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -347,7 +347,7 @@ function LookupModal({ modal_state, closeModal }: { modal_state: boolean, closeM
   const [lookup_option, setOptions] = useState<LookupOptions[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [ortho_genes, setOrthoGenes] = useState<OrthoGroupGeneList[]>([]);
-  const supabase = createClientComponentClient<Database>();
+  const supabase = createClientSupabaseClient();
 
 
   const columns = [
@@ -568,7 +568,7 @@ function ModalBox({ modal_box, openModal, closeModal }: { modal_box: boolean, op
   const [inputValue, setInputValue] = useState('');
   const [selected_gene, setSelectedGene] = useState('');
   const [nick_name, setNickName] = useState('');
-  const supabase = createClientComponentClient<Database>();
+  const supabase = createClientSupabaseClient();
 
   const style = {
     position: 'absolute',
@@ -1179,7 +1179,7 @@ export default function Genes() {
 }
 
 async function getGeneCandidates() {
-  const supabase = createClientComponentClient<Database>();
+  const supabase = createClientSupabaseClient();
 
   const { data } = await supabase
     .from("gene_candidates")

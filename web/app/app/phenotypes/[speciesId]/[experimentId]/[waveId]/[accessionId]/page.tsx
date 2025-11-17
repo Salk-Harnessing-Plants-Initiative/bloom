@@ -2,7 +2,7 @@ import Link from "next/link";
 import {
   createServerSupabaseClient,
   getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
+} from "@/lib/supabase/server";
 
 // import PlantImage from "@/components/plant-image";
 import Mixpanel from "mixpanel";
@@ -180,7 +180,7 @@ function capitalizeFirstLetter(string: String) {
 }
 
 async function getExperimentWithPlants(experimentId: number) {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("cyl_experiments")
@@ -194,7 +194,7 @@ async function getExperimentWithPlants(experimentId: number) {
 }
 
 async function getPlants(accessionId: number, waveId: number) {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("cyl_plants")

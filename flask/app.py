@@ -1,6 +1,7 @@
 import tempfile
 from urllib import request
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
 from config import supabase, s3, s3_bucket_name, jwt_secret
 from supabase import create_client, Client
 from videoWriter import VideoWriter
@@ -11,13 +12,48 @@ import io
 from PIL import Image
 import jwt
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static')
+
+# Get domain configuration from environment
+DOMAIN_MAIN = os.environ.get('DOMAIN_MAIN', 'localhost')
+DOMAIN_STUDIO = os.environ.get('DOMAIN_STUDIO', 'studio.localhost')
+DOMAIN_MINIO = os.environ.get('DOMAIN_MINIO', 'minio.localhost')
+DOMAIN_FLASK = os.environ.get('DOMAIN_FLASK', 'flask.localhost')
+
+# CORS Configs to allow requests from all subdomains
+CORS(app, resources={
+    r"/*": {
+        "origins": [
+            f"http://{DOMAIN_MAIN}",
+            f"http://{DOMAIN_MAIN}:3000",  # For dev mode
+            f"https://{DOMAIN_MAIN}",
+            f"http://{DOMAIN_STUDIO}",
+            f"https://{DOMAIN_STUDIO}",
+            f"http://{DOMAIN_MINIO}",
+            f"https://{DOMAIN_MINIO}",
+            f"http://{DOMAIN_FLASK}",
+            f"https://{DOMAIN_FLASK}"
+        ],
+        "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
+        "supports_credentials": True,
+        "max_age": 3600
+    }
+})
+
 decimate = 4
 
-# Basic Test route 1 to check if the Flask app is running
+
+# Serve API documentation
 @app.route("/")
+@app.route("/docs")
+def docs():
+    return send_from_directory('static', 'docs.html')
+
+# Basic Test route 1 to check if the Flask app is running
+@app.route("/test")
 def index():
-    return jsonify({"message": "Flask app is running!"})
+    return send_from_directory('static', 'docs.html')
 
 # Test route to check supabase connection
 @app.route("/supabaseconnection")

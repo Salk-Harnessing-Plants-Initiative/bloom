@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getUser,
   createServiceRoleSupabaseClient,
-} from "@salk-hpi/bloom-nextjs-auth";
+} from "@/lib/supabase/server";
 import { encryptToken, decryptToken } from "@salk-hpi/bloom-js";
 
 export async function GET(request: NextRequest) {

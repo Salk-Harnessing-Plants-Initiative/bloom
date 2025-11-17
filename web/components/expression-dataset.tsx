@@ -1,7 +1,7 @@
 "use client";
 
 import { Database } from "@/lib/database.types";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { useState, useEffect, useRef } from "react";
 import createREGL from "regl";
 
@@ -70,7 +70,7 @@ export default function ExpressionDataset({ name }: { name: string }) {
 
   useEffect(() => {
     const fetchData = async () => {
-      const supabase = createClientComponentClient<Database>();
+      const supabase = createClientSupabaseClient();
       supabase
         .from("scrna_datasets")
         .select(
@@ -93,7 +93,7 @@ export default function ExpressionDataset({ name }: { name: string }) {
 
   useEffect(() => {
     const fetchData = async () => {
-      const supabase = createClientComponentClient<Database>();
+      const supabase = createClientSupabaseClient();
       // get the counts
       supabase.storage
         .from("scrna")

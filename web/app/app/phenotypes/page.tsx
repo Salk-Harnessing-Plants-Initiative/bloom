@@ -3,7 +3,7 @@ import Illustration from "@/components/illustration";
 import {
   createServerSupabaseClient,
   getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
+} from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
 import SearchComponent from "../../../components/searchPage";
 
@@ -66,7 +66,7 @@ export default async function AllSpecies() {
 }
 
 async function getSpeciesList() {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("species")

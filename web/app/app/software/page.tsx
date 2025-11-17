@@ -1,4 +1,4 @@
-import { getUser } from "@salk-hpi/bloom-nextjs-auth";
+import { getUser } from "@/lib/supabase/server";
 import Link from "next/link";
 import Mixpanel from "mixpanel";
 

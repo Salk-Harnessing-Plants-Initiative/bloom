@@ -9,7 +9,7 @@ import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import * as d3 from "d3";
 
 type ScatterPlot = {
-    cluster_id: number | null;
+    cluster_id: string | null;  
     barcode: string | null;
     x: number | null;
     y: number | null;

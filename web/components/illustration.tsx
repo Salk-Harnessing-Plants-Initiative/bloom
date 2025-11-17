@@ -1,11 +1,10 @@
 export const revalidate = 60 // revalidate this page every 60 seconds
 
-import { cookies } from 'next/headers'
-import { createServerComponentClient } from '@supabase/auth-helpers-nextjs'
+import { createServerSupabaseClient } from '@/lib/supabase/server'
 import Image from 'next/image'
 
 async function getObjectUrl(path: string) {
-  const supabase = createServerComponentClient({ cookies })
+  const supabase = await createServerSupabaseClient()
 
   const { data, error } = await supabase
     .storage
@@ -26,6 +25,10 @@ async function getObjectUrl(path: string) {
 export default async function Illustration({ path }: any) {
 
   const objectUrl = await getObjectUrl(path)
+
+  if (!objectUrl) {
+    return null
+  }
 
   return (
     <Image alt="Species illustration" src={objectUrl} width={80} height={80}/>

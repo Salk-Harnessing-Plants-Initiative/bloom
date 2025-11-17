@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bloom Documentation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px 20px;
+            margin-bottom: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .architecture {
+            background: white;
+            padding: 30px;
+            margin-bottom: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .architecture h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+        }
+
+        .subdomain-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .subdomain-card {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+
+        .subdomain-card h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.2em;
+        }
+
+        .subdomain-card .url {
+            font-family: 'Monaco', 'Courier New', monospace;
+            background: rgba(255,255,255,0.5);
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+
+        .subdomain-card .description {
+            font-size: 0.95em;
+            color: #555;
+        }
+
+        .endpoint {
+            background: white;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .endpoint-header {
+            background: #f8f9fa;
+            padding: 20px;
+            border-bottom: 1px solid #e9ecef;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .endpoint-header:hover {
+            background: #e9ecef;
+        }
+
+        .method {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 0.85em;
+            margin-right: 10px;
+        }
+
+        .method.get {
+            background: #28a745;
+            color: white;
+        }
+
+        .method.post {
+            background: #007bff;
+            color: white;
+        }
+
+        .path {
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 1.1em;
+            color: #333;
+        }
+
+        .endpoint-body {
+            padding: 20px;
+            display: none;
+        }
+
+        .endpoint.active .endpoint-body {
+            display: block;
+        }
+
+        .section {
+            margin-bottom: 20px;
+        }
+
+        .section h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        .param-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        .param-table th,
+        .param-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .param-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .param-table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .code-block {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+            margin-top: 10px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-left: 5px;
+        }
+
+        .badge.required {
+            background: #dc3545;
+            color: white;
+        }
+
+        .badge.optional {
+            background: #6c757d;
+            color: white;
+        }
+
+        .badge.auth {
+            background: #ffc107;
+            color: #000;
+        }
+
+        .description {
+            margin-top: 10px;
+            color: #666;
+        }
+
+        .toggle-icon {
+            float: right;
+            transition: transform 0.3s;
+        }
+
+        .endpoint.active .toggle-icon {
+            transform: rotate(180deg);
+        }
+
+        footer {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+            margin-top: 40px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="architecture">
+            <h2><img src="/static/logo_small.png" alt="Bloom Logo" style="height: 1.5em; vertical-align: middle; margin-right: 10px;">Bloom Architecture</h2>
+            <p>Bloom uses a multi-subdomain architecture where each service runs on its own subdomain for clean separation.</p>
+            
+            <div class="subdomain-grid">
+                <div class="subdomain-card">
+                    <h3>🌐 Bloom Web</h3>
+                    <div class="url">http://localhost</div>
+                    <div class="description">Next.js web application : Main user interface</div>
+                </div>
+
+                <div class="subdomain-card">
+                    <h3>⚡ Flask API</h3>
+                    <div class="url">http://flask.localhost</div>
+                    <div class="description">Flask backend :  Video generation, presigned URLs, and fast API routes</div>
+                </div>
+
+                <div class="subdomain-card">
+                    <h3>⛁ Supabase Studio</h3>
+                    <div class="url">http://studio.localhost</div>
+                    <div class="description">Database management dashboard : Tables, SQL editor, authentication</div>
+                </div>
+
+                <div class="subdomain-card">
+                    <h3>🗄️ MinIO Console</h3>
+                    <div class="url">http://minio.localhost</div>
+                    <div class="description">Object storage management : File uploads, bucket management</div>
+                </div>
+            </div>
+
+            <div style="margin-top: 30px; padding: 20px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
+                <strong>📍 Internal Network:</strong> Services communicate internally via Docker network (e.g., Flask → Kong at <code>http://kong:8000</code>)
+            </div>
+        </div>
+
+        <div class="architecture">
+            <h2>📚 API Endpoints</h2>
+
+            <!-- Documentation Page -->
+            <div class="endpoint" onclick="toggleEndpoint(this)">
+                <div class="endpoint-header">
+                    <span class="method get">GET</span>
+                    <span class="path">/</span>
+                    <span class="toggle-icon">▼</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="section">
+                        <h4>Description</h4>
+                        <p>Serves this interactive API documentation page. This is the main landing page for the Flask API.</p>
+                    </div>
+
+                    <div class="section">
+                        <h4>Response</h4>
+                        <p>Returns an HTML documentation page with all available endpoints, their parameters, and examples.</p>
+                    </div>
+
+                    <div class="section">
+                        <h4>Example cURL</h4>
+                        <div class="code-block">curl http://flask.localhost/</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Docs Endpoint -->
+            <div class="endpoint" onclick="toggleEndpoint(this)">
+                <div class="endpoint-header">
+                    <span class="method get">GET</span>
+                    <span class="path">/docs</span>
+                    <span class="toggle-icon">▼</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="section">
+                        <h4>Description</h4>
+                        <p>Alternative endpoint that serves the same API documentation page as <code>/</code>.</p>
+                    </div>
+
+                    <div class="section">
+                        <h4>Response</h4>
+                        <p>Returns the same HTML documentation page.</p>
+                    </div>
+
+                    <div class="section">
+                        <h4>Example cURL</h4>
+                        <div class="code-block">curl http://flask.localhost/docs</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Test Endpoint -->
+            <div class="endpoint" onclick="toggleEndpoint(this)">
+                <div class="endpoint-header">
+                    <span class="method get">GET</span>
+                    <span class="path">/test</span>
+                    <span class="toggle-icon">▼</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="section">
+                        <h4>Description</h4>
+                        <p>Test endpoint that serves the documentation page. Can be used to verify the Flask API is running and accessible.</p>
+                    </div>
+
+                    <div class="section">
+                        <h4>Response</h4>
+                        <p>Returns the HTML documentation page.</p>
+                    </div>
+
+                    <div class="section">
+                        <h4>Example cURL</h4>
+                        <div class="code-block">curl http://flask.localhost/test</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Supabase Connection Test -->
+            <div class="endpoint" onclick="toggleEndpoint(this)">
+                <div class="endpoint-header">
+                    <span class="method get">GET</span>
+                    <span class="path">/supabaseconnection</span>
+                    <span class="toggle-icon">▼</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="section">
+                        <h4>Description</h4>
+                        <p>Test Supabase database connectivity by fetching contents from scanner data table.</p>
+                    </div>
+
+                    <div class="section">
+                        <h4>Response</h4>
+                        <div class="code-block">
+                        [
+                        {
+                            "id": 1,
+                            "name": "FastScanner"
+                        },
+                        {
+                            "id": 2,
+                            "name": "SlowScanner"
+                        }
+                        ]</div>
+                    </div>
+
+                    <div class="section">
+                        <h4>Example cURL</h4>
+                        <div class="code-block">curl http://flask.localhost/supabaseconnection</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- List Buckets -->
+            <div class="endpoint" onclick="toggleEndpoint(this)">
+                <div class="endpoint-header">
+                    <span class="method get">GET</span>
+                    <span class="path">/list_buckets</span>
+                    <span class="toggle-icon">▼</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="section">
+                        <h4>Description</h4>
+                        <p>Test S3/MinIO connectivity by listing all available buckets.</p>
+                    </div>
+
+                    <div class="section">
+                        <h4>Response</h4>
+                        <div class="code-block">
+                            {
+                            "buckets": [
+                                "bloom-storage",
+                                "other-bucket"
+                            ]
+                            }</div>
+                    </div>
+
+                    <div class="section">
+                        <h4>Example cURL</h4>
+                        <div class="code-block">curl http://flask.localhost/list_buckets</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Generate Video -->
+            <div class="endpoint" onclick="toggleEndpoint(this)">
+                <div class="endpoint-header">
+                    <span class="method post">POST</span>
+                    <span class="path">/generate_video</span>
+                    <span class="badge auth">Auth</span>
+                    <span class="toggle-icon">▼</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="section">
+                        <h4>Description</h4>
+                        <p>Generate a video from images associated with a cylinder scan. Downloads images from S3, creates MP4 video, and uploads back to S3.</p>
+                        <p style="color: #dc3545; margin-top: 10px;"><strong>⚠️ Long-running operation:</strong> Can take several minutes depending on image count. Timeout set to 300 seconds.</p>
+                    </div>
+
+                    <div class="section">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <thead>
+                                <tr>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>scan_id</code></td>
+                                    <td>integer</td>
+                                    <td><span class="badge required">Required</span></td>
+                                    <td>ID of the cylinder scan from <code>cyl_scans</code> table</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="section">
+                        <h4>Response</h4>
+                        <div class="code-block">
+                        {
+                        "message": "Video generated successfully",
+                        "scan_id": 123,
+                        "total_frames": 450,
+                        "download_url": "https://supabase-minio:9000/bloom-storage/cyl-videos/123.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=supabase%2F20251117%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20251117T174500Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=abc123..."
+                        }</div>
+                    </div>
+
+                    <div class="section">
+                        <h4>Error Response</h4>
+                        <div class="code-block">
+                            {
+                            "error": "Scan not found"
+                            }</div>
+                    </div>
+
+                    <div class="section">
+                        <h4>Implementation Details</h4>
+                        <ul style="margin-left: 20px; margin-top: 10px;">
+                            <li>Images are fetched from <code>storage-single-tenant/images/</code></li>
+                            <li>Images are decimated by factor of 4 (every 4th pixel) to reduce size</li>
+                            <li>Video is saved to <code>cyl-videos/{"{scan_id}"}.mp4</code> in S3</li>
+                            <li>Presigned URL expires in 1 hour (3600 seconds)</li>
+                        </ul>
+                    </div>
+
+                    <div class="section">
+                        <h4>Example cURL</h4>
+                        <div class="code-block">
+                            curl -X POST http://flask.localhost/generate_video \
+                            -H "Content-Type: application/json" \
+                            -d '{"scan_id": 123}'</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Get Presigned URLs -->
+            <div class="endpoint" onclick="toggleEndpoint(this)">
+                <div class="endpoint-header">
+                    <span class="method post">POST</span>
+                    <span class="path">/get_presigned_urls</span>
+                    <span class="badge auth">Auth Required</span>
+                    <span class="toggle-icon">▼</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="section">
+                        <h4>Description</h4>
+                        <p>Generate presigned URLs for multiple S3 objects. Requires JWT authentication.</p>
+                    </div>
+
+                    <div class="section">                      <div class="code-block">
+                        {
+                        "presigned_urls": [
+                            "https://sampleres...",
+                            "https://...",
+                            ""
+                        ],
+                        "invalid_urls": [false, false, true],
+                        "skipped_paths": ["path/to/missing.jpg"]
+                        }</div>
+                        <h4>Authentication</h4>
+                        <p>Requires Bearer token in Authorization header. Token must be a valid JWT signed with <code>JWT_SECRET</code> and have audience "authenticated".</p>
+                        <div class="code-block">Authorization: Bearer YOUR_JWT_TOKEN</div>
+                    </div>
+
+                    <div class="section">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <thead>
+                                <tr>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>object_paths</code></td>
+                                    <td>array[string]</td>
+                                    <td><span class="badge required">Required</span></td>
+                                    <td>Array of S3 object paths (prefixes)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="section">
+                        <h4>Response</h4>
+                        <div class="code-block">
+                        {
+                        "presigned_urls": [
+                            "https://supabase-minio:9000/bloom-storage/images/scan_123/img_001.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...",
+                            "https://supabase-minio:9000/bloom-storage/images/scan_123/img_002.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...",
+                            ""
+                        ],
+                        "invalid_urls": [false, false, true],
+                        "skipped_paths": ["images/scan_456/missing_image.jpg"]
+                        }</div>
+                    </div>
+
+                    <div class="section">
+                        <h4>Response Fields</h4>
+                        <table class="param-table">
+                            <thead>
+                                <tr>
+                                    <th>Field</th>
+                                    <th>Type</th>
+                                    <th>Description</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>presigned_urls</code></td>
+                                    <td>array[string]</td>
+                                    <td>Generated presigned URLs (empty string if failed)</td>
+                                </tr>
+                                <tr>
+                                    <td><code>invalid_urls</code></td>
+                                    <td>array[boolean]</td>
+                                    <td>Flags indicating which URLs failed to generate</td>
+                                </tr>
+                                <tr>
+                                    <td><code>skipped_paths</code></td>
+                                    <td>array[string]</td>
+                                    <td>Object paths that couldn't be found or processed</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="section">
+                        <h4>Error Responses</h4>
+                        <div class="code-block">
+                        // Missing or invalid Authorization header
+                        {
+                        "message": "Unauthorized--header missing or invalid"
+                        }
+
+                        // JWT decoding failed
+                        {
+                        "message": "Unauthorized--JWT decoding failed"
+                        }</div>
+                    </div>
+
+                    <div class="section">
+                        <h4>Example cURL</h4>
+                        <div class="code-block">
+                        curl -X POST http://flask.localhost/get_presigned_urls \
+                        -H "Content-Type: application/json" \
+                        -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+                        -d '{
+                            "object_paths": [
+                            "images/scan1/image001.jpg",
+                            "images/scan1/image002.jpg"
+                            ]
+                        }'</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <footer>
+            <p> ⚛ Bloom Architecture Documentation ⚛ </p>
+        </footer>
+    </div>
+
+    <script>
+        function toggleEndpoint(element) {
+            element.classList.toggle('active');
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const firstEndpoint = document.querySelector('.endpoint');
+            if (firstEndpoint) {
+                firstEndpoint.classList.add('active');
+            }
+        });
+    </script>
+</body>
+</html>

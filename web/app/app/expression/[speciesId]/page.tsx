@@ -2,7 +2,7 @@ import Link from "next/link";
 import {
   createServerSupabaseClient,
   getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
+} from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
 import ExpressionPage from "@/components/expression-page";
 
@@ -48,7 +48,7 @@ function capitalizeFirstLetter(string: String) {
 }
 
 async function getSpeciesWithDatasets(speciesId: number) {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("species")

@@ -2,7 +2,7 @@ import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import Button from '@mui/material/Button';
 import { use, useEffect, useState } from 'react';
 import { Database } from "@/lib/database.types";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { Box, Typography } from "@mui/material";
 import LinearProgress, { LinearProgressProps } from '@mui/material/LinearProgress';
 
@@ -24,7 +24,7 @@ function LinearProgressWithLabel(props: LinearProgressProps & { value: number })
 
 export default function ExpressonDownloadFiles({ file_id, file_name }: { file_id: number, file_name: string }) {
     const [trigger_download, setTrigger] = useState(false);
-    const supabase = createClientComponentClient<Database>();
+    const supabase = createClientSupabaseClient();
     const [progress, setProgress] = useState(0);
     const [progress_genelist, setProgressGeneList] = useState(0);
     const [progress_barcodes, setProgressBarcodes] = useState(0);

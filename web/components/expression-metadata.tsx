@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import { Database } from "@/lib/database.types";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 
 interface Metadata {
     annotation: string,
@@ -13,7 +13,7 @@ interface Metadata {
 }
 
 export default function ExpressionMetadata({ file_id }: { file_id: number }) {
-    const supabase = createClientComponentClient<Database>();
+    const supabase = createClientSupabaseClient();
     const [annotation, setAnnotation] = useState("NOT AVAILABLE");
     const [assembly, setAssembly] = useState("NOT AVAILABLE");
     const [strain, setStrain] = useState("NOT AVAILABLE");

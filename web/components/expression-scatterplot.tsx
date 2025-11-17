@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { useEffect, useRef, useState } from "react";
 import { Database } from "@/lib/database.types";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import CameraAltIcon from '@mui/icons-material/CameraAlt';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import html2canvas from "html2canvas";
@@ -21,7 +21,7 @@ type Barcode = {
 };
 
 export default function ExportScatterPlot({ file_id, file_name }: { file_id: number, file_name: string }) {
-    const supabase = createClientComponentClient<Database>();
+    const supabase = createClientSupabaseClient();
     const [barcode_data, setbarcodesData] = useState<Barcode[]>([]);
     const [clsuter_id, setClusterId] = useState<String[]>([]);
     const chartRef = useRef<SVGSVGElement | null>(null);

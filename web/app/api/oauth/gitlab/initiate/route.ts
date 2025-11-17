@@ -3,7 +3,7 @@ import {
   getUser,
   getSession,
   createServiceRoleSupabaseClient,
-} from "@salk-hpi/bloom-nextjs-auth";
+} from "@/lib/supabase/server";
 import crypto from "crypto";
 
 type OauthFlowState = {

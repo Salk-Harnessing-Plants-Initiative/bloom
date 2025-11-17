@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef } from "react";
 import * as d3 from "d3";
 import { Box, Typography, Checkbox, FormGroup, FormControlLabel } from "@mui/material";
 import { Database } from "@/lib/database.types";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 // import { sampleRankCorrelation } from "simple-statistics";
 import Button from '@mui/material/Button';
 import Popover from "@mui/material/Popover";
@@ -21,7 +21,7 @@ export default function CorrelationAnalysis({ file_id }: { file_id: number }) {
     const [geneData, setGeneData] = useState<GeneData>({});
     const [geneNames, setGeneNames] = useState<GeneList>();
     const [open, setOpen] = useState(false);
-    const supabase = createClientComponentClient<Database>();
+    const supabase = createClientSupabaseClient();
     const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
     useEffect(() => {

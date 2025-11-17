@@ -1,4 +1,4 @@
-import { createRouteHandlerSupabaseClient } from "@salk-hpi/bloom-nextjs-auth";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 
 export async function GET(request: Request) {
@@ -15,7 +15,7 @@ export async function GET(request: Request) {
 
   if (code) {
     console.log(`code ${code}`);
-    const supabase = createRouteHandlerSupabaseClient();
+    const supabase = await createServerSupabaseClient();
     console.log("created supabase client");
     await supabase.auth.exchangeCodeForSession(code);
     console.log("exchanged code for session");

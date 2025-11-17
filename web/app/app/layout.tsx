@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
 import { Navigation } from "@/components/navigation";
 import {
-  createServerActionSupabaseClient,
+  createServerSupabaseClient,
   getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
+} from "@/lib/supabase/server";
 import Link from "next/link";
 
 export const metadata = {
@@ -79,7 +79,7 @@ export default async function DashboardLayout({
 
   const signOut = async () => {
     "use server";
-    const supabase = createServerActionSupabaseClient();
+    const supabase = await createServerSupabaseClient();
     await supabase.auth.signOut();
     redirect("/login");
   };

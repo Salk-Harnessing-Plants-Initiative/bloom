@@ -6,7 +6,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import Autocomplete from "@mui/material/Autocomplete";
 import Typography from '@mui/material/Typography';
 import TextField from '@mui/material/TextField';
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import type { Database } from "@/lib/database.types";
 import * as TypeDefs from "../../types/genecandidates";
 import AddNewCategory from "./AddNewCategory";
@@ -22,7 +22,7 @@ import { gray } from "d3";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 export default function AddGeneCandidateModal({ modal_state, closeModal, setNewCandidateAdded }: { modal_state: boolean, closeModal: () => void, setNewCandidateAdded: Dispatch<SetStateAction<boolean>> }) {
-  const supabase = createClientComponentClient<Database>() as unknown as SupabaseClient<Database>;
+  const supabase = createClientSupabaseClient() as unknown as SupabaseClient<Database>;
   const [description, setDescription] = useState('');
   const [disclosedToOtd, setDisclosedToOtd] = useState(false);
   const [publicationStatus, setPublicationStatus] = useState(false);

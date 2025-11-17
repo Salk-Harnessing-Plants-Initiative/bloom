@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import ScanTraitBoxplot from "@/components/scan-trait-boxplot";
 
 import { Database } from "@/lib/database.types";
@@ -213,7 +213,7 @@ function capitalizeFirstLetter(string: String) {
 }
 
 async function getExperiment(experimentId: number) {
-  const supabase = createClientComponentClient<Database>();
+  const supabase = createClientSupabaseClient();
 
   const { data } = await supabase
     .from("cyl_experiments")
@@ -227,7 +227,7 @@ async function getExperiment(experimentId: number) {
 }
 
 async function getTraitNames(): Promise<string[]> {
-  const supabase = createClientComponentClient<Database>();
+  const supabase = createClientSupabaseClient();
 
   const { data } = await supabase
     .from("cyl_scan_trait_names")
@@ -242,7 +242,7 @@ async function getTraitData(
   experimentId: number,
   traitName: string
 ): Promise<TraitData> {
-  const supabase = createClientComponentClient<Database>();
+  const supabase = createClientSupabaseClient();
 
   let { data, error } = await supabase.rpc("get_scan_traits", {
     experiment_id_: experimentId,

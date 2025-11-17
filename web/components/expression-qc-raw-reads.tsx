@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Database } from "@/lib/database.types";
 
 // Ensure the `qc_plot` column exists in the `scrna_datasets` table in your database schema.
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import * as d3 from "d3";
 
 type ScrnaDataset = {
@@ -11,7 +11,7 @@ type ScrnaDataset = {
   };
 
 export function RawCountsQC({ file_id, file_name }:{ file_id: number, file_name: string }) {
-    const supabase = createClientComponentClient<Database>();
+    const supabase = createClientSupabaseClient();
     const [imageUrl, setImageUrl] = useState<string | null>(null);
 
     // useEffect(() => {

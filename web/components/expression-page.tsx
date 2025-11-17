@@ -16,7 +16,7 @@ import ExpressonDownloadFiles from './expression-download-files';
 import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
 import { Database } from "@/lib/database.types";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import ExpressionMetadata  from './expression-metadata';
 import { RawCountsQC } from './expression-qc-raw-reads';
 
@@ -79,7 +79,7 @@ function a11yProps(index: number) {
 
 export default function ExpressionPage({ specieslist }: ExpressionPageProps) {
     
-    const supabase = createClientComponentClient<Database>();
+    const supabase = createClientSupabaseClient();
     const [file_id, setFileid] = useState(0)
     const [file_name, setFileName] = useState('')
     const [slected_val, setSelectedVal] = useState({ file_id: specieslist[0]?.id || null, file_name:  specieslist[0]?.name || null })
