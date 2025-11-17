@@ -1,6 +1,6 @@
 import Link from "next/link";
 import Mixpanel from "mixpanel";
-import { getUser } from "@salk-hpi/bloom-nextjs-auth";
+import { getUser } from "@/lib/supabase/server";
 
 export default async function Index() {
   const domain = process.env.NEXT_PUBLIC_BLOOM_URL;

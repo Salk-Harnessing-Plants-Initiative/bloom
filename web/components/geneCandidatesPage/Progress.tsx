@@ -1,8 +1,8 @@
 import {
     //   createServerSupabaseClient,
     getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+} from "@/lib/supabase/server";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { useEffect, useState, Fragment, useRef } from "react";
 import type { Database } from "@/lib/database.types";
@@ -57,7 +57,7 @@ export default function Progress({ candidate, candidates_list, currentGeneCandid
     const [progressLogs, setProgressLogs] = useState<GeneTypes.Logs[]>([]);
     const [filteredLogs, setFilteredLogs] = useState<GeneTypes.Logs[]>([]);
     const [newUpdate, setNewUpdate] = useState("");
-    const supabase = createClientComponentClient<Database>() as unknown as SupabaseClient<Database>;
+    const supabase = createClientSupabaseClient() as unknown as SupabaseClient<Database>;
     const bottomRef = useRef<HTMLDivElement>(null);
     const [uploadedImages, setUploadedImages] = useState<File[]>([]);
     const [showLinkInput, setShowLinkInput] = useState(false);

@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useEffect, useRef, useState } from "react";
 import { Database } from "@/lib/database.types";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import * as d3 from "d3";
 import { Container } from 'postcss';
 

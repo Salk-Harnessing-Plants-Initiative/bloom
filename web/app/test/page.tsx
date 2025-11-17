@@ -2,12 +2,12 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+import { createClientSupabaseClient } from '@/lib/supabase/client'
 import { setDefaultResultOrder } from 'dns'
 
 export default function Login() {
   const [images, setImages] = useState<any>([])
-  const supabase = createClientComponentClient()
+  const supabase = createClientSupabaseClient()
 
   useEffect(() => {
     const getImages = async () => {

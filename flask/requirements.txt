@@ -9,6 +9,7 @@ click==8.3.0
 cryptography==46.0.3
 deprecation==2.1.0
 Flask==3.1.2
+Flask-CORS==5.0.0
 h11==0.16.0
 h2==4.3.0
 hpack==4.1.0

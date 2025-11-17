@@ -1,14 +1,14 @@
 "use client";
 
 // import { cookies } from "next/headers";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-// import { createServerComponentClient } from '@supabase/auth-helpers-nextjs'
+import { createClientSupabaseClient } from "@/lib/supabase/client";
+// import { createServerSupabaseClient } from '@/lib/supabase/server'
 // import Image from "next/image";
 import { Database } from "@/lib/database.types";
 import { useEffect, useState } from "react";
 
 async function getObjectUrl(path: string, thumb: boolean) {
-  const supabase = createClientComponentClient<Database>();
+  const supabase = createClientSupabaseClient();
 
   const { data, error } = await supabase.storage.from("images").createSignedUrl(
     path,

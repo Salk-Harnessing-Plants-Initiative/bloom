@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation'
-import { getUser } from '@salk-hpi/bloom-nextjs-auth'
+import { getUser } from '@/lib/supabase/server'
 
 
 export default async function Index() {

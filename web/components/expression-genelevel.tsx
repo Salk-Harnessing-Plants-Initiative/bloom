@@ -2,9 +2,8 @@
 import * as React from 'react';
 import { useState, useEffect } from 'react';
 import { Database } from "@/lib/database.types";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import ExpressionGeneLevelBoxPlot from "./expression-genelevel-boxplot";
-// import ExpressionGeneLevelScatterPlot from "./expression-gene-level-scatterplot";
 import ExpressionMultiGeneDotPlot from "./expression-multigene-dotplot";
 import Autocomplete from '@mui/material/Autocomplete';
 import TextField from '@mui/material/TextField';
@@ -43,13 +42,21 @@ type GeneData = {
         value: number
     }],
     data: {
-        cluster_id: number | null;
+        cluster_id: string | null;
         barcode: string | null;
         cell_number: number;
         x: number | null;
         y: number | null;
     }[] | null;
 }
+
+export type ClusterData = {
+  cluster_id: number | null;
+  barcode: string | null;
+  cell_number: number;
+  x: number | null;
+  y: number | null;
+};
 
 const StyledChip = styled(Chip)({
     margin: "2px",
@@ -71,7 +78,7 @@ export default function ExpressionGeneLevel({ file_id }: { file_id: number }) {
     const [value, setValue] = useState(0);
     const [drill_down_gene, setDrillDownGene] = useState<string | null>(null);
     // const [selected_gene, setSelectedGene] = useState<{ gene_name: string; gene_id: number }>({ gene_name: '', gene_id: 0 });
-    const supabase = createClientComponentClient<Database>();
+    const supabase = createClientSupabaseClient();
     const [isSelected_gene, setisSelectedGene] = useState<number[]>([]);
     const [scatterplot, setScatterPlotData] = useState<Scatterplot>({});
     const [show_scatterplot, setShowScatterPlot] = useState(false);

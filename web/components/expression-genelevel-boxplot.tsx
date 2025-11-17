@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
 import { Database } from "@/lib/database.types";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import * as d3 from "d3";
 import Switch from '@mui/material/Switch';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
@@ -37,7 +37,7 @@ type GeneData = {
     gene_name: string;
     counts: any;
     data: {
-        cluster_id: number | null;
+        cluster_id: string | null;
         barcode: string | null;
         cell_number: number;
         x: number | null;
@@ -47,7 +47,7 @@ type GeneData = {
 
 type BoxPlotData = {
     gene_name: string,
-    cluster_id: number | null;
+    cluster_id: string | null;
     barcode: string | null;
     cell_number: number;
     x: number | null;
@@ -57,7 +57,7 @@ type BoxPlotData = {
 
 
 export default function ExpressionGeneLevelBoxPlot({ input_array, gene_name, gene_id, file_id, setScatterPlotData, handleshowplot, setDrillDownGene }: { input_array: Record<string, GeneData>, gene_name: string, gene_id: number, file_id: number, setScatterPlotData: (data: any) => void, handleshowplot: (value: boolean) => void, setDrillDownGene: (gene_name: string) => void }) {
-    const supabase = createClientComponentClient<Database>();
+    const supabase = createClientSupabaseClient();
     const chartRef = useRef<SVGSVGElement | null>(null);
     //TODO: replace type of any with appropriate type
     const [gene_data, setGeneData] = useState<{ [key: string]: any }[]>([]); // --
@@ -139,7 +139,7 @@ export default function ExpressionGeneLevelBoxPlot({ input_array, gene_name, gen
                         }
                         result[gene_name].push({
                             gene_name: gene_name,
-                            cluster_id: clusterData?.cluster_id ?? null,
+                            cluster_id: (clusterData?.cluster_id)?.toString() ?? null,
                             barcode: barcode ?? null,
                             cell_number: Number(key) - 1,
                             x: clusterData?.x ?? null,

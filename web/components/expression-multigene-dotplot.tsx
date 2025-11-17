@@ -37,7 +37,7 @@ type GeneData = {
         value: number
     }];
     data: {
-        cluster_id: number | null;
+        cluster_id: string | null;
         barcode: string | null;
         cell_number: number;
         x: number | null;

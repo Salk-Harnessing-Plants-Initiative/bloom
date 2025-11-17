@@ -4,7 +4,7 @@ import '@/styles/globals.css'
 import Link from 'next/link'
 // import Badge from '@/components/badge'
 import { redirect } from 'next/navigation'
-import { getUser } from '@salk-hpi/bloom-nextjs-auth'
+import { getUser } from '@/lib/supabase/server'
 
 export const metadata = {
   title: 'Bloom',

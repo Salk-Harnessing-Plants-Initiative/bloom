@@ -3,7 +3,7 @@ import { Modal, Box } from "@mui/material";
 import CloseIcon from '@mui/icons-material/Close';
 import Typography from '@mui/material/Typography';
 import type { Database } from "@/lib/database.types";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { use } from "react";
 
@@ -47,7 +47,7 @@ const statusColors = {
     },
 };
 
-  const supabase = createClientComponentClient<Database>() as unknown as SupabaseClient<Database>;;
+  const supabase = createClientSupabaseClient() as unknown as SupabaseClient<Database>;
   const [statusLogs, setStatusLogs] = useState<any[]>([]);
   const [newStatus, setNewStatus] = useState("");
 

@@ -7,7 +7,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY config.py .
 COPY app.py .
+COPY videoWriter.py .
+COPY static/ ./static/
 
 EXPOSE 5002
 

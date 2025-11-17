@@ -2,7 +2,7 @@ import Link from "next/link";
 import {
   createServerSupabaseClient,
   getUser,
-} from "@salk-hpi/bloom-nextjs-auth";
+} from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
 import { Key } from "react";
 
@@ -183,7 +183,7 @@ function getAccessionCount(experiment: any) {
 }
 
 async function getSpeciesWithExperiments(speciesId: number) {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("species")

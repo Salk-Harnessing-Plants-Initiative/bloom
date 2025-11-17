@@ -1,30 +1,18 @@
 
-import {
-  createServerActionClient,
-  createServerComponentClient,
-} from '@supabase/auth-helpers-nextjs'
-import { cookies } from 'next/headers'
+import { createServerSupabaseClient, getUser } from '@/lib/supabase/server'
 import Image from 'next/image'
 import { redirect } from 'next/navigation'
 
 export default async function ProtectedRoute() {
-  const cookieStore = cookies()
-  const supabase = createServerComponentClient({ cookies: () => cookieStore })
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getUser()
 
   if (!user) {
-    // This route can only be accessed by authenticated users.
-    // Unauthenticated users will be redirected to the `/login` route.
     redirect('/login')
   }
 
     const signOut = async () => {
     'use server'
-    const cookieStore = cookies()
-    const supabase = createServerActionClient({ cookies : ()=> cookieStore })
+    const supabase = await createServerSupabaseClient()
     await supabase.auth.signOut()
     redirect('/login')
   }

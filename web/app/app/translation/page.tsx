@@ -1,7 +1,7 @@
-import { getUser } from "@salk-hpi/bloom-nextjs-auth";
+import { getUser } from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
 
-import { createServerSupabaseClient } from "@salk-hpi/bloom-nextjs-auth";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import Link from "next/link";
 import { Key, ReactElement, JSXElementConstructor, ReactNode, ReactPortal } from "react";
 
@@ -71,7 +71,7 @@ export default async function Translation() {
 }
 
 async function getProjectsList() {
-  const supabase = createServerSupabaseClient();
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
     .from("translation_projects")

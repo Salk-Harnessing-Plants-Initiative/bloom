@@ -5,7 +5,7 @@ import GeneDrillUMAP from './expression-gene-drilldown-scatterplot'
 import * as d3 from "d3";
 
 type Barcode = {
-    cluster_id: number | null;
+    cluster_id: string | null;  // Changed from number to string to match database type
     barcode: string | null;
     cell_number: number;
     x: number | null;
@@ -23,7 +23,7 @@ type GeneData = {
 }
 
 type ScatterPlot = {
-    cluster_id: number | null;
+    cluster_id: string | null;  // Changed from number to string to match database type
     barcode: string | null;
     x: number | null;
     y: number | null;

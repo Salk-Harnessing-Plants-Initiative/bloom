@@ -1,4 +1,4 @@
-import { getUser } from "@salk-hpi/bloom-nextjs-auth";
+import { getUser } from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
 
 export default async function Genotypes() {

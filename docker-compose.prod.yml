@@ -14,13 +14,45 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiYXVkIjoiYXV0aGVudGljYXRlZCIsImlhdCI6MTc2MDQwNzUwMSwiZXhwIjoyMDc1OTgzNTAxfQ.BNyTbLii0WFXxlLk8JMVzCfRzmPqCYCYW5FtC1ErZZE 
+      ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiYXVkIjoiYXV0aGVudGljYXRlZCIsImlhdCI6MTc2MDQwNzUwMSwiZXhwIjoyMDc1OTgzNTAxfQ.BNyTbLii0WFXxlLk8JMVzCfRzmPqCYCYW5FtC1ErZZE
+      DOMAIN_MAIN: ${DOMAIN_MAIN}
+      DOMAIN_STUDIO: ${DOMAIN_STUDIO}
+      DOMAIN_MINIO: ${DOMAIN_MINIO}
+      DOMAIN_FLASK: ${DOMAIN_FLASK}
     volumes:
       - ./nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
       - ./web/out:/usr/share/nginx/html:ro
     depends_on:
       - kong
-    command: /bin/sh -c "envsubst '\$ANON_KEY' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"
+    command: /bin/sh -c "envsubst '$${ANON_KEY},$${DOMAIN_MAIN},$${DOMAIN_STUDIO},$${DOMAIN_MINIO},$${DOMAIN_FLASK}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"
+    networks:
+      - supanet
+
+  #-------------------
+  # BLOOM WEB 
+  #-------------------
+  bloom-web: 
+    build:
+      context: .
+      dockerfile: ./web/Dockerfile.bloom-web.prod
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
+        NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      # Internal Docker network - connect directly to Kong
+      SUPABASE_URL: http://kong:8000
+      # Public URL - for browser (baked into build)
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
+      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
+      NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
+    depends_on:
+      - kong
     networks:
       - supanet
 
@@ -33,12 +65,9 @@ services:
     restart: unless-stopped
     networks:
       - supanet
-    ports:
-      - "8000:8000"
-      - "8443:8443"
     expose:
-      - "8000:8000"
-      - "8443:8443"
+      - "8000"
+      - "8443"
     volumes:
       - ./volumes/api/kong.yml:/home/kong/temp.yml:ro,z
     environment:
@@ -126,6 +155,36 @@ services:
       APP_NAME: realtime
       SEED_SELF_HOST: true
       RUN_JANITOR: true
+
+  # -------------------
+  # Flask API
+  # -------------------
+  flask-app:
+    container_name: flask-app
+    build: ./flask
+    restart: unless-stopped
+    networks:
+      - supanet
+    expose:
+      - "5002"
+    environment:
+      - FLASK_ENV=production
+      - SUPABASE_URL=${FLASK_SUPABASE_URL}
+      - SUPABASE_KEY=${SERVICE_ROLE_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - S3_BUCKET_NAME=${MINIO_DEFAULT_BUCKET}
+      - S3_IMAGES_PATH=images
+      - AWS_REGION=${MINIO_S3_STORAGE_REGION}
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+      - S3_ENDPOINT=${MINIO_STORAGE_S3_ENDPOINT}
+      - DOMAIN_MAIN=${DOMAIN_MAIN}
+      - DOMAIN_STUDIO=${DOMAIN_STUDIO}
+      - DOMAIN_MINIO=${DOMAIN_MINIO}
+      - DOMAIN_FLASK=${DOMAIN_FLASK}
+    depends_on:
+      - kong
+      - supabase-minio
     
   # -------------------
   # MinIO
@@ -142,6 +201,7 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BROWSER_REDIRECT_URL: http://minio.localhost
     command: server --console-address ":9001" /data
     volumes:
       - /Users/benficaa/data/minio:/data
@@ -190,7 +250,7 @@ services:
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       ENABLE_IMAGE_TRANSFORMATION: "true"
-      IMGPROXY_URL: http://imgproxy:5001
+      IMGPROXY_URL: ${IMGPROXY_URL}
   
   # -------------------
   # Database (Postgres)
@@ -280,14 +340,10 @@ services:
       DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
 
-      SUPABASE_URL: http://kong:8000
-      SUPABASE_PUBLIC_URL: http://kong:8000
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_PUBLIC_URL: ${STUDIO_SUPABASE_PUBLIC_URL}
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
-      AUTH_JWT_SECRET: ${JWT_SECRET}
-      NEXT_PUBLIC_ENABLE_LOGS: true
-      NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
-      SUPABASE_PROJECT_REF: default
 
   # -------------------
   # ImgProxy

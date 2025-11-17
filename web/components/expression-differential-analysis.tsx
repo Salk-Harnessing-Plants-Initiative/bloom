@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { DataGrid, GridColDef } from '@mui/x-data-grid';
 import Paper from '@mui/material/Paper';
 import { Database } from "@/lib/database.types";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import Box from '@mui/material/Box';
 import InputLabel from '@mui/material/InputLabel';
 import MenuItem from '@mui/material/MenuItem';
@@ -52,10 +52,10 @@ export function DataTable({rows}:{rows: GeneData[]}) {
 }
 
 export default function DifferentialExpressionAnalysis({ file_id }: { file_id: number }) {
-    const [clusterList, setClusterList] = useState<{cluster_id : string, file_path: string}[]>([]);
-    const [selectedCluster, setSelectedCluster] = useState<{cluster_id : string, file_path: string} | null>(null);
+    const [clusterList, setClusterList] = useState<{cluster_id : string | null, file_path: string}[]>([]);
+    const [selectedCluster, setSelectedCluster] = useState<{cluster_id : string | null, file_path: string} | null>(null);
     const [chartData, setChartData] = useState<any>(null);
-    const supabase = createClientComponentClient<Database>();
+    const supabase = createClientSupabaseClient();
     const chartRef = useRef<SVGSVGElement | null>(null);
 
     useEffect(
@@ -229,7 +229,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
               }}
             >
               {clusterList.map((cluster, index) => (
-                <MenuItem key={index} value={cluster.cluster_id}>{cluster.cluster_id}</MenuItem>
+                <MenuItem key={index} value={cluster.cluster_id ?? ""}>{cluster.cluster_id ?? ""}</MenuItem>
               ))}
             </Select>
           </FormControl>

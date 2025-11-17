@@ -1,11 +1,10 @@
 // TODO: Duplicate or move this file outside the `_examples` folder to make it a route
 
-import { createServerComponentClient } from '@supabase/auth-helpers-nextjs'
-import { cookies } from 'next/headers'
+import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 export default async function ServerComponent() {
   // Create a Supabase client configured to use cookies
-  const supabase = createServerComponentClient({ cookies})
+  const supabase = await createServerSupabaseClient()
 
   // This assumes you have a `todos` table in Supabase. Check out
   // the `Create Table and seed with data` section of the README 👇

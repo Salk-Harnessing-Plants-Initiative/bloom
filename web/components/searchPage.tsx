@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect } from 'react';
 import { TextField, Box, CircularProgress, List, ListItem, ListItemText } from '@mui/material';
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { Database } from "@/lib/database.types";
 import { Divider } from '@mui/material';
 
@@ -9,7 +9,7 @@ export default function SearchComponent() {
   const [searchQuery, setSearchQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const supabase = createClientComponentClient<Database>();
+  const supabase = createClientSupabaseClient();
 
   useEffect(() => {
     const delayDebounce = setTimeout(() => {

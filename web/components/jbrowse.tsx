@@ -4,15 +4,15 @@ import React, { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { createViewState, JBrowseApp } from "@jbrowse/react-app";
 import { getEnv } from '@jbrowse/core/util'
-import config from "./config"; // JBrowse configuration
+import config from "./config"; 
 
 
 type ViewModel = ReturnType<typeof createViewState>
 
 function JBrowse() {
   const searchParams = useSearchParams();
-  const reference = searchParams.get("reference"); // Reference from URL
-  const gene = searchParams.get("gene"); // Gene from URL
+  const reference = searchParams.get("reference"); 
+  const gene = searchParams.get("gene");
 
   const [viewState, setViewState] = useState<ViewModel>();
   const [stateSnapshot, setStateSnapshot] = useState("");
