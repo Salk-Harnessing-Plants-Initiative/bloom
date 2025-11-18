@@ -27,6 +27,9 @@ yarn-error.log*
 # local env files
 .env*
 .env
+# But allow template files
+!.dev.template.env
+!.prod.template.env
 
 # vercel
 .vercel
@@ -70,3 +73,13 @@ next-env.d.ts
 
 # minio
 minio/data/
+
+# temporary/copy files
+nginx/copy.config
+nginx/copy.config_2
+docker-compose.prod copy.yml
+DOCUMENTATION.md
+TROUBLESHOOTING.md
+
+# openspec files
+openspec/
