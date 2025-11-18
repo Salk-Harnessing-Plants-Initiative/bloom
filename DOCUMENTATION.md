@@ -377,10 +377,9 @@ make logs
 
 ## Additional Resources
 
-- **Interactive Docs:** Visit `http://flask.localhost/docs` for web-based documentation
+- **Interactive Docs:** Visit `PROD_SETUP.html` & `WEB_SETUP.html` for web-based documentation
 ---
 
 **Project:** Bloom  
-**Repository:** https://github.com/Salk-Harnessing-Plants-Initiative/bloom  
-**Branch:** main  
+**Repository:** https://github.com/Salk-Harnessing-Plants-Initiative/bloom    
 **Last Updated:** November 17, 2025
