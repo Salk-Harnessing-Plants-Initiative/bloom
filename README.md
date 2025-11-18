@@ -6,8 +6,15 @@ A comprehensive web application for plant phenotyping data management, built wit
 
 Choose your setup:
 
-- **[Development Setup](./DEV_SETUP.md)** - For local development visit DEV_SETUP.md (./DEV_SETUP.md) or ([DEV_SETUP_WEB_version](https://htmlpreview.github.io/?https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/setup-guide/DEV_SETUP.html))
-- **[Production Setup](./PROD_SETUP.md)** - For production deployment visit PROD_SETUP.md (./PROD_SETUP.md) or ([PROD_SETUP_WEB version](https://htmlpreview.github.io/?https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/setup-guide/PROD_SETUP.html))
+### Development Setup
+For local development:
+- 📘 [DEV_SETUP.md](./DEV_SETUP.md)
+- 🌐 [DEV_SETUP_WEB_version](https://htmlpreview.github.io/?https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/setup-guide/DEV_SETUP.html)
+
+### Production Setup
+For production deployment:
+- 📘 [PROD_SETUP.md](./PROD_SETUP.md)
+- 🌐 [PROD_SETUP_WEB_version](https://htmlpreview.github.io/?https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/setup-guide/PROD_SETUP.html)
 
 ## Prerequisites
 
