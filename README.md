@@ -2,18 +2,18 @@
 
 A comprehensive web application for plant phenotyping data management, built with Next.js, Supabase, and MinIO.
 
-## Quick Start
+## Getting Started
 
 Choose your setup:
 
-- **[Development Setup](./DEV_SETUP.md)** - For local development ([web version](./DEV_SETUP.html))
-- **[Production Setup](./PROD_SETUP.md)** - For production deployment ([web version](./PROD_SETUP.html))
+- **[Development Setup](./DEV_SETUP.md)** - For local development ([Web version](https://htmlpreview.github.io/?https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/setup-guide/DEV_SETUP.html))
+- **[Production Setup](./PROD_SETUP.md)** - For production deployment ([Web version](https://htmlpreview.github.io/?https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/setup-guide/PROD_SETUP.html))
 
 ## Prerequisites
 
 Before starting, ensure you have:
 
-- Docker and Docker Compose installed
+- Docker installed
 - Python 3.8 or higher
 
 ## Repository Structure
@@ -33,7 +33,7 @@ bloom-v2/
 └── Makefile               # Helper commands
 ```
 
-## Architecture
+## Architecture Overview
 
 ### Development Stack
 - **Frontend**: Next.js (hot reload) - http://localhost:3000
@@ -68,22 +68,12 @@ make reset-storage       # Reset database and storage (DEV only)
 make load-test-data      # Load CSV test data into database
 ```
 
-### Storage Operations
+### Storage (S3 Buckets) Operations
 ```bash
 make upload-images       # Upload test images to MinIO
 make create-bucket BUCKET=name [PUBLIC=true]  # Create new bucket
 make list-buckets        # List all storage buckets
 ```
-
-## Getting Started
-
-### 1. Development Setup
-
-    see [DEV_SETUP.md](./DEV_SETUP.md)[web version](./DEV_SETUP.html)
-
-### 2. Production Setup
-
-    see [PROD_SETUP.md](./PROD_SETUP.md)[web version](./PROD_SETUP.html)
 
 ## Test Data
 
@@ -95,7 +85,7 @@ The repository includes sample test data:
 Load test data with:
 ```bash
 make load-test-data      # Loads CSV data into database
-make upload-images       # Uploads images to MinIO
+make upload-images       # Uploads images to MinIO/S3
 ```
 
 ## Support
