@@ -60,9 +60,11 @@ function getAccessions(wave: Wave) {
 export default async function Experiment({
   params,
 }: {
-  params: { experimentId: number; speciesId: number };
+  params: Promise<{ experimentId: string; speciesId: string }>;
 }) {
-  const experiment : any = await getExperimentWithPlants(params.experimentId);
+  const { experimentId, speciesId } = await params;
+  const experiment : any = await getExperimentWithPlants(Number(experimentId));
+  console.log("Experiment data:", experiment);
   const experimentName = capitalizeFirstLetter(
     experiment?.name.replaceAll("-", " ") ?? ""
   );
@@ -76,7 +78,7 @@ export default async function Experiment({
 
   mixpanel?.track("Page view", {
     distinct_id: user?.email,
-    url: `/app/phenotypes/${params.speciesId}/${params.experimentId}`,
+    url: `/app/phenotypes/${speciesId}/${experimentId}`,
   });
 
   return (

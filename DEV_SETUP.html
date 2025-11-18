@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bloom Development Setup Guide 🌱</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        nav {
+            background: #f8f9fa;
+            padding: 20px 40px;
+            border-bottom: 2px solid #e9ecef;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        
+        nav ul {
+            list-style: none;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        
+        nav a {
+            color: #667eea;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+        
+        nav a:hover {
+            background: #667eea;
+            color: white;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        section {
+            margin-bottom: 50px;
+        }
+        
+        h2 {
+            color: #667eea;
+            font-size: 2em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+        }
+        
+        h3 {
+            color: #764ba2;
+            font-size: 1.5em;
+            margin: 25px 0 15px 0;
+        }
+        
+        h4 {
+            color: #555;
+            font-size: 1.2em;
+            margin: 20px 0 10px 0;
+        }
+        
+        .code-block {
+            background: #f8f9fa;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 15px 0;
+            font-family: 'Courier New', monospace;
+            overflow-x: auto;
+            position: relative;
+        }
+        
+        .code-block::before {
+            content: 'Terminal';
+            position: absolute;
+            top: 5px;
+            right: 10px;
+            font-size: 0.8em;
+            color: #999;
+        }
+        
+        code {
+            background: #f1f3f5;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.95em;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        th {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+        }
+        
+        td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        tr:last-child td {
+            border-bottom: none;
+        }
+        
+        tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .step-box {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-left: 5px solid #667eea;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        
+        .alert {
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 8px;
+            border-left: 5px solid;
+        }
+        
+        .alert-info {
+            background: #e3f2fd;
+            border-color: #2196F3;
+            color: #0d47a1;
+        }
+        
+        .alert-warning {
+            background: #fff3cd;
+            border-color: #ffc107;
+            color: #856404;
+        }
+        
+        .alert-success {
+            background: #d4edda;
+            border-color: #28a745;
+            color: #155724;
+        }
+        
+        .btn {
+            display: inline-block;
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: transform 0.2s;
+            margin: 10px 10px 10px 0;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+        }
+        
+        .service-card {
+            background: white;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 15px 0;
+            transition: all 0.3s;
+        }
+        
+        .service-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.2);
+        }
+        
+        .service-card h4 {
+            color: #667eea;
+            margin-top: 0;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 5px 12px;
+            background: #667eea;
+            color: white;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        
+        footer {
+            background: #f8f9fa;
+            padding: 30px;
+            text-align: center;
+            color: #666;
+        }
+        
+        @media (max-width: 768px) {
+            nav ul {
+                flex-direction: column;
+            }
+            
+            header h1 {
+                font-size: 1.8em;
+            }
+            
+            .content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1> Bloom Development Setup Guide </h1>
+        </header>
+        
+        <nav>
+            <ul>
+                <li><a href="#prerequisites">Prerequisites</a></li>
+                <li><a href="#environment">Environment</a></li>
+                <li><a href="#storage">Storage</a></li>
+                <li><a href="#starting">Starting</a></li>
+                <li><a href="#database">Database</a></li>
+                <li><a href="#data">Test Data</a></li>
+                <li><a href="#services">Services</a></li>
+            </ul>
+        </nav>
+        
+        <div class="content">
+            <section id="prerequisites">
+                <h2>📋 Prerequisites</h2>
+                <p>Before starting, ensure you have the following installed:</p>
+                <div class="step-box">
+                    <ul style="margin-left: 20px;">
+                        <li>✅ Docker and Docker Compose</li>
+                        <li>✅ Python 3.8 or higher</li>
+                        <li>✅ Node.js 18+ and npm</li>
+                    </ul>
+                </div>
+            </section>
+            
+            <section id="environment">
+                <h2>⚙️ Environment Configuration</h2>
+                
+                <h3>Step 1: Get Environment Template</h3>
+                <p>Get the development environment template from Notion:</p>
+                <a href="https://www.notion.so/Plan-2734a67a766780e89373c1e1ec687a4d" class="btn" target="_blank">
+                    📄 Get Environment Template from Notion
+                </a>
+                
+                <p>Copy the <code>.env.dev</code> template content and create the file:</p>
+                <div class="code-block">
+                    # Create .env.dev file<br/>
+                    nano .env.dev<br/>
+                    # Or use your preferred editor
+                </div>
+                
+                <h3>Step 2: Configure Environment Variables</h3>
+                <p>Edit <code>.env.dev</code> and update:</p>
+                <div class="code-block">
+                    # REQUIRED: Set your local path </br >
+                    MINIO_DATA_PATH=/Users/yourusername/minio  </br >
+
+                    # Other values can remain as defaults for dev  </br >
+                    POSTGRES_PASSWORD=postgres  </br >
+                    MINIO_ROOT_USER=supabase  </br >
+                    MINIO_ROOT_PASSWORD=supabase123  </br >
+                </div>
+                
+                <div class="alert alert-info">
+                    💡 <strong>Tip:</strong> Replace <code>yourusername</code> with your actual username or preferred path
+                </div>
+                
+                <h3>Step 3: Set Permissions</h3>
+                <div class="code-block">
+                    chmod 600 .env.dev
+                </div>
+            </section>
+            
+            <section id="storage">
+                <h2>💾 MinIO Storage Setup</h2>
+                
+                <h3>Create Storage Directory</h3>
+                <div class="code-block">
+                    # Create directory </br >
+                    mkdir -p ~/minio </br >
+
+                    # Set permissions </br >
+                    chmod 755 ~/minio </br >
+                </div>
+                
+                <div class="alert alert-warning">
+                     <strong>Important:</strong> Ensure <code>MINIO_DATA_PATH</code> in <code>.env.dev</code> matches your created directory
+                </div>
+            </section>
+            
+            <section id="starting">
+                <h2> Starting the Stack</h2>
+                
+                <h3>Step 1: Start Development</h3>
+                <div class="code-block">
+                    make dev-up
+                </div>
+                
+                <div class="step-box">
+                    <p>This command will:</p>
+                    <ul style="margin-left: 20px;">
+                        <li> Install frontend dependencies</li>
+                        <li> Build Docker images</li>
+                        <li> Start all services with hot reload</li>
+                        <li> Initialize MinIO buckets</li>
+                        <li> Apply database migrations</li>
+                    </ul>
+                    <p style="margin-top: 15px;"><em>First startup may take 5-10 minutes</em></p>
+                </div>
+                
+                <h3>Step 2: Verify Services</h3>
+                <div class="code-block">
+                    docker ps
+                </div>
+                
+                <h3>Step 3: Access the Application</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Service</th>
+                            <th>URL</th>
+                            <th>Port</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Bloom Frontend</strong></td>
+                            <td><a href="http://localhost:3000" target="_blank">http://localhost:3000</a></td>
+                            <td>3000</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Supabase Studio</strong></td>
+                            <td><a href="http://localhost:55323" target="_blank">http://localhost:55323</a></td>
+                            <td>55323</td>
+                        </tr>
+                        <tr>
+                            <td><strong>MinIO Console</strong></td>
+                            <td><a href="http://localhost:9101" target="_blank">http://localhost:9101</a></td>
+                            <td>9101</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+            
+            <section id="database">
+                <h2>🗄️ Database Migrations</h2>
+                
+                <h3>Verify Database is Ready</h3>
+                <div class="code-block">
+                    docker exec db-dev pg_isready -U supabase_admin
+                </div>
+                
+                <div class="alert alert-success">
+                    ✅ Output should be: <code>accepting connections</code>
+                </div>
+                
+                <h3>Apply Migrations</h3>
+                <div class="code-block">
+                    make apply-migrations
+                </div>
+                
+                <p>This command will:</p>
+                <ul>
+                    <li>Apply all SQL files from <code>supabase/migrations/</code> in order</li>
+                    <li>Skip tables/policies that already exist</li>
+                    <li>Show progress for each migration file</li>
+                </ul>
+                
+                <h3>Verify Migrations Applied</h3>
+                <div class="code-block">
+                    docker exec db-dev psql -U supabase_admin -d postgres -c "\dt public.*"
+                </div>
+                
+                <!-- <h3>Reset Database (if needed)</h3>
+                <div class="code-block">
+                    # Drop all tables <br/>
+                    make drop-tables <br/>
+
+                    # Reapply migrations <br/>
+                    make apply-migrations <br/>
+                </div> -->
+            </section>
+            
+            <section id="data">
+                <h2>📊 Loading Test Data</h2>
+                
+                <h3>Quick Method</h3>
+                <div class="code-block">
+                    # Load CSV data (14 tables) <br/>
+                    make load-test-data <br/>
+
+                    # Upload images (72 images) <br/>
+                    make upload-images <br/>
+                </div>
+                
+                <div class="alert alert-info">
+                    💡 <strong>Reset and Reload:</strong><br>
+                    <code>make drop-tables</code> → <code>make apply-migrations</code> → <code>make load-test-data</code> → <code>make upload-images</code>
+                </div>
+
+            </section>
+            
+            <section id="services">
+                <h2>🌐 Service URLs and Ports</h2>
+                
+                <h3>Frontend & External Services</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Service</th>
+                            <th>URL</th>
+                            <th>Port</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Bloom Web</strong></td>
+                            <td><a href="http://localhost:3000" target="_blank">localhost:3000</a></td>
+                            <td>3000</td>
+                            <td>Next.js frontend with hot reload</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Supabase Studio</strong></td>
+                            <td><a href="http://localhost:55323" target="_blank">localhost:55323</a></td>
+                            <td>55323</td>
+                            <td>Database management UI</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Flask API</strong></td>
+                            <td><a href="http://localhost:5002" target="_blank">localhost:5002</a></td>
+                            <td>5002</td>
+                            <td>Video generation API</td>
+                        </tr>
+                        <tr>
+                            <td><strong>MinIO Console</strong></td>
+                            <td><a href="http://localhost:9101" target="_blank">localhost:9101</a></td>
+                            <td>9101</td>
+                            <td>Storage management</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Kong Gateway</strong></td>
+                            <td><a href="http://localhost:8000" target="_blank">localhost:8000</a></td>
+                            <td>8000</td>
+                            <td>API Gateway</td>
+                        </tr>
+                    </tbody>
+                </table>
+                
+                <h3>Flask API Endpoints</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Endpoint</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><span class="badge">GET</span></td>
+                            <td>/test</td>
+                            <td>Health check</td>
+                        </tr>
+                        <tr>
+                            <td><span class="badge">GET</span></td>
+                            <td>/list_buckets</td>
+                            <td>List storage buckets</td>
+                        </tr>
+                        <tr>
+                            <td><span class="badge">POST</span></td>
+                            <td>/generate_video</td>
+                            <td>Generate video from scan</td>
+                        </tr>
+                        <tr>
+                            <td><span class="badge">POST</span></td>
+                            <td>/get_presigned_urls</td>
+                            <td>Get presigned URLs</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+            
+            <section id="video">
+                <h2>🎥 Video Generation</h2>
+                
+                <h3>Generate Test Video</h3>
+                <div class="code-block">
+                    curl -X POST http://localhost:5002/generate_video \
+                    -H "Content-Type: application/json" \
+                    -d '{"scan_id": 1}'
+                </div>
+                
+                <div class="alert alert-success">
+                    ✅ <strong>Success Response:</strong>
+                    <pre style="margin-top: 10px; background: white; padding: 10px; border-radius: 4px;">
+                        {
+                        "message": "Video generated successfully",
+                        "scan_id": 1,
+                        "total_frames": 72,
+                        "download_url": "http://..."
+                        }</pre>
+                </div>
+            </section>
+            
+            <!-- <section id="troubleshooting">
+                <h2>🔧 Troubleshooting</h2>
+                
+                <h3>Port Already in Use</h3>
+                <div class="code-block">
+                    # Find process using port
+                    lsof -i :3000
+
+                    # Kill the process
+                    kill -9 &lt;PID&gt;
+                </div>
+                
+                <h3>Database Connection Errors</h3>
+                <div class="code-block">
+                    # Check database is running
+                    docker ps | grep db-dev
+
+                    # Verify connection
+                    docker exec db-dev pg_isready -U supabase_admin
+
+                    # Restart database
+                    docker restart db-dev
+                                    </div>
+                                    
+                                    <h3>Complete Reset</h3>
+                                    <div class="code-block">
+                    # Stop all containers
+                    make dev-down
+
+                    # Remove all containers and volumes
+                    docker compose -f docker-compose.dev.yml down -v
+
+                    # Remove MinIO data
+                    rm -rf ~/minio/*
+
+                    # Start fresh
+                    make dev-up
+                    make load-test-data
+                    make upload-images
+                </div>
+                
+                <div class="alert alert-info">
+                    💡 <strong>Need More Help?</strong> Check <code>TROUBLESHOOTING.md</code> or open an issue on GitHub
+                </div>
+            </section> -->
+        </div>
+        
+        <footer>
+            <p> Bloom Platform</p>
+            <p>For production deployment, see <strong>PROD_SETUP.md</strong> <strong>PROD_SETUP.html</strong></p>
+        </footer>
+    </div>
+</body>
+</html>

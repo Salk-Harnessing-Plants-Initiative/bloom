@@ -80,11 +80,12 @@ export async function getUser() {
       error,
     } = await supabase.auth.getUser()
     
-    console.error('[getUser] User:', user?.email || 'null', 'Error:', error?.message || 'none')
+    if (error) {
+      console.error('[getUser] Error:', error.message)
+    }
     
     return user
   } catch (error) {
-    console.error('Error:', error)
     return null
   }
 }

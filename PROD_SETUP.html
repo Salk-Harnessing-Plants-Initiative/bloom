@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bloom Production Setup Guide</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        header {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        nav {
+            background: #f8f9fa;
+            padding: 20px 40px;
+            border-bottom: 2px solid #e9ecef;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        
+        nav ul {
+            list-style: none;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        
+        nav a {
+            color: #f5576c;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+        
+        nav a:hover {
+            background: #f5576c;
+            color: white;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        section {
+            margin-bottom: 50px;
+        }
+        
+        h2 {
+            color: #f5576c;
+            font-size: 2em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #f5576c;
+        }
+        
+        h3 {
+            color: #f093fb;
+            font-size: 1.5em;
+            margin: 25px 0 15px 0;
+        }
+        
+        h4 {
+            color: #555;
+            font-size: 1.2em;
+            margin: 20px 0 10px 0;
+        }
+        
+        .code-block {
+            background: #f8f9fa;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 15px 0;
+            font-family: 'Courier New', monospace;
+            overflow-x: auto;
+            position: relative;
+        }
+        
+        .code-block::before {
+            content: 'Terminal';
+            position: absolute;
+            top: 5px;
+            right: 10px;
+            font-size: 0.8em;
+            color: #999;
+        }
+        
+        code {
+            background: #f1f3f5;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.95em;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        th {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+        }
+        
+        td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        tr:last-child td {
+            border-bottom: none;
+        }
+        
+        tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .step-box {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-left: 5px solid #f5576c;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        
+        .alert {
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 8px;
+            border-left: 5px solid;
+        }
+        
+        .alert-danger {
+            background: #f8d7da;
+            border-color: #dc3545;
+            color: #721c24;
+        }
+        
+        .alert-warning {
+            background: #fff3cd;
+            border-color: #ffc107;
+            color: #856404;
+        }
+        
+        .alert-success {
+            background: #d4edda;
+            border-color: #28a745;
+            color: #155724;
+        }
+        
+        .alert-info {
+            background: #d1ecf1;
+            border-color: #17a2b8;
+            color: #0c5460;
+        }
+        
+        .security-warning {
+            background: #fff3cd;
+            border: 3px solid #ffc107;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 25px 0;
+        }
+        
+        .security-warning h4 {
+            color: #856404;
+            margin-top: 0;
+        }
+        
+        .checklist {
+            list-style: none;
+            margin-left: 0;
+        }
+        
+        .checklist li {
+            padding: 10px;
+            margin: 8px 0;
+            background: #f8f9fa;
+            border-left: 4px solid #28a745;
+            border-radius: 4px;
+        }
+        
+        .checklist li::before {
+            content: "✓ ";
+            color: #28a745;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+        
+        .service-card {
+            background: white;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 15px 0;
+            transition: all 0.3s;
+        }
+        
+        .service-card:hover {
+            border-color: #f5576c;
+            box-shadow: 0 5px 20px rgba(245, 87, 108, 0.2);
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 5px 12px;
+            background: #f5576c;
+            color: white;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin: 5px;
+        }
+        
+        .badge-warning {
+            background: #ffc107;
+            color: #333;
+        }
+        
+        .badge-success {
+            background: #28a745;
+        }
+        
+        footer {
+            background: #f8f9fa;
+            padding: 30px;
+            text-align: center;
+            color: #666;
+        }
+        
+        @media (max-width: 768px) {
+            nav ul {
+                flex-direction: column;
+            }
+            
+            header h1 {
+                font-size: 1.8em;
+            }
+            
+            .content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1> Bloom Production Setup Guide </h1>
+        </header>
+        
+        <nav>
+            <ul>
+                <li><a href="#prerequisites">Prerequisites</a></li>
+                <li><a href="#environment">Environment</a></li>
+                <li><a href="#storage">Storage</a></li>
+                <li><a href="#starting">Starting</a></li>
+                <li><a href="#database">Database</a></li>
+                <li><a href="#data">Data Loading</a></li>
+                <li><a href="#services">Services</a></li>
+            </ul>
+        </nav>
+        
+        <div class="content">
+            <div class="security-warning">
+                <h4>⚠️ Security Critical</h4>
+                <p>Production deployment requires careful attention to security. Follow all security steps and generate new keys.</p>
+            </div>
+            
+            <section id="prerequisites">
+                <h2>📋 Prerequisites</h2>
+                <ul class="checklist">
+                    <li>Docker and Docker Compose installed</li>
+                    <li>Python 3.8 or higher</li>
+                    <li>Root or sudo access</li>
+                    <li>Domain names configured (optional)</li>
+                </ul>
+            </section>
+
+                        <section id="storage">
+                <h2>💾 STEP 1 : MinIO Storage Setup</h2>
+                
+                <h3>Create Storage Directory</h3>
+                <div class="code-block">
+                    # Create directory <br />
+                    sudo mkdir -p /var/lib/bloom/minio <br />
+
+                    # Set ownership <br />
+                    sudo chown -R $USER:$USER /var/lib/bloom/minio <br />
+
+                    # Set permissions <br />
+                    chmod 755 /var/lib/bloom/minio <br />
+                </div>
+            </section>
+            
+            <section id="environment">
+                <h2>⚙️ STEP 2: Environment Configuration</h2>
+                
+                <h3>Step 1: Get Environment Template</h3>
+                <p>Get the production environment template from Notion:</p>
+                <a href="https://www.notion.so/Plan-2734a67a766780e89373c1e1ec687a4d" class="btn" target="_blank">
+                    📄 Get Environment Template from Notion
+                </a>
+                
+                <p>Copy the <code>.env.prod</code> template content and create the file:</p>
+                <div class="code-block">
+                    # Create .env.prod file<br/>
+                    nano .env.prod<br/>
+                    # Or use your preferred editor
+                </div>
+                
+                <h3>Step 2: Generate Secure Keys </h3>
+                <div class="code-block">
+                    # Generate random strings for keys <br />
+                    openssl rand -base64 32  # For JWT_SECRET <br />
+                    openssl rand -base64 32  # For VAULT_ENC_KEY <br />
+                    openssl rand -hex 32     # For SUPAVISOR_ENC_KEY <br />
+                </div>
+                
+                <h3>Step 3: Configure Critical Variables</h3>
+                <div class="service-card">
+                    <h4>Domain Configuration</h4>
+                    <div class="code-block">
+                    DOMAIN_MAIN=yourdomain.com <br />
+                    DOMAIN_STUDIO=studio.yourdomain.com <br />
+                    DOMAIN_MINIO=minio.yourdomain.com <br />
+                    DOMAIN_FLASK=flask.yourdomain.com <br />
+                </div>
+                
+                <div class="service-card">
+                    <h4>Database Security</h4>
+                    <div class="code-block">
+                    POSTGRES_PASSWORD=CHANGE_TO_SECURE_PASSWORD <br />
+                    DASHBOARD_USERNAME=admin <br />
+                    DASHBOARD_PASSWORD=CHANGE_TO_SECURE_PASSWORD <br />
+                    </div>
+                </div>
+                
+                <div class="service-card">
+                    <h4>MinIO Security</h4>
+                    <div class="code-block">
+                    MINIO_ROOT_USER=admin <br />
+                    MINIO_ROOT_PASSWORD=CHANGE_TO_SECURE_PASSWORD <br />
+                    MINIO_DATA_PATH=/var/lib/bloom/minio <br />
+                    </div>
+                </div>
+                
+                <h3>Step 4: Set Permissions</h3>
+                <div class="code-block">
+                    chmod 600 .env.prod
+                </div>
+            </section>
+                        
+            <section id="starting">
+                <h2>STEP 3: 🚀 Starting Production Stack</h2>
+                
+                <h3>STEP 4: Start Services</h3>
+                <div class="code-block">
+                    make prod-up
+                </div>
+                
+                <div class="step-box">
+                    <p>This will:</p>
+                    <ul style="margin-left: 20px;">
+                        <li>Build optimized Next.js production bundle</li>
+                        <li>Start all services in detached mode</li>
+                        <li>Initialize MinIO buckets</li>
+                    </ul>
+                </div>
+                
+                <h3>Verify Services Running</h3>
+                <div class="code-block">
+                    docker ps
+                </div>
+                
+                <div class="alert alert-success">
+                    You should see: db-prod, supabase-minio, supabase-storage, supabase-kong, supabase-auth, bloom-web-prod, flask-app
+                </div>
+                
+                <h3>Check Logs</h3>
+                <div class="code-block">
+                    make prod-logs
+                </div>
+            </section>
+            
+            <section id="database">
+                <h2>STEP 5 :🗄️ Database Migrations</h2>
+                
+                <h3>Verify Database Ready</h3>
+                <div class="code-block">
+                    docker exec db-prod pg_isready -U supabase_admin
+                </div>
+                
+                <div class="alert alert-warning">
+                    ⚠️ <strong>Important:</strong> Make sure you have the Supabase CLI installed : all migrations are applied using the Supabase CLI.
+                </div>
+                
+                <h3>Apply Migrations</h3>
+                <div class="code-block">
+                    make apply-migrations
+                </div>
+                
+                <!-- <h3>Verify Migrations Applied</h3>
+                <div class="code-block">
+                    docker exec db-prod psql -U supabase_admin -d postgres -c "\dt public.*"
+                </div> -->
+            </section>
+            
+            <section id="data">
+                <h2>STEP 6 :📊 Loading Initial Data</h2>
+                
+                <h3>Load Test Data (loads table)</h3>
+                <div class="code-block">
+                    make load-test-data              
+                </div>
+                <h3>Loads Cyl Scan Images to S3</h3>
+                <div class="code-block">
+                    make upload-images
+                </div>   
+            </section>
+            
+            <section id="services">
+                <h2>STEP 7 :🌐 Service URLs and Ports</h2>
+                
+                <h3>Internal Services (Docker Network)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Service</th>
+                            <th>Internal URL</th>
+                            <th>Port</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>PostgreSQL</td>
+                            <td>db-prod:5432</td>
+                            <td>5432</td>
+                        </tr>
+                        <tr>
+                            <td>Kong Gateway</td>
+                            <td>kong:8000</td>
+                            <td>8000</td>
+                        </tr>
+                        <tr>
+                            <td>MinIO API</td>
+                            <td>supabase-minio:9000</td>
+                            <td>9000</td>
+                        </tr>
+                        <tr>
+                            <td>Flask API</td>
+                            <td>flask-app:5002</td>
+                            <td>5002</td>
+                        </tr>
+                    </tbody>
+                </table>
+                
+                <h3>External Access (via Nginx)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Service</th>
+                            <th>URL</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Main App</td>
+                            <td>http://yourdomain.com</td>
+                            <td>Frontend application</td>
+                        </tr>
+                        <tr>
+                            <td>API</td>
+                            <td>http://yourdomain.com/api</td>
+                            <td>Supabase services</td>
+                        </tr>
+                        <tr>
+                            <td>Studio</td>
+                            <td>http://studio.yourdomain.com</td>
+                            <td>Database management</td>
+                        </tr>
+                        <tr>
+                            <td>MinIO</td>
+                            <td>http://minio.yourdomain.com</td>
+                            <td>Storage management</td>
+                        </tr>
+                        <tr>
+                            <td>Flask</td>
+                            <td>http://flask.yourdomain.com</td>
+                            <td>API</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+        </div>
+        
+        <footer>
+            <p>Bloom - Production</p>
+        </footer>
+    </div>
+</body>
+</html>

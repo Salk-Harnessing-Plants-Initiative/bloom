@@ -14,21 +14,22 @@ import { Key } from "react";
 export default async function Accession({
   params,
 }: {
-  params: {
-    experimentId: number;
-    accessionId: number;
-    speciesId: number;
-    waveId: number;
-  };
+  params: Promise<{
+    experimentId: string;
+    accessionId: string;
+    speciesId: string;
+    waveId: string;
+  }>;
 }) {
-  const experiment : any = await getExperimentWithPlants(params.experimentId);
+  const { experimentId, accessionId, speciesId, waveId } = await params;
+  const experiment : any = await getExperimentWithPlants(Number(experimentId));
   const species = experiment?.species;
   const experimentName = capitalizeFirstLetter(
     experiment?.name.replaceAll("-", " ") ?? ""
   );
   const speciesName = species?.common_name ?? "";
 
-  const plants : any = await getPlants(params.accessionId, params.waveId);
+  const plants : any = await getPlants(Number(accessionId), Number(waveId));
   const accessionName = plants?.[0]?.accessions?.name ?? "";
   const wave = plants?.[0]?.cyl_waves;
   const days = (
@@ -49,7 +50,7 @@ export default async function Accession({
 
   mixpanel?.track("Page view", {
     distinct_id: user?.email,
-    url: `/app/phenotypes/${params.speciesId}/${params.experimentId}/${params.waveId}/${params.accessionId}`,
+    url: `/app/phenotypes/${speciesId}/${experimentId}/${waveId}/${accessionId}`,
   });
 
   return (
@@ -135,7 +136,7 @@ export default async function Accession({
                             scan={scan}
                             thumb={true}
                             height={105}
-                            href={`/app/phenotypes/${species?.id}/${experiment?.id}/${params.waveId}/${params.accessionId}/${scan.id}`}
+                            href={`/app/phenotypes/${species?.id}/${experiment?.id}/${waveId}/${accessionId}/${scan.id}`}
                           />
                         </div>
                       ))}

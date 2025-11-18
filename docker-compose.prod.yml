@@ -204,7 +204,7 @@ services:
       MINIO_BROWSER_REDIRECT_URL: http://minio.localhost
     command: server --console-address ":9001" /data
     volumes:
-      - /Users/benficaa/data/minio:/data
+      - ${MINIO_DATA_PATH}:/data
   
   minio-init:
     image: minio/mc
