@@ -55,7 +55,7 @@
 
 - [ ] 2.1 Install and configure FastMCP
 
-  - [ ] Add `fastmcp` to requirements.txt
+  - [ ] Run `uv add fastmcp` to add dependency
   - [ ] Create `fastapi/mcp_server.py`
   - [ ] Initialize FastMCP instance
   - [ ] Mount MCP app at `/ai/mcp`
@@ -101,10 +101,8 @@
 
 - [ ] 4.1 Install dependencies
 
-  - [ ] Add `langgraph` to requirements.txt
-  - [ ] Add `langchain-community` to requirements.txt
-  - [ ] Add `langchain-core` to requirements.txt
-  - [ ] Install in Docker image
+  - [ ] Run `uv add langgraph langchain-community langchain-core`
+  - [ ] Install in Docker image (update Dockerfile to use `uv sync`)
   - [ ] Verify imports work
 
 - [ ] 4.2 Create agent orchestration package
@@ -208,8 +206,8 @@
 
 - [ ] 8.1 Install and configure Guardrails AI
 
-  - [ ] Add `guardrails-ai` to requirements.txt
-  - [ ] Install in Docker image
+  - [ ] Run `uv add guardrails-ai`
+  - [ ] Install in Docker image (update Dockerfile to use `uv sync`)
   - [ ] Configure Guardrails Hub access
   - [ ] Test basic guard functionality
 
@@ -389,7 +387,7 @@
 
 - [ ] 16.1 Set up marimo
 
-  - [ ] Add marimo to requirements
+  - [ ] Run `uv add marimo`
   - [ ] Configure marimo server
   - [ ] Create notebook templates
 

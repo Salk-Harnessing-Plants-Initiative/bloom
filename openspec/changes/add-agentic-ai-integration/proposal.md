@@ -409,6 +409,33 @@ ENABLE_PAID_MODELS=false  # Default off
 - ✅ Modern free models are highly capable
 - ✅ Qwen2.5 14B ≈ GPT-3.5 Turbo performance
 
+### Python Package Management: uv
+
+**Philosophy**: Bloom uses `uv` for fast, reliable Python package management.
+
+```bash
+# Install dependencies (uses uv)
+uv add fastapi fastmcp langgraph langchain-community guardrails-ai
+
+# Sync dependencies in Docker
+uv sync
+```
+
+**Why uv:**
+
+- ✅ 10-100x faster than pip
+- ✅ Deterministic installs with lock files
+- ✅ Unified tool for packages and environments
+- ✅ Drop-in replacement for pip
+- ✅ Better conflict resolution
+
+**Best Practices:**
+
+- Use `uv add` instead of `pip install`
+- Use `uv sync` in Docker for reproducible builds
+- Commit `uv.lock` for deterministic deployments
+- Use `uv run` for scripts requiring dependencies
+
 ### Agent Framework: LangGraph + LangChain
 
 **What You Need:**
@@ -416,8 +443,8 @@ ENABLE_PAID_MODELS=false  # Default off
 Both libraries work together - **LangGraph is built on top of LangChain**:
 
 ```bash
-# Installation (LangGraph includes LangChain as dependency)
-pip install langgraph langchain-community langchain-core
+# Installation with uv (LangGraph includes LangChain as dependency)
+uv add langgraph langchain-community langchain-core
 ```
 
 **What Each Provides:**
@@ -611,7 +638,7 @@ async def agent_query(request: AgentQueryRequest):
 **Use Guardrails AI library + custom guards:**
 
 ```bash
-pip install guardrails-ai
+uv add guardrails-ai
 ```
 
 #### Pre-Built Validators from Guardrails AI

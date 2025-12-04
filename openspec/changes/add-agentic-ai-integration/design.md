@@ -353,27 +353,27 @@ User Query: "Show me experiments for species X"
 
 ### Core Technologies
 
-| Component       | Technology               | Purpose                     |
-| --------------- | ------------------------ | --------------------------- |
-| API Framework   | FastAPI                  | REST API + async support    |
-| MCP Server      | FastMCP                  | Auto-expose tools to agents |
-| Agent Framework | LangGraph + LangChain    | Workflow orchestration      |
-| Validation      | Pydantic + Guardrails AI | Request/response validation |
-| Models          | Ollama (free)            | LLM inference               |
-| Database        | PostgreSQL (Supabase)    | Data storage                |
-| File Storage    | MinIO (S3)               | Object storage              |
+| Component          | Technology               | Purpose                     |
+| ------------------ | ------------------------ | --------------------------- |
+| API Framework      | FastAPI                  | REST API + async support    |
+| MCP Server         | FastMCP                  | Auto-expose tools to agents |
+| Agent Framework    | LangGraph + LangChain    | Workflow orchestration      |
+| Validation         | Pydantic + Guardrails AI | Request/response validation |
+| Models             | Ollama (free)            | LLM inference               |
+| Database           | PostgreSQL (Supabase)    | Data storage                |
+| File Storage       | MinIO (S3)               | Object storage              |
+| Package Management | uv                       | Fast Python package manager |
 
 ### Dependencies
 
-```python
-# Core
-fastapi==0.104.1
-pydantic==2.5.0
-fastmcp==1.0.0
-langgraph==0.0.40
-langchain-community==0.0.20
-langchain-core==0.1.10
-guardrails-ai==0.4.0
+**Note**: Bloom uses `uv` for Python package management. Use `uv add <package>` instead of `pip install`.
+
+```bash
+# Install core dependencies with uv
+uv add fastapi fastmcp langgraph langchain-community guardrails-ai
+
+# Sync dependencies (in Docker or after pulling)
+uv sync
 
 # Models
 ollama  # or via HTTP API
