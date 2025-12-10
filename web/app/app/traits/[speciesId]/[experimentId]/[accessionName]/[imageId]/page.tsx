@@ -4,15 +4,16 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import PlantImage from '@/components/plant-image';
 
 
-export default async function Image({ params }: { params: { experimentId: number, accessionName: string, imageId: string } }) {
+export default async function Image({ params }: { params: Promise<{ experimentId: number, accessionName: string, imageId: string }> }) {
 
-  const experiment : any = await getExperimentWithSpecies(params.experimentId)
+  const { experimentId, accessionName, imageId } = await params;
+  const experiment : any = await getExperimentWithSpecies(experimentId)
   const species = experiment?.species
   const experimentName = capitalizeFirstLetter(experiment?.name.replaceAll('-', ' ') ?? '')
   const speciesName = species?.common_name ?? ''
 
-  const lineNameUnescaped = params.accessionName.replaceAll('%20', ' ')
-  const image : any  = await getImage(params.imageId)
+  const lineNameUnescaped = accessionName.replaceAll('%20', ' ')
+  const image : any  = await getImage(imageId)
 
   return (
     <div className=''>
@@ -33,7 +34,7 @@ export default async function Image({ params }: { params: { experimentId: number
           </span>
           &nbsp;▸&nbsp;
           <span className='hover:underline'>
-            <Link href={`/app/phenotypes/${species?.id}/${experiment?.id}/${params.accessionName}`}>
+            <Link href={`/app/phenotypes/${species?.id}/${experiment?.id}/${accessionName}`}>
                 {lineNameUnescaped}
             </Link>
           </span>

@@ -222,7 +222,7 @@ http {
   }
 
   # -----------------
-  # Flask API (subdomain)
+  # FastAPI service (subdomain)
   # -----------------
   server {
     listen 80;
@@ -235,8 +235,8 @@ http {
         log_not_found off;
     }
 
-    location / {
-        proxy_pass http://flask-app:5002;
+  location / {
+    proxy_pass http://fastapi-app:5002;
         proxy_http_version 1.1;
         
         # Standard proxy headers

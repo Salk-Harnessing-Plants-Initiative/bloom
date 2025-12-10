@@ -8,10 +8,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY config.py .
-COPY app.py .
+COPY main.py .
 COPY videoWriter.py .
 COPY static/ ./static/
 
 EXPOSE 5002
 
-CMD ["python", "app.py"]
+# Run with uvicorn for ASGI and automatic OpenAPI docs
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5002", "--reload"]

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { use, useState, useEffect } from "react";
 import Link from "next/link";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import ScanTraitBoxplot from "@/components/scan-trait-boxplot";
@@ -12,8 +12,9 @@ import ScientistBadge from "@/components/scientist-badge";
 export default function Experiment({
   params,
 }: {
-  params: { experimentId: number };
+  params: Promise<{ experimentId: number }>;
 }) {
+  const { experimentId } = use(params);
   const defaultTraitName = "primary_length_mean";
 
   const [loginStatusReady, setLoginStatusReady] = useState(false);
@@ -43,11 +44,11 @@ export default function Experiment({
   // get experiment data
   useEffect(() => {
     const get = async () => {
-      const data = await getExperiment(params.experimentId);
+      const data = await getExperiment(experimentId);
       setExperiment(data);
     };
     get();
-  }, [params.experimentId]);
+  }, [experimentId]);
 
   // get trait names
   useEffect(() => {
@@ -62,7 +63,7 @@ export default function Experiment({
   useEffect(() => {
     const getExperiment = async () => {
       setTraitData(null);
-      const data = await getTraitData(params.experimentId, selectedTraitName);
+      const data = await getTraitData(experimentId, selectedTraitName);
       setTraitData(data);
       // set plant ages
       const plantAgeDays = (data ?? []).map((row) => row.plant_age_days);
@@ -78,14 +79,10 @@ export default function Experiment({
         data?.filter((row) => row.wave_number === wave)
       );
       const waveStartEndDates = rowsByWave.map((rows, i) => {
-        // wave number
         const waveNumber = wavesUnique[i];
-        // get epochs for this wave
         const dates =
           rows?.map((row) => new Date(row.date_scanned).getTime()) ?? [];
-        // get earliest date
         const earliestDate = new Date(Math.min(...dates));
-        // get latest date
         const latestDate = new Date(Math.max(...dates));
         return {
           waveNumber,
@@ -97,7 +94,7 @@ export default function Experiment({
       setWaves(waveStartEndDates);
     };
     getExperiment();
-  }, [params.experimentId, selectedTraitName]);
+  }, [experimentId, selectedTraitName]);
 
   const experimentName = capitalizeFirstLetter(
     experiment?.name.replaceAll("-", " ") ?? ""

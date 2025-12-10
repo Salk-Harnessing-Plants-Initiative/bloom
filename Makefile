@@ -16,6 +16,7 @@ help:
 	@echo "  make upload-images    - Upload test images to MinIO storage"
 	@echo "  make create-bucket    - Create a new S3 bucket (BUCKET=name [PUBLIC=true])"
 	@echo "  make list-buckets     - List all S3 buckets"
+	@echo "  make configure-storage - Configure storage backend (MinIO or AWS S3)"
 
 # Run development stack
 .PHONY: dev-up
@@ -28,8 +29,10 @@ dev-up:
 		echo " package-lock.json found."; \
 	fi
 	@echo " Starting Bloom Dev Stack..."
-	docker compose -f docker-compose.dev.yml --env-file .env.dev up --build
-	@echo " Bloom is running at http://localhost:3000"
+	docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --build
+	@echo " Bloom Dev Stack running in background"
+	@echo " Access at: http://localhost:3000"
+	@echo " View logs: make dev-logs"
 
 .PHONY: rebuild-dev-fresh
 rebuild-dev-fresh:
@@ -65,13 +68,13 @@ rebuild-prod-fresh:
 # Stop dev
 .PHONY: dev-down
 dev-down:
-	docker compose -f docker-compose.dev.yml down
+	docker compose -f docker-compose.dev.yml --env-file .env.dev down
 	@echo "All containers stopped."
 
 # Stop prod
 .PHONY: prod-down
 prod-down:
-	docker compose -f docker-compose.prod.yml down
+	docker compose -f docker-compose.prod.yml --env-file .env.prod down
 	@echo "All containers stopped."
 
 # View logs for all services
@@ -240,3 +243,15 @@ list-buckets:
 rebuild: ensure-lock
 	@echo " Rebuilding all Docker images..."
 	docker compose -f docker-compose.dev.yml build --no-cache
+
+## Configure storage backend (MinIO or AWS S3)
+.PHONY: configure-storage-dev
+configure-storage-dev:
+	@echo "Running storage backend configuration..."
+	@bash scripts/configure_storage.sh
+
+## Configure storage backend for production
+.PHONY: configure-storage-prod
+configure-storage-prod:
+	@echo "Running storage backend configuration for production..."
+	@bash scripts/configure_storage.sh prod
