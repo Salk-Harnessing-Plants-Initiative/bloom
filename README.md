@@ -2,7 +2,7 @@
 
 A comprehensive web application for plant phenotyping data management, built with Next.js, Supabase, and MinIO.
 
-## Quick Start
+## Getting Started
 
 Choose your setup:
 
@@ -13,7 +13,7 @@ Choose your setup:
 
 Before starting, ensure you have:
 
-- Docker and Docker Compose installed
+- Docker installed
 - Python 3.8 or higher
 
 ## Repository Structure
@@ -33,7 +33,7 @@ bloom-v2/
 └── Makefile               # Helper commands
 ```
 
-## Architecture
+## Architecture Overview
 
 ### Development Stack
 - **Frontend**: Next.js (hot reload) - http://localhost:3000
@@ -68,7 +68,7 @@ make reset-storage       # Reset database and storage (DEV only)
 make load-test-data      # Load CSV test data into database
 ```
 
-### Storage Operations
+### Storage (S3 Buckets) Operations
 ```bash
 make upload-images       # Upload test images to MinIO
 make create-bucket BUCKET=name [PUBLIC=true]  # Create new bucket
@@ -95,7 +95,7 @@ The repository includes sample test data:
 Load test data with:
 ```bash
 make load-test-data      # Loads CSV data into database
-make upload-images       # Uploads images to MinIO
+make upload-images       # Uploads images to MinIO/S3
 ```
 
 ## Support

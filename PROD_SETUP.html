@@ -317,7 +317,7 @@
             <section id="prerequisites">
                 <h2>📋 Prerequisites</h2>
                 <ul class="checklist">
-                    <li>Docker and Docker Compose installed</li>
+                    <li>Docker installed</li>
                     <li>Python 3.8 or higher</li>
                     <li>Root or sudo access</li>
                     <li>Domain names configured (optional)</li>
@@ -345,9 +345,18 @@
                 
                 <h3>Step 1: Get Environment Template</h3>
                 <p>Get the production environment template from Notion:</p>
-                <a href="https://www.notion.so/Plan-2734a67a766780e89373c1e1ec687a4d" class="btn" target="_blank">
-                    📄 Get Environment Template from Notion
-                </a>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <a href="https://www.notion.so/Plan-2734a67a766780e89373c1e1ec687a4d" 
+                    class="btn" 
+                    target="_blank">
+                        📄 Get Environment Template from Notion
+                    </a>
+                    ️<p> ➡️ </p>
+                    <a href="https://www.notion.so/Plan-2734a67a766780e89373c1e1ec687a4d" 
+                    target="_blank">
+                        https://www.notion.so/Plan-2734a67a766780e89373c1e1ec687a4d
+                    </a>
+                </div>
                 
                 <p>Copy the <code>.env.prod</code> template content and create the file:</p>
                 <div class="code-block">
@@ -437,11 +446,7 @@
                 <div class="code-block">
                     docker exec db-prod pg_isready -U supabase_admin
                 </div>
-                
-                <div class="alert alert-warning">
-                    ⚠️ <strong>Important:</strong> Make sure you have the Supabase CLI installed : all migrations are applied using the Supabase CLI.
-                </div>
-                
+                                
                 <h3>Apply Migrations</h3>
                 <div class="code-block">
                     make apply-migrations
@@ -502,7 +507,7 @@
                     </tbody>
                 </table>
                 
-                <h3>External Access (via Nginx)</h3>
+                <h3>Acess the application Externally (via Nginx)</h3>
                 <table>
                     <thead>
                         <tr>
