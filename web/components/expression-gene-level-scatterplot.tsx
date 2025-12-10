@@ -29,6 +29,12 @@ export default function ExpressionGeneLevelScatterPlot({ scatterplot, show_scatt
             });
 
             if (!chartRef.current) return;
+            // if there's no data, clear the chart and exit early to avoid
+            // calling .toFixed on undefined values coming from d3.extent
+            if (points.length === 0) {
+                d3.select(chartRef.current).selectAll("*").remove();
+                return;
+            }
             const margin = { top: 20, right: 30, bottom: 30, left: 60 };
             // const container = chartRef.current.getBoundingClientRect();
             const width = 900 - margin.left - margin.right;
@@ -56,7 +62,13 @@ export default function ExpressionGeneLevelScatterPlot({ scatterplot, show_scatt
                     .range([height - 20, 20]);
                 const xAxis = d3.axisBottom(xScale);
                 const yAxis = d3.axisLeft(yScale);
-                const expressionExtent = d3.extent(points, (d) => d.expression_level) as [number, number];
+                let expressionExtent = d3.extent(points, (d) => d.expression_level) as [number, number];
+                if (expressionExtent == null) {
+                    expressionExtent = [0, 0];
+                }
+                // ensure numeric fallbacks if one side is undefined
+                if (expressionExtent[0] == null) expressionExtent[0] = 0;
+                if (expressionExtent[1] == null) expressionExtent[1] = expressionExtent[0] ?? 0;
                 const colorScale = d3.scaleLinear<string>()
                     .domain([
                         expressionExtent[0],
@@ -187,13 +199,13 @@ export default function ExpressionGeneLevelScatterPlot({ scatterplot, show_scatt
                     .style("fill", "black")
                     .text("C1");
 
-                const legendValues = [
-                        expressionExtent[0],
-                        expressionExtent[0] + (expressionExtent[1] - expressionExtent[0]) * 0.25,
-                        expressionExtent[0] + (expressionExtent[1] - expressionExtent[0]) * 0.5,
-                        expressionExtent[0] + (expressionExtent[1] - expressionExtent[0]) * 0.75,
-                        expressionExtent[1]
-                ];
+        const legendValues = [
+            expressionExtent[0],
+            expressionExtent[0] + (expressionExtent[1] - expressionExtent[0]) * 0.25,
+            expressionExtent[0] + (expressionExtent[1] - expressionExtent[0]) * 0.5,
+            expressionExtent[0] + (expressionExtent[1] - expressionExtent[0]) * 0.75,
+            expressionExtent[1]
+        ];
                 const legend = svg.append("g")
                     .attr("class", "color-legend")
                     .attr("transform", `translate(${width - 100}, 50)`);
@@ -219,7 +231,7 @@ export default function ExpressionGeneLevelScatterPlot({ scatterplot, show_scatt
                     .append("text")
                     .attr("x", 30)
                     .attr("y", (d, i) => i * 25 + 15)
-                    .text(d => d.toFixed(2))
+                    .text(d => (d == null ? "0.00" : Number(d).toFixed(2)))
                     .style("font-size", "14px")
                     .style("alignment-baseline", "middle")
                     .style("fill", "black");

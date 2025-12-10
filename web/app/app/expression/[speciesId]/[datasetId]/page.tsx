@@ -60,9 +60,10 @@ function getAccessions(wave: Wave) {
 export default async function Experiment({
   params,
 }: {
-  params: { datasetId: number; speciesId: number };
+  params: Promise<{ datasetId: number; speciesId: number }>;
 }) {
-  const dataset : any = await getDataset(params.datasetId);
+  const { datasetId, speciesId } = await params;
+  const dataset : any = await getDataset(datasetId);
   const datasetName = capitalizeFirstLetter(dataset?.name ?? "");
   const speciesName = dataset?.species?.common_name ?? "";
 
@@ -74,7 +75,7 @@ export default async function Experiment({
 
   mixpanel?.track("Page view", {
     distinct_id: user?.email,
-    url: `/app/expression/${params.speciesId}/${params.datasetId}`,
+    url: `/app/expression/${speciesId}/${datasetId}`,
   });
 
   return (

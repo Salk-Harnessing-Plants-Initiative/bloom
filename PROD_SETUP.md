@@ -121,7 +121,7 @@ This will:
 docker ps
 ```
 
-You should see: `db-prod`, `supabase-minio`, `supabase-storage`, `supabase-kong`, `supabase-auth`, `bloom-web-prod`, `flask-app`
+You should see: `db-prod`, `supabase-minio`, `supabase-storage`, `supabase-kong`, `supabase-auth`, `bloom-web-prod`, `fastapi-app`
 
 ### Check Logs
 
@@ -182,7 +182,7 @@ Replace test data with your actual production data:
 | Storage API | storage:5000 | 5000 | Supabase Storage |
 | Auth API | auth:9999 | 9999 | Authentication |
 | REST API | rest:3000 | 3000 | PostgREST |
-| Flask API | flask-app:5002 | 5002 | Video Generation |
+| FastAPI (video API) | fastapi-app:5002 | 5002 | Video generation service (OpenAPI docs available at /docs) |
 
 ### External Access (via Nginx)
 
@@ -194,7 +194,7 @@ Production services are accessed through Nginx reverse proxy:
 | API | http://yourdomain.com/api | Supabase services |
 | Studio | http://studio.yourdomain.com | Database management |
 | MinIO | http://minio.yourdomain.com | Storage management |
-| Flask | http://flask.yourdomain.com | Video generation API |
+| FastAPI | http://flask.yourdomain.com | Video generation API (OpenAPI docs at /docs) |
 
 
 

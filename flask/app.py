@@ -1,52 +1,11 @@
-import tempfile
-from urllib import request
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
-from config import supabase, s3, s3_bucket_name, jwt_secret
-from supabase import create_client, Client
-from videoWriter import VideoWriter
-import boto3
-import numpy as np
-import os
-import io
-from PIL import Image
-import jwt
+"""
+This file has been removed and replaced by `flask/main.py` (FastAPI).
+If any code still imports `flask.app`, update it to import `flask.main:app`
+or point to the FastAPI `main.py` entrypoint. The Flask shim was intentionally
+removed to eliminate the old Flask footprint.
+"""
 
-app = Flask(__name__, static_folder='static')
-
-# Get domain configuration from environment
-DOMAIN_MAIN = os.environ.get('DOMAIN_MAIN', 'localhost')
-DOMAIN_STUDIO = os.environ.get('DOMAIN_STUDIO', 'studio.localhost')
-DOMAIN_MINIO = os.environ.get('DOMAIN_MINIO', 'minio.localhost')
-DOMAIN_FLASK = os.environ.get('DOMAIN_FLASK', 'flask.localhost')
-
-# CORS Configs to allow requests from all subdomains
-CORS(app, resources={
-    r"/*": {
-        "origins": [
-            f"http://{DOMAIN_MAIN}",
-            f"http://{DOMAIN_MAIN}:3000",  # For dev mode
-            f"https://{DOMAIN_MAIN}",
-            f"http://{DOMAIN_STUDIO}",
-            f"https://{DOMAIN_STUDIO}",
-            f"http://{DOMAIN_MINIO}",
-            f"https://{DOMAIN_MINIO}",
-            f"http://{DOMAIN_FLASK}",
-            f"https://{DOMAIN_FLASK}"
-        ],
-        "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
-        "supports_credentials": True,
-        "max_age": 3600
-    }
-})
-
-decimate = 4
-
-
-# Serve API documentation
-@app.route("/")
-@app.route("/docs")
+raise SystemExit("flask/app.py removed; use flask/main.py")
 def docs():
     return send_from_directory('static', 'docs.html')
 

@@ -157,11 +157,11 @@ services:
       RUN_JANITOR: true
 
   # -------------------
-  # Flask API
+  # FastAPI service
   # -------------------
-  flask-app:
-    container_name: flask-app
-    build: ./flask
+  fastapi-app:
+    container_name: fastapi-app
+    build: ./fastapi
     restart: unless-stopped
     networks:
       - supanet

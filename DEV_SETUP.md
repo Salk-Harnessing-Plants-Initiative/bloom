@@ -129,7 +129,7 @@ You should see containers for:
 - supabase-kong
 - supabase-auth
 - supabase-rest
-- flask-app
+- fastapi-app (runs FastAPI-based video/presigned-URL service)
 
 ### Step 3: Access the Application
 
@@ -215,7 +215,7 @@ make upload-images
 |---------|-----|------|-------------|
 | Bloom Web | http://localhost:3000 | 3000 | Next.js frontend with hot reload |
 | Supabase Studio | http://localhost:55323 | 55323 | Database management UI |
-| Flask API | http://localhost:5002 | 5002 | Video generation API |
+| FastAPI (video API) | http://localhost:5002 | 5002 | Video generation and presigned-URL API (OpenAPI docs at /docs) |
 | MinIO Console | http://localhost:9101 | 9101 | Storage management console |
 | Kong Gateway | http://localhost:8000 | 8000 | API Gateway |
 
@@ -241,15 +241,15 @@ make upload-images
 | /realtime/v1/* | realtime:4000 | Subscriptions |
 | /storage/v1/* | storage:5000 | File storage |
 
-**Flask API** (http://localhost:5002):
+**FastAPI (video API)** (http://localhost:5002):
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | / | API documentation |
+| GET | / | API documentation (FastAPI app serves OpenAPI UI at /docs) |
 | GET | /test | Health check |
 | GET | /list_buckets | List storage buckets |
 | POST | /generate_video | Generate video from scan |
-| POST | /get_presigned_urls | Get presigned URLs |
+| POST | /get_presigned_urls | Get presigned URLs (requires JWT) |
 
 ---
 
@@ -371,17 +371,17 @@ cd web && npm install
 make rebuild-dev-fresh
 ```
 
-### Flask API Errors
+### FastAPI service errors / logs
 
 ```bash
-# Check Flask logs
-docker logs flask-app
+# Check API logs (service runs under the fastapi-app container name)
+docker logs fastapi-app
 
 # Verify Python dependencies
-docker exec flask-app pip list
+docker exec fastapi-app pip list
 
-# Restart Flask
-docker restart flask-app
+# Restart FastAPI service
+docker restart fastapi-app
 
 # Test connection
 curl http://localhost:5002/test
@@ -457,7 +457,7 @@ After successful setup:
 1. Explore the frontend at http://localhost:3000
 2. View database in Studio at http://localhost:55323
 3. Test API endpoints with curl or Postman
-4. Generate a test video with Flask API
+4. Generate a test video with FastAPI service
 5. Start developing your features
 6. See [PROD_SETUP.md](./PROD_SETUP.md)/[PROD_SETUP.html](./PROD_SETUP.html) for production deployment
 
@@ -472,7 +472,7 @@ MINIO_ROOT_USER=supabase
 MINIO_ROOT_PASSWORD=supabase123
 MINIO_DEFAULT_BUCKET=bloom-storage
 
-# Flask
+# FastAPI
 FLASK_SUPABASE_URL=http://kong:8000
 S3_ENDPOINT=http://supabase-minio:9000
 

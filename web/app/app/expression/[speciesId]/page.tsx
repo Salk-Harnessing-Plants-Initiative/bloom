@@ -9,9 +9,10 @@ import ExpressionPage from "@/components/expression-page";
 export default async function Species({
   params,
 }: {
-  params: { speciesId: number };
+  params: Promise<{ speciesId: number }>;
 }) {
-  const species : any = await getSpeciesWithDatasets(params.speciesId);
+  const { speciesId } = await params;
+  const species : any = await getSpeciesWithDatasets(speciesId);
 
   const user = await getUser();
 
@@ -21,7 +22,7 @@ export default async function Species({
 
   mixpanel?.track("Page view", {
     distinct_id: user?.email,
-    url: `/app/expression/${params.speciesId}`,
+    url: `/app/expression/${speciesId}`,
   });
 
   return (

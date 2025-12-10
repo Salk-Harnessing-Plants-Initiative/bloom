@@ -1,6 +1,7 @@
 'use client';
 
 import dynamic from "next/dynamic";
+import { Suspense } from "react";
 
 const JBrowse = dynamic(() => import("@/components/jbrowse"), {
   ssr: false,
@@ -8,5 +9,9 @@ const JBrowse = dynamic(() => import("@/components/jbrowse"), {
 });
 
 export default function JBrowseClient() {
-  return <JBrowse />;
+  return (
+    <Suspense fallback={<div className="p-4">Loading JBrowse...</div>}>
+      <JBrowse />
+    </Suspense>
+  );
 }

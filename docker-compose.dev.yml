@@ -24,9 +24,9 @@ services:
       - supanet
     command: sh -c "apt-get update >/dev/null && apt-get install -y --no-install-recommends socat >/dev/null && socat TCP-LISTEN:8000,fork,reuseaddr TCP:kong:8000 &npm run dev"
 
-  flask-app:
-    container_name: flask-app
-    build: ./flask
+  fastapi-app:
+    container_name: fastapi-app
+    build: ./fastapi
     ports:
       - "5002:5002"
     environment:
@@ -43,7 +43,7 @@ services:
     networks:
       - supanet
     volumes:
-      - ./flask:/app
+      - ./fastapi:/app
     depends_on:
       - kong
 
