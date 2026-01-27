@@ -11,7 +11,8 @@ help:
 	@echo "  make dev-logs         - Tail development logs"
 	@echo "  make reset-storage    - Reset dev DB and storage (destructive)"
 	@echo "  make drop-tables      - Drop all tables in public schema"
-	@echo "  make apply-migrations - Apply database migrations using Supabase CLI"
+	@echo "  make new-migration name=xxx - Create a new migration file"
+	@echo "  make apply-migrations-local - Apply database migrations locally"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
 	@echo "  make upload-images    - Upload test images to MinIO storage"
 	@echo "  make create-bucket    - Create a new S3 bucket (BUCKET=name [PUBLIC=true])"
@@ -143,43 +144,55 @@ reset-storage:
 	
 	@echo "reset-storage completed. Database and storage are now empty."
 
-## Drop all tables in public schema
-.PHONY: drop-tables
-drop-tables:
-	@echo "WARNING: This will DROP all tables in the public schema."
-	@printf "Are you sure you want to continue? Type 'yes' to proceed: " ; read ans ; if [ "$$ans" != "yes" ] ; then echo "Aborted." ; exit 1 ; fi
-	@if ! docker ps | grep -q db-dev; then \
-		echo "Error: Development database not running. Start with 'make dev-up' first."; \
+## Create a new migration file
+## Usage: make new-migration name=create_users_table
+.PHONY: new-migration
+new-migration:
+	@if [ -z "$(name)" ]; then \
+		echo "Error: Please provide a migration name. Usage: make new-migration name=your_migration_name"; \
 		exit 1; \
 	fi
-	@echo "Dropping all tables in public schema..."
-	@docker exec db-dev psql -U supabase_admin -d postgres -c "\
-		DO \$$\$$ \
-		DECLARE \
-			r RECORD; \
-		BEGIN \
-			FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP \
-				EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE'; \
-			END LOOP; \
-		END \$$\$$;"
-	@echo "All tables dropped successfully."
+	@timestamp=$$(date +%Y%m%d%H%M%S); \
+	filename="supabase/migrations/$${timestamp}_$(name).sql"; \
+	echo "-- Migration: $(name)" > $$filename; \
+	echo "-- Created: $$(date)" >> $$filename; \
+	echo "" >> $$filename; \
+	echo "-- Write your SQL migration here" >> $$filename; \
+	echo "" >> $$filename; \
+	echo "Created: $$filename"
 
-## Apply database migrations
-.PHONY: apply-migrations
-apply-migrations:
-	@echo "Applying database migrations..."
+## Apply database migrations locally (only unapplied ones)
+.PHONY: apply-migrations-local
+apply-migrations-local:
+	@echo "Applying database migrations to local development database..."
 	@if ! docker ps | grep -q db-dev; then \
 		echo "Error: Development database not running. Start with 'make dev-up' first."; \
 		exit 1; \
 	fi
-	@echo "Applying migrations from supabase/migrations/ directory..."
-	@for file in $$(ls -1 supabase/migrations/*.sql 2>/dev/null | sort); do \
+	@echo "Creating migrations tracking table if not exists..."
+	@PGPASSWORD=postgres psql -h localhost -p 5432 -U supabase_admin -d postgres -c \
+		"CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT NOW());" > /dev/null 2>&1
+	@echo "Checking for unapplied migrations..."
+	@applied=0; \
+	for file in $$(ls -1 supabase/migrations/*.sql 2>/dev/null | sort); do \
 		if [ -f "$$file" ]; then \
-			echo "Applying: $$(basename $$file)"; \
-			PGPASSWORD=postgres psql -h localhost -p 5432 -U supabase_admin -d postgres -f "$$file" 2>&1 | grep -v "already exists" | grep -v "does not exist, skipping" || true; \
+			filename=$$(basename "$$file"); \
+			is_applied=$$(PGPASSWORD=postgres psql -h localhost -p 5432 -U supabase_admin -d postgres -tAc \
+				"SELECT 1 FROM _migrations WHERE name = '$$filename';" 2>/dev/null); \
+			if [ -z "$$is_applied" ]; then \
+				echo "Applying: $$filename"; \
+				PGPASSWORD=postgres psql -h localhost -p 5432 -U supabase_admin -d postgres -f "$$file" 2>&1 | grep -v "already exists" | grep -v "does not exist, skipping" || true; \
+				PGPASSWORD=postgres psql -h localhost -p 5432 -U supabase_admin -d postgres -c \
+					"INSERT INTO _migrations (name) VALUES ('$$filename');" > /dev/null 2>&1; \
+				applied=$$((applied + 1)); \
+			fi \
 		fi \
-	done
-	@echo "All migrations applied successfully."
+	done; \
+	if [ $$applied -eq 0 ]; then \
+		echo "No new migrations to apply."; \
+	else \
+		echo "Applied $$applied migration(s) successfully."; \
+	fi
 
 ## Load test data into development database
 .PHONY: load-test-data

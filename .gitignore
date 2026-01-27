@@ -78,4 +78,4 @@ docker-compose.prod copy.yml
 DOCUMENTATION.md
 TROUBLESHOOTING.md
 openspec/
-prompts/
+prompts/.claude/

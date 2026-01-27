@@ -169,16 +169,38 @@ export default function ExpressionGeneLevel({ file_id }: { file_id: number }) {
                         if (storageData) {
                             const fileText = await storageData.text();
                             const jsonData = JSON.parse(fileText);
-                            const cell_ids_list: number[] = jsonData.map((cell: Record<string, number>) => Number(Object.keys(cell)[0]) - 1);
+                            // jsonData is an object {cell_id: expression_value, ...} not an array
+                            // Extract cell IDs from object keys
+                            const cell_ids_list: number[] = Object.keys(jsonData).map((cellId) => Number(cellId));
 
-                            const { data: clusterData, error: clusterError } = await supabase
-                                .from("scrna_cells")
-                                .select("cluster_id, barcode, cell_number, x, y")
-                                .eq("dataset_id", file_id)
-                                .in("cell_number", cell_ids_list);
+                            // Supabase has a URL length limit for .in() queries, so we may need to batch
+                            // For large gene counts files (many cells), fetch all cells and filter client-side
+                            let clusterData: any[] | null = null;
+                            let clusterError: any = null;
+
+                            if (cell_ids_list.length > 1000) {
+                                // For large sets, fetch all cells for dataset and filter
+                                const result = await supabase
+                                    .from("scrna_cells")
+                                    .select("cluster_id, barcode, cell_number, x, y")
+                                    .eq("dataset_id", file_id);
+                                clusterError = result.error;
+                                if (result.data) {
+                                    const cellIdSet = new Set(cell_ids_list);
+                                    clusterData = result.data.filter(cell => cellIdSet.has(cell.cell_number));
+                                }
+                            } else {
+                                const result = await supabase
+                                    .from("scrna_cells")
+                                    .select("cluster_id, barcode, cell_number, x, y")
+                                    .eq("dataset_id", file_id)
+                                    .in("cell_number", cell_ids_list);
+                                clusterData = result.data;
+                                clusterError = result.error;
+                            }
 
                             if (clusterError) {
-                                console.error(`Error fetching cluster data for gene`, clusterError);
+                                console.error(`Error fetching cluster data for gene:`, clusterError);
                                 continue;
                             }
                             const geneInfo = geneName[0] as { id: number; gene_number: number; gene_name: string };
@@ -231,8 +253,22 @@ export default function ExpressionGeneLevel({ file_id }: { file_id: number }) {
                         //get the barcode and cluster id for the cells
                         const fileText = await storageData.text();
                         const jsonData = JSON.parse(fileText);
-                        const cell_ids_list = jsonData.map((cell: { key: number, value: number }) => Number(Object.keys(cell)[0]) - 1);
-                        const { data: clusterData, error: clusterError } = await supabase.from("scrna_cells").select("cluster_id, barcode, cell_number, x, y").eq("dataset_id", file_id).in("cell_number", cell_ids_list);
+                        // jsonData is an object {cell_id: expression_value, ...} not an array
+                        const cell_ids_list = Object.keys(jsonData).map((cellId) => Number(cellId));
+
+                        // Handle large cell ID lists that exceed Supabase URL limits
+                        let clusterData: any[] | null = null;
+                        if (cell_ids_list.length > 1000) {
+                            const result = await supabase.from("scrna_cells").select("cluster_id, barcode, cell_number, x, y").eq("dataset_id", file_id);
+                            if (result.data) {
+                                const cellIdSet = new Set(cell_ids_list);
+                                clusterData = result.data.filter(cell => cellIdSet.has(cell.cell_number));
+                            }
+                        } else {
+                            const result = await supabase.from("scrna_cells").select("cluster_id, barcode, cell_number, x, y").eq("dataset_id", file_id).in("cell_number", cell_ids_list);
+                            clusterData = result.data;
+                        }
+
                         setInputArray((prevValues) => ({
                             ...prevValues,
                             [gene_name || '']: {

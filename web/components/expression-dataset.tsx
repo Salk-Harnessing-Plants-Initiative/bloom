@@ -3,6 +3,9 @@
 import { Database } from "@/lib/database.types";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { useState, useEffect, useRef } from "react";
+import { Canvas, useFrame } from "@react-three/fiber";
+import { OrbitControls } from "@react-three/drei";
+import * as THREE from "three";
 import createREGL from "regl";
 
 type SCRNAGene = {
@@ -67,6 +70,8 @@ export default function ExpressionDataset({ name }: { name: string }) {
   const [selectedCluster, setSelectedCluster] = useState<number | null>(null);
   const [selectedGene, setSelectedGene] = useState<string | null>(null);
   const [counts, setCounts] = useState<any | null>({});
+  const [is3D, setIs3D] = useState<boolean>(false);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -77,9 +82,9 @@ export default function ExpressionDataset({ name }: { name: string }) {
           "*, scrna_genes(gene_name), scrna_cells(x, y, cluster_id, cell_number)"
         )
         .eq("name", name)
-        .single<{ 
-          scrna_genes: SCRNAGene[]; 
-          scrna_cells: SCRNACell[]; 
+        .single<{
+          scrna_genes: SCRNAGene[];
+          scrna_cells: SCRNACell[];
         }>()
         .then((data) => {
           const dataset = data?.data!;
@@ -129,7 +134,6 @@ export default function ExpressionDataset({ name }: { name: string }) {
   });
 
   // Define points
-
   const xAbsMax =
     cells?.reduce(
       (acc, cell) => (Math.abs(cell.x!) > acc ? Math.abs(cell.x!) : acc),
@@ -143,11 +147,7 @@ export default function ExpressionDataset({ name }: { name: string }) {
 
   const scale = 0.9 / Math.max(xAbsMax, yAbsMax);
 
-  console.log(Math.max(xAbsMax, yAbsMax));
-
   const position = cells?.map((cell) => [cell.x! * scale, cell.y! * scale]);
-
-  console.log(cells);
 
   // Define colors
   const clusterColor = cells?.map((cell) => {
@@ -160,56 +160,8 @@ export default function ExpressionDataset({ name }: { name: string }) {
       : [0.9, 0.9, 0.9, 1.0];
   });
 
-  const geneColor = cells?.map((cell) => {
-    // const colorIdx = cell.cluster_id! % clusterColors.length;
-    // const color = clusterColors[colorIdx];
-    return counts !== null && cell.cell_number!.toString() in counts
-      ? [
-          0.9,
-          Math.max(0.9 - 0.3 * counts[cell.cell_number!], 0),
-          Math.max(0.9 - 0.3 * counts[cell.cell_number!], 0),
-          1,
-        ]
-      : [0.9, 0.9, 0.9, 1.0];
-  });
-
-  // Define sizes
-  const clusterSize = cells?.map((cell) => {
-    return selectedCluster !== null && cell.cluster_id === selectedCluster
-      ? 4.0
-      : 2.0;
-  });
-
-  const geneSize = cells?.map((cell) => {
-    return counts !== null && cell.cell_number!.toString() in counts
-      ? 4.0
-      : 2.0;
-  });
-
-  // indices of cells with the selected gene
-  const geneIndices = cells
-    ?.map((cell) => cell.cell_number!)
-    .filter((cellNumber) => cellNumber.toString() in counts);
-  // indices of cells without the selected gene
-  const nonGeneIndices = cells
-    ?.map((cell) => cell.cell_number!)
-    .filter((cellNumber) => !(cellNumber.toString() in counts));
-
-  // recombined positions, colors, and sizes
-  const positionsRecombined = position
-    ? recombine(position!, geneIndices!, nonGeneIndices!)
-    : [];
-  const colorsRecombined = position
-    ? recombine(geneColor!, geneIndices!, nonGeneIndices!)
-    : [];
-  const sizesRecombined = position
-    ? recombine(geneSize!, geneIndices!, nonGeneIndices!)
-    : [];
-
   return (
     <div>
-      {/* autocomplete selectedGene using genes.gene_name */}
-      {/* if text field is a prefix of anything in genes.gene_name, display a list */}
       {genes ? (
         <div>
           <div className="text-xs font-bold">Gene ID</div>
@@ -219,29 +171,50 @@ export default function ExpressionDataset({ name }: { name: string }) {
               setSelectedGene(gene);
             }}
           />
+
+          {/* Controls */}
+          <div className="flex gap-4 mt-4 mb-4">
+            <button
+              onClick={() => setIs3D(!is3D)}
+              className="px-4 py-2 rounded-md border border-gray-300 hover:bg-gray-100 transition-colors"
+            >
+              {is3D ? "Switch to 2D" : "Switch to 3D"}
+            </button>
+            <button
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className="px-4 py-2 rounded-md border border-gray-300 hover:bg-gray-100 transition-colors"
+            >
+              {isDarkMode ? "Light Mode" : "Dark Mode"}
+            </button>
+          </div>
+
+          {/* UMAP Visualization */}
           <div className="flex flex-row mt-4">
-            <div className="mr-2">
+            <div className="mr-4">
               {cells ? (
-                <ExpressionView
-                  position={positionsRecombined!}
-                  size={sizesRecombined!}
-                  color={colorsRecombined!}
-                />
+                is3D ? (
+                  <UMAPView3D
+                    cells={cells}
+                    position={position!}
+                    color={clusterColor!}
+                    scale={scale}
+                    isDarkMode={isDarkMode}
+                    selectedCluster={selectedCluster}
+                  />
+                ) : (
+                  <UMAPView2D
+                    position={position!}
+                    color={clusterColor!}
+                    isDarkMode={isDarkMode}
+                    selectedCluster={selectedCluster}
+                  />
+                )
               ) : (
                 <div>Loading...</div>
               )}
             </div>
-            <div>
-              {cells ? (
-                <ExpressionView
-                  position={position!}
-                  size={clusterSize!}
-                  color={clusterColor!}
-                />
-              ) : (
-                <div>Loading...</div>
-              )}
-            </div>
+
+            {/* Cluster Legend */}
             {numClusters ? (
               <div className="grid grid-rows-10 grid-flow-col ml-2">
                 {clusterColors.slice(0, numClusters ?? -1).map((color, i) => (
@@ -287,41 +260,23 @@ export default function ExpressionDataset({ name }: { name: string }) {
       ) : (
         <div>Loading...</div>
       )}
-
-      {/* <div>
-        {genes?.map((gene) => (
-          <div key={gene.id}>{gene.gene_name}</div>
-        ))}
-      </div> */}
-      {/* <div>
-        {cells?.map((cell) => (
-          <div key={cell.id}>
-            <div>{cell.barcode}</div>
-            <div>{cell.x}</div>
-            <div>{cell.y}</div>
-          </div>
-        ))}
-      </div> */}
     </div>
   );
 }
 
-function recombine(arr: any[], indices1: number[], indices2: number[]) {
-  return indices1
-    .map((index) => arr[index])
-    .concat(indices2.map((index) => arr[index]));
-}
-
-function ExpressionView({
+// 2D UMAP View using REGL
+function UMAPView2D({
   position,
   color,
-  size,
+  isDarkMode,
+  selectedCluster,
 }: {
   position: number[][];
   color: number[][];
-  size: number[];
+  isDarkMode: boolean;
+  selectedCluster: number | null;
 }) {
-  const reglContainerRef = useRef(null);
+  const reglContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     var regl: createREGL.Regl | null = null;
@@ -329,6 +284,8 @@ function ExpressionView({
       regl = createREGL({
         container: reglContainerRef.current,
       });
+
+      const bgColor = isDarkMode ? [0.1, 0.1, 0.1, 1] : [1, 1, 1, 1];
 
       // Define the draw command
       const drawPoints = regl({
@@ -343,18 +300,16 @@ function ExpressionView({
             precision mediump float;
             attribute vec2 position;
             attribute vec4 color;
-            attribute float size;
             varying vec4 fragColor;
             void main() {
-                gl_PointSize = size;
+                gl_PointSize = ${selectedCluster !== null ? 4.0 : 3.0};
                 gl_Position = vec4(position, 0, 1);
-                fragColor = color; // Pass color to the fragment shader
+                fragColor = color;
             }`,
 
         attributes: {
           position: position,
           color: color,
-          size: size,
         },
 
         count: position.length,
@@ -365,7 +320,7 @@ function ExpressionView({
       // Render the points
       regl?.frame(() => {
         regl?.clear({
-          color: [0, 0, 0, 0],
+          color: bgColor,
           depth: 1,
         });
 
@@ -377,14 +332,105 @@ function ExpressionView({
     return () => {
       regl && regl.destroy();
     };
-  }, [position, color, size]);
+  }, [position, color, isDarkMode, selectedCluster]);
 
   return (
     <div
       ref={reglContainerRef}
-      className="border border-1 rounded-md"
-      style={{ width: "300px", height: "300px" }}
+      className={`border rounded-md ${isDarkMode ? 'border-gray-700' : 'border-gray-300'}`}
+      style={{ width: "600px", height: "600px" }}
     ></div>
+  );
+}
+
+// 3D UMAP View using Three.js
+function UMAPView3D({
+  cells,
+  position,
+  color,
+  scale,
+  isDarkMode,
+  selectedCluster,
+}: {
+  cells: SCRNACell[];
+  position: number[][];
+  color: number[][];
+  scale: number;
+  isDarkMode: boolean;
+  selectedCluster: number | null;
+}) {
+  return (
+    <div
+      className={`border rounded-md ${isDarkMode ? 'border-gray-700' : 'border-gray-300'}`}
+      style={{ width: "600px", height: "600px" }}
+    >
+      <Canvas camera={{ position: [0, 0, 3], fov: 50 }}>
+        {isDarkMode ? (
+          <color attach="background" args={[0.1, 0.1, 0.1]} />
+        ) : (
+          <color attach="background" args={[1, 1, 1]} />
+        )}
+        <ambientLight intensity={0.5} />
+        <pointLight position={[10, 10, 10]} />
+        <RotatingPoints
+          cells={cells}
+          position={position}
+          color={color}
+          scale={scale}
+          selectedCluster={selectedCluster}
+        />
+        <OrbitControls enableDamping dampingFactor={0.05} />
+      </Canvas>
+    </div>
+  );
+}
+
+// Rotating points component for 3D view
+function RotatingPoints({
+  cells,
+  position,
+  color,
+  scale,
+  selectedCluster,
+}: {
+  cells: SCRNACell[];
+  position: number[][];
+  color: number[][];
+  scale: number;
+  selectedCluster: number | null;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+
+  // Rotate the entire group
+  useFrame((state, delta) => {
+    if (groupRef.current) {
+      groupRef.current.rotation.y += delta * 0.2;
+    }
+  });
+
+  return (
+    <group ref={groupRef}>
+      {cells.map((cell, i) => {
+        const x = position[i][0];
+        const y = position[i][1];
+        // Add z-coordinate variation for 3D effect (can be random or based on cluster)
+        const z = (Math.sin(x * 3) + Math.cos(y * 3)) * 0.1;
+
+        const [r, g, b, a] = color[i];
+
+        return (
+          <mesh key={i} position={[x, y, z]}>
+            <sphereGeometry args={[0.015, 8, 8]} />
+            <meshStandardMaterial
+              color={new THREE.Color(r, g, b)}
+              emissive={new THREE.Color(r, g, b)}
+              emissiveIntensity={0.5}
+              toneMapped={false}
+            />
+          </mesh>
+        );
+      })}
+    </group>
   );
 }
 
@@ -402,7 +448,7 @@ function Autocomplete({
 
   useEffect(() => {
     setFilteredValues(
-      values.filter((value) => value.startsWith(input)) //.slice(0, 20)
+      values.filter((value) => value.startsWith(input))
     );
   }, [input, values]);
 
@@ -440,7 +486,7 @@ function Autocomplete({
         className="border border-1 rounded-md p-2 w-60"
       />
       {filteredValues && focused && (
-        <div className="border border-1 rounded-md p-1 w-60 absolute bg-white max-h-80 overflow-scroll">
+        <div className="border border-1 rounded-md p-1 w-60 absolute bg-white max-h-80 overflow-scroll z-10">
           {filteredValues.map((value, index) => (
             <div
               key={value}

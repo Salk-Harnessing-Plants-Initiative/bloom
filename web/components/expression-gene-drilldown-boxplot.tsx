@@ -96,6 +96,12 @@ export default function GeneDrillDownBoxPots({ BoxPlotData, geneName }: { BoxPlo
             .append("g")
             .attr("transform", `translate(${margin.left},${margin.top})`);
 
+        // Helper to truncate labels
+        const truncateLabel = (label: string, maxLen: number = 20) => {
+            if (label.length <= maxLen) return label;
+            return label.substring(0, maxLen - 3) + '...';
+        };
+
         const x = d3.scaleBand()
             .range([0, width])
             .domain(BoxPlotData.filter((d): d is PlotStats => d !== undefined).map(d => d!.key))
@@ -104,7 +110,7 @@ export default function GeneDrillDownBoxPots({ BoxPlotData, geneName }: { BoxPlo
         svg.append("g")
             .attr("class", "x-axis")
             .attr("transform", `translate(0,${height})`)
-            .call(d3.axisBottom(x));
+            .call(d3.axisBottom(x).tickFormat(d => truncateLabel(String(d), 20)));
 
         const min_values = BoxPlotData.map(d => d!.value.min);
         const max_values = BoxPlotData.map(d => d!.value.max);
@@ -130,13 +136,27 @@ export default function GeneDrillDownBoxPots({ BoxPlotData, geneName }: { BoxPlo
             .text("Counts");
 
         svg.selectAll(".x-axis text")
-            .style("text-anchor", "middle")
-            .style("font-size", "20px")
-            .style("overflow", "hidden")
-            .style("white-space", "nowrap")
-            .style("text-overflow", "ellipsis")
-            .attr("dy", "0.5em")
-            .attr("transform", "rotate(-20)");
+            .style("text-anchor", "end")
+            .style("font-size", "12px")
+            .style("cursor", "pointer")
+            .attr("dx", "-0.5em")
+            .attr("dy", "0.3em")
+            .attr("transform", "rotate(-35)")
+            .each(function(d) {
+                const fullLabel = String(d);
+                const text = d3.select(this);
+                if (fullLabel.length > 20) {
+                    text.on("mouseover", function(event) {
+                        tooltip.style("visibility", "visible")
+                            .html(`<strong>${fullLabel}</strong>`)
+                            .style("left", `${event.pageX + 10}px`)
+                            .style("top", `${event.pageY - 20}px`);
+                    })
+                    .on("mouseout", function() {
+                        tooltip.style("visibility", "hidden");
+                    });
+                }
+            });
 
         svg.selectAll("boxPlots")
             .data(BoxPlotData)

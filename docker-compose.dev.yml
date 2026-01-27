@@ -30,20 +30,29 @@ services:
     ports:
       - "5002:5002"
     environment:
-      - FLASK_ENV=development
+      # FastAPI environment
+      - FASTAPI_ENV=development
+      # Supabase configuration
       - SUPABASE_URL=${FLASK_SUPABASE_URL}
       - SUPABASE_KEY=${SERVICE_ROLE_KEY}
       - JWT_SECRET=${JWT_SECRET}
+      # S3/MinIO configuration
       - S3_BUCKET_NAME=${MINIO_DEFAULT_BUCKET}
       - S3_IMAGES_PATH=images
       - AWS_REGION=${MINO_S3_STORAGE_REGION}
       - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
       - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
       - S3_ENDPOINT=${MINIO_STORAGE_S3_ENDPOINT}
+      # OpenAI API Key for LangChain agent
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Optional: QWEN local LLM server
+      - QWEN_API=http://host.docker.internal:9000/generate
     networks:
       - supanet
     volumes:
       - ./fastapi:/app
+      - ./bloommcp:/app/bloommcp
+      - ./langchain:/app/langchain
     depends_on:
       - kong
 
@@ -466,6 +475,21 @@ services:
   #     ]
   #   security_opt:
   #     - "label=disable"
+
+  swagger-ui:
+    container_name: swagger-ui-dev
+    image: swaggerapi/swagger-ui:latest
+    restart: unless-stopped
+    networks:
+      - supanet
+    ports:
+      - "8085:8080"
+    environment:
+      SWAGGER_JSON_URL: http://localhost:8000/rest/v1/?apikey=${ANON_KEY}
+      BASE_URL: /
+      DOC_EXPANSION: list
+      FILTER: true
+      TRY_IT_OUT_ENABLED: true
 
   supavisor:
     container_name: supabase-pooler

@@ -130,22 +130,21 @@ export default function ExpressionGeneLevelBoxPlot({ input_array, gene_name, gen
 
             Object.values(input_array).forEach((geneData) => {
                 const { gene_name, counts, data } = geneData;
-                counts.forEach((item: Record<number, number>) => {
-                    Object.entries(item).forEach(([key, value]: [string, number]) => {
-                        const clusterData = data?.find((cell) => cell.cell_number === (Number(key) - 1));
-                        const barcode = clusterData?.barcode;
-                        if (!result[gene_name]) {
-                            result[gene_name] = []
-                        }
-                        result[gene_name].push({
-                            gene_name: gene_name,
-                            cluster_id: (clusterData?.cluster_id)?.toString() ?? null,
-                            barcode: barcode ?? null,
-                            cell_number: Number(key) - 1,
-                            x: clusterData?.x ?? null,
-                            y: clusterData?.y ?? null,
-                            value: value
-                        });
+                // counts is now an object {cellId: expressionValue, ...} not an array
+                Object.entries(counts).forEach(([cellId, value]: [string, any]) => {
+                    const clusterData = data?.find((cell) => cell.cell_number === Number(cellId));
+                    const barcode = clusterData?.barcode;
+                    if (!result[gene_name]) {
+                        result[gene_name] = []
+                    }
+                    result[gene_name].push({
+                        gene_name: gene_name,
+                        cluster_id: (clusterData?.cluster_id)?.toString() ?? null,
+                        barcode: barcode ?? null,
+                        cell_number: Number(cellId),
+                        x: clusterData?.x ?? null,
+                        y: clusterData?.y ?? null,
+                        value: value as number
                     });
                 });
             });

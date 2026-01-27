@@ -122,31 +122,27 @@ export default function ExpressionPage({ specieslist }: ExpressionPageProps) {
 
             <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
                 <Tabs value={value} onChange={handleChange} aria-label="basic tabs example">
-                    <Tab label="QC and Raw Counts Info" {...a11yProps(0)} />
-                    <Tab label="UMAP" {...a11yProps(1)} />
-                    <Tab label="Gene Expression Explorer" {...a11yProps(2)} />
-                    <Tab label="Correlation" {...a11yProps(3)} />
-                    <Tab label="Differential Expression" {...a11yProps(4)} />
-                    <Tab label="Download Files" {...a11yProps(5)} />
+                    <Tab label="UMAP" {...a11yProps(0)} />
+                    <Tab label="Gene Expression Explorer" {...a11yProps(1)} />
+                    <Tab label="Correlation" {...a11yProps(2)} />
+                    <Tab label="Differential Expression" {...a11yProps(3)} />
+                    <Tab label="Download Files" {...a11yProps(4)} />
                 </Tabs>
             </Box>
 
             <CustomTabPanel value={value} index={0}>
-                {results && < RawCountsQC file_id={file_id} file_name={file_name} />}
-            </CustomTabPanel> 
-            <CustomTabPanel value={value} index={1}>
                 {results && <ExportScatterPlot file_id={file_id} file_name={file_name} />}
             </CustomTabPanel>
-            <CustomTabPanel value={value} index={2}>
+            <CustomTabPanel value={value} index={1}>
                 {results && <ExpressionGeneLevel file_id={file_id} />}
             </CustomTabPanel>
-            <CustomTabPanel value={value} index={3}>
+            <CustomTabPanel value={value} index={2}>
                 {results && <BasicTabs file_id={file_id} />}
-            </CustomTabPanel> 
-            <CustomTabPanel value={value} index={4}>
+            </CustomTabPanel>
+            <CustomTabPanel value={value} index={3}>
                 {results && <DifferentialExpressionAnalysis file_id={file_id} />}
             </CustomTabPanel>
-            <CustomTabPanel value={value} index={5}>
+            <CustomTabPanel value={value} index={4}>
                 {results && <ExpressonDownloadFiles file_id={file_id} file_name={file_name} />}
             </CustomTabPanel> 
 

@@ -23,6 +23,8 @@
     "@mui/material": "^7.3.4",
     "@mui/system": "^7.3.3",
     "@mui/x-data-grid": "^8.17.0",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.5.0",
     "@salk-hpi/bloom-js": "file:../packages/bloom-js",
     "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "latest",
@@ -43,6 +45,7 @@
     "regl": "^2.1.0",
     "sharp": "^0.34.4",
     "supabase": "^2.53.6",
+    "three": "^0.182.0",
     "typescript": "^5.1.6",
     "uuid": "^13.0.0"
   },

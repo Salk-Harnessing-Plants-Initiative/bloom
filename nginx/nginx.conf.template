@@ -222,6 +222,7 @@ http {
   }
 
   # -----------------
+  # -----------------
   # FastAPI service (subdomain)
   # -----------------
   server {
@@ -246,7 +247,7 @@ http {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
         
-        # Pass through CORS headers from Flask
+        # Pass through CORS headers from FastAPI
         proxy_pass_header Access-Control-Allow-Origin;
         proxy_pass_header Access-Control-Allow-Methods;
         proxy_pass_header Access-Control-Allow-Headers;

@@ -157,7 +157,8 @@ services:
       RUN_JANITOR: true
 
   # -------------------
-  # FastAPI service
+  # -------------------
+  # FastAPI service (replaced Flask)
   # -------------------
   fastapi-app:
     container_name: fastapi-app
@@ -168,20 +169,30 @@ services:
     expose:
       - "5002"
     environment:
-      - FLASK_ENV=production
+      # FastAPI environment
+      - FASTAPI_ENV=production
+      # Supabase configuration
       - SUPABASE_URL=${FLASK_SUPABASE_URL}
       - SUPABASE_KEY=${SERVICE_ROLE_KEY}
       - JWT_SECRET=${JWT_SECRET}
+      # S3/MinIO configuration
       - S3_BUCKET_NAME=${MINIO_DEFAULT_BUCKET}
       - S3_IMAGES_PATH=images
       - AWS_REGION=${MINIO_S3_STORAGE_REGION}
       - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
       - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
       - S3_ENDPOINT=${MINIO_STORAGE_S3_ENDPOINT}
+      # Domain configuration
       - DOMAIN_MAIN=${DOMAIN_MAIN}
       - DOMAIN_STUDIO=${DOMAIN_STUDIO}
       - DOMAIN_MINIO=${DOMAIN_MINIO}
-      - DOMAIN_FLASK=${DOMAIN_FLASK}
+      - DOMAIN_FASTAPI=${DOMAIN_FLASK}
+      # OpenAI API Key for LangChain agent
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ./fastapi:/app
+      - ./bloommcp:/app/bloommcp
+      - ./langchain:/app/langchain
     depends_on:
       - kong
       - supabase-minio
