@@ -1,0 +1,31 @@
+[Unit]
+Description=Bloom Video Generation Worker
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=bloom
+Group=bloom
+WorkingDirectory=/opt/bloom/services/video-worker
+ExecStart=/opt/bloom/venv/bin/python video_listener.py
+Restart=always
+RestartSec=5
+
+Environment=DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
+Environment=S3_ENDPOINT=http://localhost:9100
+Environment=S3_BUCKET_NAME=bloom-storage
+Environment=AWS_ACCESS_KEY_ID=supabase
+Environment=AWS_SECRET_ACCESS_KEY=supabase123
+Environment=AWS_REGION=us-east-1
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=video-worker
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
