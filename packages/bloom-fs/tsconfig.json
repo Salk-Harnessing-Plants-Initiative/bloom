@@ -5,15 +5,15 @@
     "isolatedModules": true,
     "module": "commonjs",
     "moduleResolution": "node",
-    "outDir": "dist", 
-    "rootDir": "src", 
+    "outDir": "dist",
+    "rootDir": "src",
     "preserveWatchOutput": true,
     "skipLibCheck": true,
     "strict": true,
-    "declaration": true, 
+    "declaration": true,
     "target": "es2019",
     "typeRoots": ["./node_modules/@types"]
   },
-  "include": ["src/**/*"], 
+  "include": ["src/**/*"],
   "exclude": ["node_modules"]
 }

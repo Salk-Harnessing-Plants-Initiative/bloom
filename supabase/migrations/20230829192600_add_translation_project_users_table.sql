@@ -21,7 +21,7 @@ USING (
     SELECT translation_project_id
     FROM translation_project_users
     WHERE user_id = auth.uid()
-  )    
+  )
 );
 
 

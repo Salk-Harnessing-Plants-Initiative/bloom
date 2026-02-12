@@ -12,4 +12,3 @@ CREATE POLICY "Authenticated users can update gene_candidates"
 ON gene_candidates AS permissive
 FOR UPDATE TO authenticated
 USING (true);
-
