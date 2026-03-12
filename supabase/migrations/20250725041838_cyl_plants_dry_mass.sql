@@ -1,7 +1,7 @@
 --adding drymass information to the metadata column
 CREATE TABLE IF NOT EXISTS public.cyl_plants_metadata (
   id uuid primary key default gen_random_uuid(),
-  group_id text, 
+  group_id text,
   packet text,
   plating_date date,
   position text,

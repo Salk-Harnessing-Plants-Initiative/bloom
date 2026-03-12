@@ -14,6 +14,7 @@
 
 # production
 /build
+dist/
 
 # misc
 .DS_Store
@@ -29,6 +30,7 @@ yarn-error.log*
 .env
 **/.env
 **/.env.*
+.env.prod
 
 # vercel
 .vercel
@@ -42,12 +44,23 @@ __pycache__/
 *.pyc
 *.pyo
 
+.venv
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# project-specific
 /extra
-dist/
 volumes/
 
 # minio
 minio/data/
+minio_data/
 
 # temporary/copy files
 nginx/copy.config
@@ -68,3 +81,4 @@ scripts/compute_de.py
 scripts/generate_KEYS
 *.bak
 
+prompts/.claude/

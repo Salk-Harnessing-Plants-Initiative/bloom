@@ -1,4 +1,4 @@
-export { initCylMetadata } from "./cyl/init";
+export { initCylMetadata } from './cyl/init'
 
 export {
   getImageMetadata,
@@ -7,28 +7,28 @@ export {
   uploadImages,
   getPlantAccessions,
   concurrentMap,
-} from "./cyl/metadata";
+} from './cyl/metadata'
 
-export type { CylImageMetadata } from "./cyl/metadata";
+export type { CylImageMetadata } from './cyl/metadata'
 
 export {
   getAnonCredentials,
   getCredentialsPath,
   loadCredentials,
   saveCredentials,
-} from "./supabase/credentials";
+} from './supabase/credentials'
 
 export {
   createSupabaseClient,
   testCredentials,
   getAvailableProfiles,
-} from "./supabase/create-client";
- 
-export { saveToCSV, processCSV } from "./utils";
+} from './supabase/create-client'
+
+export { saveToCSV, processCSV } from './utils'
 
 export {
   uploadSCRNAdata,
   uploadScRNAGenedata,
   uploadScRNACells,
   uploadScRNACounts,
-} from "./scrna/metadata";
+} from './scrna/metadata'

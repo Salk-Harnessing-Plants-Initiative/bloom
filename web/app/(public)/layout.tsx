@@ -1,4 +1,3 @@
-
 import '@/styles/globals.css'
 
 import Link from 'next/link'
@@ -12,7 +11,6 @@ export const metadata = {
 }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-
   const user = await getUser()
 
   if (user) {
@@ -21,10 +19,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
   return (
     <main className="min-h-screen flex flex-col bg-stone-100">
-      <div className='absolute left-12 top-8 align-middle'>
-        <Link href='/'><img src="/logo.png" className="h-12 inline" /></Link>
+      <div className="absolute left-12 top-8 align-middle">
+        <Link href="/">
+          <img src="/logo.png" className="h-12 inline" />
+        </Link>
       </div>
-      <div className='absolute right-12 top-8'>
+      <div className="absolute right-12 top-8">
         <div className="flex text-sm">
           <span className="ml-auto">
             <Link href="/login" className="hover:underline">
@@ -33,9 +33,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           </span>
         </div>
       </div>
-      <div className='mt-20 flex flex-col'>
-        {children}
-      </div>
+      <div className="mt-20 flex flex-col">{children}</div>
     </main>
   )
 }
