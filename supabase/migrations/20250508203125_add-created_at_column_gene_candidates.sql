@@ -1,0 +1,2 @@
+ALTER TABLE gene_candidates
+ADD COLUMN created_at TIMESTAMP NOT NULL DEFAULT NOW();

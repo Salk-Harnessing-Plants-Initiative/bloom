@@ -1,0 +1,18 @@
+.container {
+    position: relative;
+}
+
+.hover-target {
+    cursor: pointer;
+}
+
+.reveal-on-hover {
+    position: absolute;
+    left: 100%; /* Position to the right of the hover-target */
+    top: 0;
+    display: none; /* Hide initially */
+}
+
+.container:hover .reveal-on-hover {
+    display: block; /* Show on hover */
+}

@@ -1,0 +1,2 @@
+id,plant_id,date_scanned,scanner_id,phenotyper_id,plant_age_days,uploaded_at,scientist_id,cyl_camera_settings_id
+1,1,2025-10-26T00:00:00Z,1,57,10,2025-10-26T00:00:00Z,1,f47ac10b-58cc-4372-a567-0e02b2c3d479

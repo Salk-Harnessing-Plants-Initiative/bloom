@@ -1,0 +1,1 @@
+ALTER TABLE cyl_plants ADD COLUMN accession_id BIGINT REFERENCES accessions(id);
