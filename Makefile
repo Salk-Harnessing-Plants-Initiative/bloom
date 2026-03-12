@@ -38,10 +38,14 @@ dev-up:
 
 .PHONY: rebuild-dev-fresh
 rebuild-dev-fresh:
+	@echo "Stopping dev stack if running..."
+	@docker compose -f docker-compose.dev.yml --env-file .env.dev down -v 2>/dev/null || true
+	@echo "Pruning unused volumes..."
+	@docker volume prune -f
 	@echo "Removing existing node_modules for a fresh install..."
 	rm -rf web/node_modules packages/*/node_modules
 	@echo "Rebuilding Dev Stack without cache..."
-	docker compose -f docker-compose.dev.yml build --no-cache
+	docker compose -f docker-compose.dev.yml --env-file .env.dev build --no-cache
 	@echo "Dev Stack images rebuilt with fresh dependencies."
 
 
@@ -256,7 +260,7 @@ list-buckets:
 .PHONY: rebuild
 rebuild: ensure-lock
 	@echo " Rebuilding all Docker images..."
-	docker compose -f docker-compose.dev.yml build --no-cache
+	docker compose -f docker-compose.dev.yml --env-file .env.dev build --no-cache
 
 ## Configure storage backend (MinIO or AWS S3)
 .PHONY: configure-storage-dev
