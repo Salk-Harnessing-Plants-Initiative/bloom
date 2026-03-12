@@ -31,7 +31,6 @@
     "@types/d3": "^7.4.3",
     "@types/html2canvas": "^0.5.35",
     "@types/uuid": "^10.0.0",
-    "@vercel/analytics": "^1.0.1",
     "autoprefixer": "10.4.14",
     "d3": "^7.8.5",
     "html2canvas": "^1.4.1",
