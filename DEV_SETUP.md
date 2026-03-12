@@ -50,18 +50,18 @@ Replace `yourusername` with your actual username or preferred path.
 
 **Other Values** (can remain as defaults for local dev):
 ```bash
-# Database (defaults are fine for development)
-POSTGRES_PASSWORD=postgres
+# Database
+POSTGRES_PASSWORD=<your-postgres-password>
 POSTGRES_USER=supabase_admin
 
-# MinIO (defaults are fine for development)
-MINIO_ROOT_USER=supabase
-MINIO_ROOT_PASSWORD=supabase123
+# MinIO
+MINIO_ROOT_USER=<your-minio-user>
+MINIO_ROOT_PASSWORD=<your-minio-password>
 
-# JWT Keys (defaults provided in template work for dev)
-JWT_SECRET=super-secret-jwt-token-with-at-least-32-characters-long
-ANON_KEY=eyJhbGci...
-SERVICE_ROLE_KEY=eyJhbGci...
+# JWT Keys (generate using scripts/generateJWT_key.py)
+JWT_SECRET=<your-jwt-secret-at-least-32-characters>
+ANON_KEY=<your-generated-anon-key>
+SERVICE_ROLE_KEY=<your-generated-service-role-key>
 ```
 
 ### Step 3: Set File Permissions
@@ -442,8 +442,8 @@ On stack startup, these buckets are created automatically:
 
 ```bash
 # From .env.dev
-MINIO_ROOT_USER=supabase
-MINIO_ROOT_PASSWORD=supabase123
+MINIO_ROOT_USER=<your-minio-user>
+MINIO_ROOT_PASSWORD=<your-minio-password>
 ```
 
 Use these to login at http://localhost:9101
@@ -468,8 +468,8 @@ KONG_HTTP_PORT=8000
 SITE_URL=http://localhost:3000
 
 # MinIO
-MINIO_ROOT_USER=supabase
-MINIO_ROOT_PASSWORD=supabase123
+MINIO_ROOT_USER=<your-minio-user>
+MINIO_ROOT_PASSWORD=<your-minio-password>
 MINIO_DEFAULT_BUCKET=bloom-storage
 
 # FastAPI

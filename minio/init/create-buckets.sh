@@ -5,7 +5,7 @@ echo "Waiting for MinIO to start..."
 sleep 5
 
 echo "Configuring MinIO client..."
-mc alias set local http://supabase-minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+mc alias set local "${MINIO_ENDPOINT:-http://supabase-minio:9000}" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
 
 echo "Creating private buckets..."
 mc mb -p local/images || true

@@ -18,6 +18,7 @@ help:
 	@echo "  make create-bucket    - Create a new S3 bucket (BUCKET=name [PUBLIC=true])"
 	@echo "  make list-buckets     - List all S3 buckets"
 	@echo "  make configure-storage - Configure storage backend (MinIO or AWS S3)"
+	@echo "  make gen-types         - Generate database.types.ts from local DB and sync to all packages"
 
 # Run development stack
 .PHONY: dev-up
@@ -268,3 +269,28 @@ configure-storage-dev:
 configure-storage-prod:
 	@echo "Running storage backend configuration for production..."
 	@bash scripts/configure_storage.sh prod
+
+## Generate database.types.ts from local DB and copy to all packages
+## Requires the local dev database to be running (make dev-up)
+.PHONY: gen-types
+gen-types:
+	@echo "Generating TypeScript types from local database..."
+	@if ! docker ps | grep -q db-dev; then \
+		echo "Error: Development database not running. Start with 'make dev-up' first."; \
+		exit 1; \
+	fi
+	@npx supabase gen types typescript \
+		--db-url "postgresql://postgres:postgres@localhost:5432/postgres" \
+		> /tmp/database.types.ts
+	@echo "Copying database.types.ts to all packages..."
+	@cp /tmp/database.types.ts packages/bloom-fs/src/types/database.types.ts
+	@cp /tmp/database.types.ts packages/bloom-js/src/types/database.types.ts
+	@cp /tmp/database.types.ts packages/bloom-nextjs-auth/src/lib/database.types.ts
+	@cp /tmp/database.types.ts web/lib/database.types.ts
+	@rm /tmp/database.types.ts
+	@echo "Database types updated in:"
+	@echo "  - packages/bloom-fs/src/types/database.types.ts"
+	@echo "  - packages/bloom-js/src/types/database.types.ts"
+	@echo "  - packages/bloom-nextjs-auth/src/lib/database.types.ts"
+	@echo "  - web/lib/database.types.ts"
+	@echo "Done. All packages now have identical types."

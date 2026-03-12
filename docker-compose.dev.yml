@@ -1,5 +1,4 @@
 name: bloom_v2_dev
-version : "1.0"
 
 services:
   
@@ -9,6 +8,9 @@ services:
     build:
       context: .
       dockerfile: ./web/Dockerfile.bloom-web.dev
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: http://localhost:8000
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
     ports:
       - "3000:3000"
     environment:
@@ -23,6 +25,64 @@ services:
     networks:
       - supanet
     command: sh -c "apt-get update >/dev/null && apt-get install -y --no-install-recommends socat >/dev/null && socat TCP-LISTEN:8000,fork,reuseaddr TCP:kong:8000 &npm run dev"
+
+  langchain-agent:
+    build:
+      context: ./langchain
+      dockerfile: Dockerfile
+    ports:
+      - "5002:5002"
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: gpt-4o-mini
+      BLOOM_MCP_URL: http://bloommcp:8811/mcp
+      BLOOM_PLOTS_DIR: ${BLOOM_PLOTS_DIR}
+      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-bloom-langchain}
+      LANGCHAIN_POSTGRES_URL: ${LANGCHAIN_POSTGRES_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db-dev}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./langchain:/app
+      - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
+    networks:
+      - supanet
+    depends_on:
+      - kong
+      - bloommcp
+      - db-dev
+    restart: unless-stopped
+
+  bloommcp:
+    build:
+      context: ./bloommcp
+      dockerfile: Dockerfile
+    ports:
+      - "8811:8811"
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      BLOOM_TRAITS_DIR: /app/data/SLEAP_OUT_CSV
+      BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
+      BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
+      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
+    volumes:
+      - ./bloommcp:/app
+      - ./bloommcp/data/SLEAP_OUT_CSV:/app/data/SLEAP_OUT_CSV
+      - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
+      - ./bloommcp/data/ANALYSIS_OUTPUT:/app/data/ANALYSIS_OUTPUT
+    networks:
+      - supanet
+    depends_on:
+      - kong
+    restart: unless-stopped
 
   studio:
     container_name: supabase-studio-dev
@@ -192,7 +252,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
       DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
-      DB_ENC_KEY: supabaserealtime
+      DB_ENC_KEY: ${DB_ENC_KEY}
       API_JWT_SECRET: ${JWT_SECRET}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
       ERL_AFLAGS: -proto_dist inet_tcp
@@ -372,7 +432,6 @@ services:
       - ./volumes/db/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:Z
       - ./volumes/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:Z
       - ./volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:Z
-      - ./volumes/db/data:/var/lib/postgresql/data:Z
       - ./volumes/db/logs.sql:/docker-entrypoint-initdb.d/migrations/99-logs.sql:Z
       - ./volumes/db/pooler.sql:/docker-entrypoint-initdb.d/migrations/99-pooler.sql:Z
       - db-config:/etc/postgresql-custom
@@ -411,37 +470,6 @@ services:
         "-c",
         "log_min_messages=fatal"
       ]
-
-  # TODO : 
-  # vector:
-  #   container_name: supabase-vector
-  #   image: timberio/vector:0.28.1-alpine
-  #   restart: unless-stopped
-  #   volumes:
-  #     - ./volumes/logs/vector.yml:/etc/vector/vector.yml:ro,z
-  #     - ${DOCKER_SOCKET_LOCATION}:/var/run/docker.sock:ro,z
-  #   healthcheck:
-  #     test:
-  #       [
-  #         "CMD",
-  #         "wget",
-  #         "--no-verbose",
-  #         "--tries=1",
-  #         "--spider",
-  #         "http://vector:9001/health"
-  #       ]
-  #     timeout: 5s
-  #     interval: 5s
-  #     retries: 3
-  #   environment:
-  #     LOGFLARE_PUBLIC_ACCESS_TOKEN: ${LOGFLARE_PUBLIC_ACCESS_TOKEN}
-  #   command:
-  #     [
-  #       "--config",
-  #       "/etc/vector/vector.yml"
-  #     ]
-  #   security_opt:
-  #     - "label=disable"
 
   swagger-ui:
     container_name: swagger-ui-dev
@@ -515,7 +543,6 @@ services:
 
 volumes:
   db-config:
-
 
 networks:
   supanet:

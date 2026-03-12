@@ -44,12 +44,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuration from environment
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/postgres')
-S3_ENDPOINT = os.environ.get('S3_ENDPOINT', 'http://localhost:9100')
+# Configuration from environment (required)
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is required")
+S3_ENDPOINT = os.environ.get('S3_ENDPOINT')
+if not S3_ENDPOINT:
+    raise RuntimeError("S3_ENDPOINT environment variable is required")
 S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME', 'bloom-storage')
-AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID', 'supabase')
-AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY', 'supabase123')
+AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
+if not AWS_ACCESS_KEY_ID:
+    raise RuntimeError("AWS_ACCESS_KEY_ID environment variable is required")
+AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
+if not AWS_SECRET_ACCESS_KEY:
+    raise RuntimeError("AWS_SECRET_ACCESS_KEY environment variable is required")
 AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
 
 # Video processing settings

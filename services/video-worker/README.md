@@ -41,11 +41,11 @@ sudo yum install ffmpeg
 ### 3. Configure environment
 
 ```bash
-export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
-export S3_ENDPOINT=http://localhost:9100
+export DATABASE_URL=postgresql://<user>:<password>@<host>:5432/<database>
+export S3_ENDPOINT=http://<minio-host>:9100
 export S3_BUCKET_NAME=bloom-storage
-export AWS_ACCESS_KEY_ID=supabase
-export AWS_SECRET_ACCESS_KEY=supabase123
+export AWS_ACCESS_KEY_ID=<your-access-key>
+export AWS_SECRET_ACCESS_KEY=<your-secret-key>
 export AWS_REGION=us-east-1
 ```
 
