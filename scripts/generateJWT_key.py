@@ -2,9 +2,9 @@ import jwt
 import time
 import os
 
-jwt_secret = os.environ.get("BLOOM_JWT_SECRET")
+jwt_secret = os.environ.get("JWT_SECRET")
 if not jwt_secret:
-    raise RuntimeError("BLOOM_JWT_SECRET environment variable is required")
+    raise RuntimeError("JWT_SECRET environment variable is required")
 
 payload = {
     "sub": "test-user",

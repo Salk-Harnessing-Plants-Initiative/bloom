@@ -171,19 +171,19 @@ apply-migrations-local:
 		exit 1; \
 	fi
 	@echo "Creating migrations tracking table if not exists..."
-	@PGPASSWORD=postgres psql -h localhost -p 5432 -U supabase_admin -d postgres -c \
+	@PGPASSWORD=$${POSTGRES_PASSWORD:-postgres} psql -h localhost -p 5432 -U supabase_admin -d postgres -c \
 		"CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT NOW());" > /dev/null 2>&1
 	@echo "Checking for unapplied migrations..."
 	@applied=0; \
 	for file in $$(ls -1 supabase/migrations/*.sql 2>/dev/null | sort); do \
 		if [ -f "$$file" ]; then \
 			filename=$$(basename "$$file"); \
-			is_applied=$$(PGPASSWORD=postgres psql -h localhost -p 5432 -U supabase_admin -d postgres -tAc \
+			is_applied=$$(PGPASSWORD=$${POSTGRES_PASSWORD:-postgres} psql -h localhost -p 5432 -U supabase_admin -d postgres -tAc \
 				"SELECT 1 FROM _migrations WHERE name = '$$filename';" 2>/dev/null); \
 			if [ -z "$$is_applied" ]; then \
 				echo "Applying: $$filename"; \
-				PGPASSWORD=postgres psql -h localhost -p 5432 -U supabase_admin -d postgres -f "$$file" 2>&1 | grep -v "already exists" | grep -v "does not exist, skipping" || true; \
-				PGPASSWORD=postgres psql -h localhost -p 5432 -U supabase_admin -d postgres -c \
+				PGPASSWORD=$${POSTGRES_PASSWORD:-postgres} psql -h localhost -p 5432 -U supabase_admin -d postgres -f "$$file" 2>&1 | grep -v "already exists" | grep -v "does not exist, skipping" || true; \
+				PGPASSWORD=$${POSTGRES_PASSWORD:-postgres} psql -h localhost -p 5432 -U supabase_admin -d postgres -c \
 					"INSERT INTO _migrations (name) VALUES ('$$filename');" > /dev/null 2>&1; \
 				applied=$$((applied + 1)); \
 			fi \
@@ -280,7 +280,7 @@ gen-types:
 		exit 1; \
 	fi
 	@npx supabase gen types typescript \
-		--db-url "postgresql://postgres:postgres@localhost:5432/postgres" \
+		--db-url "$${SUPABASE_DB_URL:-postgresql://postgres:$${POSTGRES_PASSWORD:-postgres}@localhost:5432/postgres}" \
 		> /tmp/database.types.ts
 	@echo "Copying database.types.ts to all packages..."
 	@cp /tmp/database.types.ts packages/bloom-fs/src/types/database.types.ts

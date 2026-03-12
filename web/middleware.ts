@@ -8,9 +8,9 @@ export async function middleware(request: NextRequest) {
 
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  const jwtSecret = process.env.SUPABASE_JWT_SECRET
+  const jwtSecret = process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET
   if (!jwtSecret) {
-    throw new Error('SUPABASE_JWT_SECRET environment variable is required')
+    throw new Error('JWT_SECRET environment variable is required')
   }
   const cookieName = process.env.SUPABASE_COOKIE_NAME || 'sb-localhost-auth-token'
 
