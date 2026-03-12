@@ -129,7 +129,8 @@ You should see containers for:
 - supabase-kong
 - supabase-auth
 - supabase-rest
-- fastapi-app (runs FastAPI-based video/presigned-URL service)
+- langchain-agent (LangChain AI agent)
+- bloommcp (FastMCP Bloom analysis tools)
 
 ### Step 3: Access the Application
 
@@ -215,7 +216,9 @@ make upload-images
 |---------|-----|------|-------------|
 | Bloom Web | http://localhost:3000 | 3000 | Next.js frontend with hot reload |
 | Supabase Studio | http://localhost:55323 | 55323 | Database management UI |
-| FastAPI (video API) | http://localhost:5002 | 5002 | Video generation and presigned-URL API (OpenAPI docs at /docs) |
+| LangChain Agent | http://localhost:5002 | 5002 | AI agent chat API |
+| Bloom MCP Server | http://localhost:8811 | 8811 | FastMCP Bloom analysis tools |
+| Swagger UI | http://localhost:8085 | 8085 | PostgREST API browser |
 | MinIO Console | http://localhost:9101 | 9101 | Storage management console |
 | Kong Gateway | http://localhost:8000 | 8000 | API Gateway |
 
@@ -241,59 +244,24 @@ make upload-images
 | /realtime/v1/* | realtime:4000 | Subscriptions |
 | /storage/v1/* | storage:5000 | File storage |
 
-**FastAPI (video API)** (http://localhost:5002):
+**LangChain Agent** (http://localhost:5002):
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | / | API documentation (FastAPI app serves OpenAPI UI at /docs) |
-| GET | /test | Health check |
-| GET | /list_buckets | List storage buckets |
-| POST | /generate_video | Generate video from scan |
-| POST | /get_presigned_urls | Get presigned URLs (requires JWT) |
+| POST | /chat | Send message to AI agent |
+| GET | /health | Health check |
 
 ---
 
-## Video Generation
+## AI Agent
 
-### Step 1: Verify Data is Loaded
-
-Ensure you have loaded test data:
+### Verify Agent is Running
 
 ```bash
-make load-test-data
-make upload-images
+curl http://localhost:5002/health
 ```
 
-### Step 2: Generate Video
-
-```bash
-curl -X POST http://localhost:5002/generate_video \
-  -H "Content-Type: application/json" \
-  -d '{"scan_id": 1}'
-```
-
-Response should include:
-```json
-{
-  "message": "Video generated successfully",
-  "scan_id": 1,
-  "total_frames": 72,
-  "download_url": "http://..."
-}
-```
-
-### Step 3: Verify Video in Storage
-
-Using MinIO Console:
-1. Open http://localhost:9101
-2. Login with credentials from `.env.dev`
-3. Navigate to `video` bucket
-4. Find `1.mp4` file
-
-Or via command line:
-```bash
-make list-buckets
-```
+The LangChain agent connects to the Bloom MCP server (port 8811) which provides 39 Bloom analysis tools for plant phenotyping data.
 
 ---
 
@@ -371,20 +339,21 @@ cd web && npm install
 make rebuild-dev-fresh
 ```
 
-### FastAPI service errors / logs
+### LangChain Agent / MCP Server errors
 
 ```bash
-# Check API logs (service runs under the fastapi-app container name)
-docker logs fastapi-app
+# Check agent logs
+docker logs bloom_v2_dev-langchain-agent-1
 
-# Verify Python dependencies
-docker exec fastapi-app pip list
+# Check MCP server logs
+docker logs bloom_v2_dev-bloommcp-1
 
-# Restart FastAPI service
-docker restart fastapi-app
+# Restart services
+docker restart bloom_v2_dev-langchain-agent-1
+docker restart bloom_v2_dev-bloommcp-1
 
-# Test connection
-curl http://localhost:5002/test
+# Test agent health
+curl http://localhost:5002/health
 ```
 
 ### Data Loading Fails
@@ -457,9 +426,9 @@ After successful setup:
 1. Explore the frontend at http://localhost:3000
 2. View database in Studio at http://localhost:55323
 3. Test API endpoints with curl or Postman
-4. Generate a test video with FastAPI service
+4. Test AI agent at http://localhost:5002
 5. Start developing your features
-6. See [PROD_SETUP.md](./PROD_SETUP.md)/[PROD_SETUP.html](./PROD_SETUP.html) for production deployment
+6. See [PROD_SETUP.md](./PROD_SETUP.md) for production deployment
 
 ---
 
@@ -472,8 +441,8 @@ MINIO_ROOT_USER=<your-minio-user>
 MINIO_ROOT_PASSWORD=<your-minio-password>
 MINIO_DEFAULT_BUCKET=bloom-storage
 
-# FastAPI
-FLASK_SUPABASE_URL=http://kong:8000
+# LangChain Agent
+SUPABASE_URL=http://kong:8000
 S3_ENDPOINT=http://supabase-minio:9000
 
 ---
@@ -499,4 +468,4 @@ Safety notes:
 - If the MinIO host path cannot be detected automatically, you'll be prompted to enter it manually (e.g. `/Users/benficaa/minio`).
 
 
-**Last Updated:** November 17, 2025
+**Last Updated:** March 2026
