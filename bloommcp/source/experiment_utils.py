@@ -82,7 +82,8 @@ def list_experiments(traits_dir: Optional[Path] = None) -> list[dict]:
     for csv_path in sorted(d.glob("*.csv")):
         try:
             df = pd.read_csv(csv_path, nrows=5)
-            row_count = sum(1 for _ in open(csv_path)) - 1  # fast line count
+            with open(csv_path) as f:
+                row_count = sum(1 for _ in f) - 1  # fast line count
             detected = detect_columns(df)
 
             # Try to extract experiment name from data

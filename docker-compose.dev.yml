@@ -52,6 +52,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       LOCAL_LLM_URL: ${LOCAL_LLM_URL}
+      CORS_ORIGINS: "http://localhost:3000"
     volumes:
       - ./langchain:/app
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR

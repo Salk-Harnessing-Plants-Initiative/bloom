@@ -98,9 +98,10 @@ os.makedirs(PLOTS_DIR, exist_ok=True)
 app.mount("/plots", StaticFiles(directory=PLOTS_DIR), name="plots")
 
 # CORS for frontend
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
