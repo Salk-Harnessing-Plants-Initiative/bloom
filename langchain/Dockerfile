@@ -21,4 +21,7 @@ RUN mkdir -p /app/data/PLOTS_DIR
 
 EXPOSE 5002
 
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -sf http://localhost:5002/health || exit 1
+
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5002", "--reload"]

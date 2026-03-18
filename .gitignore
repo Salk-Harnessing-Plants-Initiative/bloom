@@ -82,3 +82,6 @@ scripts/generate_KEYS
 *.bak
 
 prompts/.claude/
+
+# setup/deployment notes (local only)
+.setup/

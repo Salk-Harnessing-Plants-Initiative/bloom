@@ -1,3 +1,20 @@
+# =============================================================================
+# Bloom v2 Production Stack
+#
+# Minimum Resource Requirements:
+#   CPU:     8 vCPU
+#   RAM:     16 GB
+#   Disk:    100 GB SSD
+#
+# Services: ~17 containers (nginx, bloom-web, langchain-agent, bloommcp,
+#   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
+#   meta, analytics, db-prod, supavisor, studio)
+#
+# Host-exposed ports:
+#   80/443  - nginx (public HTTP/HTTPS)
+#   55323   - studio (admin, restrict via firewall)
+# =============================================================================
+
 name: bloom_v2_prod
 
 services:
@@ -88,6 +105,11 @@ services:
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
     networks:
       - supanet
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     depends_on:
       - kong
       - bloommcp
@@ -118,6 +140,11 @@ services:
       - ./bloommcp/data/ANALYSIS_OUTPUT:/app/data/ANALYSIS_OUTPUT
     networks:
       - supanet
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8811/mcp')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     depends_on:
       - kong
     restart: unless-stopped
@@ -226,7 +253,7 @@ services:
   # MinIO
   # -------------------
   supabase-minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
     container_name: supabase-minio
     restart: unless-stopped
     networks:
@@ -243,7 +270,7 @@ services:
       - ${MINIO_DATA_PATH}:/data
   
   minio-init:
-    image: minio/mc
+    image: minio/mc:RELEASE.2025-01-17T23-25-50Z
     depends_on:
       - supabase-minio
     networks:
@@ -421,8 +448,8 @@ services:
     restart: unless-stopped
     networks:
       - supanet
-    ports:
-      - 4000:4000
+    expose:
+      - "4000"
     healthcheck:
       test:
         [

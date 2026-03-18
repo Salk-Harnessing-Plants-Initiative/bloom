@@ -57,6 +57,11 @@ services:
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
     networks:
       - supanet
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     depends_on:
       - kong
       - bloommcp
@@ -84,6 +89,11 @@ services:
       - ./bloommcp/data/ANALYSIS_OUTPUT:/app/data/ANALYSIS_OUTPUT
     networks:
       - supanet
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8811/mcp')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     depends_on:
       - kong
     restart: unless-stopped
@@ -269,7 +279,7 @@ services:
   supabase-minio:
     networks:
       - supanet
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
     container_name: supabase-minio
     ports:
       - "9100:9000"
@@ -284,7 +294,7 @@ services:
   minio-init:
     networks:
       - supanet
-    image: minio/mc
+    image: minio/mc:RELEASE.2025-01-17T23-25-50Z
     depends_on:
       - supabase-minio
     entrypoint: ["/bin/sh", "/usr/local/bin/init/create-buckets.sh"]
@@ -477,7 +487,7 @@ services:
 
   swagger-ui:
     container_name: swagger-ui-dev
-    image: swaggerapi/swagger-ui:latest
+    image: swaggerapi/swagger-ui:v5.18.2
     restart: unless-stopped
     networks:
       - supanet
