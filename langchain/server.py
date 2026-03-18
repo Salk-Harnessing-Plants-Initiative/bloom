@@ -367,7 +367,7 @@ async def list_threads(user_id: str = Depends(get_current_user)):
                 """
                 SELECT thread_id, title, created_at, updated_at
                 FROM chat_threads
-                WHERE user_id = %s::uuid
+                WHERE user_id = %s::uuid AND deleted_at IS NULL
                 ORDER BY updated_at DESC
                 """,
                 (user_id,),
@@ -391,35 +391,21 @@ async def list_threads(user_id: str = Depends(get_current_user)):
 
 @app.delete("/langchain/threads/{thread_id}")
 async def clear_thread(thread_id: str, user_id: str = Depends(get_current_user)):
-    """Clear conversation history for a specific thread owned by the authenticated user."""
+    """Soft-delete a conversation thread. Marks deleted_at timestamp instead of
+    permanently removing data. Checkpoint data is preserved for potential recovery."""
     checkpointer = getattr(app.state, 'checkpointer', None)
     if not checkpointer:
         raise HTTPException(status_code=503, detail="Checkpointer not available")
 
-    scoped_thread = f"{user_id}:{thread_id}"
     try:
-        # Delete all checkpoints for this thread from Postgres
         async with checkpointer.conn.connection() as conn:
             await conn.execute(
-                "DELETE FROM checkpoints WHERE thread_id = %s",
-                (scoped_thread,),
-            )
-            await conn.execute(
-                "DELETE FROM checkpoint_blobs WHERE thread_id = %s",
-                (scoped_thread,),
-            )
-            await conn.execute(
-                "DELETE FROM checkpoint_writes WHERE thread_id = %s",
-                (scoped_thread,),
-            )
-            # Also delete thread metadata from chat_threads table
-            await conn.execute(
-                "DELETE FROM chat_threads WHERE user_id = %s::uuid AND thread_id = %s",
+                "UPDATE chat_threads SET deleted_at = now() WHERE user_id = %s::uuid AND thread_id = %s",
                 (user_id, thread_id),
             )
-        return {"status": "cleared", "thread_id": thread_id}
+        return {"status": "deleted", "thread_id": thread_id}
     except Exception as e:
-        logger.exception(f"Error clearing thread {scoped_thread}")
+        logger.exception(f"Error deleting thread {thread_id} for user {user_id}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

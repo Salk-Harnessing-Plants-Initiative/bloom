@@ -119,7 +119,7 @@ def load_experiment_data(filename: str) -> str:
     """
     df, trait_cols, config, source = _load_data(filename)
     if df is None:
-        return config  # error string
+        return source  # error string
 
     n_samples = len(df)
     n_traits = len(trait_cols)
@@ -179,7 +179,7 @@ def inspect_data_quality(filename: str) -> str:
     """
     df, trait_cols, config, source = _load_data(filename)
     if df is None:
-        return config
+        return source
 
     genotype_col = config["genotype_col"]
     sample_id_col = config["sample_id_col"]
@@ -285,7 +285,7 @@ def clean_experiment_data(
     """
     df, trait_cols, config, source = _load_data(filename)
     if df is None:
-        return config
+        return source
 
     stem = Path(filename).stem
     original_samples = len(df)
@@ -366,7 +366,7 @@ def list_trait_columns(filename: str) -> str:
     """
     df, trait_cols, config, source = _load_data(filename)
     if df is None:
-        return config
+        return source
 
     lines = [
         f"Trait columns for {filename} ({len(trait_cols)} traits, source: {source}):",
