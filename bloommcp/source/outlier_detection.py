@@ -875,7 +875,7 @@ def detect_outliers_kmeans(
         >>> print(f"Found {result['n_outliers']} outliers")
         >>> cleaned_df = df.drop(index=result['outlier_indices'])
     """
-    from clustering import perform_kmeans_clustering
+    from .clustering import perform_kmeans_clustering
 
     try:
         # Perform core K-Means clustering
@@ -968,7 +968,7 @@ def detect_outliers_gmm(
         >>> print(f"Selected {result['n_components']} components")
         >>> print(f"Found {result['n_outliers']} outliers")
     """
-    from clustering import perform_gmm_clustering
+    from .clustering import perform_gmm_clustering
 
     try:
         # Perform core GMM clustering
@@ -1058,7 +1058,7 @@ def detect_outliers_hierarchical(
         >>> # With specified k
         >>> result = detect_outliers_hierarchical(df, n_clusters=3)
     """
-    from clustering import (
+    from .clustering import (
         perform_hierarchical_clustering,
         cut_dendrogram,
         calculate_optimal_clusters_hierarchical,

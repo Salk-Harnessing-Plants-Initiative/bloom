@@ -352,15 +352,15 @@ export default function MCPChat() {
 
         const parts: string[] = [];
 
-        if (data.answer) {
+        if (data && data.answer) {
           parts.push(data.answer);
         }
 
-        if (data.tools_used && data.tools_used.length > 0) {
+        if (data && data.tools_used && data.tools_used.length > 0) {
           parts.push("\nTools: " + data.tools_used.join(", "));
         }
 
-        if (data.error) {
+        if (data && data.error) {
           parts.push(`Error: ${data.error}`);
           if (data.detail) {
             parts.push(`Details: ${data.detail}`);

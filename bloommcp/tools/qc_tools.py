@@ -301,14 +301,15 @@ def clean_experiment_data(
     )
 
     # Save cleaned data and log
-    from source.data_utils import create_run_directory, convert_to_json_serializable
+    from source.data_utils import convert_to_json_serializable
 
-    run_dir = create_run_directory(OUTPUT_DIR / f"qc_{stem}")
+    qc_dir = OUTPUT_DIR / f"qc_{stem}"
+    qc_dir.mkdir(parents=True, exist_ok=True)
 
-    cleaned_csv_path = run_dir / f"{stem}_cleaned.csv"
+    cleaned_csv_path = qc_dir / f"{stem}_cleaned.csv"
     df_clean.to_csv(cleaned_csv_path, index=False)
 
-    log_path = run_dir / "cleanup_log.json"
+    log_path = qc_dir / "cleanup_log.json"
     with open(log_path, "w") as f:
         json.dump(convert_to_json_serializable(cleanup_log), f, indent=2)
 
