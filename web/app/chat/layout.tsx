@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 import { getUser } from "@/lib/supabase/server";
 import Link from "next/link";
@@ -5,7 +6,7 @@ import Link from "next/link";
 export default async function ChatLayout({
   children,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   const user = await getUser();
 

@@ -90,7 +90,7 @@ def trim_conversation(state):
         messages,
         strategy="last",
         max_tokens=8000,
-        token_counter=len,       #  1 token ≈ 1 char
+        token_counter=lambda msgs: sum(len(str(m.content)) for m in msgs),  # char-based approx: ~4 chars per token
         include_system=True,
         allow_partial=False,
         start_on="human",

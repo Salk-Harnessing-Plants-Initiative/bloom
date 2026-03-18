@@ -68,7 +68,7 @@ Edit `.env.prod` and update these values:
 DOMAIN_MAIN=yourdomain.com
 DOMAIN_STUDIO=studio.yourdomain.com
 DOMAIN_MINIO=minio.yourdomain.com
-DOMAIN_API=api.yourdomain.com
+DOMAIN_FLASK=api.yourdomain.com
 ```
 
 **Database Security:**

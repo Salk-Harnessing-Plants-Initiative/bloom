@@ -87,11 +87,11 @@ make list-buckets        # List all storage buckets
 
 ### 1. Development Setup
 
-    see[DEV_SETUP.md](./DEV_SETUP.md)
+    see [DEV_SETUP.md](./DEV_SETUP.md)
 
 ### 2. Production Setup
 
-    see[PROD_SETUP.md](./PROD_SETUP.md)
+    see [PROD_SETUP.md](./PROD_SETUP.md)
 
 ## Test Data
 

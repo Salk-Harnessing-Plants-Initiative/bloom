@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from agent import create_agent, AVAILABLE_MODELS, setup_checkpointer
 from langchain_core.messages import AIMessage
 from mcp_config import MCP_SERVERS
@@ -186,7 +186,7 @@ class ChatRequest(BaseModel):
     provider: str = "openai"  # "openai" or "local"
     model: Optional[str] = None  # Defaults to first model for provider
     tool_set: str = "all"  # "all", "scrna", "cyl", "generic"
-    mcp_tool_names: list[str] = []  # Filter MCP tools by name (empty = foundational only)
+    mcp_tool_names: list[str] = Field(default_factory=list)  # Filter MCP tools by name (empty = foundational only)
     thread_id: str = "default"  # Conversation thread ID for memory persistence
 
 
