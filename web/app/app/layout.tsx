@@ -64,6 +64,10 @@ const navLinks = [
     name: "Software",
     href: "/app/software",
   },
+  {
+    name: "Bloom Assistant",
+    href: "/chat",
+  },
   // {
   //   name: "Settings",
   //   href: "/app/settings",

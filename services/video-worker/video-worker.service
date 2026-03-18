@@ -11,12 +11,7 @@ ExecStart=/opt/bloom/venv/bin/python video_listener.py
 Restart=always
 RestartSec=5
 
-Environment=DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
-Environment=S3_ENDPOINT=http://localhost:9100
-Environment=S3_BUCKET_NAME=bloom-storage
-Environment=AWS_ACCESS_KEY_ID=supabase
-Environment=AWS_SECRET_ACCESS_KEY=supabase123
-Environment=AWS_REGION=us-east-1
+EnvironmentFile=/opt/bloom/services/video-worker/.env
 
 # Logging
 StandardOutput=journal

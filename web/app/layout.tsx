@@ -1,5 +1,5 @@
 import '@/styles/globals.css'
-import { Analytics } from '@vercel/analytics/react'
+
 
 export const metadata = {
   title: 'Bloom',
@@ -11,7 +11,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang="en">
       <body>
         {children}
-        <Analytics />
       </body>
     </html>
   )

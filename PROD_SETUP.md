@@ -68,7 +68,7 @@ Edit `.env.prod` and update these values:
 DOMAIN_MAIN=yourdomain.com
 DOMAIN_STUDIO=studio.yourdomain.com
 DOMAIN_MINIO=minio.yourdomain.com
-DOMAIN_FLASK=flask.yourdomain.com
+DOMAIN_FLASK=api.yourdomain.com
 ```
 
 **Database Security:**
@@ -121,7 +121,7 @@ This will:
 docker ps
 ```
 
-You should see: `db-prod`, `supabase-minio`, `supabase-storage`, `supabase-kong`, `supabase-auth`, `bloom-web-prod`, `fastapi-app`
+You should see: `db-prod`, `supabase-minio`, `supabase-storage`, `supabase-kong`, `supabase-auth`, `bloom-web-prod`, `langchain-agent`, `bloommcp`
 
 ### Check Logs
 
@@ -182,7 +182,8 @@ Replace test data with your actual production data:
 | Storage API | storage:5000 | 5000 | Supabase Storage |
 | Auth API | auth:9999 | 9999 | Authentication |
 | REST API | rest:3000 | 3000 | PostgREST |
-| FastAPI (video API) | fastapi-app:5002 | 5002 | Video generation service (OpenAPI docs available at /docs) |
+| LangChain Agent | langchain-agent:5002 | 5002 | AI agent chat API |
+| Bloom MCP | bloommcp:8811 | 8811 | FastMCP Bloom analysis tools |
 
 ### External Access (via Nginx)
 
@@ -194,7 +195,7 @@ Production services are accessed through Nginx reverse proxy:
 | API | http://yourdomain.com/api | Supabase services |
 | Studio | http://studio.yourdomain.com | Database management |
 | MinIO | http://minio.yourdomain.com | Storage management |
-| FastAPI | http://flask.yourdomain.com | Video generation API (OpenAPI docs at /docs) |
+| API | http://api.yourdomain.com | AI agent and MCP services |
 
 
 
