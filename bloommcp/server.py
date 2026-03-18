@@ -12,6 +12,8 @@ Tool modules (39 tools total):
   - viz_tools:         7 tools  (histograms, boxplots, heatmaps, dendrograms)
   - correlation_tools: 8 tools  (cross-experiment correlations, power analysis)
 """
+import os
+
 from fastmcp import FastMCP
 
 from tools import (
@@ -24,9 +26,29 @@ from tools import (
     correlation_tools,
 )
 
+# --- Authentication ---
+
+API_KEY = os.getenv("BLOOMMCP_API_KEY")
+
+auth_provider = None
+if API_KEY:
+    from fastmcp.server.auth import TokenVerifier, AccessToken
+
+    class ApiKeyVerifier(TokenVerifier):
+        """Validates Bearer token against BLOOMMCP_API_KEY env var."""
+
+        async def verify_token(self, token: str) -> AccessToken | None:
+            if token == API_KEY:
+                return AccessToken(
+                    token=token, client_id="bloom-client", scopes=["tools"]
+                )
+            return None
+
+    auth_provider = ApiKeyVerifier()
+
 # --- MCP Server ---
 
-mcp = FastMCP("bloom-tools")
+mcp = FastMCP("bloom-tools", auth=auth_provider)
 
 # --- Register All Tool Modules ---
 
@@ -42,4 +64,8 @@ correlation_tools.register(mcp)
 # --- Entry Point ---
 
 if __name__ == "__main__":
+    if API_KEY:
+        print("Bloom MCP Server starting with API key authentication")
+    else:
+        print("Bloom MCP Server starting without authentication (dev mode)")
     mcp.run(transport="streamable-http", host="0.0.0.0", port=8811)

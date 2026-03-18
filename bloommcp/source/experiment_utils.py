@@ -4,17 +4,52 @@ Shared experiment discovery and column auto-detection for SLEAP tool modules.
 All tool modules import from this instead of hardcoding EXPERIMENTS dicts.
 """
 
+import logging
 import os
 import pandas as pd
 from pathlib import Path
 from typing import Optional
 
-TRAITS_DIR = Path(os.getenv("BLOOM_TRAITS_DIR", "/app/data/SLEAP_OUT_CSV"))
-OUTPUT_DIR = Path(os.getenv("BLOOM_OUTPUT_DIR", "/app/data/ANALYSIS_OUTPUT"))
-PLOTS_DIR = Path(os.getenv("BLOOM_PLOTS_DIR", "/app/data/PLOTS_DIR"))
+logger = logging.getLogger(__name__)
+
+# --- Required environment variables (no silent defaults) ---
+
+_REQUIRED_DIRS = {
+    "BLOOM_TRAITS_DIR": "Directory containing experiment CSV files",
+    "BLOOM_OUTPUT_DIR": "Directory for analysis output",
+    "BLOOM_PLOTS_DIR": "Directory for generated plots",
+}
+
+_missing = [k for k in _REQUIRED_DIRS if not os.getenv(k)]
+if _missing:
+    raise RuntimeError(
+        f"Missing required environment variables: {', '.join(_missing)}. "
+        f"Set them in .env or docker-compose."
+    )
+
+TRAITS_DIR = Path(os.environ["BLOOM_TRAITS_DIR"])
+OUTPUT_DIR = Path(os.environ["BLOOM_OUTPUT_DIR"])
+PLOTS_DIR = Path(os.environ["BLOOM_PLOTS_DIR"])
+
 PLOTS_URL = os.getenv("BLOOM_PLOTS_URL")
 if not PLOTS_URL:
     raise RuntimeError("BLOOM_PLOTS_URL environment variable is required")
+
+# --- Startup filesystem validation ---
+
+def _validate_dirs() -> None:
+    """Check that configured data directories exist and are writable."""
+    for name, path in [("BLOOM_TRAITS_DIR", TRAITS_DIR), ("BLOOM_OUTPUT_DIR", OUTPUT_DIR), ("BLOOM_PLOTS_DIR", PLOTS_DIR)]:
+        if not path.exists():
+            raise RuntimeError(f"{name}={path} does not exist. Create it or fix the path.")
+        if not path.is_dir():
+            raise RuntimeError(f"{name}={path} is not a directory.")
+        if not os.access(path, os.R_OK):
+            logger.warning(f"{name}={path} is not readable")
+        if not os.access(path, os.W_OK):
+            logger.warning(f"{name}={path} is not writable — analysis output will fail")
+
+_validate_dirs()
 
 # metadata columns, matched case-insensitively
 KNOWN_METADATA_COLS = {

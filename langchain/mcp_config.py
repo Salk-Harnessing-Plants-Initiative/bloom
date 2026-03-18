@@ -11,10 +11,14 @@ MCP_SERVERS = {}
 # Bloom MCP server (new tools: SLEAP-trait-analysis-pipeline, future analysis tools)
 BLOOM_MCP_URL = os.getenv("BLOOM_MCP_URL")
 if BLOOM_MCP_URL:
-    MCP_SERVERS["bloom-tools"] = {
+    bloom_config = {
         "url": BLOOM_MCP_URL,
         "transport": "streamable_http",
     }
+    BLOOMMCP_API_KEY = os.getenv("BLOOMMCP_API_KEY")
+    if BLOOMMCP_API_KEY:
+        bloom_config["headers"] = {"Authorization": f"Bearer {BLOOMMCP_API_KEY}"}
+    MCP_SERVERS["bloom-tools"] = bloom_config
 
 # External: web search (optional, requires API key)
 MCP_WEB_SEARCH_KEY = os.getenv("MCP_WEB_SEARCH_KEY")

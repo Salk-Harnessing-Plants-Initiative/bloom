@@ -39,6 +39,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: gpt-4o-mini
       BLOOM_MCP_URL: http://bloommcp:8811/mcp
+      BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY:-}
       BLOOM_PLOTS_DIR: ${BLOOM_PLOTS_DIR}
       BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
       LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
@@ -75,6 +76,7 @@ services:
       BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
       BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
+      BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY:-}
     volumes:
       - ./bloommcp:/app
       - ./bloommcp/data/SLEAP_OUT_CSV:/app/data/SLEAP_OUT_CSV
