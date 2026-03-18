@@ -76,7 +76,7 @@ def query_database(table: str, select: str = "*", filters: Optional[dict] = None
     # Guard: reject SQL syntax
     error = _reject_sql(table, select, filters)
     if error:
-        return error
+        return [error]
 
     params = {"select": select, "limit": limit}
     if filters:
