@@ -18,8 +18,8 @@ NC='\033[0m'
 PASS=0
 FAIL=0
 
-pass() { echo -e "  ${GREEN}✓${NC} $1"; ((PASS++)); }
-fail() { echo -e "  ${RED}✗${NC} $1"; ((FAIL++)); }
+pass() { echo -e "  ${GREEN}✓${NC} $1"; PASS=$((PASS + 1)); }
+fail() { echo -e "  ${RED}✗${NC} $1"; FAIL=$((FAIL + 1)); }
 
 echo ""
 echo "=============================================="

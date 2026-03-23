@@ -20,9 +20,9 @@ PASS=0
 FAIL=0
 WARN=0
 
-pass() { echo -e "  ${GREEN}✓${NC} $1"; ((PASS++)); }
-fail() { echo -e "  ${RED}✗${NC} $1"; ((FAIL++)); }
-warn() { echo -e "  ${YELLOW}!${NC} $1"; ((WARN++)); }
+pass() { echo -e "  ${GREEN}✓${NC} $1"; PASS=$((PASS + 1)); }
+fail() { echo -e "  ${RED}✗${NC} $1"; FAIL=$((FAIL + 1)); }
+warn() { echo -e "  ${YELLOW}!${NC} $1"; WARN=$((WARN + 1)); }
 
 ENV_FILE="${1:-.env.prod}"
 
