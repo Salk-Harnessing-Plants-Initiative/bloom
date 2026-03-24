@@ -30,6 +30,11 @@ RUN npm install
 COPY web ./web
 COPY packages ./packages
 
+# Build shared packages first
+RUN cd /app/packages/bloom-js && npm run build || true
+RUN cd /app/packages/bloom-fs && npm run build || true
+RUN cd /app/packages/bloom-nextjs-auth && npm run build || true
+
 # Build the Next.js app
 WORKDIR /app/web
 RUN npm run build
