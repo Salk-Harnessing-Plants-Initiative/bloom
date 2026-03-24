@@ -52,13 +52,6 @@ rebuild-dev-fresh:
 # Run production stack
 .PHONY: prod-up
 prod-up:
-	@echo " Checking frontend dependencies..."
-	@if [ ! -f "./web/package-lock.json" ]; then \
-		echo " package-lock.json not found. Installing dependencies..."; \
-		cd web && npm install; \
-	else \
-		echo " package-lock.json found. Installing .. "; \
-	fi
 	@echo " Starting Bloom Production Stack..."
 	docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
 	@echo " Bloom Production running in background"
