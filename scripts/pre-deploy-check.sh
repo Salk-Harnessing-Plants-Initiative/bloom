@@ -48,7 +48,7 @@ else
 fi
 
 # Check permissions (should be 600)
-PERMS=$(stat -f "%Lp" "$ENV_FILE" 2>/dev/null || stat -c "%a" "$ENV_FILE" 2>/dev/null)
+PERMS=$(stat -c "%a" "$ENV_FILE" 2>/dev/null || stat -f "%Lp" "$ENV_FILE" 2>/dev/null)
 if [[ "$PERMS" == "600" ]]; then
   pass "File permissions are 600 (owner read/write only)"
 else
