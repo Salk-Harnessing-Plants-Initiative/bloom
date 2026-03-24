@@ -1,6 +1,6 @@
 """
 FastAPI server for LangChain Agent
-Supports multiple LLM providers: OpenAI, local LLM
+Uses local LLM provider (vLLM)
 Production-ready: PostgresSaver, JWT auth, agent caching
 
 Endpoints:
@@ -183,7 +183,7 @@ def get_or_create_agent(
 
 class ChatRequest(BaseModel):
     prompt: str
-    provider: str = "openai"  # "openai" or "local"
+    provider: str = "local"
     model: Optional[str] = None  # Defaults to first model for provider
     tool_set: str = "all"  # "all", "scrna", "cyl", "generic"
     mcp_tool_names: list[str] = Field(default_factory=list)  # Filter MCP tools by name (empty = foundational only)
@@ -217,7 +217,7 @@ async def chat(request: ChatRequest, user_id: str = Depends(get_current_user)):
 
         # Validate provider
         if provider not in AVAILABLE_MODELS:
-            raise ValueError(f"Unknown provider: {provider}. Choose from: openai, local")
+            raise ValueError(f"Unknown provider: {provider}. Choose from: local")
 
         # Default model if not specified
         if not model:

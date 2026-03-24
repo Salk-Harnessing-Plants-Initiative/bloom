@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 
 type Message = { from: "user" | "bot"; text: string };
-type Provider = "openai" | "local";
+type Provider = "local";
 type ToolSet = "all" | "scrna" | "cyl" | "generic" | "";
 
 interface MCPTool {
@@ -34,12 +34,10 @@ const TOOL_SET_OPTIONS: { value: ToolSet; label: string; description: string }[]
 ];
 
 const AVAILABLE_MODELS: Record<Provider, string[]> = {
-  openai: ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"],
   local: ["Qwen/Qwen3-8B"],
 };
 
 const PROVIDER_LABELS: Record<Provider, string> = {
-  openai: "OpenAI",
   local: "Local LLM",
 };
 
@@ -465,30 +463,8 @@ export default function MCPChat() {
             >
               LLM Provider
             </div>
-            <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-              {(["local", "openai"] as Provider[]).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => handleProviderChange(p)}
-                  style={{
-                    flex: 1,
-                    padding: "8px 12px",
-                    border: settings.provider === p ? "2px solid #0ea5a4" : "2px solid #e2e8f0",
-                    borderRadius: 8,
-                    background: settings.provider === p ? "#f0fdfa" : "white",
-                    cursor: "pointer",
-                    fontSize: 13,
-                    fontWeight: 500,
-                    color: settings.provider === p ? "#0ea5a4" : "#64748b",
-                    transition: "all 0.2s",
-                  }}
-                >
-                  {PROVIDER_LABELS[p]}
-                  {p === "local" && (
-                    <span style={{ fontSize: 10, marginLeft: 4, opacity: 0.7 }}>(Free)</span>
-                  )}
-                </button>
-              ))}
+            <div style={{ marginBottom: 12, padding: "8px 12px", border: "2px solid #0ea5a4", borderRadius: 8, background: "#f0fdfa", fontSize: 13, fontWeight: 500, color: "#0ea5a4" }}>
+              {PROVIDER_LABELS[settings.provider]}
             </div>
 
             {/* Model Selector */}
@@ -513,21 +489,6 @@ export default function MCPChat() {
                 </option>
               ))}
             </select>
-
-            {settings.provider === "openai" && (
-              <div
-                style={{
-                  marginTop: 10,
-                  padding: 10,
-                  background: "#eff6ff",
-                  borderRadius: 8,
-                  fontSize: 11,
-                  color: "#1d4ed8",
-                }}
-              >
-                OpenAI API key is configured on the server.
-              </div>
-            )}
 
             {settings.provider === "local" && (
               <div

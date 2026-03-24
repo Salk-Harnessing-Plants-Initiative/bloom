@@ -112,7 +112,6 @@ if [[ "$ENV_MODE" == "dev" ]]; then
   SUPABASE_COOKIE_NAME="sb-localhost-auth-token"
   POSTGRES_HOST="db-dev"
   MINIO_DATA_PATH="./minio/data"
-  OPENAI_MODEL="gpt-4o-mini"
   BLOOM_PLOTS_URL="http://localhost/plots"
   IMGPROXY_URL="http://imgproxy:5001"
 else
@@ -129,7 +128,6 @@ else
   SUPABASE_COOKIE_NAME="sb-bloom-salk-edu-auth-token"
   POSTGRES_HOST="db-prod"
   MINIO_DATA_PATH="/data/bloom/minio"
-  OPENAI_MODEL="gpt-4o"
   BLOOM_PLOTS_URL="https://bloom.salk.edu/plots"
   IMGPROXY_URL="http://imgproxy:5001"
 fi
@@ -209,9 +207,8 @@ SECRET_KEY_BASE=${SECRET_KEY_BASE}
 # --- Bloom MCP ---
 BLOOMMCP_API_KEY=${BLOOMMCP_API_KEY}
 
-# --- OpenAI ---
-OPENAI_API_KEY=
-OPENAI_MODEL=${OPENAI_MODEL}
+# --- OpenAI (Studio only) ---
+# OPENAI_API_KEY is only used by Supabase Studio's optional AI assistant
 
 # --- Logflare/Analytics ---
 LOGFLARE_PUBLIC_ACCESS_TOKEN=${LOGFLARE_PUBLIC_TOKEN}
@@ -257,8 +254,7 @@ echo "   - Use your JWT_SECRET to generate both keys"
 echo "   - Update $ENV_FILE with the generated values"
 echo ""
 if [[ "$TRIAL" == false ]]; then
-  echo "2. Add external API keys to $ENV_FILE:"
-  echo "   - OPENAI_API_KEY (required for AI agent)"
+  echo "2. Add external API keys to $ENV_FILE (optional):"
   echo "   - LANGCHAIN_API_KEY (optional, for tracing)"
   echo ""
   echo "3. Verify domain configuration:"
