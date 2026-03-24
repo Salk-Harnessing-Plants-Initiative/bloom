@@ -49,15 +49,7 @@ export default async function Index() {
           </li>
         </ul>
         <div>
-          This project is a work in progress, and we appreciate feedback! Please
-          send comments or questions to Dan Butler (
-          <a
-            className="text-lime-700 hover:underline"
-            href="mailto:dbutler@salk.edu"
-          >
-            dbutler@salk.edu
-          </a>
-          ).
+          This project is a work in progress, and we appreciate feedback!
         </div>
       </div>
     </div>

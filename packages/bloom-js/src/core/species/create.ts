@@ -37,7 +37,7 @@ export async function createSpecies(
       const { error } = await uploader.uploadImage(
         image_path,
         illustration_path,
-        'species_illustrations'
+        'species-illustrations'
       )
       if (error === null) {
         console.log(`Uploaded ${image_path} to ${illustration_path}`)

@@ -223,7 +223,7 @@ check_port() {
 
 check_port 80 "Nginx HTTP"
 check_port 443 "Nginx HTTPS"
-check_port 55323 "Supabase Studio"
+check_port 55324 "Supabase Studio"
 
 # =============================================================================
 # Summary

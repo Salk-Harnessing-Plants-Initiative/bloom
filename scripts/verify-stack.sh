@@ -166,7 +166,7 @@ echo -e "${BLUE}[3/3] MinIO Bucket Verification${NC}"
 
 EXPECTED_BUCKETS=(
   "images"
-  "species_illustrations"
+  "species-illustrations"
   "tus-files"
   "video"
   "scrna"

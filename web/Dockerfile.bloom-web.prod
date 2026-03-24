@@ -31,9 +31,8 @@ COPY web ./web
 COPY packages ./packages
 
 # Build shared packages (dist/ is gitignored, must build here)
-RUN cd /app/packages/bloom-js && npx tsc --build
-RUN cd /app/packages/bloom-fs && npx tsc --build
-RUN cd /app/packages/bloom-nextjs-auth && npx tsc --build
+RUN cd /app/packages/bloom-js && npx tsc -p tsconfig.json
+RUN cd /app/packages/bloom-fs && npx tsc -p tsconfig.json
 
 # Build the Next.js app
 WORKDIR /app/web
