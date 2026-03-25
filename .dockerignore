@@ -11,3 +11,4 @@ npm-debug.log
 .gitignore
 docker-compose.*
 Dockerfile*
+volumes/
