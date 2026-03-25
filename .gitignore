@@ -56,7 +56,7 @@ htmlcov/
 
 # project-specific
 /extra
-volumes/
+volumes/db/data/
 
 # minio
 minio/data/

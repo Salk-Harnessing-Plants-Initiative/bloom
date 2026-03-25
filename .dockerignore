@@ -1,13 +1,57 @@
-# Ignore local dependencies and build artifacts
+# Runtime data (Postgres, MinIO volumes created by docker compose)
+volumes/
+
+# Version control
+.git
+.gitignore
+
+# IDE / editor
+.vscode
+.idea
+*.swp
+*.swo
+
+# Environment files (secrets - never send to build context)
+.env
+.env.*
+!.env.example
+
+# Node / Next.js build artifacts
 node_modules
 **/node_modules
 .next
-.DS_Store
 npm-debug.log
-.env
-.env.*
-.vscode
-.git
-.gitignore
+yarn-error.log
+
+# Python artifacts
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+**/.pytest_cache
+*.egg-info
+.venv
+venv
+
+# Docker files (not needed inside images)
 docker-compose.*
 Dockerfile*
+
+# Documentation and config not needed in images
+*.md
+docs/
+openspec/
+scripts/
+supabase/
+PR24_REVIEW.md
+LICENSE
+Makefile
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test / CI
+.github/
+.claude/

@@ -99,7 +99,7 @@ def trim_conversation(state):
 
 AVAILABLE_MODELS = {
     "openai": ["gpt-4o"],
-    "local": ["Qwen/Qwen3-8B"],
+    "local": ["Qwen/Qwen3.5-9B"],
 }
 
 # Local LLM configuration (OpenAI-compatible endpoint, e.g., vLLM)
