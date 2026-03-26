@@ -25,19 +25,28 @@ We evaluated and rejected several "cleaner" approaches:
 | Python-generated compose | Over-engineering: YAML fidelity issues, ambiguous source of truth |
 | Template-based compose | Fragile string interpolation |
 
+## Terminology
+
+**These terms are used consistently throughout this spec and all Bloom documentation:**
+
+| Term | Meaning | Where it runs | Branch |
+|---|---|---|---|
+| **dev** | Local development with hot reload. Your laptop only. | Developer's machine | feature/* |
+| **staging** | Pre-production testing. Deployed automatically by CI. | bloom-dev server (`/opt/bloom/staging/`) | `staging` |
+| **production** | Live environment serving real users. | bloom-dev server (`/opt/bloom/production/`) | `main` |
+
+- **"dev" always means local.** The `docker-compose.dev.yml` file, `.env.dev`, and `make dev-up` are all for local development on your laptop. Never the server.
+- **The server hostname `bloom-dev` (pbiob-gh.salk.edu) is unrelated to the "dev" environment.** It hosts both staging and production.
+- **The `dev` git branch is retired.** We use `staging` as the branch name for CI deployment to avoid confusion with "dev" (local). Feature branches PR into `staging`.
+
 ## Branch Model
 
 ```
 feature branches → staging → main
                    │          │
                    │          └─ CI deploys to production
-                   └─ CI deploys to staging server
+                   └─ CI auto-deploys to staging server
 ```
-
-- `staging` branch: CI auto-deploys to `staging.pbiob-gh.salk.edu` on push
-- `main` branch: CI deploys to `bloom.pbiob-gh.salk.edu` after manual approval
-- `dev` is retired as a branch name (too easily confused with local development)
-- Feature branches PR into `staging`
 
 ## Environment Model
 
