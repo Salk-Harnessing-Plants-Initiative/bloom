@@ -3,4 +3,3 @@ CREATE TABLE IF NOT EXISTS plates_source_table (
     created_at TIMESTAMP DEFAULT NOW(),
     file_path TEXT UNIQUE
 );
-

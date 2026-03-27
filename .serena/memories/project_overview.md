@@ -1,9 +1,11 @@
 # Bloom Project Overview
 
 ## Purpose
+
 Full-stack web application for biological/scientific data visualization and management with video generation capabilities for cylindrical scan data.
 
 ## Tech Stack
+
 - **Frontend**: Next.js 16.0.0, React 19.2.0 (overridden to 18.2.0), TypeScript, Material-UI
 - **Backend**: Flask (Python 3.11), Supabase (self-hosted)
 - **Storage**: MinIO (S3-compatible), Supabase Storage
@@ -12,6 +14,7 @@ Full-stack web application for biological/scientific data visualization and mana
 - **Build**: Turbo (monorepo), pnpm (specified but npm used in practice)
 
 ## Project Structure
+
 ```
 /
 ├── web/              # Next.js frontend application
@@ -25,6 +28,7 @@ Full-stack web application for biological/scientific data visualization and mana
 ```
 
 ## Key Services (Development)
+
 - bloom-web: Next.js frontend (port 3000)
 - flask-app: Flask API (port 5002)
 - kong: API Gateway (port 8000)

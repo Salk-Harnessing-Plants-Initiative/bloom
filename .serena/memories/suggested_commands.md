@@ -1,6 +1,7 @@
 # Suggested Commands for Bloom Project
 
 ## Development Commands
+
 ```bash
 # Start development stack
 make dev-up
@@ -16,6 +17,7 @@ make logs
 ```
 
 ## Production Commands
+
 ```bash
 # Start production stack (detached)
 make prod-up
@@ -28,6 +30,7 @@ make rebuild-prod-fresh
 ```
 
 ## Frontend (from /web directory)
+
 ```bash
 # Development server
 npm run dev
@@ -40,6 +43,7 @@ npm run start
 ```
 
 ## Docker Commands
+
 ```bash
 # Start dev stack
 docker compose -f docker-compose.dev.yml --env-file .env.dev up --build
@@ -55,6 +59,7 @@ docker compose -f docker-compose.dev.yml down -v --remove-orphans
 ```
 
 ## System-specific Notes (macOS Darwin)
+
 - Standard Unix commands available: ls, cd, grep, find, cat, etc.
 - Docker Desktop required for container operations
 - MinIO data directory needs to be created with proper permissions:

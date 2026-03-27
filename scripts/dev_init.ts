@@ -14,9 +14,6 @@ const envFile = process.env.NODE_ENV === 'production' ? '.env.prod' : '.env.dev'
 dotenv.config({ path: envFile });
 console.log(`Loaded ${envFile}`);
 
-// In PROD :  Use NEXT_PUBLIC_SUPABASE_URL (http://localhost/api through nginx)
-// In DEV  :   Use SUPABASE_URL (http://localhost:8000 direct to Kong)
-
 const supabaseUrl = process.env.NODE_ENV === 'production' 
   ? process.env.NEXT_PUBLIC_SUPABASE_URL! 
   : process.env.SUPABASE_URL!;
@@ -242,10 +239,17 @@ async function loadTestTables(supabase: any): Promise<void> {
 
 async function main() {
     
-    await writeProfile("testuser5", "testuser5", "dev1");
-    await writeProfile("testuser6", "testuser6", "dev2");
-    await addDevUser("testuser5", "testuser5");
-    await addDevUser("testuser6", "testuser6");
+    const devUser1 = process.env.DEV_USER_1 || "testuser5";
+    const devPass1 = process.env.DEV_PASS_1;
+    if (!devPass1) throw new Error("DEV_PASS_1 environment variable is required");
+    const devUser2 = process.env.DEV_USER_2 || "testuser6";
+    const devPass2 = process.env.DEV_PASS_2;
+    if (!devPass2) throw new Error("DEV_PASS_2 environment variable is required");
+
+    await writeProfile(devUser1, devPass1, "dev1");
+    await writeProfile(devUser2, devPass2, "dev2");
+    await addDevUser(devUser1, devPass1);
+    await addDevUser(devUser2, devPass2);
     
     const supabase = createClient(
         supabaseUrl,

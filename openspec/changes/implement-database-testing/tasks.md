@@ -1,6 +1,7 @@
 # Implementation Tasks
 
 ## 1. Setup Test Infrastructure
+
 - [ ] 1.1 Create `supabase/tests/` directory structure
 - [ ] 1.2 Create `supabase/tests/conftest.py` with shared pytest fixtures
 - [ ] 1.3 Add pytest and psycopg2 to project dependencies
@@ -9,6 +10,7 @@
 - [ ] 1.6 Document how to run database tests locally
 
 ## 2. Migration Testing
+
 - [ ] 2.1 Create `supabase/tests/test_migrations.py`
 - [ ] 2.2 Write test for applying all migrations in order
 - [ ] 2.3 Write test for rolling back migrations
@@ -18,6 +20,7 @@
 - [ ] 2.7 Run migration tests locally and verify they pass
 
 ## 3. Data Integrity Testing
+
 - [ ] 3.1 Create `supabase/tests/test_data_integrity.py`
 - [ ] 3.2 Write tests for foreign key constraints (core tables)
 - [ ] 3.3 Write tests for check constraints
@@ -28,6 +31,7 @@
 - [ ] 3.8 Test that orphaned records cannot be created
 
 ## 4. RLS Policy Testing
+
 - [ ] 4.1 Create `supabase/tests/test_rls_policies.py`
 - [ ] 4.2 Create test fixtures for different user roles (anon, authenticated, admin)
 - [ ] 4.3 Write tests for SELECT policies (users see only allowed data)
@@ -39,6 +43,7 @@
 - [ ] 4.9 Test cross-table RLS policies (joins with RLS)
 
 ## 5. Performance Testing
+
 - [ ] 5.1 Create `supabase/tests/test_performance.py`
 - [ ] 5.2 Identify top 10 critical queries to baseline
 - [ ] 5.3 Write tests that establish performance baselines
@@ -50,6 +55,7 @@
 - [ ] 5.9 Document acceptable performance thresholds
 
 ## 6. Test Data Management
+
 - [ ] 6.1 Create `supabase/tests/fixtures/` directory
 - [ ] 6.2 Create factory functions for core entities (species, experiments, plants, scans)
 - [ ] 6.3 Create sample datasets for common scenarios
@@ -60,6 +66,7 @@
 - [ ] 6.8 Document test data patterns and usage
 
 ## 7. Backup and Recovery Testing
+
 - [ ] 7.1 Create `supabase/tests/test_backups.py`
 - [ ] 7.2 Write test to create database backup (pg_dump)
 - [ ] 7.3 Write test to restore backup to separate database
@@ -70,6 +77,7 @@
 - [ ] 7.8 Test disaster recovery scenario end-to-end
 
 ## 8. Schema Validation Testing
+
 - [ ] 8.1 Create `supabase/tests/test_schema.py`
 - [ ] 8.2 Write test to validate all tables have primary keys
 - [ ] 8.3 Write test to validate foreign keys have indexes
@@ -80,6 +88,7 @@
 - [ ] 8.8 Write test to validate function signatures
 
 ## 9. CI Integration
+
 - [ ] 9.1 Create `.github/workflows/database-tests.yml`
 - [ ] 9.2 Configure workflow to start test PostgreSQL container
 - [ ] 9.3 Configure workflow to apply migrations to test database
@@ -90,6 +99,7 @@
 - [ ] 9.8 Test CI workflow with intentional failures
 
 ## 10. Documentation
+
 - [ ] 10.1 Document how to run database tests locally
 - [ ] 10.2 Document how to write new migration tests
 - [ ] 10.3 Document how to write RLS policy tests

@@ -1,6 +1,7 @@
 # Code Style and Conventions
 
 ## TypeScript/Next.js
+
 - **TypeScript Version**: 5.1.6+
 - **Target**: ES6 (consider upgrading)
 - **Strict Mode**: Enabled
@@ -10,6 +11,7 @@
 - **Naming**: Not explicitly documented in configs
 
 ## Python/Flask
+
 - **Version**: Python 3.11
 - **Style**: Not explicitly enforced (no linting config found)
 - **Conventions observed**:
@@ -18,23 +20,27 @@
   - Class names in PascalCase (VideoWriter)
 
 ## File Organization
+
 - Monorepo structure with workspaces
 - Local packages in `/packages` directory
 - Separate Dockerfiles for dev and prod environments
 - Environment-specific docker-compose files
 
 ## Dependencies Management
+
 - **Specified**: pnpm@10.19.0 (packageManager field)
 - **In Practice**: npm used in Dockerfiles and Makefile
 - **Inconsistency**: Should standardize on one package manager
 
 ## Docker Conventions
+
 - Multi-stage builds for production
 - Development uses volume mounts for hot reload
 - Environment variables passed via .env files
 - Service naming: {service}-{env} pattern
 
 ## Currently Missing
+
 - ESLint configuration
 - Prettier configuration
 - Python linting (black, flake8, mypy)

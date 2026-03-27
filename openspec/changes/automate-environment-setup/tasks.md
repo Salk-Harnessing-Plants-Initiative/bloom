@@ -1,6 +1,7 @@
 # Implementation Tasks
 
 ## 1. Create Environment Templates
+
 - [ ] 1.1 Create `.env.dev.example` from current `.env.dev` (replace all secrets with placeholders)
 - [ ] 1.2 Add comments to `.env.dev.example` explaining each variable
 - [ ] 1.3 Create `.env.prod.example` with production-specific settings
@@ -8,6 +9,7 @@
 - [ ] 1.5 Test that templates are valid format (can be parsed as env files)
 
 ## 2. Implement Automated Setup Script
+
 - [ ] 2.1 Create `scripts/setup-env.sh` with proper shebang and error handling
 - [ ] 2.2 Implement argument parsing (dev|prod, --force flag)
 - [ ] 2.3 Implement credential generation functions:
@@ -23,6 +25,7 @@
 - [ ] 2.9 Test script with --force flag overwrites correctly
 
 ## 3. Security Improvements
+
 - [ ] 3.1 Update `.gitignore` to exclude all env files (`.env*`)
 - [ ] 3.2 Remove duplicate gitignore entries
 - [ ] 3.3 Verify `.env.dev` and `.env.prod` are properly ignored
@@ -30,6 +33,7 @@
 - [ ] 3.5 Add pre-commit hook check for accidentally staged env files (optional)
 
 ## 4. Documentation Updates
+
 - [ ] 4.1 Update README.md "Getting Started" section:
   - [ ] 4.1.1 Replace manual env setup with `./scripts/setup-env.sh dev` command
   - [ ] 4.1.2 Fix `make dev` → `make dev-up` throughout
@@ -42,6 +46,7 @@
 - [ ] 4.3 Update CONTRIBUTING.md with setup instructions for contributors
 
 ## 5. Testing
+
 - [ ] 5.1 Test fresh clone setup workflow:
   - [ ] 5.1.1 Clone repo to new directory
   - [ ] 5.1.2 Run `./scripts/setup-env.sh dev`
@@ -62,6 +67,7 @@
   - [ ] 5.4.3 Verify production-specific settings are correct
 
 ## 6. Security Verification
+
 - [ ] 6.1 Verify no secrets in git history (run git log search)
 - [ ] 6.2 Verify template files contain only placeholders
 - [ ] 6.3 Test generated secrets have sufficient entropy
@@ -70,6 +76,7 @@
 - [ ] 6.6 Add security audit checklist to PR template
 
 ## 7. Team Onboarding
+
 - [ ] 7.1 Create onboarding checklist for new developers
 - [ ] 7.2 Update team documentation with new setup process
 - [ ] 7.3 Notify existing team members about new setup script

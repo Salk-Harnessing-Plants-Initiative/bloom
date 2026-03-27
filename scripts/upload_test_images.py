@@ -10,8 +10,12 @@ from pathlib import Path
 from supabase import create_client, Client
 
 # Configuration
-SUPABASE_URL = os.getenv("SUPABASE_URL", "http://localhost:8000")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJhdWQiOiJhdXRoZW50aWNhdGVkIiwiaWF0IjoxNzYwNDA3NTYzLCJleHAiOjIwNzU5ODM1NjN9.MQtGFnfpIKzWTvUIDTH7IUyym8TXDW_kjcWcl-_LNgA")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+if not SUPABASE_URL:
+    raise RuntimeError("SUPABASE_URL environment variable is required")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+if not SUPABASE_KEY:
+    raise RuntimeError("SUPABASE_KEY environment variable is required")
 TEST_DATA_DIR = Path(__file__).parent.parent / "test_data" / "sample_cyl_scan"
 BUCKET_NAME = "images"
 STORAGE_PATH_PREFIX = "sample_cyl_scan"
