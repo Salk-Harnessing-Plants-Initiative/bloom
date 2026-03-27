@@ -32,7 +32,6 @@ from .scrna_tools import (
     get_top_de_genes_tool,
     get_cells_by_cluster_tool,
     get_gene_counts_tool,
-    get_gene_expression_by_cluster_tool,
 )
 
 from .cyl_tools import (
@@ -77,7 +76,6 @@ __all__ = [
     "get_top_de_genes_tool",
     "get_cells_by_cluster_tool",
     "get_gene_counts_tool",
-    "get_gene_expression_by_cluster_tool",
     # Cylinder tools
     "list_experiments_tool",
     "get_experiment_by_id_tool",
