@@ -35,8 +35,7 @@ $PSQL -c "ALTER USER pgbouncer WITH PASSWORD '$PGPASSWORD';" 2>/dev/null || true
 $PSQL -c "ALTER USER postgres WITH PASSWORD '$PGPASSWORD';" 2>/dev/null || true
 
 echo ""
-echo "=== Creating _supabase database ==="
-$PSQL -c "CREATE DATABASE _supabase;" 2>/dev/null || echo "  _supabase already exists"
+echo "=== Skipping _supabase database (analytics removed) ==="
 
 echo ""
 echo "=== Done. Restart services: ==="

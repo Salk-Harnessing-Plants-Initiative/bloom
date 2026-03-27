@@ -80,8 +80,6 @@ if [[ "$TRIAL" == true ]]; then
   SUPAVISOR_ENC_KEY="$(gen_hex 32)"
   SECRET_KEY_BASE="$(gen_hex 64)"
   DB_ENC_KEY="trial-dbenc-$(gen_alnum 32)"
-  LOGFLARE_PUBLIC_TOKEN="trial-logflare-pub-$(gen_alnum 16)"
-  LOGFLARE_PRIVATE_TOKEN="trial-logflare-priv-$(gen_alnum 16)"
 else
   info "Generating cryptographically secure credentials"
   JWT_SECRET="$(gen_secret 48)"
@@ -93,8 +91,6 @@ else
   SUPAVISOR_ENC_KEY="$(gen_hex 32)"
   SECRET_KEY_BASE="$(gen_hex 64)"
   DB_ENC_KEY="$(gen_secret 32)"
-  LOGFLARE_PUBLIC_TOKEN="$(gen_alnum 24)"
-  LOGFLARE_PRIVATE_TOKEN="$(gen_alnum 24)"
 fi
 
 # --- Set env-specific values ---
@@ -211,9 +207,6 @@ BLOOMMCP_API_KEY=${BLOOMMCP_API_KEY}
 # OPENAI_API_KEY is only used by Supabase Studio's optional AI assistant
 
 # --- Logflare/Analytics ---
-LOGFLARE_PUBLIC_ACCESS_TOKEN=${LOGFLARE_PUBLIC_TOKEN}
-LOGFLARE_PRIVATE_ACCESS_TOKEN=${LOGFLARE_PRIVATE_TOKEN}
-
 # --- Supabase Services ---
 ADDITIONAL_REDIRECT_URLS=
 DISABLE_SIGNUP=false

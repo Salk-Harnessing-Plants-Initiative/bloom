@@ -46,7 +46,6 @@ EXPECTED_SERVICES=(
   "studio"
   "supabase-imgproxy-prod"
   "supabase-meta-prod"
-  "supabase-analytics-prod"
 )
 
 # Get running containers
