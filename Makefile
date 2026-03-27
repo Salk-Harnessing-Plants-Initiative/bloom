@@ -1,12 +1,5 @@
 # Makefile for Bloom Monorepo
 
-# Postgres connection variables — override on the command line or via env
-POSTGRES_USER     ?= postgres
-POSTGRES_PASSWORD ?= postgres
-POSTGRES_HOST     ?= localhost
-POSTGRES_PORT     ?= 5432
-POSTGRES_DB       ?= postgres
-
 # Default target when you just run `make`
 .PHONY: help
 help:
@@ -284,7 +277,7 @@ gen-types:
 		exit 1; \
 	fi
 	@npx supabase gen types typescript \
-		--db-url "$${SUPABASE_DB_URL:-postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):$(POSTGRES_PORT)/$(POSTGRES_DB)}" \
+		--db-url "$${SUPABASE_DB_URL:-postgresql://postgres:$${POSTGRES_PASSWORD:-postgres}@localhost:5432/postgres}" \
 		> /tmp/database.types.ts
 	@echo "Copying database.types.ts to all packages..."
 	@cp /tmp/database.types.ts packages/bloom-fs/src/types/database.types.ts
