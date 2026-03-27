@@ -332,15 +332,20 @@ export default function MCPChat() {
           },
           body: JSON.stringify(body),
         });
-        const rawBody = await resp.text();
         if (!resp.ok) {
-          throw new Error(`Agent request failed ${resp.status}: ${rawBody}`);
+          const errBody = await resp.text();
+          throw new Error(`Agent request failed ${resp.status}: ${errBody}`);
         }
         let data: any = null;
+        let rawBody: string | null = null;
         try {
-          data = JSON.parse(rawBody);
-        } catch {
-          // rawBody already captured above
+          data = await resp.json();
+        } catch (jsonErr) {
+          try {
+            rawBody = await resp.text();
+          } catch (e) {
+            rawBody = String(jsonErr ?? e ?? "<no body>");
+          }
         }
 
         const parts: string[] = [];
