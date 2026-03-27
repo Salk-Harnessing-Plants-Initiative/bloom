@@ -84,16 +84,15 @@ bloom-dev server (pbiob-gh.salk.edu):
 
 All external traffic comes through nginx on 443 (HTTPS with Let's Encrypt). Docker services are not directly exposed to the internet.
 
-**Note:** 8 DNS A records needed (add `mcp.*` and `staging-mcp.*` to issue #17's DNS request).
-
-**nginx rewrite is a follow-up** aligned with CI/CD epic #16. The current `nginx/nginx.conf.template` runs inside Docker and handles 3 server blocks (main domain, studio, minio) with path-based API routing, no SSL. The target architecture needs 8 subdomain-based server blocks with SSL. This work belongs in issues #17/#21, not this PR.
+**Reverse proxy, SSL, and subdomain routing are follow-up work** aligned with CI/CD epic #16 (issues #17/#21). See the **Open Decisions** section below for choices the team needs to make — especially given the recent security incident on bloom-dev.
 
 **Services NOT exposed externally** (internal only, accessed through Kong or within Docker network):
 - PostgreSQL (5432/5433) — database, never public
 - PostgREST (3000 internal) — accessed through Kong's `/rest/v1/` route
 - GoTrue auth (9999 internal) — accessed through Kong's `/auth/v1/` route
 - Realtime (4000 internal) — accessed through Kong's `/realtime/v1/` route
-- Supabase Studio (55323/55324) — admin UI, access via SSH tunnel or VPN only
+- Supabase Studio (55323/55324) — admin UI, access via SSH tunnel only (see Decision 3)
+- MinIO Console (9101) — admin UI, access via SSH tunnel only (see Decision 3)
 - langchain-agent (5002/5003) — accessed by bloom-web internally
 - imgproxy, meta, analytics, supavisor — all internal
 
@@ -409,6 +408,107 @@ minio_data/
 3. Set up production: cd /opt/bloom/production && git clone <repo> . && make init  (then manually create .env.prod per PROD_SETUP.md)
 4. Configure nginx with subdomain routing (see epic #16, issue #17)
 5. staging-up && check, then dev-up with .env.prod
+```
+
+## Open Decisions (Team Discussion Required)
+
+These decisions affect the CI/CD epic (#16) and server setup (#17). They don't block this PR but need to be resolved before the server deployment work begins.
+
+### Decision 1: Replace nginx with Caddy + Cloudflare Tunnel
+
+**Context:** The bloom-dev server was recently quarantined by Salk IT security (Darktrace) because port 80 was publicly exposed with no SSL. The Supabase analytics container's outbound requests to DataDog and a GitHub binary download were flagged as malicious activity. This incident highlights the risk of open ports.
+
+**Recommendation: Caddy + Cloudflare Tunnel (split DNS)**
+
+```
+Salk network users (primary users):
+  → Internal DNS resolves to server LAN IP
+  → Caddy on server handles SSL + routing
+  → Zero latency penalty, no upload limits
+
+External users (remote access):
+  → Cloudflare DNS → Cloudflare Tunnel → server
+  → No inbound ports open on server firewall (prevents incidents like the one above)
+  → 100MB upload limit on Free plan (acceptable for occasional remote use)
+```
+
+**Why Caddy over nginx:**
+- Auto-provisions SSL via Let's Encrypt (no certbot setup)
+- ~30 lines of config vs the current 225-line nginx template
+- Built-in CORS, WebSocket support, hot reload
+- Current nginx template needs a near-complete rewrite anyway
+
+**Why Cloudflare Tunnel for external access:**
+- Zero inbound ports = zero attack surface (would have prevented the security incident)
+- The lab already has a Cloudflare account (Free plan)
+- Automatic SSL for the custom domain
+- DDoS protection included
+
+**Why split DNS (both Caddy and Tunnel):**
+- Cloudflare Free plan has 100MB upload limit — local users bypass this via Caddy
+- Routing through Cloudflare adds 50-200ms latency — unacceptable for an on-site research tool used daily
+- Local users get direct, fast access; external users get secure access through the tunnel
+
+**Alternative options:**
+- **A) Cloudflare Tunnel only (no Caddy):** Simpler, but all traffic goes through Cloudflare (latency + upload limit for everyone)
+- **B) Caddy only (no Cloudflare):** Requires open ports 80/443 on firewall (security risk that caused the incident)
+- **C) Keep nginx:** Works but needs complete rewrite, no auto-SSL, more complex config
+- **D) Upgrade Cloudflare plan:** Business ($200/mo) raises upload to 200MB; still doesn't solve latency
+
+### Decision 2: Subdomain count — 6 recommended (down from 8)
+
+**Current epic (#16) plan:** 8 subdomains (bloom, api, storage, studio × staging/prod)
+
+**Recommended: 6 subdomains** — drop storage and studio, add MCP:
+
+| Subdomain | Service | Why exposed |
+|---|---|---|
+| `bloom.yourdomain.com` | Web UI | The app |
+| `api.yourdomain.com` | Kong API gateway | Supabase client SDK needs a URL |
+| `mcp.yourdomain.com` | BloomMCP server | External AI tools connect here |
+| `staging.yourdomain.com` | Staging Web UI | CI/CD testing |
+| `staging-api.yourdomain.com` | Staging Kong | Staging API |
+| `staging-mcp.yourdomain.com` | Staging BloomMCP | Staging MCP testing |
+
+**Dropped from public access (SSH tunnel instead):**
+- Supabase Studio — admin database UI, sensitive. Access via `ssh -L 55323:localhost:55323 user@server`
+- MinIO Console — storage admin, sensitive. Access via `ssh -L 9101:localhost:9101 user@server`
+
+**Why SSH tunnel for admin tools:**
+- Fewer public endpoints = smaller attack surface
+- Only team members with SSH access can reach admin UIs
+- Studio and MinIO have their own passwords as a second layer
+- Reduces DNS records and SSL certs to manage
+- A `make admin-tunnel` Makefile target makes this easy
+
+**Alternative: Keep all 8 subdomains** if the team wants Studio/MinIO accessible without SSH. This is less secure but more convenient.
+
+### Decision 3: Custom domain
+
+**Recommendation:** Register a short domain (e.g., `bloomsalk.org`, `salkbloom.com`, `usebloom.app`) and manage DNS through Cloudflare.
+
+**Benefits:**
+- Clean URLs instead of `bloom.pbiob-gh.salk.edu`
+- No dependency on Salk IT for DNS changes
+- Cloudflare auto-SSL for all subdomains
+- ~$10-15/year for domain registration
+
+**Cloudflare as registrar** sells domains at cost (no markup) and DNS is pre-configured.
+
+**Alternative:** Keep `pbiob-gh.salk.edu` subdomains. Requires IT to create DNS records and manage them. Based on the current incident response timeline, this adds friction to every infrastructure change.
+
+### Decision 4: Port 80/443 and firewall policy going forward
+
+Given the security incident, the team should decide:
+
+- **A) No inbound ports ever** — Use Cloudflare Tunnel exclusively for external access. Salk IT never needs to open ports. Most secure.
+- **B) Ports 80/443 only, restricted to Cloudflare IPs** — Allow inbound only from Cloudflare's published IP ranges. Moderate security.
+- **C) Ports 80/443 open** — Current (failed) approach. Not recommended.
+
+For option A, the Makefile could include:
+```makefile
+admin-tunnel:    ## SSH tunnel for Studio + MinIO admin (local browser)
+	ssh -L 55323:localhost:55323 -L 9101:localhost:9101 user@pbiob-gh.salk.edu
 ```
 
 ## Production Notes
