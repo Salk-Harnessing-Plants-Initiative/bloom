@@ -8,6 +8,8 @@ help:
 	@echo "  make dev-down         - Stop development stack"
 	@echo "  make prod-up          - Run full stack in production mode"
 	@echo "  make prod-down        - Stop production stack"
+	@echo "  make staging-up       - Run staging stack (port 8080)"
+	@echo "  make staging-down     - Stop staging stack"
 	@echo "  make dev-logs         - Tail development logs"
 	@echo "  make reset-storage    - Reset dev DB and storage (destructive)"
 	@echo "  make drop-tables      - Drop all tables in public schema"
@@ -75,6 +77,24 @@ dev-down:
 prod-down:
 	docker compose -f docker-compose.prod.yml --env-file .env.prod down
 	@echo "All containers stopped."
+
+# Run staging stack
+.PHONY: staging-up
+staging-up:
+	@echo " Starting Bloom Staging Stack..."
+	docker compose -f docker-compose.staging.yml --env-file .env.staging up -d --build
+	@echo " Bloom Staging running on port 8080"
+
+# Stop staging
+.PHONY: staging-down
+staging-down:
+	docker compose -f docker-compose.staging.yml --env-file .env.staging down
+	@echo "Staging containers stopped."
+
+# View staging logs
+.PHONY: staging-logs
+staging-logs:
+	docker compose -f docker-compose.staging.yml logs -f
 
 # View logs for all services
 .PHONY: dev-logs

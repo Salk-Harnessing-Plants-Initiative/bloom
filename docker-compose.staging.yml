@@ -1,0 +1,478 @@
+# =============================================================================
+# Bloom v2 Staging Stack
+#
+# Runs alongside production on the same server with different ports.
+# Used for testing changes before deploying to production.
+#
+# Services: ~15 containers (nginx, bloom-web, langchain-agent, bloommcp,
+#   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
+#   meta, db-staging, supavisor, studio)
+#
+# Host-exposed ports:
+#   8080/8443 - nginx (HTTP/HTTPS)
+#   55325     - studio (admin, localhost only)
+# =============================================================================
+
+name: bloom_v2_staging
+
+services:
+
+  # -------------------
+  # Nginx
+  # -------------------
+  nginx:
+    image: nginx:1.28.3-alpine
+    container_name: staging-nginx
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    ports:
+      - "8080:80"
+      - "8443:443"
+    environment:
+      ANON_KEY: ${ANON_KEY}
+      DOMAIN_MAIN: ${DOMAIN_MAIN}
+      DOMAIN_STUDIO: ${DOMAIN_STUDIO}
+      DOMAIN_MINIO: ${DOMAIN_MINIO}
+    volumes:
+      - ./nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
+    depends_on:
+      - kong
+    command: /bin/sh -c "envsubst '$${ANON_KEY},$${DOMAIN_MAIN},$${DOMAIN_STUDIO},$${DOMAIN_MINIO}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"
+    networks:
+      - supanet
+
+  #-------------------
+  # BLOOM WEB
+  #-------------------
+  bloom-web:
+    build:
+      context: .
+      dockerfile: ./web/Dockerfile.bloom-web.prod
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
+        NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
+    container_name: staging-bloom-web
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:3000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      SUPABASE_URL: http://kong:8000
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
+      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
+      NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
+    depends_on:
+      - kong
+    networks:
+      - supanet
+
+  # -------------------
+  # LangChain Agent
+  # -------------------
+  langchain-agent:
+    build:
+      context: ./langchain
+      dockerfile: Dockerfile
+    container_name: staging-langchain-agent
+    expose:
+      - "5002"
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      BLOOM_MCP_URL: http://bloommcp:8811/mcp
+      BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
+      BLOOM_PLOTS_DIR: ${BLOOM_PLOTS_DIR}
+      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
+      LANGCHAIN_POSTGRES_URL: ${LANGCHAIN_POSTGRES_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db-staging}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER:-supabase_admin}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-bloom-langchain-staging}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:8080}
+    volumes:
+      - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
+    networks:
+      - supanet
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - kong
+      - bloommcp
+      - db-staging
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5002", "--workers", "4"]
+
+  # -------------------
+  # Bloom MCP Server
+  # -------------------
+  bloommcp:
+    build:
+      context: ./bloommcp
+      dockerfile: Dockerfile
+    container_name: staging-bloommcp
+    expose:
+      - "8811"
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      BLOOM_TRAITS_DIR: /app/data/SLEAP_OUT_CSV
+      BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
+      BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
+      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
+      BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
+    volumes:
+      - ./bloommcp/data/SLEAP_OUT_CSV:/app/data/SLEAP_OUT_CSV
+      - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
+      - ./bloommcp/data/ANALYSIS_OUTPUT:/app/data/ANALYSIS_OUTPUT
+    networks:
+      - supanet
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8811/mcp')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - kong
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # -------------------
+  #  Kong Gateway
+  # -------------------
+  kong:
+    container_name: staging-kong
+    image: kong:2.8.1
+    restart: unless-stopped
+    networks:
+      - supanet
+    expose:
+      - "8000"
+      - "8443"
+    volumes:
+      - ./volumes/api/kong.yml:/home/kong/temp.yml:ro,z
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+    entrypoint: bash -c 'eval "echo \"$$(cat ~/temp.yml)\"" > ~/kong.yml && /docker-entrypoint.sh kong docker-start'
+
+  # -------------------
+  # Auth (GoTrue)
+  # -------------------
+  auth:
+    container_name: staging-auth
+    image: supabase/gotrue:v2.177.0
+    restart: unless-stopped
+    networks:
+      - supanet
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      GOTRUE_SITE_URL: ${SITE_URL}
+      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS}
+      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP}
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: ${JWT_EXPIRY}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP}
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS}
+      GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM}
+
+  # -------------------
+  # PostgREST
+  # -------------------
+  rest:
+    container_name: staging-rest
+    image: postgrest/postgrest:v12.2.12
+    restart: unless-stopped
+    networks:
+      - supanet
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
+    command: ["postgrest"]
+
+  # -------------------
+  # Realtime
+  # -------------------
+  realtime:
+    container_name: staging-realtime
+    image: supabase/realtime:v2.34.47
+    restart: unless-stopped
+    networks:
+      - supanet
+    environment:
+      PORT: 4000
+      DB_HOST: ${POSTGRES_HOST}
+      DB_PORT: ${POSTGRES_PORT}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
+      DB_ENC_KEY: ${DB_ENC_KEY}
+      API_JWT_SECRET: ${JWT_SECRET}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      ERL_AFLAGS: -proto_dist inet_tcp
+      RLIMIT_NOFILE: "10000"
+      APP_NAME: realtime
+      SEED_SELF_HOST: true
+      RUN_JANITOR: true
+
+  # -------------------
+  # MinIO
+  # -------------------
+  supabase-minio:
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    container_name: staging-minio
+    restart: unless-stopped
+    networks:
+      - supanet
+    expose:
+      - "9000"
+      - "9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BROWSER_REDIRECT_URL: http://minio.localhost
+    command: server --console-address ":9001" /data
+    volumes:
+      - ${MINIO_DATA_PATH}:/data
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-01-17T23-25-50Z
+    container_name: staging-minio-init
+    depends_on:
+      - supabase-minio
+    networks:
+      - supanet
+    entrypoint: ["/bin/sh", "/usr/local/bin/init/create-buckets.sh"]
+    volumes:
+      - ./minio/init:/usr/local/bin/init
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+  # -------------------
+  # Supabase Storage
+  # -------------------
+  storage:
+    container_name: staging-storage
+    image: supabase/storage-api:v1.25.7
+    restart: unless-stopped
+    networks:
+      - supanet
+    expose:
+      - "5000"
+    volumes:
+      - ./volumes/storage:/var/lib/storage:z
+    environment:
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      POSTGREST_URL: http://rest:3000
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      FILE_SIZE_LIMIT: 52428800
+      STORAGE_BACKEND: s3
+      STORAGE_S3_BUCKET: bloom-storage
+      STORAGE_S3_ENDPOINT: http://supabase-minio:9000
+      STORAGE_S3_FORCE_PATH_STYLE: "true"
+      STORAGE_S3_REGION: us-east-1
+      STORAGE_S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      STORAGE_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      ENABLE_IMAGE_TRANSFORMATION: "true"
+      IMGPROXY_URL: ${IMGPROXY_URL}
+
+  # -------------------
+  # Database (Postgres)
+  # -------------------
+  db-staging:
+    container_name: db-staging
+    image: supabase/postgres:15.8.1.060
+    restart: unless-stopped
+    networks:
+      - supanet
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supabase_admin -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - ${POSTGRES_DATA_PATH:-/data/bloom/postgres-staging}:/var/lib/postgresql/data:Z
+      - ./volumes/db/init:/docker-entrypoint-initdb.d:Z
+      - db-config:/etc/postgresql-custom
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXP: ${JWT_EXPIRY}
+    command:
+      [
+        "postgres",
+        "-c",
+        "config_file=/etc/postgresql/postgresql.conf",
+        "-c",
+        "log_min_messages=fatal"
+      ]
+
+  # -------------------
+  # Supavisor (Connection Pooler)
+  # -------------------
+  supavisor:
+    container_name: staging-pooler
+    image: supabase/supavisor:2.5.7
+    restart: unless-stopped
+    networks:
+      - supanet
+    expose:
+      - "6543"
+    volumes:
+      - ./volumes/pooler/pooler.exs:/etc/pooler/pooler.exs:ro,z
+    environment:
+      PORT: 4000
+      SUPAVISOR_ENC_KEY: ${SUPAVISOR_ENC_KEY}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_URL: ecto://supabase_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/_supabase
+      CLUSTER_POSTGRES: true
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      VAULT_ENC_KEY: ${VAULT_ENC_KEY}
+      API_JWT_SECRET: ${JWT_SECRET}
+      METRICS_JWT_SECRET: ${JWT_SECRET}
+      REGION: local
+      ERL_AFLAGS: -proto_dist inet_tcp
+      POOLER_TENANT_ID: ${POOLER_TENANT_ID}
+      POOLER_DEFAULT_POOL_SIZE: ${POOLER_DEFAULT_POOL_SIZE}
+      POOLER_MAX_CLIENT_CONN: ${POOLER_MAX_CLIENT_CONN}
+      POOLER_POOL_MODE: transaction
+      DB_POOL_SIZE: ${POOLER_DB_POOL_SIZE}
+    command:
+      [
+        "/bin/sh",
+        "-c",
+        "/app/bin/migrate && /app/bin/supavisor eval \"$$(cat /etc/pooler/pooler.exs)\" && /app/bin/server"
+      ]
+
+  # -------------------
+  # Supabase Studio
+  # -------------------
+  studio:
+    container_name: staging-studio
+    image: supabase/studio:2025.06.30-sha-6f5982d
+    restart: unless-stopped
+    networks:
+      - supanet
+    expose:
+      - "3000"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    ports:
+      - "127.0.0.1:55325:3000"
+    environment:
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
+      DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_PUBLIC_URL: ${STUDIO_SUPABASE_PUBLIC_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+
+  # -------------------
+  # ImgProxy
+  # -------------------
+  imgproxy:
+    container_name: staging-imgproxy
+    image: darthsim/imgproxy:v3.8.0
+    restart: unless-stopped
+    networks:
+      - supanet
+    environment:
+      IMGPROXY_BIND: ":5001"
+      IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
+      IMGPROXY_USE_ETAG: "true"
+      IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
+
+  meta:
+    container_name: staging-meta
+    image: supabase/postgres-meta:v0.91.6
+    restart: unless-stopped
+    networks:
+      - supanet
+    depends_on:
+      db-staging:
+        condition: service_healthy
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: ${POSTGRES_HOST}
+      PG_META_DB_PORT: ${POSTGRES_PORT}
+      PG_META_DB_NAME: ${POSTGRES_DB}
+      PG_META_DB_USER: supabase_admin
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+
+volumes:
+  db-config:
+
+networks:
+  supanet:
+    driver: bridge

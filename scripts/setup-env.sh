@@ -30,14 +30,15 @@ FORCE=false
 
 for arg in "$@"; do
   case "$arg" in
-    dev|prod) ENV_MODE="$arg" ;;
+    dev|prod|staging) ENV_MODE="$arg" ;;
     --trial)  TRIAL=true ;;
     --force)  FORCE=true ;;
     -h|--help)
-      echo "Usage: $0 <dev|prod> [--trial] [--force]"
+      echo "Usage: $0 <dev|prod|staging> [--trial] [--force]"
       echo ""
       echo "  dev       Generate .env.dev"
       echo "  prod      Generate .env.prod"
+      echo "  staging   Generate .env.staging"
       echo "  --trial   Use test credentials (clearly marked non-production)"
       echo "  --force   Overwrite existing env file"
       exit 0
@@ -47,13 +48,15 @@ for arg in "$@"; do
 done
 
 if [[ -z "$ENV_MODE" ]]; then
-  err "Usage: $0 <dev|prod> [--trial] [--force]"
+  err "Usage: $0 <dev|prod|staging> [--trial] [--force]"
   exit 1
 fi
 
 # --- Determine output file ---
 if [[ "$ENV_MODE" == "dev" ]]; then
   ENV_FILE=".env.dev"
+elif [[ "$ENV_MODE" == "staging" ]]; then
+  ENV_FILE=".env.staging"
 else
   ENV_FILE=".env.prod"
 fi
@@ -114,21 +117,36 @@ if [[ "$ENV_MODE" == "dev" ]]; then
   MINIO_DATA_PATH="./minio/data"
   BLOOM_PLOTS_URL="http://localhost/plots"
   IMGPROXY_URL="http://imgproxy:5001"
-else
-  DOMAIN_MAIN="bloom.salk.edu"
-  DOMAIN_STUDIO="studio.bloom.salk.edu"
-  DOMAIN_MINIO="minio.bloom.salk.edu"
-  DOMAIN_FLASK="flask.bloom.salk.edu"
-  SITE_URL="https://bloom.salk.edu"
-  NEXT_PUBLIC_SUPABASE_URL="https://bloom.salk.edu/api"
-  NEXT_PUBLIC_APP_URL="https://bloom.salk.edu"
-  API_EXTERNAL_URL="https://bloom.salk.edu/api"
+elif [[ "$ENV_MODE" == "staging" ]]; then
+  DOMAIN_MAIN="bloom-dev.salk.edu"
+  DOMAIN_STUDIO="studio.bloom-dev.salk.edu"
+  DOMAIN_MINIO="minio.bloom-dev.salk.edu"
+  SITE_URL="http://bloom-dev.salk.edu:8080"
+  NEXT_PUBLIC_SUPABASE_URL="http://bloom-dev.salk.edu:8080/api"
+  NEXT_PUBLIC_APP_URL="http://bloom-dev.salk.edu:8080"
+  API_EXTERNAL_URL="http://bloom-dev.salk.edu:8080/api"
   SUPABASE_URL="http://kong:8000"
-  STUDIO_SUPABASE_PUBLIC_URL="https://bloom.salk.edu/api"
+  STUDIO_SUPABASE_PUBLIC_URL="http://bloom-dev.salk.edu:8080/api"
+  SUPABASE_COOKIE_NAME="sb-bloom-staging-auth-token"
+  POSTGRES_HOST="db-staging"
+  POSTGRES_DATA_PATH="/data/bloom/postgres-staging"
+  MINIO_DATA_PATH="/data/bloom/minio-staging"
+  BLOOM_PLOTS_URL="http://bloom-dev.salk.edu:8080/plots"
+  IMGPROXY_URL="http://imgproxy:5001"
+else
+  DOMAIN_MAIN="bloom-dev.salk.edu"
+  DOMAIN_STUDIO="studio.bloom-dev.salk.edu"
+  DOMAIN_MINIO="minio.bloom-dev.salk.edu"
+  SITE_URL="http://bloom-dev.salk.edu"
+  NEXT_PUBLIC_SUPABASE_URL="http://bloom-dev.salk.edu/api"
+  NEXT_PUBLIC_APP_URL="http://bloom-dev.salk.edu"
+  API_EXTERNAL_URL="http://bloom-dev.salk.edu/api"
+  SUPABASE_URL="http://kong:8000"
+  STUDIO_SUPABASE_PUBLIC_URL="http://bloom-dev.salk.edu/api"
   SUPABASE_COOKIE_NAME="sb-bloom-salk-edu-auth-token"
   POSTGRES_HOST="db-prod"
-  MINIO_DATA_PATH="/data/bloom/minio"
-  BLOOM_PLOTS_URL="https://bloom.salk.edu/plots"
+  MINIO_DATA_PATH="/data/bloom-data/minio"
+  BLOOM_PLOTS_URL="http://bloom-dev.salk.edu/plots"
   IMGPROXY_URL="http://imgproxy:5001"
 fi
 
