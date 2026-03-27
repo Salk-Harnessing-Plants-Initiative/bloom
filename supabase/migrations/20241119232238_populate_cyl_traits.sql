@@ -88,4 +88,3 @@ AS $$
     ORDER BY
     accession_name, plant_id;
 $$ LANGUAGE SQL;
-
