@@ -108,6 +108,7 @@ These gaps lead to:
   - Codecov account (free for open source)
 
 - **Migration required**:
+
   - Team training on uv commands (1-2 hours)
   - Initial test writing effort (3 weeks, 2 developers 50% time)
   - Existing code formatting pass (1-2 days)

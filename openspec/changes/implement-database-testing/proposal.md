@@ -13,6 +13,7 @@ The Bloom project uses a self-hosted Supabase PostgreSQL database with 100+ migr
 - **No RLS policy testing**: Security policies protecting sensitive data are not systematically tested
 
 These gaps lead to:
+
 - Production schema migration failures
 - Data integrity violations that go undetected
 - Performance regressions in queries
@@ -23,6 +24,7 @@ These gaps lead to:
 ## What Changes
 
 ### 1. Migration Testing Framework
+
 - Create `supabase/tests/test_migrations.py` with pytest framework
 - Automated tests for applying migrations forward and backward
 - Validation that migrations are idempotent (can run multiple times safely)
@@ -31,6 +33,7 @@ These gaps lead to:
 - Automated migration ordering validation
 
 ### 2. Data Integrity Testing
+
 - Test all foreign key constraints (referential integrity)
 - Test check constraints and business rules
 - Test NOT NULL constraints on critical fields
@@ -39,6 +42,7 @@ These gaps lead to:
 - Test trigger functions and their side effects
 
 ### 3. RLS Policy Testing
+
 - Create test users with different roles (anon, authenticated, service_role)
 - Test that RLS policies correctly restrict access
 - Test that users can only see/modify their own data
@@ -47,6 +51,7 @@ These gaps lead to:
 - Test performance impact of RLS policies
 
 ### 4. Performance Testing
+
 - Establish query performance baselines for critical queries
 - Automated regression detection for slow queries
 - Test index effectiveness
@@ -55,6 +60,7 @@ These gaps lead to:
 - Identify N+1 query problems
 
 ### 5. Test Data Management
+
 - Create database fixtures for common scenarios
 - Use factories (faker) to generate realistic test data
 - Seed databases with representative datasets
@@ -62,6 +68,7 @@ These gaps lead to:
 - Snapshot/restore mechanisms for fast test setup
 
 ### 6. Backup and Recovery Testing
+
 - Automated backup verification (can restore successfully)
 - Test point-in-time recovery (PITR)
 - Test backup restoration to separate environment
@@ -69,6 +76,7 @@ These gaps lead to:
 - Document and test disaster recovery procedures
 
 ### 7. Schema Validation
+
 - Test that all tables have appropriate indexes
 - Validate naming conventions (consistency)
 - Test that all foreign keys have indexes
@@ -79,6 +87,7 @@ These gaps lead to:
 
 - **Affected specs**: `database-testing` (new capability spec)
 - **Affected code**:
+
   - **New files**:
     - `supabase/tests/` - Test directory structure
     - `supabase/tests/test_migrations.py` - Migration tests
@@ -96,6 +105,7 @@ These gaps lead to:
 - **Breaking changes**: None (tests are additive)
 
 - **Dependencies**:
+
   - pytest (already in CI/CD proposal)
   - psycopg2 (PostgreSQL adapter for Python)
   - faker (test data generation)
@@ -103,6 +113,7 @@ These gaps lead to:
   - Docker Compose (for test database)
 
 - **Testing required**:
+
   - Run database tests locally before CI integration
   - Verify tests catch intentional migration errors
   - Validate RLS policy tests with different user roles

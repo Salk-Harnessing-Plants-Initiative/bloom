@@ -3,6 +3,7 @@
 ## Context
 
 Bloom uses a self-hosted Supabase PostgreSQL database with:
+
 - 100+ migration files managing schema evolution
 - Complex schema with tables, views, functions, triggers
 - Row Level Security (RLS) policies protecting sensitive data
@@ -14,6 +15,7 @@ Database reliability is critical for research data integrity.
 ## Goals / Non-Goals
 
 **Goals:**
+
 - Prevent migration failures in production
 - Ensure data integrity constraints are respected
 - Verify RLS policies protect data correctly
@@ -22,6 +24,7 @@ Database reliability is critical for research data integrity.
 - Provide reproducible test data for debugging
 
 **Non-Goals:**
+
 - Testing application business logic (covered by API tests)
 - Production database monitoring (separate observability concern)
 - Query optimization tuning (this is validation, not optimization)
@@ -33,6 +36,7 @@ Database reliability is critical for research data integrity.
 **What:** Use pytest framework for all database tests
 
 **Why:**
+
 - Consistent with backend testing strategy (from CI/CD proposal)
 - Excellent fixture support for database setup/teardown
 - Can integrate with existing CI pipeline
@@ -43,6 +47,7 @@ Database reliability is critical for research data integrity.
 **What:** Run tests against local Docker Compose Supabase stack
 
 **Why:**
+
 - Isolated from production data
 - Fast test execution (no network latency)
 - Can reset database state between tests
@@ -50,6 +55,7 @@ Database reliability is critical for research data integrity.
 - No cost for test database
 
 **Test database setup:**
+
 ```bash
 docker compose -f docker-compose.dev.yml up -d db-dev
 # Run migrations
@@ -62,6 +68,7 @@ docker compose -f docker-compose.dev.yml up -d db-dev
 **What:** Create test users for anon, authenticated, and service_role
 
 **Why:**
+
 - RLS policies behave differently based on JWT claims
 - Must verify anon users cannot access protected data
 - Must verify authenticated users see only their own data
@@ -72,12 +79,14 @@ docker compose -f docker-compose.dev.yml up -d db-dev
 **What:** Measure and track query performance, fail if regressions detected
 
 **Why:**
+
 - Performance testing is about detecting regressions, not optimization
 - Baselines provide early warning of slow queries
 - Can catch missing indexes or inefficient query plans
 - Focus on critical queries (top 10 by frequency/importance)
 
 **Threshold approach:**
+
 - Measure baseline on representative data (e.g., 1000 scans)
 - Allow 10% variance for normal fluctuation
 - Fail test if query takes >2x baseline (clear regression)
@@ -87,6 +96,7 @@ docker compose -f docker-compose.dev.yml up -d db-dev
 **What:** Create Python factory functions to generate test data
 
 **Why:**
+
 - More flexible than static SQL dumps
 - Can generate random/realistic data with faker
 - Easier to maintain (no brittle SQL scripts)
@@ -94,6 +104,7 @@ docker compose -f docker-compose.dev.yml up -d db-dev
 - Self-documenting (code shows what data looks like)
 
 **Example:**
+
 ```python
 def create_test_plant(species_id: int, experiment_id: int) -> dict:
     return {
@@ -109,6 +120,7 @@ def create_test_plant(species_id: int, experiment_id: int) -> dict:
 See [tasks.md](./tasks.md) for detailed implementation tasks.
 
 **Key components:**
+
 1. **Migration tests**: Apply/rollback migrations, verify idempotency
 2. **Integrity tests**: Test constraints, cascades, triggers
 3. **RLS tests**: Test policies with different user roles
@@ -123,6 +135,7 @@ See [tasks.md](./tasks.md) for detailed implementation tasks.
 **Risk:** Tests may interfere with each other if database state not properly isolated
 
 **Mitigation:**
+
 - Use pytest fixtures for database setup/teardown
 - Transaction rollback after each test
 - Separate test database from development database
@@ -133,6 +146,7 @@ See [tasks.md](./tasks.md) for detailed implementation tasks.
 **Risk:** Database tests may be slow, especially with large datasets
 
 **Mitigation:**
+
 - Run in parallel where possible (separate test databases)
 - Use factories to generate minimal necessary data
 - Optimize test database (smaller datasets for unit tests)
@@ -143,6 +157,7 @@ See [tasks.md](./tasks.md) for detailed implementation tasks.
 **Risk:** RLS tests depend on JWT token generation, may be flaky
 
 **Mitigation:**
+
 - Use Supabase service role key for deterministic auth
 - Create test users with known IDs
 - Clear test user data between tests
@@ -153,6 +168,7 @@ See [tasks.md](./tasks.md) for detailed implementation tasks.
 **Trade-off:** Comprehensive database tests require ongoing maintenance as schema evolves
 
 **Approach:**
+
 - Focus on high-value tests (critical queries, sensitive RLS policies)
 - Accept some duplication for clarity (separate test per policy)
 - Use factories to reduce brittle test data

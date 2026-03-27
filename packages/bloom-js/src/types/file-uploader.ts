@@ -1,7 +1,7 @@
-import { Database } from "./database.types.js";
-import { StorageError } from "@supabase/storage-js";
+import { Database } from './database.types.js'
+import { StorageError } from '@supabase/storage-js'
 
-export type Species = Database["public"]["Tables"]["species"]["Row"];
+export type Species = Database['public']['Tables']['species']['Row']
 
 export interface FileUploader {
   uploadImage(
@@ -9,5 +9,5 @@ export interface FileUploader {
     dst: string,
     bucket: string,
     opts?: { pngCompression: number }
-  ): Promise<{ error: StorageError | null }>;
+  ): Promise<{ error: StorageError | null }>
 }
