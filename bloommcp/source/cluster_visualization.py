@@ -48,7 +48,7 @@ def create_cluster_scatter_pca(
         >>> # Option 2: Compute PCA for visualization only
         >>> fig = create_cluster_scatter_pca(kmeans_result)
     """
-    from .pca import perform_pca_analysis
+    from sleap_roots_analyze.pca import perform_pca_analysis
 
     fig, ax = plt.subplots(figsize=figsize)
 
