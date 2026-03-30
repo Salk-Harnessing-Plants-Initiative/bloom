@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
-import { ALL_SPECIES, getSpeciesColor } from "./constants";
+import { ALL_SPECIES, SPECIES_BY_TYPE, getSpeciesColor } from "./constants";
 import TextField from "@mui/material/TextField";
 import Button from "@mui/material/Button";
 import Checkbox from "@mui/material/Checkbox";
@@ -236,30 +236,35 @@ export default function GeneSearch({
       </div>
 
       <div className="flex items-center gap-4 flex-wrap">
-        <div className="flex items-center gap-1.5">
-          <span className="text-sm text-neutral-500 mr-1">Species:</span>
-          {ALL_SPECIES.map((species) => (
-            <Chip
-              key={species}
-              label={species}
-              size="small"
-              variant={selectedSpecies.includes(species) ? "filled" : "outlined"}
-              onClick={() => toggleSpecies(species)}
-              sx={{
-                borderColor: getSpeciesColor(species),
-                backgroundColor: selectedSpecies.includes(species)
-                  ? getSpeciesColor(species)
-                  : "transparent",
-                color: selectedSpecies.includes(species) ? "#fff" : getSpeciesColor(species),
-                fontWeight: 500,
-                textTransform: "capitalize",
-                "&:hover": {
-                  backgroundColor: getSpeciesColor(species),
-                  color: "#fff",
-                  opacity: 0.9,
-                },
-              }}
-            />
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {Object.entries(SPECIES_BY_TYPE).map(([type, species]) => (
+            <div key={type} className="flex items-center gap-1">
+              <span className="text-xs text-neutral-400 font-medium mr-0.5">{type}:</span>
+              {species.map((s) => (
+                <Chip
+                  key={s}
+                  label={s}
+                  size="small"
+                  variant={selectedSpecies.includes(s) ? "filled" : "outlined"}
+                  onClick={() => toggleSpecies(s)}
+                  sx={{
+                    borderColor: getSpeciesColor(s),
+                    backgroundColor: selectedSpecies.includes(s)
+                      ? getSpeciesColor(s)
+                      : "transparent",
+                    color: selectedSpecies.includes(s) ? "#fff" : getSpeciesColor(s),
+                    fontWeight: 500,
+                    textTransform: "capitalize",
+                    "&:hover": {
+                      backgroundColor: getSpeciesColor(s),
+                      color: "#fff",
+                      opacity: 0.9,
+                    },
+                  }}
+                />
+              ))}
+              <span className="mx-1 text-neutral-300">|</span>
+            </div>
           ))}
         </div>
 

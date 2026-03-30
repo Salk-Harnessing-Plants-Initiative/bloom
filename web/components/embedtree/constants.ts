@@ -3,6 +3,8 @@ export const SPECIES_COLORS: Record<string, string> = {
   pennycress: "#FFD54F",
   soybean: "#81C784",
   sorghum: "#EF5350",
+  eh23a: "#AB47BC",
+  emiliania: "#26C6DA",
 };
 
 export const SPECIES_GROUPS: Record<
@@ -13,6 +15,14 @@ export const SPECIES_GROUPS: Record<
   pennycress: { family: "Brassicaceae", type: "Dicot" },
   soybean: { family: "Fabaceae", type: "Dicot" },
   sorghum: { family: "Poaceae", type: "Monocot" },
+  eh23a: { family: "Cannabaceae", type: "Dicot" },
+  emiliania: { family: "Noelaerhabdaceae", type: "Marine phytoplankton" },
+};
+
+export const SPECIES_BY_TYPE: Record<string, string[]> = {
+  Dicot: ["arabidopsis", "pennycress", "soybean", "eh23a"],
+  Monocot: ["sorghum"],
+  "Marine phytoplankton": ["emiliania"],
 };
 
 export function getSpeciesColor(species: string): string {

@@ -1,6 +1,6 @@
 "use client";
 
-import { getSpeciesColor } from "./constants";
+import { getSpeciesColor, getSpeciesGroup } from "./constants";
 import type { KnnResult } from "./GeneSearch";
 
 interface KnnResultsProps {
@@ -65,6 +65,9 @@ function ResultTable({
                       />
                       <span className="capitalize text-neutral-700">
                         {row.species}
+                      </span>
+                      <span className="text-[10px] text-neutral-400 bg-neutral-100 px-1 py-0.5 rounded">
+                        {getSpeciesGroup(row.species).type}
                       </span>
                     </span>
                   </td>
