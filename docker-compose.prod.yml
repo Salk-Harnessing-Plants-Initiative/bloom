@@ -1,5 +1,21 @@
+# =============================================================================
+# Bloom v2 Production Stack
+#
+# Minimum Resource Requirements:
+#   CPU:     8 vCPU
+#   RAM:     16 GB
+#   Disk:    100 GB SSD
+#
+# Services: ~17 containers (nginx, bloom-web, langchain-agent, bloommcp,
+#   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
+#   meta, analytics, db-prod, supavisor, studio)
+#
+# Host-exposed ports:
+#   80/443  - nginx (public HTTP/HTTPS)
+#   55323   - studio (admin, restrict via firewall)
+# =============================================================================
+
 name: bloom_v2_prod
-version : "1.0"
 
 services:
 
@@ -10,18 +26,22 @@ services:
     image: nginx:1.28.0-alpine
     container_name: bloom-nginx
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     ports:
       - "80:80"
       - "443:443"
     environment:
-      ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiYXVkIjoiYXV0aGVudGljYXRlZCIsImlhdCI6MTc2MDQwNzUwMSwiZXhwIjoyMDc1OTgzNTAxfQ.BNyTbLii0WFXxlLk8JMVzCfRzmPqCYCYW5FtC1ErZZE
+      ANON_KEY: ${ANON_KEY}
       DOMAIN_MAIN: ${DOMAIN_MAIN}
       DOMAIN_STUDIO: ${DOMAIN_STUDIO}
       DOMAIN_MINIO: ${DOMAIN_MINIO}
       DOMAIN_FLASK: ${DOMAIN_FLASK}
     volumes:
       - ./nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
-      - ./web/out:/usr/share/nginx/html:ro
     depends_on:
       - kong
     command: /bin/sh -c "envsubst '$${ANON_KEY},$${DOMAIN_MAIN},$${DOMAIN_STUDIO},$${DOMAIN_MINIO},$${DOMAIN_FLASK}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"
@@ -31,7 +51,7 @@ services:
   #-------------------
   # BLOOM WEB 
   #-------------------
-  bloom-web: 
+  bloom-web:
     build:
       context: .
       dockerfile: ./web/Dockerfile.bloom-web.prod
@@ -39,6 +59,18 @@ services:
         NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
         NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:3000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     expose:
       - "3000"
     environment:
@@ -49,12 +81,98 @@ services:
       NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
       SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      JWT_SECRET: ${JWT_SECRET}
       SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
     depends_on:
       - kong
     networks:
       - supanet
+
+  # -------------------
+  # LangChain Agent
+  # -------------------
+  langchain-agent:
+    build:
+      context: ./langchain
+      dockerfile: Dockerfile
+    expose:
+      - "5002"
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      BLOOM_MCP_URL: http://bloommcp:8811/mcp
+      BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
+      BLOOM_PLOTS_DIR: ${BLOOM_PLOTS_DIR}
+      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
+      LANGCHAIN_POSTGRES_URL: ${LANGCHAIN_POSTGRES_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db-prod}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER:-supabase_admin}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-bloom-langchain}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost}
+    volumes:
+      - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
+    networks:
+      - supanet
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - kong
+      - bloommcp
+      - db-prod
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5002", "--workers", "4"]
+
+  # -------------------
+  # Bloom MCP Server
+  # -------------------
+  bloommcp:
+    build:
+      context: ./bloommcp
+      dockerfile: Dockerfile
+    expose:
+      - "8811"
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      BLOOM_TRAITS_DIR: /app/data/SLEAP_OUT_CSV
+      BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
+      BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
+      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
+      BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
+    volumes:
+      - ./bloommcp/data/SLEAP_OUT_CSV:/app/data/SLEAP_OUT_CSV
+      - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
+      - ./bloommcp/data/ANALYSIS_OUTPUT:/app/data/ANALYSIS_OUTPUT
+    networks:
+      - supanet
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8811/mcp')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - kong
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   # -------------------
   #  Kong Gateway
@@ -147,7 +265,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
       DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
-      DB_ENC_KEY: supabaserealtime
+      DB_ENC_KEY: ${DB_ENC_KEY}
       API_JWT_SECRET: ${JWT_SECRET}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
       ERL_AFLAGS: -proto_dist inet_tcp
@@ -157,40 +275,10 @@ services:
       RUN_JANITOR: true
 
   # -------------------
-  # Flask API
-  # -------------------
-  flask-app:
-    container_name: flask-app
-    build: ./flask
-    restart: unless-stopped
-    networks:
-      - supanet
-    expose:
-      - "5002"
-    environment:
-      - FLASK_ENV=production
-      - SUPABASE_URL=${FLASK_SUPABASE_URL}
-      - SUPABASE_KEY=${SERVICE_ROLE_KEY}
-      - JWT_SECRET=${JWT_SECRET}
-      - S3_BUCKET_NAME=${MINIO_DEFAULT_BUCKET}
-      - S3_IMAGES_PATH=images
-      - AWS_REGION=${MINIO_S3_STORAGE_REGION}
-      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
-      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
-      - S3_ENDPOINT=${MINIO_STORAGE_S3_ENDPOINT}
-      - DOMAIN_MAIN=${DOMAIN_MAIN}
-      - DOMAIN_STUDIO=${DOMAIN_STUDIO}
-      - DOMAIN_MINIO=${DOMAIN_MINIO}
-      - DOMAIN_FLASK=${DOMAIN_FLASK}
-    depends_on:
-      - kong
-      - supabase-minio
-    
-  # -------------------
   # MinIO
   # -------------------
   supabase-minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
     container_name: supabase-minio
     restart: unless-stopped
     networks:
@@ -204,10 +292,10 @@ services:
       MINIO_BROWSER_REDIRECT_URL: http://minio.localhost
     command: server --console-address ":9001" /data
     volumes:
-      - /Users/benficaa/data/minio:/data
+      - ${MINIO_DATA_PATH}:/data
   
   minio-init:
-    image: minio/mc
+    image: minio/mc:RELEASE.2025-01-17T23-25-50Z
     depends_on:
       - supabase-minio
     networks:
@@ -330,8 +418,13 @@ services:
       - supanet
     expose:
     - "3000"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     ports:
-      - "55323:3000"
+      - "127.0.0.1:55324:3000"
     environment:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -361,7 +454,7 @@ services:
       IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
   
   meta:
-    container_name: supabase-meta-dev
+    container_name: supabase-meta-prod
     image: supabase/postgres-meta:v0.91.6
     restart: unless-stopped
     networks:
@@ -380,13 +473,13 @@ services:
       PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
   
   analytics:
-    container_name: supabase-analytics-dev
+    container_name: supabase-analytics-prod
     image: supabase/logflare:1.14.2
     restart: unless-stopped
     networks:
       - supanet
-    ports:
-      - 4000:4000
+    expose:
+      - "4000"
     healthcheck:
       test:
         [
