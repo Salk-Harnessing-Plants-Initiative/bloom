@@ -1,0 +1,94 @@
+name: Deploy
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  build:
+    name: Build & Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Security audit (npm)
+        run: npm audit --audit-level=critical
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Security audit (Python)
+        run: |
+          pip install uv
+          uv pip install --system pip-audit
+          pip-audit -r langchain/requirements.txt
+          pip-audit -r bloommcp/requirements.txt
+
+      - name: Build shared packages
+        run: |
+          cd packages/bloom-js && npx tsc -p tsconfig.json
+          cd ../../packages/bloom-fs && npx tsc -p tsconfig.json
+
+      - name: Build Next.js app
+        run: cd web && npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: http://localhost:8000
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
+          NEXT_PUBLIC_SUPABASE_COOKIE_NAME: sb-localhost-auth-token
+
+      - name: Build Docker images
+        run: |
+          docker build -f web/Dockerfile.bloom-web.prod \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL=http://localhost:8000 \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder \
+            --build-arg NEXT_PUBLIC_SUPABASE_COOKIE_NAME=sb-localhost-auth-token \
+            -t bloom-web:${{ github.sha }} .
+          docker build -f langchain/Dockerfile -t langchain-agent:${{ github.sha }} ./langchain
+          docker build -f bloommcp/Dockerfile -t bloommcp:${{ github.sha }} ./bloommcp
+
+      - name: Scan images with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'bloom-web:${{ github.sha }}'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Staging deployment
+        run: echo "TODO - SSH to server and deploy staging stack"
+
+  deploy-production:
+    name: Deploy to Production
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Production deployment
+        run: echo "TODO - SSH to server and deploy production stack"
