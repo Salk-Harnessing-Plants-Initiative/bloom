@@ -83,21 +83,21 @@ jobs:
 
       # Scan built images for CVEs
       - name: Scan bloom-web image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.69.3
         with:
           image-ref: 'bloom-web:ci'
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
 
       - name: Scan langchain-agent image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.69.3
         with:
           image-ref: 'langchain-agent:ci'
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
 
       - name: Scan bloommcp image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.69.3
         with:
           image-ref: 'bloommcp:ci'
           severity: 'CRITICAL,HIGH'
@@ -108,42 +108,42 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Scan nginx
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.69.3
         with:
           image-ref: 'nginx:1.28.0-alpine'
           severity: 'CRITICAL'
           exit-code: '1'
 
       - name: Scan supabase/postgres
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.69.3
         with:
           image-ref: 'supabase/postgres:15.8.1.060'
           severity: 'CRITICAL'
           exit-code: '1'
 
       - name: Scan kong
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.69.3
         with:
           image-ref: 'kong:2.8.1'
           severity: 'CRITICAL'
           exit-code: '1'
 
       - name: Scan supabase/gotrue
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.69.3
         with:
           image-ref: 'supabase/gotrue:v2.177.0'
           severity: 'CRITICAL'
           exit-code: '1'
 
       - name: Scan supabase/storage-api
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.69.3
         with:
           image-ref: 'supabase/storage-api:v1.25.7'
           severity: 'CRITICAL'
           exit-code: '1'
 
       - name: Scan minio
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.69.3
         with:
           image-ref: 'minio/minio:RELEASE.2025-01-20T14-49-07Z'
           severity: 'CRITICAL'
