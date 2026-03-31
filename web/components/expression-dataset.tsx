@@ -1,20 +1,23 @@
-'use client'
+"use client";
 
-import { Database } from '@/lib/database.types'
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
-import { useState, useEffect, useRef } from 'react'
-import createREGL from 'regl'
+import { Database } from "@/lib/database.types";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
+import { useState, useEffect, useRef } from "react";
+import { Canvas, useFrame } from "@react-three/fiber";
+import { OrbitControls } from "@react-three/drei";
+import * as THREE from "three";
+import createREGL from "regl";
 
 type SCRNAGene = {
-  gene_name: string
-}
+  gene_name: string;
+};
 
 type SCRNACell = {
-  cluster_id: number | null
-  cell_number: number | null
-  x: number | null
-  y: number | null
-}
+  cluster_id: number | null;
+  cell_number: number | null;
+  x: number | null;
+  y: number | null;
+};
 
 // List of 30 pastel colors for different clusters
 const clusterColors = [
@@ -58,195 +61,191 @@ const clusterColors = [
   [0.9922, 0.9569, 0.8, 1],
   [0.7098, 0.5059, 0.6078, 1],
   [0.9922, 0.9569, 0.8314, 1],
-]
+];
 
 export default function ExpressionDataset({ name }: { name: string }) {
-  const [genes, setGenes] = useState<SCRNAGene[] | null>(null)
-  const [cells, setCells] = useState<SCRNACell[] | null>(null)
-  const [numClusters, setNumClusters] = useState<number | null>(null)
-  const [selectedCluster, setSelectedCluster] = useState<number | null>(null)
-  const [selectedGene, setSelectedGene] = useState<string | null>(null)
-  const [counts, setCounts] = useState<any | null>({})
+  const [genes, setGenes] = useState<SCRNAGene[] | null>(null);
+  const [cells, setCells] = useState<SCRNACell[] | null>(null);
+  const [numClusters, setNumClusters] = useState<number | null>(null);
+  const [selectedCluster, setSelectedCluster] = useState<number | null>(null);
+  const [selectedGene, setSelectedGene] = useState<string | null>(null);
+  const [counts, setCounts] = useState<any | null>({});
+  const [is3D, setIs3D] = useState<boolean>(false);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchData = async () => {
-      const supabase = createClientComponentClient<Database>()
+      const supabase = createClientSupabaseClient();
       supabase
-        .from('scrna_datasets')
-        .select('*, scrna_genes(gene_name), scrna_cells(x, y, cluster_id, cell_number)')
-        .eq('name', name)
+        .from("scrna_datasets")
+        .select(
+          "*, scrna_genes(gene_name), scrna_cells(x, y, cluster_id, cell_number)"
+        )
+        .eq("name", name)
         .single<{
-          scrna_genes: SCRNAGene[]
-          scrna_cells: SCRNACell[]
+          scrna_genes: SCRNAGene[];
+          scrna_cells: SCRNACell[];
         }>()
         .then((data) => {
-          const dataset = data?.data!
-          console.log('received data')
-          setGenes(dataset.scrna_genes)
-          setCells(dataset.scrna_cells)
-        })
-    }
-    fetchData()
-  }, [name])
+          const dataset = data?.data!;
+          console.log("received data");
+          setGenes(dataset.scrna_genes);
+          setCells(dataset.scrna_cells);
+        });
+    };
+    fetchData();
+  }, [name]);
 
   useEffect(() => {
     const fetchData = async () => {
-      const supabase = createClientComponentClient<Database>()
+      const supabase = createClientSupabaseClient();
       // get the counts
       supabase.storage
-        .from('scrna')
+        .from("scrna")
         .download(`counts/${name}/${selectedGene}.json`)
         .then((data) => {
           data.data?.text().then((text) => {
-            const counts = JSON.parse(text)
-            setCounts(counts)
-          })
-        })
-    }
+            const counts = JSON.parse(text);
+            setCounts(counts);
+          });
+        });
+    };
     if (selectedGene) {
-      fetchData()
+      fetchData();
     }
-  }, [name, selectedGene])
+  }, [name, selectedGene]);
 
   useEffect(() => {
     if (cells) {
-      const numClusters = new Set(cells.map((cell) => cell.cluster_id)).size
-      setNumClusters(numClusters)
+      const numClusters = new Set(cells.map((cell) => cell.cluster_id)).size;
+      setNumClusters(numClusters);
     }
-  }, [cells])
+  }, [cells]);
 
   useEffect(() => {
-    document.addEventListener('mousedown', (e) => {
-      setSelectedCluster(null)
-    })
+    document.addEventListener("mousedown", (e) => {
+      setSelectedCluster(null);
+    });
     return () => {
-      document.removeEventListener('mousedown', (e) => {
-        setSelectedCluster(null)
-      })
-    }
-  })
+      document.removeEventListener("mousedown", (e) => {
+        setSelectedCluster(null);
+      });
+    };
+  });
 
   // Define points
-
   const xAbsMax =
-    cells?.reduce((acc, cell) => (Math.abs(cell.x!) > acc ? Math.abs(cell.x!) : acc), 0) || 1
+    cells?.reduce(
+      (acc, cell) => (Math.abs(cell.x!) > acc ? Math.abs(cell.x!) : acc),
+      0
+    ) || 1;
   const yAbsMax =
-    cells?.reduce((acc, cell) => (Math.abs(cell.y!) > acc ? Math.abs(cell.y!) : acc), 0) || 1
+    cells?.reduce(
+      (acc, cell) => (Math.abs(cell.y!) > acc ? Math.abs(cell.y!) : acc),
+      0
+    ) || 1;
 
-  const scale = 0.9 / Math.max(xAbsMax, yAbsMax)
+  const scale = 0.9 / Math.max(xAbsMax, yAbsMax);
 
-  console.log(Math.max(xAbsMax, yAbsMax))
-
-  const position = cells?.map((cell) => [cell.x! * scale, cell.y! * scale])
-
-  console.log(cells)
+  const position = cells?.map((cell) => [cell.x! * scale, cell.y! * scale]);
 
   // Define colors
   const clusterColor = cells?.map((cell) => {
-    const colorIdx = cell.cluster_id! % clusterColors.length
-    const color = clusterColors[colorIdx]
+    const colorIdx = cell.cluster_id! % clusterColors.length;
+    const color = clusterColors[colorIdx];
     return selectedCluster === null
       ? color
       : cell.cluster_id === selectedCluster
-        ? color
-        : [0.9, 0.9, 0.9, 1.0]
-  })
-
-  const geneColor = cells?.map((cell) => {
-    // const colorIdx = cell.cluster_id! % clusterColors.length;
-    // const color = clusterColors[colorIdx];
-    return counts !== null && cell.cell_number!.toString() in counts
-      ? [
-          0.9,
-          Math.max(0.9 - 0.3 * counts[cell.cell_number!], 0),
-          Math.max(0.9 - 0.3 * counts[cell.cell_number!], 0),
-          1,
-        ]
-      : [0.9, 0.9, 0.9, 1.0]
-  })
-
-  // Define sizes
-  const clusterSize = cells?.map((cell) => {
-    return selectedCluster !== null && cell.cluster_id === selectedCluster ? 4.0 : 2.0
-  })
-
-  const geneSize = cells?.map((cell) => {
-    return counts !== null && cell.cell_number!.toString() in counts ? 4.0 : 2.0
-  })
-
-  // indices of cells with the selected gene
-  const geneIndices = cells
-    ?.map((cell) => cell.cell_number!)
-    .filter((cellNumber) => cellNumber.toString() in counts)
-  // indices of cells without the selected gene
-  const nonGeneIndices = cells
-    ?.map((cell) => cell.cell_number!)
-    .filter((cellNumber) => !(cellNumber.toString() in counts))
-
-  // recombined positions, colors, and sizes
-  const positionsRecombined = position ? recombine(position!, geneIndices!, nonGeneIndices!) : []
-  const colorsRecombined = position ? recombine(geneColor!, geneIndices!, nonGeneIndices!) : []
-  const sizesRecombined = position ? recombine(geneSize!, geneIndices!, nonGeneIndices!) : []
+      ? color
+      : [0.9, 0.9, 0.9, 1.0];
+  });
 
   return (
     <div>
-      {/* autocomplete selectedGene using genes.gene_name */}
-      {/* if text field is a prefix of anything in genes.gene_name, display a list */}
       {genes ? (
         <div>
           <div className="text-xs font-bold">Gene ID</div>
           <Autocomplete
             values={genes.map((gene) => gene.gene_name)}
             onSelect={(gene) => {
-              setSelectedGene(gene)
+              setSelectedGene(gene);
             }}
           />
+
+          {/* Controls */}
+          <div className="flex gap-4 mt-4 mb-4">
+            <button
+              onClick={() => setIs3D(!is3D)}
+              className="px-4 py-2 rounded-md border border-gray-300 hover:bg-gray-100 transition-colors"
+            >
+              {is3D ? "Switch to 2D" : "Switch to 3D"}
+            </button>
+            <button
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className="px-4 py-2 rounded-md border border-gray-300 hover:bg-gray-100 transition-colors"
+            >
+              {isDarkMode ? "Light Mode" : "Dark Mode"}
+            </button>
+          </div>
+
+          {/* UMAP Visualization */}
           <div className="flex flex-row mt-4">
-            <div className="mr-2">
+            <div className="mr-4">
               {cells ? (
-                <ExpressionView
-                  position={positionsRecombined!}
-                  size={sizesRecombined!}
-                  color={colorsRecombined!}
-                />
+                is3D ? (
+                  <UMAPView3D
+                    cells={cells}
+                    position={position!}
+                    color={clusterColor!}
+                    scale={scale}
+                    isDarkMode={isDarkMode}
+                    selectedCluster={selectedCluster}
+                  />
+                ) : (
+                  <UMAPView2D
+                    position={position!}
+                    color={clusterColor!}
+                    isDarkMode={isDarkMode}
+                    selectedCluster={selectedCluster}
+                  />
+                )
               ) : (
                 <div>Loading...</div>
               )}
             </div>
-            <div>
-              {cells ? (
-                <ExpressionView position={position!} size={clusterSize!} color={clusterColor!} />
-              ) : (
-                <div>Loading...</div>
-              )}
-            </div>
+
+            {/* Cluster Legend */}
             {numClusters ? (
               <div className="grid grid-rows-10 grid-flow-col ml-2">
                 {clusterColors.slice(0, numClusters ?? -1).map((color, i) => (
                   <div
                     key={i}
                     className={
-                      'pr-2 ' +
-                      (selectedCluster !== null ? (selectedCluster === i ? '' : 'opacity-30') : '')
+                      "pr-2 " +
+                      (selectedCluster !== null
+                        ? selectedCluster === i
+                          ? ""
+                          : "opacity-30"
+                        : "")
                     }
                   >
                     <div
                       className="w-2 h-2 inline-block rounded-full mr-2"
                       style={{
-                        backgroundColor: `rgba(${color[0] * 255}, ${color[1] * 255}, ${
-                          color[2] * 255
-                        }, ${color[3]})`,
+                        backgroundColor: `rgba(${color[0] * 255}, ${
+                          color[1] * 255
+                        }, ${color[2] * 255}, ${color[3]})`,
                       }}
                     ></div>
                     <div
-                      className={'inline text-xs cursor-pointer'}
+                      className={"inline text-xs cursor-pointer"}
                       onClick={(e) => {
-                        e.stopPropagation()
-                        console.log(`toggling cluster ${i}`)
+                        e.stopPropagation();
+                        console.log(`toggling cluster ${i}`);
                         if (selectedCluster === i) {
-                          setSelectedCluster(null)
+                          setSelectedCluster(null);
                         } else {
-                          setSelectedCluster(i)
+                          setSelectedCluster(i);
                         }
                       }}
                     >
@@ -261,46 +260,32 @@ export default function ExpressionDataset({ name }: { name: string }) {
       ) : (
         <div>Loading...</div>
       )}
-
-      {/* <div>
-        {genes?.map((gene) => (
-          <div key={gene.id}>{gene.gene_name}</div>
-        ))}
-      </div> */}
-      {/* <div>
-        {cells?.map((cell) => (
-          <div key={cell.id}>
-            <div>{cell.barcode}</div>
-            <div>{cell.x}</div>
-            <div>{cell.y}</div>
-          </div>
-        ))}
-      </div> */}
     </div>
-  )
+  );
 }
 
-function recombine(arr: any[], indices1: number[], indices2: number[]) {
-  return indices1.map((index) => arr[index]).concat(indices2.map((index) => arr[index]))
-}
-
-function ExpressionView({
+// 2D UMAP View using REGL
+function UMAPView2D({
   position,
   color,
-  size,
+  isDarkMode,
+  selectedCluster,
 }: {
-  position: number[][]
-  color: number[][]
-  size: number[]
+  position: number[][];
+  color: number[][];
+  isDarkMode: boolean;
+  selectedCluster: number | null;
 }) {
-  const reglContainerRef = useRef(null)
+  const reglContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    var regl: createREGL.Regl | null = null
+    var regl: createREGL.Regl | null = null;
     if (reglContainerRef.current) {
       regl = createREGL({
         container: reglContainerRef.current,
-      })
+      });
+
+      const bgColor = isDarkMode ? [0.1, 0.1, 0.1, 1] : [1, 1, 1, 1];
 
       // Define the draw command
       const drawPoints = regl({
@@ -315,68 +300,157 @@ function ExpressionView({
             precision mediump float;
             attribute vec2 position;
             attribute vec4 color;
-            attribute float size;
             varying vec4 fragColor;
             void main() {
-                gl_PointSize = size;
+                gl_PointSize = ${selectedCluster !== null ? 4.0 : 3.0};
                 gl_Position = vec4(position, 0, 1);
-                fragColor = color; // Pass color to the fragment shader
+                fragColor = color;
             }`,
 
         attributes: {
           position: position,
           color: color,
-          size: size,
         },
 
         count: position.length,
 
-        primitive: 'points',
-      })
+        primitive: "points",
+      });
 
       // Render the points
       regl?.frame(() => {
         regl?.clear({
-          color: [0, 0, 0, 0],
+          color: bgColor,
           depth: 1,
-        })
+        });
 
-        drawPoints()
-      })
+        drawPoints();
+      });
     }
 
     // Cleanup function to stop regl's animation loop when the component unmounts
     return () => {
-      regl && regl.destroy()
-    }
-  }, [position, color, size])
+      regl && regl.destroy();
+    };
+  }, [position, color, isDarkMode, selectedCluster]);
 
   return (
     <div
       ref={reglContainerRef}
-      className="border border-1 rounded-md"
-      style={{ width: '300px', height: '300px' }}
+      className={`border rounded-md ${isDarkMode ? 'border-gray-700' : 'border-gray-300'}`}
+      style={{ width: "600px", height: "600px" }}
     ></div>
-  )
+  );
+}
+
+// 3D UMAP View using Three.js
+function UMAPView3D({
+  cells,
+  position,
+  color,
+  scale,
+  isDarkMode,
+  selectedCluster,
+}: {
+  cells: SCRNACell[];
+  position: number[][];
+  color: number[][];
+  scale: number;
+  isDarkMode: boolean;
+  selectedCluster: number | null;
+}) {
+  return (
+    <div
+      className={`border rounded-md ${isDarkMode ? 'border-gray-700' : 'border-gray-300'}`}
+      style={{ width: "600px", height: "600px" }}
+    >
+      <Canvas camera={{ position: [0, 0, 3], fov: 50 }}>
+        {isDarkMode ? (
+          <color attach="background" args={[0.1, 0.1, 0.1]} />
+        ) : (
+          <color attach="background" args={[1, 1, 1]} />
+        )}
+        <ambientLight intensity={0.5} />
+        <pointLight position={[10, 10, 10]} />
+        <RotatingPoints
+          cells={cells}
+          position={position}
+          color={color}
+          scale={scale}
+          selectedCluster={selectedCluster}
+        />
+        <OrbitControls enableDamping dampingFactor={0.05} />
+      </Canvas>
+    </div>
+  );
+}
+
+// Rotating points component for 3D view
+function RotatingPoints({
+  cells,
+  position,
+  color,
+  scale,
+  selectedCluster,
+}: {
+  cells: SCRNACell[];
+  position: number[][];
+  color: number[][];
+  scale: number;
+  selectedCluster: number | null;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+
+  // Rotate the entire group
+  useFrame((state, delta) => {
+    if (groupRef.current) {
+      groupRef.current.rotation.y += delta * 0.2;
+    }
+  });
+
+  return (
+    <group ref={groupRef}>
+      {cells.map((cell, i) => {
+        const x = position[i][0];
+        const y = position[i][1];
+        // Add z-coordinate variation for 3D effect (can be random or based on cluster)
+        const z = (Math.sin(x * 3) + Math.cos(y * 3)) * 0.1;
+
+        const [r, g, b, a] = color[i];
+
+        return (
+          <mesh key={i} position={[x, y, z]}>
+            <sphereGeometry args={[0.015, 8, 8]} />
+            <meshStandardMaterial
+              color={new THREE.Color(r, g, b)}
+              emissive={new THREE.Color(r, g, b)}
+              emissiveIntensity={0.5}
+              toneMapped={false}
+            />
+          </mesh>
+        );
+      })}
+    </group>
+  );
 }
 
 function Autocomplete({
   values,
   onSelect,
 }: {
-  values: string[]
-  onSelect: (value: string) => void
+  values: string[];
+  onSelect: (value: string) => void;
 }) {
-  const [input, setInput] = useState('')
-  const [focused, setFocused] = useState(false)
-  const [filteredValues, setFilteredValues] = useState<string[]>([])
-  const [selectedIdx, setSelectedIdx] = useState<number>(0)
+  const [input, setInput] = useState("");
+  const [focused, setFocused] = useState(false);
+  const [filteredValues, setFilteredValues] = useState<string[]>([]);
+  const [selectedIdx, setSelectedIdx] = useState<number>(0);
 
   useEffect(() => {
     setFilteredValues(
-      values.filter((value) => value.startsWith(input)) //.slice(0, 20)
-    )
-  }, [input, values])
+      values.filter((value) => value.startsWith(input))
+    );
+  }, [input, values]);
 
   return (
     <div>
@@ -385,43 +459,45 @@ function Autocomplete({
         value={input}
         onChange={(e) => {
           if (e.target.value in values) {
-            onSelect(e.target.value)
+            onSelect(e.target.value);
           }
-          setInput(e.target.value)
+          setInput(e.target.value);
         }}
         onFocus={() => {
-          setFocused(true)
+          setFocused(true);
         }}
         onBlur={(e) => {
-          setFocused(false)
+          setFocused(false);
         }}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            onSelect(filteredValues[selectedIdx])
-            setInput(filteredValues[selectedIdx])
+          if (e.key === "Enter") {
+            onSelect(filteredValues[selectedIdx]);
+            setInput(filteredValues[selectedIdx]);
           }
-          if (e.key === 'ArrowDown') {
-            setSelectedIdx((selectedIdx + 1) % filteredValues.length)
+          if (e.key === "ArrowDown") {
+            setSelectedIdx((selectedIdx + 1) % filteredValues.length);
           }
-          if (e.key === 'ArrowUp') {
-            setSelectedIdx(selectedIdx === 0 ? filteredValues.length - 1 : selectedIdx - 1)
+          if (e.key === "ArrowUp") {
+            setSelectedIdx(
+              selectedIdx === 0 ? filteredValues.length - 1 : selectedIdx - 1
+            );
           }
         }}
         className="border border-1 rounded-md p-2 w-60"
       />
       {filteredValues && focused && (
-        <div className="border border-1 rounded-md p-1 w-60 absolute bg-white max-h-80 overflow-scroll">
+        <div className="border border-1 rounded-md p-1 w-60 absolute bg-white max-h-80 overflow-scroll z-10">
           {filteredValues.map((value, index) => (
             <div
               key={value}
               className={
-                'hover:bg-gray-200 cursor-pointer p-1 rounded-md' +
-                (index === selectedIdx ? ' bg-gray-200' : '')
+                "hover:bg-gray-200 cursor-pointer p-1 rounded-md" +
+                (index === selectedIdx ? " bg-gray-200" : "")
               }
               onMouseDown={() => {
-                console.log(`selected ${value}`)
-                onSelect(value)
-                setInput(value)
+                console.log(`selected ${value}`);
+                onSelect(value);
+                setInput(value);
               }}
             >
               {value}
@@ -430,5 +506,5 @@ function Autocomplete({
         </div>
       )}
     </div>
-  )
+  );
 }

@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+import { createClientSupabaseClient } from '@/lib/supabase/client'
 
 export default function Login() {
   const [email, setEmail] = useState('')
@@ -10,7 +10,7 @@ export default function Login() {
   const [view, setView] = useState('sign-in')
   const [error, setError] = useState('')
   const router = useRouter()
-  const supabase = createClientComponentClient()
+  const supabase = createClientSupabaseClient()
 
   const handleSignUp = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -31,7 +31,8 @@ export default function Login() {
     })
     if (error) {
       setError(error.message)
-    } else {
+    }
+    else {
       setView('check-email')
     }
   }
@@ -43,13 +44,20 @@ export default function Login() {
       password,
     })
 
-    console.log('_____________________________________________>>>>')
-    console.log('RESPONSE', { data, error })
-    console.log('CLEAN RESPONSE', JSON.stringify(data, null, 2))
+    console.log("_____________________________________________>>>>")
+    console.log("RESPONSE", { data, error })
+    console.log("CLEAN RESPONSE", JSON.stringify(data, null, 2));
+
+    const { data: sessionData } = await supabase.auth.getSession()
+    console.log("Session persisted?", sessionData)
 
     if (error) {
       setError(error.message)
-    } else {
+    }
+    else {
+      // Use window.location instead of router.push to force a full page reload
+      // This ensures the middleware picks up the new auth cookies
+      // window.location.href = '/app'
       router.push('/app')
     }
   }
@@ -58,8 +66,8 @@ export default function Login() {
     <div className="flex-1 flex flex-col mx-auto w-full max-w-sm justify-center gap-2">
       {view === 'check-email' ? (
         <p className="text-center text-neutral-400">
-          Click the confirmation link sent to{' '}
-          <span className="font-bold">{email + '@salk.edu'}</span> to continue signing up
+          Click the confirmation link sent to <span className="font-bold">{email + '@salk.edu'}</span> to
+          continue signing up
         </p>
       ) : (
         <form
@@ -69,7 +77,7 @@ export default function Login() {
           <label className="text-md text-neutral-400" htmlFor="email">
             Email
           </label>
-          <div className="flex flex-row">
+          <div className='flex flex-row'>
             <input
               className="flex-1 rounded-md px-4 py-2 bg-inherit border mb-6"
               name="email"
@@ -102,7 +110,10 @@ export default function Login() {
               </button>
               <p className="text-sm text-neutral-500 text-center">
                 Don't have an account?
-                <button className="ml-1 underline" onClick={() => setView('sign-up')}>
+                <button
+                  className="ml-1 underline"
+                  onClick={() => setView('sign-up')}
+                >
                   Sign Up Now
                 </button>
               </p>
@@ -115,13 +126,20 @@ export default function Login() {
               </button>
               <p className="text-sm text-neutral-500 text-center">
                 Already have an account?
-                <button className="ml-1 underline" onClick={() => setView('sign-in')}>
+                <button
+                  className="ml-1 underline"
+                  onClick={() => setView('sign-in')}
+                >
                   Sign In Now
                 </button>
               </p>
             </>
           ) : null}
-          {error ? <p className="text-sm text-red-700 text-center">{error}</p> : null}
+          {error ? (
+            <p className="text-sm text-red-700 text-center">
+              {error}
+            </p>
+          ) : null}
         </form>
       )}
     </div>

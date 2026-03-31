@@ -25,9 +25,11 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# local env files
+# local env files (root and all subdirectories)
 .env*
 .env
+**/.env
+**/.env.*
 .env.prod
 
 # vercel
@@ -38,6 +40,10 @@ yarn-error.log*
 next-env.d.ts
 
 # python
+__pycache__/
+*.pyc
+*.pyo
+
 .venv
 __pycache__/
 *.pyc
@@ -51,5 +57,31 @@ htmlcov/
 # project-specific
 /extra
 volumes/
+
+# minio
 minio/data/
 minio_data/
+
+# temporary/copy files
+nginx/copy.config
+nginx/copy.config_2
+docker-compose.prod copy.yml
+DOCUMENTATION.md
+TROUBLESHOOTING.md
+AGENTS.md
+CLAUDE.md
+openspec/
+prompts/
+.claude/
+langchain/ANALYSIS_OUTPUT/
+langchain/PLOTS_DIR/
+scripts/compute_de_genes.py
+scripts/compute_de_local.py
+scripts/compute_de.py
+scripts/generate_KEYS
+*.bak
+
+prompts/.claude/
+
+# setup/deployment notes (local only)
+.setup/

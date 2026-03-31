@@ -1,19 +1,29 @@
-import Link from 'next/link'
-import { createServerSupabaseClient, getUser } from '@salk-hpi/bloom-nextjs-auth'
-import Mixpanel from 'mixpanel'
-import ExpressionPage from '@/components/expression-page'
+import Link from "next/link";
+import {
+  createServerSupabaseClient,
+  getUser,
+} from "@/lib/supabase/server";
+import Mixpanel from "mixpanel";
+import ExpressionPage from "@/components/expression-page";
 
-export default async function Species({ params }: { params: { speciesId: number } }) {
-  const species: any = await getSpeciesWithDatasets(params.speciesId)
+export default async function Species({
+  params,
+}: {
+  params: Promise<{ speciesId: number }>;
+}) {
+  const { speciesId } = await params;
+  const species : any = await getSpeciesWithDatasets(speciesId);
 
-  const user = await getUser()
+  const user = await getUser();
 
-  const mixpanel = process.env.MIXPANEL_TOKEN ? Mixpanel.init(process.env.MIXPANEL_TOKEN) : null
+  const mixpanel = process.env.MIXPANEL_TOKEN
+    ? Mixpanel.init(process.env.MIXPANEL_TOKEN)
+    : null;
 
-  mixpanel?.track('Page view', {
+  mixpanel?.track("Page view", {
     distinct_id: user?.email,
-    url: `/app/expression/${params.speciesId}`,
-  })
+    url: `/app/expression/${speciesId}`,
+  });
 
   return (
     <div className="">
@@ -26,24 +36,26 @@ export default async function Species({ params }: { params: { speciesId: number 
         </span>
         <span className="capitalize">{species?.common_name}</span>
       </div>
-      <div className="text-sm mb-4 text-stone-500 align-middle max-w-[650px] flex flex-row items-center"></div>
-      {species && <ExpressionPage specieslist={species.scrna_datasets} />}
+      <div className="text-sm mb-4 text-stone-500 align-middle max-w-[650px] flex flex-row items-center">
+
+      </div>
+      {species && <ExpressionPage specieslist={species.scrna_datasets}/>}
     </div>
-  )
+  );
 }
 
 function capitalizeFirstLetter(string: String) {
-  return string.charAt(0).toUpperCase() + string.slice(1)
+  return string.charAt(0).toUpperCase() + string.slice(1);
 }
 
 async function getSpeciesWithDatasets(speciesId: number) {
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient();
 
   const { data } = await supabase
-    .from('species')
-    .select('*, scrna_datasets(*, people(*))')
-    .eq('id', speciesId)
-    .single()
+    .from("species")
+    .select("*, scrna_datasets(*, people(*))")
+    .eq("id", speciesId)
+    .single();
 
-  return data
+  return data;
 }
