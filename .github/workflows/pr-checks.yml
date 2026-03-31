@@ -1,0 +1,150 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-audit:
+    name: Build & npm CVE Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Security audit (npm)
+        run: npm audit --audit-level=critical
+
+      - name: TypeScript type check
+        run: cd web && npx tsc --noEmit
+
+      - name: Build shared packages
+        run: |
+          cd packages/bloom-js && npx tsc -p tsconfig.json
+          cd ../../packages/bloom-fs && npx tsc -p tsconfig.json
+
+      - name: Build Next.js app
+        run: cd web && npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: http://localhost:8000
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
+          NEXT_PUBLIC_SUPABASE_COOKIE_NAME: sb-localhost-auth-token
+
+  python-audit:
+    name: Python Security Audit for CVEs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv and pip-audit
+        run: pip install uv && uv pip install --system pip-audit
+
+      - name: Audit langchain dependencies
+        run: pip-audit -r langchain/requirements.txt
+
+      - name: Audit bloommcp dependencies
+        run: pip-audit -r bloommcp/requirements.txt
+
+  docker-build:
+    name: Build Docker Images & Scan for CVEs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build bloom-web image
+        run: |
+          docker build -f web/Dockerfile.bloom-web.prod \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL=http://localhost:8000 \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder \
+            --build-arg NEXT_PUBLIC_SUPABASE_COOKIE_NAME=sb-localhost-auth-token \
+            -t bloom-web:ci .
+
+      - name: Build langchain-agent image
+        run: docker build -f langchain/Dockerfile -t langchain-agent:ci ./langchain
+
+      - name: Build bloommcp image
+        run: docker build -f bloommcp/Dockerfile -t bloommcp:ci ./bloommcp
+
+      # Scan built images for CVEs
+      - name: Scan bloom-web image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'bloom-web:ci'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Scan langchain-agent image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'langchain-agent:ci'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Scan bloommcp image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'bloommcp:ci'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+  scan-pinned-images:
+    name: Scan Public Docker Images for CVEs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan nginx
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'nginx:1.28.0-alpine'
+          severity: 'CRITICAL'
+          exit-code: '1'
+
+      - name: Scan supabase/postgres
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'supabase/postgres:15.8.1.060'
+          severity: 'CRITICAL'
+          exit-code: '1'
+
+      - name: Scan kong
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'kong:2.8.1'
+          severity: 'CRITICAL'
+          exit-code: '1'
+
+      - name: Scan supabase/gotrue
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'supabase/gotrue:v2.177.0'
+          severity: 'CRITICAL'
+          exit-code: '1'
+
+      - name: Scan supabase/storage-api
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'supabase/storage-api:v1.25.7'
+          severity: 'CRITICAL'
+          exit-code: '1'
+
+      - name: Scan minio
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'minio/minio:RELEASE.2025-01-20T14-49-07Z'
+          severity: 'CRITICAL'
+          exit-code: '1'
