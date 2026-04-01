@@ -221,46 +221,5 @@ http {
     }
   }
 
-  # -----------------
-  # Flask API (subdomain)
-  # -----------------
-  server {
-    listen 80;
-    server_name ${DOMAIN_FLASK};
-    
-    # Ignore favicon.ico requests
-    location = /favicon.ico {
-        return 204;
-        access_log off;
-        log_not_found off;
-    }
-
-    location / {
-        proxy_pass http://flask-app:5002;
-        proxy_http_version 1.1;
-        
-        # Standard proxy headers
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        
-        # Pass through CORS headers from Flask
-        proxy_pass_header Access-Control-Allow-Origin;
-        proxy_pass_header Access-Control-Allow-Methods;
-        proxy_pass_header Access-Control-Allow-Headers;
-        proxy_pass_header Access-Control-Allow-Credentials;
-        
-        # Don't buffer for API responses
-        proxy_buffering off;
-        
-        # Increase timeouts for long-running requests (video generation, etc.)
-        proxy_connect_timeout 300;
-        proxy_send_timeout 300;
-        proxy_read_timeout 300;
-        send_timeout 300;
-    }
-  }
 }
 

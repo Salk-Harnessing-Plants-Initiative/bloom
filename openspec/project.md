@@ -1,152 +1,213 @@
 # Project Context
 
 ## Purpose
-Bloom is a web application for sharing and exploring scientific data within the Salk Harnessing Plants Initiative. It provides tools for researchers to:
-- Browse and visualize plant phenotype data, genotypes, gene expression, and genomic data
-- Access greenhouse experiment data (cylinder experiments, scans, images)
-- View and analyze single-cell RNA sequencing (scRNA-seq) data
-- Explore plant genes, accessions, and traits
-- Integrate JBrowse genome browser for genomic visualization
-- Generate videos from time-series plant imaging data
+
+Bloom is a full-stack web application for biological/scientific data visualization and management, specifically designed for handling cylindrical scan data. The application provides capabilities for storing, managing, and visualizing scientific imaging data, with specialized video generation functionality for cylindrical scan sequences.
 
 ## Tech Stack
 
 ### Frontend
-- **Next.js 16.0.0** (App Router) - React-based framework with server-side rendering
-- **React 19.2.0** - UI library
-- **TypeScript 5.x** - Type-safe JavaScript
-- **Tailwind CSS** - Utility-first CSS framework
-- **Material UI (MUI)** - Component library (@mui/material, @mui/icons-material, @mui/x-data-grid)
-- **D3.js** - Data visualization library
-- **JBrowse** (@jbrowse/react-app, @jbrowse/core) - Genomic data browser
-- **html2canvas** - Screenshot generation
 
-### Backend Services
-- **Supabase** (self-hosted) - Backend-as-a-Service platform providing:
-  - PostgreSQL database with Row Level Security (RLS)
-  - Authentication (Supabase Auth) - Integrated via **@supabase/ssr** package
-  - Storage API
-  - Real-time subscriptions
-- **Flask (Python)** - Microservice for video generation and S3 content access
-- **MinIO** - S3-compatible object storage for images and files
-- **Kong** - API gateway (part of Supabase stack)
-- **nginx** - Reverse proxy
+- **Framework**: Next.js 16.0.0 with React 18.2.0 (overridden from 19.2.0)
+- **Language**: TypeScript 5.9.3 (ES6 target, strict mode enabled)
+- **UI Library**: Material-UI
+- **Build Tool**: Turbo (monorepo)
+- **Package Manager**: pnpm 10.19.0 (specified), though npm is used in practice
 
-### Infrastructure
-- **Docker Compose** - Container orchestration for local dev and production
-- **Turbo** - Monorepo build system
-- **pnpm** - Package manager (v10.19.0)
+### Backend
 
-### Internal Packages (Monorepo)
-- **@salk-hpi/bloom-js** - Core TypeScript utilities and types
-- **@salk-hpi/bloom-fs** - File system utilities, CSV/XLSX parsing, image processing
+- **API Framework**: Flask (Python 3.11)
+- **Database**: PostgreSQL (via Supabase)
+- **Auth/Backend Services**: Supabase (self-hosted)
+  - Authentication
+  - REST API
+  - Realtime subscriptions
+  - Storage
+  - Studio UI
 
-### Analytics & Monitoring
-- **Mixpanel** - User behavior analytics
-- **Vercel Analytics** - Performance monitoring
+### Storage & Infrastructure
+
+- **Object Storage**: MinIO (S3-compatible) on port 9100-9101
+- **API Gateway**: Kong (port 8000)
+- **Reverse Proxy**: Nginx (production only)
+- **Containerization**: Docker Compose with separate dev/prod configurations
+- **Volume Management**: Persistent volumes for Supabase and MinIO data
+
+### Key Ports (Development)
+
+- Web: 3000
+- Flask API: 5002
+- Kong Gateway: 8000
+- PostgreSQL: 5432
+- MinIO: 9100-9101
+- Supabase Studio: 55323
 
 ## Project Conventions
 
 ### Code Style
-- **TypeScript strict mode** enabled in all packages
-- **Path aliases**: Use `@/*` for imports relative to the web app root (e.g., `@/components/...`)
-- **Naming conventions**:
-  - React components: PascalCase (e.g., `UserProfile.tsx`)
-  - Utilities/functions: camelCase
-  - Database tables: snake_case (e.g., `cyl_experiments`, `cyl_plants`)
-  - Environment variables: SCREAMING_SNAKE_CASE
-- **File organization**: Next.js App Router structure (`app/` directory with route-based folders)
-- **Component structure**: Server components by default, use `'use client'` directive only when needed
+
+#### TypeScript/JavaScript
+
+- **Strict mode**: Enabled
+- **Module system**: ESNext with Node resolution
+- **JSX**: react-jsx transform
+- **Path aliases**: `@/*` maps to project root
+- **Naming**: Follow standard TypeScript conventions
+  - PascalCase for components and classes
+  - camelCase for functions and variables
+  - UPPER_SNAKE_CASE for constants
+
+#### Python/Flask
+
+- **Version**: Python 3.11
+- **Naming**:
+  - snake_case for functions and variables
+  - PascalCase for classes (e.g., VideoWriter)
+  - Type hints encouraged (as seen in config.py)
+- **Note**: No formal linting configuration currently enforced
+
+#### Missing Tooling
+
+- ESLint configuration (should be added)
+- Prettier configuration (should be added)
+- Python linting tools (black, flake8, mypy recommended)
+- Pre-commit hooks (should be configured)
 
 ### Architecture Patterns
-- **Monorepo structure**: Root workspace with `web/`, `packages/`, and service directories
-- **Microservices**: Separate services for web frontend, Flask backend, MinIO storage, and Supabase
-- **Server-first rendering**: Leverage Next.js App Router with React Server Components
-- **Database access patterns**:
-  - Use Supabase client for database queries
-  - Row Level Security (RLS) policies enforce authentication requirements
-  - Service role key used for admin operations in Flask and scripts
-- **Storage architecture**:
-  - MinIO for S3-compatible object storage
-  - Supabase Storage API as abstraction layer
-  - Images stored in buckets with specific paths (e.g., `images/`)
-- **Authentication**: Supabase Auth with JWT tokens, integrated via **@supabase/ssr**
-  - Server components: Use `createServerSupabaseClient()` from `web/lib/supabase/server.ts` (async)
-  - Client components: Use `createClientSupabaseClient()` from `web/lib/supabase/client.ts`
-  - Middleware: Session refresh handled via manual cookie management with `createServerClient`
-  - Migration from deprecated `@supabase/auth-helpers-nextjs` completed
-- **API routes**: Next.js API routes in `app/api/` for server-side logic
+
+#### Monorepo Structure
+
+```
+/
+├── web/              # Next.js frontend application
+├── flask/            # Flask API for video generation and S3 access
+├── packages/         # Shared packages
+│   ├── bloom-fs/     # File system utilities
+│   ├── bloom-js/     # Shared JavaScript utilities
+│   └── bloom-nextjs-auth/ # Authentication helpers
+├── supabase/         # Supabase configuration and volumes
+├── minio/            # MinIO initialization scripts
+├── nginx/            # Nginx configuration (production)
+├── scripts/          # Utility scripts (dev_init.ts, setup-env.sh)
+├── test_data/        # Test data for development
+└── volumes/          # Docker volume mounts
+```
+
+#### Service Architecture
+
+- **Microservices approach**: Frontend, Flask API, and Supabase services run as separate containers
+- **API Gateway pattern**: Kong sits in front of backend services
+- **Environment separation**: Distinct docker-compose files for dev and prod
+- **Volume persistence**: Data persists across container restarts
+
+#### Key Design Patterns
+
+- **Multi-stage Docker builds** for production optimization
+- **Volume mounts** in development for hot reload
+- **Environment-based configuration** via .env files
+- **Service naming convention**: `{service}-{env}` pattern
 
 ### Testing Strategy
-- Test data available in `test_data/` directory with CSV files for seeding database
-- `dev_init.ts` script for loading test data into development environment
-- Environment-based testing: `.env.dev` for development, `.env.prod` for production
+
+**Current State**: No automated testing framework configured
+
+**Recommended Setup**:
+
+- Frontend: Jest + React Testing Library
+- Backend: pytest for Flask API
+- E2E: Playwright or Cypress
+- Test data: Use `dev_init.ts` script to populate test database
 
 ### Git Workflow
-- **Repository**: `Salk-Harnessing-Plants-Initiative/bloom` on GitHub
-- **Main branch**: `main`
-- Docker-based development workflow with hot reloading
 
-### Environment Management
-- **Environment files**:
-  - Root level: `.env.dev`, `.env.prod` (for Docker Compose)
-  - Web app: `web/.env` (for Next.js)
-- **Key environment variables**:
-  - `NEXT_PUBLIC_SUPABASE_URL` - Supabase API URL
-  - `NEXT_PUBLIC_SUPABASE_ANON_KEY` - Supabase anonymous key
-  - `SERVICE_ROLE_KEY` - Supabase admin key
-  - `JWT_SECRET` - JWT signing secret
-  - `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` - MinIO credentials
+#### Branching Strategy
 
-### Build & Development
-- **Start development**: `make dev-up` (runs `docker-compose.dev.yml`)
-- **Start production**: `make prod-up` (runs `docker-compose.prod.yml`)
-- **Local web dev**: `npm run dev` (port 3000)
-- **Package manager**: pnpm for monorepo, npm in containers
-- **TypeScript compilation**: `tsc --build` for packages, Next.js handles web app
+- **Main branch**: `main` (default and production branch)
+- **Development**: Work directly on feature branches
+- **Commit style**: Descriptive, imperative mood
+  - Examples from history: "Update README to include test data loading instructions", "add routes for video generation"
+
+#### Environment Management
+
+- `.env.dev` for local development
+- `.env.prod` for production deployment
+- Separate environment files for web app and Docker stack
 
 ## Domain Context
 
-### Scientific Data Types
-- **Species**: Plant species data (genus, species, common name)
-- **Phenotypers**: Scientists conducting phenotyping experiments
-- **Accessions**: Plant accession identifiers (e.g., PI458606)
-- **Genes**: Gene information with candidates and supporting evidence
-- **Expression data**: Single-cell RNA-seq counts stored as JSON in MinIO (`scrna/counts/{dataset}/{gene}.json`)
-- **Cylinder (CYL) experiments**: Automated greenhouse phenotyping system data
-  - Experiments, waves, plants, scanners, scans, images
-  - Time-series imaging data for plant growth monitoring
-  - Camera settings and scan metadata
-- **Traits**: Phenotypic traits with sources and measurements
-- **Genotypes**: Genetic variation data
-- **JBrowse**: Genome browser sessions for genomic sequence visualization
+### Scientific Imaging Domain
 
-### Key Data Relationships
-- Experiments contain waves, which contain plants
-- Plants are scanned by scanners, producing scans with associated images
-- Images are stored in MinIO and referenced by database records
-- Species linked to accessions, which are linked to experiments
+- **Primary data type**: Cylindrical scan images
+- **Data workflow**:
+  1. Scan data stored in PostgreSQL (`cyl_scanners`, `cyl_images` tables)
+  2. Image files stored in MinIO (S3-compatible storage)
+  3. Flask API generates videos from image sequences
+  4. Frontend provides visualization and management interface
+
+### Key Database Tables
+
+- `cyl_scanners`: Scanner metadata
+- `cyl_images`: Individual scan images with S3 references
+
+### Video Generation
+
+- Custom `VideoWriter` class for creating videos from scan sequences
+- Decimation factor: 4 (reduces frame count for performance)
+- Processes images stored in S3 bucket
+- Authenticated via JWT
 
 ## Important Constraints
-- **Authentication required**: Most database operations require authenticated users (enforced by RLS policies)
-- **Image rendering**: Remote image patterns must be configured in `next.config.js` for Next.js Image optimization
-- **Storage access**: MinIO requires specific S3 bucket configuration and credentials
-- **Database timeouts**: Configured to 5 minutes for long-running queries
-- **React version pinning**: React 18.2.0 used as override due to dependency compatibility (though React 19.2.0 also referenced)
-- **Docker requirement**: Full stack requires Docker and Docker Compose
-- **MinIO volume**: Requires host directory `/data/minio` with proper permissions (777)
+
+### Technical Constraints
+
+- **React version locked**: Overridden to 18.2.0 (compatibility requirement)
+- **Python version**: Must use Python 3.11 for Flask app
+- **Storage requirement**: MinIO needs `/data/minio` directory with 777 permissions
+- **Package manager inconsistency**: Specified pnpm but npm used in Docker/Makefile
+
+### Infrastructure Constraints
+
+- **Self-hosted Supabase**: Requires full stack deployment, not using Supabase cloud
+- **MinIO configuration**: Requires proper initialization and bucket setup
+- **Volume persistence**: Critical data stored in Docker volumes
+
+### Development Constraints
+
+- **Environment files required**: Must have `.env.dev` and `.env.prod` configured
+- **Test data**: Use `dev_init.ts` script with appropriate NODE_ENV
+- **Port availability**: Multiple services require specific ports (see Tech Stack section)
 
 ## External Dependencies
-- **Supabase services**: 
-  - PostgreSQL database (port 5432)
-  - Kong API gateway (port 8000)
-  - Auth server
-  - Storage API
-  - Realtime server
-- **MinIO**: S3-compatible storage (default bucket configured via environment)
-- **Flask service**: Port 5002 for video generation and image processing
-- **External domains**:
-  - Production: `api.bloom.salk.edu`
-  - Staging: `api.bloom-staging.salkhpi.org`
-  - Development: `localhost:8000` (Supabase), `localhost:3000` (Next.js), `localhost:5002` (Flask)
-- **Python dependencies**: Flask app uses boto3, PIL, numpy for video/image processing
+
+### Required External Services
+
+- **Docker & Docker Compose**: For running the full stack
+- **MinIO**: S3-compatible object storage (self-hosted)
+- **Supabase**: Full backend platform (self-hosted)
+  - PostgreSQL database
+  - Auth service
+  - Storage service
+  - Realtime service
+  - REST API
+  - Studio UI
+
+### External Packages
+
+- **Frontend**: Next.js, React, Material-UI, TypeScript
+- **Backend**: Flask, boto3 (S3 client), Pillow (image processing), numpy, PyJWT
+- **Shared**: Supabase client libraries, custom bloom packages
+- **Build**: Turbo for monorepo orchestration
+
+### Network Dependencies
+
+- **Kong API Gateway**: Routes requests to appropriate backend services
+- **Nginx**: Reverse proxy in production environment
+- **Inter-service communication**: Services communicate via Docker network
+
+### Development Tools
+
+- **ts-node**: For running TypeScript scripts
+- **Make**: Orchestration via Makefile commands
+  - `make dev-up` / `make prod-up`
+  - `make dev-down` / `make prod-down`
+  - `make rebuild-dev-fresh` / `make rebuild-prod-fresh`

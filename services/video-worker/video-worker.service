@@ -1,0 +1,26 @@
+[Unit]
+Description=Bloom Video Generation Worker
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=bloom
+Group=bloom
+WorkingDirectory=/opt/bloom/services/video-worker
+ExecStart=/opt/bloom/venv/bin/python video_listener.py
+Restart=always
+RestartSec=5
+
+EnvironmentFile=/opt/bloom/services/video-worker/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=video-worker
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -12,24 +12,25 @@ import ScientistBadge from "@/components/scientist-badge";
 export default async function Image({
   params,
 }: {
-  params: {
-    experimentId: number;
+  params: Promise<{
+    experimentId: string;
     waveId: string;
-    accessionId: number;
-    speciesId: number;
-    scanId: number;
-  };
+    accessionId: string;
+    speciesId: string;
+    scanId: string;
+  }>;
 }) {
-  const experiment : any = await getExperimentWithPlants(params.experimentId);
+  const { experimentId, waveId, accessionId, speciesId, scanId } = await params;
+  const experiment : any = await getExperimentWithPlants(Number(experimentId));
   const species = experiment?.species;
   const experimentName = capitalizeFirstLetter(
     experiment?.name.replaceAll("-", " ") ?? ""
   );
   const speciesName : any = species?.common_name ?? "";
-  const scan : any = await getScan(params.scanId);
+  const scan : any = await getScan(Number(scanId));
   const wave = scan?.cyl_plants?.cyl_waves;
 
-  const accession : any = await getAccession(params.accessionId);
+  const accession : any = await getAccession(Number(accessionId));
   const user = await getUser();
 
   const mixpanel = process.env.MIXPANEL_TOKEN
@@ -38,7 +39,7 @@ export default async function Image({
 
   mixpanel?.track("Page view", {
     distinct_id: user?.email,
-    url: `/app/phenotypes/${params.speciesId}/${params.experimentId}/${params.waveId}/${params.accessionId}/${params.scanId}`,
+    url: `/app/phenotypes/${speciesId}/${experimentId}/${waveId}/${accessionId}/${scanId}`,
   });
 
   return (
@@ -61,7 +62,7 @@ export default async function Image({
           &nbsp;▸&nbsp;
           <span className="hover:underline">
             <Link
-              href={`/app/phenotypes/${species?.id}/${experiment?.id}/${params.waveId}/${params.accessionId}`}
+              href={`/app/phenotypes/${species?.id}/${experiment?.id}/${waveId}/${accessionId}`}
             >
               {accession?.name} (Wave {wave?.number})
             </Link>

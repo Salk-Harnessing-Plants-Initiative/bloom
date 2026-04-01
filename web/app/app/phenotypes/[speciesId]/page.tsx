@@ -9,9 +9,10 @@ import { Key } from "react";
 export default async function Species({
   params,
 }: {
-  params: { speciesId: number };
+  params: Promise<{ speciesId: string }>;
 }) {
-  const species : any = await getSpeciesWithExperiments(params.speciesId);
+  const { speciesId } = await params;
+  const species : any = await getSpeciesWithExperiments(Number(speciesId));
 
   const user = await getUser();
 
@@ -21,8 +22,28 @@ export default async function Species({
 
   mixpanel?.track("Page view", {
     distinct_id: user?.email,
-    url: `/app/phenotypes/${params.speciesId}`,
+    url: `/app/phenotypes/${speciesId}`,
   });
+
+  // Handle case where species doesn't exist or has no experiments
+  if (!species || !species.cyl_experiments || species.cyl_experiments.length === 0) {
+    return (
+      <div className="">
+        <div className="text-xl mb-8 select-none">
+          <span className="text-stone-400">
+            <span className="hover:underline">
+              <Link href="/app/phenotypes">All species</Link>
+            </span>
+            &nbsp;▸&nbsp;
+          </span>
+          <span className="capitalize">{species?.common_name || 'Unknown Species'}</span>
+        </div>
+        <div className="text-neutral-500 italic">
+          No experiments found for this species.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="">
@@ -163,20 +184,34 @@ function capitalizeFirstLetter(string: String) {
 }
 
 function getPlantCount(experiment: any) {
+  if (!experiment?.cyl_waves || !Array.isArray(experiment.cyl_waves)) {
+    return '0 replicates';
+  }
+  
   let plantCount = 0;
   experiment.cyl_waves.forEach((wave: any) => {
-    plantCount += wave.cyl_plants.length;
+    if (wave?.cyl_plants && Array.isArray(wave.cyl_plants)) {
+      plantCount += wave.cyl_plants.length;
+    }
   });
   return `${plantCount} replicates`;
 }
 
 function getAccessionCount(experiment: any) {
+  if (!experiment?.cyl_waves || !Array.isArray(experiment.cyl_waves)) {
+    return '0 accessions';
+  }
+  
   // empty array of strings
   let accessionNames: string[] = [];
   experiment.cyl_waves.forEach((wave: any) => {
-    wave.cyl_plants.forEach((plant: any) => {
-      accessionNames.push(plant.accessions.name);
-    });
+    if (wave?.cyl_plants && Array.isArray(wave.cyl_plants)) {
+      wave.cyl_plants.forEach((plant: any) => {
+        if (plant?.accessions?.name) {
+          accessionNames.push(plant.accessions.name);
+        }
+      });
+    }
   });
   const lineCount = new Set(accessionNames).size;
   return `${lineCount} accessions`;

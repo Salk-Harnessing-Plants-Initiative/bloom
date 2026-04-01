@@ -4,11 +4,9 @@ import Button from '@mui/material/Button';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import html2canvas from "html2canvas";
 import CameraAltIcon from '@mui/icons-material/CameraAlt';
-// import Menu from '@mui/material/Menu';
-// import MenuItem from '@mui/material/MenuItem';
-// import ListIcon from '@mui/icons-material/List';
+import TouchAppIcon from '@mui/icons-material/TouchApp';
+import { Alert, Tooltip } from '@mui/material';
 import * as d3 from "d3";
-// import { Typography } from "@mui/material";
 
 
 type GeneNames = {
@@ -46,7 +44,7 @@ type GeneData = {
 }
 
 export default function ExpressionMultiGeneDotPlot({ input_array, setDrillDownGene }: { input_array: Record<string, GeneData>, setDrillDownGene: (gene_name: string) => void }) {
-    const chartRef = useRef<SVGSVGElement | null>(null);
+    const chartRef = useRef<HTMLDivElement | null>(null);
     const colorLegendRef = useRef<HTMLDivElement | null>(null);
     const percentLegendRef = useRef<HTMLDivElement | null>(null);
 
@@ -56,16 +54,7 @@ export default function ExpressionMultiGeneDotPlot({ input_array, setDrillDownGe
         clusters: [],
         expression: []
     });
-    const [anchorEl, setAnchorEl] = React.useState<null | HTMLElement>(null);
-    const open = Boolean(anchorEl);
-    const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
-        setAnchorEl(event.currentTarget);
-    };
-    const handleClose = () => {
-        setAnchorEl(null);
-    };
     const tooltipRef = useRef<HTMLDivElement | null>(null);
-    const verticalOffset = 30;
 
     const downloadJSON = () => {
         const dataStr = JSON.stringify(data, null, 2);
@@ -143,39 +132,39 @@ export default function ExpressionMultiGeneDotPlot({ input_array, setDrillDownGe
                 }
 
                 const geneClusterMap = new Map<string, { total: number; count: number; expressedCells: Set<string> }>();
-                counts.forEach((item) => {
-                    Object.entries(item).forEach(([key, value]) => {
-                        const clusterData = data?.find((cell) => cell.cell_number === (Number(key) - 1));
-                        const barcode = clusterData?.barcode;
+                // counts is now an object {cellId: expressionValue, ...} not an array
+                const countsEntries = Object.entries(counts);
+                countsEntries.forEach(([cellId, value]) => {
+                    const clusterData = data?.find((cell) => cell.cell_number === Number(cellId));
+                    const barcode = clusterData?.barcode;
 
-                        if (clusterData?.cluster_id) {
-                            const clusterId = clusterData?.cluster_id.toString();
-                            if (!clusters.includes(clusterId)) {
-                                clusters.push(clusterId);
-                            }
-                            const mapKey = `${gene_name}@${clusterId}`;
-                            if (!geneClusterMap.has(mapKey)) {
-                                geneClusterMap.set(mapKey, { total: 0, count: 0, expressedCells: new Set() });
-                            }
-                            const clusterStats = geneClusterMap.get(mapKey)!;
-                            clusterStats.total += value;
-                            clusterStats.count += 1;
-                            if (value > 0 && clusterData.barcode) clusterStats.expressedCells.add(clusterData.barcode);
+                    if (clusterData?.cluster_id) {
+                        const clusterId = clusterData?.cluster_id.toString();
+                        if (!clusters.includes(clusterId)) {
+                            clusters.push(clusterId);
                         }
-                    });
+                        const mapKey = `${gene_name}@${clusterId}`;
+                        if (!geneClusterMap.has(mapKey)) {
+                            geneClusterMap.set(mapKey, { total: 0, count: 0, expressedCells: new Set() });
+                        }
+                        const clusterStats = geneClusterMap.get(mapKey)!;
+                        clusterStats.total += value as number;
+                        clusterStats.count += 1;
+                        if ((value as number) > 0 && clusterData.barcode) clusterStats.expressedCells.add(clusterData.barcode);
+                    }
                 });
 
                 geneClusterMap.forEach((value, key) => {
                     const [geneName, clusterId] = key.split('@');
                     const avgExpression = value.total / value.count;
-                    const percentExpressed = value.expressedCells.size / counts.length;
+                    const percentExpressed = value.expressedCells.size / countsEntries.length;
                     expression.push({
                         gene: geneName,
                         cluster: clusterId,
                         avg_value: parseFloat(avgExpression.toFixed(2)),
                         percent_expressed: parseFloat(percentExpressed.toFixed(2)),
                         expressed_cells: value.expressedCells.size,
-                        total_cells: counts.length
+                        total_cells: countsEntries.length
                     });
 
                 });
@@ -192,6 +181,12 @@ export default function ExpressionMultiGeneDotPlot({ input_array, setDrillDownGe
 
     }, [input_array]);
 
+    // Helper function to truncate long gene names
+    const truncateGeneName = (name: string, maxLength: number = 20) => {
+        if (name.length <= maxLength) return name;
+        return name.substring(0, maxLength - 3) + '...';
+    };
+
     useEffect(() => {
         if (!chartRef.current) return;
 
@@ -199,108 +194,174 @@ export default function ExpressionMultiGeneDotPlot({ input_array, setDrillDownGe
         d3.select(colorLegendRef.current).selectAll("*").remove();
         d3.select(percentLegendRef.current).selectAll("*").remove();
 
-        const container = chartRef.current.getBoundingClientRect();
-        const margin = { top: 10, right: 60, bottom: 80, left: 70 };
-        const width = container.width - margin.left - margin.right;
-        const height = container.height - margin.top - margin.bottom - 90;
+        // Dynamic sizing based on data
+        const numClusters = data.clusters.length;
+        const numGenes = data.genes.length;
 
-        const chartHeight = Math.min((data.genes).length * 100, 800);
-        setChartHeight(chartHeight);
+        // Fixed cell size for consistent, readable dots
+        // This ensures dots are always a good size - container will scroll if needed
+        const cellSize = 80; // Larger size per cell for better dot visibility
+
+        const margin = { top: 140, right: 40, bottom: 40, left: 200 };
+
+        // Calculate dimensions based on cell size
+        const width = numClusters * cellSize;
+        const chartHeight = numGenes * cellSize;
+
+        setChartHeight(chartHeight + margin.top + margin.bottom);
+
+        const totalWidth = width + margin.left + margin.right;
+        const totalHeight = chartHeight + margin.top + margin.bottom;
+
         const svg = d3.select(chartRef.current)
             .append("svg")
-            .attr("width", width + margin.left + margin.right)
-            .attr("height", chartHeight + margin.top + margin.bottom)
+            .attr("width", totalWidth)
+            .attr("height", totalHeight)
             .append("g")
             .attr("transform", `translate(${margin.left},${margin.top})`);
 
-        const x = d3.scaleBand().range([0, width]).domain((data.clusters)).padding(0.05);
+        // X-axis (Clusters) - positioned at top
+        const x = d3.scaleBand().range([0, width]).domain(data.clusters).padding(0.1);
         svg.append("g")
             .attr("class", "x-axis")
-            .attr("transform", `translate(0, 20)`)
-            .call(d3.axisBottom(x).tickSize(0))
+            .attr("transform", `translate(0, -10)`)
+            .call(d3.axisTop(x).tickSize(0))
             .select(".domain").remove();
 
+        // Style X-axis labels - rotated for better readability
+        // Adjust font size based on number of clusters
+        const xFontSize = numClusters > 15 ? '10px' : numClusters > 10 ? '11px' : '12px';
         svg.selectAll('.x-axis text')
-            .style('font-size', '16px')
-            .attr("transform", "rotate(-45)"); 
-        //svg.append("g").attr("class", "x-axis").call(d3.axisBottom(x).tickSize(0)).select(".domain").remove();
+            .style('font-size', xFontSize)
+            .style('font-weight', '500')
+            .attr("transform", "rotate(-50)")
+            .attr("text-anchor", "start")
+            .attr("dx", "0.5em")
+            .attr("dy", "0em");
 
+        // X-axis title
         svg.append('text')
-            // .text(function(d){
-            //     console.log(d)
-            // })
-            .attr('transform', `translate(${width / 2},10)`)
-            .style('text-anchor', 'top')
-            .style('font-size', '26px')
+            .attr('transform', `translate(${width / 2}, -100)`)
+            .style('text-anchor', 'middle')
+            .style('font-size', '14px')
+            .style('font-weight', 'bold')
             .text('Cluster');
 
-        const y = d3.scaleBand().range([0, chartHeight]).domain((data.genes)).padding(0.05);
+        // Y-axis (Genes)
+        const y = d3.scaleBand().range([0, chartHeight]).domain(data.genes).padding(0.1);
         svg.append("g")
             .attr("class", "y-axis")
-            .call(d3.axisLeft(y).tickSize(5))
+            .call(d3.axisLeft(y).tickSize(0).tickFormat(d => truncateGeneName(String(d), 22)))
             .select(".domain").remove();
 
+        // Style Y-axis labels - horizontal, clickable with visual feedback
         svg.selectAll('.y-axis text')
-            .style('text-anchor', 'middle')
-            .style('transform', 'rotate(-60deg)')
-            .style('transform-origin', 'middle center')
-            .style('font-size', '14px')
+            .style('text-anchor', 'end')
+            .style('font-size', '11px')
             .style('cursor', 'pointer')
+            .style('fill', '#1976d2')
+            .attr("dx", "-0.5em")
             .on('mouseover', function (event, d) {
                 d3.select(this)
                     .transition()
-                    .duration(200)
+                    .duration(150)
                     .style('font-weight', 'bold')
-                    .style('fill', 'blue')
-                    .style('text-shadow', '0 0 10px rgba(0,0,255,0.8)');
+                    .style('fill', '#1565c0')
+                    .style('text-decoration', 'underline');
+
+                // Show full name in tooltip if truncated
+                const fullName = String(d);
+                if (fullName.length > 22 && tooltipRef.current) {
+                    tooltipRef.current.style.visibility = "visible";
+                    tooltipRef.current.innerHTML = `<strong>${fullName}</strong><br><small>Click for detailed view</small>`;
+                    tooltipRef.current.style.left = `${event.pageX + 10}px`;
+                    tooltipRef.current.style.top = `${event.pageY - 30}px`;
+                }
             })
-            .on('mouseout', function (event, d) {
+            .on('mouseout', function () {
                 d3.select(this)
                     .transition()
-                    .duration(200)
+                    .duration(150)
                     .style('font-weight', 'normal')
-                    .style('fill', 'black')
-                    .style('text-shadow', 'none');
+                    .style('fill', '#1976d2')
+                    .style('text-decoration', 'none');
+
+                if (tooltipRef.current) {
+                    tooltipRef.current.style.visibility = "hidden";
+                }
             })
             .on('click', function (event, d) {
-                d3.select(this).style('fill', 'blue')
-                setDrillDownGene(String(d))
+                setDrillDownGene(String(d));
             });
 
+        // Y-axis title with click hint
         svg.append('text')
             .attr('transform', `rotate(-90)`)
-            .attr('y', -margin.left + 20)
+            .attr('y', -margin.left + 15)
             .attr('x', -chartHeight / 2)
             .style('text-anchor', 'middle')
-            .style('font-size', '26px')
-            .text('Genes');
+            .style('font-size', '16px')
+            .style('font-weight', 'bold')
+            .text('Genes (click for details)');
 
         const myColor = d3.scaleSequential().interpolator(d3.interpolatePurples).domain([d3.min(data.expression, d => (d.avg_value) * 100) || 0, (d3.max(data.expression, d => (d.avg_value) * 100) || 0)]);
+
+        // Calculate max radius based on cell size (leave some padding)
+        const maxRadius = Math.min(x.bandwidth(), y.bandwidth()) / 2 - 3;
+        const minRadius = Math.max(6, maxRadius * 0.25); // Minimum 25% of max or 6px
+
+        // Radius scale - larger dots for better visibility
         const radiusScale = d3.scaleLinear()
             .domain([0, 100])
-            .range([8, 40]);
+            .range([minRadius, maxRadius]);
 
         const circles = svg.selectAll()
             .data(data.expression)
             .enter()
             .append("circle")
-            .attr("cx", d => ((x(d.cluster) ?? 0) + x.bandwidth() / 2) + 30)
-            .attr("cy", d => ((y(d.gene) ?? 0) + y.bandwidth() / 2) + 30)
-            .attr("r", d => (radiusScale(d.percent_expressed * 100)))
+            .attr("cx", d => (x(d.cluster) ?? 0) + x.bandwidth() / 2)
+            .attr("cy", d => (y(d.gene) ?? 0) + y.bandwidth() / 2)
+            .attr("r", d => radiusScale(d.percent_expressed * 100))
             .style("fill", d => myColor(d.avg_value * 100))
-            .style("opacity", 1)
+            .style("opacity", 0.85)
+            .style("stroke", "#ccc")
+            .style("stroke-width", 0.5)
+            .style("cursor", "pointer")
             .on("mouseover", (event, d) => {
+                d3.select(event.currentTarget)
+                    .transition()
+                    .duration(100)
+                    .style("opacity", 1)
+                    .style("stroke", "#333")
+                    .style("stroke-width", 2);
+
                 if (tooltipRef.current) {
                     tooltipRef.current.style.visibility = "visible";
-                    tooltipRef.current.innerHTML = `Gene: ${d.gene}<br>Cluster: ${d.cluster}<br>Average Expression: ${d.avg_value} <br> Percentage: ${d.percent_expressed * 100}% <br> #cells/total: ${d.expressed_cells}/${d.total_cells} `;
-                    tooltipRef.current.style.left = `${event.pageX + 10}px`;
-                    tooltipRef.current.style.top = `${event.pageY + 10}px`;
+                    tooltipRef.current.innerHTML = `
+                        <strong>${d.gene}</strong><br>
+                        <span style="color: #aaa">Cluster:</span> ${d.cluster}<br>
+                        <span style="color: #aaa">Avg Expression:</span> ${d.avg_value.toFixed(2)}<br>
+                        <span style="color: #aaa">% Expressing:</span> ${(d.percent_expressed * 100).toFixed(1)}%<br>
+                        <span style="color: #aaa">Cells:</span> ${d.expressed_cells} / ${d.total_cells}
+                    `;
+                    tooltipRef.current.style.left = `${event.pageX + 15}px`;
+                    tooltipRef.current.style.top = `${event.pageY - 10}px`;
                 }
             })
-            .on("mouseout", () => {
+            .on("mouseout", (event) => {
+                d3.select(event.currentTarget)
+                    .transition()
+                    .duration(100)
+                    .style("opacity", 0.85)
+                    .style("stroke", "#ccc")
+                    .style("stroke-width", 0.5);
+
                 if (tooltipRef.current) {
                     tooltipRef.current.style.visibility = "hidden";
                 }
+            })
+            .on("click", (event, d) => {
+                setDrillDownGene(d.gene);
             });
 
 
@@ -341,50 +402,39 @@ export default function ExpressionMultiGeneDotPlot({ input_array, setDrillDownGe
             .style("text-anchor", "end")
             .text(Math.ceil(d3.max(data.expression, d => d.avg_value) ?? 0).toFixed(1));
 
+        // Fixed legend radius scale for consistent display
+        const legendRadiusScale = d3.scaleLinear().domain([0, 100]).range([5, 20]);
+
         const sizeLegend = d3.select(percentLegendRef.current)
             .append("svg")
-            .attr("width", 150)
-            .attr("height", 150);
-        sizeLegend.append("text")
-            .attr("x", 0)
-            .attr("y", -10)
-            .style("font-size", "14px")
-            .text("Point Size (Percentage)");
-        sizeLegend.append("circle")
-            .attr("cx", 20)
-            .attr("cy", 30)
-            .attr("r", radiusScale(20))
-            .style("fill", "gray");
-        sizeLegend.append("circle")
-            .attr("cx", 60)
-            .attr("cy", 30)
-            .attr("r", radiusScale(30))
-            .style("fill", "gray");
-        sizeLegend.append("circle")
-            .attr("cx", 120)
-            .attr("cy", 30)
-            .attr("r", radiusScale(60))
-            .style("fill", "gray");
-        sizeLegend.append("text")
-            .attr("x", 15)
-            .attr("y", 70)
-            .style("font-size", "12px")
-            .text(20 + "%");
-        sizeLegend.append("text")
-            .attr("x", 55)
-            .attr("y", 70)
-            .style("font-size", "12px")
-            .text(30 + "%");
-        sizeLegend.append("text")
-            .attr("x", 115)
-            .attr("y", 70)
-            .style("font-size", "12px")
-            .text(60 + "%");
+            .attr("width", 180)
+            .attr("height", 80);
+
+        // Legend circles with fixed sizes
+        const legendData = [
+            { percent: 20, cx: 25 },
+            { percent: 40, cx: 70 },
+            { percent: 80, cx: 130 }
+        ];
+
+        legendData.forEach(item => {
+            sizeLegend.append("circle")
+                .attr("cx", item.cx)
+                .attr("cy", 30)
+                .attr("r", legendRadiusScale(item.percent))
+                .style("fill", "#9e9e9e")
+                .style("stroke", "#666")
+                .style("stroke-width", 0.5);
+
+            sizeLegend.append("text")
+                .attr("x", item.cx)
+                .attr("y", 60)
+                .style("font-size", "11px")
+                .style("text-anchor", "middle")
+                .text(item.percent + "%");
+        });
 
         function sortByExpression() {
-            const svg = d3.select(chartRef.current)
-            const rects = svg.selectAll("rect");
-
             const sortedGenes = [...data.genes].sort((a, b) => {
                 const aValue = data.expression.find(d => d.gene === a)?.avg_value || 0;
                 const bValue = data.expression.find(d => d.gene === b)?.avg_value || 0;
@@ -396,21 +446,11 @@ export default function ExpressionMultiGeneDotPlot({ input_array, setDrillDownGe
             svg.select(".y-axis")
                 .transition()
                 .duration(1000)
-                .attr("transform", `translate(0, ${verticalOffset})`)
-                .call(d3.axisLeft(y) as any);
+                .call(d3.axisLeft(y).tickSize(0).tickFormat(d => truncateGeneName(String(d), 22)) as any);
 
             circles.transition()
                 .duration(1000)
-                .attr("cy", d => ((y(d.gene) ?? 0) + y.bandwidth() / 2) + 30);
-
-            // circles.transition()
-            //     .duration(1000)
-            //     .attr("y", function(d: any) { return (y(d.gene) ?? 0) + verticalOffset; });
-
-            svg.select(".x-axis")
-                .transition()
-                .duration(1000)
-                .call(d3.axisBottom(x) as any);
+                .attr("cy", d => (y(d.gene) ?? 0) + y.bandwidth() / 2);
         }
 
         function sortByGeneName() {
@@ -421,21 +461,11 @@ export default function ExpressionMultiGeneDotPlot({ input_array, setDrillDownGe
             svg.select(".y-axis")
                 .transition()
                 .duration(1000)
-                .attr("transform", `translate(0, ${verticalOffset})`)
-                .call(d3.axisLeft(y) as any);
-
-            // circles.transition()
-            //     .duration(1000)
-            //     .attr("y", d => (y(d.gene) ?? 0) + verticalOffset);
+                .call(d3.axisLeft(y).tickSize(0).tickFormat(d => truncateGeneName(String(d), 22)) as any);
 
             circles.transition()
                 .duration(1000)
-                .attr("cy", d => ((y(d.gene) ?? 0) + y.bandwidth() / 2) + 30);
-
-            svg.select(".x-axis")
-                .transition()
-                .duration(1000)
-                .call(d3.axisBottom(x) as any);
+                .attr("cy", d => (y(d.gene) ?? 0) + y.bandwidth() / 2);
         }
 
         d3.select("#sortByCounts").on("click", sortByExpression);
@@ -447,90 +477,89 @@ export default function ExpressionMultiGeneDotPlot({ input_array, setDrillDownGe
 
     return (
         <>
-            {/* <div style={{ alignItems: 'right', display: 'flex', justifyContent: 'right', padding: '10px' }}>
-                <Button
-                    id="basic-button"
-                    aria-controls={open ? 'basic-menu' : undefined}
-                    aria-haspopup="true"
-                    aria-expanded={open ? 'true' : undefined}
-                    onClick={handleClick}
-                >
-                    FILTER <ListIcon />
-                </Button>
-                <Menu
-                    id="basic-menu"
-                    anchorEl={anchorEl}
-                    open={open}
-                    onClose={handleClose}
-                >
-                    <MenuItem onClick={() => { handleClose }}>
-                        <button id="sortByCounts" >
-                            Sort by Expression (E)
-                        </button>
-                    </MenuItem>
-                    <MenuItem onClick={handleClose}>
-                        <button id="sortByGenes" >
-                            Sort by gene (E)
-                        </button>
-                    </MenuItem>
-                    <MenuItem onClick={handleClose}>CELL TYPE</MenuItem>
-                </Menu>
-            </div> */}
-            <Box sx={{ padding: '18px' }} >
-            <Button
-                onClick={() => { downloadJSON() }}
-                variant="outlined"
-                style={{ marginRight: '10px' }}
-            >
-                JSON <FileDownloadIcon />
-            </Button>
-            <Button
-                variant="outlined"
-                onClick={() => { downloadCSV() }}
-                style={{ marginRight: '10px' }}
-            >
-                CSV <FileDownloadIcon />
-            </Button>
-            <Button
-                variant="outlined"
-                onClick={() => { downloadChartAsPNG() }}
-                style={{ marginRight: '10px' }}
-            >
-                <CameraAltIcon/> <FileDownloadIcon />
-            </Button>
+            <Box sx={{ padding: '18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }} >
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                    <Button
+                        onClick={() => { downloadJSON() }}
+                        variant="outlined"
+                        size="small"
+                    >
+                        JSON <FileDownloadIcon />
+                    </Button>
+                    <Button
+                        variant="outlined"
+                        onClick={() => { downloadCSV() }}
+                        size="small"
+                    >
+                        CSV <FileDownloadIcon />
+                    </Button>
+                    <Button
+                        variant="outlined"
+                        onClick={() => { downloadChartAsPNG() }}
+                        size="small"
+                    >
+                        <CameraAltIcon/> <FileDownloadIcon />
+                    </Button>
+                </Box>
+                <Tooltip title="Click on any gene name or dot to see detailed expression analysis" arrow>
+                    <Alert
+                        severity="info"
+                        icon={<TouchAppIcon />}
+                        sx={{
+                            py: 0,
+                            px: 2,
+                            fontSize: '0.85rem',
+                            '& .MuiAlert-message': { padding: '4px 0' }
+                        }}
+                    >
+                        Click on gene names or dots for detailed cluster analysis
+                    </Alert>
+                </Tooltip>
             </Box>
             <Box id='image-dot-plot'>
-            <div
-                ref={tooltipRef}
-                style={{
-                    position: "absolute",
-                    visibility: "hidden",
-                    backgroundColor: "rgba(0, 0, 0, 0.7)",
-                    color: "white",
-                    padding: "5px",
-                    borderRadius: "5px",
-                    fontSize: "12px",
-                    pointerEvents: "none",
-                    zIndex: 10
-                }}
-            ></div>
-            <div style={{ display: "flex", flexDirection: "row", justifyContent: "center" }}>
-                <div ref={colorLegendRef} id="colorLegend" style={{ marginRight: "10px", fontSize: '16px' }}>Avg. Expression Levels </div>
-                <div ref={percentLegendRef} id="percentLegend" style={{ marginRight: "10px", fontSize: '16px' }}> % of Cells Expressing the Gene </div>
-            </div>
-            <div style={{ flex: '1', display: 'flex', height: 'auto', minHeight: chartHeight }}>
-                {/* <button id="sortByCounts" >
-                    Sort by Expression (E)
-            </button> 
-            <button id="sortByGenes" >
-                    Sort by gene (E)
-            </button> */}
-                <svg
-                    style={{ flex: '1', overflowY: 'auto', justifyContent: 'center', alignItems: 'center' }}
-                    ref={chartRef}
-                    height={chartHeight + 40}
-                ></svg>
-            </div>
+                <div
+                    ref={tooltipRef}
+                    style={{
+                        position: "fixed",
+                        visibility: "hidden",
+                        backgroundColor: "rgba(30, 30, 30, 0.95)",
+                        color: "white",
+                        padding: "10px 14px",
+                        borderRadius: "8px",
+                        fontSize: "13px",
+                        pointerEvents: "none",
+                        zIndex: 1000,
+                        boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                        lineHeight: 1.5,
+                        maxWidth: "280px"
+                    }}
+                ></div>
+                <div style={{ display: "flex", flexDirection: "row", justifyContent: "center", gap: "40px", marginBottom: "10px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                        <span style={{ fontSize: '14px', fontWeight: 500, marginBottom: '5px' }}>Avg. Expression Levels</span>
+                        <div ref={colorLegendRef} id="colorLegend"></div>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                        <span style={{ fontSize: '14px', fontWeight: 500, marginBottom: '5px' }}>% of Cells Expressing</span>
+                        <div ref={percentLegendRef} id="percentLegend"></div>
+                    </div>
+                </div>
+                <div style={{
+                    width: '100%',
+                    maxHeight: '700px',
+                    overflow: 'auto',
+                    border: '1px solid #e0e0e0',
+                    borderRadius: '8px',
+                    backgroundColor: '#fafafa'
+                }}>
+                    <div
+                        ref={chartRef}
+                        style={{
+                            display: 'inline-block',
+                            minWidth: 'fit-content'
+                        }}
+                    ></div>
+                </div>
             </Box>
         </>
     );

@@ -1,67 +1,118 @@
-# bloom
-Packages and infrastructure for bloom web application.
+# Bloom - Plant Phenotyping Platform
 
-## 📚 Documentation
+A comprehensive web application for plant phenotyping data management, built with Next.js, Supabase, and MinIO.
 
-- **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** - Complete guide for debugging authentication, nginx routing, and SSR issues
-- **[.env.example](./.env.example)** - Environment variable template with explanations
-- **[Production Deployment Checklist](./TROUBLESHOOTING.md#production-deployment-checklist)** - Step-by-step guide for deploying to production
+## Getting Started
 
-# Overview 
-This repository contains:
-- **web/** – Next.js frontend
-- **supabase/** – self-hosted Supabase stack
-- **minio/** – S3-compatible storage
-- **flaskapp/** - Contains Flask routes for video generation and S3 content access.
-- **docker-compose.dev.yml / docker-compose.prod.yml** – environment definitions
-- **Makefile** – helper commands to run the full stack
+Choose your setup:
+
+- **[Development Setup](./DEV_SETUP.md)** - For local development
+- **[Production Setup](./PROD_SETUP.md)** - For production deployment
 
 ## Prerequisites
-###  1: Root-level environment files (for Docker)
-These are used when running the full stack with Docker:
-- `.env.dev` → for local development (used by `make dev-up`)
-- `.env.prod` → for production / deployment (used by `make prod-up`)
 
-###  2: Web app environment file (for running frontend locally)
-- `.env.dev` → for local development  
-- `.env.prod` → for production / deployment  
+Before starting, ensure you have:
 
-### 3: Setting up a folder for minio service to access
-This project uses MinIO for object storage. To ensure the service runs correctly, you need to create a folder on your host machine for MinIO to store data.
+- Docker installed
+- Python 3.8 or higher
 
-#### Create folder
-sudo mkdir -p /data/minio
-#### Give full access to the folder for Docker containers can read/write to this folder
-sudo chmod 777 /data/minio 
+## Repository Structure
 
-## Starting the Full Stack in Development
-make dev-up
+```
+bloom-v2/
+├── web/                    # Next.js frontend application
+├── langchain/              # LangChain AI agent (ReAct agent with chat API)
+├── bloommcp/               # FastMCP server (Bloom analysis tools)
+├── supabase/              # Supabase configuration and migrations
+│   └── migrations/        # Database migration files
+├── minio/                 # MinIO storage configuration
+│   └── init/              # Bucket initialization scripts
+├── scripts/               # Utility scripts for data loading
+├── test_data/             # Sample data for testing
+├── docker-compose.dev.yml # Development stack configuration
+├── docker-compose.prod.yml # Production stack configuration
+└── Makefile               # Helper commands
+```
 
-## Starting the Full Stack in Production
-make dev-up
+## Architecture Overview
 
-### To stop all containers:
-make dev-down
-make prod-down
+### Development Stack
 
-### To follow logs:
-make dev-logs
-make prod-logs
+- **Frontend**: Next.js (hot reload) - http://localhost:3000
+- **Database**: PostgreSQL via Supabase - localhost:5432
+- **Storage**: MinIO Console - http://localhost:9101
+- **AI Agent**: LangChain agent - http://localhost:5002
+- **MCP Server**: Bloom FastMCP (Bloom tools) - http://localhost:8811
+- **Swagger UI**: PostgREST API browser - http://localhost:8085
+- **Studio**: Supabase Studio - http://localhost:55323
 
-### To rebuild everything from scratch:
-make rebuild-dev-fresh
-make rebuild-prod-fresh
+### Production Stack
 
-## Load test files into the database
+- **Frontend**: Next.js (optimized build) - http://yourdomain.com
+- **Database**: PostgreSQL via Supabase
+- **Storage**: MinIO S3
+- **AI Agent**: LangChain agent
+- **MCP Server**: Bloom FastMCP (Bloom tools)
+- **All services behind Nginx reverse proxy**
 
-Use the `dev_init.ts` script to populate the database with test files.
+## Available Commands
+
+### Stack Management
 
 ```bash
-# Load using .env.dev
-NODE_ENV=development ts-node scripts/dev_init.ts
+make dev-up              # Start development stack
+make dev-down            # Stop development stack
+make prod-up             # Start production stack
+make prod-down           # Stop production stack
+make dev-logs            # View development logs
+make prod-logs           # View production logs
+```
 
-# Load using .env.prod
-NODE_ENV=production ts-node scripts/dev_init.ts
+### Database Operations
 
+```bash
+make reset-storage       # Reset database and storage (DEV only)
+make load-test-data      # Load CSV test data into database
+```
 
+### Storage (S3 Buckets) Operations
 
+```bash
+make upload-images       # Upload test images to MinIO
+make create-bucket BUCKET=name [PUBLIC=true]  # Create new bucket
+make list-buckets        # List all storage buckets
+```
+
+## Getting Started
+
+### 1. Development Setup
+
+    see [DEV_SETUP.md](./DEV_SETUP.md)
+
+### 2. Production Setup
+
+    see [PROD_SETUP.md](./PROD_SETUP.md)
+
+## Test Data
+
+The repository includes sample test data:
+
+- 14 CSV files with reference data
+- 72 sample plant scan images
+- Scripts to load data automatically
+
+Load test data with:
+
+```bash
+make load-test-data      # Loads CSV data into database
+make upload-images       # Uploads images to MinIO/S3
+```
+
+## Support
+
+For issues and questions:
+
+1. Review logs with `make dev-logs` or `make prod-logs`
+2. Open an issue on GitHub
+
+**Last Updated:** March 2026

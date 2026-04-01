@@ -1,24 +1,70 @@
 import * as React from 'react';
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Typography from '@mui/material/Typography';
+import Chip from '@mui/material/Chip';
+import FormControlLabel from '@mui/material/FormControlLabel';
+import Switch from '@mui/material/Switch';
+import Tooltip from '@mui/material/Tooltip';
 import html2canvas from "html2canvas";
 import CameraAltIcon from '@mui/icons-material/CameraAlt';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import * as d3 from "d3";
 
 type ScatterPlot = {
-    cluster_id: string | null;  
+    cluster_id: string | null;
     barcode: string | null;
     x: number | null;
     y: number | null;
     expression: number;
 }
 
+// Bright distinct colors for clusters
+const CLUSTER_COLORS = [
+    "#e6194B", "#3cb44b", "#ffe119", "#4363d8", "#f58231",
+    "#911eb4", "#42d4f4", "#f032e6", "#bfef45", "#fabed4",
+    "#469990", "#dcbeff", "#9A6324", "#fffac8", "#800000",
+    "#aaffc3", "#808000", "#ffd8b1", "#000075", "#a9a9a9"
+];
+
 export default function GeneDrillUMAP({ scatterPlot, geneName }: { scatterPlot: ScatterPlot[], geneName: string }) {
     const chartRef = useRef<SVGSVGElement | null>(null);
-    const [clusterId, setClusterId] = useState<(string | null)[]>([]);
+    const [selectedClusters, setSelectedClusters] = useState<Set<string>>(new Set());
+    const [colorByCluster, setColorByCluster] = useState(false);
+
+    // Get unique cluster IDs
+    const uniqueClusters = useMemo(() => {
+        const clusters = new Set<string>();
+        scatterPlot.forEach(d => {
+            if (d.cluster_id) clusters.add(d.cluster_id);
+        });
+        return Array.from(clusters).sort();
+    }, [scatterPlot]);
+
+    // Create cluster color scale
+    const clusterColorScale = useMemo(() => {
+        return d3.scaleOrdinal<string>()
+            .domain(uniqueClusters)
+            .range(CLUSTER_COLORS);
+    }, [uniqueClusters]);
+
+    // Toggle cluster selection
+    const toggleCluster = (clusterId: string) => {
+        setSelectedClusters(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(clusterId)) {
+                newSet.delete(clusterId);
+            } else {
+                newSet.add(clusterId);
+            }
+            return newSet;
+        });
+    };
+
+    // Select all / clear all
+    const selectAllClusters = () => setSelectedClusters(new Set(uniqueClusters));
+    const clearAllClusters = () => setSelectedClusters(new Set());
 
     const downloadJSON = () => {
         const dataStr = JSON.stringify(scatterPlot, null, 2);
@@ -74,8 +120,6 @@ export default function GeneDrillUMAP({ scatterPlot, geneName }: { scatterPlot: 
 
     useEffect(() => {
         if (scatterPlot) {
-
-            setClusterId(scatterPlot.map(item => item.cluster_id?.toString() || null))
             if (!chartRef.current) return;
             const margin = { top: 20, right: 30, bottom: 30, left: 60 };
             const container = chartRef.current.getBoundingClientRect();
@@ -89,7 +133,7 @@ export default function GeneDrillUMAP({ scatterPlot, geneName }: { scatterPlot: 
             const legendWidth = 30;
             const legendHeight = (legendContainer ? legendContainer.clientHeight : 0) - margin.top - margin.bottom;
             const expressionExtent = d3.extent(scatterPlot, (d: ScatterPlot) => d.expression) as [number, number];
-            const colorScale = d3.scaleLinear<string>()
+            const expressionColorScale = d3.scaleLinear<string>()
                 .domain([
                     expressionExtent[0],
                     expressionExtent[0] + (expressionExtent[1] - expressionExtent[0]) * 0.25,
@@ -98,6 +142,19 @@ export default function GeneDrillUMAP({ scatterPlot, geneName }: { scatterPlot: 
                     expressionExtent[1]
                 ])
                 .range(["#82f584", "#61b863", "#427a43", "#244224", "#0f1c0f"]);
+
+            // Filter data based on selected clusters
+            const filteredData = selectedClusters.size === 0
+                ? scatterPlot
+                : scatterPlot.filter(d => d.cluster_id && selectedClusters.has(d.cluster_id));
+
+            // Determine color function based on mode
+            const getColor = (d: ScatterPlot) => {
+                if (colorByCluster) {
+                    return d.cluster_id ? clusterColorScale(d.cluster_id) : '#999';
+                }
+                return expressionColorScale(d.expression);
+            };
 
             const tickValues = [expressionExtent[0],
             expressionExtent[0] + (expressionExtent[1] - expressionExtent[0]) * 0.25,
@@ -174,7 +231,7 @@ export default function GeneDrillUMAP({ scatterPlot, geneName }: { scatterPlot: 
                     .filter((dot: any) => (dot as ScatterPlot).cluster_id === selectedLabel)
                     .transition()
                     .duration(200)
-                    .style("fill", (d) => colorScale((d as ScatterPlot).expression))
+                    .style("fill", (dot: any) => getColor(dot as ScatterPlot))
                     .style("filter", "drop-shadow(6px 9px 6px rgba(0, 0, 0, 0.8))")
                     .style("stroke", "black")
                     .style("stroke-width", 2)
@@ -201,7 +258,7 @@ export default function GeneDrillUMAP({ scatterPlot, geneName }: { scatterPlot: 
                     .duration(200)
                     .style("stroke", "none")
                     .style("stroke-width", 0)
-                    .style("fill", (d) => colorScale((d as ScatterPlot).expression))
+                    .style("fill", (dot: any) => getColor(dot as ScatterPlot))
                     .style("stroke", "black")
                     .attr("r", 6)
                     .style("stroke-width", 2)
@@ -211,17 +268,18 @@ export default function GeneDrillUMAP({ scatterPlot, geneName }: { scatterPlot: 
                     .text("");
             };
 
+            // Use filtered data for rendering
             svg.selectAll("circle")
-                .data(scatterPlot)
+                .data(filteredData)
                 .enter()
                 .append("circle")
                 .attr("class", (d) => `dot ${d.cluster_id}`)
                 .attr("cx", (d) => xScale(d.x ? d.x : 0))
                 .attr("cy", (d) => yScale(d.y ? d.y : 0))
                 .attr("r", 6)
-                .style("fill", (d) => colorScale(d.expression))
+                .style("fill", (d) => getColor(d))
                 .style("stroke", "black")
-                .style("stroke-width", 2)
+                .style("stroke-width", 1)
                 .style("opacity", 0.8)
                 .on("mouseover", function (event, d) { highlight(event, d); })
                 .on("mouseleave", function (event, d) { doNotHighlight(event, d); });
@@ -303,45 +361,105 @@ export default function GeneDrillUMAP({ scatterPlot, geneName }: { scatterPlot: 
                 .attr("fill", "white")
                 .text(d => d);
 
-            //// const legendCellType = d3.select("#drilldown-scatterplot-legend");
-            //// const uniqueClusterIds = Array.from(new Set(scatterPlot.map((d) => d.cluster_id?.toString() || 'null')));
-    
-            //// const legendWidthCellType = 200;
-            //// const clusterColorScale = d3.scaleOrdinal<string>()
-            ////     .domain(uniqueClusterIds)
-            ////     .range(d3.schemeCategory10);
         }
 
-    },
-        [scatterPlot])
+    }, [scatterPlot, selectedClusters, colorByCluster, clusterColorScale])
+
+    // Truncate cluster name for display
+    const truncateClusterName = (name: string, maxLen: number = 15) => {
+        if (name.length <= maxLen) return name;
+        return name.substring(0, maxLen - 2) + '..';
+    };
 
     return (
-        <Box
-        sx={{height: '100%'}}
-        >
-            <div style={{ marginLeft: '10px', margin: '10px', padding: '10px', display: 'flex', alignItems: 'center' }}>
+        <Box sx={{ height: '100%' }}>
+            <div style={{ marginLeft: '10px', margin: '10px', padding: '10px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
                 <Button
                     onClick={() => { downloadJSON() }}
                     variant="outlined"
-                    style={{ marginRight: '10px' }}
+                    size="small"
                 >
                     JSON <FileDownloadIcon />
                 </Button>
                 <Button
                     variant="outlined"
                     onClick={() => { downloadCSV() }}
-                    style={{ marginRight: '10px' }}
+                    size="small"
                 >
                     CSV <FileDownloadIcon />
                 </Button>
                 <Button
                     variant="outlined"
                     onClick={() => { downloadChartAsPNG() }}
-                    style={{ marginRight: '10px' }}
+                    size="small"
                 >
                     <CameraAltIcon /> <FileDownloadIcon />
                 </Button>
+                <Tooltip
+                    title="Toggle to color cells by their cluster identity instead of expression level. Helps visualize cluster boundaries and cell type distributions."
+                    arrow
+                    placement="bottom"
+                >
+                    <FormControlLabel
+                        control={
+                            <Switch
+                                checked={colorByCluster}
+                                onChange={(e) => setColorByCluster(e.target.checked)}
+                                size="small"
+                            />
+                        }
+                        label="Color by Cluster"
+                        sx={{ ml: 2 }}
+                    />
+                </Tooltip>
             </div>
+
+            {/* Cluster Filter Legend */}
+            <Box sx={{
+                mx: 2,
+                mb: 1,
+                p: 1.5,
+                border: '1px solid #e0e0e0',
+                borderRadius: 2,
+                backgroundColor: '#fafafa'
+            }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>
+                        Filter by Cluster {selectedClusters.size > 0 && `(${selectedClusters.size} selected)`}
+                    </Typography>
+                    <Box>
+                        <Button size="small" onClick={selectAllClusters} sx={{ mr: 1 }}>Select All</Button>
+                        <Button size="small" onClick={clearAllClusters}>Clear</Button>
+                    </Box>
+                </Box>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                    {uniqueClusters.map((cluster) => (
+                        <Tooltip key={cluster} title={cluster} arrow placement="top">
+                            <Chip
+                                label={truncateClusterName(cluster)}
+                                size="small"
+                                onClick={() => toggleCluster(cluster)}
+                                sx={{
+                                    backgroundColor: selectedClusters.size === 0 || selectedClusters.has(cluster)
+                                        ? clusterColorScale(cluster)
+                                        : '#e0e0e0',
+                                    color: selectedClusters.size === 0 || selectedClusters.has(cluster)
+                                        ? '#fff'
+                                        : '#666',
+                                    fontWeight: selectedClusters.has(cluster) ? 'bold' : 'normal',
+                                    border: selectedClusters.has(cluster) ? '2px solid #333' : '1px solid #ccc',
+                                    '&:hover': {
+                                        backgroundColor: clusterColorScale(cluster),
+                                        opacity: 0.8
+                                    },
+                                    cursor: 'pointer',
+                                    fontSize: '0.75rem'
+                                }}
+                            />
+                        </Tooltip>
+                    ))}
+                </Box>
+            </Box>
             <Box
                 sx={{
                     display: 'flex',

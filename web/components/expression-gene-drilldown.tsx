@@ -52,12 +52,11 @@ export default function GeneDrillDown({ geneData }: { geneData: GeneData }) {
 
     useEffect(()=>{
 
-        const counts_obj = geneData.counts.reduce<{[key:number]:number}>((acc, item) => {
-            const key = Number(Object.keys(item)[0]); 
-            const value = item[key as unknown as keyof typeof item]
-            acc[key] = value;
-            return acc; 
-        }, {} as {[key:number]:number});
+        // counts is now an object {cellId: expressionValue, ...} not an array
+        const counts_obj: {[key:number]:number} = {};
+        for (const [cellId, value] of Object.entries(geneData.counts)) {
+            counts_obj[Number(cellId)] = value as number;
+        }
 
         const stats_data = geneData?.data?.reduce<{ [clusterid: string]: { barcodes: string[]; expression: number[]; points: {expression: number, barcode: string}[] } }>((acc: { [clusterId: string]: { barcodes: string[]; expression: number[]; points: {expression: number, barcode: string}[] } }, item: Barcode, ) => {
             if (item.cluster_id !== null && !acc[item.cluster_id]) {

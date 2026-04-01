@@ -1,5 +1,5 @@
 -- create a table for ortho_group_id to gene_id mapping
--- add rsl to insert 
+-- add rsl to insert
 -- add rsl to update
 
 CREATE TABLE ortho_gene_id_map (

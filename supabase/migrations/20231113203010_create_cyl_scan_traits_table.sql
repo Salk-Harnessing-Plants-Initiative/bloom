@@ -12,4 +12,3 @@ CREATE POLICY "Authenticated users can select cyl_scan_traits"
 ON cyl_scan_traits AS permissive
 FOR SELECT TO authenticated
 USING (true);
-

@@ -1,12 +1,4 @@
-# Usage
-#   Start:              docker compose up
-#   With helpers:       docker compose -f docker-compose.yml -f ./dev/docker-compose.dev.yml up
-#   Stop:               docker compose down
-#   Destroy:            docker compose -f docker-compose.yml -f ./dev/docker-compose.dev.yml down -v --remove-orphans
-#   Reset everything:  ./reset.sh
-
 name: bloom_v2_dev
-version : "1.0"
 
 services:
   
@@ -16,6 +8,9 @@ services:
     build:
       context: .
       dockerfile: ./web/Dockerfile.bloom-web.dev
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: http://localhost:8000
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
     ports:
       - "3000:3000"
     environment:
@@ -23,6 +18,7 @@ services:
       NEXT_PUBLIC_SUPABASE_URL: http://localhost:8000
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
       SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      JWT_SECRET: ${JWT_SECRET}
     volumes:
       - ./web:/app/web
       - ./packages:/app/packages
@@ -31,29 +27,77 @@ services:
       - supanet
     command: sh -c "apt-get update >/dev/null && apt-get install -y --no-install-recommends socat >/dev/null && socat TCP-LISTEN:8000,fork,reuseaddr TCP:kong:8000 &npm run dev"
 
-  flask-app:
-    container_name: flask-app
-    build: ./flask
+  langchain-agent:
+    build:
+      context: ./langchain
+      dockerfile: Dockerfile
     ports:
       - "5002:5002"
     environment:
-      - FLASK_ENV=development
-      - SUPABASE_URL=${FLASK_SUPABASE_URL}
-      - SUPABASE_KEY=${SERVICE_ROLE_KEY}
-      - JWT_SECRET=${JWT_SECRET}
-      - S3_BUCKET_NAME=${MINIO_DEFAULT_BUCKET}
-      - S3_IMAGES_PATH=images
-      - AWS_REGION=${MINO_S3_STORAGE_REGION}
-      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
-      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
-      - S3_ENDPOINT=${MINIO_STORAGE_S3_ENDPOINT}
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: gpt-4o-mini
+      BLOOM_MCP_URL: http://bloommcp:8811/mcp
+      BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY:-}
+      BLOOM_PLOTS_DIR: ${BLOOM_PLOTS_DIR}
+      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-bloom-langchain}
+      LANGCHAIN_POSTGRES_URL: ${LANGCHAIN_POSTGRES_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db-dev}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      LOCAL_LLM_URL: ${LOCAL_LLM_URL}
+      CORS_ORIGINS: "http://localhost:3000"
+    volumes:
+      - ./langchain:/app
+      - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
     networks:
       - supanet
-    volumes:
-      - ./flask:/app
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     depends_on:
       - kong
+      - bloommcp
+      - db-dev
+    restart: unless-stopped
 
+  bloommcp:
+    build:
+      context: ./bloommcp
+      dockerfile: Dockerfile
+    ports:
+      - "8811:8811"
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      BLOOM_TRAITS_DIR: /app/data/SLEAP_OUT_CSV
+      BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
+      BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
+      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
+      BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY:-}
+    volumes:
+      - ./bloommcp:/app
+      - ./bloommcp/data/SLEAP_OUT_CSV:/app/data/SLEAP_OUT_CSV
+      - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
+      - ./bloommcp/data/ANALYSIS_OUTPUT:/app/data/ANALYSIS_OUTPUT
+    networks:
+      - supanet
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8811/mcp')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - kong
+    restart: unless-stopped
 
   studio:
     container_name: supabase-studio-dev
@@ -223,7 +267,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
       DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
-      DB_ENC_KEY: supabaserealtime
+      DB_ENC_KEY: ${DB_ENC_KEY:-supabaserealtime}
       API_JWT_SECRET: ${JWT_SECRET}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
       ERL_AFLAGS: -proto_dist inet_tcp
@@ -236,7 +280,7 @@ services:
   supabase-minio:
     networks:
       - supanet
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
     container_name: supabase-minio
     ports:
       - "9100:9000"
@@ -246,12 +290,12 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     command: server --console-address ":9001" /data
     volumes:
-      - /Users/benficaa/minio-data-2:/data
+      - ${MINIO_DATA_PATH}:/data
 
   minio-init:
     networks:
       - supanet
-    image: minio/mc
+    image: minio/mc:RELEASE.2025-01-17T23-25-50Z
     depends_on:
       - supabase-minio
     entrypoint: ["/bin/sh", "/usr/local/bin/init/create-buckets.sh"]
@@ -403,7 +447,6 @@ services:
       - ./volumes/db/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:Z
       - ./volumes/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:Z
       - ./volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:Z
-      - ./volumes/db/data:/var/lib/postgresql/data:Z
       - ./volumes/db/logs.sql:/docker-entrypoint-initdb.d/migrations/99-logs.sql:Z
       - ./volumes/db/pooler.sql:/docker-entrypoint-initdb.d/migrations/99-pooler.sql:Z
       - db-config:/etc/postgresql-custom
@@ -443,36 +486,20 @@ services:
         "log_min_messages=fatal"
       ]
 
-  # TODO : 
-  # vector:
-  #   container_name: supabase-vector
-  #   image: timberio/vector:0.28.1-alpine
-  #   restart: unless-stopped
-  #   volumes:
-  #     - ./volumes/logs/vector.yml:/etc/vector/vector.yml:ro,z
-  #     - ${DOCKER_SOCKET_LOCATION}:/var/run/docker.sock:ro,z
-  #   healthcheck:
-  #     test:
-  #       [
-  #         "CMD",
-  #         "wget",
-  #         "--no-verbose",
-  #         "--tries=1",
-  #         "--spider",
-  #         "http://vector:9001/health"
-  #       ]
-  #     timeout: 5s
-  #     interval: 5s
-  #     retries: 3
-  #   environment:
-  #     LOGFLARE_PUBLIC_ACCESS_TOKEN: ${LOGFLARE_PUBLIC_ACCESS_TOKEN}
-  #   command:
-  #     [
-  #       "--config",
-  #       "/etc/vector/vector.yml"
-  #     ]
-  #   security_opt:
-  #     - "label=disable"
+  swagger-ui:
+    container_name: swagger-ui-dev
+    image: swaggerapi/swagger-ui:v5.18.2
+    restart: unless-stopped
+    networks:
+      - supanet
+    ports:
+      - "8085:8080"
+    environment:
+      SWAGGER_JSON_URL: http://localhost:8000/rest/v1/?apikey=${ANON_KEY}
+      BASE_URL: /
+      DOC_EXPANSION: list
+      FILTER: true
+      TRY_IT_OUT_ENABLED: true
 
   supavisor:
     container_name: supabase-pooler
@@ -531,7 +558,6 @@ services:
 
 volumes:
   db-config:
-
 
 networks:
   supanet:

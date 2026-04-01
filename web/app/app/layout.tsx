@@ -36,10 +36,10 @@ const navLinks = [
     name: "Genes",
     href: "/app/genes",
   },
-  {
-    name: "Genomes",
-    href: "/app/jbrowse",
-  },
+  // {
+  //   name: "Genomes",
+  //   href: "/app/jbrowse",
+  // },
   {
     name: "Expression",
     href: "/app/expression",
@@ -63,6 +63,10 @@ const navLinks = [
   {
     name: "Software",
     href: "/app/software",
+  },
+  {
+    name: "Bloom Assistant",
+    href: "/chat",
   },
   // {
   //   name: "Settings",

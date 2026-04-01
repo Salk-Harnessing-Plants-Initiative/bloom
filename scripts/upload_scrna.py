@@ -3,19 +3,24 @@ import os
 import sys
 import json
 
+
 import pandas as pd
 from scipy.io import mmread
 from scipy.sparse import csr_matrix
 from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
 import supabase
 
 n_workers = 8
 
-supabase_url = "http://localhost:8000"
-supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJhdWQiOiJhdXRoZW50aWNhdGVkIiwiaWF0IjoxNzYwNDA3NTYzLCJleHAiOjIwNzU5ODM1NjN9.MQtGFnfpIKzWTvUIDTH7IUyym8TXDW_kjcWcl-_LNgA"
-database_string = "postgresql+psycopg2://postgres:postgres@localhost:5432/postgres"
+default_env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env.dev"))
+dotenv_path = os.environ.get("DOTENV_PATH", default_env_path)
+load_dotenv(dotenv_path=dotenv_path)
 
-engine = create_engine("postgresql+psycopg2://postgres:postgres@localhost:5432/postgres")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+DATABASE_STRING = os.getenv("DATABASE_STRING")
+
 
 def process_gene(gene_idx, csr, dataset_id, dataset_name, gene_ids, supabase_url, supabase_key, engine):
     # Creating a new database connection inside the function for thread safety
@@ -30,7 +35,7 @@ def process_gene(gene_idx, csr, dataset_id, dataset_name, gene_ids, supabase_url
 
     gene_name = gene_ids[gene_idx]
     storage_path = f'counts/{dataset_name}/{gene_name}.json'
-    
+
     bucket_name = 'scrna'
     json_string = json.dumps(d)
     buffer = json_string.encode('utf-8')
@@ -63,7 +68,7 @@ def upload_scrna(dataset_dir, dataset_name, species_name):
     # insert rows into scrna_genes table (SQLAlchemy for bulk insert)
     gene_ids_path = os.path.join(dataset_dir, f'{dataset_name}.gene_ids.txt')
     print("GeneIds Pathway"+gene_ids_path+"\n")
-   
+
     gene_ids = [s.strip() for s in open(gene_ids_path).read().splitlines()]
     gene_info = [{'dataset_id': dataset_id, 'gene_name': gene_id, 'gene_number': i} for (i, gene_id) in enumerate(gene_ids)]
     df = pd.DataFrame(gene_info)
@@ -82,7 +87,7 @@ def upload_scrna(dataset_dir, dataset_name, species_name):
     } for (i, row) in cell_embeddings.iterrows()]
     df = pd.DataFrame(cell_info)
     df.to_sql('scrna_cells', engine, if_exists='append', index=False)
-    
+
     # insert rows into scrna_counts table (SQLAlchemy for bulk insert)
     mtx_file = os.path.join(dataset_dir, f'{dataset_name}.counts.mtx')
     coo = mmread(mtx_file)
