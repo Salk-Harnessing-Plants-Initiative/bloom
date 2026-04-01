@@ -445,7 +445,7 @@ services:
   
   analytics:
     container_name: supabase-analytics-prod
-    image: supabase/logflare:1.14.2
+    image: supabase/logflare:1.36.0
     restart: unless-stopped
     networks:
       - supanet
