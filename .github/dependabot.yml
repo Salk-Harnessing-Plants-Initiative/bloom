@@ -1,0 +1,73 @@
+version: 2
+updates:
+  # npm dependencies
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+
+  # Docker base images (bloom-web)
+  - package-ecosystem: "docker"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  # Docker base images (langchain-agent)
+  - package-ecosystem: "docker"
+    directory: "/langchain"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  # Docker base images (bloommcp)
+  - package-ecosystem: "docker"
+    directory: "/bloommcp"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  # Docker Compose images (nginx, kong, supabase, minio, etc.)
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  # GitHub Actions versions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "github-actions"
+
+  # Python dependencies (langchain)
+  - package-ecosystem: "pip"
+    directory: "/langchain"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "python"
+
+  # Python dependencies (bloommcp)
+  - package-ecosystem: "pip"
+    directory: "/bloommcp"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "python"
