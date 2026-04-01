@@ -426,7 +426,7 @@ services:
   
   meta:
     container_name: supabase-meta-prod
-    image: supabase/postgres-meta:v0.91.6
+    image: supabase/postgres-meta:v0.96.2
     restart: unless-stopped
     networks:
       - supanet
