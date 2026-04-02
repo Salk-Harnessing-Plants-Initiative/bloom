@@ -11,7 +11,7 @@
     "dotenv": "^17.2.3",
     "fs-extra": "^11.3.2",
     "jsonwebtoken": "^9.0.2",
-    "next": "16.0.0",
+    "next": "16.2.0",
     "supabase": "^2.53.6",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
