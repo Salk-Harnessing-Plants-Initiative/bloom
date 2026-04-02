@@ -285,7 +285,7 @@ function UMAPView2D({
         container: reglContainerRef.current,
       });
 
-      const bgColor = isDarkMode ? [0.1, 0.1, 0.1, 1] : [1, 1, 1, 1];
+      const bgColor: [number, number, number, number] = isDarkMode ? [0.1, 0.1, 0.1, 1] : [1, 1, 1, 1];
 
       // Define the draw command
       const drawPoints = regl({

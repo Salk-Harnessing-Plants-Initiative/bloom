@@ -55,7 +55,7 @@ export default function GeneDrillDown({ geneData }: { geneData: GeneData }) {
         // counts is now an object {cellId: expressionValue, ...} not an array
         const counts_obj: {[key:number]:number} = {};
         for (const [cellId, value] of Object.entries(geneData.counts)) {
-            counts_obj[Number(cellId)] = value as number;
+            counts_obj[Number(cellId)] = value as unknown as number;
         }
 
         const stats_data = geneData?.data?.reduce<{ [clusterid: string]: { barcodes: string[]; expression: number[]; points: {expression: number, barcode: string}[] } }>((acc: { [clusterId: string]: { barcodes: string[]; expression: number[]; points: {expression: number, barcode: string}[] } }, item: Barcode, ) => {
