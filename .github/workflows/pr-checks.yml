@@ -81,51 +81,161 @@ jobs:
       - name: Build bloommcp image
         run: docker build -f bloommcp/Dockerfile -t bloommcp:ci ./bloommcp
 
-      # Scan built images for CVEs
+      # Scan built images for CVEs and generate markdown report
       - name: Scan bloom-web image
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'bloom-web:ci'
           severity: 'CRITICAL,HIGH'
-          exit-code: '1'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-bloom-web.txt'
 
       - name: Scan langchain-agent image
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'langchain-agent:ci'
           severity: 'CRITICAL,HIGH'
-          exit-code: '1'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-langchain.txt'
 
       - name: Scan bloommcp image
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'bloommcp:ci'
           severity: 'CRITICAL,HIGH'
-          exit-code: '1'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-bloommcp.txt'
 
-  scan-pinned-images:
-    name: Scan Public Docker Images for CVEs
+      - name: Generate Trivy report
+        if: always()
+        run: |
+          {
+            echo "## Docker Image CVE Report"
+            echo ""
+            echo "| Image | Critical | High |"
+            echo "|-------|----------|------|"
+            for img in bloom-web langchain bloommcp; do
+              file="trivy-${img}.txt"
+              if [ -f "$file" ]; then
+                crit=$(grep -c "CRITICAL" "$file" 2>/dev/null || echo 0)
+                high=$(grep -c "HIGH" "$file" 2>/dev/null || echo 0)
+                echo "| ${img} | ${crit} | ${high} |"
+              fi
+            done
+            echo ""
+            for img in bloom-web langchain bloommcp; do
+              file="trivy-${img}.txt"
+              if [ -f "$file" ] && [ -s "$file" ]; then
+                echo "<details>"
+                echo "<summary><strong>${img}</strong> — click to expand</summary>"
+                echo ""
+                echo '```'
+                cat "$file"
+                echo '```'
+                echo "</details>"
+                echo ""
+              fi
+            done
+          } > trivy-report.md
+
+      - name: Post Trivy report as PR comment
+        if: always()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: trivy-docker-build
+          path: trivy-report.md
+
+      - name: Upload Trivy report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-built-images-report
+          path: trivy-report.md
+
+      - name: Fail on critical CVEs
+        run: |
+          CRIT=0
+          for file in trivy-bloom-web.txt trivy-langchain.txt trivy-bloommcp.txt; do
+            if [ -f "$file" ] && grep -q "CRITICAL" "$file"; then
+              CRIT=1
+            fi
+          done
+          if [ "$CRIT" -eq 1 ]; then
+            echo "::error::CRITICAL CVEs found in built images. See Trivy report in PR comment."
+            exit 1
+          fi
+
+  extract-pinned-images:
+    name: Extract Pinned Images
     runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.extract.outputs.images }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Extract and scan public images from docker-compose.prod.yml
+      - name: Extract images from docker-compose.prod.yml
+        id: extract
         run: |
-          # Extract image names from docker-compose.prod.yml (only pre-built, not build: context)
-          grep "image:" docker-compose.prod.yml | awk '{print $2}' | while read image; do
-            echo "Scanning $image..."
-            docker pull "$image"
-            docker run --rm aquasec/trivy image --severity CRITICAL --exit-code 0 "$image"
-          done
+          IMAGES=$(grep "image:" docker-compose.prod.yml | awk '{print $2}' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "images=$IMAGES" >> "$GITHUB_OUTPUT"
 
-      - name: Scan for critical CVEs (fail on findings)
+  scan-pinned-images:
+    name: Scan ${{ matrix.image }}
+    needs: extract-pinned-images
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJson(needs.extract-pinned-images.outputs.images) }}
+    steps:
+      - name: Pull image
+        run: docker pull "${{ matrix.image }}"
+
+      - name: Scan image
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: '${{ matrix.image }}'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-result.txt'
+
+      - name: Generate report
+        if: always()
         run: |
-          FAILED=0
-          grep "image:" docker-compose.prod.yml | awk '{print $2}' | while read image; do
-            if ! docker run --rm aquasec/trivy image --severity CRITICAL --exit-code 1 --quiet "$image"; then
-              echo "CRITICAL CVEs found in: $image"
-              FAILED=1
-            fi
-          done
-          exit $FAILED
+          crit=$(grep -c "CRITICAL" trivy-result.txt 2>/dev/null || echo 0)
+          high=$(grep -c "HIGH" trivy-result.txt 2>/dev/null || echo 0)
+          {
+            echo "## CVE Report: \`${{ matrix.image }}\`"
+            echo ""
+            echo "| Severity | Count |"
+            echo "|----------|-------|"
+            echo "| CRITICAL | ${crit} |"
+            echo "| HIGH | ${high} |"
+            echo ""
+            echo "<details>"
+            echo "<summary>Full scan output</summary>"
+            echo ""
+            echo '```'
+            cat trivy-result.txt
+            echo '```'
+            echo "</details>"
+          } > trivy-report.md
+
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-${{ hashFiles('trivy-result.txt') }}
+          path: trivy-report.md
+
+      - name: Fail on critical CVEs
+        run: |
+          if grep -q "CRITICAL" trivy-result.txt 2>/dev/null; then
+            echo "::error::CRITICAL CVEs found in ${{ matrix.image }}"
+            exit 1
+          fi

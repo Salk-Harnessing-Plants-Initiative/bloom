@@ -210,7 +210,7 @@ services:
   # Auth (GoTrue)
   # -------------------
   auth:
-    image: supabase/gotrue:v2.177.0
+    image: supabase/gotrue:v2.188.1
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -316,7 +316,7 @@ services:
       - ${MINIO_DATA_PATH}:/data
   
   minio-init:
-    image: minio/mc:RELEASE.2025-01-17T23-25-50Z
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
       - supabase-minio
     networks:
@@ -334,7 +334,7 @@ services:
   # -------------------
   storage:
     container_name: supabase-storage
-    image: supabase/storage-api:v1.25.7
+    image: supabase/storage-api:v1.48.14
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -370,7 +370,7 @@ services:
   # -------------------
   db-prod:
     container_name: db-prod
-    image: supabase/postgres:15.8.1.060
+    image: supabase/postgres:15.14.1.104
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -403,7 +403,7 @@ services:
   # -------------------
   supavisor:
     container_name: supabase-pooler
-    image: supabase/supavisor:2.5.7
+    image: supabase/supavisor:2.7.4
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -445,7 +445,7 @@ services:
   # -------------------
   studio:
     container_name: studio
-    image: supabase/studio:2025.06.30-sha-6f5982d
+    image: supabase/studio:2026.03.30-sha-12a43e5
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -475,7 +475,7 @@ services:
   # -------------------
   imgproxy:
     container_name: supabase-imgproxy-prod
-    image: darthsim/imgproxy:v3.8.0
+    image: darthsim/imgproxy:v3.31.1
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -491,7 +491,7 @@ services:
   
   meta:
     container_name: supabase-meta-prod
-    image: supabase/postgres-meta:v0.91.6
+    image: supabase/postgres-meta:v0.96.2
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

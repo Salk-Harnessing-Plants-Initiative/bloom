@@ -40,9 +40,9 @@ WORKDIR /app/web
 RUN npm run build
 
 # ---- Runner Stage ----
-FROM node:20-bookworm AS runner
+FROM node:20-alpine AS runner
 
-RUN addgroup --system bloom && adduser --system --ingroup bloom bloom
+RUN addgroup -S bloom && adduser -S -G bloom bloom
 
 WORKDIR /app/web
 COPY --from=builder --chown=bloom:bloom /app/web/.next ./.next
