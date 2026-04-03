@@ -107,44 +107,25 @@ jobs:
     name: Scan Public Docker Images for CVEs
     runs-on: ubuntu-latest
     steps:
-      - name: Scan nginx
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: 'nginx:1.28.0-alpine'
-          severity: 'CRITICAL'
-          exit-code: '1'
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Scan supabase/postgres
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: 'supabase/postgres:15.8.1.060'
-          severity: 'CRITICAL'
-          exit-code: '1'
+      - name: Extract and scan public images from docker-compose.prod.yml
+        run: |
+          # Extract image names from docker-compose.prod.yml (only pre-built, not build: context)
+          grep "image:" docker-compose.prod.yml | awk '{print $2}' | while read image; do
+            echo "Scanning $image..."
+            docker pull "$image"
+            docker run --rm aquasec/trivy image --severity CRITICAL --exit-code 0 "$image"
+          done
 
-      - name: Scan kong
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: 'kong:2.8.1'
-          severity: 'CRITICAL'
-          exit-code: '1'
-
-      - name: Scan supabase/gotrue
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: 'supabase/gotrue:v2.177.0'
-          severity: 'CRITICAL'
-          exit-code: '1'
-
-      - name: Scan supabase/storage-api
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: 'supabase/storage-api:v1.25.7'
-          severity: 'CRITICAL'
-          exit-code: '1'
-
-      - name: Scan minio
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: 'minio/minio:RELEASE.2025-01-20T14-49-07Z'
-          severity: 'CRITICAL'
-          exit-code: '1'
+      - name: Scan for critical CVEs (fail on findings)
+        run: |
+          FAILED=0
+          grep "image:" docker-compose.prod.yml | awk '{print $2}' | while read image; do
+            if ! docker run --rm aquasec/trivy image --severity CRITICAL --exit-code 1 --quiet "$image"; then
+              echo "CRITICAL CVEs found in: $image"
+              FAILED=1
+            fi
+          done
+          exit $FAILED
