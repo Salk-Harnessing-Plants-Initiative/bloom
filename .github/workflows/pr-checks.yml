@@ -116,14 +116,14 @@ jobs:
           grep "image:" docker-compose.prod.yml | awk '{print $2}' | while read image; do
             echo "Scanning $image..."
             docker pull "$image"
-            docker run --rm aquasec/trivy image --severity CRITICAL --exit-code 0 "$image"
+            docker run --rm aquasecurity/trivy image --severity CRITICAL --exit-code 0 "$image"
           done
 
       - name: Scan for critical CVEs (fail on findings)
         run: |
           FAILED=0
           grep "image:" docker-compose.prod.yml | awk '{print $2}' | while read image; do
-            if ! docker run --rm aquasec/trivy image --severity CRITICAL --exit-code 1 --quiet "$image"; then
+            if ! docker run --rm aquasecurity/trivy image --severity CRITICAL --exit-code 1 --quiet "$image"; then
               echo "CRITICAL CVEs found in: $image"
               FAILED=1
             fi
