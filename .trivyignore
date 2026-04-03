@@ -1,0 +1,20 @@
+# xlsx - used in cyl scan CLI (packages/bloom-fs/src/cyl/metadata.ts), will fix later
+# Trivy status: no fix available on npm
+CVE-2023-30533
+CVE-2024-22363
+
+# Upstream vendor image CVEs — all images already on latest stable versions
+
+# zlib1g (Debian) - affects: realtime, studio, postgres-meta
+# Trivy status: will_not_fix | Fixed version: none
+CVE-2023-45853
+
+# libsqlite3 (Debian) - affects: realtime, studio
+# Trivy status: affected | Fixed version: none
+CVE-2025-7458
+
+# grpc-go authz bypass - affects: gotrue, imgproxy
+# Fix exists in grpc-go 1.79.3 but official supabase/gotrue and
+# darthsim/imgproxy images have not been rebuilt with it yet
+# Trivy status: fixed in 1.79.3
+CVE-2026-33186

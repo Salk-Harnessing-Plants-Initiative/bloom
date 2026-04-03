@@ -69,17 +69,17 @@ jobs:
 
       - name: Build bloom-web image
         run: |
-          docker build -f web/Dockerfile.bloom-web.prod \
+          docker build --provenance=false -f web/Dockerfile.bloom-web.prod \
             --build-arg NEXT_PUBLIC_SUPABASE_URL=http://localhost:8000 \
             --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder \
             --build-arg NEXT_PUBLIC_SUPABASE_COOKIE_NAME=sb-localhost-auth-token \
             -t bloom-web:ci .
 
       - name: Build langchain-agent image
-        run: docker build -f langchain/Dockerfile -t langchain-agent:ci ./langchain
+        run: docker build --provenance=false -f langchain/Dockerfile -t langchain-agent:ci ./langchain
 
       - name: Build bloommcp image
-        run: docker build -f bloommcp/Dockerfile -t bloommcp:ci ./bloommcp
+        run: docker build --provenance=false -f bloommcp/Dockerfile -t bloommcp:ci ./bloommcp
 
       # Scan built images for CVEs and generate markdown report
       - name: Scan bloom-web image
@@ -90,6 +90,7 @@ jobs:
           exit-code: '0'
           format: 'table'
           output: 'trivy-bloom-web.txt'
+          trivyignores: '.trivyignore'
 
       - name: Scan langchain-agent image
         uses: aquasecurity/trivy-action@v0.35.0
@@ -99,6 +100,7 @@ jobs:
           exit-code: '0'
           format: 'table'
           output: 'trivy-langchain.txt'
+          trivyignores: '.trivyignore'
 
       - name: Scan bloommcp image
         uses: aquasecurity/trivy-action@v0.35.0
@@ -108,6 +110,7 @@ jobs:
           exit-code: '0'
           format: 'table'
           output: 'trivy-bloommcp.txt'
+          trivyignores: '.trivyignore'
 
       - name: Generate Trivy report
         if: always()
@@ -192,6 +195,9 @@ jobs:
       matrix:
         image: ${{ fromJson(needs.extract-pinned-images.outputs.images) }}
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Pull image
         run: docker pull "${{ matrix.image }}"
 
@@ -203,6 +209,7 @@ jobs:
           exit-code: '0'
           format: 'table'
           output: 'trivy-result.txt'
+          trivyignores: '.trivyignore'
 
       - name: Generate report
         if: always()
