@@ -28,9 +28,10 @@ jobs:
         run: cd web && npx tsc --noEmit
 
       - name: Build shared packages
+        # --skipLibCheck: monorepo root node_modules has d3 types incompatible with these packages
         run: |
-          cd packages/bloom-js && npx tsc -p tsconfig.json
-          cd ../../packages/bloom-fs && npx tsc -p tsconfig.json
+          cd packages/bloom-js && npx tsc -p tsconfig.json --skipLibCheck
+          cd ../../packages/bloom-fs && npx tsc -p tsconfig.json --skipLibCheck
 
       - name: Build Next.js app
         run: cd web && npm run build
