@@ -23,7 +23,7 @@ services:
   # Nginx 
   # -------------------
   nginx:
-    image: nginx:1.28.3-alpine
+    image: nginx:1.28.3-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
     container_name: bloom-nginx
     restart: unless-stopped
     security_opt:
@@ -185,7 +185,7 @@ services:
   # -------------------
   kong:
     container_name: supabase-kong
-    image: kong:2.8.1
+    image: kong:2.8.1@sha256:1b53405d8680a09d6f44494b7990bf7da2ea43f84a258c59717d4539abf09f6d
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -215,7 +215,7 @@ services:
   # Auth (GoTrue)
   # -------------------
   auth:
-    image: supabase/gotrue:v2.188.1
+    image: supabase/gotrue:v2.188.1@sha256:87db8c737af49a64236c461882ed3925f8b1e5c2c47176c64694dedc65153573
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -245,7 +245,7 @@ services:
   # PostgREST
   # -------------------
   rest:
-    image: postgrest/postgrest:v12.2.12
+    image: postgrest/postgrest:v12.2.12@sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -271,7 +271,7 @@ services:
   # -------------------
   realtime:
     container_name: realtime-prod.supabase-realtime
-    image: supabase/realtime:v2.34.47
+    image: supabase/realtime:v2.34.47@sha256:4d2460cb6eb081b7cfec0e6b0af57f547497f60cf897621555303992d299f6e8
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -303,7 +303,7 @@ services:
   # MinIO
   # -------------------
   supabase-minio:
-    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z@sha256:ed9be66eb5f2636c18289c34c3b725ddf57815f2777c77b5938543b78a44f144
     container_name: supabase-minio
     restart: unless-stopped
     security_opt:
@@ -324,7 +324,7 @@ services:
       - ${MINIO_DATA_PATH}:/data
   
   minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     depends_on:
       - supabase-minio
     networks:
@@ -342,7 +342,7 @@ services:
   # -------------------
   storage:
     container_name: supabase-storage
-    image: supabase/storage-api:v1.48.14
+    image: supabase/storage-api:v1.48.14@sha256:14a7e837e44a5f1d59c4af0a7fb0066a6ab3b9146690a48f8e018dd60f3bf91f
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -378,7 +378,7 @@ services:
   # -------------------
   db-prod:
     container_name: db-prod
-    image: supabase/postgres:15.14.1.104
+    image: supabase/postgres:15.14.1.104@sha256:bc49dde9849c1f8ee5c48f08600b49e2b0911f17c1b055a696d610cea48b6ba1
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -417,7 +417,7 @@ services:
   # -------------------
   supavisor:
     container_name: supabase-pooler
-    image: supabase/supavisor:2.7.4
+    image: supabase/supavisor:2.7.4@sha256:466297ba00956e2d1cbd56a4362fbd5dbc9c2a47ad83e8ca9bdb877f743315ee
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -459,7 +459,7 @@ services:
   # -------------------
   studio:
     container_name: studio
-    image: supabase/studio:2026.03.30-sha-12a43e5
+    image: supabase/studio:2026.03.30-sha-12a43e5@sha256:d73df17a81b897bb61326b3160b29558ca4c2cdbe32d25b7bb11e15a2cd13488
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -489,7 +489,7 @@ services:
   # -------------------
   imgproxy:
     container_name: supabase-imgproxy-prod
-    image: darthsim/imgproxy:v3.31.1
+    image: darthsim/imgproxy:v3.31.1@sha256:2b7a56dbf9c8a8e12e7109a5bdd27d31a8c1aa49f2116c927c6aedc37e18db98
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -505,7 +505,7 @@ services:
   
   meta:
     container_name: supabase-meta-prod
-    image: supabase/postgres-meta:v0.96.2
+    image: supabase/postgres-meta:v0.96.2@sha256:4ed8f7c5d3b2e25aa4aa29794605b49799b66da4b36a3c70894cd5241af63f97
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
