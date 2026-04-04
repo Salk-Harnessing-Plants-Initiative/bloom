@@ -1,5 +1,10 @@
 """
 Smoke tests — verify the compose stack is up and reachable.
+
+Prerequisites:
+  1. Compose stack running: docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+
+Run: python -m pytest tests/integration/test_smoke.py -v
 """
 
 import pytest
