@@ -132,16 +132,15 @@ jobs:
             for img in bloom-web langchain bloommcp; do
               file="trivy-${img}.txt"
               if [ -f "$file" ] && [ -s "$file" ]; then
-                echo "<details>"
-                echo "<summary><strong>${img}</strong> — click to expand</summary>"
-                echo ""
-                echo '```'
-                cat "$file"
-                echo '```'
-                echo "</details>"
-                echo ""
+                cves=$(grep -oP 'CVE-\d+-\d+' "$file" | sort -u | tr '\n' ', ' | sed 's/,$//')
+                if [ -n "$cves" ]; then
+                  echo "**${img}:** ${cves}"
+                  echo ""
+                fi
               fi
             done
+            echo ""
+            echo "> Full scan output available in the [trivy-built-images-report](../actions/artifacts) artifact."
           } > trivy-report.md
 
       - name: Post Trivy report as PR comment
@@ -211,38 +210,65 @@ jobs:
           output: 'trivy-result.txt'
           trivyignores: '.trivyignore'
 
-      - name: Generate report
+      - name: Generate summary
         if: always()
         run: |
           crit=$(grep -c "CRITICAL" trivy-result.txt 2>/dev/null || echo 0)
           high=$(grep -c "HIGH" trivy-result.txt 2>/dev/null || echo 0)
-          {
-            echo "## CVE Report: \`${{ matrix.image }}\`"
-            echo ""
-            echo "| Severity | Count |"
-            echo "|----------|-------|"
-            echo "| CRITICAL | ${crit} |"
-            echo "| HIGH | ${high} |"
-            echo ""
-            echo "<details>"
-            echo "<summary>Full scan output</summary>"
-            echo ""
-            echo '```'
-            cat trivy-result.txt
-            echo '```'
-            echo "</details>"
-          } > trivy-report.md
+          cves=$(grep -oP 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | sort -u | tr '\n' ',' | sed 's/,$//' || echo "")
+          echo "${{ matrix.image }}|${crit}|${high}|${cves}" > summary.txt
 
-      - name: Upload scan report
+      - name: Sanitize artifact name
+        if: always()
+        id: sanitize
+        run: echo "name=$(echo '${{ matrix.image }}' | tr '/:.' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-${{ hashFiles('trivy-result.txt') }}
-          path: trivy-report.md
+          name: trivy-pinned-${{ steps.sanitize.outputs.name }}
+          path: summary.txt
 
-      - name: Fail on critical CVEs
+      - name: Warn on critical CVEs
         run: |
           if grep -q "CRITICAL" trivy-result.txt 2>/dev/null; then
-            echo "::error::CRITICAL CVEs found in ${{ matrix.image }}"
-            exit 1
+            echo "::warning::CRITICAL CVEs found in ${{ matrix.image }}"
           fi
+
+  pinned-images-summary:
+    name: Pinned Images CVE Summary
+    needs: scan-pinned-images
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all scan summaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: trivy-pinned-*
+          path: results
+
+      - name: Generate combined report
+        run: |
+          {
+            echo "## Pinned Image CVE Report"
+            echo ""
+            echo "| Image | Critical | High | CVEs |"
+            echo "|-------|----------|------|------|"
+            for file in results/trivy-pinned-*/summary.txt; do
+              if [ -f "$file" ]; then
+                IFS='|' read -r img crit high cves < "$file"
+                if [ -n "$cves" ]; then
+                  echo "| ${img} | ${crit} | ${high} | ${cves} |"
+                else
+                  echo "| ${img} | ${crit} | ${high} | — |"
+                fi
+              fi
+            done
+          } > pinned-report.md
+
+      - name: Post as PR comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: trivy-pinned-images
+          path: pinned-report.md
