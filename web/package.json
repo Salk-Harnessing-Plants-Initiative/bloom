@@ -22,7 +22,7 @@
     "@mui/icons-material": "^7.3.4",
     "@mui/material": "^7.3.4",
     "@mui/system": "^7.3.3",
-    "@mui/x-data-grid": "^8.17.0",
+    "@mui/x-data-grid": "^8.28.2",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
     "@salk-hpi/bloom-js": "file:../packages/bloom-js",
