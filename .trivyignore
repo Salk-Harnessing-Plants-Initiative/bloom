@@ -18,3 +18,8 @@ CVE-2025-7458
 # darthsim/imgproxy images have not been rebuilt with it yet
 # Trivy status: fixed in 1.79.3
 CVE-2026-33186
+
+# Go stdlib crypto/tls session resumption - affects: supabase CLI binary
+# bundled in node_modules/supabase/bin/supabase (compiled with Go 1.25.5)
+# Fix available in Go 1.25.7 but supabase npm package not yet rebuilt
+CVE-2025-68121
