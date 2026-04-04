@@ -123,8 +123,8 @@ jobs:
             for img in bloom-web langchain bloommcp; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
-                crit=$(grep -c "CRITICAL" "$file" 2>/dev/null || echo 0)
-                high=$(grep -c "HIGH" "$file" 2>/dev/null || echo 0)
+                crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || echo 0)
+                high=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "HIGH" || echo 0)
                 echo "| ${img} | ${crit} | ${high} |"
               fi
             done
@@ -161,7 +161,7 @@ jobs:
         run: |
           CRIT=0
           for file in trivy-bloom-web.txt trivy-langchain.txt trivy-bloommcp.txt; do
-            if [ -f "$file" ] && grep -q "CRITICAL" "$file"; then
+            if [ -f "$file" ] && grep -P 'CVE-\d+-\d+' "$file" | grep -q "CRITICAL"; then
               CRIT=1
             fi
           done
@@ -213,8 +213,8 @@ jobs:
       - name: Generate summary
         if: always()
         run: |
-          crit=$(grep -c "CRITICAL" trivy-result.txt 2>/dev/null || echo 0)
-          high=$(grep -c "HIGH" trivy-result.txt 2>/dev/null || echo 0)
+          crit=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "CRITICAL" || echo 0)
+          high=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "HIGH" || echo 0)
           cves=$(grep -oP 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | sort -u | tr '\n' ',' | sed 's/,$//' || echo "")
           echo "${{ matrix.image }}|${crit}|${high}|${cves}" > summary.txt
 
