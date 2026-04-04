@@ -69,7 +69,7 @@ jobs:
           docker build -f bloommcp/Dockerfile -t bloommcp:${{ github.sha }} ./bloommcp
 
       - name: Scan images with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'bloom-web:${{ github.sha }}'
           severity: 'CRITICAL,HIGH'

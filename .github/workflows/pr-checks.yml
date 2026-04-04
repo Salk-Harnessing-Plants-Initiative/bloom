@@ -83,7 +83,7 @@ jobs:
 
       # Scan built images for CVEs and generate markdown report
       - name: Scan bloom-web image
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'bloom-web:ci'
           severity: 'CRITICAL,HIGH'
@@ -93,7 +93,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Scan langchain-agent image
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'langchain-agent:ci'
           severity: 'CRITICAL,HIGH'
@@ -103,7 +103,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Scan bloommcp image
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'bloommcp:ci'
           severity: 'CRITICAL,HIGH'
@@ -158,7 +158,7 @@ jobs:
           path: trivy-report.md
 
       - name: Check bloom-web for critical CVEs
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'bloom-web:ci'
           severity: 'CRITICAL'
@@ -166,7 +166,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Check langchain-agent for critical CVEs
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'langchain-agent:ci'
           severity: 'CRITICAL'
@@ -174,7 +174,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Check bloommcp for critical CVEs
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'bloommcp:ci'
           severity: 'CRITICAL'
@@ -212,7 +212,7 @@ jobs:
         run: docker pull "${{ matrix.image }}"
 
       - name: Scan image
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: '${{ matrix.image }}'
           severity: 'CRITICAL,HIGH'
