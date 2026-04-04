@@ -157,18 +157,29 @@ jobs:
           name: trivy-built-images-report
           path: trivy-report.md
 
-      - name: Fail on critical CVEs
-        run: |
-          CRIT=0
-          for file in trivy-bloom-web.txt trivy-langchain.txt trivy-bloommcp.txt; do
-            if [ -f "$file" ] && grep -P 'CVE-\d+-\d+' "$file" | grep -q "CRITICAL"; then
-              CRIT=1
-            fi
-          done
-          if [ "$CRIT" -eq 1 ]; then
-            echo "::error::CRITICAL CVEs found in built images. See Trivy report in PR comment."
-            exit 1
-          fi
+      - name: Check bloom-web for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'bloom-web:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+
+      - name: Check langchain-agent for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'langchain-agent:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+
+      - name: Check bloommcp for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'bloommcp:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
 
   extract-pinned-images:
     name: Extract Pinned Images
