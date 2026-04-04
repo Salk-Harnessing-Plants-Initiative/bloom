@@ -148,9 +148,9 @@ export default function ExpressionMultiGeneDotPlot({ input_array, setDrillDownGe
                             geneClusterMap.set(mapKey, { total: 0, count: 0, expressedCells: new Set() });
                         }
                         const clusterStats = geneClusterMap.get(mapKey)!;
-                        clusterStats.total += value as number;
+                        clusterStats.total += value as unknown as number;
                         clusterStats.count += 1;
-                        if ((value as number) > 0 && clusterData.barcode) clusterStats.expressedCells.add(clusterData.barcode);
+                        if ((value as unknown as number) > 0 && clusterData.barcode) clusterStats.expressedCells.add(clusterData.barcode);
                     }
                 });
 

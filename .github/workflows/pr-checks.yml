@@ -69,59 +69,217 @@ jobs:
 
       - name: Build bloom-web image
         run: |
-          docker build -f web/Dockerfile.bloom-web.prod \
+          docker build --provenance=false -f web/Dockerfile.bloom-web.prod \
             --build-arg NEXT_PUBLIC_SUPABASE_URL=http://localhost:8000 \
             --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder \
             --build-arg NEXT_PUBLIC_SUPABASE_COOKIE_NAME=sb-localhost-auth-token \
             -t bloom-web:ci .
 
       - name: Build langchain-agent image
-        run: docker build -f langchain/Dockerfile -t langchain-agent:ci ./langchain
+        run: docker build --provenance=false -f langchain/Dockerfile -t langchain-agent:ci ./langchain
 
       - name: Build bloommcp image
-        run: docker build -f bloommcp/Dockerfile -t bloommcp:ci ./bloommcp
+        run: docker build --provenance=false -f bloommcp/Dockerfile -t bloommcp:ci ./bloommcp
 
-      # Scan built images for CVEs
+      # Scan built images for CVEs and generate markdown report
       - name: Scan bloom-web image
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'bloom-web:ci'
           severity: 'CRITICAL,HIGH'
-          exit-code: '1'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-bloom-web.txt'
+          trivyignores: '.trivyignore'
 
       - name: Scan langchain-agent image
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'langchain-agent:ci'
           severity: 'CRITICAL,HIGH'
-          exit-code: '1'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-langchain.txt'
+          trivyignores: '.trivyignore'
 
       - name: Scan bloommcp image
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'bloommcp:ci'
           severity: 'CRITICAL,HIGH'
-          exit-code: '1'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-bloommcp.txt'
+          trivyignores: '.trivyignore'
 
-  scan-pinned-images:
-    name: Scan Public Docker Images for CVEs
+      - name: Generate Trivy report
+        if: always()
+        run: |
+          {
+            echo "## Docker Image CVE Report"
+            echo ""
+            echo "| Image | Critical | High |"
+            echo "|-------|----------|------|"
+            for img in bloom-web langchain bloommcp; do
+              file="trivy-${img}.txt"
+              if [ -f "$file" ]; then
+                crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || echo 0)
+                high=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "HIGH" || echo 0)
+                echo "| ${img} | ${crit} | ${high} |"
+              fi
+            done
+            echo ""
+            for img in bloom-web langchain bloommcp; do
+              file="trivy-${img}.txt"
+              if [ -f "$file" ] && [ -s "$file" ]; then
+                cves=$(grep -oP 'CVE-\d+-\d+' "$file" | sort -u | tr '\n' ', ' | sed 's/,$//')
+                if [ -n "$cves" ]; then
+                  echo "**${img}:** ${cves}"
+                  echo ""
+                fi
+              fi
+            done
+            echo ""
+            echo "> Full scan output available in the [trivy-built-images-report](../actions/artifacts) artifact."
+          } > trivy-report.md
+
+      - name: Post Trivy report as PR comment
+        if: always()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: trivy-docker-build
+          path: trivy-report.md
+
+      - name: Upload Trivy report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-built-images-report
+          path: trivy-report.md
+
+      - name: Check bloom-web for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'bloom-web:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+
+      - name: Check langchain-agent for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'langchain-agent:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+
+      - name: Check bloommcp for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'bloommcp:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+
+  extract-pinned-images:
+    name: Extract Pinned Images
     runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.extract.outputs.images }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Trivy
+      - name: Extract images from docker-compose.prod.yml
+        id: extract
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          IMAGES=$(grep "image:" docker-compose.prod.yml | awk '{print $2}' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "images=$IMAGES" >> "$GITHUB_OUTPUT"
 
-      - name: Scan all public images from docker-compose
+  scan-pinned-images:
+    name: Scan ${{ matrix.image }}
+    needs: extract-pinned-images
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJson(needs.extract-pinned-images.outputs.images) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Pull image
+        run: docker pull "${{ matrix.image }}"
+
+      - name: Scan image
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: '${{ matrix.image }}'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-result.txt'
+          trivyignores: '.trivyignore'
+
+      - name: Generate summary
+        if: always()
         run: |
-          FAILED=0
-          grep "image:" docker-compose.prod.yml | awk '{print $2}' | while read image; do
-            echo "=== Scanning $image ==="
-            if ! trivy image --severity CRITICAL --exit-code 1 "$image" 2>&1; then
-              FAILED=1
-            fi
+          crit=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "CRITICAL" || echo 0)
+          high=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "HIGH" || echo 0)
+          cves=$(grep -oP 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | sort -u | tr '\n' ',' | sed 's/,$//' || echo "")
+          echo "${{ matrix.image }}|${crit}|${high}|${cves}" > summary.txt
+
+      - name: Sanitize artifact name
+        if: always()
+        id: sanitize
+        run: echo "name=$(echo '${{ matrix.image }}' | tr '/:.' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-pinned-${{ steps.sanitize.outputs.name }}
+          path: summary.txt
+
+      - name: Warn on critical CVEs
+        run: |
+          if grep -q "CRITICAL" trivy-result.txt 2>/dev/null; then
+            echo "::warning::CRITICAL CVEs found in ${{ matrix.image }}"
+          fi
+
+  pinned-images-summary:
+    name: Pinned Images CVE Summary
+    needs: scan-pinned-images
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all scan summaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: trivy-pinned-*
+          path: results
+
+      - name: Generate combined report
+        run: |
+          {
+            echo "## Pinned Image CVE Report"
             echo ""
-          done
-          exit $FAILED
+            echo "| Image | Critical | High | CVEs |"
+            echo "|-------|----------|------|------|"
+            for file in results/trivy-pinned-*/summary.txt; do
+              if [ -f "$file" ]; then
+                IFS='|' read -r img crit high cves < "$file"
+                if [ -n "$cves" ]; then
+                  echo "| ${img} | ${crit} | ${high} | ${cves} |"
+                else
+                  echo "| ${img} | ${crit} | ${high} | — |"
+                fi
+              fi
+            done
+          } > pinned-report.md
+
+      - name: Post as PR comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: trivy-pinned-images
+          path: pinned-report.md

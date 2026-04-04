@@ -19,9 +19,13 @@ COPY . .
 # Create data directories (owned by bloommcp)
 RUN mkdir -p /app/data/SLEAP_OUT_CSV /app/data/PLOTS_DIR /app/data/ANALYSIS_OUTPUT
 
+RUN addgroup --system bloom && adduser --system --ingroup bloom bloom
+RUN chown -R bloom:bloom /app
+
 EXPOSE 8811
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8811/mcp')" || exit 1
 
+USER bloom
 CMD ["python", "server.py"]

@@ -19,9 +19,13 @@ COPY . .
 # Create plots directory (shared with bloommcp via volume mount)
 RUN mkdir -p /app/data/PLOTS_DIR
 
+RUN addgroup --system bloom && adduser --system --ingroup bloom bloom
+RUN chown -R bloom:bloom /app
+
 EXPOSE 5002
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -sf http://localhost:5002/health || exit 1
 
+USER bloom
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5002", "--reload"]
