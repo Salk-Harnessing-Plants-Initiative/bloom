@@ -27,7 +27,7 @@
     "@react-three/fiber": "^9.5.0",
     "@salk-hpi/bloom-js": "file:../packages/bloom-js",
     "@supabase/ssr": "^0.7.0",
-    "@supabase/supabase-js": "latest",
+    "@supabase/supabase-js": "^2.101.1",
     "@types/d3": "^7.4.3",
     "@types/html2canvas": "^0.5.35",
     "@types/uuid": "^10.0.0",
