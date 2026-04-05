@@ -36,7 +36,7 @@ updates:
       - "dependencies"
       - "docker"
 
-  # Docker Compose images (nginx, kong, supabase, minio, etc.)
+  # Docker Compose images (caddy, kong, supabase, minio, etc.)
   - package-ecosystem: "docker-compose"
     directory: "/"
     schedule:

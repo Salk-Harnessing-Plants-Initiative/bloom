@@ -6,12 +6,12 @@
 #   RAM:     16 GB
 #   Disk:    100 GB SSD
 #
-# Services: ~15 containers (nginx, bloom-web, langchain-agent, bloommcp,
+# Services: ~15 containers (caddy, bloom-web, langchain-agent, bloommcp,
 #   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
 #   meta, db-prod, supavisor, studio)
 #
 # Host-exposed ports:
-#   80/443  - nginx (public HTTP/HTTPS)
+#   80/443  - caddy (reverse proxy, auto HTTPS)
 #   55323   - studio (admin, restrict via firewall)
 # =============================================================================
 
@@ -23,7 +23,7 @@ services:
   # Caddy (Reverse Proxy)
   # -------------------
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.2-alpine
     container_name: bloom-caddy
     restart: unless-stopped
     security_opt:
