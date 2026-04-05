@@ -20,30 +20,36 @@ name: bloom_v2_prod
 services:
 
   # -------------------
-  # Nginx 
+  # Caddy (Reverse Proxy)
   # -------------------
-  nginx:
-    image: nginx:1.28.3-alpine
-    container_name: bloom-nginx
+  caddy:
+    image: caddy:2-alpine
+    container_name: bloom-caddy
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - NET_BIND_SERVICE
     ports:
-      - "80:80"
-      - "443:443"
+      - "${CADDY_HTTP_LISTEN_PORT}:80"
+      - "${CADDY_HTTPS_LISTEN_PORT}:443"
     environment:
-      ANON_KEY: ${ANON_KEY}
       DOMAIN_MAIN: ${DOMAIN_MAIN}
       DOMAIN_STUDIO: ${DOMAIN_STUDIO}
       DOMAIN_MINIO: ${DOMAIN_MINIO}
-      DOMAIN_FLASK: ${DOMAIN_FLASK}
+      KONG_PORT: ${KONG_PORT}
+      BLOOM_WEB_PORT: ${BLOOM_WEB_PORT}
+      STUDIO_PORT: ${STUDIO_PORT}
+      MINIO_CONSOLE_PORT: ${MINIO_CONSOLE_PORT}
+      CADDY_HTTP_PORT: ${CADDY_HTTP_PORT}
     volumes:
-      - ./nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
     depends_on:
       - kong
-    command: /bin/sh -c "envsubst '$${ANON_KEY},$${DOMAIN_MAIN},$${DOMAIN_STUDIO},$${DOMAIN_MINIO},$${DOMAIN_FLASK}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"
     networks:
       - supanet
 
@@ -110,16 +116,16 @@ services:
       BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
       LANGCHAIN_POSTGRES_URL: ${LANGCHAIN_POSTGRES_URL}
       JWT_SECRET: ${JWT_SECRET}
-      POSTGRES_HOST: ${POSTGRES_HOST:-db-prod}
-      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
-      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_USER: ${POSTGRES_USER:-supabase_admin}
-      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
-      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
-      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-bloom-langchain}
-      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      POSTGRES_USER: ${POSTGRES_USER}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+      CORS_ORIGINS: ${CORS_ORIGINS}
     volumes:
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
     networks:
@@ -272,6 +278,9 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - SETUID
+      - SETGID
     networks:
       - supanet
     environment:
@@ -282,7 +291,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
       DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
-      DB_ENC_KEY: ${DB_ENC_KEY:-supabaserealtime}
+      DB_ENC_KEY: ${DB_ENC_KEY}
       API_JWT_SECRET: ${JWT_SECRET}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
       ERL_AFLAGS: -proto_dist inet_tcp
@@ -376,6 +385,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - FOWNER
+      - DAC_OVERRIDE
     networks:
       - supanet
     expose:
@@ -456,14 +471,14 @@ services:
     expose:
     - "3000"
     ports:
-      - "55323:3000"
+      - "${STUDIO_PORT}:3000"
     environment:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
       DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
       DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
 
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_PUBLIC_URL: ${STUDIO_SUPABASE_PUBLIC_URL}
@@ -515,6 +530,8 @@ services:
 
 volumes:
   db-config:
+  caddy-data:
+  caddy-config:
 
 networks:
   supanet:

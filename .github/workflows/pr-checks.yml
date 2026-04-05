@@ -24,6 +24,13 @@ jobs:
       - name: Security audit (npm)
         run: npm audit --audit-level=critical
 
+      - name: Check Caddy config has no dev overrides
+        run: |
+          if grep -q "auto_https off" caddy/Caddyfile 2>/dev/null; then
+            echo "::error::caddy/Caddyfile contains 'auto_https off' — remove before merging to main"
+            exit 1
+          fi
+
       - name: Build shared packages
         run: |
           cd packages/bloom-js && npx tsc -p tsconfig.json
