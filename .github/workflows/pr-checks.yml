@@ -257,7 +257,7 @@ jobs:
           EOF
 
       - name: Create MinIO data directory
-        run: mkdir -p /tmp/minio-ci
+        run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci
 
       - name: Start compose stack
         run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build
