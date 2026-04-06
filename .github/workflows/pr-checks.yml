@@ -188,6 +188,115 @@ jobs:
           exit-code: '1'
           trivyignores: '.trivyignore'
 
+  compose-health-check:
+    name: Docker Compose Health Check
+    needs: docker-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate .env.ci from secrets
+        run: |
+          cat <<EOF > .env.ci
+          POSTGRES_DB=postgres
+          POSTGRES_USER=supabase_admin
+          POSTGRES_PASSWORD=${{ secrets.CI_POSTGRES_PASSWORD }}
+          POSTGRES_PORT=5432
+          POSTGRES_HOST=db-prod
+          PGRST_DB_SCHEMAS=public,auth,storage
+          ANON_KEY=${{ secrets.CI_ANON_KEY }}
+          SERVICE_ROLE_KEY=${{ secrets.CI_SERVICE_ROLE_KEY }}
+          JWT_SECRET=${{ secrets.CI_JWT_SECRET }}
+          JWT_EXPIRY=3600
+          ENABLE_ANONYMOUS_USERS=false
+          ENABLE_EMAIL_SIGNUP=true
+          ENABLE_EMAIL_AUTOCONFIRM=true
+          DISABLE_SIGNUP=false
+          API_EXTERNAL_URL=http://localhost:9999
+          ADDITIONAL_REDIRECT_URLS=http://localhost
+          SITE_URL=http://localhost
+          NEXT_PUBLIC_SUPABASE_URL=http://kong:8000
+          SUPABASE_URL=http://kong:8000
+          SUPABASE_COOKIE_NAME=sb-ci-auth-token
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.CI_ANON_KEY }}
+          NEXT_PUBLIC_APP_URL=http://localhost
+          SUPABASE_PUBLIC_URL=http://localhost/api
+          POOLER_TENANT_ID=default
+          POOLER_DEFAULT_POOL_SIZE=5
+          POOLER_MAX_CLIENT_CONN=100
+          POOLER_DB_POOL_SIZE=10
+          SUPAVISOR_ENC_KEY=${{ secrets.CI_SUPAVISOR_ENC_KEY }}
+          VAULT_ENC_KEY=${{ secrets.CI_VAULT_ENC_KEY }}
+          SECRET_KEY_BASE=${{ secrets.CI_SECRET_KEY_BASE }}
+          DASHBOARD_USERNAME=ci-admin
+          DASHBOARD_PASSWORD=ci-changeme
+          STUDIO_DEFAULT_ORGANIZATION=ci-org
+          STUDIO_DEFAULT_PROJECT=ci-project
+          STUDIO_SUPABASE_PUBLIC_URL=http://localhost
+          MINIO_ROOT_USER=ci-supabase
+          MINIO_ROOT_PASSWORD=${{ secrets.CI_MINIO_PASSWORD }}
+          MINIO_DATA_PATH=/tmp/minio-ci
+          IMGPROXY_URL=http://imgproxy:5001
+          IMGPROXY_ENABLE_WEBP_DETECTION=true
+          DB_ENC_KEY=${{ secrets.CI_DB_ENC_KEY }}
+          DOMAIN_MAIN=localhost
+          DOMAIN_STUDIO=studio.localhost
+          DOMAIN_MINIO=minio.localhost
+          DOMAIN_FLASK=api.localhost
+          BLOOM_PLOTS_DIR=/app/data/PLOTS_DIR
+          BLOOM_PLOTS_URL=http://localhost:5002/plots
+          BLOOMMCP_API_KEY=ci-placeholder
+          BLOOM_MCP_URL=http://bloommcp:8811/mcp
+          OPENAI_API_KEY=sk-ci-not-real
+          LANGCHAIN_POSTGRES_URL=postgresql://supabase_admin:${{ secrets.CI_POSTGRES_PASSWORD }}@db-prod:5432/postgres
+          LANGCHAIN_TRACING_V2=false
+          LANGCHAIN_API_KEY=
+          LANGCHAIN_PROJECT=bloom-ci
+          CORS_ORIGINS=http://localhost
+          EOF
+
+      - name: Create MinIO data directory
+        run: mkdir -p /tmp/minio-ci
+
+      - name: Start compose stack
+        run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build
+
+      - name: Wait for services to be healthy
+        run: |
+          echo "Waiting for services to become healthy..."
+          TIMEOUT=120
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            UNHEALTHY=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r 'select(.Health == "unhealthy" or .Health == "starting") | .Name' 2>/dev/null | wc -l)
+            EXITED=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r 'select(.State == "exited" and .ExitCode != 0) | .Name' 2>/dev/null | wc -l)
+            if [ "$UNHEALTHY" -eq 0 ] && [ "$EXITED" -eq 0 ]; then
+              echo "All services healthy!"
+              docker compose -f docker-compose.prod.yml --env-file .env.ci ps
+              exit 0
+            fi
+            echo "Waiting... (${ELAPSED}s / ${TIMEOUT}s) — ${UNHEALTHY} unhealthy, ${EXITED} failed"
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          echo "::error::Services did not become healthy within ${TIMEOUT}s"
+          docker compose -f docker-compose.prod.yml --env-file .env.ci ps
+          docker compose -f docker-compose.prod.yml --env-file .env.ci logs --tail=50
+          exit 1
+
+      - name: Run integration tests
+        run: |
+          pip install pytest
+          python -m pytest tests/integration/ -v --tb=short
+        env:
+          TEST_BASE_URL: http://localhost
+          ANON_KEY: ${{ secrets.CI_ANON_KEY }}
+          SERVICE_ROLE_KEY: ${{ secrets.CI_SERVICE_ROLE_KEY }}
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker-compose.prod.yml --env-file .env.ci down -v
+
   extract-pinned-images:
     name: Extract Pinned Images
     runs-on: ubuntu-latest
