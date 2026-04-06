@@ -198,16 +198,12 @@ jobs:
 
       - name: Generate .env.ci from secrets
         run: |
-          cat <<EOF > .env.ci
+          cat > .env.ci << 'ENVEOF'
           POSTGRES_DB=postgres
           POSTGRES_USER=supabase_admin
-          POSTGRES_PASSWORD=${{ secrets.CI_POSTGRES_PASSWORD }}
           POSTGRES_PORT=5432
           POSTGRES_HOST=db-prod
           PGRST_DB_SCHEMAS=public,auth,storage
-          ANON_KEY=${{ secrets.CI_ANON_KEY }}
-          SERVICE_ROLE_KEY=${{ secrets.CI_SERVICE_ROLE_KEY }}
-          JWT_SECRET=${{ secrets.CI_JWT_SECRET }}
           JWT_EXPIRY=3600
           ENABLE_ANONYMOUS_USERS=false
           ENABLE_EMAIL_SIGNUP=true
@@ -219,27 +215,21 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL=http://kong:8000
           SUPABASE_URL=http://kong:8000
           SUPABASE_COOKIE_NAME=sb-ci-auth-token
-          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.CI_ANON_KEY }}
           NEXT_PUBLIC_APP_URL=http://localhost
           SUPABASE_PUBLIC_URL=http://localhost/api
           POOLER_TENANT_ID=default
           POOLER_DEFAULT_POOL_SIZE=5
           POOLER_MAX_CLIENT_CONN=100
           POOLER_DB_POOL_SIZE=10
-          SUPAVISOR_ENC_KEY=${{ secrets.CI_SUPAVISOR_ENC_KEY }}
-          VAULT_ENC_KEY=${{ secrets.CI_VAULT_ENC_KEY }}
-          SECRET_KEY_BASE=${{ secrets.CI_SECRET_KEY_BASE }}
           DASHBOARD_USERNAME=ci-admin
           DASHBOARD_PASSWORD=ci-changeme
           STUDIO_DEFAULT_ORGANIZATION=ci-org
           STUDIO_DEFAULT_PROJECT=ci-project
           STUDIO_SUPABASE_PUBLIC_URL=http://localhost
           MINIO_ROOT_USER=ci-supabase
-          MINIO_ROOT_PASSWORD=${{ secrets.CI_MINIO_PASSWORD }}
           MINIO_DATA_PATH=/tmp/minio-ci
           IMGPROXY_URL=http://imgproxy:5001
           IMGPROXY_ENABLE_WEBP_DETECTION=true
-          DB_ENC_KEY=${{ secrets.CI_DB_ENC_KEY }}
           DOMAIN_MAIN=localhost
           DOMAIN_STUDIO=studio.localhost
           DOMAIN_MINIO=minio.localhost
@@ -249,12 +239,23 @@ jobs:
           BLOOMMCP_API_KEY=ci-placeholder
           BLOOM_MCP_URL=http://bloommcp:8811/mcp
           OPENAI_API_KEY=sk-ci-not-real
-          LANGCHAIN_POSTGRES_URL=postgresql://supabase_admin:${{ secrets.CI_POSTGRES_PASSWORD }}@db-prod:5432/postgres
           LANGCHAIN_TRACING_V2=false
           LANGCHAIN_API_KEY=
           LANGCHAIN_PROJECT=bloom-ci
           CORS_ORIGINS=http://localhost
-          EOF
+          ENVEOF
+          sed -i 's/^          //' .env.ci
+          echo "POSTGRES_PASSWORD=${{ secrets.CI_POSTGRES_PASSWORD }}" >> .env.ci
+          echo "ANON_KEY=${{ secrets.CI_ANON_KEY }}" >> .env.ci
+          echo "SERVICE_ROLE_KEY=${{ secrets.CI_SERVICE_ROLE_KEY }}" >> .env.ci
+          echo "JWT_SECRET=${{ secrets.CI_JWT_SECRET }}" >> .env.ci
+          echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.CI_ANON_KEY }}" >> .env.ci
+          echo "SUPAVISOR_ENC_KEY=${{ secrets.CI_SUPAVISOR_ENC_KEY }}" >> .env.ci
+          echo "VAULT_ENC_KEY=${{ secrets.CI_VAULT_ENC_KEY }}" >> .env.ci
+          echo "SECRET_KEY_BASE=${{ secrets.CI_SECRET_KEY_BASE }}" >> .env.ci
+          echo "MINIO_ROOT_PASSWORD=${{ secrets.CI_MINIO_PASSWORD }}" >> .env.ci
+          echo "DB_ENC_KEY=${{ secrets.CI_DB_ENC_KEY }}" >> .env.ci
+          echo "LANGCHAIN_POSTGRES_URL=postgresql://supabase_admin:${{ secrets.CI_POSTGRES_PASSWORD }}@db-prod:5432/postgres" >> .env.ci
 
       - name: Create MinIO data directory
         run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci
