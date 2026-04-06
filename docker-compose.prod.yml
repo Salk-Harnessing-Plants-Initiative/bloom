@@ -24,7 +24,6 @@ services:
   # -------------------
   caddy:
     image: caddy:2.11.2-alpine
-    container_name: bloom-caddy
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -185,7 +184,6 @@ services:
   #  Kong Gateway
   # -------------------
   kong:
-    container_name: supabase-kong
     image: kong:2.8.1
     restart: unless-stopped
     security_opt:
@@ -271,7 +269,6 @@ services:
   # Realtime Analytics
   # -------------------
   realtime:
-    container_name: realtime-prod.supabase-realtime
     image: supabase/realtime:v2.34.47
     restart: unless-stopped
     security_opt:
@@ -305,7 +302,6 @@ services:
   # -------------------
   supabase-minio:
     image: minio/minio:RELEASE.2025-01-20T14-49-07Z
-    container_name: supabase-minio
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -342,7 +338,6 @@ services:
   # Supabase Storage
   # -------------------
   storage:
-    container_name: supabase-storage
     image: supabase/storage-api:v1.48.14
     restart: unless-stopped
     security_opt:
@@ -378,7 +373,6 @@ services:
   # Database (Postgres)
   # -------------------
   db-prod:
-    container_name: db-prod
     image: supabase/postgres:15.14.1.104
     restart: unless-stopped
     security_opt:
@@ -417,7 +411,6 @@ services:
   # Supavisor (Connection Pooler)
   # -------------------
   supavisor:
-    container_name: supabase-pooler
     image: supabase/supavisor:2.7.4
     restart: unless-stopped
     security_opt:
@@ -459,7 +452,6 @@ services:
   # Supabase Studio
   # -------------------
   studio:
-    container_name: studio
     image: supabase/studio:2026.03.30-sha-12a43e5
     restart: unless-stopped
     security_opt:
@@ -489,7 +481,6 @@ services:
   # ImgProxy
   # -------------------
   imgproxy:
-    container_name: supabase-imgproxy-prod
     image: darthsim/imgproxy:v3.31.1
     restart: unless-stopped
     security_opt:
@@ -505,7 +496,6 @@ services:
       IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
   
   meta:
-    container_name: supabase-meta-prod
     image: supabase/postgres-meta:v0.96.2
     restart: unless-stopped
     security_opt:
