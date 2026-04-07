@@ -285,8 +285,8 @@ jobs:
       - name: Run integration tests
         run: |
           if [ -d "tests/integration" ]; then
-            pip install pytest
-            python -m pytest tests/integration/ -v --tb=short
+            pip install uv
+            uv run --with pytest pytest tests/integration/ -v --tb=short
           else
             echo "No integration tests found — skipping"
           fi
