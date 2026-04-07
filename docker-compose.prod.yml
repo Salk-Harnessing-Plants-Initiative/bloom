@@ -269,7 +269,7 @@ services:
   # Realtime Analytics
   # -------------------
   realtime:
-    image: supabase/realtime:v2.34.47
+    image: supabase/realtime:v2.80.13
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
