@@ -1,0 +1,77 @@
+# =============================================================================
+# Bloom v2 Caddyfile
+#
+# Routes:
+#   {DOMAIN_MAIN}        → bloom-web (frontend)
+#   {DOMAIN_MAIN}/api/*  → kong (Supabase API gateway, /api prefix stripped)
+#   {DOMAIN_STUDIO}      → studio (Supabase Studio)
+#   {DOMAIN_MINIO}       → minio console
+#
+# All service hosts and ports are configurable via env vars.
+# Set CADDY_HTTP_PORT=:80 for local dev (HTTP only).
+# Leave CADDY_HTTP_PORT empty for production (auto HTTPS via Let's Encrypt).
+# =============================================================================
+
+# -------------------
+# Main Application
+# -------------------
+{$DOMAIN_MAIN}{$CADDY_HTTP_PORT} {
+
+	# Supabase API — strip /api prefix, proxy to Kong
+	handle_path /api/* {
+		reverse_proxy kong:{$KONG_PORT}
+	}
+
+	# Bloom Frontend
+	handle {
+		reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
+	}
+}
+
+# -------------------
+# Supabase Studio
+# -------------------
+{$DOMAIN_STUDIO}{$CADDY_HTTP_PORT} {
+
+	# Studio backend routes → Kong
+	handle_path /auth/* {
+		reverse_proxy kong:{$KONG_PORT} {
+			rewrite /auth{uri}
+		}
+	}
+
+	handle_path /rest/* {
+		reverse_proxy kong:{$KONG_PORT} {
+			rewrite /rest{uri}
+		}
+	}
+
+	handle_path /storage/* {
+		reverse_proxy kong:{$KONG_PORT} {
+			rewrite /storage{uri}
+		}
+	}
+
+	handle_path /realtime/* {
+		reverse_proxy kong:{$KONG_PORT} {
+			rewrite /realtime{uri}
+		}
+	}
+
+	# Studio UI
+	handle {
+		reverse_proxy studio:{$STUDIO_PORT}
+	}
+}
+
+# -------------------
+# MinIO Console
+# -------------------
+{$DOMAIN_MINIO}{$CADDY_HTTP_PORT} {
+	reverse_proxy supabase-minio:{$MINIO_CONSOLE_PORT} {
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+}
