@@ -466,9 +466,8 @@ services:
     networks:
       - supanet
     expose:
-    - "3000"
-    ports:
-      - "${STUDIO_PORT}:3000"
+      - "3000"
+    # Studio accessible via Caddy DOMAIN_STUDIO route — no direct port exposure in prod
     environment:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

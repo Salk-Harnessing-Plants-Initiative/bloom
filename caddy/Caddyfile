@@ -68,5 +68,10 @@
 # MinIO Console
 # -------------------
 {$DOMAIN_MINIO}{$CADDY_HTTP_PORT} {
-	reverse_proxy supabase-minio:{$MINIO_CONSOLE_PORT}
+	reverse_proxy supabase-minio:{$MINIO_CONSOLE_PORT} {
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
 }

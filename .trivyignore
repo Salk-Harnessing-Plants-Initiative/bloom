@@ -24,7 +24,8 @@ CVE-2026-33186
 # Fix available in Go 1.25.7 but supabase npm package not yet rebuilt
 CVE-2025-68121
 
-# smallstep/certificates SCEP bypass - affects: caddy
-# Only exploitable if using Caddy as an ACME CA server (we don't — we only obtain certs)
-# Fix in smallstep/certificates v0.30.0 but caddy has not rebuilt with it yet
+# smallstep/certificates SCEP provisioner bypass — affects: caddy
+# Only exploitable if Caddy's internal SCEP provisioner is enabled
+# (we use Caddy only as a reverse proxy/ACME client, not as a CA)
+# TODO: Remove when Caddy ships a build with smallstep/certificates >= v0.30.0
 CVE-2026-30836

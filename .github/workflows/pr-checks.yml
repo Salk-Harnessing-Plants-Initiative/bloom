@@ -266,8 +266,8 @@ jobs:
           TIMEOUT=180
           ELAPSED=0
           while [ $ELAPSED -lt $TIMEOUT ]; do
-            UNHEALTHY=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r 'select(.Health == "unhealthy" or .Health == "starting") | .Name' 2>/dev/null | wc -l)
-            EXITED=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r 'select(.State == "exited" and .ExitCode != 0) | .Name' 2>/dev/null | wc -l)
+            UNHEALTHY=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r '.[] | select(.Health == "unhealthy" or .Health == "starting") | .Name' 2>/dev/null | wc -l)
+            EXITED=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r '.[] | select(.State == "exited" and .ExitCode != 0) | .Name' 2>/dev/null | wc -l)
             if [ "$UNHEALTHY" -eq 0 ] && [ "$EXITED" -eq 0 ]; then
               echo "All services healthy!"
               docker compose -f docker-compose.prod.yml --env-file .env.ci ps
@@ -284,8 +284,12 @@ jobs:
 
       - name: Run integration tests
         run: |
-          pip install pytest
-          python -m pytest tests/integration/ -v --tb=short
+          if [ -d "tests/integration" ]; then
+            pip install pytest
+            python -m pytest tests/integration/ -v --tb=short
+          else
+            echo "No integration tests found — skipping"
+          fi
         env:
           TEST_BASE_URL: http://localhost
           ANON_KEY: ${{ secrets.CI_ANON_KEY }}
