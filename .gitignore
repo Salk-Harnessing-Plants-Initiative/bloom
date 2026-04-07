@@ -57,6 +57,12 @@ htmlcov/
 # project-specific
 /extra
 volumes/
+!volumes/db/
+!volumes/db/*.sql
+!volumes/db/*.sh
+volumes/db/data/
+!volumes/api/
+!volumes/api/kong.yml
 
 # minio
 minio/data/
