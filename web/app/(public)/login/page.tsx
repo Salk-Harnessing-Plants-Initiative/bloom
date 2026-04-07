@@ -27,6 +27,9 @@ export default function Login() {
       password,
       options: {
         emailRedirectTo: `${location.origin}/auth/callback`,
+        data: {
+          is_admin: false,
+        },
       },
     })
     if (error) {

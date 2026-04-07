@@ -2,17 +2,25 @@
 Configuration for LangChain Agent
 """
 import os
+import logging
 from functools import lru_cache
 import supabase
+
+logger = logging.getLogger(__name__)
 
 # Supabase/PostgREST Configuration (required)
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 if not SUPABASE_URL:
     raise RuntimeError("SUPABASE_URL environment variable is required")
-SUPABASE_ANON_KEY = os.environ.get('SUPABASE_ANON_KEY')
+
+# Agent key — must use bloom_agent role (read-only)
+# Do NOT use service_role — the agent should never have write access
+BLOOM_AGENT_KEY = os.environ.get('BLOOM_AGENT_KEY')
+if not BLOOM_AGENT_KEY:
+    raise RuntimeError("BLOOM_AGENT_KEY environment variable is required. Generate a JWT with role=bloom_agent.")
+
+# Service key — only for server-side operations (auth verification, not data queries)
 SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY') or os.environ.get('SERVICE_ROLE_KEY')
-if not SUPABASE_SERVICE_KEY:
-    raise RuntimeError("SUPABASE_SERVICE_KEY or SERVICE_ROLE_KEY environment variable is required")
 
 # REST API base URL
 REST_API_URL = f"{SUPABASE_URL}/rest/v1"
@@ -23,10 +31,9 @@ FRONTEND_URL = os.environ.get('NEXT_PUBLIC_APP_URL', 'http://localhost')
 
 @lru_cache(maxsize=1)
 def get_supabase_client():
-    """Get a cached Supabase client instance.
+    """Get a cached Supabase client for the agent.
 
-    Uses service key for full access, falls back to anon key.
-    The client is cached so it's only created once.
+    Uses BLOOM_AGENT_KEY (bloom_agent role, read-only) for data queries.
+    The agent should never have write access to the database.
     """
-    key = SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY or ""
-    return supabase.create_client(SUPABASE_URL, key)
+    return supabase.create_client(SUPABASE_URL, BLOOM_AGENT_KEY)
