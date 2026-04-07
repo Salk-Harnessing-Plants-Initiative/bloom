@@ -35,6 +35,10 @@ export default function Login() {
     if (error) {
       setError(error.message)
     }
+    else if (data?.user?.confirmed_at) {
+      // Autoconfirm is enabled — user is already confirmed, sign them in
+      router.push('/app')
+    }
     else {
       setView('check-email')
     }
@@ -42,17 +46,10 @@ export default function Login() {
 
   const handleSignIn = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
-    const { data, error } = await supabase.auth.signInWithPassword({
+    const { error } = await supabase.auth.signInWithPassword({
       email: email + '@salk.edu',
       password,
     })
-
-    console.log("_____________________________________________>>>>")
-    console.log("RESPONSE", { data, error })
-    console.log("CLEAN RESPONSE", JSON.stringify(data, null, 2));
-
-    const { data: sessionData } = await supabase.auth.getSession()
-    console.log("Session persisted?", sessionData)
 
     if (error) {
       setError(error.message)
