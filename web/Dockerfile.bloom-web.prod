@@ -3,7 +3,7 @@
 # ------------------------
 
 # ---- Builder Stage ----
-FROM node:20-bookworm@sha256:a4545fc6f4f1483384ad5f4c71d34d71781c3779da407173ec6058079a718520 AS builder
+FROM node:25-bookworm@sha256:2495bb8bc48c8a04438f9c8260add59c6b4a214741a3bfbe30ad237b3036a0c8 AS builder
 
 
 ARG NEXT_PUBLIC_SUPABASE_URL
@@ -40,7 +40,7 @@ WORKDIR /app/web
 RUN npm run build
 
 # ---- Runner Stage ----
-FROM node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c AS runner
+FROM node:25-alpine@sha256:ad82ecad30371c43f4057aaa4800a8ed88f9446553a2d21323710c7b937177fc AS runner
 
 RUN addgroup -S bloom && adduser -S -G bloom bloom
 

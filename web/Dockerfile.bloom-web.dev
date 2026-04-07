@@ -2,7 +2,7 @@
 # ------------------------
 # Bloom Web DEV Dockerfile
 # ------------------------
-FROM node:20-bookworm
+FROM node:25-bookworm
 
 # Set working directory to root of monorepo
 WORKDIR /app
