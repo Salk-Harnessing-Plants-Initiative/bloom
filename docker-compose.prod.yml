@@ -184,7 +184,7 @@ services:
   #  Kong Gateway
   # -------------------
   kong:
-    image: kong:2.8.1
+    image: kong:3.9.1
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

@@ -134,7 +134,7 @@ services:
       NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
 
   kong:
-    image: kong:2.8.1
+    image: kong:3.9.1
     restart: unless-stopped
     networks:
       - supanet
