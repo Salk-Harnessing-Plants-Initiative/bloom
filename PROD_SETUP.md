@@ -185,9 +185,9 @@ Replace test data with your actual production data:
 | LangChain Agent | langchain-agent:5002 | 5002 | AI agent chat API |
 | Bloom MCP | bloommcp:8811 | 8811 | FastMCP Bloom analysis tools |
 
-### External Access (via Nginx)
+### External Access (via Caddy)
 
-Production services are accessed through Nginx reverse proxy:
+Production services are accessed through Caddy reverse proxy (auto HTTPS via Let's Encrypt):
 
 | Service | URL | Description |
 |---------|-----|-------------|
