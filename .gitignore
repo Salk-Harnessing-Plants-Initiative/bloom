@@ -60,6 +60,8 @@ volumes/
 !volumes/db/
 !volumes/db/*.sql
 !volumes/db/*.sh
+!volumes/db/init/
+!volumes/db/init/*
 volumes/db/data/
 !volumes/api/
 !volumes/api/kong.yml
