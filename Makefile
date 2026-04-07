@@ -50,8 +50,8 @@ dev-up:
 rebuild-dev-fresh:
 	@echo "Stopping dev stack if running..."
 	@docker compose -f docker-compose.dev.yml --env-file .env.dev down -v 2>/dev/null || true
-	@echo "Pruning unused volumes..."
-	@docker volume prune -f
+	@echo "Pruning project volumes..."
+	@docker volume ls -q --filter name=bloom_v2 | xargs -r docker volume rm 2>/dev/null || true
 	@echo "Removing existing node_modules for a fresh install..."
 	rm -rf web/node_modules packages/*/node_modules
 	@echo "Rebuilding Dev Stack without cache..."
