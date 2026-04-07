@@ -380,7 +380,7 @@ services:
   # connections to DataDog. See: https://github.com/supabase/cli/issues/3254
 
   db-dev:
-    image: supabase/postgres:15.8.1.060
+    image: supabase/postgres:17.6.1.104
     restart: unless-stopped 
     volumes:
       - ./volumes/db/_supabase.sh:/docker-entrypoint-initdb.d/96-_supabase.sh:Z

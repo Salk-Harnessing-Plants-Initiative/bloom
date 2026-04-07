@@ -373,7 +373,7 @@ services:
   # Database (Postgres)
   # -------------------
   db-prod:
-    image: supabase/postgres:15.14.1.104
+    image: supabase/postgres:17.6.1.104
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
