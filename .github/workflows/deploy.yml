@@ -1,8 +1,10 @@
 name: Deploy
 
 on:
-  release:
-    types: [published]
+  push:
+    branches:
+      - main
+      - staging
   workflow_dispatch:
     inputs:
       environment:
@@ -15,80 +17,244 @@ on:
           - production
 
 jobs:
-  build:
-    name: Build & Verify
+  deploy-production:
+    name: Deploy to Production
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Security audit (npm)
-        run: npm audit --audit-level=critical
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Security audit (Python)
+      - name: Set up SSH
         run: |
-          pip install uv
-          uv pip install --system pip-audit
-          pip-audit -r langchain/requirements.txt
-          pip-audit -r bloommcp/requirements.txt
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Build shared packages
+      - name: Generate .env.prod on server
         run: |
-          cd packages/bloom-js && npx tsc -p tsconfig.json
-          cd ../../packages/bloom-fs && npx tsc -p tsconfig.json
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "cat > ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod << 'ENVEOF'
+          POSTGRES_DB=${{ secrets.PROD_POSTGRES_DB }}
+          POSTGRES_USER=${{ secrets.PROD_POSTGRES_USER }}
+          POSTGRES_PASSWORD=${{ secrets.PROD_POSTGRES_PASSWORD }}
+          POSTGRES_PORT=${{ secrets.PROD_POSTGRES_PORT }}
+          POSTGRES_HOST=${{ secrets.PROD_POSTGRES_HOST }}
+          PGRST_DB_SCHEMAS=${{ secrets.PROD_PGRST_DB_SCHEMAS }}
+          ANON_KEY=${{ secrets.PROD_ANON_KEY }}
+          SERVICE_ROLE_KEY=${{ secrets.PROD_SERVICE_ROLE_KEY }}
+          JWT_SECRET=${{ secrets.PROD_JWT_SECRET }}
+          JWT_EXPIRY=${{ secrets.PROD_JWT_EXPIRY }}
+          SUPAVISOR_ENC_KEY=${{ secrets.PROD_SUPAVISOR_ENC_KEY }}
+          VAULT_ENC_KEY=${{ secrets.PROD_VAULT_ENC_KEY }}
+          SECRET_KEY_BASE=${{ secrets.PROD_SECRET_KEY_BASE }}
+          DB_ENC_KEY=${{ secrets.PROD_DB_ENC_KEY }}
+          DOMAIN_MAIN=${{ secrets.PROD_DOMAIN_MAIN }}
+          DOMAIN_STUDIO=${{ secrets.PROD_DOMAIN_STUDIO }}
+          DOMAIN_MINIO=${{ secrets.PROD_DOMAIN_MINIO }}
+          CADDY_HTTP_LISTEN_PORT=${{ secrets.PROD_CADDY_HTTP_LISTEN_PORT }}
+          CADDY_HTTPS_LISTEN_PORT=${{ secrets.PROD_CADDY_HTTPS_LISTEN_PORT }}
+          CADDY_HTTP_PORT=
+          KONG_PORT=${{ secrets.PROD_KONG_PORT }}
+          BLOOM_WEB_PORT=${{ secrets.PROD_BLOOM_WEB_PORT }}
+          STUDIO_PORT=${{ secrets.PROD_STUDIO_PORT }}
+          MINIO_CONSOLE_PORT=${{ secrets.PROD_MINIO_CONSOLE_PORT }}
+          MINIO_ROOT_USER=${{ secrets.PROD_MINIO_ROOT_USER }}
+          MINIO_ROOT_PASSWORD=${{ secrets.PROD_MINIO_PASSWORD }}
+          MINIO_DATA_PATH=${{ secrets.PROD_MINIO_DATA_PATH }}
+          MINIO_BROWSER_REDIRECT_URL=${{ secrets.PROD_MINIO_BROWSER_REDIRECT_URL }}
+          POOLER_TENANT_ID=${{ secrets.PROD_POOLER_TENANT_ID }}
+          POOLER_DEFAULT_POOL_SIZE=${{ secrets.PROD_POOLER_DEFAULT_POOL_SIZE }}
+          POOLER_MAX_CLIENT_CONN=${{ secrets.PROD_POOLER_MAX_CLIENT_CONN }}
+          POOLER_DB_POOL_SIZE=${{ secrets.PROD_POOLER_DB_POOL_SIZE }}
+          DASHBOARD_USERNAME=${{ secrets.PROD_DASHBOARD_USERNAME }}
+          DASHBOARD_PASSWORD=${{ secrets.PROD_DASHBOARD_PASSWORD }}
+          SITE_URL=${{ secrets.PROD_SITE_URL }}
+          API_EXTERNAL_URL=${{ secrets.PROD_API_EXTERNAL_URL }}
+          ADDITIONAL_REDIRECT_URLS=${{ secrets.PROD_ADDITIONAL_REDIRECT_URLS }}
+          ENABLE_ANONYMOUS_USERS=${{ secrets.PROD_ENABLE_ANONYMOUS_USERS }}
+          ENABLE_EMAIL_SIGNUP=${{ secrets.PROD_ENABLE_EMAIL_SIGNUP }}
+          ENABLE_EMAIL_AUTOCONFIRM=${{ secrets.PROD_ENABLE_EMAIL_AUTOCONFIRM }}
+          DISABLE_SIGNUP=${{ secrets.PROD_DISABLE_SIGNUP }}
+          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.PROD_NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.PROD_ANON_KEY }}
+          NEXT_PUBLIC_APP_URL=${{ secrets.PROD_NEXT_PUBLIC_APP_URL }}
+          SUPABASE_URL=${{ secrets.PROD_SUPABASE_URL }}
+          SUPABASE_PUBLIC_URL=${{ secrets.PROD_SUPABASE_PUBLIC_URL }}
+          SUPABASE_COOKIE_NAME=${{ secrets.PROD_SUPABASE_COOKIE_NAME }}
+          STUDIO_DEFAULT_ORGANIZATION=${{ secrets.PROD_STUDIO_DEFAULT_ORGANIZATION }}
+          STUDIO_DEFAULT_PROJECT=${{ secrets.PROD_STUDIO_DEFAULT_PROJECT }}
+          STUDIO_SUPABASE_PUBLIC_URL=${{ secrets.PROD_STUDIO_SUPABASE_PUBLIC_URL }}
+          IMGPROXY_URL=${{ secrets.PROD_IMGPROXY_URL }}
+          IMGPROXY_ENABLE_WEBP_DETECTION=${{ secrets.PROD_IMGPROXY_ENABLE_WEBP_DETECTION }}
+          BLOOM_PLOTS_DIR=${{ secrets.PROD_BLOOM_PLOTS_DIR }}
+          BLOOM_PLOTS_URL=${{ secrets.PROD_BLOOM_PLOTS_URL }}
+          BLOOMMCP_API_KEY=${{ secrets.PROD_BLOOMMCP_API_KEY }}
+          BLOOM_MCP_URL=${{ secrets.PROD_BLOOM_MCP_URL }}
+          OPENAI_API_KEY=${{ secrets.PROD_OPENAI_API_KEY }}
+          CORS_ORIGINS=${{ secrets.PROD_CORS_ORIGINS }}
+          LANGCHAIN_TRACING_V2=${{ secrets.PROD_LANGCHAIN_TRACING_V2 }}
+          LANGCHAIN_API_KEY=${{ secrets.PROD_LANGCHAIN_API_KEY }}
+          LANGCHAIN_PROJECT=${{ secrets.PROD_LANGCHAIN_PROJECT }}
+          LANGCHAIN_POSTGRES_URL=postgresql://${{ secrets.PROD_POSTGRES_USER }}:${{ secrets.PROD_POSTGRES_PASSWORD }}@${{ secrets.PROD_POSTGRES_HOST }}:${{ secrets.PROD_POSTGRES_PORT }}/${{ secrets.PROD_POSTGRES_DB }}
+          ENVEOF"
 
-      - name: Build Next.js app
-        run: cd web && npm run build
-        env:
-          NEXT_PUBLIC_SUPABASE_URL: http://localhost:8000
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
-          NEXT_PUBLIC_SUPABASE_COOKIE_NAME: sb-localhost-auth-token
-
-      - name: Build Docker images
+      - name: Pull latest code
         run: |
-          docker build -f web/Dockerfile.bloom-web.prod \
-            --build-arg NEXT_PUBLIC_SUPABASE_URL=http://localhost:8000 \
-            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder \
-            --build-arg NEXT_PUBLIC_SUPABASE_COOKIE_NAME=sb-localhost-auth-token \
-            -t bloom-web:${{ github.sha }} .
-          docker build -f langchain/Dockerfile -t langchain-agent:${{ github.sha }} ./langchain
-          docker build -f bloommcp/Dockerfile -t bloommcp:${{ github.sha }} ./bloommcp
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            git fetch origin main
+            git reset --hard origin/main
+          "
 
-      - name: Scan images with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: 'bloom-web:${{ github.sha }}'
-          severity: 'CRITICAL,HIGH'
-          exit-code: '1'
+      - name: Deploy production stack
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans
+          "
+
+      - name: Health check
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            for i in \$(seq 1 60); do
+              HEALTHY=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps --format json | jq '[.[] | select(.Health == \"healthy\")] | length' 2>/dev/null || echo 0)
+              echo \"  \$HEALTHY services healthy (\$i/60)\"
+              if [ \"\$HEALTHY\" -ge 3 ]; then
+                echo 'Production deployed successfully!'
+                docker compose -f docker-compose.prod.yml --env-file .env.prod ps
+                exit 0
+              fi
+              sleep 5
+            done
+            echo 'WARNING: Not all services healthy'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod ps
+            exit 1
+          "
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
 
   deploy-staging:
     name: Deploy to Staging
-    needs: build
+    if: github.ref == 'refs/heads/staging' || github.event.inputs.environment == 'staging'
     runs-on: ubuntu-latest
     environment: staging
     steps:
-      - name: Staging deployment
-        run: echo "TODO - SSH to server and deploy staging stack"
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-  deploy-production:
-    name: Deploy to Production
-    needs: deploy-staging
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - name: Production deployment
-        run: echo "TODO - SSH to server and deploy production stack"
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Generate .env.staging on server
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "cat > ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging << 'ENVEOF'
+          POSTGRES_DB=${{ secrets.STAGING_POSTGRES_DB }}
+          POSTGRES_USER=${{ secrets.STAGING_POSTGRES_USER }}
+          POSTGRES_PASSWORD=${{ secrets.STAGING_POSTGRES_PASSWORD }}
+          POSTGRES_PORT=${{ secrets.STAGING_POSTGRES_PORT }}
+          POSTGRES_HOST=${{ secrets.STAGING_POSTGRES_HOST }}
+          PGRST_DB_SCHEMAS=${{ secrets.STAGING_PGRST_DB_SCHEMAS }}
+          ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
+          SERVICE_ROLE_KEY=${{ secrets.STAGING_SERVICE_ROLE_KEY }}
+          JWT_SECRET=${{ secrets.STAGING_JWT_SECRET }}
+          JWT_EXPIRY=${{ secrets.STAGING_JWT_EXPIRY }}
+          SUPAVISOR_ENC_KEY=${{ secrets.STAGING_SUPAVISOR_ENC_KEY }}
+          VAULT_ENC_KEY=${{ secrets.STAGING_VAULT_ENC_KEY }}
+          SECRET_KEY_BASE=${{ secrets.STAGING_SECRET_KEY_BASE }}
+          DB_ENC_KEY=${{ secrets.STAGING_DB_ENC_KEY }}
+          DOMAIN_MAIN=${{ secrets.STAGING_DOMAIN_MAIN }}
+          DOMAIN_STUDIO=${{ secrets.STAGING_DOMAIN_STUDIO }}
+          DOMAIN_MINIO=${{ secrets.STAGING_DOMAIN_MINIO }}
+          CADDY_HTTP_LISTEN_PORT=${{ secrets.STAGING_CADDY_HTTP_LISTEN_PORT }}
+          CADDY_HTTPS_LISTEN_PORT=${{ secrets.STAGING_CADDY_HTTPS_LISTEN_PORT }}
+          CADDY_HTTP_PORT=
+          KONG_PORT=${{ secrets.STAGING_KONG_PORT }}
+          BLOOM_WEB_PORT=${{ secrets.STAGING_BLOOM_WEB_PORT }}
+          STUDIO_PORT=${{ secrets.STAGING_STUDIO_PORT }}
+          MINIO_CONSOLE_PORT=${{ secrets.STAGING_MINIO_CONSOLE_PORT }}
+          MINIO_ROOT_USER=${{ secrets.STAGING_MINIO_ROOT_USER }}
+          MINIO_ROOT_PASSWORD=${{ secrets.STAGING_MINIO_PASSWORD }}
+          MINIO_DATA_PATH=${{ secrets.STAGING_MINIO_DATA_PATH }}
+          MINIO_BROWSER_REDIRECT_URL=${{ secrets.STAGING_MINIO_BROWSER_REDIRECT_URL }}
+          POOLER_TENANT_ID=${{ secrets.STAGING_POOLER_TENANT_ID }}
+          POOLER_DEFAULT_POOL_SIZE=${{ secrets.STAGING_POOLER_DEFAULT_POOL_SIZE }}
+          POOLER_MAX_CLIENT_CONN=${{ secrets.STAGING_POOLER_MAX_CLIENT_CONN }}
+          POOLER_DB_POOL_SIZE=${{ secrets.STAGING_POOLER_DB_POOL_SIZE }}
+          DASHBOARD_USERNAME=${{ secrets.STAGING_DASHBOARD_USERNAME }}
+          DASHBOARD_PASSWORD=${{ secrets.STAGING_DASHBOARD_PASSWORD }}
+          SITE_URL=${{ secrets.STAGING_SITE_URL }}
+          API_EXTERNAL_URL=${{ secrets.STAGING_API_EXTERNAL_URL }}
+          ADDITIONAL_REDIRECT_URLS=${{ secrets.STAGING_ADDITIONAL_REDIRECT_URLS }}
+          ENABLE_ANONYMOUS_USERS=${{ secrets.STAGING_ENABLE_ANONYMOUS_USERS }}
+          ENABLE_EMAIL_SIGNUP=${{ secrets.STAGING_ENABLE_EMAIL_SIGNUP }}
+          ENABLE_EMAIL_AUTOCONFIRM=${{ secrets.STAGING_ENABLE_EMAIL_AUTOCONFIRM }}
+          DISABLE_SIGNUP=${{ secrets.STAGING_DISABLE_SIGNUP }}
+          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.STAGING_NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
+          NEXT_PUBLIC_APP_URL=${{ secrets.STAGING_NEXT_PUBLIC_APP_URL }}
+          SUPABASE_URL=${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_PUBLIC_URL=${{ secrets.STAGING_SUPABASE_PUBLIC_URL }}
+          SUPABASE_COOKIE_NAME=${{ secrets.STAGING_SUPABASE_COOKIE_NAME }}
+          STUDIO_DEFAULT_ORGANIZATION=${{ secrets.STAGING_STUDIO_DEFAULT_ORGANIZATION }}
+          STUDIO_DEFAULT_PROJECT=${{ secrets.STAGING_STUDIO_DEFAULT_PROJECT }}
+          STUDIO_SUPABASE_PUBLIC_URL=${{ secrets.STAGING_STUDIO_SUPABASE_PUBLIC_URL }}
+          IMGPROXY_URL=${{ secrets.STAGING_IMGPROXY_URL }}
+          IMGPROXY_ENABLE_WEBP_DETECTION=${{ secrets.STAGING_IMGPROXY_ENABLE_WEBP_DETECTION }}
+          BLOOM_PLOTS_DIR=${{ secrets.STAGING_BLOOM_PLOTS_DIR }}
+          BLOOM_PLOTS_URL=${{ secrets.STAGING_BLOOM_PLOTS_URL }}
+          BLOOMMCP_API_KEY=${{ secrets.STAGING_BLOOMMCP_API_KEY }}
+          BLOOM_MCP_URL=${{ secrets.STAGING_BLOOM_MCP_URL }}
+          OPENAI_API_KEY=${{ secrets.STAGING_OPENAI_API_KEY }}
+          CORS_ORIGINS=${{ secrets.STAGING_CORS_ORIGINS }}
+          LANGCHAIN_TRACING_V2=${{ secrets.STAGING_LANGCHAIN_TRACING_V2 }}
+          LANGCHAIN_API_KEY=${{ secrets.STAGING_LANGCHAIN_API_KEY }}
+          LANGCHAIN_PROJECT=${{ secrets.STAGING_LANGCHAIN_PROJECT }}
+          LANGCHAIN_POSTGRES_URL=postgresql://${{ secrets.STAGING_POSTGRES_USER }}:${{ secrets.STAGING_POSTGRES_PASSWORD }}@${{ secrets.STAGING_POSTGRES_HOST }}:${{ secrets.STAGING_POSTGRES_PORT }}/${{ secrets.STAGING_POSTGRES_DB }}
+          ENVEOF"
+
+      - name: Pull latest code
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            git fetch origin staging
+            git reset --hard origin/staging
+          "
+
+      - name: Deploy staging stack
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build --remove-orphans
+          "
+
+      - name: Health check
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            for i in \$(seq 1 60); do
+              HEALTHY=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps --format json | jq '[.[] | select(.Health == \"healthy\")] | length' 2>/dev/null || echo 0)
+              echo \"  \$HEALTHY services healthy (\$i/60)\"
+              if [ \"\$HEALTHY\" -ge 3 ]; then
+                echo 'Staging deployed successfully!'
+                docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
+                exit 0
+              fi
+              sleep 5
+            done
+            echo 'WARNING: Not all services healthy'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
+            exit 1
+          "
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
