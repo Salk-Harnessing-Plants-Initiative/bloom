@@ -51,6 +51,17 @@ Additionally, each command needs content review for:
 - References to scripts that don't exist in this repo's `package.json`
 - Coverage thresholds and test infrastructure that doesn't match reality
 
+### Add 1 new skill
+
+#### `.claude/skills/openspec-review/SKILL.md`
+Port from bloom-desktop's `.claude/skills/openspec-review/SKILL.md`. This is a 5-subagent parallel review for OpenSpec proposals (referenced by `new-feature` step 5). Adaptations:
+
+- **Subagent 1 (Spec Quality):** Keep mostly as-is (OpenSpec format rules are universal)
+- **Subagent 2 (Code & Architecture):** Replace Electron/IPC/Prisma with Next.js + Supabase + FastAPI + LangGraph + Docker + Caddy architecture
+- **Subagent 3 (GitHub Issues):** Change repo context, keep logic identical
+- **Subagent 4 (TDD & Testing):** Replace Vitest/Playwright infrastructure with pytest integration tests, note no unit tests yet, CI runs compose-health-check job
+- **Subagent 5 (Scientific Rigor):** Shift from desktop scanning/camera/metadata.json to web platform for plant phenotyping — genomic data integrity, Supabase RLS for multi-user data isolation, visualization accuracy (JBrowse, Three.js, D3)
+
 ### Add 3 new commands
 
 #### 1. `new-feature.md`
@@ -98,6 +109,9 @@ Replace the current checklist-style review with bloom-desktop's 5-subagent paral
 
 ## Files Changed
 
+New skill:
+- `.claude/skills/openspec-review/SKILL.md` - NEW (5-subagent OpenSpec proposal review)
+
 All in `.claude/commands/`:
 - `changelog.md` - minor fixes (flask -> langchain/bloommcp references)
 - `ci-debug.md` - major rewrite (match actual CI from pr-checks.yml)
@@ -118,7 +132,7 @@ All in `.claude/commands/`:
 
 ## Non-goals
 
-- Not adding new commands beyond the 3 specified
+- Not adding new commands beyond the 3 specified (plus 1 skill)
 - Not changing the OpenSpec commands (they're managed by the openspec tool)
 - Not modifying CLAUDE.md or other config files
 - Not adding unit test infrastructure (just documenting current state accurately)
