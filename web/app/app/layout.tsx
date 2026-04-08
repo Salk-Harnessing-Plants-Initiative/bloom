@@ -12,6 +12,10 @@ export const metadata = {
 };
 
 const navLinks = [
+  {
+    name: "Home",
+    href: "/app",
+  },
   // {
   //   name: "Accessions",
   //   href: "/app/accessions",
@@ -61,6 +65,10 @@ const navLinks = [
     href: "/app/translation",
   },
   {
+    name: "OrthoBrowser",
+    href: "/app/orthofinder",
+  },
+  {
     name: "Software",
     href: "/app/software",
   },
@@ -92,22 +100,21 @@ export default async function DashboardLayout({
     redirect("/login");
   } else {
     return (
-      <main className="min-h-screen flex flex-col bg-stone-100">
+      <main className="min-h-screen flex flex-col bg-slate-50">
         <div className="absolute left-12 top-8 align-middle">
-          <Link href="/">
-            <img src="/logo.png" className="h-12 inline" />
+          <Link href="/app">
+            <img src="/logo.png" className="h-14 inline" alt="Bloom" />
           </Link>
         </div>
         <div className="absolute right-12 top-8">
-          <div className="flex text-sm">
-            <span className="ml-auto">
-              <span className="flex gap-4">
-                {user.email} <span className="border-r"></span>{" "}
-                <form action={signOut}>
-                  <button className="hover:underline">Logout</button>
-                </form>
-              </span>
-            </span>
+          <div className="flex items-center text-sm gap-4">
+            <span className="text-neutral-500">{user.email}</span>
+            <span className="text-neutral-300">|</span>
+            <form action={signOut}>
+              <button className="text-neutral-500 hover:text-neutral-800 transition-colors">
+                Logout
+              </button>
+            </form>
           </div>
         </div>
         <div className="mt-20 flex flex-col">

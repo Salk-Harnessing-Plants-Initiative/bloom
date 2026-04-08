@@ -11,7 +11,7 @@
     "dist"
   ],
   "dependencies": {
-    "typescript": "^4.5.5",
+    "typescript": "^5.9.3",
     "uuid": "^9.0.0"
   }
 }

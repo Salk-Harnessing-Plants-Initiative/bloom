@@ -83,14 +83,19 @@ def get_clusters_by_dataset_tool(dataset_id: int) -> list:
         headers=get_headers(),
         params={
             "dataset_id": f"eq.{dataset_id}",
-            "select": "cluster_id,cell_count:count()",
+            "select": "cluster_id"
         }
     )
     if response.status_code != 200:
         raise Exception(f"Failed to fetch clusters: {response.text}")
 
-    rows = response.json()
-    return sorted(rows, key=lambda r: r.get("cluster_id", ""))
+    cells = response.json()
+    cluster_counts = {}
+    for cell in cells:
+        cid = cell.get("cluster_id", "unknown")
+        cluster_counts[cid] = cluster_counts.get(cid, 0) + 1
+
+    return [{"cluster_id": k, "cell_count": v} for k, v in sorted(cluster_counts.items())]
 
 
 @tool

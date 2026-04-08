@@ -12,7 +12,7 @@ async function getObjectUrl(path: string) {
 
   const { data, error } = await supabase
     .storage
-    .from('species_illustrations')
+    .from('species-illustrations')
     .createSignedUrl(path, 120, {
       transform: {
         width: 192

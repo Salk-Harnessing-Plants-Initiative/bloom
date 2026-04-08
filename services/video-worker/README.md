@@ -40,18 +40,14 @@ sudo yum install ffmpeg
 
 ### 3. Configure environment
 
-Create a `.env` file at `/opt/bloom/services/video-worker/.env` with the required variables:
-
-```ini
-DATABASE_URL=postgresql://<user>:<password>@<host>:5432/<database>
-S3_ENDPOINT=http://<minio-host>:9100
-S3_BUCKET_NAME=bloom-storage
-AWS_ACCESS_KEY_ID=<your-access-key>
-AWS_SECRET_ACCESS_KEY=<your-secret-key>
-AWS_REGION=us-east-1
+```bash
+export DATABASE_URL=postgresql://<user>:<password>@<host>:5432/<database>
+export S3_ENDPOINT=http://<minio-host>:9100
+export S3_BUCKET_NAME=bloom-storage
+export AWS_ACCESS_KEY_ID=<your-access-key>
+export AWS_SECRET_ACCESS_KEY=<your-secret-key>
+export AWS_REGION=us-east-1
 ```
-
-The systemd unit reads this file via `EnvironmentFile=`. For local development you can source it directly: `set -a && source .env && set +a`.
 
 ### 4. Run the worker
 
@@ -67,10 +63,13 @@ python video_listener.py
 sudo cp video-worker.service /etc/systemd/system/
 ```
 
-### 2. Create the environment file
+### 2. Edit the service file
 
-Create `/opt/bloom/services/video-worker/.env` with the required variables (see [Configure environment](#3-configure-environment) above).
-The service unit reads this file via `EnvironmentFile=` — do **not** inline variables directly in the unit file.
+Update paths and environment variables in `/etc/systemd/system/video-worker.service`:
+- `WorkingDirectory` - path to this folder
+- `ExecStart` - path to Python interpreter
+- `DATABASE_URL` - your PostgreSQL connection string
+- `S3_*` / `AWS_*` - your MinIO/S3 credentials
 
 ### 3. Enable and start
 

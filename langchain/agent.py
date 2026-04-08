@@ -1,6 +1,6 @@
 """
 Bloom LangChain Agent - Uses PostgREST (Supabase) for data queries
-Supports multiple LLM providers: OpenAI, Local (vLLM)
+Uses local LLM provider (vLLM with OpenAI-compatible API)
 """
 import os
 from typing import Optional, Literal
@@ -90,7 +90,7 @@ def trim_conversation(state):
         messages,
         strategy="last",
         max_tokens=8000,
-        token_counter=lambda msgs: sum(len(str(m.content)) for m in msgs),  # char-based approx: ~4 chars per token
+        token_counter=len,       #  1 token ≈ 1 char
         include_system=True,
         allow_partial=False,
         start_on="human",
@@ -98,7 +98,6 @@ def trim_conversation(state):
     return {"llm_input_messages": trimmed}
 
 AVAILABLE_MODELS = {
-    "openai": ["gpt-4o"],
     "local": ["Qwen/Qwen3-8B"],
 }
 
@@ -107,42 +106,30 @@ LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL")
 
 
 def get_llm(
-    provider: Literal["openai", "local"] = "openai",
+    provider: str = "local",
     model: Optional[str] = None,
 ):
     """
-    Factory function to create LLM instance based on provider.
-    API keys are read from server-side environment variables only.
+    Factory function to create LLM instance using local vLLM provider.
 
     Args:
-        provider: "openai" or "local"
-        model: Model name (defaults to first model in AVAILABLE_MODELS for provider)
+        provider: "local" (only supported provider)
+        model: Model name (defaults to first model in AVAILABLE_MODELS)
 
     Returns:
-        LLM instance configured for the specified provider
+        LLM instance configured for the local vLLM endpoint
     """
     if not model:
-        model = AVAILABLE_MODELS.get(provider, ["gpt-4o-mini"])[0]
+        model = AVAILABLE_MODELS.get("local", ["Qwen/Qwen3-8B"])[0]
 
-    if provider == "local":
-        if not LOCAL_LLM_URL:
-            raise ValueError("LOCAL_LLM_URL environment variable required for local LLM provider")
-        return ChatOpenAI(
-            model=model,
-            base_url=LOCAL_LLM_URL,
-            api_key="not-needed",  # vLLM doesn't require a real key
-            temperature=0.0,
-        )
-
-    else:  # Default to OpenAI
-        key = os.getenv("OPENAI_API_KEY")
-        if not key:
-            raise ValueError("OPENAI_API_KEY environment variable required for OpenAI provider")
-        return ChatOpenAI(
-            model=model,
-            api_key=key,
-            temperature=0.0,
-        )
+    if not LOCAL_LLM_URL:
+        raise ValueError("LOCAL_LLM_URL environment variable required for local LLM provider")
+    return ChatOpenAI(
+        model=model,
+        base_url=LOCAL_LLM_URL,
+        api_key="not-needed",  # vLLM doesn't require a real key
+        temperature=0.0,
+    )
 
 
 # System prompts for different tool configurations
@@ -205,7 +192,7 @@ on the filesystem — NOT database tables. Never use query_database for these.
 
 
 def create_agent(
-    provider: str = "openai",
+    provider: str = "local",
     model: Optional[str] = None,
     tool_set: str = "all",  # "all", "scrna", "cyl", "generic"
     mcp_tools: list = None,  # Tools from MCP servers (bloommcp, external)
@@ -215,7 +202,7 @@ def create_agent(
     Create the LangChain agent with specified LLM provider and tool set.
 
     Args:
-        provider: "openai" or "local"
+        provider: "local"
         model: Model name
         tool_set: Which tools to include:
             - "all": All tools (generic + scrna + cyl)

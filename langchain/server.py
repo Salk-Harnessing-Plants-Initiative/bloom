@@ -1,6 +1,6 @@
 """
 FastAPI server for LangChain Agent
-Supports multiple LLM providers: OpenAI, local LLM
+Uses local LLM provider (vLLM)
 Production-ready: PostgresSaver, JWT auth, agent caching
 
 Endpoints:
@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from agent import create_agent, AVAILABLE_MODELS, setup_checkpointer
 from langchain_core.messages import AIMessage
 from mcp_config import MCP_SERVERS
@@ -98,10 +98,9 @@ os.makedirs(PLOTS_DIR, exist_ok=True)
 app.mount("/plots", StaticFiles(directory=PLOTS_DIR), name="plots")
 
 # CORS for frontend
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -183,10 +182,10 @@ def get_or_create_agent(
 
 class ChatRequest(BaseModel):
     prompt: str
-    provider: str = "openai"  # "openai" or "local"
+    provider: str = "local"
     model: Optional[str] = None  # Defaults to first model for provider
     tool_set: str = "all"  # "all", "scrna", "cyl", "generic"
-    mcp_tool_names: list[str] = Field(default_factory=list)  # Filter MCP tools by name (empty = foundational only)
+    mcp_tool_names: list[str] = []  # Filter MCP tools by name (empty = foundational only)
     thread_id: str = "default"  # Conversation thread ID for memory persistence
 
 
@@ -217,7 +216,7 @@ async def chat(request: ChatRequest, user_id: str = Depends(get_current_user)):
 
         # Validate provider
         if provider not in AVAILABLE_MODELS:
-            raise ValueError(f"Unknown provider: {provider}. Choose from: openai, local")
+            raise ValueError(f"Unknown provider: {provider}. Choose from: local")
 
         # Default model if not specified
         if not model:

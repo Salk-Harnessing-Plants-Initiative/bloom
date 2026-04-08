@@ -26,6 +26,11 @@ services:
     image: nginx:1.28.0-alpine
     container_name: bloom-nginx
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     ports:
       - "80:80"
       - "443:443"
@@ -46,7 +51,7 @@ services:
   #-------------------
   # BLOOM WEB 
   #-------------------
-  bloom-web: 
+  bloom-web:
     build:
       context: .
       dockerfile: ./web/Dockerfile.bloom-web.prod
@@ -54,6 +59,18 @@ services:
         NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
         NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:3000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     expose:
       - "3000"
     environment:
@@ -84,8 +101,6 @@ services:
     environment:
       SUPABASE_URL: http://kong:8000
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_MODEL: gpt-4o
       BLOOM_MCP_URL: http://bloommcp:8811/mcp
       BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
       BLOOM_PLOTS_DIR: ${BLOOM_PLOTS_DIR}
@@ -101,7 +116,6 @@ services:
       LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
       LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-bloom-langchain}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     volumes:
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
     networks:
@@ -116,6 +130,11 @@ services:
       - bloommcp
       - db-prod
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5002", "--workers", "4"]
 
   # -------------------
@@ -149,6 +168,11 @@ services:
     depends_on:
       - kong
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   # -------------------
   #  Kong Gateway
@@ -241,7 +265,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
       DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
-      DB_ENC_KEY: ${DB_ENC_KEY:-supabaserealtime}
+      DB_ENC_KEY: ${DB_ENC_KEY}
       API_JWT_SECRET: ${JWT_SECRET}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
       ERL_AFLAGS: -proto_dist inet_tcp
@@ -394,8 +418,13 @@ services:
       - supanet
     expose:
     - "3000"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     ports:
-      - "55323:3000"
+      - "127.0.0.1:55324:3000"
     environment:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

@@ -12,7 +12,6 @@ Tool modules (39 tools total):
   - viz_tools:         7 tools  (histograms, boxplots, heatmaps, dendrograms)
   - correlation_tools: 8 tools  (cross-experiment correlations, power analysis)
 """
-import hmac
 import os
 
 from fastmcp import FastMCP
@@ -39,7 +38,7 @@ if API_KEY:
         """Validates Bearer token against BLOOMMCP_API_KEY env var."""
 
         async def verify_token(self, token: str) -> AccessToken | None:
-            if hmac.compare_digest(token, API_KEY):
+            if token == API_KEY:
                 return AccessToken(
                     token=token, client_id="bloom-client", scopes=["tools"]
                 )
