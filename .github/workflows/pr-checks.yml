@@ -282,6 +282,15 @@ jobs:
           timeout 180 bash -c 'until docker compose -f docker-compose.prod.yml --env-file .env.ci ps db-prod --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
           echo "Database is healthy!"
 
+      - name: Apply database migrations
+        run: |
+          for f in supabase/migrations/*.sql; do
+            echo "Applying $f ..."
+            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T db-prod \
+              psql -U supabase_admin -d postgres -f - < "$f"
+          done
+          echo "All migrations applied."
+
       - name: Start remaining services
         run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build
 

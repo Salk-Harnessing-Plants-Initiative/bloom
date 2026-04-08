@@ -56,7 +56,7 @@ def test_storage_has_expected_buckets(api, service_role_key):
     status, body = api("/api/storage/v1/bucket", api_key=service_role_key)
     assert status == 200
     bucket_names = {b["name"] for b in body}
-    expected = {"images", "video", "scrna"}
+    expected = {"images", "videos", "scrna"}
     assert expected.issubset(bucket_names), f"Missing buckets: {expected - bucket_names}"
 
 
@@ -68,12 +68,13 @@ def test_bloom_web_returns_html(api):
 
 
 def test_studio_reachable(api):
-    """Supabase Studio responds through Caddy subdomain or is running."""
-    # Studio is only accessible via Caddy DOMAIN_STUDIO route — no direct port
-    # In CI, just verify the service is up via compose
+    """Supabase Studio container is running."""
     import subprocess
+    # Use plain `docker ps` to avoid needing an env-file for compose variable
+    # interpolation (MINIO_DATA_PATH etc. cause parse errors without one).
     result = subprocess.run(
-        ["docker", "compose", "-f", "docker-compose.prod.yml", "ps", "studio", "--format", "json"],
+        ["docker", "ps", "--filter", "name=studio", "--format", "{{.Names}} {{.Status}}"],
         capture_output=True, text=True
     )
-    assert "studio" in result.stdout.lower() or result.returncode == 0
+    assert result.returncode == 0, f"docker ps failed: {result.stderr}"
+    assert "studio" in result.stdout.lower(), f"Studio container not found: {result.stdout}"
