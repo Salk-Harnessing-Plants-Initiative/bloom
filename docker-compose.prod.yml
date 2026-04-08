@@ -391,7 +391,13 @@ services:
       - "5432"
     volumes:
       - ./volumes/db/data:/var/lib/postgresql/data:Z
-      - ./volumes/db/init:/docker-entrypoint-initdb.d:Z
+      - ./volumes/db/_supabase.sh:/docker-entrypoint-initdb.d/96-_supabase.sh:Z
+      - ./volumes/db/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:Z
+      - ./volumes/db/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:Z
+      - ./volumes/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:Z
+      - ./volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:Z
+      - ./volumes/db/logs.sql:/docker-entrypoint-initdb.d/migrations/99-logs.sql:Z
+      - ./volumes/db/pooler.sql:/docker-entrypoint-initdb.d/migrations/99-pooler.sql:Z
       - db-config:/etc/postgresql-custom
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
