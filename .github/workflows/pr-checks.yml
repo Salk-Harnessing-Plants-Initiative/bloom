@@ -21,9 +21,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Checks npm packages for known CVEs (critical only)
       - name: Security audit (npm)
         run: npm audit --audit-level=critical
 
+      # Ensures auto_https off is not committed — would disable HTTPS in production
       - name: Check Caddy config has no dev overrides
         run: |
           if grep -q "auto_https off" caddy/Caddyfile 2>/dev/null; then
@@ -31,14 +33,17 @@ jobs:
             exit 1
           fi
 
+      # Compiles bloom-js and bloom-fs TypeScript libraries
       - name: Build shared packages
         run: |
           cd packages/bloom-js && npx tsc -p tsconfig.json
           cd ../../packages/bloom-fs && npx tsc -p tsconfig.json
 
+      # Checks all frontend code for type errors
       - name: TypeScript type check
         run: cd web && npx tsc --noEmit
 
+      # Full production build — catches build errors before merge
       - name: Build Next.js app
         run: cd web && npm run build
         env:
@@ -46,6 +51,7 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
           NEXT_PUBLIC_SUPABASE_COOKIE_NAME: sb-localhost-auth-token
 
+  # Scans Python dependencies for known CVEs
   python-audit:
     name: Python Security Audit for CVEs
     runs-on: ubuntu-latest
@@ -58,12 +64,15 @@ jobs:
         with:
           python-version: '3.11'
 
+      # uv, pip-audit
       - name: Install uv and pip-audit
         run: pip install uv && uv pip install --system pip-audit
 
+      # Checks langchain agent Python packages for vulnerabilities
       - name: Audit langchain dependencies
         run: pip-audit -r langchain/requirements.txt
 
+      # Checks bloommcp server Python packages for vulnerabilities
       - name: Audit bloommcp dependencies
         run: pip-audit -r bloommcp/requirements.txt
 
@@ -297,6 +306,8 @@ jobs:
           docker compose -f docker-compose.prod.yml --env-file .env.ci logs --tail=50
           exit 1
 
+      # Runs 22 integration tests (smoke, auth, RLS, storage, API routing) against the live compose stack
+      # Skips if tests/integration/ doesn't exist on this branch
       - name: Run integration tests
         run: |
           if [ -d "tests/integration" ]; then
