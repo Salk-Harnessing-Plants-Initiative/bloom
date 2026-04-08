@@ -117,6 +117,11 @@ Each command also needs deep content review for:
 | `run-ci-locally.md` | **Full rewrite** | Zero salvageable structure; 7-phase fictional pipeline, fake Makefile |
 | `validate-env.md` | **Full rewrite** | Embedded shell script hardcodes pnpm, wrong ports, wrong container names, `supabase start` |
 
+Config fix:
+| File | Change |
+|---|---|
+| `.pre-commit-config.yaml` | Fix `^flask/` → `^(langchain\|bloommcp)/` in all Python hooks; update mypy stubs from Flask to `types-PyJWT`, `types-python-dotenv` |
+
 New files:
 | File | Type |
 |---|---|
@@ -256,6 +261,5 @@ Additionally verify:
 
 - Not adding new commands beyond the 3 specified (plus 1 skill)
 - Not changing the OpenSpec commands (they're managed by the openspec tool)
-- Not fixing `.pre-commit-config.yaml` (broken `^flask/` patterns) — that's a separate bug
 - Not modifying CLAUDE.md or other config files
 - Not adding unit test infrastructure (just documenting current state accurately)
