@@ -266,7 +266,7 @@ jobs:
         run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci
 
       - name: Start compose stack
-        run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build
+        run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build --wait --wait-timeout 120
 
       - name: Wait for services to be healthy
         run: |
