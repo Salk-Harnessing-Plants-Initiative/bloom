@@ -23,7 +23,7 @@ services:
   # Caddy (Reverse Proxy)
   # -------------------
   caddy:
-    image: caddy:2.11.2-alpine
+    image: caddy:2.11.2-alpine@sha256:fce4f15aad23222c0ac78a1220adf63bae7b94355d5ea28eee53910624acedfa
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -184,7 +184,7 @@ services:
   #  Kong Gateway
   # -------------------
   kong:
-    image: kong:2.8.1
+    image: kong:2.8.1@sha256:1b53405d8680a09d6f44494b7990bf7da2ea43f84a258c59717d4539abf09f6d
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -269,7 +269,7 @@ services:
   # Realtime Analytics
   # -------------------
   realtime:
-    image: supabase/realtime:v2.34.47
+    image: supabase/realtime:v2.34.47@sha256:4d2460cb6eb081b7cfec0e6b0af57f547497f60cf897621555303992d299f6e8
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -301,7 +301,7 @@ services:
   # MinIO
   # -------------------
   supabase-minio:
-    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z@sha256:ed9be66eb5f2636c18289c34c3b725ddf57815f2777c77b5938543b78a44f144
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -338,7 +338,7 @@ services:
   # Supabase Storage
   # -------------------
   storage:
-    image: supabase/storage-api:v1.48.14
+    image: supabase/storage-api:v1.48.14@sha256:14a7e837e44a5f1d59c4af0a7fb0066a6ab3b9146690a48f8e018dd60f3bf91f
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -373,7 +373,7 @@ services:
   # Database (Postgres)
   # -------------------
   db-prod:
-    image: supabase/postgres:15.14.1.104
+    image: supabase/postgres:15.14.1.104@sha256:bc49dde9849c1f8ee5c48f08600b49e2b0911f17c1b055a696d610cea48b6ba1
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -416,7 +416,7 @@ services:
   # Supavisor (Connection Pooler)
   # -------------------
   supavisor:
-    image: supabase/supavisor:2.7.4
+    image: supabase/supavisor:2.7.4@sha256:466297ba00956e2d1cbd56a4362fbd5dbc9c2a47ad83e8ca9bdb877f743315ee
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -457,7 +457,7 @@ services:
   # Supabase Studio
   # -------------------
   studio:
-    image: supabase/studio:2026.03.30-sha-12a43e5
+    image: supabase/studio:2026.03.30-sha-12a43e5@sha256:d73df17a81b897bb61326b3160b29558ca4c2cdbe32d25b7bb11e15a2cd13488
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -485,7 +485,7 @@ services:
   # ImgProxy
   # -------------------
   imgproxy:
-    image: darthsim/imgproxy:v3.31.1
+    image: darthsim/imgproxy:v3.31.1@sha256:2b7a56dbf9c8a8e12e7109a5bdd27d31a8c1aa49f2116c927c6aedc37e18db98
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -500,7 +500,7 @@ services:
       IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
   
   meta:
-    image: supabase/postgres-meta:v0.96.2
+    image: supabase/postgres-meta:v0.96.2@sha256:4ed8f7c5d3b2e25aa4aa29794605b49799b66da4b36a3c70894cd5241af63f97
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
