@@ -399,11 +399,11 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXP: ${JWT_EXPIRY}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supabase_admin} -h localhost"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supabase_admin} -d ${POSTGRES_DB:-postgres} -h localhost"]
       interval: 5s
       timeout: 5s
-      retries: 10
-      start_period: 30s
+      retries: 30
+      start_period: 60s
     command:
       [
         "postgres",
