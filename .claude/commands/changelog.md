@@ -22,7 +22,7 @@ git log $(git describe --tags --abbrev=0)..HEAD --oneline
 git log --author="<name>" --oneline
 
 # View changes to specific package
-git log --oneline -- flask/
+git log --oneline -- langchain/ bloommcp/
 git log --oneline -- web/
 
 # View current version (if package.json exists)
@@ -76,14 +76,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Video generation API endpoint with decimation support
-- S3 integration for cylindrical scan image storage
-- JWT authentication for protected endpoints
+- LangGraph agent endpoint for plant image analysis
+- Supabase migration for new cyl_experiments table
+- JWT authentication for protected LangGraph endpoints
 
 ### Changed
 
 - Updated Supabase configuration for self-hosted deployment
-- Improved error handling in Flask API
+- Improved error handling in FastAPI services
 
 ### Fixed
 
@@ -93,7 +93,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Flask API for video generation and S3 access
+- LangGraph agent service for AI-powered data analysis
+- FastMCP server for plant data queries
 - Next.js frontend with Material-UI components
 - PostgreSQL database via self-hosted Supabase
 - MinIO S3-compatible object storage
@@ -104,7 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Initial monorepo setup with Turborepo
-- Basic project structure (web/, flask/, packages/)
+- Basic project structure (web/, langchain/, bloommcp/, packages/)
 - Database schema for cylindrical scan data
 - Development initialization scripts
 
@@ -138,24 +139,24 @@ Group commits by category:
 
 - **Added**: New features, new endpoints, new components
 
-  - "Add video generation endpoint"
+  - "Add LangGraph agent endpoint for plant analysis"
   - "Add S3 integration for image storage"
   - "Add JWT authentication middleware"
 
 - **Changed**: Refactors, performance improvements, dependency updates
 
   - "Update Docker Compose configuration"
-  - "Improve error handling in Flask API"
+  - "Improve error handling in FastAPI services"
   - "Migrate from pip to uv for Python packages"
 
 - **Fixed**: Bug fixes, error handling improvements
 
   - "Fix S3 upload retry logic"
-  - "Fix CORS headers in Flask API"
+  - "Fix CORS headers in FastAPI service"
   - "Fix RLS policies on cyl_images table"
 
 - **Security**: Security patches, dependency security updates
-  - "Update Flask to 3.1.2 (CVE-2024-XXXX)"
+  - "Update FastAPI dependencies (CVE-2024-XXXX)"
   - "Add RLS policies to prevent unauthorized data access"
 
 ### Step 3: Update CHANGELOG.md
@@ -167,14 +168,14 @@ Add changes to the `[Unreleased]` section:
 
 ### Added
 
-- Video generation API endpoint with configurable decimation (#42)
+- LangGraph agent endpoint for plant image analysis with configurable parameters (#42)
 - S3 integration for cylindrical scan image storage (#45)
 - Pre-commit hooks for code quality (black, ruff, mypy, prettier) (#48)
 
 ### Changed
 
 - Migrated Python package management from pip to uv (#50)
-- Updated nginx configuration for Supabase dashboard subpath (#38)
+- Updated Caddy configuration for Supabase dashboard subpath (#38)
 
 ### Fixed
 
@@ -193,14 +194,14 @@ Move `[Unreleased]` to a versioned section:
 
 ### Added
 
-- Video generation API endpoint with configurable decimation (#42)
+- LangGraph agent endpoint for plant image analysis (#42)
 - S3 integration for cylindrical scan image storage (#45)
 - Pre-commit hooks for code quality (#48)
 
 ### Changed
 
 - Migrated Python package management from pip to uv (#50)
-- Updated nginx configuration for Supabase dashboard subpath (#38)
+- Updated Caddy configuration for Supabase dashboard subpath (#38)
 
 ### Fixed
 
@@ -221,9 +222,9 @@ Since Bloom is a monorepo, label changes by package:
 ```markdown
 ### Added
 
-- **flask**: Video generation API endpoint with decimation support (#42)
+- **langchain**: LangGraph agent endpoint for plant analysis (#42)
 - **web**: Scan data visualization dashboard (#44)
-- **packages/bloom-fs**: File system utilities for S3 operations (#45)
+- **bloommcp**: FastMCP server for structured data queries (#45)
 ```
 
 Or organize by package:
@@ -231,16 +232,22 @@ Or organize by package:
 ```markdown
 ## [1.2.0] - 2025-01-15
 
-### flask
+### langchain
 
 #### Added
 
-- Video generation API endpoint with decimation support (#42)
+- LangGraph agent endpoint for plant image analysis (#42)
 - S3 integration for image storage (#45)
 
 #### Fixed
 
 - S3 upload retry logic for network failures (#43)
+
+### bloommcp
+
+#### Added
+
+- FastMCP server for plant data queries (#46)
 
 ### web
 
@@ -253,7 +260,7 @@ Or organize by package:
 
 #### Changed
 
-- Updated nginx configuration for Supabase dashboard subpath (#38)
+- Updated Caddy configuration for Supabase dashboard subpath (#38)
 - Added pre-commit hooks for code quality (#48)
 ```
 
@@ -264,19 +271,19 @@ Or organize by package:
 ```markdown
 ### Added
 
-- Video generation endpoint generates MP4 videos from scan sequences with configurable FPS and decimation
+- LangGraph agent endpoint analyzes plant scan sequences with configurable parameters
 - S3 integration for MinIO storage with retry logic and exponential backoff for network failures
 - Pre-commit hooks enforce code quality: Black, Ruff, mypy for Python; Prettier, ESLint for TypeScript
 
 ### Changed
 
 - Migrated Python package management from pip to uv (10-100x faster, PEP 621 compliant)
-- Updated nginx reverse proxy to serve Supabase dashboard at /supabase_kong/ subpath with correct asset paths
+- Updated Caddy reverse proxy to serve Supabase dashboard at /supabase_kong/ subpath with correct asset paths
 
 ### Fixed
 
 - S3 upload retry logic now correctly handles ConnectionError with exponential backoff (1s, 2s, 4s)
-- Supabase dashboard static assets (CSS, JS) now load correctly when served through nginx reverse proxy
+- Supabase dashboard static assets (CSS, JS) now load correctly when served through Caddy reverse proxy
 ```
 
 ### Bad Examples
@@ -296,15 +303,15 @@ Or organize by package:
 
 ## Bloom-Specific Examples
 
-### Video Generation Changes
+### LangGraph Agent Changes
 
 ```markdown
 ### Added
 
-- **flask**: VideoWriter class generates MP4 videos from cylindrical scan image sequences
-  - Configurable FPS (default: 30)
-  - Decimation factor for frame reduction (reduces file size by 75%)
-  - Automatic frame sizing and codec selection
+- **langchain**: LangGraph agent processes plant scan image sequences
+  - Configurable analysis parameters
+  - Streaming response support
+  - Tool-calling integration with FastMCP server
 ```
 
 ### Scan Data Changes
@@ -314,7 +321,7 @@ Or organize by package:
 
 - **web**: Scan data table with filtering, sorting, and pagination
 - **web**: Real-time scan status updates via Supabase subscriptions
-- **flask**: Batch image upload endpoint for scan sequences
+- **langchain**: Batch image analysis endpoint for scan sequences
 ```
 
 ### Supabase/Database Changes
@@ -336,9 +343,9 @@ Or organize by package:
 ```markdown
 ### Changed
 
-- **docker**: Updated docker-compose.prod.yml nginx configuration for subdirectory serving
+- **docker**: Updated docker-compose.prod.yml Caddy configuration for subdirectory serving
 - **docker**: Added NEXT_PUBLIC_BASE_PATH environment variable for Supabase Studio
-- **nginx**: Configured X-Forwarded-Prefix headers for correct asset URL generation
+- **caddy**: Configured X-Forwarded-Prefix headers for correct asset URL generation
 ```
 
 ## Tips
@@ -346,8 +353,8 @@ Or organize by package:
 1. **Update continuously**: Add to `[Unreleased]` as you merge PRs, don't batch at release time
 2. **Link to issues/PRs**: Include `(#42)` references for traceability
 3. **Be user-focused**: Write for users, not developers
-   - Good: "Added video generation with configurable FPS"
-   - Bad: "Implemented VideoWriter class with generate_video method"
+   - Good: "Added LangGraph agent endpoint for plant image analysis"
+   - Bad: "Implemented agent graph with tool nodes and state management"
 4. **Note breaking changes**: Clearly mark with `**BREAKING:**`
 5. **Skip internal changes**: Don't include CI config tweaks, test refactors, or minor internal changes
 6. **Group related changes**: If a feature required changes across multiple commits, summarize as one entry
@@ -359,10 +366,10 @@ If a change is breaking, mark it clearly:
 ```markdown
 ### Changed
 
-- **BREAKING - flask**: Video generation endpoint now requires `scanner_id` parameter (previously optional)
-  - Migration: Include `scanner_id` in all `/api/video/generate` requests
-  - Old: `POST /api/video/generate { "decimation": 4 }`
-  - New: `POST /api/video/generate { "scanner_id": 123, "decimation": 4 }`
+- **BREAKING - langchain**: LangGraph agent endpoint now requires `scanner_id` parameter (previously optional)
+  - Migration: Include `scanner_id` in all `/api/agent/analyze` requests
+  - Old: `POST /api/agent/analyze { "decimation": 4 }`
+  - New: `POST /api/agent/analyze { "scanner_id": 123, "decimation": 4 }`
 ```
 
 ## Release Checklist
@@ -375,7 +382,7 @@ Before cutting a release:
 - [ ] Links at bottom are updated
 - [ ] Breaking changes are clearly marked
 - [ ] Notable changes are user-friendly and descriptive
-- [ ] Package-specific changes are labeled (**flask**, **web**, etc.)
+- [ ] Package-specific changes are labeled (**langchain**, **bloommcp**, **web**, etc.)
 
 ## Semantic Versioning Quick Reference
 
@@ -412,7 +419,8 @@ Given a version number `MAJOR.MINOR.PATCH`:
 
 - Initial monorepo setup with Turborepo and Docker Compose
 - Next.js frontend with Material-UI design system
-- Flask API for video generation and S3 access
+- LangGraph agent service for AI-powered plant data analysis
+- FastMCP server for structured data queries
 - Self-hosted Supabase for database, auth, and storage
 - MinIO S3-compatible object storage
 - Database schema for cylindrical scan data (cyl_scanners, cyl_images tables)
@@ -427,17 +435,18 @@ Given a version number `MAJOR.MINOR.PATCH`:
 
 ### Added
 
-- **flask**: Video generation endpoint with configurable FPS and decimation
-- **flask**: S3 integration with retry logic for network failures
-- **flask**: JWT authentication middleware for protected endpoints
+- **langchain**: LangGraph agent endpoint for plant scan analysis
+- **langchain**: S3 integration with retry logic for network failures
+- **langchain**: JWT authentication middleware for protected endpoints
+- **bloommcp**: FastMCP server with plant data query tools
 - **web**: Scan data visualization dashboard with real-time updates
 - **web**: Image upload interface for scan sequences
 - **database**: RLS policies for user-scoped data access
 
 ### Changed
 
-- **flask**: Updated Supabase client to v2.22.2 for improved performance
-- **docker**: Optimized nginx configuration for static asset serving
+- **langchain**: Updated Supabase client to v2.22.2 for improved performance
+- **docker**: Optimized Caddy configuration for static asset serving
 ```
 
 ### Version 1.1.1 (Bug Fix)
@@ -447,9 +456,9 @@ Given a version number `MAJOR.MINOR.PATCH`:
 
 ### Fixed
 
-- **flask**: S3 upload retry logic now correctly handles ConnectionError (#43)
-- **web**: Supabase dashboard static assets load correctly through nginx reverse proxy (#40)
-- **flask**: Video generation no longer crashes on empty image sequences (#47)
+- **langchain**: S3 upload retry logic now correctly handles ConnectionError (#43)
+- **web**: Supabase dashboard static assets load correctly through Caddy reverse proxy (#40)
+- **langchain**: Agent endpoint no longer crashes on empty image sequences (#47)
 ```
 
 ### Version 2.0.0 (Breaking Change)
@@ -459,17 +468,17 @@ Given a version number `MAJOR.MINOR.PATCH`:
 
 ### Changed
 
-- **BREAKING - flask**: Video generation endpoint now requires authentication
-  - All `/api/video/generate` requests must include valid JWT token
+- **BREAKING - langchain**: LangGraph agent endpoint now requires authentication
+  - All `/api/agent/analyze` requests must include valid JWT token
   - Migration: Add `Authorization: Bearer <token>` header to all requests
 - **BREAKING - database**: Renamed `cyl_images.s3_path` to `cyl_images.s3_key`
   - Migration: Run migration script `supabase/migrations/20250201_rename_s3_path.sql`
 
 ### Added
 
-- **flask**: Video generation progress tracking with real-time updates
-- **flask**: Batch processing for large scan sequences
-- **web**: Progress indicators for video generation
+- **langchain**: Agent progress tracking with real-time updates
+- **langchain**: Batch processing for large scan sequences
+- **web**: Progress indicators for agent analysis jobs
 ```
 
 ## Maintaining CHANGELOG.md

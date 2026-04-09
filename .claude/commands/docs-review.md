@@ -22,8 +22,11 @@ find . -type f -name "*.md" \
 # List OpenSpec proposals
 openspec list
 
-# Find Flask API endpoints
-grep -n "@app.route" flask/app.py
+# Find FastAPI routes in langchain service
+grep -rn "router\." langchain/
+
+# Find FastAPI routes in bloommcp service
+grep -rn "router\." bloommcp/
 
 # Find React pages and components
 find web -name "*.tsx" -type f ! -path "*/node_modules/*" | head -20
@@ -41,15 +44,15 @@ find . -name "*.md" ! -path "*/node_modules/*" -mtime -7 -ls
 # Validate all OpenSpec proposals
 openspec validate --strict
 
-# Check Flask API routes
-cd flask && uv run python -c "from app import app; print('\\n'.join(str(rule) for rule in app.url_map.iter_rules()))"
+# Check FastAPI routes in langchain service
+cd langchain && uv run python -c "from app import app; import uvicorn; print('routes ok')"
 
 # Verify environment variables documented
-diff <(grep -o "os.environ.get(['\"].*['\"])" flask/config.py | sort -u) \
+diff <(grep -o "os.environ.get(['\"].*['\"])" langchain/config.py | sort -u) \
      <(grep "^[A-Z_]*=" .env.dev | cut -d= -f1 | sort -u)
 
 # Check Docker services match documentation
-docker-compose -f docker-compose.dev.yml config --services
+docker compose -f docker-compose.dev.yml config --services
 ```
 
 ## Documentation Review Workflows
@@ -63,7 +66,7 @@ Identify which documentation exists and find gaps:
 ls -lh README.md CLAUDE.md ARCHITECTURE.md DEVELOPMENT.md API.md TESTING.md DEPLOYMENT.md 2>/dev/null || echo "Some files missing"
 
 # Check package documentation
-ls -lh flask/README.md web/README.md packages/*/README.md 2>/dev/null || echo "Package docs missing"
+ls -lh langchain/README.md bloommcp/README.md web/README.md packages/*/README.md 2>/dev/null || echo "Package docs missing"
 
 # Check OpenSpec
 ls -lh openspec/project.md openspec/AGENTS.md
@@ -78,10 +81,10 @@ find . -maxdepth 2 -name "*.md" -exec stat -f "%Sm %N" -t "%Y-%m-%d" {} \; | sor
 - [ ] README.md exists and is up to date (<30 days)
 - [ ] CLAUDE.md has Bloom-specific guidelines
 - [ ] ARCHITECTURE.md exists (if not, create it)
-- [ ] API.md or flask/README.md exists with endpoint documentation
+- [ ] API.md or langchain/README.md exists with endpoint documentation
 - [ ] web/README.md has component and routing documentation
 - [ ] DEVELOPMENT.md has complete setup instructions
-- [ ] TESTING.md exists (after Phase 2 CI/CD)
+- [ ] TESTING.md exists with integration test guidance
 - [ ] openspec/project.md is current
 - [ ] All active proposals are valid (`openspec validate --strict`)
 
@@ -133,27 +136,33 @@ grep -r "\- \[ \]" openspec/changes/*/tasks.md
   - [ ] Blockers documented in proposal.md
   - [ ] Ready for `openspec archive` when complete
 
-### Workflow 3: Flask API Documentation Review
+### Workflow 3: Python Services Documentation Review
 
-Ensure Flask API endpoints are documented:
+Ensure the LangGraph agent (`langchain/`) and FastMCP server (`bloommcp/`) endpoints are documented:
 
 ```bash
-# Extract all Flask routes
-cd flask && uv run python -c "
+# List FastAPI routes in langchain service
+cd langchain && uv run python -c "
 from app import app
-for rule in app.url_map.iter_rules():
-    methods = ','.join(sorted(rule.methods - {'HEAD', 'OPTIONS'}))
-    print(f'{methods:6} {rule.rule}')
+for route in app.routes:
+    if hasattr(route, 'methods'):
+        methods = ','.join(sorted(route.methods))
+        print(f'{methods:10} {route.path}')
 "
 
-# Count undocumented endpoints
-# (compare routes in app.py with documented endpoints in API.md)
-grep "@app.route" flask/app.py | wc -l
+# List FastAPI routes in bloommcp service
+cd bloommcp && uv run python -c "
+from app import app
+for route in app.routes:
+    if hasattr(route, 'methods'):
+        methods = ','.join(sorted(route.methods))
+        print(f'{methods:10} {route.path}')
+"
 ```
 
-**Flask API Documentation Checklist:**
+**Python Services Documentation Checklist:**
 
-- [ ] **API.md or flask/README.md exists** with comprehensive endpoint documentation
+- [ ] **API.md or langchain/README.md exists** with comprehensive endpoint documentation
 - [ ] Each endpoint documented with:
   - [ ] HTTP method and path
   - [ ] Request parameters (query, body, headers)
@@ -162,13 +171,15 @@ grep "@app.route" flask/app.py | wc -l
   - [ ] Authentication requirements (JWT or public)
   - [ ] Example curl commands
   - [ ] Error codes and meanings (400, 401, 404, 500)
-- [ ] **VideoWriter class documented**
-  - [ ] Constructor parameters (`filename`, `fps`)
-  - [ ] `add()` method usage with numpy arrays
-  - [ ] `_open()` internal workflow
-  - [ ] `close()` finalization and error handling
-  - [ ] ffmpeg dependencies and installation
-  - [ ] Decimation factor explanation
+- [ ] **LangGraph agent documented**
+  - [ ] Agent graph structure and tools
+  - [ ] Streaming response support
+  - [ ] Tool-calling integration with FastMCP server
+  - [ ] Error handling and retry logic
+- [ ] **FastMCP server documented**
+  - [ ] Available MCP tools and resources
+  - [ ] Input/output schemas
+  - [ ] Integration with LangGraph agent
 - [ ] **S3/MinIO integration documented**
   - [ ] boto3 configuration (credentials, endpoint)
   - [ ] Bucket names and structure
@@ -182,15 +193,15 @@ grep "@app.route" flask/app.py | wc -l
 
 ### Workflow 4: Infrastructure Documentation Review
 
-Verify Docker, nginx, and database documentation:
+Verify Docker, Caddy, and database documentation:
 
 ```bash
 # List all Docker services
-docker-compose -f docker-compose.dev.yml config --services
-docker-compose -f docker-compose.prod.yml config --services
+docker compose -f docker-compose.dev.yml config --services
+docker compose -f docker-compose.prod.yml config --services
 
-# Check nginx configuration
-cat nginx/nginx.conf.template
+# Check Caddy configuration
+cat caddy/Caddyfile
 
 # List environment variables
 grep "^[A-Z_]*=" .env.dev | cut -d= -f1 | sort
@@ -202,7 +213,7 @@ ls -lh supabase/migrations/
 **Infrastructure Documentation Checklist:**
 
 - [ ] **docker-compose.dev.yml documented**
-  - [ ] Service descriptions (Flask, Web, Supabase, MinIO, nginx, Kong)
+  - [ ] Service descriptions (LangGraph agent, FastMCP server, web app, Supabase, MinIO, Caddy, Kong)
   - [ ] Port mappings explained
   - [ ] Volume mounts documented (minio_data/, volumes/)
   - [ ] Environment variables listed
@@ -212,7 +223,7 @@ ls -lh supabase/migrations/
   - [ ] Multi-stage build process
   - [ ] Production optimizations noted
   - [ ] Security considerations
-- [ ] **nginx configuration documented**
+- [ ] **Caddy configuration documented**
   - [ ] Reverse proxy setup
   - [ ] Subpath routing (Supabase at `/supabase_kong/`)
   - [ ] Frontend and API routing
@@ -224,9 +235,9 @@ ls -lh supabase/migrations/
   - [ ] Policy configuration (public vs private)
 - [ ] **Supabase configuration documented**
   - [ ] Self-hosted setup
-  - [ ] Migration workflow (`supabase db push`)
+  - [ ] Migration workflow (`make apply-migrations-local`)
   - [ ] RLS policy guidelines
-  - [ ] Studio UI access (port 55323)
+  - [ ] Studio UI access
   - [ ] Subpath deployment configuration
 
 ### Workflow 5: Next.js Frontend Documentation Review
@@ -259,13 +270,13 @@ grep "@mui/material" web -r --include="*.tsx" | cut -d: -f1 | sort -u | head -10
   - [ ] Supabase Auth integration
   - [ ] Protected routes and middleware
   - [ ] Session management
-  - [ ] JWT handling with Flask API
+  - [ ] JWT handling with Python services
 - [ ] **Material-UI usage documented**
   - [ ] Theme configuration
   - [ ] Custom components
   - [ ] Styling patterns (sx prop vs styled vs CSS modules)
-- [ ] **Flask API client documented**
-  - [ ] API base URL configuration
+- [ ] **Python service API client documented**
+  - [ ] API base URL configuration (routed through Caddy)
   - [ ] Type definitions for requests/responses
   - [ ] Error handling patterns
   - [ ] Authentication header injection
@@ -277,14 +288,14 @@ grep "@mui/material" web -r --include="*.tsx" | cut -d: -f1 | sort -u | head -10
 
 ## Documentation Templates
 
-### API.md Template (Flask)
+### API.md Template (Python Services)
 
-Use this template to document Flask API endpoints:
+Use this template to document the LangGraph agent and FastMCP server endpoints:
 
 ````markdown
-# Bloom Flask API Documentation
+# Bloom API Documentation
 
-Base URL: `http://localhost:5002` (dev) | `https://api.bloom.example.com` (prod)
+All API routing is handled by Caddy. In development, services are accessed directly.
 
 ## Authentication
 
@@ -296,20 +307,21 @@ Authorization: Bearer <jwt_token>
 
 Get a token from Supabase Auth after user login.
 
-## Endpoints
+## LangGraph Agent Endpoints (`langchain/`)
 
-### GET /
+### GET /health
 
 **Health Check**
 
-Returns the status of the Flask application.
+Returns the status of the LangGraph agent service.
 
 **Authentication:** Not required
 
 **Response:**
 \```json
 {
-"message": "Flask app is running!"
+  "status": "ok",
+  "service": "langchain-agent"
 }
 \```
 
@@ -319,39 +331,33 @@ Returns the status of the Flask application.
 
 ---
 
-### POST /generate_video
+### POST /agent/invoke
 
-**Generate Video from Scan Images**
+**Invoke LangGraph Agent**
 
-Generates an MP4 video from a sequence of cylindrical scan images.
+Runs the LangGraph agent with the provided input and returns the result.
 
 **Authentication:** Required (JWT)
 
 **Request Body:**
 \```json
 {
-"scan_id": 123
+  "input": "Analyze scan 123",
+  "scanner_id": 123
 }
 \```
 
 **Parameters:**
 
-- `scan_id` (integer, required): ID of the scan in database
+- `input` (string, required): Natural language instruction for the agent
+- `scanner_id` (integer, optional): ID of the scanner in database
 
 **Response (Success):**
 \```json
 {
-"message": "Video generated successfully",
-"scan_id": 123,
-"total_frames": 72,
-"download_url": "https://minio.example.com/videos/scan_123.mp4?signature=..."
-}
-\```
-
-**Response (Error):**
-\```json
-{
-"error": "Scan not found"
+  "output": "Analysis complete",
+  "tool_calls": [],
+  "scanner_id": 123
 }
 \```
 
@@ -360,50 +366,70 @@ Generates an MP4 video from a sequence of cylindrical scan images.
 - 200: Success
 - 400: Bad request (invalid parameters)
 - 401: Unauthorized (missing or invalid JWT)
-- 404: Scan not found
-- 500: Server error (video generation failed)
+- 500: Server error (agent invocation failed)
 
 **Example:**
 \```bash
-curl -X POST http://localhost:5002/generate_video \\
--H "Authorization: Bearer <jwt_token>" \\
--H "Content-Type: application/json" \\
--d '{"scan_id": 123}'
+curl -X POST http://localhost:8000/agent/invoke \
+  -H "Authorization: Bearer <jwt_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Analyze scan 123", "scanner_id": 123}'
 \```
 
 ---
 
-### POST /get_presigned_urls
+## FastMCP Server Endpoints (`bloommcp/`)
 
-**Get Presigned URLs for S3 Objects**
+### GET /health
 
-Generates presigned URLs for accessing S3/MinIO objects.
+**Health Check**
+
+Returns the status of the FastMCP server.
+
+**Authentication:** Not required
+
+**Response:**
+\```json
+{
+  "status": "ok",
+  "service": "bloommcp"
+}
+\```
+
+---
+
+### POST /mcp/tools/call
+
+**Call an MCP Tool**
+
+Invokes an MCP tool registered with the FastMCP server.
 
 **Authentication:** Required (JWT)
 
 **Request Body:**
 \```json
 {
-"object_paths": [
-"images/scan_123/frame_001.png",
-"images/scan_123/frame_002.png"
-]
+  "name": "get_scan_data",
+  "arguments": {
+    "scanner_id": 123
+  }
 }
 \```
 
 **Parameters:**
 
-- `object_paths` (array of strings, required): S3 object paths
+- `name` (string, required): Name of the MCP tool to invoke
+- `arguments` (object, required): Tool-specific arguments
 
 **Response:**
 \```json
 {
-"presigned_urls": [
-"https://minio.example.com/bloom-storage/images/scan_123/frame_001.png?signature=...",
-"https://minio.example.com/bloom-storage/images/scan_123/frame_002.png?signature=..."
-],
-"invalid_urls": [false, false],
-"skipped_paths": []
+  "content": [
+    {
+      "type": "text",
+      "text": "Scanner 123 data..."
+    }
+  ]
 }
 \```
 
@@ -411,49 +437,6 @@ Generates presigned URLs for accessing S3/MinIO objects.
 
 - 200: Success
 - 401: Unauthorized
-
-## Video Generation
-
-### VideoWriter Class
-
-The `VideoWriter` class handles video generation from image sequences using ffmpeg.
-
-**Usage:**
-\```python
-from videoWriter import VideoWriter
-import numpy as np
-
-writer = VideoWriter(filename="output.mp4", fps=30.0)
-
-# Add frames (numpy arrays)
-
-for image_array in images:
-writer.add(image_array) # numpy.ndarray, uint8 or float32/64
-
-writer.close()
-\```
-
-**Parameters:**
-
-- `filename` (str): Output video file path
-- `fps` (float): Frames per second (default: 30.0)
-
-**Methods:**
-
-- `add(img)`: Add a frame (numpy array, uint8 or float32/64)
-- `close()`: Finalize video and close ffmpeg subprocess
-
-**Dependencies:**
-
-- ffmpeg must be installed on the system
-- Uses H.264 codec with MP4 container
-- CRF 20 for high quality
-
-**Error Handling:**
-
-- Raises `RuntimeError` if ffmpeg fails (exit code != 0)
-- Raises `RuntimeError` if ffmpeg times out (>30 seconds)
-- Validates dimensions and fps before starting
 
 ## Environment Variables
 
@@ -464,40 +447,9 @@ Required environment variables (`.env.dev` or `.env.prod`):
 - `JWT_SECRET`: Secret for JWT validation (must match Supabase)
 - `AWS_REGION`: AWS region (use `us-east-1` for MinIO)
 - `S3_BUCKET_NAME`: Default S3 bucket name
-- `S3_ENDPOINT`: MinIO endpoint URL (e.g., `http://minio:9100`)
+- `S3_ENDPOINT`: MinIO endpoint URL (e.g., `http://supabase-minio:9100`)
 - `AWS_ACCESS_KEY_ID`: S3/MinIO access key
 - `AWS_SECRET_ACCESS_KEY`: S3/MinIO secret key
-
-## Development
-
-**Local Testing:**
-\```bash
-
-# Start Flask dev server
-
-cd flask && uv run flask run --host=0.0.0.0 --port=5002
-
-# Test health check
-
-curl http://localhost:5002/
-
-# Get JWT token from Supabase Auth (via web UI or API)
-
-# Then test protected endpoint:
-
-curl -X POST http://localhost:5002/generate_video \\
--H "Authorization: Bearer <token>" \\
--H "Content-Type: application/json" \\
--d '{"scan_id": 1}'
-\```
-
-**Error Codes:**
-
-- 400: Bad Request (invalid input)
-- 401: Unauthorized (missing/invalid JWT)
-- 403: Forbidden (valid JWT but insufficient permissions)
-- 404: Not Found (resource doesn't exist)
-- 500: Internal Server Error (server-side failure)
 ````
 
 ### ARCHITECTURE.md Template
@@ -507,79 +459,91 @@ curl -X POST http://localhost:5002/generate_video \\
 
 ## System Overview
 
-Bloom is a full-stack application for biological/scientific data visualization, specifically designed for cylindrical scan image management and video generation for plant research.
+Bloom is a full-stack application for biological/scientific data visualization, specifically designed for cylindrical scan image management and AI-powered analysis for plant research.
 
 ## Technology Stack
 
 - **Frontend**: Next.js 16, React 19, TypeScript, Material-UI
-- **Backend API**: Flask (Python 3.11) with uv package manager
+- **LangGraph Agent**: FastAPI + LangGraph (Python 3.11) with uv package manager
+- **FastMCP Server**: FastMCP (Python 3.11) with uv package manager
 - **Database**: PostgreSQL (via self-hosted Supabase)
 - **Object Storage**: MinIO (S3-compatible)
 - **Authentication**: Supabase Auth (JWT tokens)
-- **Reverse Proxy**: nginx (production), Kong (Supabase API Gateway)
+- **Reverse Proxy**: Caddy (production), Kong (Supabase API Gateway)
 - **Containerization**: Docker Compose
-- **Monorepo**: Turborepo with pnpm workspaces
+- **Monorepo**: Turborepo with npm workspaces
 
 ## Service Architecture
 
 \```
 [Browser]
 ↓
-[nginx:80] (production) or direct (development)
-├─→ [Next.js:3000]
-│ ↓ (API calls)
-├─→ [Flask:5002] ──→ [MinIO:9100] (S3 operations)
-│ ↓ (database queries)
-└─→ [Kong:8000] (Supabase API Gateway)
-├─→ [PostgreSQL:5432]
-├─→ [PostgREST] (REST API)
-├─→ [GoTrue] (Auth)
-├─→ [Storage]
-└─→ [Realtime]
+[Caddy:80/443] (production) or direct (development)
+├─→ [Next.js:3000]            (bloom-web)
+│    ↓ (API calls)
+├─→ [LangGraph Agent:8001]    (langchain-agent)
+│    ↓ (tool calls)
+├─→ [FastMCP Server:8002]     (bloommcp)
+│    ↓ (database queries)
+└─→ [Kong:8000]               (Supabase API Gateway)
+     ├─→ [PostgreSQL:5432]    (db-dev / db-prod)
+     ├─→ [PostgREST]          (REST API)
+     ├─→ [GoTrue]             (Auth)
+     ├─→ [Storage]
+     └─→ [Realtime]
 \```
+
+MinIO (supabase-minio): ports 9100-9101
 
 ### Service Details
 
-#### Next.js Web App (port 3000)
+#### Next.js Web App (`web/`, container `bloom-web`)
 
 - React-based UI for scan visualization
 - Server-side rendering (SSR) with App Router
 - Material-UI components
 - Supabase Auth integration
-- API client for Flask endpoints
+- API client for LangGraph agent and FastMCP endpoints
 
-#### Flask API (port 5002)
+#### LangGraph Agent (`langchain/`, container `langchain-agent`)
 
-- RESTful API for video generation
+- FastAPI + LangGraph service for AI-powered data analysis
 - S3/MinIO integration for image storage
 - JWT authentication (validates Supabase tokens)
-- VideoWriter class (ffmpeg wrapper for video encoding)
+- Tool-calling integration with FastMCP server
 - Logging with Python logging module
+
+#### FastMCP Server (`bloommcp/`, container `bloommcp`)
+
+- FastMCP server exposing plant data tools
+- MCP tools for querying scan data, images, and experiments
+- Used by the LangGraph agent for structured data access
 
 #### Supabase Stack (Kong on port 8000)
 
-- **PostgreSQL** (port 5432): Main database
+- **PostgreSQL** (port 5432): Main database (container `db-dev` / `db-prod`)
 - **PostgREST**: Auto-generated REST API
 - **GoTrue**: Authentication service
 - **Storage**: File upload and management
 - **Realtime**: WebSocket subscriptions
-- **Studio UI** (port 55323): Admin dashboard
+- **Studio UI**: Admin dashboard
 
-#### MinIO (ports 9100-9101)
+#### MinIO (container `supabase-minio`, ports 9100-9101)
 
 - S3-compatible object storage
-- Stores scan images and generated videos
+- Stores scan images and analysis artifacts
 - Bucket: `bloom-storage`
 - Console UI on port 9101 (admin interface)
 
-#### nginx (production only, port 80)
+#### Caddy (production only, container `caddy`, port 80/443)
 
 - Reverse proxy for all services
 - Subpath routing:
   - `/` → Next.js frontend
-  - `/api/` → Flask backend (future)
+  - `/api/agent/` → LangGraph agent
+  - `/api/mcp/` → FastMCP server
   - `/supabase_kong/` → Supabase services
-- Static file serving
+- Automatic HTTPS with Let's Encrypt
 
 ## Data Flow
 
@@ -587,28 +551,26 @@ Bloom is a full-stack application for biological/scientific data visualization, 
 
 \```
 [Researcher] → [Web UI] → [Supabase Storage/API] → [PostgreSQL: cyl_images table]
-↓
-[MinIO: S3 storage]
+                                                   ↓
+                                            [MinIO: S3 storage]
 \```
 
-### 2. Video Generation Workflow
+### 2. AI Analysis Workflow
 
 \```
-[Researcher clicks "Generate Video"]
+[Researcher sends analysis request]
 ↓
-[Web UI] → [Flask API /generate_video]
+[Web UI] → [LangGraph Agent /agent/invoke]
 ↓
-[Fetch scan + images from PostgreSQL]
+[Agent builds graph with tool nodes]
 ↓
-[Download images from MinIO/S3]
+[Tool call: FastMCP Server → fetch scan data from PostgreSQL]
 ↓
-[VideoWriter: decimate frames (every 4th), encode with ffmpeg]
+[Tool call: fetch images from MinIO/S3]
 ↓
-[Upload MP4 to MinIO]
+[Agent processes and returns analysis]
 ↓
-[Generate presigned URL for download]
-↓
-[Return URL to Web UI]
+[Return result to Web UI]
 \```
 
 ### 3. Authentication Flow
@@ -618,9 +580,9 @@ Bloom is a full-stack application for biological/scientific data visualization, 
 ↓
 [JWT Token returned to client]
 ↓
-[Client includes token in Flask API requests]
+[Client includes token in LangGraph agent / FastMCP requests]
 ↓
-[Flask validates JWT signature with JWT_SECRET]
+[Services validate JWT signature with JWT_SECRET]
 \```
 
 ## Database Schema
@@ -661,40 +623,16 @@ Bloom is a full-stack application for biological/scientific data visualization, 
 - Local Docker Compose setup
 - MinIO at `http://localhost:9100`
 - Supabase at `http://localhost:8000`
-- No nginx (direct service access)
-- Hot reload enabled for Flask and Next.js
+- No Caddy (direct service access)
+- Hot reload enabled for Python services and Next.js
 
 ### Production (.env.prod)
 
 - Multi-stage Docker builds (smaller images)
-- nginx reverse proxy with subpath routing
+- Caddy reverse proxy with subpath routing
 - External domain names
 - Environment-specific secrets
 - No debug mode
-
-## Video Processing
-
-### VideoWriter Class (`flask/videoWriter.py`)
-
-**Process:**
-
-1. Open ffmpeg subprocess with pipe stdin
-2. Accept numpy arrays (RGB images)
-3. Convert to bytes and pipe to ffmpeg
-4. Encode as H.264, MP4 container, CRF 20
-5. Close subprocess and validate output
-
-**Decimation:**
-
-- Default factor: 4 (every 4th frame)
-- Reduces file size and processing time
-- Configurable per request (future)
-
-**Performance:**
-
-- CPU-intensive (ffmpeg encoding)
-- ~2-5 seconds for 100 frames
-- Depends on image resolution and frame count
 
 ## Security
 
@@ -702,7 +640,7 @@ Bloom is a full-stack application for biological/scientific data visualization, 
 
 - Supabase Auth (email/password, OAuth providers)
 - JWT tokens (HS256 algorithm)
-- Token validation on Flask protected endpoints
+- Token validation on protected endpoints in Python services
 - Generic error messages (no information leakage)
 
 ### Access Control
@@ -726,32 +664,25 @@ Bloom is a full-stack application for biological/scientific data visualization, 
 \```bash
 
 # 1. Clone repository
-
 git clone <repo-url>
 cd bloom
 
 # 2. Create MinIO data directory
-
 mkdir -p minio_data
 chmod 777 minio_data
 
 # 3. Copy and configure environment
-
 cp .env.dev.example .env.dev
-
 # Edit .env.dev with your values
 
 # 4. Start all services
-
 make dev-up
 
 # 5. Initialize database
-
-cd supabase && supabase db push
+make apply-migrations-local
 
 # 6. Load test data
-
-cd web && pnpm db:init:dev
+cd web && npm run db:init:dev
 \```
 
 ### Daily Development
@@ -759,19 +690,15 @@ cd web && pnpm db:init:dev
 \```bash
 
 # Start services
-
 make dev-up
 
 # View logs
-
 make dev-logs
 
 # Stop services
-
 make dev-down
 
 # Rebuild after dependency changes
-
 make rebuild-dev-fresh
 \```
 
@@ -782,21 +709,22 @@ make rebuild-dev-fresh
 \```bash
 
 # All services
+docker compose -f docker-compose.dev.yml logs -f
 
-docker-compose -f docker-compose.dev.yml logs -f
+# LangGraph agent only
+docker compose -f docker-compose.dev.yml logs -f langchain-agent
 
-# Flask only
-
-docker-compose -f docker-compose.dev.yml logs -f flask-app
+# FastMCP server only
+docker compose -f docker-compose.dev.yml logs -f bloommcp
 
 # Next.js only
-
-docker-compose -f docker-compose.dev.yml logs -f web
+docker compose -f docker-compose.dev.yml logs -f web
 \```
 
 ### Health Checks
 
-- Flask: `curl http://localhost:5002/`
+- LangGraph agent: `curl http://localhost:8001/health`
+- FastMCP server: `curl http://localhost:8002/health`
 - Supabase: `curl http://localhost:8000/rest/v1/`
 - MinIO: Browse to `http://localhost:9101`
 - Next.js: Browse to `http://localhost:3000`
@@ -808,7 +736,7 @@ docker-compose -f docker-compose.dev.yml logs -f web
 
 ## Performance Considerations
 
-- **Video generation**: CPU-intensive, consider queue (Celery) for production
+- **AI analysis**: LLM calls are latency-bound; consider streaming responses
 - **Large scans**: Pagination for >1000 images
 - **S3 presigned URLs**: 1-hour expiration (configurable)
 - **Database**: Connection pooling via Supabase
@@ -820,11 +748,11 @@ docker-compose -f docker-compose.dev.yml logs -f web
 
 - [ ] Update environment variables in `.env.prod`
 - [ ] Build production images: `make rebuild-prod-fresh`
-- [ ] Configure nginx SSL/TLS certificates
+- [ ] Configure Caddy SSL/TLS certificates
 - [ ] Set up domain DNS records
 - [ ] Configure Supabase production instance
 - [ ] Initialize MinIO buckets and policies
-- [ ] Run database migrations: `supabase db push`
+- [ ] Run database migrations: `make apply-migrations-local`
 - [ ] Test all endpoints with production URLs
 - [ ] Set up backup strategy (PostgreSQL, MinIO)
 - [ ] Configure monitoring and alerting
@@ -832,13 +760,12 @@ docker-compose -f docker-compose.dev.yml logs -f web
 ## Future Enhancements
 
 - [ ] Redis caching for frequently accessed data
-- [ ] Celery for async video generation (background jobs)
-- [ ] CDN for static assets and videos
-- [ ] Horizontal scaling for Flask API (load balancer)
-- [ ] WebSocket updates for video generation progress
-- [ ] Advanced video options (resolution, FPS, codec)
-- [ ] Bulk video generation
-- [ ] Video thumbnails and previews
+- [ ] Async background jobs for long-running agent tasks
+- [ ] CDN for static assets
+- [ ] Horizontal scaling for Python services (load balancer)
+- [ ] WebSocket updates for agent progress
+- [ ] Advanced analysis options (custom agent tools)
+- [ ] Bulk analysis jobs
 ````
 
 ### DEVELOPMENT.md Template
@@ -858,19 +785,16 @@ Complete guide for setting up and developing the Bloom application locally.
   - [Download for Windows](https://www.docker.com/products/docker-desktop)
   - [Install for Linux](https://docs.docker.com/engine/install/)
 
-- **Node.js** (v20+) and **pnpm** (v9+)
+- **Node.js** (v20+) and **npm** (v10+)
   \```bash
-
-  # Install pnpm
-
-  npm install -g pnpm
+  # Verify versions
+  node -v && npm -v
   \```
 
 - **Python** (3.11+) and **uv**
   \```bash
 
   # Install uv
-
   curl -LsSf https://astral.sh/uv/install.sh | sh
   \```
 
@@ -881,11 +805,6 @@ Complete guide for setting up and developing the Bloom application locally.
   \```
 
 ### Optional Tools
-
-- **Supabase CLI** (for migrations)
-  \```bash
-  brew install supabase/tap/supabase
-  \```
 
 - **PostgreSQL client** (for direct database access)
   \```bash
@@ -925,21 +844,18 @@ Edit `.env.dev` and configure:
 \```bash
 
 # Supabase
-
 SUPABASE_URL=http://localhost:8000
 SUPABASE_KEY=<anon-key-from-supabase>
 JWT_SECRET=<jwt-secret-from-supabase>
 
 # MinIO (S3)
-
 AWS_REGION=us-east-1
 S3_BUCKET_NAME=bloom-storage
-S3_ENDPOINT=http://minio:9100
+S3_ENDPOINT=http://supabase-minio:9100
 AWS_ACCESS_KEY_ID=minioadmin
 AWS_SECRET_ACCESS_KEY=minioadmin
 
 # Next.js
-
 NEXT_PUBLIC_SUPABASE_URL=http://localhost:8000
 NEXT_PUBLIC_SUPABASE_ANON_KEY=<same-as-SUPABASE_KEY>
 \```
@@ -947,7 +863,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=<same-as-SUPABASE_KEY>
 **Where to find Supabase keys:**
 
 1. Start Supabase: `make dev-up`
-2. Check logs: `docker-compose -f docker-compose.dev.yml logs supabase-kong`
+2. Check logs: `docker compose -f docker-compose.dev.yml logs supabase-kong`
 3. Look for `anon key:` and `service_role key:`
 
 ### 4. Install Dependencies
@@ -955,12 +871,11 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=<same-as-SUPABASE_KEY>
 \```bash
 
 # Install all monorepo dependencies
+npm install
 
-pnpm install
-
-# Install Flask dependencies
-
-cd flask && uv sync --all-extras
+# Install Python service dependencies
+cd langchain && uv sync --all-extras
+cd ../bloommcp && uv sync --all-extras
 \```
 
 ### 5. Start Services
@@ -968,12 +883,10 @@ cd flask && uv sync --all-extras
 \```bash
 
 # Start all Docker services
-
 make dev-up
 
 # Wait for services to be healthy (~30 seconds)
-
-docker-compose -f docker-compose.dev.yml ps
+docker compose ps
 \```
 
 ### 6. Initialize Database
@@ -981,34 +894,29 @@ docker-compose -f docker-compose.dev.yml ps
 \```bash
 
 # Run Supabase migrations
-
-cd supabase
-supabase db push
+make apply-migrations-local
 
 # Load test data (optional)
-
-cd ../web
-pnpm db:init:dev
+cd web && npm run db:init:dev
 \```
 
 ### 7. Verify Setup
 
 \```bash
 
-# Test Flask
+# Test LangGraph agent
+curl http://localhost:8001/health
 
-curl http://localhost:5002/
+# Test FastMCP server
+curl http://localhost:8002/health
 
 # Test Supabase
-
 curl http://localhost:8000/rest/v1/
 
 # Test MinIO
-
 open http://localhost:9101 # Login: minioadmin / minioadmin
 
 # Test Next.js
-
 open http://localhost:3000
 \```
 
@@ -1019,39 +927,42 @@ open http://localhost:3000
 \```bash
 
 # Start all services
-
 make dev-up
 
 # View logs (all services)
-
 make dev-logs
 
 # View logs (specific service)
-
-docker-compose -f docker-compose.dev.yml logs -f flask-app
-docker-compose -f docker-compose.dev.yml logs -f web
+docker compose -f docker-compose.dev.yml logs -f langchain-agent
+docker compose -f docker-compose.dev.yml logs -f web
 \```
 
 ### Making Code Changes
 
-**Flask (Python):**
+**LangGraph agent (Python, `langchain/`):**
 
-- Edit files in `flask/`
-- Flask auto-reloads on file changes (debug mode)
-- Install new dependencies: `cd flask && uv add <package>`
-- Run tests: `cd flask && uv run pytest`
+- Edit files in `langchain/`
+- FastAPI auto-reloads on file changes (debug mode)
+- Install new dependencies: `cd langchain && uv add <package>`
+- Run tests: `uv run pytest tests/integration/ -v --tb=short`
 
-**Next.js (TypeScript):**
+**FastMCP server (Python, `bloommcp/`):**
+
+- Edit files in `bloommcp/`
+- FastAPI auto-reloads on file changes
+- Install new dependencies: `cd bloommcp && uv add <package>`
+
+**Next.js (TypeScript, `web/`):**
 
 - Edit files in `web/`
 - Next.js auto-reloads via Fast Refresh
-- Install new dependencies: `pnpm add <package>`
-- Run linting: `pnpm lint`
+- Install new dependencies: `npm install <package>`
+- Run linting: `npm run lint`
 
 **Database:**
 
 - Edit schemas in `supabase/migrations/`
-- Apply migrations: `cd supabase && supabase db push`
+- Apply migrations: `make apply-migrations-local`
 - Create new migration: `supabase migration new <name>`
 
 ### Stopping Services
@@ -1059,12 +970,10 @@ docker-compose -f docker-compose.dev.yml logs -f web
 \```bash
 
 # Stop all services (keep data)
-
 make dev-down
 
 # Stop and remove all data
-
-docker-compose -f docker-compose.dev.yml down -v
+docker compose -f docker-compose.dev.yml down -v
 \```
 
 ## Common Tasks
@@ -1074,18 +983,15 @@ docker-compose -f docker-compose.dev.yml down -v
 \```bash
 
 # Stop services
-
 make dev-down
 
 # Remove database volume
-
 docker volume rm bloom_db-data
 
 # Restart and re-initialize
-
 make dev-up
-cd supabase && supabase db push
-cd ../web && pnpm db:init:dev
+make apply-migrations-local
+cd web && npm run db:init:dev
 \```
 
 ### Clear MinIO Storage
@@ -1093,15 +999,12 @@ cd ../web && pnpm db:init:dev
 \```bash
 
 # Stop services
-
 make dev-down
 
 # Remove MinIO data
-
-rm -rf minio_data/\*
+rm -rf minio_data/*
 
 # Restart (bucket will be recreated)
-
 make dev-up
 \```
 
@@ -1110,51 +1013,45 @@ make dev-up
 \```bash
 
 # Rebuild all Docker images
-
 make rebuild-dev-fresh
 
 # Rebuild specific service
-
-docker-compose -f docker-compose.dev.yml build flask-app
-docker-compose -f docker-compose.dev.yml up -d flask-app
+docker compose -f docker-compose.dev.yml build langchain-agent
+docker compose -f docker-compose.dev.yml up -d langchain-agent
 \```
 
 ### Run Tests
 
 \```bash
 
-# Python tests (Phase 2)
+# Python integration tests
+uv run pytest tests/integration/ -v --tb=short
 
-cd flask && uv run pytest --cov
-
-# TypeScript tests (future)
-
-pnpm test
-
-# E2E tests (future)
-
-pnpm test:e2e
+# TypeScript linting and type-check
+npm run lint
+cd web && npx tsc --noEmit
 \```
 
 ### Format and Lint Code
 
 \```bash
 
-# Python
-
-cd flask
+# Python (recommended locally but NOT currently enforced in CI)
+cd langchain
 uv run black .
 uv run ruff check --fix .
 uv run mypy .
 
-# TypeScript/JavaScript
+cd ../bloommcp
+uv run black .
+uv run ruff check --fix .
 
-pnpm format
-pnpm lint:fix
+# TypeScript/JavaScript
+npm run format
+npm run lint
 
 # Run all pre-commit hooks
-
-cd flask && uv run pre-commit run --all-files
+cd langchain && uv run pre-commit run --all-files
 \```
 
 ## Troubleshooting
@@ -1166,16 +1063,13 @@ cd flask && uv run pre-commit run --all-files
 **Solution**:
 \```bash
 
-# Find process using port (e.g., 5002)
-
-lsof -ti:5002
+# Find process using port (e.g., 8001)
+lsof -ti:8001
 
 # Kill process
-
 kill -9 <PID>
 
 # Or change port in docker-compose.dev.yml
-
 \```
 
 ### Issue: MinIO Permission Denied
@@ -1186,11 +1080,9 @@ kill -9 <PID>
 \```bash
 
 # Ensure minio_data/ has correct permissions
-
 chmod 777 minio_data
 
 # Or recreate directory
-
 rm -rf minio_data
 mkdir minio_data
 chmod 777 minio_data
@@ -1198,17 +1090,17 @@ chmod 777 minio_data
 
 ### Issue: Supabase Auth Not Working
 
-**Symptom**: JWT validation fails in Flask
+**Symptom**: JWT validation fails in Python services
 
 **Solution**:
 
 1. Check JWT_SECRET matches Supabase secret
 2. Get correct secret from Supabase logs:
    \```bash
-   docker-compose -f docker-compose.dev.yml logs supabase-kong | grep "JWT secret"
+   docker compose -f docker-compose.dev.yml logs supabase-kong | grep "JWT secret"
    \```
 3. Update `.env.dev` with correct secret
-4. Restart Flask: `docker-compose -f docker-compose.dev.yml restart flask-app`
+4. Restart services: `docker compose -f docker-compose.dev.yml restart langchain-agent bloommcp`
 
 ### Issue: Database Connection Error
 
@@ -1218,33 +1110,14 @@ chmod 777 minio_data
 \```bash
 
 # Check if PostgreSQL is running
-
-docker-compose -f docker-compose.dev.yml ps supabase-db
+docker compose ps db-dev
 
 # Check logs
-
-docker-compose -f docker-compose.dev.yml logs supabase-db
+docker compose -f docker-compose.dev.yml logs db-dev
 
 # Restart database
-
-docker-compose -f docker-compose.dev.yml restart supabase-db
+docker compose -f docker-compose.dev.yml restart db-dev
 \```
-
-### Issue: Flask Not Reloading
-
-**Symptom**: Code changes not reflected
-
-**Solution**:
-
-1. Check if Flask debug mode is enabled
-2. Restart Flask container:
-   \```bash
-   docker-compose -f docker-compose.dev.yml restart flask-app
-   \```
-3. Check logs for errors:
-   \```bash
-   docker-compose -f docker-compose.dev.yml logs -f flask-app
-   \```
 
 ### Issue: Next.js Build Errors
 
@@ -1254,16 +1127,13 @@ docker-compose -f docker-compose.dev.yml restart supabase-db
 \```bash
 
 # Clear Next.js cache
-
 rm -rf web/.next
 
 # Reinstall dependencies
-
-pnpm install
+npm ci
 
 # Restart service
-
-docker-compose -f docker-compose.dev.yml restart web
+docker compose -f docker-compose.dev.yml restart web
 \```
 
 ## Git Workflow
@@ -1282,12 +1152,10 @@ Follow Conventional Commits:
 \```bash
 
 # Format
-
 <type>(<scope>): <subject>
 
 # Examples
-
-feat(flask): add video generation endpoint
+feat(langchain): add LangGraph agent endpoint for scan analysis
 fix(web): correct authentication flow
 docs(readme): update setup instructions
 chore(deps): upgrade Next.js to v16
@@ -1298,7 +1166,7 @@ chore(deps): upgrade Next.js to v16
 Install pre-commit hooks:
 
 \```bash
-cd flask && uv run pre-commit install
+cd langchain && uv run pre-commit install
 \```
 
 Hooks run automatically on `git commit`:
@@ -1308,7 +1176,7 @@ Hooks run automatically on `git commit`:
 - Check YAML/TOML
 - Black formatting
 - Ruff linting
-- mypy type checking
+- mypy type checking (recommended locally but NOT currently enforced in CI)
 - Prettier formatting
 
 ## Editor Setup
@@ -1327,24 +1195,27 @@ Recommended extensions:
 Settings (`.vscode/settings.json`):
 \```json
 {
-"python.linting.enabled": true,
-"python.linting.mypyEnabled": true,
-"python.formatting.provider": "black",
-"editor.formatOnSave": true,
-"editor.codeActionsOnSave": {
-"source.fixAll.eslint": true
-}
+  "python.linting.enabled": true,
+  "python.linting.mypyEnabled": true,
+  "python.formatting.provider": "black",
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": true
+  }
 }
 \```
 
 ## Resources
 
-- [Flask Documentation](https://flask.palletsprojects.com/)
+- [FastAPI Documentation](https://fastapi.tiangolo.com/)
+- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
+- [FastMCP Documentation](https://gofastmcp.com/)
 - [Next.js Documentation](https://nextjs.org/docs)
 - [Supabase Documentation](https://supabase.com/docs)
 - [MinIO Documentation](https://min.io/docs/)
 - [Turborepo Documentation](https://turbo.build/repo)
 - [uv Documentation](https://docs.astral.sh/uv/)
+- [Caddy Documentation](https://caddyserver.com/docs/)
 ````
 
 ## Documentation Review Checklist
@@ -1355,13 +1226,14 @@ Settings (`.vscode/settings.json`):
 - [ ] **CLAUDE.md** - AI assistant instructions and project context
 - [ ] **ARCHITECTURE.md** - System design, service architecture
 - [ ] **DEVELOPMENT.md** - Local setup, development workflow
-- [ ] **API.md** or **flask/README.md** - Flask API endpoints
-- [ ] **TESTING.md** - Test strategy, running tests (Phase 2+)
+- [ ] **API.md** or **langchain/README.md** - LangGraph agent and FastMCP API endpoints
+- [ ] **TESTING.md** - Test strategy, running integration tests
 - [ ] **DEPLOYMENT.md** - Production deployment guide
 
 ### Package Documentation
 
-- [ ] **flask/README.md** - Flask app, API endpoints, VideoWriter
+- [ ] **langchain/README.md** - LangGraph agent, API endpoints, tools
+- [ ] **bloommcp/README.md** - FastMCP server, available tools
 - [ ] **web/README.md** - Next.js app, components, routing
 - [ ] **packages/\*/README.md** - Any shared packages
 
@@ -1377,7 +1249,7 @@ Settings (`.vscode/settings.json`):
 
 - [ ] **docker-compose.dev.yml** - Development services
 - [ ] **docker-compose.prod.yml** - Production configuration
-- [ ] **nginx/nginx.conf.template** - Reverse proxy config
+- [ ] **caddy/Caddyfile** - Reverse proxy config
 - [ ] **.env.dev.example** - Environment variable template
 - [ ] **Makefile** - Common commands documented
 
@@ -1424,15 +1296,13 @@ Settings (`.vscode/settings.json`):
 \```bash
 
 # Extract all env vars from code
-
-grep -r "os.environ.get\|process.env" flask/ web/ --include="_.py" --include="_.ts" --include="\*.tsx"
+grep -r "os.environ.get\|process.env" langchain/ bloommcp/ web/ --include="*.py" --include="*.ts" --include="*.tsx"
 
 # Compare with .env.dev.example
 
 # Add missing variables
 
 # Remove unused variables
-
 \```
 
 ## When Documentation is Complete
@@ -1453,7 +1323,6 @@ Documentation is complete when:
 
 - `/lint` - Check code and documentation style
 - `/review-pr` - PR review includes documentation check
-- `/coverage` - Test coverage analysis (Phase 2+)
 - `/openspec/proposal` - Create documentation for new features
 - `/validate-env` - Ensure environment is correct for docs testing
 - `/openspec/apply` - Implement approved changes

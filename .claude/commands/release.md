@@ -13,7 +13,7 @@ Comprehensive workflow for releasing a new version of Bloom packages to npm.
 
 This command guides you through the complete release process, ensuring:
 
-1. All pre-release checks pass (tests, coverage, linting, CI)
+1. All pre-release checks pass (tests, linting, CI)
 2. Version is bumped correctly following semantic versioning
 3. Changes are documented and committed properly
 4. GitHub release is created with appropriate notes
@@ -70,14 +70,12 @@ gh run list --branch main --limit 5
 /lint
 
 # Or manually:
-cd flask && uv run black --check . && uv run ruff check . && uv run mypy .
-pnpm lint && pnpm type-check
+cd langchain && uv run black --check . && uv run ruff check . && uv run mypy .
+cd ../bloommcp && uv run black --check . && uv run ruff check . && uv run mypy .
+npm run lint && cd web && npx tsc --noEmit
 
-# Run coverage analysis (see /coverage command)
-/coverage
-
-# Or manually (Phase 2+):
-cd flask && uv run pytest --cov --cov-fail-under=70
+# Run integration tests
+uv run pytest tests/integration/ -v --tb=short
 
 # Review documentation (see /docs-review command)
 /docs-review --check
@@ -87,10 +85,10 @@ cd flask && uv run pytest --cov --cov-fail-under=70
 
 ```bash
 # Build Next.js app
-pnpm build
+npm run build
 
 # Build Docker images
-docker-compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml build
 
 # Verify images
 docker images | grep bloom
@@ -98,7 +96,7 @@ docker images | grep bloom
 
 **Stop if any checks fail.** Fix issues before proceeding.
 
-**Tip**: Use `/lint`, `/coverage`, and `/docs-review` commands for detailed guidance.
+**Tip**: Use `/lint` and `/docs-review` commands for detailed guidance.
 
 ### Step 2: Determine Version Number and Update Changelog
 
@@ -135,7 +133,7 @@ git log --oneline --no-merges | head -20
 
 **Decision Matrix:**
 
-- New video generation features? → MINOR bump
+- New LangGraph agent or FastMCP features? → MINOR bump
 - Just bug fixes? → PATCH bump
 - Breaking API changes? → MAJOR bump
 
@@ -190,28 +188,28 @@ Check if README or other docs need updates:
 
 ```bash
 # Install dependencies with exact versions
-pnpm install
+npm ci
 
 # Build all packages
-pnpm build
+npm run build
 
 # Build Docker images for deployment
-docker-compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml build
 
 # Verify Docker images
 docker images | grep bloom
 
 # Test prod image runs
-docker-compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml up -d
 # ... test functionality ...
-docker-compose -f docker-compose.prod.yml down
+docker compose -f docker-compose.prod.yml down
 ```
 
 ### Step 7: Commit Version Bump and Changelog
 
 ```bash
 # Stage changes (version and changelog)
-git add package.json web/package.json packages/*/package.json CHANGELOG.md pnpm-lock.yaml
+git add package.json web/package.json packages/*/package.json CHANGELOG.md package-lock.json
 
 # Commit with standard message format
 git commit -m "chore: bump version to v$NEW_VERSION
@@ -250,6 +248,7 @@ $(git log v$CURRENT_VERSION..HEAD --oneline --no-merges | head -20)
 
 - [x] All linting checks pass
 - [x] Type checking passes
+- [x] Integration tests pass
 - [x] Documentation reviewed
 - [x] Docker builds succeed
 - [x] CHANGELOG.md updated
@@ -302,10 +301,10 @@ gh release create v$NEW_VERSION \
 
 \`\`\`bash
 # Pull latest images
-docker-compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml pull
 
 # Restart services
-docker-compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml up -d
 \`\`\`
 
 ### Development Setup
@@ -314,7 +313,7 @@ docker-compose -f docker-compose.prod.yml up -d
 # Clone and install
 git clone <repo-url>
 cd bloom
-pnpm install
+npm install
 
 # Start development servers
 make dev-up
@@ -347,15 +346,16 @@ cd /path/to/bloom
 git pull origin main
 
 # Rebuild and restart services
-docker-compose -f docker-compose.prod.yml build
-docker-compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml up -d
 
 # Verify services are running
-docker-compose -f docker-compose.prod.yml ps
+docker compose ps
 
 # Check logs for errors
-docker-compose -f docker-compose.prod.yml logs --tail=50 flask-app
-docker-compose -f docker-compose.prod.yml logs --tail=50 web
+docker compose -f docker-compose.prod.yml logs --tail=50 langchain-agent
+docker compose -f docker-compose.prod.yml logs --tail=50 bloommcp
+docker compose -f docker-compose.prod.yml logs --tail=50 web
 ```
 
 ### Step 11: Verify Release
@@ -367,11 +367,11 @@ Monitor the release:
 gh release view v$NEW_VERSION
 
 # Test deployed application
-curl https://your-domain.com/api/  # Flask health check
-curl https://your-domain.com/      # Next.js app
+curl https://your-domain.com/api/health  # LangGraph agent health check
+curl https://your-domain.com/           # Next.js app
 
 # Or test locally with prod images
-docker-compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml up -d
 open http://localhost:3000
 ```
 
@@ -412,8 +412,8 @@ PREVIOUS_VERSION=$CURRENT_VERSION
 
 # On production server
 git checkout v$PREVIOUS_VERSION
-docker-compose -f docker-compose.prod.yml build
-docker-compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml up -d
 
 # Mark release as pre-release on GitHub
 gh release edit v$NEW_VERSION --prerelease
@@ -432,7 +432,7 @@ gh release delete v$NEW_VERSION --yes
 ssh production-server
 cd /path/to/bloom
 git checkout v$PREVIOUS_VERSION
-docker-compose -f docker-compose.prod.yml up -d --force-recreate
+docker compose -f docker-compose.prod.yml up -d --force-recreate
 
 # Mark release as problematic
 gh release edit v$NEW_VERSION --prerelease \
@@ -456,8 +456,8 @@ Before each release, verify:
 2. **Type Checking**: No TypeScript or mypy errors
 
    ```bash
-   pnpm type-check
-   cd flask && uv run mypy .
+   cd web && npx tsc --noEmit
+   cd langchain && uv run mypy .
    ```
 
 3. **Documentation**: All docs up to date
@@ -469,7 +469,7 @@ Before each release, verify:
 4. **Docker Builds**: Production images build successfully
 
    ```bash
-   docker-compose -f docker-compose.prod.yml build
+   docker compose -f docker-compose.prod.yml build
    ```
 
 5. **Clean Working Tree**: No uncommitted changes
@@ -491,6 +491,7 @@ Copy this checklist for each release:
 - [ ] CI passing on main branch
 - [ ] Linting checks pass (/lint)
 - [ ] Type checking passes
+- [ ] Integration tests pass
 - [ ] Version number determined (MAJOR.MINOR.PATCH)
 - [ ] CHANGELOG reviewed (git log since last release)
 - [ ] CHANGELOG.md updated
@@ -502,7 +503,7 @@ Copy this checklist for each release:
 - [ ] CHANGELOG.md updated with release date and version
 - [ ] Documentation updated (if needed)
 - [ ] Docker images build successfully
-- [ ] pnpm-lock.yaml updated
+- [ ] package-lock.json updated
 
 ### PR and Review
 
@@ -549,7 +550,7 @@ Copy this checklist for each release:
 
 **Example changes:**
 
-- Fix video generation encoding bug
+- Fix LangGraph agent encoding bug
 - Update README installation instructions
 - Add missing test cases
 - Optimize S3 presigned URL generation
@@ -566,7 +567,7 @@ Copy this checklist for each release:
 **Example changes:**
 
 - Add new database tables for experiments
-- New video processing options
+- New LangGraph agent tools
 - Enhanced authentication flow
 - Additional export formats
 
@@ -592,7 +593,6 @@ Copy this checklist for each release:
 
 ```bash
 /lint              # Check code style
-/coverage          # Verify test coverage (Phase 2+)
 /docs-review       # Review documentation
 /run-ci-locally    # Run full CI suite locally
 ```
@@ -647,15 +647,15 @@ git push origin release/v$NEW_VERSION
 
 ```bash
 # Check Docker build logs
-docker-compose -f docker-compose.prod.yml build --no-cache
+docker compose -f docker-compose.prod.yml build --no-cache
 
 # Common causes:
-# 1. Dependency version conflicts (check package.json, pyproject.toml)
+# 1. Dependency version conflicts (check package.json, requirements.txt)
 # 2. Missing environment variables
 # 3. File permissions in Docker context
 
 # Test build locally before pushing
-docker-compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml build
 ```
 
 ### Issue: Version Mismatch Between Packages
@@ -677,7 +677,7 @@ grep -r '"version":' package.json web/package.json packages/*/package.json
 ```bash
 # Check deployment logs
 ssh production-server
-docker-compose -f docker-compose.prod.yml logs --tail=100
+docker compose -f docker-compose.prod.yml logs --tail=100
 
 # Common issues:
 # 1. Environment variables not set (.env.prod)
@@ -687,7 +687,7 @@ docker-compose -f docker-compose.prod.yml logs --tail=100
 
 # Roll back if needed
 git checkout v$PREVIOUS_VERSION
-docker-compose -f docker-compose.prod.yml up -d --force-recreate
+docker compose -f docker-compose.prod.yml up -d --force-recreate
 ```
 
 ## Best Practices
@@ -715,7 +715,6 @@ docker-compose -f docker-compose.prod.yml up -d --force-recreate
 ## Related Commands
 
 - `/lint` - Run code style checks
-- `/coverage` - Run test coverage analysis
 - `/docs-review` - Review and update documentation
 - `/changelog` - Maintain CHANGELOG.md following Keep a Changelog format
 - `/pr-description` - Template for creating comprehensive PRs
