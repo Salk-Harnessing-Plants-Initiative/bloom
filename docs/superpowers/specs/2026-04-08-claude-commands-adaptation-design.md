@@ -28,7 +28,7 @@ The existing 15 commands were templated with references to the wrong tools and d
 3. **Python linting (Black/Ruff/mypy) is NOT in CI.** CI only runs `pip-audit` for CVE scanning. Commands must not claim Python lint failures block CI.
 4. **CI does NOT run `npm run lint`.** CI runs `npx tsc --noEmit` and `npm run build` for type/build checking, plus `npm audit` for CVE scanning.
 5. **Pre-commit config is broken.** `.pre-commit-config.yaml` targets `^flask/` which doesn't exist. Python hooks silently match no files.
-6. **This project uses self-hosted Supabase via Docker Compose**, not the Supabase CLI local dev stack. Commands like `supabase start`, `supabase status`, `supabase db reset` are NOT applicable.
+6. **Hybrid Supabase setup.** Database runs via Docker Compose (not `supabase start`). Migrations are applied via `psql` in the Makefile (`make apply-migrations-local`), not `supabase db push`. However, `npx supabase gen types typescript` IS used for TypeScript type generation against the running Docker DB. Commands should reference `make` targets and `psql`, not `supabase start`/`supabase db reset`/`supabase db push`.
 7. **CI uses `docker compose` (v2, no hyphen)**, not `docker-compose` (v1).
 
 ## Canonical Glossary
@@ -78,7 +78,10 @@ All adapted commands MUST use these exact terms consistently:
 | `SECRET_KEY=test-secret-key` | Remove or replace with actual env vars | |
 | `DOMAIN_FLASK` | Remove (vestigial) | |
 | Port `5002` as "Flask API" | Remove; Caddy handles routing | |
-| `supabase start` / `supabase status` / `supabase db reset` | `docker compose` equivalents (self-hosted) | **NOT using Supabase CLI** |
+| `supabase start` / `supabase db reset` | `make dev-up` / `make apply-migrations-local` | DB runs via Docker Compose, migrations via psql |
+| `supabase db push` / `supabase db diff` | `make apply-migrations-local` / `make new-migration` | |
+| `supabase status` | `docker compose ps` | |
+| `supabase gen types` | Keep — `npx supabase gen types typescript` IS used (`make gen-types`) | |
 | `docker-compose` (v1 syntax) | `docker compose` (v2 syntax) | Match CI usage |
 | Hypothetical CI jobs (`lint-typescript`, `lint-python`, `type-check`, `test-unit-frontend`, `test-unit-backend`) | Actual jobs: `build-and-audit`, `python-audit`, `docker-build`, `compose-health-check` | |
 | Vitest/Jest unit test references | "No frontend unit tests exist yet" | Document current state accurately |
@@ -238,7 +241,7 @@ grep -ri "FLASK_ENV\|flask-app\|bloom-flask" .claude/commands/ .claude/skills/
 grep -ri "bloom-desktop" .claude/commands/ .claude/skills/
 grep -ri "vitest\|jest" .claude/commands/ .claude/skills/ # (unless explicitly noting they don't exist)
 grep -ri "pytest-flask" .claude/commands/ .claude/skills/
-grep -ri "supabase start\|supabase status\|supabase db reset" .claude/commands/ .claude/skills/
+grep -ri "supabase start\|supabase db reset\|supabase db push" .claude/commands/ .claude/skills/
 grep -ri "bloom-minio" .claude/commands/ .claude/skills/ # should be supabase-minio
 grep -ri "port 5002\|localhost:5002" .claude/commands/ .claude/skills/
 grep -ri "Phase 1\|Phase 2\|Phase 3" .claude/commands/ .claude/skills/
