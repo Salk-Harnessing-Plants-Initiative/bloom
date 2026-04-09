@@ -1,3 +1,10 @@
+---
+name: Review Pull Request
+description: 5-subagent parallel PR review for code quality, testing, scientific rigor, security, and behavioural correctness
+category: Git Workflow
+tags: [pr, review, github, subagent]
+---
+
 # PR Code Review — Subagent Team
 
 You are a senior scientific programmer reviewing a pull request for bloom

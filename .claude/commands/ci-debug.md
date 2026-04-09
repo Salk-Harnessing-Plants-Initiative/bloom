@@ -78,8 +78,7 @@ gh run view <RUN_ID> --log-failed
 # Reproduce the full job
 npm ci
 npm audit --audit-level=critical
-cd web && npx tsc --noEmit
-cd web && npm run build
+cd web && npx tsc --noEmit && npm run build
 ```
 
 **Common failures:**
@@ -98,8 +97,8 @@ cd web && npm run build
 **Debug locally:**
 
 ```bash
-uv run pip-audit -r langchain/requirements.txt
-uv run pip-audit -r bloommcp/requirements.txt
+uv run --with pip-audit pip-audit -r langchain/requirements.txt
+uv run --with pip-audit pip-audit -r bloommcp/requirements.txt
 ```
 
 **Common failures:**
@@ -274,8 +273,8 @@ export CI=true
 npm ci && npm audit --audit-level=critical && cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Phase 2: python-audit
-uv run pip-audit -r langchain/requirements.txt
-uv run pip-audit -r bloommcp/requirements.txt
+uv run --with pip-audit pip-audit -r langchain/requirements.txt
+uv run --with pip-audit pip-audit -r bloommcp/requirements.txt
 
 # Phase 3: docker-build
 docker compose -f docker-compose.prod.yml build

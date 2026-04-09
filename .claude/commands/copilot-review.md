@@ -1,3 +1,10 @@
+---
+name: Copilot Review
+description: View GitHub Copilot inline code review comments and summary for a PR
+category: Git Workflow
+tags: [pr, review, github, copilot]
+---
+
 # View GitHub Copilot Review Comments
 
 **Quick command to view all GitHub Copilot inline code review comments for a PR**

@@ -49,7 +49,7 @@ npm run lint:fix    # Auto-fix issues
 
 Runs via Turborepo across all workspaces that define a `lint` script.
 
-**Config:** `.eslintrc.json` at repo root with `@typescript-eslint`, `eslint-plugin-react`, `eslint-plugin-react-hooks`, `eslint-config-next`, `eslint-config-prettier`.
+**Config:** `.eslintrc.js` at repo root with `@typescript-eslint`, `eslint-plugin-react`, `eslint-plugin-react-hooks`, `eslint-config-next`, `eslint-config-prettier`.
 
 ### Prettier
 

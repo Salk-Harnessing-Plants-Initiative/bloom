@@ -16,7 +16,7 @@ The `pr-checks.yml` workflow runs these jobs:
 | Job | What It Does | Local Equivalent |
 |---|---|---|
 | `build-and-audit` | npm audit, TypeScript check, Next.js build | `npm ci && npm audit && cd web && npx tsc --noEmit && npm run build` |
-| `python-audit` | Python CVE scanning | `uv run pip-audit -r langchain/requirements.txt` |
+| `python-audit` | Python CVE scanning | `uv run --with pip-audit pip-audit -r langchain/requirements.txt` |
 | `docker-build` | Build Docker images + Trivy scan | `docker compose -f docker-compose.prod.yml build` |
 | `compose-health-check` | Full stack integration tests | `make dev-up && uv run pytest tests/integration/` |
 
@@ -27,8 +27,7 @@ Matches the `build-and-audit` job:
 ```bash
 npm ci
 npm audit --audit-level=critical
-cd web && npx tsc --noEmit
-cd web && npm run build
+cd web && npx tsc --noEmit && npm run build
 ```
 
 ## Python Audit (~30s)
@@ -36,8 +35,8 @@ cd web && npm run build
 Matches the `python-audit` job:
 
 ```bash
-uv run pip-audit -r langchain/requirements.txt
-uv run pip-audit -r bloommcp/requirements.txt
+uv run --with pip-audit pip-audit -r langchain/requirements.txt
+uv run --with pip-audit pip-audit -r bloommcp/requirements.txt
 ```
 
 ## Docker Build (~5-10 min)
@@ -106,7 +105,7 @@ npm run format        # Prettier fix
 npm ci && npm audit --audit-level=critical && cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Phase 2: python-audit
-uv run pip-audit -r langchain/requirements.txt && uv run pip-audit -r bloommcp/requirements.txt
+uv run --with pip-audit pip-audit -r langchain/requirements.txt && uv run --with pip-audit pip-audit -r bloommcp/requirements.txt
 
 # Phase 3: docker-build
 docker compose -f docker-compose.prod.yml build

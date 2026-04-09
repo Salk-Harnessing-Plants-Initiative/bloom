@@ -14,15 +14,14 @@ Comprehensive checklist before merging a PR. Phases match the actual CI jobs in 
 ```bash
 npm ci
 npm audit --audit-level=critical
-cd web && npx tsc --noEmit
-cd web && npm run build
+cd web && npx tsc --noEmit && npm run build
 ```
 
 ## Step 2: Python Audit (matches `python-audit` job)
 
 ```bash
-uv run pip-audit -r langchain/requirements.txt
-uv run pip-audit -r bloommcp/requirements.txt
+uv run --with pip-audit pip-audit -r langchain/requirements.txt
+uv run --with pip-audit pip-audit -r bloommcp/requirements.txt
 ```
 
 ## Step 3: Docker Builds (matches `docker-build` job)

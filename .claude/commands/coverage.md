@@ -25,13 +25,13 @@ Bloom currently has **integration tests only** — no frontend unit tests exist 
 uv run pytest tests/integration/ -v --tb=short
 
 # Run with coverage report
-uv run pytest tests/integration/ --cov --cov-report=term-missing -v
+uv run --with pytest-cov pytest tests/integration/ --cov --cov-report=term-missing -v
 
 # Run with HTML coverage report
-uv run pytest tests/integration/ --cov --cov-report=term-missing --cov-report=html -v
+uv run --with pytest-cov pytest tests/integration/ --cov --cov-report=term-missing --cov-report=html -v
 
 # Run with coverage threshold (for future enforcement)
-uv run pytest tests/integration/ --cov --cov-fail-under=70 -v
+uv run --with pytest-cov pytest tests/integration/ --cov --cov-fail-under=70 -v
 
 # Run a specific test file
 uv run pytest tests/integration/test_api_endpoints.py -v --tb=short

@@ -187,7 +187,7 @@ uv run pytest tests/integration/ -v --tb=short
 
 ### TypeScript/JavaScript (ESLint)
 
-**File**: `.eslintrc.json` — extends Next.js and TypeScript configs with `eslint-config-prettier`.
+**File**: `.eslintrc.js` — extends Next.js and TypeScript configs with `eslint-config-prettier`.
 
 ### Python (Black + Ruff)
 
