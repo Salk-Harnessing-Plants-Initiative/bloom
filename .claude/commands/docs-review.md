@@ -682,7 +682,7 @@ make dev-up
 make apply-migrations-local
 
 # 6. Load test data
-cd web && npm run db:init:dev
+cd web && npm run init-env
 \```
 
 ### Daily Development
@@ -897,7 +897,7 @@ docker compose ps
 make apply-migrations-local
 
 # Load test data (optional)
-cd web && npm run db:init:dev
+cd web && npm run init-env
 \```
 
 ### 7. Verify Setup
@@ -991,7 +991,7 @@ docker volume rm bloom_db-data
 # Restart and re-initialize
 make dev-up
 make apply-migrations-local
-cd web && npm run db:init:dev
+cd web && npm run init-env
 \```
 
 ### Clear MinIO Storage
