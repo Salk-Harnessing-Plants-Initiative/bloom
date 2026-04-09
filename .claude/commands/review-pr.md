@@ -1,407 +1,290 @@
+# PR Code Review — Subagent Team
+
+You are a senior scientific programmer reviewing a pull request for bloom
+(Next.js + Supabase + FastAPI/LangGraph + FastMCP + Docker), a plant phenotyping
+web platform used in research environments. You value testing, code quality,
+reproducibility, data integrity, and UX above all else.
+
+## How This Skill Works
+
+This skill launches **5 specialized subagents in parallel** to critically review the PR.
+Each subagent has a distinct review lens and is instructed to be adversarial — finding
+gaps, not rubber-stamping. After all subagents return, synthesize findings into a unified
+review and post it to GitHub.
+
+## Step 1: Gather PR Context
+
+Run the following in parallel to collect everything the subagents need:
+
+```bash
+# Get PR metadata
+gh pr view $PR_NUMBER --json title,body,baseRefName,headRefName,author,labels,files
+
+# Get the full diff
+gh pr diff $PR_NUMBER
+
+# Get CI status
+gh pr checks $PR_NUMBER
+
+# Get any existing Copilot review comments
+gh api graphql -f query='
+query {
+  repository(owner: "Salk-Harnessing-Plants-Initiative", name: "bloom") {
+    pullRequest(number: '$PR_NUMBER') {
+      reviews(first: 10) {
+        nodes {
+          author { login }
+          comments(first: 50) {
+            nodes { path line body }
+          }
+        }
+      }
+    }
+  }
+}
+' --jq '.data.repository.pullRequest.reviews.nodes[] | select(.author.login | contains("opilot")) | .comments.nodes[] | "File: \(.path):\(.line)\n\(.body)"'
+```
+
+Also read any OpenSpec proposal linked in the PR body (look for `openspec/changes/` paths).
+
+## Step 2: Launch Subagent Review Team
+
+Launch ALL 5 subagents in a single message (parallel execution). Embed the full diff,
+PR description, CI status, and Copilot comments in each prompt.
+
 ---
-name: Review Pull Request
-description: Systematic workflow for reviewing PRs with comprehensive checklist
-category: Git Workflow
-tags: [pr, review, github]
+
+### Subagent 1: Code Quality & Architecture
+
+```
+subagent_type: "general-purpose"
+description: "Review code quality and architecture"
+```
+
+**Prompt:**
+
+> You are reviewing a pull request for bloom, a plant phenotyping web platform.
+> Your role: **Code Quality & Architecture Reviewer**.
+> Be adversarial. Read actual source files. Find real problems, not hypotheticals.
+>
+> Architecture overview:
+>
+> - Next.js app (`web/`) — React 19, server/client components, Supabase SSR
+> - Supabase — auth (GoTrue), database (PostgreSQL 15), storage, realtime
+> - LangGraph agent (`langchain/`) — FastAPI + Uvicorn, LangChain tools
+> - FastMCP server (`bloommcp/`) — data analysis, pandas/numpy/scipy
+> - Docker Compose — 16 services, Caddy reverse proxy with auto-HTTPS
+> - Shared packages: `packages/bloom-js`, `packages/bloom-fs`, `packages/bloom-nextjs-auth`
+>
+> **Check:**
+>
+> 1. Naming: camelCase TS, snake_case Python, kebab-case filenames — any violations?
+> 2. Magic numbers/strings — are constants named and co-located?
+> 3. TypeScript: any `any` types? Are API responses fully typed?
+> 4. Server vs client component boundaries — does client code access server-only APIs?
+> 5. Supabase client usage — SSR pattern where appropriate? RLS-aware queries?
+> 6. Error handling — are errors surfaced to the user or silently swallowed?
+> 7. Are there ripple effects in files NOT changed by the PR? (read them)
+> 8. Does the PR introduce dead code, unreachable branches, or stale comments?
+> 9. Are Docker networking changes consistent across dev/prod compose files?
+> 10. Are there any `eslint-disable` comments added? Are they justified?
+>
+> Return: BLOCKING, IMPORTANT, SUGGESTIONS, and overall score 1-10.
+
 ---
 
-# Review Pull Request
+### Subagent 2: Testing Strategy
 
-Systematic workflow for reviewing PRs and responding to comments.
+```
+subagent_type: "general-purpose"
+description: "Review testing strategy"
+```
 
-## Quick Review Commands
+**Prompt:**
+
+> You are reviewing a pull request for bloom.
+> Your role: **Testing Strategy Reviewer**.
+> Be adversarial. Check every claim.
+>
+> **Testing infrastructure:**
+>
+> - **pytest** integration tests: `tests/integration/`, `uv run pytest tests/integration/ -v`
+> - **CI**: `compose-health-check` job runs tests after full Docker stack is healthy
+> - **NO unit tests exist yet** — but TDD is the standard going forward
+> - **NO coverage thresholds enforced** in CI yet
+>
+> **TDD expectations:** New features SHOULD follow TDD (write tests before implementation).
+> Integration tests are the minimum. Unit tests (Vitest for TS, pytest for Python) should
+> be added for pure logic, data transformations, and utilities. Do NOT flag the absence of
+> the test infrastructure itself as BLOCKING, but DO flag if the PR adds complex logic
+> without any tests.
+>
+> **Check:**
+>
+> 1. Were tests written before implementation (TDD)? Evidence: test files in earlier commits?
+> 2. Does new behavior have test coverage (integration or unit)?
+> 3. Are tests specific enough? ("returns 200 with valid data" not "works correctly")
+> 4. Missing tests — error paths, boundary values, concurrent access, NaN/null data?
+> 5. Will tests pass in CI? (integration tests require full Docker stack)
+> 6. Do existing tests break due to the PR? (read `tests/integration/`)
+> 7. For data transformation logic (trait calculations, expression counts): is there a
+>    unit test verifying correctness, or is it only tested end-to-end?
+> 8. Is there a 1:1 mapping between spec scenarios and tests?
+>
+> Return: BLOCKING, IMPORTANT, SUGGESTIONS.
+
+---
+
+### Subagent 3: Scientific Rigor, Data Integrity & UX
+
+```
+subagent_type: "general-purpose"
+description: "Review scientific rigor, data integrity, and UX"
+```
+
+**Prompt:**
+
+> You are reviewing a pull request for bloom, a scientific web platform for plant phenotyping.
+> Your role: **Scientific Rigor, Data Integrity & UX Reviewer**.
+> Be adversarial. Mistakes in data handling can invalidate research.
+>
+> **Domain context:** Bloom tracks cylinder phenotyping (multi-angle plant scans with
+> hundreds of numeric trait columns per scan), scRNA-seq expression data (UMAP clusters,
+> gene counts stored as JSON in Supabase Storage), genome assemblies (JBrowse), and
+> gene candidate tracking for research/patents.
+>
+> **Check:**
+>
+> 1. Does the PR affect Supabase RLS policies? Could a user see another scientist's data?
+> 2. Are phenotyping data writes atomic? Can a partial scan upload leave orphaned records
+>    in `cyl_scans`/`cyl_images`/`cyl_scan_traits`?
+> 3. Plant-scan-trait traceability: can a trait value be traced back to its scan, plant,
+>    wave, and experiment? Are foreign keys maintained?
+> 4. scRNA-seq expression counts are stored as JSON in Supabase Storage — could a partial
+>    upload or failed request corrupt a dataset's count files?
+> 5. Are numeric trait values handled correctly? (NaN, zero-inflation, units, precision)
+> 6. Are destructive actions (delete experiment, remove plant, clear QC labels) guarded?
+> 7. Are `plant_age_days` calculations and growth timeline logic correct?
+> 8. If the PR changes data schemas, is there a migration path for existing records?
+> 9. Are error messages meaningful to scientists (not just developers)?
+> 10. QR code / plant ID uniqueness: could the PR introduce duplicate identifiers?
+>
+> Return: BLOCKING, IMPORTANT, SUGGESTIONS.
+
+---
+
+### Subagent 4: Security
+
+```
+subagent_type: "general-purpose"
+description: "Review security"
+```
+
+**Prompt:**
+
+> You are reviewing a pull request for bloom.
+> Your role: **Security Reviewer**.
+> Be adversarial. Check every input, every policy, every container config.
+>
+> **Check:**
+>
+> 1. Supabase RLS: Are new/modified tables protected? Do policies enforce user scoping?
+> 2. JWT validation: Are protected API routes validating tokens?
+> 3. Docker security: `no-new-privileges`, `cap_drop: ALL`, `read_only` maintained?
+> 4. Caddy TLS: Any changes to Caddyfile that weaken HTTPS?
+> 5. API input validation: Are user inputs sanitized before database queries?
+> 6. MinIO presigned URLs: Are they scoped correctly? Do they expire?
+> 7. Are secrets or credentials logged or exposed in API responses?
+> 8. Are there any new `shell.exec()` or subprocess calls with user input?
+>
+> Return: BLOCKING, IMPORTANT, SUGGESTIONS.
+
+---
+
+### Subagent 5: Behavioural Correctness & Edge Cases
+
+```
+subagent_type: "general-purpose"
+description: "Review behavioural correctness and edge cases"
+```
+
+**Prompt:**
+
+> You are reviewing a pull request for bloom.
+> Your role: **Behavioural Correctness & Edge Case Reviewer**.
+> Be adversarial. Play adversarial user. Try to break the feature.
+>
+> **Check:**
+>
+> 1. Read the PR description's stated behaviour. Does the code actually implement it?
+> 2. Trace the full call chain: Next.js → Supabase → FastAPI → response → render
+> 3. What happens if:
+>    - The feature is triggered by multiple concurrent users?
+>    - A Supabase realtime subscription delivers stale data during an update?
+>    - The LangGraph agent returns an error or streams a partial response?
+>    - A file upload is interrupted midway?
+>    - A Docker container restarts during an operation?
+> 4. Are cleanup functions (useEffect returns, abort controllers) correct?
+> 5. Are there state machine violations — impossible states reachable?
+> 6. Does the Copilot review raise any issues not yet addressed?
+>
+> Return: BLOCKING, IMPORTANT, SUGGESTIONS.
+
+---
+
+## Step 3: Synthesize and Post Review
+
+After ALL subagents return:
+
+**Subagent failure handling:** If any subagent fails to return or returns an error, note it
+explicitly: "Subagent N (Description): DID NOT COMPLETE — treat as BLOCKED pending re-run."
+Do NOT synthesize a passing verdict if any subagent failed. If a subagent result is
+suspiciously short (< 100 words), flag it for re-run.
+
+1. **Deduplicate** overlapping findings
+2. **Prioritize**:
+   - **BLOCKING** — must fix before merge
+   - **IMPORTANT** — should fix before merge
+   - **SUGGESTION** — optional improvements
+3. **Pre-APPROVE check**: Before posting APPROVE, verify:
+   - At least one subagent checked Supabase RLS for any schema changes
+   - No subagent result was empty or suspiciously short
+   - All 5 subagents returned successfully
+4. **Determine verdict**:
+   - `APPROVE` — no blocking issues
+   - `COMMENT` — no blocking issues but important items
+   - `REQUEST_CHANGES` — any blocking issues
+
+5. **Post the review to GitHub**:
+
+> **Note:** GitHub does not allow requesting changes or approving your own PRs.
+> Always attempt the desired action first; if it fails, fall back to `--comment`.
 
 ```bash
-# List open PRs
-gh pr list
+BODY="$(cat <<'EOF'
+## Review Summary
 
-# View specific PR
-gh pr view <number>
+[2-3 sentence overall assessment]
 
-# View PR diff
-gh pr diff <number>
+## Blocking Issues
 
-# Checkout PR locally
-gh pr checkout <number>
+[Must fix before merge]
 
-# View PR checks (CI status)
-gh pr checks <number>
+## Important Issues
 
-# Add review comment
-gh pr review <number> --comment --body "Great work!"
+[Should fix before merge]
 
-# Approve PR
-gh pr review <number> --approve --body "LGTM! Ready to merge."
+## Suggestions
 
-# Request changes
-gh pr review <number> --request-changes --body "Please address the following..."
+[Optional improvements]
 
-# View review comments
-gh pr view <number> --comments
+---
+*Review by Claude Code subagent team (Code Quality · Testing · Scientific Rigor · Security · Behavioural Correctness)*
+EOF
+)"
+
+gh pr review $PR_NUMBER --request-changes -b "$BODY" 2>&1 || \
+gh pr review $PR_NUMBER --comment -b "$(printf '> **Verdict: REQUEST_CHANGES** (posted as comment — GitHub does not allow requesting changes on your own PR)\n\n%s' "$BODY")"
 ```
 
-## Review Checklist
-
-### 1. Initial Review
-
-- [ ] **Read PR description** - Understand purpose, scope, and context
-- [ ] **Check CI status** - Don't review if tests/linting are failing
-- [ ] **Review linked issues** - Verify PR addresses the issue correctly
-- [ ] **Check files changed** - Ensure changes are scoped appropriately
-
-### 2. Code Quality
-
-#### General
-
-- [ ] Code follows TypeScript/Python conventions
-- [ ] Functions have clear, single responsibilities
-- [ ] Variable/function names are descriptive and consistent
-- [ ] No commented-out code or debug logs
-- [ ] Error handling is appropriate and comprehensive
-- [ ] No hardcoded values that should be environment variables
-
-#### Python (Flask)
-
-- [ ] Type hints on all function signatures
-- [ ] Proper use of snake_case naming
-- [ ] Docstrings for complex functions
-- [ ] No `print()` statements (use logging)
-- [ ] Proper exception handling with specific exception types
-
-#### TypeScript (Next.js)
-
-- [ ] No `any` types (except where absolutely necessary with justification)
-- [ ] Proper use of interfaces/types
-- [ ] Const assertions where appropriate
-- [ ] Proper async/await error handling
-
-### 3. Type Safety
-
-#### Python
-
-- [ ] mypy type checking passes
-- [ ] Type hints match actual usage
-- [ ] No `# type: ignore` comments without explanation
-
-#### TypeScript
-
-- [ ] Strict null checks enforced
-- [ ] Type exports in appropriate locations
-- [ ] No implicit `any` in functions
-- [ ] Generics used correctly
-
-### 4. Testing
-
-- [ ] New features have test coverage
-- [ ] Tests are clear and descriptive
-- [ ] Edge cases are tested
-- [ ] Error paths are tested
-- [ ] Coverage meets 70% threshold (Flask)
-- [ ] Critical paths have 100% coverage (video generation, S3, auth)
-- [ ] Tests don't have hardcoded credentials or secrets
-- [ ] External services are properly mocked
-
-#### Flask Testing
-
-- [ ] pytest fixtures used appropriately
-- [ ] Mock boto3 for S3 operations
-- [ ] Mock Supabase client for database operations
-- [ ] Test both success and failure cases
-
-#### Frontend Testing (when configured)
-
-- [ ] Component tests for new components
-- [ ] Integration tests for user workflows
-- [ ] Accessibility tests included
-
-### 5. Documentation
-
-- [ ] Complex algorithms have comments explaining approach
-- [ ] Public API functions have docstrings/JSDoc
-- [ ] README updated if new features/commands added
-- [ ] Breaking changes clearly documented
-- [ ] Environment variables documented
-- [ ] Deployment notes included if infrastructure changes
-
-### 6. Monorepo Structure
-
-- [ ] Changes are in correct package (flask/, web/, packages/)
-- [ ] Dependencies properly declared in package.json/pyproject.toml
-- [ ] No circular dependencies introduced
-- [ ] turbo.json updated if new tasks added
-- [ ] Build order is correct (dependsOn in turbo.json)
-
-### 7. Security & Privacy
-
-- [ ] No sensitive data logged
-- [ ] No secrets in code or committed files
-- [ ] Authentication required on protected endpoints
-- [ ] Proper JWT validation
-- [ ] RLS policies maintained (if Supabase changes)
-- [ ] User permissions checked
-- [ ] Input validation on all user inputs
-- [ ] SQL injection prevention (parameterized queries)
-
-#### Flask Security
-
-- [ ] JWT token validation on protected routes
-- [ ] Proper 401/403 responses for unauthorized access
-- [ ] No SQL injection vulnerabilities
-- [ ] S3 bucket permissions correct
-
-#### Supabase Security
-
-- [ ] RLS policies enabled on all tables
-- [ ] User-scoped queries (users see only their data)
-- [ ] Sensitive data encrypted
-- [ ] No direct SQL string concatenation
-
-### 8. Performance
-
-#### Backend
-
-- [ ] Database queries are efficient
-- [ ] Proper indexing on queried columns
-- [ ] No N+1 query problems
-- [ ] Large file operations chunked appropriately
-- [ ] Connection pooling considered
-
-#### Frontend
-
-- [ ] No unnecessary re-renders (check useEffect deps)
-- [ ] Proper use of React.memo/useMemo/useCallback
-- [ ] Images optimized (Next.js Image component)
-- [ ] Code splitting where appropriate
-- [ ] No blocking operations in render
-
-### 9. Flask API Specific
-
-- [ ] Routes follow RESTful conventions
-- [ ] Proper HTTP status codes (200, 201, 400, 401, 404, 500)
-- [ ] Request validation (input types, required fields)
-- [ ] Response format consistent (JSON)
-- [ ] Pagination for large datasets
-- [ ] Rate limiting considered for public endpoints
-
-### 10. Next.js Frontend Specific
-
-- [ ] Server-side rendering used appropriately
-- [ ] Client-side state management clean (hooks, context)
-- [ ] API calls error handling
-- [ ] Loading states shown to users
-- [ ] Material-UI components used correctly
-- [ ] Responsive design (mobile + desktop)
-- [ ] Accessibility: ARIA labels, keyboard navigation
-
-### 11. Docker/Infrastructure
-
-- [ ] docker-compose.dev.yml and docker-compose.prod.yml in sync
-- [ ] Environment variables documented
-- [ ] Volume mounts correct
-- [ ] Service dependencies correct (depends_on)
-- [ ] Health checks configured
-- [ ] Port conflicts avoided
-
-### 12. Database Migrations
-
-- [ ] Migration file follows naming convention
-- [ ] Migration tested locally
-- [ ] Rollback script provided
-- [ ] No data loss in migration
-- [ ] Indexes added for performance
-- [ ] RLS policies updated
-
-## Review Response Workflow
-
-### As a Reviewer
-
-1. **Read the PR description** - Understand the purpose and scope
-2. **Check CI status** - Don't review if CI is failing
-3. **Review diff file by file** - Start with test files to understand intent
-4. **Checkout locally** - Run tests and try the feature
-5. **Leave specific comments** - Reference line numbers, suggest alternatives
-6. **Approve or request changes** - Be clear and constructive
-
-### As a PR Author
-
-1. **Address all comments** - Don't ignore any feedback
-2. **Respond to each comment** - Explain your reasoning or agree to change
-3. **Push fixes** - Make requested changes in new commits
-4. **Mark resolved** - Resolve conversations after addressing
-5. **Request re-review** - Notify reviewers when ready (`gh pr review --request`)
-
-## Example Review Comments
-
-### Good Comments
-
-```markdown
-**Line 42 (app.py)**: Consider using `Path.exists()` instead of try/except for
-file existence check - it's more explicit and easier to read.
-
-**Line 87 (videoWriter.py)**: The decimation factor of 4 is hardcoded here.
-Should this be a parameter to allow different decimation rates?
-
-**tests/test_video.py**: Great test coverage on the VideoWriter class! Could you
-add a test case for when the S3 bucket is unavailable to verify retry logic?
-
-**General**: Excellent work on the video generation feature! The code is clean and
-well-tested. Just a few minor suggestions above regarding error handling.
-```
-
-### Less Helpful Comments
-
-```markdown
-This doesn't look right. ❌
-Why did you do it this way? ❌
-Use Path instead. ❌
-Too much code. ❌
-```
-
-**Better versions:**
-
-```markdown
-This error handling might not catch all cases. Consider also handling OSError. ✓
-What's the reasoning behind using recursion here? Iterative might be clearer. ✓
-Using Path.exists() would be more explicit than try/except here. ✓
-This function is doing multiple things. Consider splitting into smaller functions. ✓
-```
-
-## GitHub CLI Review Examples
-
-```bash
-# Start a review
-gh pr review 27 --comment --body "Starting review..."
-
-# Approve with message
-gh pr review 27 --approve --body "LGTM! Great test coverage on the video generation logic. The error handling looks solid."
-
-# Request changes
-gh pr review 27 --request-changes --body "Please address the comments about error handling in videoWriter.py and add tests for S3 retry logic."
-
-# View review comments
-gh pr view 27 --comments
-
-# Respond to review as author
-gh pr comment 27 --body "✅ Addressed all review comments. Added S3 retry tests and improved error handling."
-```
-
-## Responding to Review Comments
-
-```bash
-# View PR with comments
-gh pr view 27 --comments
-
-# Checkout PR to make fixes
-gh pr checkout 27
-
-# Make changes, commit, push
-git add .
-git commit -m "fix: address review comments on error handling"
-git push
-
-# Notify reviewer
-gh pr comment 27 --body "✅ Addressed all review comments:
-- Added Path.exists() checks (line 42)
-- Made decimation factor configurable (line 87)
-- Added S3 retry test (test_video.py:156)
-
-Ready for re-review!"
-```
-
-## Common Review Patterns for Bloom
-
-### Pattern 1: Flask API Changes
-
-When reviewing Flask API changes:
-
-1. **Check authentication** - All protected endpoints validate JWT
-2. **Verify S3 operations** - Proper error handling, retry logic, cleanup
-3. **Test coverage** - Core logic has 100%, endpoints have 80%+
-4. **Type hints** - All functions have proper type annotations
-5. **Error responses** - Proper HTTP status codes and error messages
-
-### Pattern 2: Video Generation Changes
-
-When reviewing video generation code:
-
-1. **Memory efficiency** - Large videos don't consume too much memory
-2. **File cleanup** - Temporary files are deleted after processing
-3. **S3 integration** - Images fetched correctly, videos uploaded successfully
-4. **Error handling** - Missing images, network failures, codec errors
-5. **Configuration** - FPS, decimation, resolution are configurable
-
-### Pattern 3: Database Schema Changes
-
-When reviewing Supabase migrations:
-
-1. **RLS policies** - User-scoped access maintained
-2. **Migrations** - Up and down migrations provided
-3. **Data integrity** - Foreign keys, constraints properly defined
-4. **Performance** - Indexes on queried columns
-5. **Security** - Sensitive data encrypted, no SQL injection
-
-### Pattern 4: Next.js Component Changes
-
-When reviewing React components:
-
-1. **Type safety** - Props interfaces defined, no implicit `any`
-2. **Accessibility** - ARIA labels, keyboard navigation, semantic HTML
-3. **Responsive** - Works on mobile and desktop
-4. **Material-UI** - Uses theme properly, follows design system
-5. **Performance** - No unnecessary re-renders, proper memoization
-
-### Pattern 5: Docker/Infrastructure Changes
-
-When reviewing Docker changes:
-
-1. **Both environments** - dev and prod configs updated
-2. **Environment variables** - All required vars documented
-3. **Testing** - Changes tested with `make dev-up` and `make prod-up`
-4. **Networking** - Services communicate correctly, ports documented
-5. **Volumes** - Data persistence correct, no data loss
-
-## When to Request Changes vs Comment
-
-### Request Changes (Blocking Issues)
-
-- Type errors or linting failures
-- Failing tests or missing test coverage
-- Security vulnerabilities
-- Incorrect algorithms or logic errors
-- Breaking changes without migration path
-- Missing RLS policies on database tables
-
-### Comment (Non-Blocking Suggestions)
-
-- Style improvements (unless violating standards)
-- Performance optimizations (unless critical)
-- Refactoring suggestions
-- Nice-to-have features
-- Questions about approach
-
-## Escalation
-
-If a PR discussion is getting stuck:
-
-1. **Jump on a call** - Discuss synchronously
-2. **Create a GitHub Discussion** - For architectural questions
-3. **Update project.md or CLAUDE.md** - Document decision for future reference
-4. **Bring in another reviewer** - Get third opinion
-
-## Tips for Effective Reviews
-
-1. **Be timely** - Review within 24 hours if possible
-2. **Be specific** - Reference line numbers, suggest concrete alternatives
-3. **Be kind** - Assume positive intent, use constructive language
-4. **Test locally** - Don't just read code, run it
-5. **Focus on substance** - Don't nitpick style (Prettier handles that)
-6. **Explain why** - Help the author learn, don't just point out issues
-7. **Approve quickly** - If it's good, say so and approve
-8. **Ask questions** - "Why X?" is better than "X is wrong"
-
-## Related Commands
-
-- `/pre-merge` - Comprehensive pre-merge checklist for PR authors
-- `/pr-description` - Generate comprehensive PR description
-- `/run-ci-locally` - Run CI checks before requesting review
-- `/docs-review` - Review documentation changes
+6. After posting, show the user the full synthesized review and the GitHub link.
