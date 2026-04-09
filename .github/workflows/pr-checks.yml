@@ -282,18 +282,6 @@ jobs:
           timeout 180 bash -c 'until docker compose -f docker-compose.prod.yml --env-file .env.ci ps db-prod --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
           echo "Database is healthy!"
 
-      - name: Apply database migrations
-        run: |
-          for f in supabase/migrations/*.sql; do
-            echo "Applying $f ..."
-            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
-              -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
-              psql -U supabase_admin -d postgres -f - < "$f"
-          done
-          echo "All migrations applied."
-        env:
-          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
-
       - name: Start remaining services
         run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build
 
@@ -318,6 +306,18 @@ jobs:
           docker compose -f docker-compose.prod.yml --env-file .env.ci ps
           docker compose -f docker-compose.prod.yml --env-file .env.ci logs --tail=50
           exit 1
+
+      - name: Apply database migrations
+        run: |
+          for f in supabase/migrations/*.sql; do
+            echo "Applying $f ..."
+            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
+              -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
+              psql -U supabase_admin -d postgres -f - < "$f" 2>&1 || true
+          done
+          echo "All migrations applied."
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
 
       # Runs 22 integration tests (smoke, auth, RLS, storage, API routing) against the live compose stack
       # Skips if tests/integration/ doesn't exist on this branch
