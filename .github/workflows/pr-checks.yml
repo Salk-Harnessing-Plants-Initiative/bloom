@@ -286,10 +286,13 @@ jobs:
         run: |
           for f in supabase/migrations/*.sql; do
             echo "Applying $f ..."
-            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T db-prod \
+            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
+              -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
               psql -U supabase_admin -d postgres -f - < "$f"
           done
           echo "All migrations applied."
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
 
       - name: Start remaining services
         run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build
