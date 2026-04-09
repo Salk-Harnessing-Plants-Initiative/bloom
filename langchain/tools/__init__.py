@@ -50,6 +50,12 @@ from .cyl_tools import (
     get_plant_scan_history_tool,
 )
 
+from .context_tools import (
+    context_tools,
+    get_agent_context,
+    list_available_tools,
+)
+
 # Combined tool lists for convenience
 all_tools = generic_tools + scrna_tools + cyl_tools
 
@@ -90,6 +96,10 @@ __all__ = [
     "list_scanners_tool",
     "list_phenotypers_tool",
     "get_plant_scan_history_tool",
+    # Context tools
+    "context_tools",
+    "get_agent_context",
+    "list_available_tools",
     # Utilities
     "REST_URL",
     "get_headers",
