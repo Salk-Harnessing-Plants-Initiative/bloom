@@ -7,254 +7,166 @@ tags: [lint, format, code-quality]
 
 # Lint & Format Code
 
-Run linting and formatting checks across the Bloom monorepo to ensure code quality and consistent style.
+Run linting and formatting checks across the Bloom monorepo.
 
 ## Quick Commands
 
-### Python (Flask API)
-
 ```bash
-# Format Python code with Black
-cd flask && uv run black .
+# TypeScript/JavaScript
+npm run lint                   # ESLint via Turborepo
+npm run lint:fix               # ESLint auto-fix
+npm run format                 # Prettier auto-format
+npm run format:check           # Prettier check only
 
-# Check formatting without making changes
-cd flask && uv run black --check .
+# TypeScript type checking (no script exists — run directly)
+cd web && npx tsc --noEmit
 
-# Run Ruff linter (with auto-fix)
-cd flask && uv run ruff check --fix .
+# Python — the LangGraph agent (langchain/)
+cd langchain && uv run black --check .
+cd langchain && uv run ruff check .
+cd langchain && uv run mypy . --ignore-missing-imports
 
-# Run Ruff linter (check only)
-cd flask && uv run ruff check .
+# Python — the FastMCP server (bloommcp/)
+cd bloommcp && uv run black --check .
+cd bloommcp && uv run ruff check .
+cd bloommcp && uv run mypy . --ignore-missing-imports
 
-# Run mypy type checking
-cd flask && uv run mypy .
+# All Python services at once
+cd langchain && uv run black --check . && uv run ruff check . && cd ../bloommcp && uv run black --check . && uv run ruff check .
 
-# Run all Python checks
-cd flask && uv run black . && uv run ruff check --fix . && uv run mypy .
+# Pre-commit hooks (runs all configured checks)
+uv run pre-commit run --all-files
 ```
 
-### JavaScript/TypeScript (Next.js Web)
-
-```bash
-# Format code with Prettier
-pnpm format
-
-# Check formatting without making changes
-pnpm format:check
-
-# Run ESLint
-pnpm lint
-
-# Fix ESLint issues automatically
-pnpm lint:fix
-
-# Run TypeScript type checking
-pnpm type-check
-```
-
-### Pre-commit Hooks
-
-```bash
-# Run all pre-commit hooks manually (from repo root)
-cd flask && uv run pre-commit run --all-files
-
-# Run pre-commit on staged files only
-cd flask && uv run pre-commit run
-
-# Update pre-commit hook versions
-cd flask && uv run pre-commit autoupdate
-
-# Install pre-commit hooks (one-time setup)
-cd flask && uv run pre-commit install
-```
-
-## Configuration Files
-
-Our linting configuration is defined in:
-
-- **Python**:
-
-  - `flask/pyproject.toml` - Black, Ruff, mypy, pytest config
-  - `.pre-commit-config.yaml` - Pre-commit hook definitions
-
-- **JavaScript/TypeScript**:
-  - `.eslintrc.js` - ESLint rules for Next.js, React, TypeScript
-  - `.prettierrc.json` - Prettier formatting rules
-  - `turbo.json` - Monorepo task definitions
-
-## Python Linting Details
-
-### Black (Code Formatter)
-
-- **Line length**: 88 characters
-- **Target**: Python 3.11
-- **Config**: `[tool.black]` in `flask/pyproject.toml`
-
-### Ruff (Linter)
-
-- **Checks**: pycodestyle (E/W), pyflakes (F), isort (I), bugbear (B), comprehensions (C4), pyupgrade (UP)
-- **Line length**: 88 characters
-- **Config**: `[tool.ruff]` in `flask/pyproject.toml`
-
-### mypy (Type Checker)
-
-- **Strict mode**: Relaxed for Phase 1 (existing code without full type annotations)
-- **Checks**: return types, unused configs, warn on issues
-- **Config**: `[tool.mypy]` in `flask/pyproject.toml`
-- **Note**: `disallow_untyped_defs` and `strict_optional` are currently disabled for existing code. Will enable in Phase 2.
-
-## JavaScript/TypeScript Linting Details
+## TypeScript/JavaScript Linting
 
 ### ESLint
 
-- **Extends**: Next.js, React, TypeScript recommended configs
-- **Prettier integration**: Disabled conflicting rules
-- **Config**: `.eslintrc.js`
+```bash
+npm run lint        # Check for issues
+npm run lint:fix    # Auto-fix issues
+```
+
+Runs via Turborepo across all workspaces that define a `lint` script.
+
+**Config:** `.eslintrc.json` at repo root with `@typescript-eslint`, `eslint-plugin-react`, `eslint-plugin-react-hooks`, `eslint-config-next`, `eslint-config-prettier`.
 
 ### Prettier
 
-- **Line length**: 100 characters
-- **Style**: Single quotes, no semicolons, trailing commas (ES5)
-- **Config**: `.prettierrc.json`
-
-## Monorepo Context
-
-Our Turborepo workspace has several packages that linting applies to:
-
-- **flask/**: Python Flask API (black, ruff, mypy)
-- **web/**: Next.js frontend (prettier, eslint, tsc)
-- **packages/bloom-fs/**: File system utilities (prettier, eslint, tsc)
-- **packages/bloom-js/**: Shared JavaScript utilities (prettier, eslint, tsc)
-- **packages/bloom-nextjs-auth/**: Auth helpers (prettier, eslint, tsc)
-
-## Common Issues & Fixes
-
-### Python
-
-**Issue**: Import order errors from Ruff
-
 ```bash
-# Auto-fix with Ruff
-cd flask && uv run ruff check --fix .
+npm run format         # Auto-format all files
+npm run format:check   # Check only (no changes)
 ```
 
-**Issue**: Type errors from mypy
+**Config:** `.prettierrc.json` — no semicolons, single quotes, 2-space indent, trailing commas (es5), 100 char width.
+
+### TypeScript Type Checking
 
 ```bash
-# Add type hints to functions
-def process_image(image_path: str) -> bool:
-    # ... implementation
+cd web && npx tsc --noEmit
 ```
 
-**Issue**: Line too long
+**Note:** There is no `type-check` script in `package.json`. Run `tsc` directly in the `web/` directory.
+
+## Python Linting
+
+Python linting applies to two services: the LangGraph agent (`langchain/`) and the FastMCP server (`bloommcp/`).
+
+### Black (Formatter)
 
 ```bash
-# Black will auto-format, or break the line manually
-# Before: some_function(argument1, argument2, argument3, argument4, argument5)
-# After:
-some_function(
-    argument1,
-    argument2,
-    argument3,
-    argument4,
-    argument5,
-)
+cd langchain && uv run black --check .   # Check only
+cd langchain && uv run black .           # Auto-format
+
+cd bloommcp && uv run black --check .    # Check only
+cd bloommcp && uv run black .            # Auto-format
 ```
 
-### JavaScript/TypeScript
-
-**Issue**: Prettier formatting conflicts
+### Ruff (Linter)
 
 ```bash
-# Run Prettier to auto-fix
-pnpm format
+cd langchain && uv run ruff check .          # Check only
+cd langchain && uv run ruff check --fix .    # Auto-fix
+
+cd bloommcp && uv run ruff check .           # Check only
+cd bloommcp && uv run ruff check --fix .     # Auto-fix
 ```
 
-**Issue**: ESLint errors
+### mypy (Type Checker)
 
 ```bash
-# Auto-fix where possible
-pnpm lint:fix
-
-# For remaining errors, fix manually
+cd langchain && uv run mypy . --ignore-missing-imports
+cd bloommcp && uv run mypy . --ignore-missing-imports
 ```
 
-**Issue**: TypeScript type errors
+Uses `--ignore-missing-imports` because some data science libraries (scipy, scikit-learn, statsmodels, seaborn, umap-learn) lack type stubs.
+
+## Pre-commit Hooks
+
+`.pre-commit-config.yaml` runs these hooks automatically on `git commit`:
+
+- **General:** trailing-whitespace, end-of-file-fixer, check-yaml, check-added-large-files, check-merge-conflict, check-toml
+- **Python:** Black, Ruff, mypy targeting `^(langchain|bloommcp)/`
+- **JS/TS:** Prettier on `.(js|jsx|ts|tsx|json|md)$`
 
 ```bash
-# Run type-check to see all errors
-pnpm type-check
+# Run all hooks manually
+uv run pre-commit run --all-files
 
-# Fix by adding proper type annotations
+# Install hooks (first time)
+uv run pre-commit install
 ```
 
-## Pre-commit Hook Integration
+## CI Context
 
-When you commit code, pre-commit hooks automatically run:
+**Important:** Python linting (Black, Ruff, mypy) is recommended locally but **NOT currently enforced in CI**.
 
-1. **Trailing whitespace**: Removed
-2. **End of file fixer**: Ensures newline at EOF
-3. **YAML/TOML check**: Validates syntax
-4. **Black**: Formats Python code
-5. **Ruff**: Lints and fixes Python code
-6. **mypy**: Type checks Python code (Flask only)
-7. **Prettier**: Formats JS/TS/JSON/MD files
+What CI actually checks:
+- `build-and-audit` job: `npm audit --audit-level=critical`, `npx tsc --noEmit` (type check), `npm run build` (Next.js build)
+- `python-audit` job: `pip-audit` for CVE scanning only (no Black/Ruff/mypy)
 
-If any hook fails, the commit is blocked. Fix the issues and try again.
+## Common Issues
 
-## Workflow
+### ESLint errors
 
-### Before Committing
+```bash
+# See all errors with details
+npm run lint 2>&1 | head -50
 
-1. **Run linters manually** to catch issues early
-2. **Fix any errors** reported by linters
-3. **Run pre-commit** to ensure hooks will pass
-4. **Stage changes** with `git add`
-5. **Commit** - hooks run automatically
+# Auto-fix what can be fixed
+npm run lint:fix
+```
 
-### Continuous Integration
+### Prettier formatting
 
-Once Phase 1 CI/CD is merged, GitHub Actions will:
+```bash
+# Check what would change
+npm run format:check
 
-- Run linting on all PRs
-- Block merge if linting fails
-- Ensure consistent code quality across the team
+# Fix all formatting
+npm run format
+```
 
-## Tips
+### Python formatting
 
-1. **Use uv for Python tools**: Always use `uv run` to ensure correct virtual environment
-2. **Run linters frequently**: Catch issues early, don't wait for pre-commit
-3. **Auto-fix when possible**: Use `--fix` flags to save time
-4. **Configure your editor**: Set up Black/Prettier/ESLint in your IDE for real-time feedback
-5. **Don't fight the formatter**: Accept Black/Prettier's decisions to maintain consistency
+```bash
+# Fix all Python formatting in both services
+cd langchain && uv run black . && uv run ruff check --fix . && cd ../bloommcp && uv run black . && uv run ruff check --fix .
+```
 
-## Editor Integration
+### Pre-commit hook failures
 
-### VS Code
+```bash
+# Update hooks
+uv run pre-commit autoupdate
 
-Install these extensions:
-
-- **Python**: ms-python.python (includes Black, Ruff, mypy support)
-- **ESLint**: dbaeumer.vscode-eslint
-- **Prettier**: esbenp.prettier-vscode
-
-Configure settings:
-
-```json
-{
-  "editor.formatOnSave": true,
-  "python.formatting.provider": "black",
-  "python.linting.ruffEnabled": true,
-  "python.linting.mypyEnabled": true,
-  "editor.defaultFormatter": "esbenp.prettier-vscode",
-  "[python]": {
-    "editor.defaultFormatter": "ms-python.python"
-  }
-}
+# Clean and reinstall
+uv run pre-commit clean
+uv run pre-commit install
 ```
 
 ## Related Commands
 
-- `/fix-formatting` - Auto-fix formatting issues instead of just checking
-- `/run-ci-locally` - Run full CI suite including linting
-- `/validate-env` - Ensure linting tools are installed correctly
+- `/fix-formatting` — auto-fix all formatting issues
+- `/run-ci-locally` — run the full CI pipeline locally
+- `/pre-merge` — comprehensive pre-merge checklist
