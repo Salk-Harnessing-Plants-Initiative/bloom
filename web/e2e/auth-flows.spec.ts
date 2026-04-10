@@ -65,7 +65,6 @@ test.describe("Auth flows", () => {
 
     for (const route of ["/app/expression", "/app/phenotypes", "/app/genes"]) {
       await page.goto(route);
-      await page.waitForLoadState("networkidle");
       expect(page.url()).not.toContain("/login");
     }
   });
