@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 
 type Message = { from: "user" | "bot"; text: string };
-type Provider = "openai" | "local";
+type Provider = "local";
 type ToolSet = "all" | "scrna" | "cyl" | "generic" | "";
 
 interface MCPTool {
@@ -34,12 +34,10 @@ const TOOL_SET_OPTIONS: { value: ToolSet; label: string; description: string }[]
 ];
 
 const AVAILABLE_MODELS: Record<Provider, string[]> = {
-  openai: ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"],
   local: ["Qwen/Qwen3-8B"],
 };
 
 const PROVIDER_LABELS: Record<Provider, string> = {
-  openai: "OpenAI",
   local: "Local LLM",
 };
 
@@ -514,20 +512,6 @@ export default function MCPChat() {
               ))}
             </select>
 
-            {settings.provider === "openai" && (
-              <div
-                style={{
-                  marginTop: 10,
-                  padding: 10,
-                  background: "#eff6ff",
-                  borderRadius: 8,
-                  fontSize: 11,
-                  color: "#1d4ed8",
-                }}
-              >
-                OpenAI API key is configured on the server.
-              </div>
-            )}
 
             {settings.provider === "local" && (
               <div

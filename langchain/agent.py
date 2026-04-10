@@ -222,7 +222,6 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
 
 
 AVAILABLE_MODELS = {
-    "openai": ["gpt-4o"],
     "local": ["Qwen/Qwen3.5-9B"],
 }
 
