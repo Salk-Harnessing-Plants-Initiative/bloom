@@ -276,9 +276,8 @@ EOF
 # Wait for review and CI checks
 gh pr checks --watch
 
-# After approval, merge
-echo "Request review from maintainers, then merge when approved"
-gh pr merge --squash --delete-branch
+# After approval, the maintainer merges manually via GitHub UI
+echo "Request review from maintainers, then they merge when approved"
 ```
 
 ### Step 9: Create GitHub Release
