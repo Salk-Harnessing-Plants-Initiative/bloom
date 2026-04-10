@@ -85,7 +85,7 @@ uv run pytest tests/integration/ -v --tb=short
 
 ```bash
 # Build Next.js app
-npm run build
+cd web && npm run build && cd ..
 
 # Build Docker images
 docker compose -f docker-compose.prod.yml build
@@ -191,7 +191,7 @@ Check if README or other docs need updates:
 npm ci
 
 # Build all packages
-npm run build
+cd web && npm run build && cd ..
 
 # Build Docker images for deployment
 docker compose -f docker-compose.prod.yml build

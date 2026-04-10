@@ -1051,7 +1051,8 @@ npm run format
 npm run lint
 
 # Run all pre-commit hooks
-cd langchain && uv run pre-commit run --all-files
+# Run all pre-commit hooks (from repo root)
+uv run pre-commit run --all-files
 \```
 
 ## Troubleshooting
@@ -1166,7 +1167,8 @@ chore(deps): upgrade Next.js to v16
 Install pre-commit hooks:
 
 \```bash
-cd langchain && uv run pre-commit install
+# Install from repo root (config is at .pre-commit-config.yaml)
+uv run pre-commit install
 \```
 
 Hooks run automatically on `git commit`:

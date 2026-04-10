@@ -20,8 +20,8 @@ cd web && npx tsc --noEmit && npm run build
 ## Step 2: Python Audit (matches `python-audit` job)
 
 ```bash
-uv run --with pip-audit pip-audit -r langchain/requirements.txt
-uv run --with pip-audit pip-audit -r bloommcp/requirements.txt
+uv tool run pip-audit -r langchain/requirements.txt
+uv tool run pip-audit -r bloommcp/requirements.txt
 ```
 
 ## Step 3: Docker Builds (matches `docker-build` job)
@@ -33,11 +33,11 @@ docker compose -f docker-compose.prod.yml build
 ## Step 4: Integration Tests (matches `compose-health-check` job)
 
 ```bash
-make dev-up
-# Wait for services to be healthy
-docker compose -f docker-compose.dev.yml ps
-uv run pytest tests/integration/ -v --tb=short
-make dev-down
+make prod-up
+# Wait for services to be healthy (CI uses prod stack with Caddy routing)
+docker compose -f docker-compose.prod.yml ps
+uv run --with pytest pytest tests/integration/ -v --tb=short
+make prod-down
 ```
 
 ## Step 5: PR Status on GitHub
@@ -101,7 +101,7 @@ For small changes, the minimum checks:
 cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Integration tests (if applicable)
-uv run pytest tests/integration/ -v --tb=short
+uv run --with pytest pytest tests/integration/ -v --tb=short
 ```
 
 ## Pre-Merge Checklist

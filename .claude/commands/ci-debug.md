@@ -18,7 +18,7 @@ Guide for debugging CI failures in Bloom (Next.js + FastAPI/LangGraph + FastMCP 
 | `build-and-audit` | npm CVE audit, TypeScript check, Next.js build | `npm ci`, `npm audit --audit-level=critical`, `npx tsc --noEmit`, `npm run build` |
 | `python-audit` | Python CVE scanning | `pip-audit -r langchain/requirements.txt`, `pip-audit -r bloommcp/requirements.txt` |
 | `docker-build` | Build + Trivy scan Docker images | Build `bloom-web`, `langchain-agent`, `bloommcp`; Trivy CRITICAL gate |
-| `compose-health-check` | Full stack integration tests | Start prod compose, wait 180s for health, `uv run pytest tests/integration/` |
+| `compose-health-check` | Full stack integration tests | Start prod compose, wait 180s for health, `uv run --with pytest pytest tests/integration/` |
 | `extract-pinned-images` | Extract pinned images for matrix scan | Grep `image:` from compose |
 | `scan-pinned-images` | CVE scan each pinned image (matrix) | Trivy per-image |
 | `pinned-images-summary` | Aggregate CVE report | Post combined table as PR comment |
@@ -97,8 +97,8 @@ cd web && npx tsc --noEmit && npm run build
 **Debug locally:**
 
 ```bash
-uv run --with pip-audit pip-audit -r langchain/requirements.txt
-uv run --with pip-audit pip-audit -r bloommcp/requirements.txt
+uv tool run pip-audit -r langchain/requirements.txt
+uv tool run pip-audit -r bloommcp/requirements.txt
 ```
 
 **Common failures:**
@@ -142,29 +142,29 @@ trivy image bloom-web:latest --severity CRITICAL,HIGH
 2. Generates `.env.ci` from GitHub secrets
 3. Starts the full prod compose stack
 4. Waits up to 180 seconds for all services to report healthy
-5. Runs `uv run pytest tests/integration/ -v --tb=short`
+5. Runs `uv run --with pytest pytest tests/integration/ -v --tb=short`
 6. Tears down with `docker compose down -v`
 
 **Debug locally:**
 
 ```bash
-# Start the dev stack
-make dev-up
+# Start the prod stack (CI uses prod compose with Caddy routing)
+make prod-up
 
 # Check service health
-docker compose -f docker-compose.dev.yml ps
+docker compose -f docker-compose.prod.yml ps
 
 # Check specific container logs
-docker compose -f docker-compose.dev.yml logs bloom-web
-docker compose -f docker-compose.dev.yml logs langchain-agent
-docker compose -f docker-compose.dev.yml logs bloommcp
-docker compose -f docker-compose.dev.yml logs db-dev
+docker compose -f docker-compose.prod.yml logs bloom-web
+docker compose -f docker-compose.prod.yml logs langchain-agent
+docker compose -f docker-compose.prod.yml logs bloommcp
+docker compose -f docker-compose.prod.yml logs db-prod
 
 # Run integration tests
-uv run pytest tests/integration/ -v --tb=short
+uv run --with pytest pytest tests/integration/ -v --tb=short
 
 # Teardown
-make dev-down
+make prod-down
 ```
 
 **Common failures:**
@@ -273,18 +273,18 @@ export CI=true
 npm ci && npm audit --audit-level=critical && cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Phase 2: python-audit
-uv run --with pip-audit pip-audit -r langchain/requirements.txt
-uv run --with pip-audit pip-audit -r bloommcp/requirements.txt
+uv tool run pip-audit -r langchain/requirements.txt
+uv tool run pip-audit -r bloommcp/requirements.txt
 
 # Phase 3: docker-build
 docker compose -f docker-compose.prod.yml build
 
-# Phase 4: compose-health-check
-make dev-up
+# Phase 4: compose-health-check (prod stack, matching CI)
+make prod-up
 # Wait for services...
-docker compose -f docker-compose.dev.yml ps
-uv run pytest tests/integration/ -v --tb=short
-make dev-down
+docker compose -f docker-compose.prod.yml ps
+uv run --with pytest pytest tests/integration/ -v --tb=short
+make prod-down
 ```
 
 ## Debugging Checklist
