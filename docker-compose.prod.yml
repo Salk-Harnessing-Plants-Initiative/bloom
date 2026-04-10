@@ -239,7 +239,11 @@ services:
       GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP}
       GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS}
       GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM}
-  
+
+      # Custom access token hook — assigns bloom_user/bloom_admin role via JWT
+      GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_ENABLED: "true"
+      GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_URI: "pg-functions://postgres/public/custom_access_token_hook"
+
   # -------------------
   # PostgREST
   # -------------------
@@ -319,11 +323,18 @@ services:
     command: server --console-address ":9001" /data
     volumes:
       - ${MINIO_DATA_PATH}:/data
-  
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   minio-init:
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     depends_on:
-      - supabase-minio
+      supabase-minio:
+        condition: service_healthy
     networks:
       - supanet
     entrypoint: ["/bin/sh", "/usr/local/bin/init/create-buckets.sh"]
@@ -391,7 +402,13 @@ services:
       - "5432"
     volumes:
       - ./volumes/db/data:/var/lib/postgresql/data:Z
-      - ./volumes/db/init:/docker-entrypoint-initdb.d:Z
+      - ./volumes/db/_supabase.sh:/docker-entrypoint-initdb.d/96-_supabase.sh:Z
+      - ./volumes/db/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:Z
+      - ./volumes/db/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:Z
+      - ./volumes/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:Z
+      - ./volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:Z
+      - ./volumes/db/logs.sql:/docker-entrypoint-initdb.d/migrations/99-logs.sql:Z
+      - ./volumes/db/pooler.sql:/docker-entrypoint-initdb.d/migrations/99-pooler.sql:Z
       - db-config:/etc/postgresql-custom
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -399,10 +416,11 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXP: ${JWT_EXPIRY}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supabase_admin} -h localhost"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supabase_admin} -d ${POSTGRES_DB:-postgres} -h localhost"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 30
+      start_period: 60s
     command:
       [
         "postgres",

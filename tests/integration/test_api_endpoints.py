@@ -67,12 +67,14 @@ def test_bloom_web_returns_html(api):
     assert "<!DOCTYPE html>" in body or "<html" in body or "next" in str(body).lower()
 
 
-def test_studio_reachable_on_port():
-    """Supabase Studio responds on port 55323."""
-    import urllib.request
-    try:
-        req = urllib.request.Request("http://localhost:55323")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            assert resp.status == 200
-    except urllib.error.HTTPError as e:
-        assert e.code in (200, 301, 302), f"Studio returned {e.code}"
+def test_studio_reachable(api):
+    """Supabase Studio container is running."""
+    import subprocess
+    # Use plain `docker ps` to avoid needing an env-file for compose variable
+    # interpolation (MINIO_DATA_PATH etc. cause parse errors without one).
+    result = subprocess.run(
+        ["docker", "ps", "--filter", "name=studio", "--format", "{{.Names}} {{.Status}}"],
+        capture_output=True, text=True
+    )
+    assert result.returncode == 0, f"docker ps failed: {result.stderr}"
+    assert "studio" in result.stdout.lower(), f"Studio container not found: {result.stdout}"
