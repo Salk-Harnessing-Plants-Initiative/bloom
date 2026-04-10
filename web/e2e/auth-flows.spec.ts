@@ -4,13 +4,14 @@ import { login } from "./helpers/auth";
 const TEST_EMAIL = `e2e-test@salk.edu`;
 const TEST_PASSWORD = "e2eTestPassword123!";
 
+const ANON_KEY = process.env.ANON_KEY;
+if (!ANON_KEY) throw new Error("ANON_KEY env var required for e2e tests");
+
 // Create test user before all auth tests
 test.beforeAll(async ({ request }) => {
   const baseURL = process.env.TEST_BASE_URL || "http://localhost";
   const res = await request.post(`${baseURL}/api/auth/v1/signup`, {
-    headers: {
-      apikey: process.env.ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiYXVkIjoiYXV0aGVudGljYXRlZCIsImlhdCI6MTc2MjgzMTc3OSwiZXhwIjoyMDc4NDA3Nzc5fQ.atklhrmiVo5YtB0VwPY2fmj0nOa3EJzgI1W6xS3DKnw",
-    },
+    headers: { apikey: ANON_KEY },
     data: { email: TEST_EMAIL, password: TEST_PASSWORD },
   });
   // 200 = created, 400 = already exists — both fine
