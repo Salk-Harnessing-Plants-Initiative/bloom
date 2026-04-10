@@ -253,8 +253,9 @@ def get_llm(
         return ChatOpenAI(
             model=model,
             base_url=LOCAL_LLM_URL,
-            api_key="not-needed",  # vLLM doesn't require a real key
+            api_key="not-needed",
             temperature=0.0,
+            request_timeout=30,
         )
 
     else:  # Default to OpenAI
