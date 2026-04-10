@@ -165,11 +165,11 @@ docker compose -f docker-compose.prod.yml build bloom-web
 
 ```bash
 # Check service health first
-docker compose -f docker-compose.dev.yml ps
+docker compose -f docker-compose.prod.yml ps
 
 # Check specific service logs
-docker compose -f docker-compose.dev.yml logs langchain-agent --tail=50
-docker compose -f docker-compose.dev.yml logs db-dev --tail=50
+docker compose -f docker-compose.prod.yml logs langchain-agent --tail=50
+docker compose -f docker-compose.prod.yml logs db-prod --tail=50
 
 # Run specific test
 uv run --with pytest pytest tests/integration/test_smoke.py -v --tb=long

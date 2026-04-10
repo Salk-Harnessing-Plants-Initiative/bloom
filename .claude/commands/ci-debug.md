@@ -169,7 +169,7 @@ make prod-down
 
 **Common failures:**
 - **Health check timeout:** A service is failing to start. Check logs for the unhealthy container
-- **Database not ready:** `docker exec db-dev pg_isready -U supabase_admin -h localhost`
+- **Database not ready:** `docker exec db-prod pg_isready -U supabase_admin -h localhost`
 - **Integration test failure:** Check test output for specific assertion errors
 - **Port conflicts:** Another process using required ports. Stop conflicting containers
 
