@@ -157,7 +157,7 @@ Formatting should never break tests, but verify:
 
 ```bash
 # Integration tests (requires Docker stack running)
-uv run pytest tests/integration/ -v --tb=short
+uv run --with pytest pytest tests/integration/ -v --tb=short
 ```
 
 ## Comparison with /lint

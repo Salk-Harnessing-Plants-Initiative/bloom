@@ -75,7 +75,7 @@ cd ../bloommcp && uv run black --check . && uv run ruff check . && uv run mypy .
 npm run lint && cd web && npx tsc --noEmit
 
 # Run integration tests
-uv run pytest tests/integration/ -v --tb=short
+uv run --with pytest pytest tests/integration/ -v --tb=short
 
 # Review documentation (see /docs-review command)
 /docs-review --check

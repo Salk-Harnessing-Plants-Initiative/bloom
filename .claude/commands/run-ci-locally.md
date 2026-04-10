@@ -18,7 +18,7 @@ The `pr-checks.yml` workflow runs these jobs:
 | `build-and-audit` | npm audit, TypeScript check, Next.js build | `npm ci && npm audit && cd web && npx tsc --noEmit && npm run build` |
 | `python-audit` | Python CVE scanning | `uv tool run pip-audit -r langchain/requirements.txt` |
 | `docker-build` | Build Docker images + Trivy scan | `docker compose -f docker-compose.prod.yml build` |
-| `compose-health-check` | Full stack integration tests | `make dev-up && uv run --with pytest pytest tests/integration/` |
+| `compose-health-check` | Full stack integration tests | `make prod-up && uv run --with pytest pytest tests/integration/` |
 
 ## Quick Check (~1 min)
 

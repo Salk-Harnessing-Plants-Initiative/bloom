@@ -70,7 +70,7 @@ Launch ALL 5 subagents in a single message (parallel execution).
 > Your role: **TDD & Testing Strategy Reviewer**. Be critical.
 >
 > **Testing infrastructure:**
-> - pytest integration tests: `tests/integration/`, `uv run pytest tests/integration/ -v`
+> - pytest integration tests: `tests/integration/`, `uv run --with pytest pytest tests/integration/ -v`
 > - CI: `compose-health-check` job runs tests after full Docker stack is healthy
 > - **NO unit tests exist yet** — but TDD is the standard going forward
 > - TDD means: write tests before implementation. Integration tests are the minimum.

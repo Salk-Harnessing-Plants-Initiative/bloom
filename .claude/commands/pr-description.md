@@ -22,7 +22,7 @@ Standardized template for Bloom pull request descriptions.
 
 ## Testing
 
-- [ ] Integration tests pass: `uv run pytest tests/integration/ -v --tb=short`
+- [ ] Integration tests pass: `uv run --with pytest pytest tests/integration/ -v --tb=short`
 - [ ] TypeScript type check passes: `cd web && npx tsc --noEmit`
 - [ ] Next.js build succeeds: `cd web && npm run build`
 - [ ] Docker images build: `docker compose -f docker-compose.prod.yml build`

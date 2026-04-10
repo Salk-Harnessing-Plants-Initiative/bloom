@@ -115,7 +115,7 @@ description: "Review testing strategy"
 >
 > **Testing infrastructure:**
 >
-> - **pytest** integration tests: `tests/integration/`, `uv run pytest tests/integration/ -v`
+> - **pytest** integration tests: `tests/integration/`, `uv run --with pytest pytest tests/integration/ -v`
 > - **CI**: `compose-health-check` job runs tests after full Docker stack is healthy
 > - **NO unit tests exist yet** — but TDD is the standard going forward
 > - **NO coverage thresholds enforced** in CI yet

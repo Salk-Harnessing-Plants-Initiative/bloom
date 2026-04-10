@@ -944,7 +944,7 @@ docker compose -f docker-compose.dev.yml logs -f web
 - Edit files in `langchain/`
 - FastAPI auto-reloads on file changes (debug mode)
 - Install new dependencies: `cd langchain && uv add <package>`
-- Run tests: `uv run pytest tests/integration/ -v --tb=short`
+- Run tests: `uv run --with pytest pytest tests/integration/ -v --tb=short`
 
 **FastMCP server (Python, `bloommcp/`):**
 
@@ -1025,7 +1025,7 @@ docker compose -f docker-compose.dev.yml up -d langchain-agent
 \```bash
 
 # Python integration tests
-uv run pytest tests/integration/ -v --tb=short
+uv run --with pytest pytest tests/integration/ -v --tb=short
 
 # TypeScript linting and type-check
 npm run lint
