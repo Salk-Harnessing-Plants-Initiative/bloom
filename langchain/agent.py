@@ -221,12 +221,44 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
 #################################################### LLM Setup ####################################################
 
 
-AVAILABLE_MODELS = {
-    "local": ["Qwen/Qwen3.5-9B"],
-}
-
 # Local LLM configuration (OpenAI-compatible endpoint, e.g., vLLM)
 LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL")
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL")
+
+
+def _detect_vllm_model() -> str:
+    """Auto-detect model name from vLLM /v1/models endpoint."""
+    if LOCAL_LLM_MODEL:
+        return LOCAL_LLM_MODEL
+    if not LOCAL_LLM_URL:
+        raise RuntimeError("LOCAL_LLM_URL environment variable is required")
+    try:
+        import httpx
+        response = httpx.get(f"{LOCAL_LLM_URL}/models", timeout=5)
+        response.raise_for_status()
+        models = response.json().get("data", [])
+        if models:
+            model_name = models[0].get("id", "")
+            logger.info(f"Auto-detected vLLM model: {model_name}")
+            return model_name
+    except Exception as e:
+        logger.warning(f"Failed to auto-detect vLLM model: {e}")
+    raise RuntimeError("Could not detect model. Set LOCAL_LLM_MODEL env var.")
+
+
+_cached_model = None
+
+def get_local_model() -> str:
+    """Get local model name — from env, auto-detect, or cache."""
+    global _cached_model
+    if _cached_model:
+        return _cached_model
+    _cached_model = _detect_vllm_model()
+    return _cached_model
+
+AVAILABLE_MODELS = {
+    "local": [LOCAL_LLM_MODEL or "auto-detect"],
+}
 
 
 def get_llm(
@@ -245,7 +277,7 @@ def get_llm(
         LLM instance configured for the specified provider
     """
     if not model:
-        model = AVAILABLE_MODELS.get(provider, ["gpt-4o-mini"])[0]
+        model = get_local_model()
 
     if provider == "local":
         if not LOCAL_LLM_URL:
