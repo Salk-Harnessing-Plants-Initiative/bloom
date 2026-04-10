@@ -52,33 +52,13 @@ test.describe("Auth flows", () => {
     expect(page.url()).toContain("/login");
   });
 
-  test("session persists across navigation", async ({ page }) => {
-    await login(page, TEST_EMAIL, TEST_PASSWORD);
-    // Navigate to a different page
-    await page.goto("/app/expression");
-    await page.waitForLoadState("networkidle");
-
-    // Should still be authenticated, not redirected to login
-    expect(page.url()).not.toContain("/login");
-  });
-
-  test("protected route /app/expression redirects when unauthenticated", async ({ page }) => {
-    await page.goto("/app/expression");
-    await page.waitForLoadState("networkidle");
-    expect(page.url()).toContain("/login");
-  });
-
-  test("protected route /app/chat redirects when unauthenticated", async ({ page }) => {
-    await page.goto("/app/chat");
-    await page.waitForLoadState("networkidle");
-    expect(page.url()).toContain("/login");
-  });
-
-  test("protected route /app/phenotypes redirects when unauthenticated", async ({ page }) => {
-    await page.goto("/app/phenotypes");
-    await page.waitForLoadState("networkidle");
-    expect(page.url()).toContain("/login");
-  });
+  for (const route of ["/app/expression", "/app/chat", "/app/phenotypes"]) {
+    test(`${route} redirects when unauthenticated`, async ({ page }) => {
+      await page.goto(route);
+      await page.waitForURL(/\/login/, { timeout: 10000 });
+      expect(page.url()).toContain("/login");
+    });
+  }
 
   test("after login can access multiple protected routes", async ({ page }) => {
     await login(page, TEST_EMAIL, TEST_PASSWORD);
