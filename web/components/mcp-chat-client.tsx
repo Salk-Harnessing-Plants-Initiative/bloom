@@ -33,9 +33,20 @@ const TOOL_SET_OPTIONS: { value: ToolSet; label: string; description: string }[]
   { value: "generic", label: "Generic", description: "Basic database queries only" },
 ];
 
-const AVAILABLE_MODELS: Record<Provider, string[]> = {
-  local: ["Qwen/Qwen3-8B"],
+// Default models — overwritten by /langchain/models API on load
+let AVAILABLE_MODELS: Record<string, string[]> = {
+  local: ["loading..."],
 };
+
+// Fetch models from backend on module load
+if (typeof window !== "undefined") {
+  fetch("/api/langchain/models")
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.models) AVAILABLE_MODELS = data.models;
+    })
+    .catch(() => {});
+}
 
 const PROVIDER_LABELS: Record<Provider, string> = {
   local: "Local LLM",
