@@ -49,7 +49,7 @@ query {
     }
   }
 }
-' --jq '.data.repository.pullRequest.reviews.nodes[] | select(.author.login | contains("opilot")) | .comments.nodes[] | "File: \(.path):\(.line)\n\(.body)"'
+' --jq '.data.repository.pullRequest.reviews.nodes[] | select(.author.login | test("^(Copilot|copilot-pull-request-reviewer\\[bot\\])$")) | .comments.nodes[] | "File: \(.path):\(.line)\n\(.body)"'
 ```
 
 Also read any OpenSpec proposal linked in the PR body (look for `openspec/changes/` paths).

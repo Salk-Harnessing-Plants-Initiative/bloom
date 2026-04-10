@@ -32,7 +32,7 @@ query {
     }
   }
 }
-' --jq '.data.repository.pullRequest.reviews.nodes[] | select(.author.login | contains("opilot")) | .comments.nodes[] | "File: \(.path):\(.line)\n\(.body)\n" + ("="*80)'
+' --jq '.data.repository.pullRequest.reviews.nodes[] | select(.author.login | test("^(Copilot|copilot-pull-request-reviewer\\[bot\\])$")) | .comments.nodes[] | "File: \(.path):\(.line)\n\(.body)\n" + ("="*80)'
 ```
 
 ## Alternative: REST API
@@ -81,7 +81,7 @@ query {
     }
   }
 }
-' --jq '.data.repository.pullRequest.reviews.nodes[] | select(.author.login | contains("opilot")) | {state, submitted: .submittedAt, body}'
+' --jq '.data.repository.pullRequest.reviews.nodes[] | select(.author.login | test("^(Copilot|copilot-pull-request-reviewer\\[bot\\])$")) | {state, submitted: .submittedAt, body}'
 
 # REST API
 gh api repos/Salk-Harnessing-Plants-Initiative/bloom/pulls/PR_NUMBER/reviews --jq '.[] | select(.user.login | contains("copilot")) | {state: .state, submitted_at: .submitted_at, body: .body}'
