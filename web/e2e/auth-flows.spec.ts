@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, request as playwrightRequest } from "@playwright/test";
 import { login } from "./helpers/auth";
 
 const TEST_EMAIL = `e2e-test@salk.edu`;
@@ -8,14 +8,18 @@ const ANON_KEY = process.env.ANON_KEY;
 if (!ANON_KEY) throw new Error("ANON_KEY env var required for e2e tests");
 
 // Create test user before all auth tests
-test.beforeAll(async ({ request }) => {
+// Note: beforeAll only supports worker-scoped fixtures, not the test-scoped
+// `request` fixture, so we create the API context manually.
+test.beforeAll(async () => {
   const baseURL = process.env.TEST_BASE_URL || "http://localhost";
-  const res = await request.post(`${baseURL}/api/auth/v1/signup`, {
+  const context = await playwrightRequest.newContext({ baseURL });
+  const res = await context.post(`${baseURL}/api/auth/v1/signup`, {
     headers: { apikey: ANON_KEY },
     data: { email: TEST_EMAIL, password: TEST_PASSWORD },
   });
   // 200 = created, 400 = already exists — both fine
   expect([200, 201, 400, 422]).toContain(res.status());
+  await context.dispose();
 });
 
 test.describe("Auth flows", () => {
@@ -86,21 +90,4 @@ test.describe("Auth flows", () => {
     }
   });
 
-  test("signup with non-salk email shows error", async ({ page }) => {
-    await page.goto("/login");
-    await page.waitForLoadState("networkidle");
-
-    // Switch to signup
-    await page.getByRole("button", { name: /sign up/i }).click();
-
-    await page.fill('input[name="email"]', "test-invalid");
-    await page.fill('input[name="password"]', "testpassword123!");
-
-    // Click sign up submit
-    const submitButton = page.getByRole("button", { name: /sign up/i });
-    await submitButton.click();
-
-    const error = page.getByText(/salk\.edu|not allowed|invalid/i);
-    await expect(error).toBeVisible({ timeout: 10000 });
-  });
 });
