@@ -41,13 +41,13 @@ test.describe("Auth flows", () => {
   test("logout redirects to login page", async ({ page }) => {
     await login(page, TEST_EMAIL, TEST_PASSWORD);
 
-    // Find and click logout
+    // Find and click logout (wait for either button or link to render)
     const logoutButton = page.getByRole("button", { name: /logout|sign out/i });
+    const logoutLink = page.getByRole("link", { name: /logout|sign out/i });
+    await expect(logoutButton.or(logoutLink).first()).toBeVisible();
     if (await logoutButton.isVisible()) {
       await logoutButton.click();
     } else {
-      // Try link instead of button
-      const logoutLink = page.getByRole("link", { name: /logout|sign out/i });
       await logoutLink.click();
     }
 
