@@ -13,8 +13,11 @@ if (!ANON_KEY) throw new Error("ANON_KEY env var required for e2e tests");
 test.beforeAll(async () => {
   const baseURL = process.env.TEST_BASE_URL || "http://localhost";
   const context = await playwrightRequest.newContext({ baseURL });
-  const res = await context.post(`${baseURL}/api/auth/v1/signup`, {
-    headers: { apikey: ANON_KEY },
+  const res = await context.post("/api/auth/v1/signup", {
+    headers: {
+      apikey: ANON_KEY,
+      Authorization: `Bearer ${ANON_KEY}`,
+    },
     data: { email: TEST_EMAIL, password: TEST_PASSWORD },
   });
   // 200 = created, 400 = already exists — both fine
