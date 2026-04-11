@@ -55,7 +55,7 @@ test.describe("Auth flows", () => {
     expect(page.url()).toContain("/login");
   });
 
-  for (const route of ["/app/expression", "/app/chat", "/app/phenotypes"]) {
+  for (const route of ["/app/expression", "/chat", "/app/phenotypes"]) {
     test(`${route} redirects when unauthenticated`, async ({ page }) => {
       await page.goto(route);
       await page.waitForURL(/\/login/, { timeout: 10000 });
