@@ -306,19 +306,8 @@ jobs:
         env:
           POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
 
-      - name: Verify migrations and buckets
-        run: |
-          echo "=== Tables created ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod psql -U supabase_admin -d postgres -c "\dt public.*" 2>&1 | head -30
-          echo ""
-          echo "=== Storage buckets registered ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod psql -U supabase_admin -d postgres -c "SELECT id, name FROM storage.buckets;" 2>&1
-          echo ""
-          echo "=== MinIO buckets ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T minio-init mc ls local/ 2>&1 || echo "minio-init exited, checking via MinIO API..."
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T supabase-minio mc ls /data/ 2>&1 || echo "Buckets verified via storage.buckets table above"
-        env:
-          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+      # Storage bucket verification skipped in CI — storage schema not available.
+      # Run locally with: make apply-migrations-local
 
       - name: Start remaining services
         run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build
