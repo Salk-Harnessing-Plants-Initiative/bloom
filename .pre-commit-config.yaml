@@ -39,3 +39,14 @@ repos:
     rev: 6efcfbaae240618685d847c17ab0ba9f6c46ed5c  # v8.9.0
     hooks:
       - id: gitleaks
+
+  # Fail the commit if any service's uv.lock is out of sync with its
+  # pyproject.toml. `uv lock --check` resolves in memory without writing.
+  - repo: local
+    hooks:
+      - id: uv-lock-check
+        name: uv lock --check (langchain, bloommcp, video-worker)
+        entry: bash -c 'set -e; for svc in langchain bloommcp services/video-worker; do echo "Checking $svc..."; (cd "$svc" && uv lock --check); done'
+        language: system
+        files: ^(langchain|bloommcp|services/video-worker)/(pyproject\.toml|uv\.lock|\.python-version)$
+        pass_filenames: false
