@@ -298,7 +298,7 @@ jobs:
           echo "Applying $(ls supabase/migrations/*.sql | wc -l) migrations..."
           for migration in supabase/migrations/*.sql; do
             echo "  Running: $(basename $migration)"
-            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T db-prod psql -U supabase_admin -d postgres -f /dev/stdin < "$migration" 2>&1 || {
+            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD=postgres db-prod psql -U supabase_admin -d postgres -f /dev/stdin < "$migration" 2>&1 || {
               echo "::warning::Migration had errors: $(basename $migration)"
             }
           done
@@ -307,10 +307,10 @@ jobs:
       - name: Verify migrations and buckets
         run: |
           echo "=== Tables created ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T db-prod psql -U supabase_admin -d postgres -c "\dt public.*" 2>&1 | head -30
+          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD=postgres db-prod psql -U supabase_admin -d postgres -c "\dt public.*" 2>&1 | head -30
           echo ""
           echo "=== Storage buckets registered ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T db-prod psql -U supabase_admin -d postgres -c "SELECT id, name FROM storage.buckets;" 2>&1
+          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD=postgres db-prod psql -U supabase_admin -d postgres -c "SELECT id, name FROM storage.buckets;" 2>&1
           echo ""
           echo "=== MinIO buckets ==="
           docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T minio-init mc ls local/ 2>&1 || echo "minio-init exited, checking via MinIO API..."
@@ -340,18 +340,6 @@ jobs:
           docker compose -f docker-compose.prod.yml --env-file .env.ci ps
           docker compose -f docker-compose.prod.yml --env-file .env.ci logs --tail=50
           exit 1
-
-      - name: Apply database migrations
-        run: |
-          for f in supabase/migrations/*.sql; do
-            echo "Applying $f ..."
-            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
-              -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
-              psql -U supabase_admin -d postgres -f - < "$f" 2>&1 || true
-          done
-          echo "All migrations applied."
-        env:
-          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
 
       # Runs 22 integration tests (smoke, auth, RLS, storage, API routing) against the live compose stack
       # Skips if tests/integration/ doesn't exist on this branch
