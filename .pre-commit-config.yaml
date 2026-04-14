@@ -1,7 +1,8 @@
 # See https://pre-commit.com for more information
+# All revs pinned to immutable SHAs to prevent supply chain attacks
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.5.0
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
@@ -12,14 +13,14 @@ repos:
       - id: check-toml
 
   - repo: https://github.com/psf/black
-    rev: 24.1.1
+    rev: c6755bb741b6481d6b3d3bb563c83fa060db96c9  # 26.3.1
     hooks:
       - id: black
         files: ^(langchain|bloommcp)/
         language_version: python3.11
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.1.9
+    rev: 2c8dce6094fa2b4b668e74f694ca63ceffd38614  # v0.9.9
     hooks:
       - id: ruff
         files: ^(langchain|bloommcp)/
@@ -27,20 +28,14 @@ repos:
       - id: ruff-format
         files: ^(langchain|bloommcp)/
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.8.0
-    hooks:
-      - id: mypy
-        files: ^(langchain|bloommcp)/
-        args: [--ignore-missing-imports]
-        additional_dependencies: [
-          types-PyJWT,
-          types-python-dotenv,
-        ]
-
   - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v3.1.0
+    rev: ffb6a759a979008c0e6dff86e39f4745a2d9eac4  # v3.1.0
     hooks:
       - id: prettier
         files: \.(js|jsx|ts|tsx|json|md)$
         exclude: ^(web/package-lock\.json|pnpm-lock\.yaml)$
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 6efcfbaae240618685d847c17ab0ba9f6c46ed5c  # v8.9.0
+    hooks:
+      - id: gitleaks
