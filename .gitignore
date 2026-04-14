@@ -81,11 +81,8 @@ nginx/copy.config_2
 docker-compose.prod copy.yml
 DOCUMENTATION.md
 TROUBLESHOOTING.md
-AGENTS.md
-CLAUDE.md
-openspec/
 prompts/
-.claude/
+.claude/settings.local.json
 langchain/ANALYSIS_OUTPUT/
 langchain/PLOTS_DIR/
 scripts/compute_de_genes.py

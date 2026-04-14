@@ -20,8 +20,8 @@ cd web && npx tsc --noEmit && npm run build
 ## Step 2: Python Audit (matches `python-audit` job)
 
 ```bash
-uv tool run pip-audit -r langchain/requirements.txt
-uv tool run pip-audit -r bloommcp/requirements.txt
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
 ```
 
 ## Step 3: Docker Builds (matches `docker-build` job)

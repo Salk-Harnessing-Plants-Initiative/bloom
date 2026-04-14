@@ -649,7 +649,7 @@ git push origin release/v$NEW_VERSION
 docker compose -f docker-compose.prod.yml build --no-cache
 
 # Common causes:
-# 1. Dependency version conflicts (check package.json, requirements.txt)
+# 1. Dependency version conflicts (check package.json, pyproject.toml, uv.lock)
 # 2. Missing environment variables
 # 3. File permissions in Docker context
 

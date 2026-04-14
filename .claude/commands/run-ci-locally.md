@@ -16,7 +16,7 @@ The `pr-checks.yml` workflow runs these jobs:
 | Job | What It Does | Local Equivalent |
 |---|---|---|
 | `build-and-audit` | npm audit, TypeScript check, Next.js build | `npm ci && npm audit && cd web && npx tsc --noEmit && npm run build` |
-| `python-audit` | Python CVE scanning | `uv tool run pip-audit -r langchain/requirements.txt` |
+| `python-audit` | Python CVE scanning | `cd langchain && uv export --frozen --no-hashes \| uvx pip-audit -r /dev/stdin` |
 | `docker-build` | Build Docker images + Trivy scan | `docker compose -f docker-compose.prod.yml build` |
 | `compose-health-check` | Full stack integration tests | `make prod-up && uv run --with pytest pytest tests/integration/` |
 
@@ -35,8 +35,8 @@ cd web && npx tsc --noEmit && npm run build
 Matches the `python-audit` job:
 
 ```bash
-uv tool run pip-audit -r langchain/requirements.txt
-uv tool run pip-audit -r bloommcp/requirements.txt
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
 ```
 
 ## Docker Build (~5-10 min)
@@ -107,8 +107,8 @@ npm audit --audit-level=critical
 cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Phase 2: python-audit
-uv tool run pip-audit -r langchain/requirements.txt
-uv tool run pip-audit -r bloommcp/requirements.txt
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
 
 # Phase 3: docker-build
 docker compose -f docker-compose.prod.yml build
@@ -147,8 +147,8 @@ cd web && npx tsc --noEmit 2>&1 | head -50
 ```bash
 # Update the vulnerable package
 cd langchain  # or bloommcp
-uv pip install --upgrade <package-name>
-uv pip freeze > requirements.txt
+uv add <package-name>
+uv lock
 ```
 
 ### Docker build fails
@@ -181,7 +181,7 @@ uv run --with pytest pytest tests/integration/test_smoke.py -v --tb=long
 - **Before creating a PR:** Quick check + Python audit
 - **Before merge:** Full suite including Docker and integration tests
 - **After changing Dockerfiles:** Docker build + integration tests
-- **After updating dependencies:** npm audit + pip-audit + integration tests
+- **After updating dependencies:** npm audit + `uv export | uvx pip-audit` + integration tests
 
 ## Related Commands
 

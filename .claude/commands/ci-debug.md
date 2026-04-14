@@ -16,7 +16,7 @@ Guide for debugging CI failures in Bloom (Next.js + FastAPI/LangGraph + FastMCP 
 | Job | Purpose | Key Commands |
 |---|---|---|
 | `build-and-audit` | npm CVE audit, TypeScript check, Next.js build | `npm ci`, `npm audit --audit-level=critical`, `npx tsc --noEmit`, `npm run build` |
-| `python-audit` | Python CVE scanning | `pip-audit -r langchain/requirements.txt`, `pip-audit -r bloommcp/requirements.txt` |
+| `python-audit` | Python CVE scanning | `uv export --frozen --no-hashes` piped to `uvx pip-audit` per service |
 | `docker-build` | Build + Trivy scan Docker images | Build `bloom-web`, `langchain-agent`, `bloommcp`; Trivy CRITICAL gate |
 | `compose-health-check` | Full stack integration tests | Start prod compose, wait 180s for health, `uv run --with pytest pytest tests/integration/` |
 | `extract-pinned-images` | Extract pinned images for matrix scan | Grep `image:` from compose |
@@ -54,7 +54,7 @@ gh run view <RUN_ID> --log-failed
 | `npm audit` fails | CVE in npm dependency | Update vulnerable package |
 | `tsc` type errors | TypeScript compilation issues | `cd web && npx tsc --noEmit` locally |
 | `npm run build` fails | Next.js build error | `cd web && npm run build` locally |
-| `pip-audit` fails | CVE in Python dependency | Update in `langchain/requirements.txt` or `bloommcp/requirements.txt` |
+| `pip-audit` fails | CVE in Python dependency | Update in `langchain/pyproject.toml` or `bloommcp/pyproject.toml` and run `uv lock` |
 | Docker build fails | Dockerfile or dependency issue | `docker compose -f docker-compose.prod.yml build` |
 | Trivy CRITICAL | Critical CVE in Docker image | Update base image or dependency |
 | Health check timeout | Service not starting | Check container logs |
@@ -92,17 +92,17 @@ cd web && npx tsc --noEmit && npm run build
 ### 2. `python-audit`
 
 **What it does:**
-- Scans `langchain/requirements.txt` and `bloommcp/requirements.txt` for known CVEs
+- Exports pinned versions from `uv.lock` and scans all transitive dependencies for known CVEs
 
 **Debug locally:**
 
 ```bash
-uv tool run pip-audit -r langchain/requirements.txt
-uv tool run pip-audit -r bloommcp/requirements.txt
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
 ```
 
 **Common failures:**
-- A Python dependency has a known CVE. Fix: update the package version in the relevant `requirements.txt`
+- A Python dependency has a known CVE. Fix: update the package in the relevant `pyproject.toml` with `uv add` and run `uv lock`
 
 ---
 
@@ -273,8 +273,8 @@ export CI=true
 npm ci && npm audit --audit-level=critical && cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Phase 2: python-audit
-uv tool run pip-audit -r langchain/requirements.txt
-uv tool run pip-audit -r bloommcp/requirements.txt
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
 
 # Phase 3: docker-build
 docker compose -f docker-compose.prod.yml build
@@ -298,7 +298,7 @@ When CI fails:
 - [ ] Is the database ready? (`docker exec db-dev pg_isready`)
 - [ ] Are migrations applied? (`make apply-migrations-local`)
 - [ ] Are environment variables set?
-- [ ] Did a dependency update introduce a CVE? (`npm audit` / `pip-audit`)
+- [ ] Did a dependency update introduce a CVE? (`npm audit` / `uv export | uvx pip-audit`)
 - [ ] Is the Docker build cache stale? (`docker compose build --no-cache`)
 
 ## Related Commands

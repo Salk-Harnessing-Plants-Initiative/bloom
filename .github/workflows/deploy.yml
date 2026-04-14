@@ -34,17 +34,14 @@ jobs:
       - name: Security audit (npm)
         run: npm audit --audit-level=critical
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
 
       - name: Security audit (Python)
         run: |
-          pip install uv
-          uv pip install --system pip-audit
-          pip-audit -r langchain/requirements.txt
-          pip-audit -r bloommcp/requirements.txt
+          cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+          cd ../bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+          cd ../services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
 
       - name: Build shared packages
         run: |

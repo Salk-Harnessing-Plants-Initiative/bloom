@@ -51,7 +51,7 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
           NEXT_PUBLIC_SUPABASE_COOKIE_NAME: sb-localhost-auth-token
 
-  # Scans Python dependencies for known CVEs
+  # Scans Python dependencies for known CVEs via lockfile export
   python-audit:
     name: Python Security Audit for CVEs
     runs-on: ubuntu-latest
@@ -59,22 +59,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      # uv, pip-audit
-      - name: Install uv and pip-audit
-        run: pip install uv && uv pip install --system pip-audit
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
 
       # Checks langchain agent Python packages for vulnerabilities
       - name: Audit langchain dependencies
-        run: pip-audit -r langchain/requirements.txt
+        run: cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
 
       # Checks bloommcp server Python packages for vulnerabilities
       - name: Audit bloommcp dependencies
-        run: pip-audit -r bloommcp/requirements.txt
+        run: cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+
+      # Checks video-worker Python packages for vulnerabilities
+      - name: Audit video-worker dependencies
+        run: cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
 
   docker-build:
     name: Build Docker Images & Scan for CVEs
@@ -345,7 +343,6 @@ jobs:
       - name: Run integration tests
         run: |
           if [ -d "tests/integration" ]; then
-            pip install uv
             uv run --with pytest pytest tests/integration/ -v --tb=short
           else
             echo "No integration tests found — skipping"

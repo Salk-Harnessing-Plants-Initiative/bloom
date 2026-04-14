@@ -234,10 +234,8 @@ load-test-data:
 		echo "Error: Development database not running. Start with 'make dev-up' first."; \
 		exit 1; \
 	fi
-	@echo "Installing Python dependencies..."
-	@python3 -m pip install --quiet supabase pandas 2>/dev/null || (echo "Error: Failed to install dependencies. Install with: pip install supabase pandas" && exit 1)
 	@echo "Running data loader script..."
-	@python3 scripts/load_test_data.py
+	@uv run --with supabase,pandas -- python3 scripts/load_test_data.py
 
 ## Upload test images to MinIO storage
 .PHONY: upload-images
@@ -247,10 +245,8 @@ upload-images:
 		echo "Error: MinIO not running. Start with 'make dev-up' first."; \
 		exit 1; \
 	fi
-	@echo "Installing Python dependencies..."
-	@python3 -m pip install --quiet supabase 2>/dev/null || (echo "Error: Failed to install dependencies. Install with: pip install supabase" && exit 1)
 	@echo "Running image uploader script..."
-	@python3 scripts/upload_test_images.py
+	@uv run --with supabase -- python3 scripts/upload_test_images.py
 
 ## Create a new MinIO bucket
 .PHONY: create-bucket
@@ -263,13 +259,11 @@ create-bucket:
 		echo "Error: MinIO not running. Start with 'make dev-up' first."; \
 		exit 1; \
 	fi
-	@echo "Installing Python dependencies..."
-	@python3 -m pip install --quiet supabase 2>/dev/null || (echo "Error: Failed to install dependencies. Install with: pip install supabase" && exit 1)
 	@echo "Creating bucket via Supabase Storage API..."
 	@if [ "$(PUBLIC)" = "true" ]; then \
-		python3 scripts/create_bucket.py create $(BUCKET) public; \
+		uv run --with supabase -- python3 scripts/create_bucket.py create $(BUCKET) public; \
 	else \
-		python3 scripts/create_bucket.py create $(BUCKET); \
+		uv run --with supabase -- python3 scripts/create_bucket.py create $(BUCKET); \
 	fi
 
 ## List all MinIO buckets
@@ -279,9 +273,7 @@ list-buckets:
 		echo "Error: MinIO not running. Start with 'make dev-up' first."; \
 		exit 1; \
 	fi
-	@echo "Installing Python dependencies..."
-	@python3 -m pip install --quiet supabase 2>/dev/null || (echo "Error: Failed to install dependencies. Install with: pip install supabase" && exit 1)
-	@python3 scripts/create_bucket.py list
+	@uv run --with supabase -- python3 scripts/create_bucket.py list
 
 # Force rebuild (even without changes)
 .PHONY: rebuild
