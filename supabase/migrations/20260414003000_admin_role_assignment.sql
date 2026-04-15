@@ -29,6 +29,9 @@ BEGIN
   ) INTO is_admin;
 
   -- Set the role claim
+  -- Note: bloom_agent is NOT set here. The LangChain agent uses a pre-generated
+  -- static JWT with role=bloom_agent (stored in BLOOM_AGENT_KEY env var) rather
+  -- than going through GoTrue. Do not add a bloom_agent branch to this hook.
   IF is_admin THEN
     claims := jsonb_set(claims, '{role}', '"bloom_admin"');
   ELSE
