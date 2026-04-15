@@ -6,8 +6,8 @@ from typing import Optional
 import httpx
 from langchain_core.tools import tool
 
-# PostgREST Configuration (Supabase) — imports from config to avoid duplication
-from config import SUPABASE_URL, SUPABASE_SERVICE_KEY as SUPABASE_KEY
+# PostgREST Configuration (Supabase) — uses bloom_agent key (read-only)
+from config import SUPABASE_URL, BLOOM_AGENT_KEY as SUPABASE_KEY
 REST_URL = f"{SUPABASE_URL}/rest/v1"
 
 

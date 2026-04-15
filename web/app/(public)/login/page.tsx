@@ -9,6 +9,7 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [view, setView] = useState('sign-in')
   const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
   const router = useRouter()
   const supabase = createClientSupabaseClient()
 
@@ -27,13 +28,28 @@ export default function Login() {
       password,
       options: {
         emailRedirectTo: `${location.origin}/auth/callback`,
+        data: {
+          is_admin: false,
+        },
       },
     })
     if (error) {
       setError(error.message)
     }
-    else {
-      setView('check-email')
+    else if (data?.user) {
+      // User created — auto sign in
+      setSuccess('Account created successfully! Signing you in...')
+      setError('')
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: email + '@salk.edu',
+        password,
+      })
+      if (signInError) {
+        setError(signInError.message)
+        setSuccess('')
+      } else {
+        router.push('/app')
+      }
     }
   }
 
@@ -57,11 +73,8 @@ export default function Login() {
 
   return (
     <div className="flex-1 flex flex-col mx-auto w-full max-w-sm justify-center gap-2">
-      {view === 'check-email' ? (
-        <p className="text-center text-neutral-400">
-          Click the confirmation link sent to <span className="font-bold">{email + '@salk.edu'}</span> to
-          continue signing up
-        </p>
+      {success ? (
+        <p className="text-center text-green-700">{success}</p>
       ) : (
         <form
           className="flex-1 flex flex-col w-full max-w-sm justify-center gap-2"
@@ -104,6 +117,7 @@ export default function Login() {
               <p className="text-sm text-neutral-500 text-center">
                 Don't have an account?
                 <button
+                  type="button"
                   className="ml-1 underline"
                   onClick={() => setView('sign-up')}
                 >
