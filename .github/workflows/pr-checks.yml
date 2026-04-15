@@ -299,7 +299,8 @@ jobs:
           for migration in supabase/migrations/*.sql; do
             echo "  Running: $(basename $migration)"
             docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod psql -U supabase_admin -d postgres -f /dev/stdin < "$migration" 2>&1 || {
-              echo "::warning::Migration had errors: $(basename $migration)"
+              echo "::error::Migration failed: $(basename $migration)"
+              exit 1
             }
           done
           echo "Migrations complete!"
