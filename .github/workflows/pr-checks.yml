@@ -281,8 +281,7 @@ jobs:
           echo "Waiting for MinIO to be healthy..."
           timeout 60 bash -c 'until docker compose -f docker-compose.prod.yml --env-file .env.ci ps supabase-minio --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
           echo "MinIO is healthy!"
-          docker compose -f docker-compose.prod.yml --env-file .env.ci up -d minio-init
-          sleep 10
+          docker compose -f docker-compose.prod.yml --env-file .env.ci run --rm minio-init
           echo "Buckets created!"
 
       - name: Start database
