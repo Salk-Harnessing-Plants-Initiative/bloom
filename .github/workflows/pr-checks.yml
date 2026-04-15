@@ -297,6 +297,11 @@ jobs:
           echo "Applying migrations in order:"
           ls -1 supabase/migrations/*.sql | sort
           for migration in supabase/migrations/*.sql; do
+            # Skip bucket migrations — storage.buckets table doesn't exist until storage-api starts (see #132)
+            if [[ "$(basename $migration)" == *bucket* ]]; then
+              echo "  Skipping (storage not available in CI): $(basename $migration)"
+              continue
+            fi
             echo "  Running: $(basename $migration)"
             docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$migration" 2>&1 || {
               echo "::error::Migration failed: $(basename $migration)"
