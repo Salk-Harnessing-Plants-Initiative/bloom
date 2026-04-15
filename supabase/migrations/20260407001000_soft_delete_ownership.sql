@@ -46,9 +46,21 @@ CREATE INDEX IF NOT EXISTS idx_chat_threads_deleted_at ON chat_threads(deleted_a
 CREATE OR REPLACE FUNCTION soft_delete(target_table TEXT, target_id BIGINT)
 RETURNS VOID AS $$
 BEGIN
+  -- Only bloom_admin can soft-delete rows
+  IF NOT pg_has_role(current_user, 'bloom_admin', 'MEMBER') THEN
+    RAISE EXCEPTION 'soft_delete: only bloom_admin can soft-delete rows';
+  END IF;
+  -- Only allow soft-delete on tables that have the deleted_at column
+  IF target_table NOT IN ('species', 'scrna_datasets', 'cyl_experiments', 'gene_candidates', 'chat_threads') THEN
+    RAISE EXCEPTION 'soft_delete: table % is not soft-delete enabled', target_table;
+  END IF;
   EXECUTE format('UPDATE %I SET deleted_at = NOW() WHERE id = $1', target_table) USING target_id;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql;
+
+-- Restrict soft_delete to bloom_admin only
+REVOKE EXECUTE ON FUNCTION soft_delete(TEXT, BIGINT) FROM public;
+GRANT EXECUTE ON FUNCTION soft_delete(TEXT, BIGINT) TO bloom_admin;
 
 -- -------------------
 -- 4. Auto-set created_by on insert via trigger
