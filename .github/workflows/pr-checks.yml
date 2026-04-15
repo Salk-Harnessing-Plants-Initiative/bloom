@@ -297,8 +297,8 @@ jobs:
           echo "Applying migrations in order:"
           ls -1 supabase/migrations/*.sql | sort
           for migration in supabase/migrations/*.sql; do
-            # Skip bucket migrations — storage.buckets table doesn't exist until storage-api starts (see #132)
-            if [[ "$(basename $migration)" == *bucket* ]]; then
+            # Skip migrations that reference storage schema — storage-api not started yet (see #132)
+            if [[ "$(basename $migration)" == *bucket* ]] || grep -q "storage\.objects\|storage\.buckets" "$migration" 2>/dev/null; then
               echo "  Skipping (storage not available in CI): $(basename $migration)"
               continue
             fi
