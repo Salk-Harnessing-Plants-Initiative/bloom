@@ -71,11 +71,8 @@ ALTER TABLE chat_threads ENABLE ROW LEVEL SECURITY;
 -- 4. RLS Policies — Anon
 -- ===========================
 
-CREATE POLICY anon_read_species ON species FOR SELECT TO anon USING (deleted_at IS NULL);
-CREATE POLICY anon_read_scrna_datasets ON scrna_datasets FOR SELECT TO anon USING (deleted_at IS NULL);
-CREATE POLICY anon_read_cyl_experiments ON cyl_experiments FOR SELECT TO anon USING (deleted_at IS NULL);
-CREATE POLICY anon_read_proteins ON proteins FOR SELECT TO anon USING (true);
-CREATE POLICY anon_read_people ON people FOR SELECT TO anon USING (true);
+-- No anon policies — all data access requires authentication.
+-- Anon key is only used for auth flows (signup, signin).
 
 -- ===========================
 -- 5. RLS Policies — bloom_user
@@ -108,7 +105,6 @@ CREATE POLICY user_insert_gene_candidates ON gene_candidates FOR INSERT TO bloom
 CREATE POLICY user_insert_chat_threads ON chat_threads FOR INSERT TO bloom_user WITH CHECK (true);
 
 CREATE POLICY user_update_species ON species FOR UPDATE TO bloom_user USING (created_by = auth.uid());
-CREATE POLICY user_update_scrna_datasets ON scrna_datasets FOR UPDATE TO bloom_user USING (created_by = auth.uid());
 CREATE POLICY user_update_cyl_experiments ON cyl_experiments FOR UPDATE TO bloom_user USING (created_by = auth.uid());
 CREATE POLICY user_update_gene_candidates ON gene_candidates FOR UPDATE TO bloom_user USING (created_by = auth.uid());
 CREATE POLICY user_update_chat_threads ON chat_threads FOR UPDATE TO bloom_user USING (created_by = auth.uid());
