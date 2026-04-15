@@ -57,9 +57,8 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 CREATE OR REPLACE FUNCTION set_created_by()
 RETURNS TRIGGER AS $$
 BEGIN
-  IF NEW.created_by IS NULL THEN
-    NEW.created_by := auth.uid();
-  END IF;
+  -- Always overwrite user at created_by to prevent ownership spoofing.
+  NEW.created_by := auth.uid();
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
