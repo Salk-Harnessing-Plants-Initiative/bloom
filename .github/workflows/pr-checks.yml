@@ -298,7 +298,7 @@ jobs:
           ls -1 supabase/migrations/*.sql | sort
           for migration in supabase/migrations/*.sql; do
             # Skip migrations that reference storage schema — storage-api not started yet (see #132)
-            if [[ "$(basename $migration)" == *bucket* ]] || grep -q "storage\.objects\|storage\.buckets" "$migration" 2>/dev/null; then
+            if [[ "$(basename $migration)" == *bucket* ]] || grep -v '^\s*--' "$migration" 2>/dev/null | grep -q "storage\.objects\|storage\.buckets"; then
               echo "  Skipping (storage not available in CI): $(basename $migration)"
               continue
             fi
