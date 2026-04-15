@@ -24,15 +24,21 @@ Each Python service directory SHALL contain a `.python-version` file specifying 
 - **WHEN** `uv lock` or `uv sync` is run in a service directory
 - **THEN** resolution targets the Python version specified in `.python-version`
 
-### Requirement: Docker builds SHALL install from lockfile using uv
+### Requirement: Docker builds SHALL install from a digest-pinned uv image via lockfile
 
-Each Python service Dockerfile SHALL copy the `uv` binary from a pinned version of the official image (`ghcr.io/astral-sh/uv:0.11`) and install dependencies via `uv sync --frozen --no-dev --no-cache`. The venv SHALL be installed to `/opt/venv` (via `UV_PROJECT_ENVIRONMENT`) to avoid conflicts with dev compose bind-mounts on `/app`. `PATH` SHALL include `/opt/venv/bin` so CMD resolves to the venv Python. The venv SHALL be chowned to the non-root application user (`bloom:bloom`) so runtime libraries can write cache files (e.g., numba JIT cache, `__pycache__`). No `pip install` commands SHALL remain for application dependencies. The dependency layer SHALL be cached independently of source code changes.
+Each Python service Dockerfile SHALL copy the `uv` binary from the official image pinned to **both a version tag and an immutable SHA256 digest** (`ghcr.io/astral-sh/uv:<version>@sha256:<digest>`) — matching the digest-pin pattern already used for the Python base image. Dependencies SHALL be installed via `uv sync --frozen --no-dev --no-cache`. The venv SHALL be installed to `/opt/venv` (via `UV_PROJECT_ENVIRONMENT`) to avoid conflicts with dev compose bind-mounts on `/app`. `PATH` SHALL include `/opt/venv/bin` so CMD resolves to the venv Python. The venv SHALL be chowned to the non-root application user (`bloom:bloom`) so runtime libraries can write cache files (e.g., numba JIT cache, `__pycache__`). No `pip install` commands SHALL remain for application dependencies. The dependency layer SHALL be cached independently of source code changes.
 
 #### Scenario: Reproducible Docker build
 
 - **WHEN** `docker build` is run for a Python service
 - **THEN** the exact versions from `uv.lock` are installed
 - **AND** no network resolution occurs (frozen install)
+
+#### Scenario: uv image pinned to immutable digest
+
+- **WHEN** `docker build` runs the `COPY --from=ghcr.io/astral-sh/uv:<version>@sha256:<digest>` instruction
+- **THEN** the image layer is fetched by content hash, not by mutable tag
+- **AND** two builds separated in time produce bit-identical uv binaries as long as the digest in the Dockerfile is unchanged
 
 #### Scenario: Unused inline dependencies removed from langchain
 
@@ -76,6 +82,21 @@ The `compose-health-check` CI job SHALL also use `astral-sh/setup-uv@v7` instead
 - **THEN** uv is installed via `astral-sh/setup-uv@v7`
 - **AND** pip is NOT used to install uv
 
+### Requirement: Pre-commit hook SHALL detect lockfile drift cross-platform
+
+The `.pre-commit-config.yaml` SHALL include a local `uv-lock-check` hook that runs `uv lock --check` in each Python service directory whenever `pyproject.toml`, `uv.lock`, or `.python-version` is modified. The hook SHALL NOT depend on `bash` being available on the contributor's `PATH` (which is not guaranteed on Windows without Git Bash). The hook SHALL invoke a checked-in Python script via `language: python` so it runs under pre-commit's managed Python environment on all platforms.
+
+#### Scenario: Contributor on Windows commits a pyproject.toml change
+
+- **WHEN** a contributor on a Windows machine with no `bash` in PATH runs `git commit` after editing `langchain/pyproject.toml` without regenerating `langchain/uv.lock`
+- **THEN** the `uv-lock-check` hook SHALL run successfully via pre-commit's Python runner
+- **AND** the hook SHALL fail the commit with a clear error pointing at the drifted service
+
+#### Scenario: Hook passes on a clean branch state
+
+- **WHEN** `uvx pre-commit run uv-lock-check --all-files` is invoked on a branch where all three services' lockfiles match their `pyproject.toml`
+- **THEN** the hook reports `Passed` and exits 0
+
 ### Requirement: Python service directories SHALL have .dockerignore files
 
 Both `langchain/` and `bloommcp/` SHALL contain `.dockerignore` files that exclude development artifacts (`.git`, `__pycache__`, `.venv`, `.env*`, `*.pyc`, `.mypy_cache`, `.pytest_cache`) from Docker build context. `services/video-worker/` does not need a `.dockerignore` (no Dockerfile exists).
@@ -85,14 +106,21 @@ Both `langchain/` and `bloommcp/` SHALL contain `.dockerignore` files that exclu
 - **WHEN** `docker build` is run for a Python service
 - **THEN** `.venv/`, `__pycache__/`, and `.env*` files are NOT copied into the image
 
-### Requirement: Makefile SHALL use uv instead of pip for Python package management
+### Requirement: Makefile SHALL use uv with an explicit preflight check
 
-All `pip install` calls in the Makefile SHALL be replaced with `uv run --with <packages>` to maintain consistency with the uv-based workflow.
+All `pip install` calls in the Makefile SHALL be replaced with `uv run --with <packages>` to maintain consistency with the uv-based workflow. Each Makefile target that invokes `uv` SHALL perform a preflight check that produces an actionable error message if `uv` is not installed, so developers get a clear install hint rather than a generic `command not found` message.
 
-#### Scenario: Developer loads test data
+#### Scenario: Developer loads test data with uv installed
 
-- **WHEN** a developer runs `make load-test-data`
+- **WHEN** a developer runs `make load-test-data` with `uv` on PATH
 - **THEN** uv is used to install and run the script, not pip
+- **AND** the script executes successfully
+
+#### Scenario: Developer runs a make target without uv installed
+
+- **WHEN** a developer runs `make load-test-data` (or any uv-dependent target) with `uv` NOT on PATH
+- **THEN** the target fails early with a clear error message that includes the `uv` install URL (`https://docs.astral.sh/uv/getting-started/installation/`)
+- **AND** no cryptic `uv: command not found` leaks from an inner shell invocation
 
 ### Requirement: Dependabot SHALL use uv ecosystem for Python dependency updates
 

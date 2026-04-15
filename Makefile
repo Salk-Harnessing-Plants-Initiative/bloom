@@ -226,9 +226,21 @@ apply-migrations-local:
 		echo "Applied $$applied migration(s) successfully."; \
 	fi
 
+# Preflight helper: fail fast with an actionable message if `uv` is not on PATH.
+# Used as a prerequisite by every target that invokes `uv run ...` below so the
+# developer gets a clear install hint instead of a generic `uv: command not found`
+# coming out of the middle of a script.
+.PHONY: check-uv
+check-uv:
+	@command -v uv >/dev/null 2>&1 || ( \
+		echo "Error: uv is required but not installed or not on PATH."; \
+		echo "Install: https://docs.astral.sh/uv/getting-started/installation/"; \
+		exit 1; \
+	)
+
 ## Load test data into development database
 .PHONY: load-test-data
-load-test-data:
+load-test-data: check-uv
 	@echo "Loading test data into development database..."
 	@if ! docker ps | grep -q db-dev; then \
 		echo "Error: Development database not running. Start with 'make dev-up' first."; \
@@ -239,7 +251,7 @@ load-test-data:
 
 ## Upload test images to MinIO storage
 .PHONY: upload-images
-upload-images:
+upload-images: check-uv
 	@echo "Uploading test images to MinIO storage..."
 	@if ! docker ps | grep -q supabase-minio; then \
 		echo "Error: MinIO not running. Start with 'make dev-up' first."; \
@@ -250,7 +262,7 @@ upload-images:
 
 ## Create a new MinIO bucket
 .PHONY: create-bucket
-create-bucket:
+create-bucket: check-uv
 	@if [ -z "$(BUCKET)" ]; then \
 		echo "Error: BUCKET name required. Usage: make create-bucket BUCKET=my-bucket-name [PUBLIC=true]"; \
 		exit 1; \
@@ -268,7 +280,7 @@ create-bucket:
 
 ## List all MinIO buckets
 .PHONY: list-buckets
-list-buckets:
+list-buckets: check-uv
 	@if ! docker ps | grep -q supabase-minio; then \
 		echo "Error: MinIO not running. Start with 'make dev-up' first."; \
 		exit 1; \

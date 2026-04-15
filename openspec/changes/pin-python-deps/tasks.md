@@ -83,3 +83,27 @@
 - [x] 10.2 `grep -rn "requirements.txt" langchain/ bloommcp/ services/video-worker/ .github/workflows/ .github/dependabot.yml Makefile .claude/commands/` returns no hits
 - [x] 10.3 `grep -rn "pip install" langchain/Dockerfile bloommcp/Dockerfile .github/workflows/pr-checks.yml Makefile` returns no hits (except comments explaining the migration)
 - [x] 10.4 Confirm all three `uv.lock` files are committed
+
+## 11. Address Copilot review feedback on PR #126
+
+Four items surfaced by Copilot's automated review of the initial PR. All are legitimate improvements that strengthen reproducibility and cross-platform support.
+
+- [x] 11.1 Pin the uv Docker image by immutable digest in `bloommcp/Dockerfile`:
+  - Change `COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /bin/` to `COPY --from=ghcr.io/astral-sh/uv:0.11@sha256:b1e699368d24c57cda93c338a57a8c5a119009ba809305cc8e86986d4a006754 /uv /uvx /bin/`
+  - Matches the existing digest-pin pattern on the Python base image (`python:3.11-slim@sha256:...`)
+- [x] 11.2 Same digest pin in `langchain/Dockerfile`
+- [x] 11.3 Rebuild both images to verify the digest resolves:
+  - `docker build -f bloommcp/Dockerfile -t bloommcp:digest-test ./bloommcp`
+  - `docker build -f langchain/Dockerfile -t langchain:digest-test ./langchain`
+  - Both must succeed without network resolution of the `0.11` tag
+- [x] 11.4 Create `scripts/check-uv-locks.py` — a cross-platform helper that runs `uv lock --check` in each Python service directory and exits non-zero if any service's lockfile is out of sync. Replaces the `bash -c ... for svc in ... done` pattern in the pre-commit hook so the hook works on Windows without requiring Git Bash.
+- [x] 11.5 Update `.pre-commit-config.yaml` `uv-lock-check` hook:
+  - Change `language: system` to `language: python` (pre-commit's built-in Python runner, cross-platform)
+  - Change `entry:` from the inline bash one-liner to `entry: python scripts/check-uv-locks.py`
+  - Keep the `files:` filter and `pass_filenames: false` as-is
+- [x] 11.6 Add a `uv` preflight check to each Makefile target that uses `uv run --with ...`:
+  - Pattern: `@command -v uv >/dev/null 2>&1 || (echo "Error: uv is required. Install: https://docs.astral.sh/uv/getting-started/installation/" && exit 1)`
+  - Apply to: `load-test-data`, `upload-images`, `create-bucket`, `list-buckets`
+  - Matches the old pattern of checking for Python deps before proceeding
+- [x] 11.7 Verify: `uvx pre-commit run uv-lock-check --all-files` still passes on branch state after the hook rewrite
+- [x] 11.8 Verify: `make load-test-data` (or a dry-run equivalent) surfaces a clear error if `uv` is uninstalled — test by temporarily removing `uv` from PATH

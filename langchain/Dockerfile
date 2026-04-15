@@ -1,7 +1,8 @@
 FROM python:3.11-slim@sha256:9358444059ed78e2975ada2c189f1c1a3144a5dab6f35bff8c981afb38946634
 
-# Install uv from official image
-COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /bin/
+# Install uv from official image (pinned to version + immutable digest so rebuilds
+# are bit-identical; matches the digest-pin pattern on the python base image above)
+COPY --from=ghcr.io/astral-sh/uv:0.11@sha256:b1e699368d24c57cda93c338a57a8c5a119009ba809305cc8e86986d4a006754 /uv /uvx /bin/
 
 # Venv outside /app so dev compose bind-mounts don't shadow it
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PATH"

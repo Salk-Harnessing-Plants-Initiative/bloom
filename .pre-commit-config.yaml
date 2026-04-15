@@ -42,11 +42,13 @@ repos:
 
   # Fail the commit if any service's uv.lock is out of sync with its
   # pyproject.toml. `uv lock --check` resolves in memory without writing.
+  # Uses a checked-in Python script instead of inline bash so the hook works
+  # on Windows contributors who don't have bash on PATH (e.g., no Git Bash).
   - repo: local
     hooks:
       - id: uv-lock-check
         name: uv lock --check (langchain, bloommcp, video-worker)
-        entry: bash -c 'set -e; for svc in langchain bloommcp services/video-worker; do echo "Checking $svc..."; (cd "$svc" && uv lock --check); done'
-        language: system
+        entry: python scripts/check-uv-locks.py
+        language: python
         files: ^(langchain|bloommcp|services/video-worker)/(pyproject\.toml|uv\.lock|\.python-version)$
         pass_filenames: false
