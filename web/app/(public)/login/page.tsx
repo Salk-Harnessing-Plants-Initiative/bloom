@@ -22,7 +22,7 @@ export default function Login() {
       setError('Please fill in the password field')
       return
     }
-    const { data, error } = await supabase.auth.signUp({
+    const { error } = await supabase.auth.signUp({
       email: email + '@salk.edu',
       password,
       options: {
@@ -39,17 +39,10 @@ export default function Login() {
 
   const handleSignIn = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
-    const { data, error } = await supabase.auth.signInWithPassword({
+    const { error } = await supabase.auth.signInWithPassword({
       email: email + '@salk.edu',
       password,
     })
-
-    console.log("_____________________________________________>>>>")
-    console.log("RESPONSE", { data, error })
-    console.log("CLEAN RESPONSE", JSON.stringify(data, null, 2));
-
-    const { data: sessionData } = await supabase.auth.getSession()
-    console.log("Session persisted?", sessionData)
 
     if (error) {
       setError(error.message)
