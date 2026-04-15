@@ -81,6 +81,12 @@ CREATE POLICY anon_read_people ON people FOR SELECT TO anon USING (true);
 -- 5. RLS Policies — bloom_user
 -- ===========================
 
+-- Tables like scrna_cells, cyl_scans, proteins use USING (true) — this means
+-- "allow all rows" but ONLY for the role named in the policy (bloom_user here).
+-- With RLS enabled, a role with no policy gets zero rows even if they have a GRANT.
+-- These are shared scientific datasets where every authenticated user sees all rows.
+-- User-owned tables (species, chat_threads, etc.) use per-row checks instead.
+
 CREATE POLICY user_read_species ON species FOR SELECT TO bloom_user USING (deleted_at IS NULL);
 CREATE POLICY user_read_scrna_datasets ON scrna_datasets FOR SELECT TO bloom_user USING (deleted_at IS NULL);
 CREATE POLICY user_read_scrna_cells ON scrna_cells FOR SELECT TO bloom_user USING (true);
