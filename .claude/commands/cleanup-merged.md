@@ -65,95 +65,20 @@ git branch -a | grep <branch-name> || echo "✅ Branch deleted"
 
 If this PR was tracked with OpenSpec documentation:
 
-### Check for OpenSpec Directory
-
 ```bash
-# List active changes
+# Check if your change exists
 openspec list
 
-# Check if your change exists
-ls openspec/changes/<change-name>
-```
-
-### Archive the Change
-
-```bash
-# Archive using OpenSpec CLI (recommended)
+# Archive it (handles moving, spec updates, and README automatically)
 openspec archive <change-name> --yes
 
 # Verify archival
-openspec list  # Should not show the change anymore
-ls openspec/archive/<change-name>  # Should exist
+openspec list  # Should no longer show the change
 ```
 
-The `openspec archive` command:
+See `openspec/AGENTS.md` Stage 3 for full archive conventions.
 
-- Moves the change to `openspec/archive/`
-- Updates spec files with implemented requirements
-- Marks the change as completed
-
-### Manual Archive (if needed)
-
-If OpenSpec CLI is not available:
-
-```bash
-# Move change to archive
-git mv openspec/changes/<change-name> openspec/archive/<change-name>
-
-# Update archive README
-# (See template below)
-```
-
-### Update Archive README
-
-Add entry to `openspec/archive/README.md`:
-
-```markdown
-### <change-name> (Month Year)
-
-**Status**: ✅ Completed - Merged in PR #<number>
-
-Brief description of what was implemented.
-
-- **Proposal**: [proposal.md](<change-name>/proposal.md)
-- **Tasks**: [tasks.md](<change-name>/tasks.md)
-- **Related Issue**: #<issue-number>
-
-**Key Deliverables**:
-
-- Bullet point summary
-- Of main deliverables
-- And outcomes
-
-**Timeline**: <actual-time> (vs. <estimated-time> estimate)
-```
-
-## 5. Commit Archive Changes
-
-If you manually archived the OpenSpec change:
-
-```bash
-# Stage archive changes
-git add openspec/archive/<change-name>
-git add openspec/archive/README.md
-
-# Commit with descriptive message
-git commit -m "chore: archive <change-name> OpenSpec change
-
-Moved completed OpenSpec change to archive after PR #<number> merge.
-Updated archive README with summary of deliverables.
-
-Related: #<issue>, PR #<pr-number>
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>"
-
-# Push to main
-git push
-```
-
-## 6. Verify Cleanup
+## 5. Verify Cleanup
 
 Confirm cleanup is complete:
 
@@ -168,7 +93,7 @@ openspec list | grep <change-name> || echo "✅ OpenSpec archived"
 git status
 ```
 
-## 7. Summary Checklist
+## 6. Summary Checklist
 
 After cleanup, verify:
 
@@ -177,8 +102,6 @@ After cleanup, verify:
 - ✅ Feature branch deleted locally (`git branch -d`)
 - ✅ Remote tracking cleaned up (`git remote prune origin`)
 - ✅ OpenSpec change archived (if applicable)
-- ✅ Archive README updated (if manual archive)
-- ✅ Changes committed and pushed
 - ✅ Repository clean and organized
 
 ## Common Scenarios

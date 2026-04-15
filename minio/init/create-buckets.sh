@@ -11,7 +11,7 @@ echo "Creating private buckets..."
 mc mb -p local/images || true
 mc mb -p local/species_illustrations || true
 mc mb -p local/tus-files || true
-mc mb -p local/video || true
+mc mb -p local/videos || true
 mc mb -p local/scrna || true
 
 echo "Creating public buckets..."
@@ -25,6 +25,6 @@ mc anonymous set download local/plates-images
 mc anonymous set download local/plate-blob-storage
 
 echo "Buckets created successfully:"
-echo "  Private: images, species_illustrations, tus-files, video, scrna"
+echo "  Private: images, species_illustrations, tus-files, videos, scrna"
 echo "  Public: experiment-log-images, plates-images, plate-blob-storage"
 

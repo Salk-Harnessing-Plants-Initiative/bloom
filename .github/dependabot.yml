@@ -5,7 +5,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
 
@@ -14,6 +14,7 @@ updates:
     directory: "/web"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "docker"
@@ -23,6 +24,7 @@ updates:
     directory: "/langchain"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "docker"
@@ -32,15 +34,17 @@ updates:
     directory: "/bloommcp"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "docker"
 
-  # Docker Compose images (nginx, kong, supabase, minio, etc.)
+  # Docker Compose images (caddy, kong, supabase, minio, etc.)
   - package-ecosystem: "docker-compose"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "docker"
@@ -50,6 +54,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "github-actions"
@@ -59,6 +64,7 @@ updates:
     directory: "/langchain"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "python"
@@ -68,6 +74,7 @@ updates:
     directory: "/bloommcp"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "python"

@@ -15,7 +15,10 @@ help:
 	@echo "  make dev-down         - Stop development stack"
 	@echo "  make prod-up          - Run full stack in production mode"
 	@echo "  make prod-down        - Stop production stack"
+	@echo "  make staging-up       - Run staging stack (port 8080)"
+	@echo "  make staging-down     - Stop staging stack"
 	@echo "  make dev-logs         - Tail development logs"
+	@echo "  make staging-logs     - Tail staging logs"
 	@echo "  make reset-storage    - Reset dev DB and storage (destructive)"
 	@echo "  make drop-tables      - Drop all tables in public schema"
 	@echo "  make new-migration name=xxx - Create a new migration file"
@@ -47,8 +50,8 @@ dev-up:
 rebuild-dev-fresh:
 	@echo "Stopping dev stack if running..."
 	@docker compose -f docker-compose.dev.yml --env-file .env.dev down -v 2>/dev/null || true
-	@echo "Pruning unused volumes..."
-	@docker volume prune -f
+	@echo "Pruning project volumes..."
+	@docker volume ls -q --filter name=bloom_v2 | xargs -r docker volume rm 2>/dev/null || true
 	@echo "Removing existing node_modules for a fresh install..."
 	rm -rf web/node_modules packages/*/node_modules
 	@echo "Rebuilding Dev Stack without cache..."
@@ -90,6 +93,19 @@ prod-down:
 	docker compose -f docker-compose.prod.yml --env-file .env.prod down
 	@echo "All containers stopped."
 
+# Run staging stack (same compose file, different env and project name)
+.PHONY: staging-up
+staging-up:
+	@echo " Starting Bloom Staging Stack..."
+	docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build
+	@echo " Bloom Staging running on port 8080"
+
+# Stop staging
+.PHONY: staging-down
+staging-down:
+	docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging down
+	@echo "Staging containers stopped."
+
 # View logs for all services
 .PHONY: dev-logs
 logs:
@@ -98,6 +114,10 @@ logs:
 .PHONY: prod-logs
 prod-logs:
 	docker compose -f docker-compose.prod.yml logs -f
+
+.PHONY: staging-logs
+staging-logs:
+	docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs -f
 
 
 ## Dev-only destructive operation: reset storage and DB (clear all data)

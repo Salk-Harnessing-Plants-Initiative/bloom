@@ -7,6 +7,9 @@
 
 # testing
 /coverage
+/web/test-results
+/web/playwright-report
+/web/blob-report
 
 # next.js
 /.next/
@@ -57,6 +60,16 @@ htmlcov/
 # project-specific
 /extra
 volumes/
+!volumes/db/
+!volumes/db/*.sql
+!volumes/db/*.sh
+!volumes/db/init/
+!volumes/db/init/*
+volumes/db/data/
+!volumes/api/
+!volumes/api/kong.yml
+!volumes/pooler/
+!volumes/pooler/pooler.exs
 
 # minio
 minio/data/

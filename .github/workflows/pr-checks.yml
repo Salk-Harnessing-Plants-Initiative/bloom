@@ -21,17 +21,29 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Checks npm packages for known CVEs (critical only)
       - name: Security audit (npm)
         run: npm audit --audit-level=critical
 
+      # Ensures auto_https off is not committed — would disable HTTPS in production
+      - name: Check Caddy config has no dev overrides
+        run: |
+          if grep -q "auto_https off" caddy/Caddyfile 2>/dev/null; then
+            echo "::error::caddy/Caddyfile contains 'auto_https off' — remove before merging to main"
+            exit 1
+          fi
+
+      # Compiles bloom-js and bloom-fs TypeScript libraries
       - name: Build shared packages
         run: |
           cd packages/bloom-js && npx tsc -p tsconfig.json
           cd ../../packages/bloom-fs && npx tsc -p tsconfig.json
 
+      # Checks all frontend code for type errors
       - name: TypeScript type check
         run: cd web && npx tsc --noEmit
 
+      # Full production build — catches build errors before merge
       - name: Build Next.js app
         run: cd web && npm run build
         env:
@@ -39,6 +51,7 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
           NEXT_PUBLIC_SUPABASE_COOKIE_NAME: sb-localhost-auth-token
 
+  # Scans Python dependencies for known CVEs
   python-audit:
     name: Python Security Audit for CVEs
     runs-on: ubuntu-latest
@@ -51,12 +64,15 @@ jobs:
         with:
           python-version: '3.11'
 
+      # uv, pip-audit
       - name: Install uv and pip-audit
         run: pip install uv && uv pip install --system pip-audit
 
+      # Checks langchain agent Python packages for vulnerabilities
       - name: Audit langchain dependencies
         run: pip-audit -r langchain/requirements.txt
 
+      # Checks bloommcp server Python packages for vulnerabilities
       - name: Audit bloommcp dependencies
         run: pip-audit -r bloommcp/requirements.txt
 
@@ -180,6 +196,159 @@ jobs:
           severity: 'CRITICAL'
           exit-code: '1'
           trivyignores: '.trivyignore'
+
+  compose-health-check:
+    name: Docker Compose Health Check
+    needs: docker-build
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate .env.ci from secrets
+        run: |
+          echo "POSTGRES_DB=postgres" > .env.ci
+          echo "POSTGRES_USER=supabase_admin" >> .env.ci
+          echo "POSTGRES_PORT=5432" >> .env.ci
+          echo "POSTGRES_HOST=db-prod" >> .env.ci
+          echo "PGRST_DB_SCHEMAS=public,auth,storage" >> .env.ci
+          echo "JWT_EXPIRY=3600" >> .env.ci
+          echo "ENABLE_ANONYMOUS_USERS=false" >> .env.ci
+          echo "ENABLE_EMAIL_SIGNUP=true" >> .env.ci
+          echo "ENABLE_EMAIL_AUTOCONFIRM=true" >> .env.ci
+          echo "DISABLE_SIGNUP=false" >> .env.ci
+          echo "API_EXTERNAL_URL=http://localhost:9999" >> .env.ci
+          echo "ADDITIONAL_REDIRECT_URLS=http://localhost" >> .env.ci
+          echo "SITE_URL=http://localhost" >> .env.ci
+          echo "NEXT_PUBLIC_SUPABASE_URL=http://kong:8000" >> .env.ci
+          echo "SUPABASE_URL=http://kong:8000" >> .env.ci
+          echo "SUPABASE_COOKIE_NAME=sb-ci-auth-token" >> .env.ci
+          echo "NEXT_PUBLIC_APP_URL=http://localhost" >> .env.ci
+          echo "SUPABASE_PUBLIC_URL=http://localhost/api" >> .env.ci
+          echo "POOLER_TENANT_ID=default" >> .env.ci
+          echo "POOLER_DEFAULT_POOL_SIZE=5" >> .env.ci
+          echo "POOLER_MAX_CLIENT_CONN=100" >> .env.ci
+          echo "POOLER_DB_POOL_SIZE=10" >> .env.ci
+          echo "DASHBOARD_USERNAME=ci-admin" >> .env.ci
+          echo "DASHBOARD_PASSWORD=ci-changeme" >> .env.ci
+          echo "STUDIO_DEFAULT_ORGANIZATION=ci-org" >> .env.ci
+          echo "STUDIO_DEFAULT_PROJECT=ci-project" >> .env.ci
+          echo "STUDIO_SUPABASE_PUBLIC_URL=http://localhost" >> .env.ci
+          echo "MINIO_ROOT_USER=ci-supabase" >> .env.ci
+          echo "MINIO_DATA_PATH=/tmp/minio-ci" >> .env.ci
+          echo "IMGPROXY_URL=http://imgproxy:5001" >> .env.ci
+          echo "IMGPROXY_ENABLE_WEBP_DETECTION=true" >> .env.ci
+          echo "DOMAIN_MAIN=localhost" >> .env.ci
+          echo "DOMAIN_STUDIO=studio.localhost" >> .env.ci
+          echo "DOMAIN_MINIO=minio.localhost" >> .env.ci
+          echo "DOMAIN_FLASK=api.localhost" >> .env.ci
+          echo "BLOOM_PLOTS_DIR=/app/data/PLOTS_DIR" >> .env.ci
+          echo "BLOOM_PLOTS_URL=http://localhost:5002/plots" >> .env.ci
+          echo "BLOOMMCP_API_KEY=ci-placeholder" >> .env.ci
+          echo "BLOOM_MCP_URL=http://bloommcp:8811/mcp" >> .env.ci
+          echo "OPENAI_API_KEY=sk-ci-not-real" >> .env.ci
+          echo "LANGCHAIN_TRACING_V2=false" >> .env.ci
+          echo "LANGCHAIN_API_KEY=" >> .env.ci
+          echo "LANGCHAIN_PROJECT=bloom-ci" >> .env.ci
+          echo "CORS_ORIGINS=http://localhost" >> .env.ci
+          echo "CADDY_HTTP_LISTEN_PORT=80" >> .env.ci
+          echo "CADDY_HTTPS_LISTEN_PORT=443" >> .env.ci
+          echo "CADDY_HTTP_PORT=:80" >> .env.ci
+          echo "KONG_PORT=8000" >> .env.ci
+          echo "BLOOM_WEB_PORT=3000" >> .env.ci
+          echo "STUDIO_PORT=3000" >> .env.ci
+          echo "MINIO_CONSOLE_PORT=9001" >> .env.ci
+          echo "MINIO_BROWSER_REDIRECT_URL=http://minio.localhost" >> .env.ci
+          echo "POSTGRES_PASSWORD=${{ secrets.CI_POSTGRES_PASSWORD }}" >> .env.ci
+          echo "ANON_KEY=${{ secrets.CI_ANON_KEY }}" >> .env.ci
+          echo "SERVICE_ROLE_KEY=${{ secrets.CI_SERVICE_ROLE_KEY }}" >> .env.ci
+          echo "JWT_SECRET=${{ secrets.CI_JWT_SECRET }}" >> .env.ci
+          echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.CI_ANON_KEY }}" >> .env.ci
+          echo "SUPAVISOR_ENC_KEY=${{ secrets.CI_SUPAVISOR_ENC_KEY }}" >> .env.ci
+          echo "VAULT_ENC_KEY=${{ secrets.CI_VAULT_ENC_KEY }}" >> .env.ci
+          echo "SECRET_KEY_BASE=${{ secrets.CI_SECRET_KEY_BASE }}" >> .env.ci
+          echo "MINIO_ROOT_PASSWORD=${{ secrets.CI_MINIO_PASSWORD }}" >> .env.ci
+          echo "DB_ENC_KEY=${{ secrets.CI_DB_ENC_KEY }}" >> .env.ci
+          echo "LANGCHAIN_POSTGRES_URL=postgresql://supabase_admin:${{ secrets.CI_POSTGRES_PASSWORD }}@db-prod:5432/postgres" >> .env.ci
+
+      - name: Create MinIO data directory
+        run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci
+
+      - name: Start database
+        run: |
+          docker compose -f docker-compose.prod.yml --env-file .env.ci up -d db-prod
+          echo "Waiting for database to be healthy..."
+          timeout 180 bash -c 'until docker compose -f docker-compose.prod.yml --env-file .env.ci ps db-prod --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
+          echo "Database is healthy!"
+
+      - name: Start remaining services
+        run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build
+
+      - name: Wait for services to be healthy
+        run: |
+          echo "Waiting for services to become healthy..."
+          TIMEOUT=180
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            UNHEALTHY=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r '.[] | select(.Health == "unhealthy" or .Health == "starting") | .Name' 2>/dev/null | wc -l)
+            EXITED=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r '.[] | select(.State == "exited" and .ExitCode != 0) | .Name' 2>/dev/null | wc -l)
+            if [ "$UNHEALTHY" -eq 0 ] && [ "$EXITED" -eq 0 ]; then
+              echo "All services healthy!"
+              docker compose -f docker-compose.prod.yml --env-file .env.ci ps
+              exit 0
+            fi
+            echo "Waiting... (${ELAPSED}s / ${TIMEOUT}s) — ${UNHEALTHY} unhealthy, ${EXITED} failed"
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          echo "::error::Services did not become healthy within ${TIMEOUT}s"
+          docker compose -f docker-compose.prod.yml --env-file .env.ci ps
+          docker compose -f docker-compose.prod.yml --env-file .env.ci logs --tail=50
+          exit 1
+
+      - name: Apply database migrations
+        run: |
+          for f in supabase/migrations/*.sql; do
+            echo "Applying $f ..."
+            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
+              -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
+              psql -U supabase_admin -d postgres -f - < "$f" 2>&1 || true
+          done
+          echo "All migrations applied."
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+
+      # Runs 22 integration tests (smoke, auth, RLS, storage, API routing) against the live compose stack
+      # Skips if tests/integration/ doesn't exist on this branch
+      - name: Run integration tests
+        run: |
+          if [ -d "tests/integration" ]; then
+            pip install uv
+            uv run --with pytest pytest tests/integration/ -v --tb=short
+          else
+            echo "No integration tests found — skipping"
+          fi
+        env:
+          TEST_BASE_URL: http://localhost
+          ANON_KEY: ${{ secrets.CI_ANON_KEY }}
+          SERVICE_ROLE_KEY: ${{ secrets.CI_SERVICE_ROLE_KEY }}
+
+      - name: Debug logs on failure
+        if: failure()
+        run: |
+          echo "=== Container Status ==="
+          docker compose -f docker-compose.prod.yml --env-file .env.ci ps
+          echo "=== db-prod logs ==="
+          docker compose -f docker-compose.prod.yml --env-file .env.ci logs db-prod --tail=100
+          echo "=== kong logs ==="
+          docker compose -f docker-compose.prod.yml --env-file .env.ci logs kong --tail=50
+          echo "=== caddy logs ==="
+          docker compose -f docker-compose.prod.yml --env-file .env.ci logs caddy --tail=50
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker-compose.prod.yml --env-file .env.ci down -v
 
   extract-pinned-images:
     name: Extract Pinned Images

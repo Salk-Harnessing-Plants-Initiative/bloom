@@ -75,7 +75,7 @@ services:
     environment:
       NODE_ENV: production
       # Internal Docker network - connect directly to Kong
-      SUPABASE_URL: http://kong:8000
+      SUPABASE_URL: ${SUPABASE_URL}
       # Public URL - for browser (baked into build)
       NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
@@ -105,7 +105,7 @@ services:
     expose:
       - "5002"
     environment:
-      SUPABASE_URL: http://kong:8000
+      SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: gpt-4o
@@ -158,7 +158,7 @@ services:
     expose:
       - "8811"
     environment:
-      SUPABASE_URL: http://kong:8000
+      SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
       BLOOM_TRAITS_DIR: /app/data/SLEAP_OUT_CSV
       BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
@@ -172,7 +172,7 @@ services:
     networks:
       - supanet
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8811/mcp')"]
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request; r=urllib.request.Request('http://localhost:8811/mcp', headers={'Authorization': 'Bearer '+os.environ.get('BLOOMMCP_API_KEY','')}); urllib.request.urlopen(r)\""]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -214,7 +214,7 @@ services:
   # Auth (GoTrue)
   # -------------------
   auth:
-    image: supabase/gotrue:v2.188.1
+    image: supabase/gotrue:v2.188.1@sha256:87db8c737af49a64236c461882ed3925f8b1e5c2c47176c64694dedc65153573
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -239,12 +239,16 @@ services:
       GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP}
       GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS}
       GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM}
-  
+
+      # Custom access token hook — assigns bloom_user/bloom_admin role via JWT
+      GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_ENABLED: "true"
+      GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_URI: "pg-functions://postgres/public/custom_access_token_hook"
+
   # -------------------
   # PostgREST
   # -------------------
   rest:
-    image: postgrest/postgrest:v12.2.12
+    image: postgrest/postgrest:v12.2.12@sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -315,15 +319,22 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_BROWSER_REDIRECT_URL: http://minio.localhost
+      MINIO_BROWSER_REDIRECT_URL: ${MINIO_BROWSER_REDIRECT_URL}
     command: server --console-address ":9001" /data
     volumes:
       - ${MINIO_DATA_PATH}:/data
-  
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     depends_on:
-      - supabase-minio
+      supabase-minio:
+        condition: service_healthy
     networks:
       - supanet
     entrypoint: ["/bin/sh", "/usr/local/bin/init/create-buckets.sh"]
@@ -373,7 +384,6 @@ services:
   # Database (Postgres)
   # -------------------
   db-prod:
-    container_name: db-prod
     image: supabase/postgres:15.14.1.104
     restart: unless-stopped
     security_opt:
@@ -405,6 +415,12 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXP: ${JWT_EXPIRY}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supabase_admin} -d ${POSTGRES_DB:-postgres} -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     command:
       [
         "postgres",
@@ -418,7 +434,6 @@ services:
   # Supavisor (Connection Pooler)
   # -------------------
   supavisor:
-    container_name: supabase-pooler
     image: supabase/supavisor:2.7.4
     restart: unless-stopped
     security_opt:
@@ -460,7 +475,6 @@ services:
   # Supabase Studio
   # -------------------
   studio:
-    container_name: studio
     image: supabase/studio:2026.03.30-sha-12a43e5
     restart: unless-stopped
     security_opt:
@@ -470,9 +484,8 @@ services:
     networks:
       - supanet
     expose:
-    - "3000"
-    ports:
-      - "${STUDIO_PORT}:3000"
+      - "3000"
+    # Studio accessible via Caddy DOMAIN_STUDIO route — no direct port exposure in prod
     environment:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -490,7 +503,6 @@ services:
   # ImgProxy
   # -------------------
   imgproxy:
-    container_name: supabase-imgproxy-prod
     image: darthsim/imgproxy:v3.31.1
     restart: unless-stopped
     security_opt:
@@ -506,7 +518,6 @@ services:
       IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
   
   meta:
-    container_name: supabase-meta-prod
     image: supabase/postgres-meta:v0.96.2
     restart: unless-stopped
     security_opt:

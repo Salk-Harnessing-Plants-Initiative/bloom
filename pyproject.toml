@@ -1,0 +1,14 @@
+[project]
+name = "bloom-tests"
+version = "0.1.0"
+description = "Integration tests for Bloom v2"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "integration: marks tests that require the compose stack to be running",
+]
