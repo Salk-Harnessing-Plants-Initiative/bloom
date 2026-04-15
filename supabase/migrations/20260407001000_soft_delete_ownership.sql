@@ -46,7 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_threads_deleted_at ON chat_threads(deleted_a
 CREATE OR REPLACE FUNCTION soft_delete(target_table TEXT, target_id BIGINT)
 RETURNS VOID AS $$
 BEGIN
-  -- Only bloom_admin can soft-delete rows
+  -- Only bloom_admin can soft-delete rows, this check within the function is extra postgres RLS poliecy already checks this.
   IF NOT pg_has_role(current_user, 'bloom_admin', 'MEMBER') THEN
     RAISE EXCEPTION 'soft_delete: only bloom_admin can soft-delete rows';
   END IF;
