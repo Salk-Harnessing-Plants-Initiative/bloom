@@ -294,10 +294,11 @@ jobs:
       # Apply all supabase migrations (creates tables, roles, bucket registrations, RLS policies)
       - name: Apply database migrations
         run: |
-          echo "Applying $(ls supabase/migrations/*.sql | wc -l) migrations..."
+          echo "Applying migrations in order:"
+          ls -1 supabase/migrations/*.sql | sort
           for migration in supabase/migrations/*.sql; do
             echo "  Running: $(basename $migration)"
-            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod psql -U supabase_admin -d postgres -f /dev/stdin < "$migration" 2>&1 || {
+            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$migration" 2>&1 || {
               echo "::error::Migration failed: $(basename $migration)"
               exit 1
             }
