@@ -5,6 +5,7 @@ Supports multiple LLM providers: OpenAI, Local (vLLM)
 import os
 from typing import Optional, Literal
 
+import httpx
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langchain_openai import ChatOpenAI
@@ -233,7 +234,6 @@ def _detect_vllm_model() -> str:
     if not LOCAL_LLM_URL:
         raise RuntimeError("LOCAL_LLM_URL environment variable is required")
     try:
-        import httpx
         response = httpx.get(f"{LOCAL_LLM_URL}/models", timeout=5)
         response.raise_for_status()
         models = response.json().get("data", [])
