@@ -112,7 +112,7 @@ CONVERSATION:
 
 SUMMARY:"""
 
-# used fro summarizations when the LLM call fails
+# used for summarization when the LLM call fails
 def _extract_summary(messages: list) -> str:
     """Fallback: extract key items from messages without an LLM call."""
     key_items = []
