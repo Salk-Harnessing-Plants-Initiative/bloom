@@ -18,6 +18,7 @@ from rich.traceback import install
 from tools import all_tools, generic_tools, scrna_tools, cyl_tools, context_tools
 
 install()
+logger = logging.getLogger(__name__)
 
 logging.basicConfig(
     level=logging.DEBUG,
