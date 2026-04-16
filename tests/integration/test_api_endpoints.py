@@ -70,13 +70,6 @@ def test_bloom_web_returns_html(api):
 
 
 def test_studio_reachable(api):
-    """Supabase Studio container is running."""
-    import subprocess
-    # Use plain `docker ps` to avoid needing an env-file for compose variable
-    # interpolation (MINIO_DATA_PATH etc. cause parse errors without one).
-    result = subprocess.run(
-        ["docker", "ps", "--filter", "name=studio", "--format", "{{.Names}} {{.Status}}"],
-        capture_output=True, text=True
-    )
-    assert result.returncode == 0, f"docker ps failed: {result.stderr}"
-    assert "studio" in result.stdout.lower(), f"Studio container not found: {result.stdout}"
+    """Supabase Studio responds through Caddy."""
+    status, body = api("/", headers={"Host": "studio.localhost"})
+    assert status == 200
