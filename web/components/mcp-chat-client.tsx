@@ -158,7 +158,7 @@ export default function MCPChat() {
   const [AVAILABLE_MODELS, setAvailableModels] = useState<Record<string, string[]>>(AVAILABLE_MODELS_DEFAULT);
 
   useEffect(() => {
-    fetch("/api/langchain/models")
+    fetch(`${API_BASE_URL}/langchain/models`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
