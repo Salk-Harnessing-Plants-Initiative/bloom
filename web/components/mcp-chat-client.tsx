@@ -33,20 +33,9 @@ const TOOL_SET_OPTIONS: { value: ToolSet; label: string; description: string }[]
   { value: "generic", label: "Generic", description: "Basic database queries only" },
 ];
 
-// Default models — overwritten by /langchain/models API on load
-let AVAILABLE_MODELS: Record<string, string[]> = {
-  local: ["loading..."],
+const AVAILABLE_MODELS_DEFAULT: Record<string, string[]> = {
+  local: [],
 };
-
-// Fetch models from backend on module load
-if (typeof window !== "undefined") {
-  fetch("/api/langchain/models")
-    .then((r) => r.json())
-    .then((data) => {
-      if (data.models) AVAILABLE_MODELS = data.models;
-    })
-    .catch(() => {});
-}
 
 const PROVIDER_LABELS: Record<Provider, string> = {
   local: "Local LLM",
@@ -164,6 +153,21 @@ export default function MCPChat() {
 
   // MCP Tools collapsible
   const [mcpToolsCollapsed, setMcpToolsCollapsed] = useState(true);
+
+  // Available models — fetched from backend
+  const [AVAILABLE_MODELS, setAvailableModels] = useState<Record<string, string[]>>(AVAILABLE_MODELS_DEFAULT);
+
+  useEffect(() => {
+    fetch("/api/langchain/models")
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (data.models) setAvailableModels(data.models);
+      })
+      .catch(() => {});
+  }, []);
 
   // LLM Settings
   const [settings, setSettings] = useState<LLMSettings>(() => ({
