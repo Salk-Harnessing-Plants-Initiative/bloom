@@ -33,6 +33,10 @@ GRANT bloom_user TO authenticator;
 GRANT bloom_admin TO authenticator;
 GRANT bloom_agent TO authenticator;
 
+-- Restrict soft_delete (from migration 001) to bloom_admin only
+REVOKE EXECUTE ON FUNCTION soft_delete(TEXT, BIGINT) FROM public;
+GRANT EXECUTE ON FUNCTION soft_delete(TEXT, BIGINT) TO bloom_admin;
+
 -- ===========================
 -- 2. Schema + Table Permissions
 -- ===========================
