@@ -475,7 +475,7 @@ export default function MCPChat() {
               LLM Provider
             </div>
             <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-              {(["local", "openai"] as Provider[]).map((p) => (
+              {(Object.keys(AVAILABLE_MODELS) as Provider[]).map((p) => (
                 <button
                   key={p}
                   onClick={() => handleProviderChange(p)}
