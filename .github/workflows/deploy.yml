@@ -120,17 +120,19 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
             for i in \$(seq 1 60); do
-              HEALTHY=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps --format json | jq '[.[] | select(.Health == \"healthy\")] | length' 2>/dev/null || echo 0)
-              echo \"  \$HEALTHY services healthy (\$i/60)\"
-              if [ \"\$HEALTHY\" -ge 3 ]; then
+              UNHEALTHY=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps --format json | jq '[.[] | select(.State == \"restarting\" or .Health == \"unhealthy\")] | length' 2>/dev/null || echo 99)
+              EXITED=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps --format json | jq '[.[] | select(.State == \"exited\" and .ExitCode != 0)] | length' 2>/dev/null || echo 99)
+              echo \"  unhealthy=\$UNHEALTHY exited=\$EXITED (\$i/60)\"
+              if [ \"\$UNHEALTHY\" -eq 0 ] && [ \"\$EXITED\" -eq 0 ]; then
                 echo 'Production deployed successfully!'
                 docker compose -f docker-compose.prod.yml --env-file .env.prod ps
                 exit 0
               fi
               sleep 5
             done
-            echo 'WARNING: Not all services healthy'
+            echo 'DEPLOY FAILED: services in bad state'
             docker compose -f docker-compose.prod.yml --env-file .env.prod ps
+            docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=50
             exit 1
           "
 
@@ -241,17 +243,19 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
             for i in \$(seq 1 60); do
-              HEALTHY=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps --format json | jq '[.[] | select(.Health == \"healthy\")] | length' 2>/dev/null || echo 0)
-              echo \"  \$HEALTHY services healthy (\$i/60)\"
-              if [ \"\$HEALTHY\" -ge 3 ]; then
+              UNHEALTHY=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps --format json | jq '[.[] | select(.State == \"restarting\" or .Health == \"unhealthy\")] | length' 2>/dev/null || echo 99)
+              EXITED=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps --format json | jq '[.[] | select(.State == \"exited\" and .ExitCode != 0)] | length' 2>/dev/null || echo 99)
+              echo \"  unhealthy=\$UNHEALTHY exited=\$EXITED (\$i/60)\"
+              if [ \"\$UNHEALTHY\" -eq 0 ] && [ \"\$EXITED\" -eq 0 ]; then
                 echo 'Staging deployed successfully!'
                 docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
                 exit 0
               fi
               sleep 5
             done
-            echo 'WARNING: Not all services healthy'
+            echo 'DEPLOY FAILED: services in bad state'
             docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --tail=50
             exit 1
           "
 
