@@ -117,13 +117,13 @@ def _extract_summary(messages: list) -> str:
     for msg in messages:
         content = str(msg.content)
         if isinstance(msg, HumanMessage):
-            key_items.append(f"User asked: {content[:200]}")
+            key_items.append(f"User asked: {content[:500]}")
         elif isinstance(msg, AIMessage):
             if msg.tool_calls:
                 for tc in msg.tool_calls:
                     key_items.append(f"Called {tc.get('name', 'tool')}({str(tc.get('args', ''))[:100]})")
             elif content:
-                key_items.append(f"Assistant: {content[:200]}")
+                key_items.append(f"Assistant: {content[:500]}")
     return "Conversation summary:\n" + "\n".join(f"- {item}" for item in key_items)
 
 
