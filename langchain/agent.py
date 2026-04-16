@@ -258,7 +258,7 @@ def get_local_model() -> str:
     return _cached_model
 
 AVAILABLE_MODELS = {
-    "local": [LOCAL_LLM_MODEL or "auto-detect"],
+    "local": [get_local_model()],
 }
 
 
