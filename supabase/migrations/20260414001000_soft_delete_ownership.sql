@@ -58,9 +58,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Restrict soft_delete to bloom_admin only
-REVOKE EXECUTE ON FUNCTION soft_delete(TEXT, BIGINT) FROM public;
-GRANT EXECUTE ON FUNCTION soft_delete(TEXT, BIGINT) TO bloom_admin;
+-- Note: REVOKE/GRANT for soft_delete is in migration 002 (after bloom_admin role is created)
 
 -- -------------------
 -- 4. Auto-set created_by on insert via trigger
