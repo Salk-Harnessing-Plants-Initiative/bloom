@@ -48,5 +48,5 @@ CREATE TABLE rhizovision_results (
     surface_area INT,
     other_features JSONB,
 
-    CONSTRAINT fk_rviz_images FOREIGN KEY (barcode) REFERENCES rhizovision_images(barcode) ON DELETE SET NULL
+    CONSTRAINT fk_rviz_images FOREIGN KEY (plant_id) REFERENCES rhizovision_images(plant_id) ON DELETE SET NULL
 );

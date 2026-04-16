@@ -275,12 +275,45 @@ jobs:
       - name: Create MinIO data directory
         run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci
 
+      - name: Start MinIO and create buckets
+        run: |
+          docker compose -f docker-compose.prod.yml --env-file .env.ci up -d supabase-minio
+          echo "Waiting for MinIO to be healthy..."
+          timeout 60 bash -c 'until docker compose -f docker-compose.prod.yml --env-file .env.ci ps supabase-minio --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
+          echo "MinIO is healthy!"
+          docker compose -f docker-compose.prod.yml --env-file .env.ci run --rm minio-init
+          echo "Buckets created!"
+
       - name: Start database
         run: |
           docker compose -f docker-compose.prod.yml --env-file .env.ci up -d db-prod
           echo "Waiting for database to be healthy..."
           timeout 180 bash -c 'until docker compose -f docker-compose.prod.yml --env-file .env.ci ps db-prod --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
           echo "Database is healthy!"
+
+      # Apply all supabase migrations (creates tables, roles, bucket registrations, RLS policies)
+      - name: Apply database migrations
+        run: |
+          echo "Applying migrations in order:"
+          ls -1 supabase/migrations/*.sql | sort
+          for migration in supabase/migrations/*.sql; do
+            # Skip migrations that reference storage schema — storage-api not started yet (see #132)
+            if [[ "$(basename $migration)" == *bucket* ]] || grep -v '^\s*--' "$migration" 2>/dev/null | grep -q "storage\.objects\|storage\.buckets"; then
+              echo "  Skipping (storage not available in CI): $(basename $migration)"
+              continue
+            fi
+            echo "  Running: $(basename $migration)"
+            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$migration" 2>&1 || {
+              echo "::error::Migration failed: $(basename $migration)"
+              exit 1
+            }
+          done
+          echo "Migrations complete!"
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+
+      # Storage bucket verification skipped in CI — storage schema not available.
+      # Run locally with: make apply-migrations-local
 
       - name: Start remaining services
         run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build
@@ -306,18 +339,6 @@ jobs:
           docker compose -f docker-compose.prod.yml --env-file .env.ci ps
           docker compose -f docker-compose.prod.yml --env-file .env.ci logs --tail=50
           exit 1
-
-      - name: Apply database migrations
-        run: |
-          for f in supabase/migrations/*.sql; do
-            echo "Applying $f ..."
-            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
-              -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
-              psql -U supabase_admin -d postgres -f - < "$f" 2>&1 || true
-          done
-          echo "All migrations applied."
-        env:
-          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
 
       # Runs 22 integration tests (smoke, auth, RLS, storage, API routing) against the live compose stack
       # Skips if tests/integration/ doesn't exist on this branch
