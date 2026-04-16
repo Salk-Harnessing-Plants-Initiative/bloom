@@ -33,6 +33,10 @@ GRANT bloom_user TO authenticator;
 GRANT bloom_admin TO authenticator;
 GRANT bloom_agent TO authenticator;
 
+-- Restrict soft_delete (from migration 001) to bloom_admin only
+REVOKE EXECUTE ON FUNCTION soft_delete(TEXT, BIGINT) FROM public;
+GRANT EXECUTE ON FUNCTION soft_delete(TEXT, BIGINT) TO bloom_admin;
+
 -- ===========================
 -- 2. Schema + Table Permissions
 -- ===========================
@@ -62,7 +66,6 @@ ALTER TABLE cyl_experiments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cyl_scans ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cyl_plants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cyl_waves ENABLE ROW LEVEL SECURITY;
-ALTER TABLE proteins ENABLE ROW LEVEL SECURITY;
 ALTER TABLE gene_candidates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE people ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_threads ENABLE ROW LEVEL SECURITY;
@@ -78,7 +81,7 @@ ALTER TABLE chat_threads ENABLE ROW LEVEL SECURITY;
 -- 5. RLS Policies — bloom_user
 -- ===========================
 
--- Tables like scrna_cells, cyl_scans, proteins use USING (true) — this means
+-- Tables like scrna_cells, cyl_scans, people use USING (true) — this means
 -- "allow all rows" but ONLY for the role named in the policy (bloom_user here).
 -- With RLS enabled, a role with no policy gets zero rows even if they have a GRANT.
 -- These are shared scientific datasets where every authenticated user sees all rows.
@@ -93,7 +96,6 @@ CREATE POLICY user_read_cyl_experiments ON cyl_experiments FOR SELECT TO bloom_u
 CREATE POLICY user_read_cyl_scans ON cyl_scans FOR SELECT TO bloom_user USING (true);
 CREATE POLICY user_read_cyl_plants ON cyl_plants FOR SELECT TO bloom_user USING (true);
 CREATE POLICY user_read_cyl_waves ON cyl_waves FOR SELECT TO bloom_user USING (true);
-CREATE POLICY user_read_proteins ON proteins FOR SELECT TO bloom_user USING (true);
 CREATE POLICY user_read_gene_candidates ON gene_candidates FOR SELECT TO bloom_user USING (deleted_at IS NULL);
 CREATE POLICY user_read_people ON people FOR SELECT TO bloom_user USING (true);
 CREATE POLICY user_read_chat_threads ON chat_threads FOR SELECT TO bloom_user USING (deleted_at IS NULL);
@@ -122,7 +124,6 @@ CREATE POLICY admin_all_cyl_experiments ON cyl_experiments FOR ALL TO bloom_admi
 CREATE POLICY admin_all_cyl_scans ON cyl_scans FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
 CREATE POLICY admin_all_cyl_plants ON cyl_plants FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
 CREATE POLICY admin_all_cyl_waves ON cyl_waves FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
-CREATE POLICY admin_all_proteins ON proteins FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
 CREATE POLICY admin_all_gene_candidates ON gene_candidates FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
 CREATE POLICY admin_all_people ON people FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
 CREATE POLICY admin_all_chat_threads ON chat_threads FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
@@ -140,7 +141,6 @@ CREATE POLICY agent_read_cyl_experiments ON cyl_experiments FOR SELECT TO bloom_
 CREATE POLICY agent_read_cyl_scans ON cyl_scans FOR SELECT TO bloom_agent USING (true);
 CREATE POLICY agent_read_cyl_plants ON cyl_plants FOR SELECT TO bloom_agent USING (true);
 CREATE POLICY agent_read_cyl_waves ON cyl_waves FOR SELECT TO bloom_agent USING (true);
-CREATE POLICY agent_read_proteins ON proteins FOR SELECT TO bloom_agent USING (true);
 CREATE POLICY agent_read_gene_candidates ON gene_candidates FOR SELECT TO bloom_agent USING (deleted_at IS NULL);
 CREATE POLICY agent_read_people ON people FOR SELECT TO bloom_agent USING (true);
 CREATE POLICY agent_read_chat_threads ON chat_threads FOR SELECT TO bloom_agent USING (deleted_at IS NULL);

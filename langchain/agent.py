@@ -5,19 +5,20 @@ Supports multiple LLM providers: OpenAI, Local (vLLM)
 import os
 from typing import Optional, Literal
 
+import httpx
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import trim_messages
+from langchain_core.messages import trim_messages, SystemMessage, AIMessage, HumanMessage
 from psycopg_pool import AsyncConnectionPool
 
 import logging
 from rich.logging import RichHandler
 from rich.traceback import install
-from tools import all_tools, generic_tools, scrna_tools, cyl_tools
-from config import FRONTEND_URL
+from tools import all_tools, generic_tools, scrna_tools, cyl_tools, context_tools
 
 install()
+logger = logging.getLogger(__name__)
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -79,31 +80,186 @@ async def setup_checkpointer() -> AsyncPostgresSaver:
     return checkpointer
 
 
-def trim_conversation(state):
-    """Pre-model hook: trim messages to fit within model context limits.
+#################################################### Context Management ####################################################
 
-    Uses llm_input_messages so the full history remains in the checkpointer
-    but only recent messages are sent to the LLM. Keeps last ~8000 tokens
-    """
-    messages = state["messages"]
-    trimmed = trim_messages(
-        messages,
-        strategy="last",
-        max_tokens=8000,
-        token_counter=lambda msgs: sum(len(str(m.content)) for m in msgs),  # char-based approx: ~4 chars per token
-        include_system=True,
-        allow_partial=False,
-        start_on="human",
-    )
-    return {"llm_input_messages": trimmed}
 
-AVAILABLE_MODELS = {
-    "openai": ["gpt-4o"],
-    "local": ["Qwen/Qwen3-8B"],
+def _count_tokens(messages) -> int:
+    """Approximate token count (~4 chars per token)."""
+    return sum(len(str(m.content)) for m in messages) // 4
+
+
+def _has_context_call(messages) -> bool:
+    """Check if get_agent_context was already called in the conversation."""
+    for msg in messages:
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            for tc in msg.tool_calls:
+                if tc.get("name") == "get_agent_context":
+                    return True
+    return False
+
+
+SUMMARIZATION_PROMPT = """Summarize the following conversation between a user and an AI assistant on a plant biology platform.
+
+RULES:
+- Preserve ALL gene IDs (e.g., AT1G01010), dataset IDs, species names, and numeric results
+- Preserve key findings (GO terms, interaction partners, expression values, trait measurements)
+- Preserve user decisions and preferences
+- Keep it concise — aim for 200-400 words
+- Use bullet points grouped by topic
+
+CONVERSATION:
+{conversation}
+
+SUMMARY:"""
+
+# used for summarization when the LLM call fails
+def _extract_summary(messages: list) -> str:
+    """Fallback: extract key items from messages without an LLM call."""
+    key_items = []
+    for msg in messages:
+        content = str(msg.content)
+        if isinstance(msg, HumanMessage):
+            key_items.append(f"User asked: {content[:500]}")
+        elif isinstance(msg, AIMessage):
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    key_items.append(f"Called {tc.get('name', 'tool')}({str(tc.get('args', ''))[:100]})")
+            elif content:
+                key_items.append(f"Assistant: {content[:500]}")
+    return "Conversation summary:\n" + "\n".join(f"- {item}" for item in key_items)
+
+
+async def _llm_summarize(messages: list, llm) -> str:
+    """Summarize messages using the active LLM. Falls back to extraction on failure."""
+    logger = logging.getLogger(__name__)
+    try:
+        # Build conversation text from messages
+        lines = []
+        for msg in messages:
+            content = str(msg.content)[:500]
+            if isinstance(msg, HumanMessage):
+                lines.append(f"User: {content}")
+            elif isinstance(msg, AIMessage):
+                if msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        lines.append(f"Assistant [tool call]: {tc.get('name', 'tool')}({str(tc.get('args', ''))[:200]})")
+                if content:
+                    lines.append(f"Assistant: {content}")
+
+        conversation_text = "\n".join(lines)
+        prompt = SUMMARIZATION_PROMPT.format(conversation=conversation_text)
+
+        response = await llm.ainvoke(prompt)
+        summary = response.content.strip()
+        logger.info(f"LLM summarization complete ({len(summary)} chars)")
+        return f"Conversation summary:\n{summary}"
+    except Exception as e:
+        logger.warning(f"LLM summarization failed ({e}), falling back to extraction")
+        return _extract_summary(messages)
+
+
+# Token thresholds by provider
+TOKEN_THRESHOLDS = {
+    "local": {"summarize_at": 6000, "keep_recent": 4000},
+    "openai": {"summarize_at": 100000, "keep_recent": 50000},
 }
+
+
+def make_pre_model_hook(provider: str = "openai", llm=None):
+    """Create a pre-model hook with LLM summarization and context injection.
+
+    Returns an async function that:
+    1. Checks if get_agent_context was called; if not, injects a reminder
+    2. When messages exceed the token threshold, uses the LLM to summarize old messages
+    3. Returns trimmed messages for the LLM
+    """
+    # uses openai 100K threshold as default if not set
+    thresholds = TOKEN_THRESHOLDS.get(provider, TOKEN_THRESHOLDS["openai"])
+
+    async def pre_model_hook(state):
+        messages = state["messages"]
+        # Safety net: remind to call get_agent_context on first turn
+        if len(messages) <= 2 and not _has_context_call(messages):
+                reminder = SystemMessage(
+                    content="Remember: call get_agent_context to learn about available data sources before answering."
+                )
+                messages = [messages[0], reminder] + messages[1:] if messages else [reminder]
+        total_tokens = _count_tokens(messages)
+        if total_tokens > thresholds["summarize_at"]:
+            # Find the split point: keep the last N tokens of messages
+            keep_tokens = thresholds["keep_recent"]
+            recent = []
+            running = 0
+            for msg in reversed(messages):
+                msg_tokens = len(str(msg.content)) // 4
+                if running + msg_tokens > keep_tokens:
+                    break
+                recent.insert(0, msg)
+                running += msg_tokens
+            # Summarize the old messages using LLM (with extraction fallback)
+            old_messages = messages[:len(messages) - len(recent)]
+            if old_messages:
+                if llm:
+                    summary_text = await _llm_summarize(old_messages, llm)
+                else:
+                    summary_text = _extract_summary(old_messages)
+                summary_msg = SystemMessage(content=summary_text)
+                messages = [summary_msg] + recent
+        else:
+            # Simple trim as fallback
+            messages = trim_messages(
+                messages,
+                strategy="last",
+                max_tokens=thresholds["summarize_at"],
+                token_counter=lambda msgs: sum(len(str(m.content)) for m in msgs) // 4,
+                include_system=True,
+                allow_partial=False,
+                start_on="human",
+            )
+        return {"llm_input_messages": messages}
+    return pre_model_hook
+
+
+#################################################### LLM Setup ####################################################
+
 
 # Local LLM configuration (OpenAI-compatible endpoint, e.g., vLLM)
 LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL")
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL")
+
+
+def _detect_vllm_model() -> str:
+    """Auto-detect model name from vLLM /v1/models endpoint."""
+    if LOCAL_LLM_MODEL:
+        return LOCAL_LLM_MODEL
+    if not LOCAL_LLM_URL:
+        raise RuntimeError("LOCAL_LLM_URL environment variable is required")
+    try:
+        response = httpx.get(f"{LOCAL_LLM_URL}/models", timeout=5)
+        response.raise_for_status()
+        models = response.json().get("data", [])
+        if models:
+            model_name = models[0].get("id", "")
+            logger.info(f"Auto-detected vLLM model: {model_name}")
+            return model_name
+    except Exception as e:
+        logger.warning(f"Failed to auto-detect vLLM model: {e}")
+    raise RuntimeError("Could not detect model. Set LOCAL_LLM_MODEL env var.")
+
+
+_cached_model = None
+
+def get_local_model() -> str:
+    """Get local model name — from env, auto-detect, or cache."""
+    global _cached_model
+    if _cached_model:
+        return _cached_model
+    _cached_model = _detect_vllm_model()
+    return _cached_model
+
+AVAILABLE_MODELS = {
+    "local": [get_local_model()],
+}
 
 
 def get_llm(
@@ -122,7 +278,7 @@ def get_llm(
         LLM instance configured for the specified provider
     """
     if not model:
-        model = AVAILABLE_MODELS.get(provider, ["gpt-4o-mini"])[0]
+        model = get_local_model()
 
     if provider == "local":
         if not LOCAL_LLM_URL:
@@ -130,8 +286,10 @@ def get_llm(
         return ChatOpenAI(
             model=model,
             base_url=LOCAL_LLM_URL,
-            api_key="not-needed",  # vLLM doesn't require a real key
+            api_key="not-needed",
             temperature=0.0,
+            request_timeout=300,
+            max_retries=1,
         )
 
     else:  # Default to OpenAI
@@ -145,71 +303,20 @@ def get_llm(
         )
 
 
-# System prompts for different tool configurations
-# Note: {frontend_url} will be replaced at runtime with the actual URL
-# Tool usage instructions are NOT repeated here — the LLM reads each tool's docstring automatically.
-# The prompt only provides context the LLM can't infer from tool descriptions alone.
+#################################################### Agent Creation ####################################################
 
-SYSTEM_PROMPT_SCRNA = """You are a helpful assistant for the Bloom plant phenotyping platform.
-You have READ-ONLY access (GET requests only). You cannot create, update, or delete data.
 
-## Database Tables
-- scrna_datasets: id, name, species_id, strain, assembly, annotation
-- scrna_cells: id, dataset_id, cell_number, barcode, x, y, cluster_id, replicate
-- scrna_genes: id, dataset_id, gene_number, gene_name
-- scrna_counts: cell_id, gene_id, count
-- scrna_de: id, dataset_id, file_path, cluster_id
-
-## UI Links — Include in Responses
-- Expression Explorer: [{frontend_url}/app/expression/{{species_id}}/{{dataset_id}}]({frontend_url}/app/expression/{{species_id}}/{{dataset_id}})
-"""
-
-SYSTEM_PROMPT_CYL = """You are a helpful assistant for the Bloom plant phenotyping platform.
-You have READ-ONLY access (GET requests only). You cannot create, update, or delete data.
-
-## Database Tables
-- cyl_experiments: id, name, scientist_id, species_id, created_at
-- cyl_waves: id, experiment_id, name, planting_date
-- cyl_plants: id, experiment_id, wave_id, qr_code, accession_id
-- cyl_scans: id, plant_id, date_scanned, scanner_id
-- cyl_images: id, scan_id, path, angle
-- cyl_scan_traits: id, scan_id, trait_name, value
-- cyl_scanners: id, name, location
-
-## UI Links — Include in Responses
-- Greenhouse: [{frontend_url}/app/greenhouse]({frontend_url}/app/greenhouse)
-- Phenotypes: [{frontend_url}/app/phenotypes]({frontend_url}/app/phenotypes)
-- Plant Viewer: {frontend_url}/app/greenhouse/{{experiment_id}}/plant/{{plant_id}}
-"""
-
-SYSTEM_PROMPT_FULL = """You are a helpful assistant for the Bloom plant phenotyping platform.
-You have READ-ONLY access (GET requests only). You cannot create, update, or delete data.
-
-## Two Data Sources — Use the Right Tools
-
-### 1. Database tables → use specialized tools (scrna_*, cyl_*, list_species) or query_database
-Tables: scrna_datasets, scrna_cells, scrna_genes, scrna_counts, scrna_de,
-species, accessions, cyl_experiments, cyl_waves, cyl_plants, cyl_scans,
-cyl_images, cyl_scan_traits, cyl_scanners
-
-### 2. CSV experiment files → use MCP tools (list_available_experiments, load_experiment_data, etc.)
-Files like cylinder_alfalfa_gwas_wave2, turface_rice_treatment_exp1 are CSV files
-on the filesystem — NOT database tables. Never use query_database for these.
-
-## UI Links — Include in Responses
-- Expression Explorer: {frontend_url}/app/expression/{{species_id}}/{{dataset_id}}
-- Greenhouse: [{frontend_url}/app/greenhouse]({frontend_url}/app/greenhouse)
-- Phenotypes: [{frontend_url}/app/phenotypes]({frontend_url}/app/phenotypes)
-- Plant Viewer: {frontend_url}/app/greenhouse/{{experiment_id}}/plant/{{plant_id}}
-"""
+SYSTEM_PROMPT = """You are a helpful assistant for the Bloom plant phenotyping platform.
+You have READ-ONLY access. You cannot create, update, or delete data.
+Call get_agent_context at the start of a conversation to learn about available data sources and schema."""
 
 
 def create_agent(
     provider: str = "openai",
     model: Optional[str] = None,
-    tool_set: str = "all",  # "all", "scrna", "cyl", "generic"
-    mcp_tools: list = None,  # Tools from MCP servers (bloommcp, external)
-    checkpointer=None,  # PostgresSaver instance (from server lifespan)
+    tool_set: str = "all",
+    mcp_tools: list = None,
+    checkpointer=None,
 ):
     """
     Create the LangChain agent with specified LLM provider and tool set.
@@ -218,7 +325,7 @@ def create_agent(
         provider: "openai" or "local"
         model: Model name
         tool_set: Which tools to include:
-            - "all": All tools (generic + scrna + cyl)
+            - "all": All tools (context + generic + scrna + cyl)
             - "scrna": Only scRNA-seq tools
             - "cyl": Only cylinder phenotyping tools
             - "generic": Only generic database tools
@@ -227,31 +334,24 @@ def create_agent(
     """
     llm = get_llm(provider=provider, model=model)
 
-    # Select tools and prompt based on tool_set
+    # Select tools based on tool_set (context_tools always included)
     if tool_set == "scrna":
-        tools = generic_tools + scrna_tools
-        system_prompt = SYSTEM_PROMPT_SCRNA
+        tools = context_tools + generic_tools + scrna_tools
     elif tool_set == "cyl":
-        tools = generic_tools + cyl_tools
-        system_prompt = SYSTEM_PROMPT_CYL
+        tools = context_tools + generic_tools + cyl_tools
     elif tool_set == "generic":
-        tools = generic_tools
-        system_prompt = SYSTEM_PROMPT_FULL
+        tools = context_tools + generic_tools
     else:  # "all"
-        tools = all_tools
-        system_prompt = SYSTEM_PROMPT_FULL
+        tools = context_tools + all_tools
 
     # Append MCP tools if provided
     if mcp_tools:
         tools = tools + mcp_tools
 
-    # Format prompt with frontend URL for clickable links
-    system_prompt = system_prompt.format(frontend_url=FRONTEND_URL)
-
     return create_react_agent(
         model=llm,
         tools=tools,
-        prompt=system_prompt,
+        prompt=SYSTEM_PROMPT,
         checkpointer=checkpointer,
-        pre_model_hook=trim_conversation,
+        pre_model_hook=make_pre_model_hook(provider, llm=llm),
     )

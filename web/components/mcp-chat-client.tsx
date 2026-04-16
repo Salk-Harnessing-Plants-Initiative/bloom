@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 
 type Message = { from: "user" | "bot"; text: string };
-type Provider = "openai" | "local";
+type Provider = "local";
 type ToolSet = "all" | "scrna" | "cyl" | "generic" | "";
 
 interface MCPTool {
@@ -33,13 +33,11 @@ const TOOL_SET_OPTIONS: { value: ToolSet; label: string; description: string }[]
   { value: "generic", label: "Generic", description: "Basic database queries only" },
 ];
 
-const AVAILABLE_MODELS: Record<Provider, string[]> = {
-  openai: ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"],
-  local: ["Qwen/Qwen3-8B"],
+const AVAILABLE_MODELS_DEFAULT: Record<string, string[]> = {
+  local: [],
 };
 
 const PROVIDER_LABELS: Record<Provider, string> = {
-  openai: "OpenAI",
   local: "Local LLM",
 };
 
@@ -155,6 +153,21 @@ export default function MCPChat() {
 
   // MCP Tools collapsible
   const [mcpToolsCollapsed, setMcpToolsCollapsed] = useState(true);
+
+  // Available models — fetched from backend
+  const [AVAILABLE_MODELS, setAvailableModels] = useState<Record<string, string[]>>(AVAILABLE_MODELS_DEFAULT);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/langchain/models`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (data.models) setAvailableModels(data.models);
+      })
+      .catch(() => {});
+  }, []);
 
   // LLM Settings
   const [settings, setSettings] = useState<LLMSettings>(() => ({
@@ -466,7 +479,7 @@ export default function MCPChat() {
               LLM Provider
             </div>
             <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-              {(["local", "openai"] as Provider[]).map((p) => (
+              {(Object.keys(AVAILABLE_MODELS) as Provider[]).map((p) => (
                 <button
                   key={p}
                   onClick={() => handleProviderChange(p)}
@@ -514,20 +527,6 @@ export default function MCPChat() {
               ))}
             </select>
 
-            {settings.provider === "openai" && (
-              <div
-                style={{
-                  marginTop: 10,
-                  padding: 10,
-                  background: "#eff6ff",
-                  borderRadius: 8,
-                  fontSize: 11,
-                  color: "#1d4ed8",
-                }}
-              >
-                OpenAI API key is configured on the server.
-              </div>
-            )}
 
             {settings.provider === "local" && (
               <div
