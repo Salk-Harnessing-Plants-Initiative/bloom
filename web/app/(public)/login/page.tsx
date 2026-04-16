@@ -23,7 +23,7 @@ export default function Login() {
       setError('Please fill in the password field')
       return
     }
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email: email + '@salk.edu',
       password,
       options: {
