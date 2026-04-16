@@ -287,7 +287,8 @@ def get_llm(
             base_url=LOCAL_LLM_URL,
             api_key="not-needed",
             temperature=0.0,
-            request_timeout=30,
+            request_timeout=300,
+            max_retries=1,
         )
 
     else:  # Default to OpenAI
