@@ -32,14 +32,20 @@ DASHBOARD_PASSWORD=$(openssl rand -hex 8)
 BLOOMMCP_API_KEY=$(openssl rand -hex 16)
 
 # Generate JWT tokens signed with the JWT_SECRET
-# Anon key — role: anon, expires 2076
-ANON_PAYLOAD=$(echo -n '{"role":"anon","iss":"supabase","aud":"authenticated","iat":1760407501,"exp":2075983501}' | base64 | tr -d '=' | tr '+/' '-_' | tr -d '\n')
+# Use dynamic timestamps — issued now, valid for 5 years
+# NOTE: Rotate these keys before expiration. Running this script
+# regenerates JWTs with fresh timestamps. Update GitHub Secrets and redeploy.
+NOW=$(date +%s)
+EXP=$((NOW + 157680000))  # 5 years
+
+# Anon key — role: anon
 ANON_HEADER=$(echo -n '{"alg":"HS256","typ":"JWT"}' | base64 | tr -d '=' | tr '+/' '-_' | tr -d '\n')
+ANON_PAYLOAD=$(echo -n "{\"role\":\"anon\",\"iss\":\"supabase\",\"aud\":\"authenticated\",\"iat\":$NOW,\"exp\":$EXP}" | base64 | tr -d '=' | tr '+/' '-_' | tr -d '\n')
 ANON_SIGNATURE=$(echo -n "${ANON_HEADER}.${ANON_PAYLOAD}" | openssl dgst -sha256 -hmac "$JWT_SECRET" -binary | base64 | tr -d '=' | tr '+/' '-_' | tr -d '\n')
 ANON_KEY="${ANON_HEADER}.${ANON_PAYLOAD}.${ANON_SIGNATURE}"
 
-# Service role key — role: service_role, expires 2076
-SERVICE_PAYLOAD=$(echo -n '{"role":"service_role","iss":"supabase","aud":"authenticated","iat":1760407563,"exp":2075983563}' | base64 | tr -d '=' | tr '+/' '-_' | tr -d '\n')
+# Service role key — role: service_role
+SERVICE_PAYLOAD=$(echo -n "{\"role\":\"service_role\",\"iss\":\"supabase\",\"aud\":\"authenticated\",\"iat\":$NOW,\"exp\":$EXP}" | base64 | tr -d '=' | tr '+/' '-_' | tr -d '\n')
 SERVICE_SIGNATURE=$(echo -n "${ANON_HEADER}.${SERVICE_PAYLOAD}" | openssl dgst -sha256 -hmac "$JWT_SECRET" -binary | base64 | tr -d '=' | tr '+/' '-_' | tr -d '\n')
 SERVICE_ROLE_KEY="${ANON_HEADER}.${SERVICE_PAYLOAD}.${SERVICE_SIGNATURE}"
 
