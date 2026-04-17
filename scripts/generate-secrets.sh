@@ -27,6 +27,9 @@ SUPAVISOR_ENC_KEY=$(openssl rand -hex 32)
 VAULT_ENC_KEY=$(openssl rand -base64 24 | tr -d '\n' | head -c 32)
 SECRET_KEY_BASE=$(openssl rand -hex 32)
 MINIO_PASSWORD=$(openssl rand -hex 12)
+# DB_ENC_KEY must be exactly 16 ASCII bytes (AES-128 key size).
+# openssl rand -hex 8 = 16 hex chars = 16 ASCII bytes. DO NOT change to rand -hex 16.
+# If wrong size, Realtime crashes 90s into startup with cryptic Elixir error.
 DB_ENC_KEY=$(openssl rand -hex 8)
 DASHBOARD_PASSWORD=$(openssl rand -hex 8)
 BLOOMMCP_API_KEY=$(openssl rand -hex 16)
