@@ -99,6 +99,7 @@ cd web && npx tsc --noEmit && npm run build
 ```bash
 cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
 cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
 ```
 
 **Common failures:**
@@ -275,6 +276,7 @@ npm ci && npm audit --audit-level=critical && cd web && npx tsc --noEmit && npm 
 # Phase 2: python-audit
 cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
 cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
 
 # Phase 3: docker-build
 docker compose -f docker-compose.prod.yml build
