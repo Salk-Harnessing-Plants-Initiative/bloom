@@ -112,6 +112,17 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
+            if ! git diff --quiet || ! git diff --cached --quiet; then
+              echo '::error::Working tree is dirty on production server — deploy aborted'
+              echo 'Uncommitted changes detected:'
+              git status --short
+              echo ''
+              echo 'Someone made local changes on the server. Resolve before deploying:'
+              echo '  1. SSH to the server and commit + push the changes, or'
+              echo '  2. Discard them: git checkout -- .'
+              echo 'Previous deployment remains running.'
+              exit 1
+            fi
             git fetch origin main
             git reset --hard origin/main
           "
@@ -259,6 +270,17 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            if ! git diff --quiet || ! git diff --cached --quiet; then
+              echo '::error::Working tree is dirty on staging server — deploy aborted'
+              echo 'Uncommitted changes detected:'
+              git status --short
+              echo ''
+              echo 'Someone made local changes on the server. Resolve before deploying:'
+              echo '  1. SSH to the server and commit + push the changes, or'
+              echo '  2. Discard them: git checkout -- .'
+              echo 'Previous deployment remains running.'
+              exit 1
+            fi
             git fetch origin staging
             git reset --hard origin/staging
           "
