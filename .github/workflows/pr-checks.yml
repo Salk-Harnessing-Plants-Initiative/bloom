@@ -316,6 +316,21 @@ jobs:
           docker compose -f docker-compose.prod.yml --env-file .env.ci logs --tail=50
           exit 1
 
+      - name: Wait for all buckets registered
+        run: |
+          echo "Polling for all 5 buckets in storage.buckets table..."
+          timeout 180 bash -c '
+            until docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
+              -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
+              psql -U supabase_admin -d postgres -tAc "SELECT count(*) FROM storage.buckets WHERE id IN (\"images\", \"videos\", \"scrna\", \"species_illustrations\", \"tus-files\")" 2>/dev/null | grep -q "^5$"; do
+              sleep 2
+              echo "  waiting for all buckets..."
+            done
+          '
+          echo "All 5 buckets registered!"
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+
       - name: Verify buckets
         run: |
           echo "=== Checking storage.buckets table ==="
