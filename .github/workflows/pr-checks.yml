@@ -317,19 +317,27 @@ jobs:
           exit 1
 
       - name: Wait for all buckets registered
-        run: |
-          echo "Polling for all 5 buckets in storage.buckets table..."
-          timeout 180 bash -c '
-            until docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
-              -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
-              psql -U supabase_admin -d postgres -tAc "SELECT count(*) FROM storage.buckets WHERE id IN (\"images\", \"videos\", \"scrna\", \"species_illustrations\", \"tus-files\")" 2>/dev/null | grep -q "^5$"; do
-              sleep 2
-              echo "  waiting for all buckets..."
-            done
-          '
-          echo "All 5 buckets registered!"
         env:
           POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+          QUERY: "SELECT count(*) FROM storage.buckets WHERE id IN ('images', 'videos', 'scrna', 'species_illustrations', 'tus-files')"
+        run: |
+          echo "Polling for all 5 buckets in storage.buckets table..."
+          for i in $(seq 1 90); do
+            COUNT=$(docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
+              -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
+              psql -U supabase_admin -d postgres -tAc "${QUERY}" 2>/dev/null | tr -d '[:space:]')
+            if [ "$COUNT" = "5" ]; then
+              echo "All 5 buckets registered!"
+              exit 0
+            fi
+            echo "  buckets found: ${COUNT:-0}/5 (attempt $i/90)"
+            sleep 2
+          done
+          echo "::error::Timeout waiting for buckets to be registered"
+          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
+            -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
+            psql -U supabase_admin -d postgres -c "SELECT id FROM storage.buckets;" 2>&1 || echo "(storage.buckets does not exist)"
+          exit 1
 
       - name: Verify buckets
         run: |
