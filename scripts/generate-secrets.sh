@@ -28,6 +28,8 @@ VAULT_ENC_KEY=$(openssl rand -base64 24 | tr -d '\n' | head -c 32)
 SECRET_KEY_BASE=$(openssl rand -hex 32)
 MINIO_PASSWORD=$(openssl rand -hex 12)
 DB_ENC_KEY=$(openssl rand -hex 8)
+DASHBOARD_PASSWORD=$(openssl rand -hex 8)
+BLOOMMCP_API_KEY=$(openssl rand -hex 16)
 
 # Generate JWT tokens signed with the JWT_SECRET
 # Anon key — role: anon, expires 2076
@@ -52,6 +54,8 @@ echo "${PREFIX}_VAULT_ENC_KEY               | $VAULT_ENC_KEY"
 echo "${PREFIX}_SECRET_KEY_BASE             | $SECRET_KEY_BASE"
 echo "${PREFIX}_MINIO_PASSWORD              | $MINIO_PASSWORD"
 echo "${PREFIX}_DB_ENC_KEY                  | $DB_ENC_KEY"
+echo "${PREFIX}_DASHBOARD_PASSWORD          | $DASHBOARD_PASSWORD"
+echo "${PREFIX}_BLOOMMCP_API_KEY            | $BLOOMMCP_API_KEY"
 echo ""
 echo "=================================================="
 echo "IMPORTANT: Save these somewhere safe before closing!"
