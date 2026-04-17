@@ -165,11 +165,12 @@ jobs:
             if [ -f .previous_sha ]; then
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
-              git checkout \$PREV
+              git reset --hard \$PREV
               docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans
               echo 'Rollback complete — previous version restored'
             else
-              echo 'No previous SHA saved — manual recovery required'
+              echo '::error::No previous SHA saved — manual recovery required'
+              exit 1
             fi
           "
 
@@ -325,11 +326,12 @@ jobs:
             if [ -f .previous_sha ]; then
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
-              git checkout \$PREV
+              git reset --hard \$PREV
               docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build --remove-orphans
               echo 'Rollback complete — previous version restored'
             else
-              echo 'No previous SHA saved — manual recovery required'
+              echo '::error::No previous SHA saved — manual recovery required'
+              exit 1
             fi
           "
 

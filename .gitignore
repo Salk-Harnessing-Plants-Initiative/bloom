@@ -35,6 +35,9 @@ yarn-error.log*
 **/.env.*
 .env.prod
 
+# generated secret dumps from scripts/generate-secrets.sh --file
+.secrets-*.txt
+
 # vercel
 .vercel
 
