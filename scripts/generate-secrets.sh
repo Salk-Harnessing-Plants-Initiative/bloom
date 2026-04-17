@@ -1,16 +1,21 @@
 #!/bin/bash
 # =============================================================================
 # Generate unique secrets for a Bloom environment (prod/staging/ci)
-# Usage: ./scripts/generate-secrets.sh [prod|staging|ci]
-#
-# Outputs a list of GitHub Secrets to add manually.
-# Does NOT write to any file — copy/paste into GitHub Secrets manager.
+# Usage:
+#   ./scripts/generate-secrets.sh [prod|staging|ci]           # stdout (default)
+#   ./scripts/generate-secrets.sh [prod|staging|ci] --file    # write to file
 # =============================================================================
 
 set -e
 
 ENV="${1:-prod}"
+MODE="${2:-stdout}"
 PREFIX=$(echo "$ENV" | tr '[:lower:]' '[:upper:]')
+
+if [ "$MODE" = "--file" ]; then
+  OUTPUT=".secrets-${ENV}-$(date +%s).txt"
+  exec > "$OUTPUT"
+fi
 
 echo "=================================================="
 echo "Generating secrets for: $ENV"
@@ -70,3 +75,10 @@ echo "=================================================="
 echo "IMPORTANT: Save these somewhere safe before closing!"
 echo "These values cannot be recovered once this terminal closes."
 echo "=================================================="
+
+if [ "$MODE" = "--file" ]; then
+  chmod 600 "$OUTPUT"
+  exec > /dev/tty
+  echo "Secrets written to $OUTPUT (chmod 600)."
+  echo "Copy values into GitHub Secrets, then: rm $OUTPUT"
+fi
