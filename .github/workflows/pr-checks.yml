@@ -316,42 +316,25 @@ jobs:
           docker compose -f docker-compose.prod.yml --env-file .env.ci logs --tail=50
           exit 1
 
-      - name: Wait for all buckets registered
+      - name: Wait for storage schema
         env:
           POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
-          QUERY: "SELECT count(*) FROM storage.buckets WHERE id IN ('images', 'videos', 'scrna', 'species_illustrations', 'tus-files')"
         run: |
-          echo "Polling for all 5 buckets in storage.buckets table..."
-          for i in $(seq 1 90); do
-            COUNT=$(docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
+          echo "Polling for storage schema (storage-api creates storage.buckets table on startup)..."
+          for i in $(seq 1 60); do
+            if docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
               -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
-              psql -U supabase_admin -d postgres -tAc "${QUERY}" 2>/dev/null | tr -d '[:space:]')
-            if [ "$COUNT" = "5" ]; then
-              echo "All 5 buckets registered!"
+              psql -U supabase_admin -d postgres -tAc "SELECT 1 FROM information_schema.tables WHERE table_schema='storage' AND table_name='buckets'" 2>/dev/null | grep -q "^1$"; then
+              echo "storage.buckets table ready!"
               exit 0
             fi
-            echo "  buckets found: ${COUNT:-0}/5 (attempt $i/90)"
+            echo "  waiting for storage schema... (attempt $i/60)"
             sleep 2
           done
-          echo "::error::Timeout waiting for buckets to be registered"
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
-            -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
-            psql -U supabase_admin -d postgres -c "SELECT id FROM storage.buckets;" 2>&1 || echo "(storage.buckets does not exist)"
+          echo "::error::Timeout waiting for storage schema"
           exit 1
 
-      - name: Verify buckets
-        run: |
-          echo "=== Checking storage.buckets table ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
-            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "SELECT id, name FROM storage.buckets;" 2>&1
-          echo ""
-          echo "=== Testing file write to MinIO ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T supabase-minio \
-            sh -c 'echo "ci-test" > /tmp/ci-test.txt && mc cp /tmp/ci-test.txt local/images/ci-test.txt && mc rm local/images/ci-test.txt && echo "Write test passed"' 2>&1 || echo "::warning::MinIO write test failed"
-        env:
-          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
-
-      # Apply all migrations after services are healthy (storage schema now exists)
+      # Apply migrations — populates storage.buckets and adds RLS policies
       - name: Apply database migrations
         run: |
           echo "Applying migrations in order:"
@@ -364,6 +347,18 @@ jobs:
             }
           done
           echo "Migrations complete!"
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+
+      - name: Verify buckets
+        run: |
+          echo "=== Checking storage.buckets table ==="
+          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "SELECT id, name FROM storage.buckets;" 2>&1
+          echo ""
+          echo "=== Testing file write to MinIO ==="
+          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T supabase-minio \
+            sh -c 'echo "ci-test" > /tmp/ci-test.txt && mc cp /tmp/ci-test.txt local/images/ci-test.txt && mc rm local/images/ci-test.txt && echo "Write test passed"' 2>&1 || echo "::warning::MinIO write test failed"
         env:
           POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
 
