@@ -9,6 +9,7 @@ Run: python -m pytest tests/integration/test_api_endpoints.py -v
 """
 
 import pytest
+import urllib.request
 
 pytestmark = pytest.mark.integration
 
@@ -56,8 +57,6 @@ def test_storage_has_expected_buckets(api, service_role_key):
     status, body = api("/api/storage/v1/bucket", api_key=service_role_key)
     assert status == 200
     bucket_names = {b["name"] for b in body}
-    if not bucket_names:
-        pytest.skip("No buckets registered — storage schema not initialized (expected in CI)")
     expected = {"images", "videos", "scrna"}
     assert expected.issubset(bucket_names), f"Missing buckets: {expected - bucket_names}"
 
@@ -69,7 +68,8 @@ def test_bloom_web_returns_html(api):
     assert "<!DOCTYPE html>" in body or "<html" in body or "next" in str(body).lower()
 
 
-def test_studio_reachable(api):
-    """Supabase Studio responds through Caddy."""
-    status, body = api("/", headers={"Host": "studio.localhost"})
-    assert status == 200
+def test_studio_reachable():
+    """Supabase Studio responds through Caddy subdomain."""
+    req = urllib.request.Request("http://localhost/", headers={"Host": "studio.localhost"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        assert resp.status == 200
