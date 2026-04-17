@@ -338,6 +338,9 @@ jobs:
           docker compose -f docker-compose.prod.yml --env-file .env.ci logs --tail=50
           exit 1
 
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
       # Runs 22 integration tests (smoke, auth, RLS, storage, API routing) against the live compose stack
       # Skips if tests/integration/ doesn't exist on this branch
       - name: Run integration tests
