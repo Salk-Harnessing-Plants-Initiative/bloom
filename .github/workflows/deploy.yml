@@ -99,7 +99,8 @@ jobs:
           LANGCHAIN_API_KEY=${{ secrets.PROD_LANGCHAIN_API_KEY }}
           LANGCHAIN_PROJECT=${{ secrets.PROD_LANGCHAIN_PROJECT }}
           LANGCHAIN_POSTGRES_URL=postgresql://${{ secrets.PROD_POSTGRES_USER }}:${{ secrets.PROD_POSTGRES_PASSWORD }}@${{ secrets.PROD_POSTGRES_HOST }}:${{ secrets.PROD_POSTGRES_PORT }}/${{ secrets.PROD_POSTGRES_DB }}
-          ENVEOF"
+          ENVEOF
+          chmod 600 ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod"
 
       - name: Save previous SHA for rollback
         run: |
@@ -258,7 +259,8 @@ jobs:
           LANGCHAIN_API_KEY=${{ secrets.STAGING_LANGCHAIN_API_KEY }}
           LANGCHAIN_PROJECT=${{ secrets.STAGING_LANGCHAIN_PROJECT }}
           LANGCHAIN_POSTGRES_URL=postgresql://${{ secrets.STAGING_POSTGRES_USER }}:${{ secrets.STAGING_POSTGRES_PASSWORD }}@${{ secrets.STAGING_POSTGRES_HOST }}:${{ secrets.STAGING_POSTGRES_PORT }}/${{ secrets.STAGING_POSTGRES_DB }}
-          ENVEOF"
+          ENVEOF
+          chmod 600 ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
 
       - name: Save previous SHA for rollback
         run: |
