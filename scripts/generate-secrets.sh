@@ -13,6 +13,9 @@ MODE="${2:-stdout}"
 PREFIX=$(echo "$ENV" | tr '[:lower:]' '[:upper:]')
 
 if [ "$MODE" = "--file" ]; then
+  # umask 077 ensures the output file is created with mode 0600 (owner rw only)
+  # from the start — no race window where it exists as 0644 before chmod runs.
+  umask 077
   OUTPUT=".secrets-${ENV}-$(date +%s).txt"
   exec > "$OUTPUT"
 fi

@@ -34,9 +34,21 @@ jobs:
           echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+      - name: Snapshot existing .env.prod for rollback
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            if [ -f .env.prod ]; then
+              cp .env.prod .env.prod.previous
+              echo 'Saved .env.prod as .env.prod.previous'
+            else
+              echo 'No existing .env.prod — first deploy, skipping snapshot'
+            fi
+          "
+
       - name: Generate .env.prod on server
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "cat > ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod << 'ENVEOF'
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "umask 077 && cat > ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod << 'ENVEOF'
           POSTGRES_DB=${{ secrets.PROD_POSTGRES_DB }}
           POSTGRES_USER=${{ secrets.PROD_POSTGRES_USER }}
           POSTGRES_PASSWORD=${{ secrets.PROD_POSTGRES_PASSWORD }}
@@ -165,6 +177,12 @@ jobs:
             if [ -f .previous_sha ]; then
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
+              if [ -f .env.prod.previous ]; then
+                cp .env.prod.previous .env.prod
+                echo 'Restored previous .env.prod'
+              else
+                echo 'WARNING: no .env.prod.previous — rolling back with current .env.prod'
+              fi
               git checkout \$PREV
               docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans
               echo 'Rollback complete — previous version restored'
@@ -194,9 +212,21 @@ jobs:
           echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+      - name: Snapshot existing .env.staging for rollback
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            if [ -f .env.staging ]; then
+              cp .env.staging .env.staging.previous
+              echo 'Saved .env.staging as .env.staging.previous'
+            else
+              echo 'No existing .env.staging — first deploy, skipping snapshot'
+            fi
+          "
+
       - name: Generate .env.staging on server
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "cat > ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging << 'ENVEOF'
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "umask 077 && cat > ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging << 'ENVEOF'
           POSTGRES_DB=${{ secrets.STAGING_POSTGRES_DB }}
           POSTGRES_USER=${{ secrets.STAGING_POSTGRES_USER }}
           POSTGRES_PASSWORD=${{ secrets.STAGING_POSTGRES_PASSWORD }}
@@ -325,6 +355,12 @@ jobs:
             if [ -f .previous_sha ]; then
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
+              if [ -f .env.staging.previous ]; then
+                cp .env.staging.previous .env.staging
+                echo 'Restored previous .env.staging'
+              else
+                echo 'WARNING: no .env.staging.previous — rolling back with current .env.staging'
+              fi
               git checkout \$PREV
               docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build --remove-orphans
               echo 'Rollback complete — previous version restored'
