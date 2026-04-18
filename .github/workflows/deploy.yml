@@ -22,6 +22,9 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
     runs-on: ubuntu-latest
     environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -129,32 +132,65 @@ jobs:
             git reset --hard origin/main
           "
 
+      - name: Verify Docker Compose version (>= 2.17 required for --wait)
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            COMPOSE_VER=\$(docker compose version --short 2>/dev/null | head -1)
+            if [ -z \"\$COMPOSE_VER\" ]; then
+              echo '::error::docker compose not found on server'
+              exit 1
+            fi
+            MAJOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f1)
+            MINOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f2)
+            if [ \"\$MAJOR\" -lt 2 ] || { [ \"\$MAJOR\" -eq 2 ] && [ \"\$MINOR\" -lt 17 ]; }; then
+              echo \"::error::Docker Compose \$COMPOSE_VER found — need >= 2.17 for --wait\"
+              exit 1
+            fi
+            echo \"Docker Compose \$COMPOSE_VER ok\"
+          "
+
       - name: Deploy production stack
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans
+            docker compose -f docker-compose.prod.yml --env-file .env.prod \
+              up -d --build --remove-orphans --wait --wait-timeout 600
+            echo 'Production deployed successfully!'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod ps
           "
 
-      - name: Health check
+      - name: Deploy diagnostics on failure
+        if: failure()
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            for i in \$(seq 1 60); do
-              UNHEALTHY=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps --format json | jq '[.[] | select(.State == \"restarting\" or .Health == \"unhealthy\")] | length' 2>/dev/null || echo 99)
-              EXITED=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps --format json | jq '[.[] | select(.State == \"exited\" and .ExitCode != 0)] | length' 2>/dev/null || echo 99)
-              echo \"  unhealthy=\$UNHEALTHY exited=\$EXITED (\$i/60)\"
-              if [ \"\$UNHEALTHY\" -eq 0 ] && [ \"\$EXITED\" -eq 0 ]; then
-                echo 'Production deployed successfully!'
-                docker compose -f docker-compose.prod.yml --env-file .env.prod ps
-                exit 0
+            echo '::group::docker compose ps'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod ps || true
+            echo '::endgroup::'
+            echo '::group::docker compose logs --tail=200'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=200 || true
+            echo '::endgroup::'
+          "
+
+      - name: Smoke test
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            failed=0
+            for endpoint in '/' '/api' '/studio'; do
+              STATUS=\$(curl -s -o /dev/null -w '%{http_code}' \
+                -H 'Host: ${{ secrets.PROD_DOMAIN_MAIN }}' \
+                --max-time 10 \
+                http://localhost\$endpoint || echo 000)
+              if [ \"\$STATUS\" -ge 500 ] || [ \"\$STATUS\" -eq 000 ]; then
+                echo \"::error::Smoke test failed on \$endpoint (HTTP \$STATUS)\"
+                failed=1
+              else
+                echo \"  \$endpoint -> \$STATUS\"
               fi
-              sleep 5
             done
-            echo 'DEPLOY FAILED: services in bad state'
-            docker compose -f docker-compose.prod.yml --env-file .env.prod ps
-            docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=50
-            exit 1
+            exit \$failed
           "
 
       - name: Rollback on failure
@@ -182,6 +218,9 @@ jobs:
     if: github.ref == 'refs/heads/staging' || github.event.inputs.environment == 'staging'
     runs-on: ubuntu-latest
     environment: staging
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -289,32 +328,65 @@ jobs:
             git reset --hard origin/staging
           "
 
+      - name: Verify Docker Compose version (>= 2.17 required for --wait)
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            COMPOSE_VER=\$(docker compose version --short 2>/dev/null | head -1)
+            if [ -z \"\$COMPOSE_VER\" ]; then
+              echo '::error::docker compose not found on server'
+              exit 1
+            fi
+            MAJOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f1)
+            MINOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f2)
+            if [ \"\$MAJOR\" -lt 2 ] || { [ \"\$MAJOR\" -eq 2 ] && [ \"\$MINOR\" -lt 17 ]; }; then
+              echo \"::error::Docker Compose \$COMPOSE_VER found — need >= 2.17 for --wait\"
+              exit 1
+            fi
+            echo \"Docker Compose \$COMPOSE_VER ok\"
+          "
+
       - name: Deploy staging stack
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build --remove-orphans
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
+              up -d --build --remove-orphans --wait --wait-timeout 600
+            echo 'Staging deployed successfully!'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
           "
 
-      - name: Health check
+      - name: Deploy diagnostics on failure
+        if: failure()
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            for i in \$(seq 1 60); do
-              UNHEALTHY=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps --format json | jq '[.[] | select(.State == \"restarting\" or .Health == \"unhealthy\")] | length' 2>/dev/null || echo 99)
-              EXITED=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps --format json | jq '[.[] | select(.State == \"exited\" and .ExitCode != 0)] | length' 2>/dev/null || echo 99)
-              echo \"  unhealthy=\$UNHEALTHY exited=\$EXITED (\$i/60)\"
-              if [ \"\$UNHEALTHY\" -eq 0 ] && [ \"\$EXITED\" -eq 0 ]; then
-                echo 'Staging deployed successfully!'
-                docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
-                exit 0
+            echo '::group::docker compose ps'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps || true
+            echo '::endgroup::'
+            echo '::group::docker compose logs --tail=200'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --tail=200 || true
+            echo '::endgroup::'
+          "
+
+      - name: Smoke test
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            failed=0
+            for endpoint in '/' '/api' '/studio'; do
+              STATUS=\$(curl -s -o /dev/null -w '%{http_code}' \
+                -H 'Host: ${{ secrets.STAGING_DOMAIN_MAIN }}' \
+                --max-time 10 \
+                http://localhost:${{ secrets.STAGING_CADDY_HTTP_LISTEN_PORT }}\$endpoint || echo 000)
+              if [ \"\$STATUS\" -ge 500 ] || [ \"\$STATUS\" -eq 000 ]; then
+                echo \"::error::Smoke test failed on \$endpoint (HTTP \$STATUS)\"
+                failed=1
+              else
+                echo \"  \$endpoint -> \$STATUS\"
               fi
-              sleep 5
             done
-            echo 'DEPLOY FAILED: services in bad state'
-            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
-            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --tail=50
-            exit 1
+            exit \$failed
           "
 
       - name: Rollback on failure
