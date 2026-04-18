@@ -23,7 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     concurrency:
-      group: deploy-production
+      # Shared group for both prod and staging — only one deploy runs at a
+      # time across the whole repo (single Salk server, single docker daemon).
+      group: deploy-bloom
       cancel-in-progress: false
     steps:
       - name: Checkout code
@@ -219,7 +221,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: staging
     concurrency:
-      group: deploy-staging
+      # Shared group for both prod and staging — only one deploy runs at a
+      # time across the whole repo (single Salk server, single docker daemon).
+      group: deploy-bloom
       cancel-in-progress: false
     steps:
       - name: Checkout code
