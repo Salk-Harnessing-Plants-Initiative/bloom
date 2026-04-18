@@ -13,6 +13,8 @@ MODE="${2:-stdout}"
 PREFIX=$(echo "$ENV" | tr '[:lower:]' '[:upper:]')
 
 if [ "$MODE" = "--file" ]; then
+  # IMPORTANT: .gitignore has a matching rule (.secrets-*.txt) to prevent
+  # accidental commit. If you change this filename format, update .gitignore.
   OUTPUT=".secrets-${ENV}-$(date +%s).txt"
   exec > "$OUTPUT"
 fi
