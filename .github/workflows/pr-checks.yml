@@ -4,6 +4,11 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  # Supabase CLI version — matched to what's installed on the Salk deploy
+  # server (documented in #135). Change here + on the server together.
+  SUPABASE_VERSION: "2.90.0"
+
 jobs:
   build-and-audit:
     name: Build & npm CVE Audit
@@ -220,6 +225,19 @@ jobs:
           exit-code: '1'
           trivyignores: '.trivyignore'
 
+  lint-migrations:
+    name: Lint new migration filenames + timestamps
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Need full history so the lint can diff against origin/main
+          fetch-depth: 0
+
+      - name: Run migration lint
+        run: ./scripts/lint_migrations.sh origin/${{ github.base_ref }}
+
   compose-health-check:
     name: Docker Compose Health Check
     needs: docker-build
@@ -229,12 +247,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Supabase CLI
+        run: |
+          curl -LO https://github.com/supabase/cli/releases/download/v${SUPABASE_VERSION}/supabase_${SUPABASE_VERSION}_linux_amd64.deb
+          sudo apt install -y ./supabase_${SUPABASE_VERSION}_linux_amd64.deb
+          supabase --version | grep -q "${SUPABASE_VERSION}"
+
       - name: Generate .env.ci from secrets
         run: |
           echo "POSTGRES_DB=postgres" > .env.ci
           echo "POSTGRES_USER=supabase_admin" >> .env.ci
           echo "POSTGRES_PORT=5432" >> .env.ci
           echo "POSTGRES_HOST=db-prod" >> .env.ci
+          echo "POSTGRES_HOST_PORT=5432" >> .env.ci
           echo "PGRST_DB_SCHEMAS=public,auth,storage" >> .env.ci
           echo "JWT_EXPIRY=3600" >> .env.ci
           echo "ENABLE_ANONYMOUS_USERS=false" >> .env.ci
@@ -357,33 +382,66 @@ jobs:
           echo "::error::Timeout waiting for storage schema"
           exit 1
 
-      # Apply migrations — populates storage.buckets and adds RLS policies
+      # Apply migrations via Supabase CLI — same code path as the prod and staging deploys.
+      # Creates `supabase_migrations.schema_migrations` on first run, skips already-applied
+      # migrations, wraps each in a transaction, takes an advisory lock.
       - name: Apply database migrations
         run: |
-          echo "Applying migrations in order:"
-          ls -1 supabase/migrations/*.sql | sort
-          for migration in supabase/migrations/*.sql; do
-            echo "  Running: $(basename $migration)"
-            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$migration" 2>&1 || {
-              echo "::error::Migration failed: $(basename $migration)"
-              exit 1
-            }
-          done
-          echo "Migrations complete!"
-        env:
-          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+          # Extract only the Postgres connection vars we need. Avoids
+          # `set -a; source .env.ci; set +a` which would export every secret
+          # in the file to the subprocess environment.
+          PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
+          PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
+          PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
+          PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
+          supabase db push \
+            --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}" \
+            --yes || {
+            echo "::error title=Migration failed (CI)::See 'Migration status on failure' step and the Migration summary at top of run for applied vs pending state."
+            exit 1
+          }
 
-      - name: Verify buckets
+      # Layer B — runs only on failure. Prints applied-vs-pending state so an
+      # on-call engineer can see which migration broke without digging through
+      # step logs. `|| true` stops a diagnostic-fetch failure from masking
+      # the original migration error.
+      - name: Show migration status on failure
+        if: failure()
         run: |
-          echo "=== Checking storage.buckets table ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
-            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "SELECT id, name FROM storage.buckets;" 2>&1
-          echo ""
+          PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
+          PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
+          PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
+          PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
+          supabase migration list \
+            --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}" \
+            || echo "::warning::Could not fetch migration status"
+
+      # Layer C — markdown table of migration state in the run's summary panel.
+      # Uses CLI's native markdown output (the `-o json` flag does NOT exist on
+      # `migration list` in v2.90.0).
+      - name: Migration summary
+        if: always()
+        run: |
+          PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
+          PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
+          PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
+          PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
+          {
+            echo "## Database migration state"
+            echo ""
+            echo '```'
+            supabase migration list \
+              --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}" \
+              2>/dev/null \
+              || echo "(migration state fetch failed)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify MinIO writes
+        run: |
           echo "=== Testing file write to MinIO ==="
           docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T supabase-minio \
             sh -c 'echo "ci-test" > /tmp/ci-test.txt && mc cp /tmp/ci-test.txt local/images/ci-test.txt && mc rm local/images/ci-test.txt && echo "Write test passed"' 2>&1 || echo "::warning::MinIO write test failed"
-        env:
-          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
 
       # Runs 22 integration tests (smoke, auth, RLS, storage, API routing) against the live compose stack
       # Skips if tests/integration/ doesn't exist on this branch

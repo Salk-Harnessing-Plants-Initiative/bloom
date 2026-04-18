@@ -400,6 +400,13 @@ services:
       - supanet
     expose:
       - "5432"
+    ports:
+      # Bind to 127.0.0.1 only — loopback on the Salk server, NOT public.
+      # Lets the host-installed Supabase CLI reach Postgres for migrations.
+      # POSTGRES_HOST_PORT differs per env (5432 prod, 5433 staging) so both
+      # can coexist on the same host. `:-5432` default only fires on local
+      # dev invocations that don't set the var; deploy/CI always set it.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - ./volumes/db/data:/var/lib/postgresql/data:Z
       - ./volumes/db/_supabase.sh:/docker-entrypoint-initdb.d/96-_supabase.sh:Z
