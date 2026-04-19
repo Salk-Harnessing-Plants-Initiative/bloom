@@ -77,58 +77,44 @@ export default async function Species({
         </div>
       ) : (
         <div className="divide-y divide-stone-200 border-y border-stone-200">
-          {datasets.map((ds) => (
-            <Link
-              key={ds.id}
-              href={`/app/expression/${species.id}/${ds.id}`}
-              className="group flex items-center gap-6 py-5 hover:bg-stone-50 transition-colors px-3 -mx-3"
-            >
-              <div className="shrink-0 w-20 h-20 rounded-full bg-stone-100 overflow-hidden flex items-center justify-center">
-                <Illustration path={species.illustration_path} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-baseline gap-3 flex-wrap">
-                  <span className="font-mono text-base text-lime-700 group-hover:underline break-all">
+          {datasets.map((ds) => {
+            const secondary = [
+              ds.assembly,
+              ds.annotation,
+              ds.strain ? `strain ${ds.strain}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ");
+            return (
+              <Link
+                key={ds.id}
+                href={`/app/expression/${species.id}/${ds.id}`}
+                className="group flex items-center gap-6 py-5 hover:bg-stone-50 transition-colors px-3 -mx-3"
+              >
+                <div className="shrink-0 w-20 h-20 rounded-full bg-stone-100 overflow-hidden flex items-center justify-center">
+                  <Illustration path={species.illustration_path} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xl text-lime-700 group-hover:underline break-words">
                     {ds.name}
-                  </span>
+                  </div>
+                  {secondary && (
+                    <div className="text-sm italic text-neutral-600">
+                      {secondary}
+                    </div>
+                  )}
                   {ds.people?.name && (
-                    <span className="text-sm text-stone-500">
+                    <div className="text-sm mt-2 text-neutral-400">
                       {ds.people.name}
-                    </span>
+                    </div>
                   )}
                 </div>
-                <div className="text-xs text-stone-500 mt-1">
-                  {ds.assembly && (
-                    <>
-                      <b className="text-stone-700 font-semibold font-mono">
-                        {ds.assembly}
-                      </b>
-                      {ds.annotation && (
-                        <>
-                          {" / "}
-                          <b className="text-stone-700 font-semibold font-mono">
-                            {ds.annotation}
-                          </b>
-                        </>
-                      )}
-                    </>
-                  )}
-                  {ds.strain && (
-                    <>
-                      {(ds.assembly || ds.annotation) && " · "}
-                      strain{" "}
-                      <b className="text-stone-700 font-semibold">
-                        {ds.strain}
-                      </b>
-                    </>
-                  )}
+                <div className="shrink-0 text-stone-300 group-hover:text-lime-700 text-lg">
+                  →
                 </div>
-              </div>
-              <span className="shrink-0 text-xs text-stone-600 bg-stone-100 border border-stone-200 px-3 py-1 rounded-full whitespace-nowrap group-hover:border-lime-700 group-hover:text-lime-700 transition-colors">
-                Open cockpit →
-              </span>
-            </Link>
-          ))}
+              </Link>
+            );
+          })}
         </div>
       )}
     </div>
