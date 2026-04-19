@@ -1,6 +1,7 @@
 "use client";
 import * as React from 'react';
 import { useState , useEffect} from 'react';
+import { useSearchParams } from 'next/navigation';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import InputLabel from '@mui/material/InputLabel';
@@ -19,6 +20,7 @@ import { Database } from "@/lib/database.types";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import ExpressionMetadata  from './expression-metadata';
 import { RawCountsQC } from './expression-qc-raw-reads';
+import { ExpressionView } from './expression-view';
 
 
 export interface ExpressionPageProps {
@@ -78,8 +80,10 @@ function a11yProps(index: number) {
 }
 
 export default function ExpressionPage({ specieslist }: ExpressionPageProps) {
-    
+
     const supabase = createClientSupabaseClient();
+    const searchParams = useSearchParams();
+    const legacy = searchParams?.get('legacy') === '1';
     const [file_id, setFileid] = useState(0)
     const [file_name, setFileName] = useState('')
     const [slected_val, setSelectedVal] = useState({ file_id: specieslist[0]?.id || null, file_name:  specieslist[0]?.name || null })
@@ -131,7 +135,10 @@ export default function ExpressionPage({ specieslist }: ExpressionPageProps) {
             </Box>
 
             <CustomTabPanel value={value} index={0}>
-                {results && <ExportScatterPlot file_id={file_id} file_name={file_name} />}
+                {results && (legacy
+                    ? <ExportScatterPlot file_id={file_id} file_name={file_name} />
+                    : <ExpressionView datasetId={file_id} datasetName={file_name} />
+                )}
             </CustomTabPanel>
             <CustomTabPanel value={value} index={1}>
                 {results && <ExpressionGeneLevel file_id={file_id} />}
