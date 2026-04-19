@@ -109,9 +109,9 @@ export default async function Species({
                     </div>
                   )}
                 </div>
-                <div className="shrink-0 text-stone-300 group-hover:text-lime-700 text-lg">
-                  →
-                </div>
+                <span className="shrink-0 text-xs text-stone-600 bg-stone-100 border border-stone-200 px-3 py-1 rounded-full whitespace-nowrap group-hover:border-lime-700 group-hover:text-lime-700 transition-colors">
+                  Open
+                </span>
               </Link>
             );
           })}
