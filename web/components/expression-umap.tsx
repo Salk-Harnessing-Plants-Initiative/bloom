@@ -30,8 +30,6 @@ export interface ExpressionUmapProps {
   geneName?: string | null;
   /** Clusters currently hidden (ordinal set). Empty = all visible. */
   hiddenClusters?: ReadonlySet<number>;
-  /** Cluster to highlight; others dim. null = no highlight */
-  highlightedCluster?: number | null;
   /** Height of the canvas in pixels; width fills the parent */
   height?: number;
   /** Fires when data is loaded so parent can render colorbar / sidebar */
@@ -134,7 +132,6 @@ export function ExpressionUmap({
   datasetId,
   geneName,
   hiddenClusters,
-  highlightedCluster,
   height = 600,
   onDataLoaded,
   onExpressionRangeChanged,
@@ -243,26 +240,17 @@ export function ExpressionUmap({
     };
   }, [data, geneName, onExpressionRangeChanged]);
 
-  // -------- visibility recompute from hidden / highlighted -------------------
+  // -------- visibility recompute from hidden set -----------------------------
   const visibility = useMemo(() => {
     if (!data) return null;
     const out = new Float32Array(data.cells.length);
     const hidden = hiddenClusters ?? new Set<number>();
     for (let i = 0; i < data.cells.length; i++) {
       const ord = data.clusterOrdinals[i];
-      if (hidden.has(ord)) {
-        out[i] = 0;
-      } else if (
-        highlightedCluster != null &&
-        ord !== highlightedCluster
-      ) {
-        out[i] = 0.25; // dimmed, not hidden
-      } else {
-        out[i] = 1.0;
-      }
+      out[i] = hidden.has(ord) ? 0 : 1.0;
     }
     return out;
-  }, [data, hiddenClusters, highlightedCluster]);
+  }, [data, hiddenClusters]);
 
   // -------- regl init + render loop ------------------------------------------
   useEffect(() => {
