@@ -43,6 +43,7 @@ services:
       STUDIO_PORT: ${STUDIO_PORT}
       MINIO_CONSOLE_PORT: ${MINIO_CONSOLE_PORT}
       CADDY_HTTP_PORT: ${CADDY_HTTP_PORT}
+      CADDY_TLS_DIRECTIVE: ${CADDY_TLS_DIRECTIVE}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

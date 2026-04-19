@@ -7,25 +7,30 @@
 #   {DOMAIN_STUDIO}      → studio (Supabase Studio)
 #   {DOMAIN_MINIO}       → minio console
 #
-# TLS:
-#   `tls internal` → Caddy generates its own CA and server certs locally.
-#   Browsers show a one-time "not secure" warning because the CA isn't
-#   publicly trusted. Encryption itself is real. Acceptable short-term
-#   for a Salk-network-only service where public ACME (Let's Encrypt
-#   HTTP-01) can't reach us.
+# TLS is controlled by two env vars:
 #
-# When Salk IT provides a real cert, swap `tls internal` for either:
-#   tls /etc/caddy/certs/<domain>.crt /etc/caddy/certs/<domain>.key
-# or (with DNS-01 ACME):
-#   tls { dns <provider> {env.<TOKEN>} }
-# One line per site block; no other Caddyfile changes needed.
+#   CADDY_HTTP_PORT       site-header suffix on the listen address
+#     prod/staging:       empty   → Caddy auto-binds 80 + 443
+#     CI / local HTTP:    `:80`   → Caddy binds only 80, no TLS
+#
+#   CADDY_TLS_DIRECTIVE   first directive inside each site block
+#     prod/staging:       `tls internal` (Caddy signs certs with its
+#                         local CA — works on a Salk-network-only host
+#                         where Let's Encrypt HTTP-01 can't reach us)
+#     CI:                 empty   → plain HTTP, no cert generation
+#
+# When Salk IT provides a real cert, set CADDY_TLS_DIRECTIVE in .env.prod
+# to one of:
+#   `tls /etc/caddy/certs/<domain>.crt /etc/caddy/certs/<domain>.key`
+# or (ACME DNS-01):
+#   `tls { dns <provider> {env.<TOKEN>} }`
 # =============================================================================
 
 # -------------------
 # Main Application
 # -------------------
-{$DOMAIN_MAIN} {
-	tls internal
+{$DOMAIN_MAIN}{$CADDY_HTTP_PORT} {
+	{$CADDY_TLS_DIRECTIVE}
 
 	# Supabase API — strip /api prefix, proxy to Kong
 	handle_path /api/* {
@@ -41,8 +46,8 @@
 # -------------------
 # Supabase Studio
 # -------------------
-{$DOMAIN_STUDIO} {
-	tls internal
+{$DOMAIN_STUDIO}{$CADDY_HTTP_PORT} {
+	{$CADDY_TLS_DIRECTIVE}
 
 	# Studio backend routes → Kong
 	handle_path /auth/* {
@@ -78,8 +83,8 @@
 # -------------------
 # MinIO Console
 # -------------------
-{$DOMAIN_MINIO} {
-	tls internal
+{$DOMAIN_MINIO}{$CADDY_HTTP_PORT} {
+	{$CADDY_TLS_DIRECTIVE}
 
 	reverse_proxy supabase-minio:{$MINIO_CONSOLE_PORT} {
 		transport http {
