@@ -16,7 +16,6 @@ import {
   EXPRESSION_VERT,
   POINT_VERT,
 } from "@/components/expression-lib/shaders";
-import { VIRIDIS_STOPS, viridisUniformArray } from "@/components/expression-lib/viridis";
 import type { Database } from "@/lib/database.types";
 
 type Dataset = Database["public"]["Tables"]["scrna_datasets"]["Row"];
@@ -282,16 +281,6 @@ export function ExpressionUmap({
       expressionArr ?? new Float32Array(data.cells.length),
     );
 
-    const viridisFlat = viridisUniformArray();
-    const viridisUniforms: Record<string, [number, number, number]> = {};
-    for (let i = 0; i < VIRIDIS_STOPS.length; i++) {
-      viridisUniforms[`viridis[${i}]`] = [
-        viridisFlat[i * 3],
-        viridisFlat[i * 3 + 1],
-        viridisFlat[i * 3 + 2],
-      ];
-    }
-
     const drawClusters = regl({
       vert: POINT_VERT,
       frag: CLUSTER_FRAG,
@@ -328,7 +317,6 @@ export function ExpressionUmap({
         pointSize: DEFAULT_POINT_SIZE,
         expMin: regl.prop<{ expMin: number }, "expMin">("expMin"),
         expMax: regl.prop<{ expMax: number }, "expMax">("expMax"),
-        ...viridisUniforms,
       },
       count: data.cells.length,
       primitive: "points",
