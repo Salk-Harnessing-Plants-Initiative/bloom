@@ -192,7 +192,7 @@ jobs:
             PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
             PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
             PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
-            supabase db push --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --yes
+            supabase db push --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug --yes
           " || {
             echo '::error title=Migration failed (production)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
             exit 1
@@ -209,7 +209,7 @@ jobs:
             PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
             PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
             PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
-            supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\"
+            supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
           " || echo '::warning::Could not fetch migration status'
 
       # Layer C: migration state as a markdown table in the run summary.
@@ -228,7 +228,7 @@ jobs:
               PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
               PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
               PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
-              supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\"
+              supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
             " 2>/dev/null || echo '(migration state fetch failed)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -421,7 +421,7 @@ jobs:
             PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
             PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
             PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
-            supabase db push --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --yes
+            supabase db push --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug --yes
           " || {
             echo '::error title=Migration failed (staging)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
             exit 1
@@ -436,7 +436,7 @@ jobs:
             PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
             PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
             PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
-            supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\"
+            supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
           " || echo '::warning::Could not fetch migration status'
 
       - name: Migration summary (staging)
@@ -452,7 +452,7 @@ jobs:
               PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
               PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
               PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
-              supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\"
+              supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
             " 2>/dev/null || echo '(migration state fetch failed)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

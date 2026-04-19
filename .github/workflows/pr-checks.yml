@@ -394,8 +394,13 @@ jobs:
           PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
           PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
           PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
+          # --debug works around supabase-cli #4839 (sslmode=disable silently
+          # ignored without it on self-hosted Postgres without TLS). Not
+          # verbose-logging for the sake of it — it actually changes the code
+          # path that makes the connection succeed.
           supabase db push \
             --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}?sslmode=disable" \
+            --debug \
             --yes || {
             echo "::error title=Migration failed (CI)::See 'Migration status on failure' step and the Migration summary at top of run for applied vs pending state."
             exit 1
@@ -414,6 +419,7 @@ jobs:
           PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
           supabase migration list \
             --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}?sslmode=disable" \
+            --debug \
             || echo "::warning::Could not fetch migration status"
 
       # Layer C — markdown table of migration state in the run's summary panel.
