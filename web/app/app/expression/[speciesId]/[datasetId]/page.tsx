@@ -5,127 +5,75 @@ import {
 } from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
-import ExpressionDataset from "@/components/expression-dataset";
+import { ExpressionView } from "@/components/expression-view";
 
-type Plant = {
-  created_at: string;
-  germ_day: number | null;
-  germ_day_color: string | null;
-  id: number;
-  qr_code: string | null;
-  wave_id: number | null;
-  accessions: {
-    created_at: string;
-    id: number;
-    name: string;
-  } | null;
-};
-
-type Wave = {
-  experiment_id: number | null;
-  id: number;
-  name: string | null;
-  number: number | null;
-  cyl_plants: Plant[];
-};
-
-function getAccessions(wave: Wave) {
-  // empty array of strings
-  let lineNames: string[] = [];
-  let lineName2Id: { [key: string]: number } = {};
-  wave.cyl_plants.forEach((plant: Plant) => {
-    lineNames.push(plant.accessions?.name ?? "");
-    lineName2Id[plant.accessions?.name ?? ""] = plant.accessions?.id ?? 0;
-  });
-  const plantCountObj = countStrings(lineNames);
-  const plantCountArray = Object.entries(plantCountObj);
-  // sort by name
-  const plantCountArraySorted = plantCountArray.sort((a, b) => {
-    if (a[0] < b[0]) {
-      return -1;
-    }
-    if (a[0] > b[0]) {
-      return 1;
-    }
-    return 0;
-  });
-  const plantNameCountsArray = plantCountArraySorted.map(([name, count]) => ({
-    name,
-    id: lineName2Id[name],
-    count,
-  }));
-  return plantNameCountsArray;
-}
-
-export default async function Experiment({
+export default async function Dataset({
   params,
 }: {
   params: Promise<{ datasetId: number; speciesId: number }>;
 }) {
   const { datasetId, speciesId } = await params;
-  const dataset : any = await getDataset(datasetId);
-  const datasetName = capitalizeFirstLetter(dataset?.name ?? "");
-  const speciesName = dataset?.species?.common_name ?? "";
+  const dataset = await getDataset(datasetId);
 
   const user = await getUser();
-
   const mixpanel = process.env.MIXPANEL_TOKEN
     ? Mixpanel.init(process.env.MIXPANEL_TOKEN)
     : null;
-
   mixpanel?.track("Page view", {
     distinct_id: user?.email,
     url: `/app/expression/${speciesId}/${datasetId}`,
   });
 
+  if (!dataset) {
+    return (
+      <div className="max-w-5xl mx-auto">
+        <div className="text-sm mb-6 select-none">
+          <Link href="/app/expression" className="text-stone-400 hover:underline">
+            All species
+          </Link>
+        </div>
+        <div className="text-sm text-stone-500 italic">Dataset not found.</div>
+      </div>
+    );
+  }
+
+  const speciesName = dataset.species?.common_name ?? "";
+
   return (
-    <div className="">
-      <div className="text-xl mb-8 select-none">
-        <span className="text-stone-400">
-          <span className="hover:underline">
-            <Link href="/app/expression">All species</Link>
-          </span>
-          &nbsp;▸&nbsp;
-          <span className="hover:underline capitalize">
-            <Link href={`/app/expression/${dataset?.species?.id}`}>
-              {speciesName}
-            </Link>
-          </span>
-          &nbsp;▸&nbsp;
-        </span>
-        <span className="">{datasetName}</span>
+    <div className="max-w-[1400px] mx-auto">
+      {/* Breadcrumb */}
+      <div className="text-sm mb-6 select-none">
+        <Link href="/app/expression" className="text-stone-400 hover:underline">
+          All species
+        </Link>
+        <span className="text-stone-300">&nbsp;▸&nbsp;</span>
+        <Link
+          href={`/app/expression/${speciesId}`}
+          className="text-stone-400 hover:underline capitalize"
+        >
+          {speciesName}
+        </Link>
+        <span className="text-stone-300">&nbsp;▸&nbsp;</span>
+        <span className="text-stone-900">{dataset.name}</span>
       </div>
-      <div className="mb-8">
-        {dataset?.people && <ScientistBadge person={dataset.people} />}
-      </div>
-      <div className="text-lg align-middle">
-        {/* <span className="">Accessions</span> */}
-        <ExpressionDataset name={dataset?.name || ""} />
-      </div>
+
+      {dataset.people && (
+        <div className="mb-6">
+          <ScientistBadge person={dataset.people} />
+        </div>
+      )}
+
+      <ExpressionView datasetId={datasetId} datasetName={dataset.name} />
     </div>
   );
 }
 
-function capitalizeFirstLetter(string: String) {
-  return string.charAt(0).toUpperCase() + string.slice(1);
-}
-
 async function getDataset(datasetId: number) {
   const supabase = await createServerSupabaseClient();
-
   const { data } = await supabase
     .from("scrna_datasets")
     .select("*, people(*), species(*)")
     .eq("id", datasetId)
     .single();
-
   return data;
-}
-
-function countStrings(strings: string[]) {
-  const count: { [key: string]: number } = {};
-  strings.forEach((s) => {
-    count[s] = (count[s] || 0) + 1;
-  });
-  return count;
 }
