@@ -5,7 +5,7 @@ import {
 } from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
-import { ExpressionView } from "@/components/expression-view";
+import { ExpressionCockpit } from "@/components/expression-cockpit";
 
 export default async function Dataset({
   params,
@@ -63,7 +63,7 @@ export default async function Dataset({
         </div>
       )}
 
-      <ExpressionView datasetId={datasetId} datasetName={dataset.name} />
+      <ExpressionCockpit datasetId={datasetId} datasetName={dataset.name} />
     </div>
   );
 }
