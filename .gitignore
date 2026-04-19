@@ -99,6 +99,9 @@ prompts/.claude/
 # setup/deployment notes (local only)
 .setup/
 
+# local-only design references (prototypes, handoff docs)
+reference/
+
 # supabase CLI session cache
 supabase/.temp/
 
