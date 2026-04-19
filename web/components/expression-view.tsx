@@ -41,7 +41,6 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   const [meta, setMeta] = useState<LoadedMeta | null>(null);
   const [geneName, setGeneName] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
-  const [highlighted, setHighlighted] = useState<number | null>(null);
   const [exprRange, setExprRange] = useState<{ min: number; max: number } | null>(
     null,
   );
@@ -110,6 +109,26 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
     setHidden(new Set(meta.clusters.map((c) => c.ordinal)));
   }, [meta]);
 
+  /**
+   * Solo: hide every other cluster so only the clicked one is visible.
+   * If the clicked cluster is already the only visible one, restore full
+   * visibility. Checkbox state follows because it derives from `hidden`.
+   */
+  const handleSolo = useCallback(
+    (ordinal: number) => {
+      if (!meta) return;
+      const allOrdinals = meta.clusters.map((c) => c.ordinal);
+      const visible = allOrdinals.filter((o) => !hidden.has(o));
+      const alreadySolo = visible.length === 1 && visible[0] === ordinal;
+      if (alreadySolo) {
+        setHidden(new Set());
+      } else {
+        setHidden(new Set(allOrdinals.filter((o) => o !== ordinal)));
+      }
+    },
+    [meta, hidden],
+  );
+
   const datasetName = meta?.dataset.name;
   const unitsLabel = meta?.dataset.expression_units ?? DEFAULT_UNITS_FALLBACK;
 
@@ -125,10 +144,9 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
       <ExpressionClusterSidebar
         clusters={meta?.clusters ?? []}
         hiddenOrdinals={hidden}
-        highlightedOrdinal={highlighted}
         cellCounts={meta?.counts}
         onVisibilityChange={handleVisibilityChange}
-        onHighlight={setHighlighted}
+        onSolo={handleSolo}
         onShowAll={handleShowAll}
         onHideAll={handleHideAll}
       />
@@ -182,7 +200,6 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
             datasetId={datasetId}
             geneName={geneName}
             hiddenClusters={hidden}
-            highlightedCluster={highlighted}
             onDataLoaded={handleDataLoaded}
             onExpressionRangeChanged={setExprRange}
           />
@@ -190,7 +207,6 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           <ExpressionPca3d
             datasetId={datasetId}
             hiddenClusters={hidden}
-            highlightedCluster={highlighted}
             onDataLoaded={handleDataLoaded}
           />
         )}

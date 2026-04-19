@@ -29,7 +29,6 @@ const AXIS_KEYS: readonly AxisKey[] = ["pc1", "pc2", "pc3", "pc4", "pc5"];
 export interface ExpressionPca3dProps {
   datasetId: number;
   hiddenClusters?: ReadonlySet<number>;
-  highlightedCluster?: number | null;
   height?: number;
   onDataLoaded?: (ctx: {
     dataset: Dataset;
@@ -56,7 +55,6 @@ function hexToRgb(hex: string | null): [number, number, number] {
 export function ExpressionPca3d({
   datasetId,
   hiddenClusters,
-  highlightedCluster,
   height = 600,
   onDataLoaded,
 }: ExpressionPca3dProps) {
@@ -107,7 +105,7 @@ export function ExpressionPca3d({
     return cells[0].pc1 !== null;
   }, [cells]);
 
-  // color buffer (depends on clusters + highlight/hidden state)
+  // color buffer (depends on clusters + hidden state)
   const colorBuffer = useMemo(() => {
     if (!cells) return null;
     const hidden = hiddenClusters ?? new Set<number>();
@@ -116,18 +114,15 @@ export function ExpressionPca3d({
     const out = new Float32Array(cells.length * 3);
     for (let i = 0; i < cells.length; i++) {
       const ord = cells[i].cluster_ordinal;
-      let rgb = paletteRgb.get(ord) ?? [0.5, 0.5, 0.5];
-      if (hidden.has(ord)) {
-        rgb = [0, 0, 0]; // effectively hidden via size=0 below
-      } else if (highlightedCluster != null && ord !== highlightedCluster) {
-        rgb = [rgb[0] * 0.3, rgb[1] * 0.3, rgb[2] * 0.3];
-      }
+      const rgb = hidden.has(ord)
+        ? [0, 0, 0] // hidden cells render as pure black against dark background
+        : paletteRgb.get(ord) ?? [0.5, 0.5, 0.5];
       out[i * 3] = rgb[0];
       out[i * 3 + 1] = rgb[1];
       out[i * 3 + 2] = rgb[2];
     }
     return out;
-  }, [cells, clusters, hiddenClusters, highlightedCluster]);
+  }, [cells, clusters, hiddenClusters]);
 
   // position buffer (depends on axis selection)
   const positionBuffer = useMemo(() => {
