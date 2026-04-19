@@ -395,7 +395,7 @@ jobs:
           PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
           PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
           supabase db push \
-            --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}" \
+            --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}?sslmode=disable" \
             --yes || {
             echo "::error title=Migration failed (CI)::See 'Migration status on failure' step and the Migration summary at top of run for applied vs pending state."
             exit 1
@@ -413,7 +413,7 @@ jobs:
           PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
           PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
           supabase migration list \
-            --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}" \
+            --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}?sslmode=disable" \
             || echo "::warning::Could not fetch migration status"
 
       # Layer C — markdown table of migration state in the run's summary panel.
@@ -431,7 +431,7 @@ jobs:
             echo ""
             echo '```'
             supabase migration list \
-              --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}" \
+              --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}?sslmode=disable" \
               2>/dev/null \
               || echo "(migration state fetch failed)"
             echo '```'
