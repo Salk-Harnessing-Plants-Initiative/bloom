@@ -75,27 +75,75 @@ def search_datasets_by_species_tool(species_name: str) -> list:
 
 @tool
 def get_clusters_by_dataset_tool(dataset_id: int) -> list:
-    """Fetch all unique clusters for a given dataset.
-    Returns cluster_id and count of cells in each cluster.
+    """Fetch all clusters for a given dataset from the authoritative
+    scrna_clusters catalog (populated by upload_scrna_v2.py).
+
+    Returns cluster_id, name, color, ordinal, and cell_count per cluster.
+    cell_count comes from scrna_cluster_stats when precomputed; falls
+    back to an aggregation over scrna_cells when stats are absent
+    (legacy datasets ingested by the v1 pipeline).
     """
+    # Primary path: the Phase 1 catalog + precomputed stats.
+    clusters_resp = httpx.get(
+        f"{REST_URL}/scrna_clusters",
+        headers=get_headers(),
+        params={
+            "dataset_id": f"eq.{dataset_id}",
+            "select": "cluster_id,name,color,ordinal",
+            "order": "ordinal.asc",
+        },
+    )
+    if clusters_resp.status_code != 200:
+        raise Exception(f"Failed to fetch clusters: {clusters_resp.text}")
+    clusters = clusters_resp.json()
+
+    if clusters:
+        stats_resp = httpx.get(
+            f"{REST_URL}/scrna_cluster_stats",
+            headers=get_headers(),
+            params={
+                "dataset_id": f"eq.{dataset_id}",
+                "select": "cluster_id,cell_count",
+            },
+        )
+        counts = {}
+        if stats_resp.status_code == 200:
+            for row in stats_resp.json():
+                counts[row["cluster_id"]] = row["cell_count"]
+        return [
+            {
+                "cluster_id": c["cluster_id"],
+                "name": c.get("name"),
+                "color": c.get("color"),
+                "ordinal": c.get("ordinal"),
+                "cell_count": counts.get(c["cluster_id"]),
+            }
+            for c in clusters
+        ]
+
+    # Fallback for legacy datasets (no scrna_clusters rows): aggregate
+    # distinct cluster_id values from scrna_cells. Preserves prior
+    # behaviour for datasets ingested by scripts/upload_scrna.py.
     response = httpx.get(
         f"{REST_URL}/scrna_cells",
         headers=get_headers(),
         params={
             "dataset_id": f"eq.{dataset_id}",
-            "select": "cluster_id"
-        }
+            "select": "cluster_id",
+        },
     )
     if response.status_code != 200:
         raise Exception(f"Failed to fetch clusters: {response.text}")
-
     cells = response.json()
     cluster_counts = {}
     for cell in cells:
         cid = cell.get("cluster_id", "unknown")
         cluster_counts[cid] = cluster_counts.get(cid, 0) + 1
-
-    return [{"cluster_id": k, "cell_count": v} for k, v in sorted(cluster_counts.items())]
+    return [
+        {"cluster_id": k, "name": k, "color": None,
+         "ordinal": None, "cell_count": v}
+        for k, v in sorted(cluster_counts.items())
+    ]
 
 
 @tool
