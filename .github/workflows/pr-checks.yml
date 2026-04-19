@@ -51,7 +51,10 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
           NEXT_PUBLIC_SUPABASE_COOKIE_NAME: sb-localhost-auth-token
 
-  # Ensures prod and staging env blocks in deploy.yml stay in sync
+  # Ensures prod and staging env blocks in deploy.yml stay in sync.
+  # Validates LHS parity, RHS prefix correctness, RHS suffix parity, per-LHS
+  # secret-ref consistency, and composite multi-ref lines. See the authoritative
+  # spec at openspec/changes/update-env-parity-check/specs/deploy-env-parity/spec.md
   verify-env-parity:
     name: Verify prod/staging env parity
     runs-on: ubuntu-latest
@@ -59,20 +62,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Compare prod vs staging env vars
-        run: |
-          PROD_VARS=$(grep -oE '^[[:space:]]+[A-Z_]+=\$\{\{ secrets\.PROD_' .github/workflows/deploy.yml | awk -F'=' '{print $1}' | tr -d ' ' | sort -u)
-          STAGING_VARS=$(grep -oE '^[[:space:]]+[A-Z_]+=\$\{\{ secrets\.STAGING_' .github/workflows/deploy.yml | awk -F'=' '{print $1}' | tr -d ' ' | sort -u)
-          if [ -z "$PROD_VARS" ] || [ -z "$STAGING_VARS" ]; then
-            echo "::warning::No env vars found in deploy.yml — skipping parity check"
-            exit 0
-          fi
-          if ! diff <(echo "$PROD_VARS") <(echo "$STAGING_VARS"); then
-            echo ""
-            echo "::error::prod and staging env blocks have drifted — add missing vars to both"
-            exit 1
-          fi
-          echo "prod and staging env blocks are in sync ($(echo "$PROD_VARS" | wc -l) vars)"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run verify_env_parity on deploy.yml
+        run: python3 scripts/verify_env_parity.py .github/workflows/deploy.yml
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Run unit tests for verify_env_parity
+        run: uv run --with pytest pytest tests/unit/test_verify_env_parity.py -v
 
   # Scans Python dependencies for known CVEs
   python-audit:
