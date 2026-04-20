@@ -51,7 +51,9 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
           NEXT_PUBLIC_SUPABASE_COOKIE_NAME: sb-localhost-auth-token
 
-  # Ensures prod and staging env blocks in deploy.yml stay in sync
+  # Ensures prod and staging secret-append blocks in deploy.yml stay in sync.
+  # Non-sensitive config lives in .env.{prod,staging}.defaults and is verified
+  # by validate-env-defaults below.
   verify-env-parity:
     name: Verify prod/staging env parity
     runs-on: ubuntu-latest
@@ -73,6 +75,27 @@ jobs:
             exit 1
           fi
           echo "prod and staging env blocks are in sync ($(echo "$PROD_VARS" | wc -l) vars)"
+
+  # Guards the Committed Defaults contract: no secrets leak into the defaults
+  # files, prod/staging key sets are identical, disambiguating values differ,
+  # and every ${VAR} in docker-compose.prod.yml has a source.
+  # See openspec/changes/refactor-env-config-committed-defaults/specs/deploy-env-config/spec.md
+  validate-env-defaults:
+    name: Validate committed env defaults
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run env-defaults unit tests
+        run: |
+          pip install uv
+          uv run --with pytest pytest tests/unit/test_env_defaults.py -v --tb=short
 
   # Scans Python dependencies for known CVEs
   python-audit:
