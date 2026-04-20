@@ -50,7 +50,7 @@ export default async function Species({
       {/* Species header */}
       <div className="flex items-start gap-6 mb-10">
         <div className="shrink-0 w-28 h-28 rounded-full bg-stone-100 overflow-hidden flex items-center justify-center">
-          <Illustration path={species.illustration_path} />
+          <Illustration path={species.illustration_path} commonName={species.common_name} />
         </div>
         <div className="flex-1 pt-2">
           <div className="text-3xl font-serif italic capitalize">
@@ -92,7 +92,7 @@ export default async function Species({
                 className="group flex items-center gap-6 py-5 hover:bg-stone-50 transition-colors px-3 -mx-3"
               >
                 <div className="shrink-0 w-20 h-20 rounded-full bg-stone-100 overflow-hidden flex items-center justify-center">
-                  <Illustration path={species.illustration_path} />
+                  <Illustration path={species.illustration_path} commonName={species.common_name} />
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-xl text-lime-700 group-hover:underline break-words">
