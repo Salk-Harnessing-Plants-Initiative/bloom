@@ -15,12 +15,24 @@ on:
         options:
           - staging
           - production
+      runner:
+        description: 'Runner (ubuntu-latest ONLY for un-wedging CI; real deploys need self-hosted)'
+        required: false
+        default: 'self-hosted'
+        type: choice
+        options:
+          - self-hosted
+          - ubuntu-latest
 
 jobs:
   deploy-production:
     name: Deploy to Production
     if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
-    runs-on: [self-hosted, linux, salk-network]
+    # Escape hatch: workflow_dispatch can switch to ubuntu-latest to un-wedge
+    # CI when the self-hosted runner is offline/hung. The deploy will still
+    # fail (GitHub-hosted runners have no route to the Salk server), but
+    # it fails fast instead of queuing for 24h.
+    runs-on: ${{ github.event.inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "salk-network"]') }}
     timeout-minutes: 30
     environment: production
     steps:
@@ -90,6 +102,16 @@ jobs:
             grep -qE "^${k}=.+" "$f" || { echo "::error::Missing or empty key in $f: $k"; exit 1; }
           done
           echo "✓ .env.prod validated ($(wc -l < "$f") lines)"
+
+      # Catches the case where the runner user (who writes .env.prod at mode 600)
+      # and DEPLOY_USER (who reads it when docker compose runs) diverge. Without
+      # this check, docker compose would silently read an empty env and every
+      # service would start with blank credentials.
+      - name: Verify DEPLOY_USER can read .env.prod
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "test -r ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod" \
+            || { echo "::error::DEPLOY_USER cannot read .env.prod — runner-user and DEPLOY_USER must match, or group-readable perms needed"; exit 1; }
 
       - name: Save previous SHA for rollback
         run: |
@@ -169,7 +191,8 @@ jobs:
   deploy-staging:
     name: Deploy to Staging
     if: github.ref == 'refs/heads/staging' || github.event.inputs.environment == 'staging'
-    runs-on: [self-hosted, linux, salk-network]
+    # Escape hatch: see deploy-production for rationale.
+    runs-on: ${{ github.event.inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "salk-network"]') }}
     timeout-minutes: 30
     environment: staging
     steps:
@@ -239,6 +262,13 @@ jobs:
             grep -qE "^${k}=.+" "$f" || { echo "::error::Missing or empty key in $f: $k"; exit 1; }
           done
           echo "✓ .env.staging validated ($(wc -l < "$f") lines)"
+
+      # See deploy-production's equivalent step for rationale.
+      - name: Verify DEPLOY_USER can read .env.staging
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "test -r ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging" \
+            || { echo "::error::DEPLOY_USER cannot read .env.staging — runner-user and DEPLOY_USER must match, or group-readable perms needed"; exit 1; }
 
       - name: Save previous SHA for rollback
         run: |
