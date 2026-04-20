@@ -83,6 +83,9 @@ services:
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
       BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
       BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
+      # Kept in sync with docker-compose.prod.yml for dev/prod parity, even
+      # though dev has a writable root FS. See the prod compose for rationale.
+      NUMBA_CACHE_DIR: /tmp/numba
     volumes:
       - ./bloommcp:/app
       - ./bloommcp/data/SLEAP_OUT_CSV:/app/data/SLEAP_OUT_CSV
