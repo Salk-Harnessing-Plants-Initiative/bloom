@@ -40,30 +40,41 @@ export default async function Dataset({
   const speciesName = dataset.species?.common_name ?? "";
 
   return (
-    <div className="max-w-[1400px] mx-auto">
-      {/* Breadcrumb */}
-      <div className="text-sm mb-6 select-none">
-        <Link href="/app/expression" className="text-stone-400 hover:underline">
-          All species
-        </Link>
-        <span className="text-stone-300">&nbsp;▸&nbsp;</span>
-        <Link
-          href={`/app/expression/${speciesId}`}
-          className="text-stone-400 hover:underline capitalize"
-        >
-          {speciesName}
-        </Link>
-        <span className="text-stone-300">&nbsp;▸&nbsp;</span>
-        <span className="text-stone-900">{dataset.name}</span>
+    <div>
+      {/* Top navigation bar — matches max-w-5xl of list pages so the
+          "All species" link stays at the same screen position as you
+          navigate: /app/expression → /[speciesId] → /[speciesId]/[datasetId]. */}
+      <div className="border-b border-stone-200 mb-6 pb-4">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-sm select-none">
+            <Link
+              href="/app/expression"
+              className="text-stone-400 hover:underline"
+            >
+              All species
+            </Link>
+            <span className="text-stone-300">&nbsp;▸&nbsp;</span>
+            <Link
+              href={`/app/expression/${speciesId}`}
+              className="text-stone-400 hover:underline capitalize"
+            >
+              {speciesName}
+            </Link>
+            <span className="text-stone-300">&nbsp;▸&nbsp;</span>
+            <span className="text-stone-900">{dataset.name}</span>
+          </div>
+        </div>
       </div>
 
-      {dataset.people && (
-        <div className="mb-6">
-          <ScientistBadge person={dataset.people} />
-        </div>
-      )}
+      <div className="max-w-[1400px] mx-auto">
+        {dataset.people && (
+          <div className="mb-6">
+            <ScientistBadge person={dataset.people} />
+          </div>
+        )}
 
-      <ExpressionCockpit datasetId={datasetId} datasetName={dataset.name} />
+        <ExpressionCockpit datasetId={datasetId} datasetName={dataset.name} />
+      </div>
     </div>
   );
 }
