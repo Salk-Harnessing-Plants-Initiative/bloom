@@ -392,6 +392,7 @@ jobs:
           # in the file to the subprocess environment.
           PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
           PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
+          echo "::add-mask::$PG_PASSWORD"
           PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
           PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
           # --debug works around supabase-cli #4839 (sslmode=disable silently
@@ -415,6 +416,7 @@ jobs:
         run: |
           PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
           PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
+          echo "::add-mask::$PG_PASSWORD"
           PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
           PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
           supabase migration list \
@@ -430,6 +432,7 @@ jobs:
         run: |
           PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
           PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
+          echo "::add-mask::$PG_PASSWORD"
           PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
           PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
           {
@@ -438,6 +441,7 @@ jobs:
             echo '```'
             supabase migration list \
               --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}?sslmode=disable" \
+              --debug \
               2>/dev/null \
               || echo "(migration state fetch failed)"
             echo '```'

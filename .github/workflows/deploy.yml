@@ -186,6 +186,7 @@ jobs:
       # into the subprocess environment.
       - name: Apply database migrations (production)
         run: |
+          echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
             PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
@@ -203,6 +204,7 @@ jobs:
       - name: Show migration status on failure (production)
         if: failure()
         run: |
+          echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
             PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
@@ -218,6 +220,7 @@ jobs:
       - name: Migration summary (production)
         if: always()
         run: |
+          echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
           {
             echo "## Database migration state (production)"
             echo ""
@@ -415,6 +418,7 @@ jobs:
 
       - name: Apply database migrations (staging)
         run: |
+          echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
             PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
@@ -430,6 +434,7 @@ jobs:
       - name: Show migration status on failure (staging)
         if: failure()
         run: |
+          echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
             PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
@@ -442,6 +447,7 @@ jobs:
       - name: Migration summary (staging)
         if: always()
         run: |
+          echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
           {
             echo "## Database migration state (staging)"
             echo ""
