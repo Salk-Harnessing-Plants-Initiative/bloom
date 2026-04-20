@@ -7,6 +7,9 @@ sleep 5
 echo "Configuring MinIO client..."
 mc alias set local "${MINIO_ENDPOINT:-http://supabase-minio:9000}" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
 
+echo "Creating storage-api backend bucket..."
+mc mb -p local/bloom-storage || true
+
 echo "Creating private buckets..."
 mc mb -p local/images || true
 mc mb -p local/species_illustrations || true

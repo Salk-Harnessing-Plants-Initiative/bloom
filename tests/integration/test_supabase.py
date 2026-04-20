@@ -71,10 +71,8 @@ def test_signin_returns_session(api, anon_key):
 def test_anon_can_select_public_tables(api, anon_key):
     """Anon key can read from public tables."""
     status, body = api("/api/rest/v1/species?select=id,common_name&limit=1", api_key=anon_key)
-    # 200 = table exists, 404 = table not yet created (fresh CI DB without migrations)
-    assert status in (200, 404)
-    if status == 200:
-        assert isinstance(body, list)
+    assert status == 200
+    assert isinstance(body, list)
 
 
 def test_anon_cannot_insert_without_auth(api, anon_key):
@@ -85,16 +83,13 @@ def test_anon_cannot_insert_without_auth(api, anon_key):
         method="POST",
         data={"common_name": "ci-test-species", "genus": "Test", "species": "testicus"},
     )
-    # 401/403 = correctly blocked, 404 = table doesn't exist (fresh CI DB)
-    assert status in (401, 403, 404), f"Expected 401/403/404 but got {status}: {body}"
+    assert status in (401, 403), f"Expected 401/403 but got {status}: {body}"
 
 
 # --- Storage Tests ---
 
 def test_storage_upload_download_delete(api, service_role_key):
     """Upload a file, download it, then delete it."""
-    if os.environ.get("CI"):
-        pytest.skip("Skipped: writing to MinIO/S3 not available in CI")
     bucket = "images"
     filename = f"ci-test-{uuid.uuid4().hex[:8]}.txt"
     content = "integration test file content"
