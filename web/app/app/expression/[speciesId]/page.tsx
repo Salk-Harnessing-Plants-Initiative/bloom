@@ -32,7 +32,7 @@ export default async function Species({
   const datasets = species.scrna_datasets ?? [];
 
   return (
-    <div className="max-w-5xl mx-auto">
+    <div>
       {/* Breadcrumb */}
       <div className="text-sm mb-6 select-none">
         <Link

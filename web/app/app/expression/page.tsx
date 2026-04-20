@@ -23,7 +23,7 @@ export default async function AllSpecies() {
   const speciesList = await getSpeciesList();
 
   return (
-    <div className="max-w-5xl mx-auto">
+    <div>
       <div className="mb-1 text-sm uppercase tracking-widest text-stone-500">
         Expression
       </div>
