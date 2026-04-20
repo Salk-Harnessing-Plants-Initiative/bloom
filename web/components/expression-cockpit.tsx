@@ -7,6 +7,7 @@ import ExpressionGeneLevel from "@/components/expression-genelevel";
 import DifferentialExpressionAnalysis from "@/components/expression-differential-analysis";
 import ExpressionCorrelation from "@/components/expression-correlation-page";
 import ExpressonDownloadFiles from "@/components/expression-download-files";
+import { ExpressionThemeProvider } from "@/components/expression-theme-provider";
 
 type Tab = "umap" | "gene" | "correlation" | "de" | "download";
 
@@ -32,6 +33,7 @@ export function ExpressionCockpit({
   const [tab, setTab] = useState<Tab>("umap");
 
   return (
+    <ExpressionThemeProvider>
     <div className="bg-white border border-stone-200 rounded-lg overflow-hidden">
       {/* Tab strip */}
       <div className="border-b border-stone-200 bg-white px-5 flex items-center gap-1 overflow-x-auto">
@@ -73,6 +75,7 @@ export function ExpressionCockpit({
         )}
       </div>
     </div>
+    </ExpressionThemeProvider>
   );
 }
 
