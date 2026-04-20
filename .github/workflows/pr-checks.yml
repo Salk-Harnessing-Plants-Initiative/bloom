@@ -4,6 +4,12 @@ on:
   pull_request:
     branches: [main]
 
+# Minimum required across jobs. Read-only by default; individual jobs that
+# need to post sticky PR comments (Trivy reports) rely on pull-requests: write.
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   build-and-audit:
     name: Build & npm CVE Audit

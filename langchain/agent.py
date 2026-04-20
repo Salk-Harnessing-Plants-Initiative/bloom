@@ -85,6 +85,10 @@ async def setup_checkpointer() -> AsyncPostgresSaver:
 
     checkpointer = AsyncPostgresSaver(pool)
     logger = logging.getLogger(__name__)
+    # lgtm[py/clear-text-logging-sensitive-data] — .split('@')[-1] strips the
+    # user:password prefix of a postgresql:// URL; only host:port/db is logged.
+    # CodeQL's taint analysis can't verify the sanitization. Proper fix with
+    # urllib.parse tracked as a follow-up issue.
     logger.info(f"PostgresSaver initialized with pool (min=2, max=10) → {POSTGRES_URL.split('@')[-1]}")
     return checkpointer
 
