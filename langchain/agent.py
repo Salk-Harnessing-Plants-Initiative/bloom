@@ -29,7 +29,10 @@ logging.basicConfig(
 #################################################### Agent Setup ####################################################
 
 # Postgres connection URL for persistent conversation memory.
-# Use LANGCHAIN_POSTGRES_URL directly, or build from individual POSTGRES_* env vars.
+# Built from individual POSTGRES_* env vars by default (they come from
+# deploy-time .env.<env>.defaults + GitHub Secrets per the deploy-env-config
+# spec). LANGCHAIN_POSTGRES_URL can still be set as an override for local
+# dev against an arbitrary database.
 _pg_url_override = os.getenv("LANGCHAIN_POSTGRES_URL")
 if _pg_url_override:
     POSTGRES_URL = _pg_url_override
