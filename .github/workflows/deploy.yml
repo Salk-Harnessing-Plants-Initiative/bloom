@@ -39,8 +39,8 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
             if [ -f .env.prod ]; then
-              cp .env.prod .env.prod.previous
-              echo 'Saved .env.prod as .env.prod.previous'
+              cp -p .env.prod .env.prod.previous
+              echo 'Saved .env.prod as .env.prod.previous (mode preserved)'
             else
               echo 'No existing .env.prod — first deploy, skipping snapshot'
             fi
@@ -178,8 +178,8 @@ jobs:
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
               if [ -f .env.prod.previous ]; then
-                cp .env.prod.previous .env.prod
-                echo 'Restored previous .env.prod'
+                cp -p .env.prod.previous .env.prod
+                echo 'Restored previous .env.prod (mode preserved)'
               else
                 echo 'WARNING: no .env.prod.previous — rolling back with current .env.prod'
               fi
@@ -217,8 +217,8 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
             if [ -f .env.staging ]; then
-              cp .env.staging .env.staging.previous
-              echo 'Saved .env.staging as .env.staging.previous'
+              cp -p .env.staging .env.staging.previous
+              echo 'Saved .env.staging as .env.staging.previous (mode preserved)'
             else
               echo 'No existing .env.staging — first deploy, skipping snapshot'
             fi
@@ -356,8 +356,8 @@ jobs:
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
               if [ -f .env.staging.previous ]; then
-                cp .env.staging.previous .env.staging
-                echo 'Restored previous .env.staging'
+                cp -p .env.staging.previous .env.staging
+                echo 'Restored previous .env.staging (mode preserved)'
               else
                 echo 'WARNING: no .env.staging.previous — rolling back with current .env.staging'
               fi
