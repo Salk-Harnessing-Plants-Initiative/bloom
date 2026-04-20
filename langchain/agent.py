@@ -33,21 +33,27 @@ logging.basicConfig(
 # deploy-time .env.<env>.defaults + GitHub Secrets per the deploy-env-config
 # spec). LANGCHAIN_POSTGRES_URL can still be set as an override for local
 # dev against an arbitrary database.
+#
+# No fallback values: a missing POSTGRES_HOST would otherwise default to
+# "localhost" (the agent container itself) and produce a confusing
+# "connection refused" instead of the real "env var not set" error.
 _pg_url_override = os.getenv("LANGCHAIN_POSTGRES_URL")
 if _pg_url_override:
     POSTGRES_URL = _pg_url_override
 else:
-    _pg_password = os.getenv("POSTGRES_PASSWORD")
-    if not _pg_password:
+    _required = ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB")
+    _missing = [k for k in _required if not os.getenv(k)]
+    if _missing:
         raise RuntimeError(
-            "Database configuration required: set LANGCHAIN_POSTGRES_URL or POSTGRES_PASSWORD"
+            f"Database configuration incomplete: missing env vars {_missing}. "
+            "Set LANGCHAIN_POSTGRES_URL (local dev) or all of POSTGRES_USER/PASSWORD/HOST/PORT/DB (prod)."
         )
     POSTGRES_URL = "postgresql://{user}:{password}@{host}:{port}/{db}".format(
-        user=os.getenv("POSTGRES_USER", "postgres"),
-        password=_pg_password,
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=os.getenv("POSTGRES_PORT", "5432"),
-        db=os.getenv("POSTGRES_DB", "postgres"),
+        user=os.environ["POSTGRES_USER"],
+        password=os.environ["POSTGRES_PASSWORD"],
+        host=os.environ["POSTGRES_HOST"],
+        port=os.environ["POSTGRES_PORT"],
+        db=os.environ["POSTGRES_DB"],
     )
 
 
