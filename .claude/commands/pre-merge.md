@@ -32,11 +32,16 @@ cd web && npx tsc --noEmit && npm run build && cd ..
 Audits each service's full transitive dependency tree via its lockfile. A temp file is used for local runs because `/dev/stdin` is not portable on Windows/MSYS; CI runs `| uvx pip-audit -r /dev/stdin` directly because it's on Linux.
 
 ```bash
-for svc in langchain bloommcp services/video-worker; do
-  echo "=== Auditing $svc ==="
-  (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit -r /tmp/reqs.txt) || exit 1
-done
-rm -f /tmp/reqs.txt
+# Subshell + EXIT trap so /tmp/reqs.txt is cleaned up on both success and
+# failure paths (the earlier trailing `rm -f` only ran on success and leaked
+# the temp file when `exit 1` fired mid-loop).
+(
+  trap "rm -f /tmp/reqs.txt" EXIT
+  for svc in langchain bloommcp services/video-worker; do
+    echo "=== Auditing $svc ==="
+    (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit -r /tmp/reqs.txt) || exit 1
+  done
+)
 ```
 
 ## Step 3: Docker Builds (matches `docker-build` job)
@@ -129,9 +134,13 @@ For small changes, the minimum checks:
 cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Python audit (if any pyproject.toml/uv.lock touched)
-for svc in langchain bloommcp services/video-worker; do
-  (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit -r /tmp/reqs.txt) || exit 1
-done
+# Subshell + EXIT trap so /tmp/reqs.txt is cleaned up on success AND failure.
+(
+  trap "rm -f /tmp/reqs.txt" EXIT
+  for svc in langchain bloommcp services/video-worker; do
+    (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit -r /tmp/reqs.txt) || exit 1
+  done
+)
 ```
 
 ## Pre-Merge Checklist

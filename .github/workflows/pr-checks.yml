@@ -60,19 +60,25 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+
+      # Fast feedback on pure-Python utility scripts. Placed in python-audit
+      # (not compose-health-check) because this job runs in parallel, has no
+      # continue-on-error, and already has uv installed.
+      - name: Run Python unit tests
+        run: uv run --with pytest pytest tests/unit/ -v --tb=short
 
       # Checks langchain agent Python packages for vulnerabilities
       - name: Audit langchain dependencies
-        run: cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+        run: cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
       # Checks bloommcp server Python packages for vulnerabilities
       - name: Audit bloommcp dependencies
-        run: cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+        run: cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
       # Checks video-worker Python packages for vulnerabilities
       - name: Audit video-worker dependencies
-        run: cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+        run: cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
   docker-build:
     name: Build Docker Images & Scan for CVEs
@@ -339,7 +345,7 @@ jobs:
           exit 1
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       # Runs 22 integration tests (smoke, auth, RLS, storage, API routing) against the live compose stack
       # Skips if tests/integration/ doesn't exist on this branch

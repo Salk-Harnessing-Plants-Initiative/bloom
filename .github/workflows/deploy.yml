@@ -35,13 +35,13 @@ jobs:
         run: npm audit --audit-level=critical
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: Security audit (Python)
         run: |
-          cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-          cd ../bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-          cd ../services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+          cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+          cd ../bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+          cd ../services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
       - name: Build shared packages
         run: |
@@ -66,7 +66,7 @@ jobs:
           docker build -f bloommcp/Dockerfile -t bloommcp:${{ github.sha }} ./bloommcp
 
       - name: Scan images with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'bloom-web:${{ github.sha }}'
           severity: 'CRITICAL,HIGH'

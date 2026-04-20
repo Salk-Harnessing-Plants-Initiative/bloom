@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Iterable
 
 # Services to check, relative to repo root. Keep in sync with the pre-commit
 # hook's `files:` filter in .pre-commit-config.yaml.
@@ -34,31 +35,53 @@ SERVICES = (
 UV_INSTALL_URL = "https://docs.astral.sh/uv/getting-started/installation/"
 
 
-def main() -> int:
-    if shutil.which("uv") is None:
-        print(
-            "error: `uv` is required but not installed or not on PATH.\n"
-            f"       install: {UV_INSTALL_URL}",
-            file=sys.stderr,
-        )
-        return 127
+def check_services(repo_root: Path, services: Iterable[str] = SERVICES) -> int:
+    """Run `uv lock --check` in each service under `repo_root`.
 
-    repo_root = Path(__file__).resolve().parent.parent
+    Returns 0 when every (present) service is clean, 1 when at least one
+    has lockfile drift. Services without a `pyproject.toml` are skipped
+    (defensive — lets partially-migrated repos still pass the hook).
+
+    `repo_root` is injected rather than derived from `__file__` so tests
+    can point it at a temp directory.
+    """
     failed: list[str] = []
 
-    for service in SERVICES:
+    for service in services:
         service_dir = repo_root / service
         if not (service_dir / "pyproject.toml").exists():
-            # Skip services that haven't been migrated yet (defensive).
             print(f"skip  {service}: no pyproject.toml")
             continue
 
         print(f"check {service} ...", flush=True)
-        result = subprocess.run(
-            ["uv", "lock", "--check"],
-            cwd=service_dir,
-            # Let uv's output stream through so drift errors are visible.
-        )
+        try:
+            result = subprocess.run(
+                ["uv", "lock", "--check"],
+                cwd=service_dir,
+                # Let uv's output stream through so drift errors are visible.
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            # A stuck `uv lock --check` (network partition, stale git lock,
+            # etc.) must not wedge the pre-commit hook. Record the timeout
+            # and continue so one slow service doesn't block the rest.
+            print(
+                f"timeout: {service} exceeded 120s during `uv lock --check`",
+                file=sys.stderr,
+            )
+            failed.append(service)
+            continue
+        except FileNotFoundError:
+            # Race: `uv` passed shutil.which() but disappeared before exec.
+            # Surface the install hint and keep going.
+            print(
+                f"error: {service}: `uv` not found during exec "
+                f"(race between probe and run). install: {UV_INSTALL_URL}",
+                file=sys.stderr,
+            )
+            failed.append(service)
+            continue
+
         if result.returncode != 0:
             failed.append(service)
 
@@ -72,6 +95,19 @@ def main() -> int:
         return 1
 
     return 0
+
+
+def main() -> int:
+    if shutil.which("uv") is None:
+        print(
+            "error: `uv` is required but not installed or not on PATH.\n"
+            f"       install: {UV_INSTALL_URL}",
+            file=sys.stderr,
+        )
+        return 127
+
+    repo_root = Path(__file__).resolve().parent.parent
+    return check_services(repo_root)
 
 
 if __name__ == "__main__":

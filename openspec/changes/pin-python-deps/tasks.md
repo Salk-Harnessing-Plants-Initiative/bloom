@@ -107,3 +107,82 @@ Four items surfaced by Copilot's automated review of the initial PR. All are leg
   - Matches the old pattern of checking for Python deps before proceeding
 - [x] 11.7 Verify: `uvx pre-commit run uv-lock-check --all-files` still passes on branch state after the hook rewrite
 - [x] 11.8 Verify: `make load-test-data` (or a dry-run equivalent) surfaces a clear error if `uv` is uninstalled — test by temporarily removing `uv` from PATH
+## 12. Address 5-subagent review findings on PR #126
+
+Seven items surfaced by a parallel 5-subagent review (Code Quality · Testing · Scientific Rigor · Security · Behavioural Correctness) after round-3 Copilot fixes landed. All legitimate improvements; none blocking. TDD applied where the item is test-shaped (12.1–12.3). Configuration-only items (12.4–12.8) don't have meaningful test shape.
+
+### Test-first items (TDD)
+
+- [x] 12.1a **Refactor `scripts/check-uv-locks.py` for testability** (prerequisite for 12.1):
+  - Extract the per-service loop and failure-reporting into a pure function: `def check_services(repo_root: Path, services: Iterable[str] = SERVICES) -> int:` returning 0 (clean), 1 (drift/timeout), or 127 (uv missing — keep this check inside `main` or move to the helper's entry; pick one and document)
+  - Have `main()` compute `repo_root = Path(__file__).resolve().parent.parent` and call `check_services(repo_root)`
+  - Rationale: Test B ("missing pyproject.toml skips") needs to point `repo_root` at a `tmp_path` with a subset of services. Hardcoded `Path(__file__).resolve().parent.parent` is not monkeypatchable without fragile tricks. Injecting `repo_root` makes the test trivial.
+  - Also add `timeout=120` wiring point: the helper is where `subprocess.run` lives, so the timeout in 12.2 lands here.
+  - No behavior change for real CLI users (pre-commit hook still calls `python scripts/check-uv-locks.py`)
+  - Commit this refactor WITHOUT the timeout change so 12.1 tests can run against a clean, still-pre-12.2 state
+
+- [x] 12.1 **Write pytest for `scripts/check-uv-locks.py`** (tests A-D are characterization — they pass against the 12.1a refactor immediately; test E is the only true RED-first driver for 12.2):
+  - Create `tests/unit/test_check_uv_locks.py` and `tests/unit/conftest.py` (shared fixtures if needed)
+  - Import the `check_services` helper directly from `scripts.check_uv_locks` (add a `sys.path` shim in conftest, OR rename the script to `check_uv_locks.py` with underscores so it imports cleanly — underscores preferred; update `.pre-commit-config.yaml` and any docs in the same commit if renamed)
+  - Use `capsys` (pytest fixture) to capture parent-script stderr — the subprocess itself doesn't use `capture_output=True`, so assertions about "service name in stderr" must target the PARENT script's final error message (lines 65-71 of the current script), not child stderr
+  - **Test A** (`test_uv_missing_returns_127`): monkeypatch `shutil.which` to return `None`; assert `main()` returns `127` and `capsys.readouterr().err` contains the install URL
+  - **Test B** (`test_missing_pyproject_skips`): pass a `tmp_path` to `check_services()` containing a `langchain/pyproject.toml` but no `bloommcp/pyproject.toml`; monkeypatch `subprocess.run` to return returncode=0 for langchain; assert return value is `0` and skip message for bloommcp appears in captured stdout
+  - **Test C** (`test_drift_detected_returns_1`): `tmp_path` with all 3 service pyproject.tomls; monkeypatch `subprocess.run` to return `CompletedProcess(returncode=1)` for one service and 0 for others; assert `check_services()` returns `1` AND `capsys.readouterr().err` contains the drifted service name
+  - **Test D** (`test_clean_pass_returns_0`): monkeypatch `subprocess.run` to always return returncode=0; assert `check_services()` returns `0`
+  - **Test E** (`test_subprocess_timeout_surfaces`): monkeypatch `subprocess.run` to raise `subprocess.TimeoutExpired(cmd=..., timeout=120)`; assert `check_services()` returns `1`, the service name appears in stderr, AND processing continues to subsequent services (monkeypatch can use a side-effect list: first call raises TimeoutExpired, second+ returns 0; assert all services were attempted). Test E SHOULD FAIL against the 12.1a refactor (no timeout wired yet) — the failure is what drives 12.2.
+  - **Test F** (`test_unexpected_subprocess_error_surfaces`): monkeypatch `subprocess.run` to raise `FileNotFoundError("uv disappeared mid-run")`; assert the script fails with non-zero and a clear message (NOT an uncaught traceback). Documents defensive handling of races between `shutil.which` and the actual exec.
+  - Run `uv run --with pytest pytest tests/unit/test_check_uv_locks.py -v`; confirm 5 of 6 pass (test E fails; test F may fail too — if so, 12.2 should also add a broad `except subprocess.SubprocessError` or narrower catch)
+
+- [x] 12.2 **Implement `timeout=120` and defensive subprocess error handling in `check_services()`**:
+  - Add `timeout=120` keyword argument to the `subprocess.run(["uv", "lock", "--check"], cwd=..., timeout=120)` call in the refactored helper
+  - Wrap the call in `try / except subprocess.TimeoutExpired as e:` that prints a clear `timeout: {service} exceeded 120s` message to stderr, appends the service to `failed`, and continues the loop
+  - Also catch `FileNotFoundError` (in case `uv` vanishes between the `shutil.which` probe and the actual exec — race) with a message pointing back at the install URL; append to `failed` and continue
+  - Re-run `uv run --with pytest pytest tests/unit/test_check_uv_locks.py -v` — all 6 tests now pass (green)
+  - Confirm the existing `uvx pre-commit run uv-lock-check --all-files` still passes on the current repo state (no regression)
+
+- [x] 12.3 **Wire unit tests into the `python-audit` CI job**:
+  - Add a step to the `python-audit` job in `.github/workflows/pr-checks.yml` (NOT `compose-health-check`): `uv run --with pytest pytest tests/unit/ -v --tb=short`
+  - Reason for placement: `compose-health-check` has `continue-on-error: true` (failures don't block PRs) and `needs: docker-build` (~10 min delay). `python-audit` has neither — it runs in parallel, fails fast, and blocks merges. The `astral-sh/setup-uv` step is already present in that job so no new setup is needed.
+  - Place the step after `setup-uv` and before the first `uvx pip-audit` step so a failing unit test short-circuits the audit run
+  - Confirm via `gh pr view 126 --json statusCheckRollup` (after push) that the step appears and passes
+
+### Configuration-only items (direct changes)
+
+- [x] 12.4 **Pin `astral-sh/setup-uv` to commit SHA in both workflows**:
+  - Look up the commit SHA for the current `v7.x.y` tag of `astral-sh/setup-uv` (use `gh api repos/astral-sh/setup-uv/tags`)
+  - Replace `astral-sh/setup-uv@v7` with `astral-sh/setup-uv@<sha>  # v7.x.y` in:
+    - `.github/workflows/pr-checks.yml` (`python-audit` job; `compose-health-check` job)
+    - `.github/workflows/deploy.yml` (Python audit step)
+  - Matches the SHA-pin pattern used by `gitleaks` in `.pre-commit-config.yaml`
+
+- [x] 12.5 **Pin `uvx pip-audit` to a specific version**:
+  - Choose `uvx pip-audit@2.10.0` or the latest stable at the time of this commit (look up via `gh release list --repo pypa/pip-audit --limit 3`)
+  - Replace all three audit steps in `pr-checks.yml` and the audit step in `deploy.yml`: `uvx pip-audit -r /dev/stdin` → `uvx pip-audit@<version> -r /dev/stdin`
+  - Dependabot's `uv` ecosystem tracks the lockfiles but not inline `uvx` versions; manual bumps are the trade-off
+
+- [x] 12.6 **Align Trivy action in `deploy.yml`**:
+  - Change `aquasecurity/trivy-action@0.28.0` → `aquasecurity/trivy-action@v0.35.0`
+  - Confirm by diff: both `pr-checks.yml` and `deploy.yml` now use `v0.35.0`
+
+- [x] 12.7 **Install-as-bloom Dockerfile restructuring (both services)**:
+  - In `bloommcp/Dockerfile` and `langchain/Dockerfile`, restructure to: (1) keep apt-get steps as root, (2) add a single RUN layer that creates the bloom user AND pre-creates `/opt/venv` + any `/app/data/...` dirs with `chown -R bloom:bloom`, (3) `WORKDIR /app`, (4) `USER bloom`, (5) `COPY --chown=bloom:bloom pyproject.toml uv.lock .python-version ./`, (6) `RUN uv sync --frozen --no-dev --no-cache`, (7) `COPY --chown=bloom:bloom . .`
+  - Delete the trailing `RUN chown -R bloom:bloom /app /opt/venv` line (ownership is now set at copy/install time)
+  - Delete the trailing `USER bloom` line (switch already happened earlier)
+  - bloommcp: fold the existing `RUN mkdir -p /app/data/SLEAP_OUT_CSV /app/data/PLOTS_DIR /app/data/ANALYSIS_OUTPUT` into the user-creation layer
+  - langchain: fold `RUN mkdir -p /app/data/PLOTS_DIR` into the user-creation layer
+  - Do NOT use `RUN --chown=...` — that syntax is invalid (`--chown` is a COPY/ADD flag, not a RUN flag)
+  - Rebuild both images: `docker build -f bloommcp/Dockerfile -t bloommcp:layer-test ./bloommcp` and same for langchain
+  - Confirm smoke tests still pass: `docker run --rm --entrypoint python bloommcp:layer-test -c "import fastmcp; import statsmodels; import umap; print('ok')"`
+  - Confirm `docker history bloommcp:layer-test | grep -c "chown -R"` returns 0
+  - Confirm the container still runs as bloom: `docker run --rm --entrypoint whoami bloommcp:layer-test` returns `bloom`
+
+- [x] 12.8 **`pre-merge.md` `/tmp/reqs.txt` cleanup via `trap`**:
+  - Replace trailing `rm -f /tmp/reqs.txt` in both the main Python Audit block and the Quick Pre-Merge block with `trap "rm -f /tmp/reqs.txt" EXIT` at the start of each block
+  - Ensures cleanup runs on both success and failure paths
+
+### Follow-up (filed separately, NOT in this PR)
+
+- [ ] 12.9 **Numerical reproducibility smoke test** — file as a new GitHub issue (NOT a task in this PR):
+  - Scope: a pytest that runs a fixed-seed UMAP embedding + a reference pandas trait computation against a small committed input, asserts bit-exact output against a golden file
+  - Motivation: catch silent numerical drift from lockfile updates (esp. numba/numpy/pandas)
+  - Cross-link: mention this PR (#126) and the 5-subagent review comment as the origin

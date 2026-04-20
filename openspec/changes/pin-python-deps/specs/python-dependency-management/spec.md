@@ -60,11 +60,11 @@ Each Python service Dockerfile SHALL copy the `uv` binary from the official imag
 ### Requirement: CI SHALL validate lockfile freshness and audit transitive dependencies
 
 The `python-audit` CI job SHALL:
-1. Install uv via the `astral-sh/setup-uv@v7` GitHub Action (not via `pip install uv`)
-2. Export pinned versions from `uv.lock` via `uv export --frozen --no-hashes` and pipe to `uvx pip-audit` for vulnerability scanning
+1. Install uv via the `astral-sh/setup-uv` GitHub Action, pinned per the "CI actions SHALL be pinned to immutable commit SHAs" requirement below (not via `pip install uv`)
+2. Export pinned versions from `uv.lock` via `uv export --frozen --no-hashes` and pipe to `uvx pip-audit` for vulnerability scanning, with `pip-audit` version-pinned per the "CI security-scanning tools SHALL be pinned to specific versions" requirement below
 3. Audit all three services: `langchain/`, `bloommcp/`, and `services/video-worker/`
 
-The `compose-health-check` CI job SHALL also use `astral-sh/setup-uv@v7` instead of `pip install uv`.
+The `compose-health-check` CI job SHALL also use the SHA-pinned `astral-sh/setup-uv` action instead of `pip install uv`.
 
 #### Scenario: Transitive dependency with known CVE
 
@@ -79,8 +79,9 @@ The `compose-health-check` CI job SHALL also use `astral-sh/setup-uv@v7` instead
 #### Scenario: CI installs uv via setup-uv action
 
 - **WHEN** any CI job needs uv
-- **THEN** uv is installed via `astral-sh/setup-uv@v7`
+- **THEN** uv is installed via the `astral-sh/setup-uv` action, pinned to a 40-char commit SHA with a trailing `# v7.x.y` comment
 - **AND** pip is NOT used to install uv
+- **AND** the bare `@v7` tag reference is NOT used
 
 ### Requirement: Pre-commit hook SHALL detect lockfile drift cross-platform
 
@@ -139,3 +140,104 @@ All `.claude/commands/` files that reference `requirements.txt` or `pip-audit` S
 
 - **WHEN** a developer invokes the `ci-debug` Claude command
 - **THEN** the audit instructions reference `uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin`, not `pip-audit -r requirements.txt`
+
+### Requirement: Pre-commit hook script SHALL have unit test coverage
+
+The `scripts/check-uv-locks.py` script SHALL have unit tests in `tests/unit/test_check_uv_locks.py` that cover every distinct control-flow branch: `uv` missing from PATH, a service directory with no `pyproject.toml` (skip), lockfile drift detected, clean pass, and a subprocess timeout. Tests SHALL run in the `python-audit` CI job (which already installs uv via `astral-sh/setup-uv` and has no `continue-on-error`), placed before or alongside the pip-audit steps so unit-test failures block the PR and return feedback within the audit job's runtime rather than waiting on the slower `compose-health-check` pipeline.
+
+#### Scenario: uv missing exits with install-hint code
+
+- **WHEN** `shutil.which("uv")` returns `None`
+- **THEN** the script prints an error that includes the uv install URL
+- **AND** exits with code 127 (standard "command not found")
+
+#### Scenario: Service directory missing pyproject.toml is skipped
+
+- **WHEN** one of the service directories has no `pyproject.toml`
+- **THEN** the script logs a skip message for that service
+- **AND** does not fail the hook
+
+#### Scenario: Lockfile drift is detected
+
+- **WHEN** `uv lock --check` returns non-zero for any service
+- **THEN** the script exits with code 1
+- **AND** surfaces the drifting service name in the error message
+
+#### Scenario: Clean tree passes
+
+- **WHEN** all service lockfiles are in sync with their `pyproject.toml`
+- **THEN** the script exits with code 0 and produces no error output
+
+#### Scenario: Hung subprocess times out
+
+- **WHEN** `uv lock --check` runs longer than the configured timeout (120 seconds) for one service
+- **THEN** the `subprocess.TimeoutExpired` is caught, the timed-out service name is appended to the `failed` list, and processing continues with the next service so one stuck service does not block the rest
+- **AND** the script exits with code 1 after all services are processed
+- **AND** the timed-out service name appears in the final error message alongside any other drifted services
+
+### Requirement: CI actions SHALL be pinned to immutable commit SHAs
+
+GitHub Actions tags are mutable — a compromised maintainer can retag `v7` to point at a malicious commit. Any third-party GitHub Action used by `pr-checks.yml` or `deploy.yml` for Python dependency management (including `astral-sh/setup-uv`) SHALL be pinned to a full 40-character commit SHA with a version comment. This matches the existing SHA-pinning pattern for `gitleaks` in `.pre-commit-config.yaml`.
+
+#### Scenario: setup-uv pinned by SHA, not tag
+
+- **WHEN** a CI job references `astral-sh/setup-uv`
+- **THEN** the reference is of the form `astral-sh/setup-uv@<40-char-sha>  # v7.x.y`
+- **AND** the tag `@v7` alone is NOT used
+
+#### Scenario: Dependabot proposes SHA bumps
+
+- **WHEN** `astral-sh/setup-uv` releases a new version
+- **THEN** Dependabot's `github-actions` ecosystem proposes a PR that updates both the SHA and the trailing version comment
+- **AND** the bump is reviewed explicitly rather than absorbed silently
+
+### Requirement: CI security-scanning tools SHALL be pinned to specific versions
+
+`uvx pip-audit` without a version specifier resolves the latest published version at CI run time, meaning CI behavior can change without a code change. The CI pip-audit invocation in `pr-checks.yml` and `deploy.yml` SHALL pin to a specific version (`uvx pip-audit@<version>`). Bumping the pin SHALL be a deliberate, reviewed workflow-file change rather than an implicit resolution-time decision.
+
+#### Scenario: pip-audit version pinned in CI
+
+- **WHEN** a CI job invokes `pip-audit` via `uvx`
+- **THEN** the invocation is `uvx pip-audit@<version>` (e.g., `@2.10.0`)
+- **AND** bare `uvx pip-audit` is NOT used
+
+#### Scenario: pip-audit pin bumps are reviewed
+
+- **WHEN** a developer wants to pick up a newer `pip-audit` release
+- **THEN** the version is changed in the workflow file via an explicit PR
+- **AND** the change appears in the PR diff (not silently absorbed at CI run time)
+
+_Note: the one-time alignment of `aquasecurity/trivy-action@0.28.0` in `deploy.yml` with `@v0.35.0` in `pr-checks.yml` is handled as a tasks.md config fix (12.6). It is not elevated to a SHALL requirement because "alignment" is a point-in-time state, not a recurring behavior; the pinning discipline above covers `pip-audit` where the recurring risk actually lives._
+
+### Requirement: Claude command temp-file usage SHALL use trap-based cleanup
+
+Any Claude command that creates a temporary file during a loop (e.g., the `pre-merge.md` `/tmp/reqs.txt` pattern used for per-service pip-audit) SHALL register a `trap "rm -f <path>" EXIT` at the start of the block so the file is cleaned up on both success and failure paths. The prior pattern of placing `rm -f` only on the success path leaked temp files when a loop iteration exited early.
+
+#### Scenario: Audit loop exits early on failure
+
+- **WHEN** the pre-merge audit loop fails on the first service
+- **THEN** the EXIT trap fires and removes the temp file
+- **AND** no stale `/tmp/reqs.txt` remains on the developer's machine
+
+### Requirement: Dockerfiles SHALL install dependencies as the non-root application user
+
+Each Python service Dockerfile SHALL create the `bloom` user, pre-create `/opt/venv` and any `/app/data/...` directories with bloom ownership, and switch to `USER bloom` BEFORE running `uv sync` and BEFORE copying application source. `COPY` steps that bring `pyproject.toml`, `uv.lock`, `.python-version`, and application source into the image SHALL use `COPY --chown=bloom:bloom` so ownership is set at copy time. No trailing `RUN chown -R bloom:bloom /app /opt/venv` layer SHALL remain. System-level `apt-get` steps that require root MAY precede the `USER bloom` switch.
+
+#### Scenario: Source-only change does not invalidate the venv chown
+
+- **WHEN** a Python source file changes but `pyproject.toml` and `uv.lock` do not
+- **THEN** `docker build` reuses the cached `uv sync --frozen` layer
+- **AND** the build does NOT walk and rewrite ownership of the ~hundreds-of-MB site-packages tree
+- **AND** only the final `COPY --chown=bloom:bloom . .` and subsequent layers are rebuilt
+
+#### Scenario: uv sync runs as non-root during build
+
+- **WHEN** `docker build` executes the `RUN uv sync --frozen --no-dev --no-cache` step
+- **THEN** the step runs under `USER bloom`, not as root
+- **AND** the installed venv at `/opt/venv` is owned by `bloom:bloom` at the moment it is written
+
+#### Scenario: No trailing recursive chown layer exists
+
+- **WHEN** `docker history` is inspected for a built image
+- **THEN** no standalone `RUN chown -R bloom:bloom /opt/venv` or `RUN chown -R bloom:bloom /app` layer exists
+- **AND** the venv and app source are nonetheless owned by `bloom:bloom` at runtime
