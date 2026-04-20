@@ -223,7 +223,6 @@ jobs:
   compose-health-check:
     name: Docker Compose Health Check
     needs: docker-build
-    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
