@@ -7,7 +7,7 @@ on:
 env:
   # Supabase CLI version — matched to what's installed on the Salk deploy
   # server (documented in #135). Change here + on the server together.
-  SUPABASE_VERSION: "2.90.0"
+  SUPABASE_VERSION: "2.92.1"
 
 jobs:
   build-and-audit:
