@@ -109,10 +109,10 @@ After `--wait` reports all services healthy, the deploy workflow MUST exercise r
 
 #### Scenario: Smoke test sources domain values from deployed env file
 
-- **GIVEN** domains and ports live in committed `.env.<env>.defaults` files merged into `.env.<env>` at deploy time (not in GitHub Secrets)
+- **GIVEN** the deploy workflow writes `DOMAIN_MAIN`, `DOMAIN_STUDIO`, `DOMAIN_MINIO`, and `CADDY_HTTP_LISTEN_PORT` into the server-side `.env.<env>` file before the smoke test runs (today from GitHub Secrets; post-PR #144 from committed `.env.<env>.defaults` merged with secrets)
 - **WHEN** the smoke test assembles Host headers and URLs
-- **THEN** it MUST read those values from the deployed `.env.prod` or `.env.staging` file on the server
-- **AND** it MUST NOT reference `secrets.*_DOMAIN_MAIN` (no such secret exists post-PR #144)
+- **THEN** it MUST read those values from the deployed `.env.prod` or `.env.staging` file on the server — NOT directly from `${{ secrets.* }}` expressions in the workflow step itself
+- **AND** this decouples the smoke test from the config-source refactor, so the same code works before and after PR #144 merges
 
 #### Scenario: Smoke test does not leak secrets to workflow logs
 

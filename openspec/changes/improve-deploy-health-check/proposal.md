@@ -106,9 +106,11 @@ After Layer 1 reports success, add a smoke-test step that exercises the real req
     ssh ... "
       set -euo pipefail
       cd /data/bloom/production
-      # Domain + port come from .env.prod (rendered from .env.prod.defaults +
-      # secrets by PR #144) — NOT from secrets.*_DOMAIN_MAIN, which no longer
-      # exist as GitHub Secrets after the env-config refactor.
+      # Domain + port come from the server-side .env.prod file generated
+      # earlier in this workflow. Today that file is rendered from GitHub
+      # Secrets; after PR #144 merges (env-config split) it will be rendered
+      # from .env.prod.defaults + secrets. Reading from the deployed .env
+      # file means this smoke test is robust across that future refactor.
       DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.prod | cut -d= -f2-)
       DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.prod | cut -d= -f2-)
       DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.prod | cut -d= -f2-)
@@ -142,7 +144,7 @@ Catches failure modes that container-level healthchecks miss:
 
 - Requires Docker Compose **v2.17+** on the Salk deploy server and the CI runner. Ubuntu 22.04's default Docker packaging includes v2.17+. **Verified by deploy-time preflight** (new step; fails fast with an `::error::` annotation on older versions).
 - Layer 2 requires implementing a new `/api/health` route in `web/` for `bloom-web`.
-- Layer 3 requires `DOMAIN_MAIN`, `DOMAIN_STUDIO`, `DOMAIN_MINIO`, `CADDY_HTTP_LISTEN_PORT` in the deployed `.env.prod` / `.env.staging` files. These come from `.env.prod.defaults` / `.env.staging.defaults` committed to the repo (per PR #144's env-config refactor) — they are NOT GitHub Secrets.
+- Layer 3 requires `DOMAIN_MAIN`, `DOMAIN_STUDIO`, `DOMAIN_MINIO`, `CADDY_HTTP_LISTEN_PORT` to be present in the deployed `.env.prod` / `.env.staging` file on the server. Today (pre-#144) the workflow's "Generate .env.prod" step writes these from GitHub Secrets (`PROD_DOMAIN_MAIN`, etc.). After PR #144 merges, the same values will be sourced from committed `.env.prod.defaults`. The smoke test reads from the deployed `.env` file in either case — no code change needed when #144 merges.
 
 ## Risks
 
