@@ -400,8 +400,19 @@ jobs:
             psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "SELECT id, name FROM storage.buckets;" 2>&1
           echo ""
           echo "=== Testing file write to MinIO ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T supabase-minio \
-            sh -c 'echo "ci-test" > /tmp/ci-test.txt && mc cp /tmp/ci-test.txt local/images/ci-test.txt && mc rm local/images/ci-test.txt && echo "Write test passed"' 2>&1 || echo "::warning::MinIO write test failed"
+          # Run mc in a one-off minio/mc container. The supabase-minio container
+          # (minio/minio image) has no mc CLI, which is why the previous invocation
+          # was silently failing as a warning on every run. Override the init
+          # entrypoint (create-buckets.sh) so we can drive a write-delete probe.
+          docker compose -f docker-compose.prod.yml --env-file .env.ci run --rm \
+            --entrypoint sh minio-init -c '
+              set -e
+              mc alias set local http://supabase-minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+              echo "ci-test" > /tmp/ci-test.txt
+              mc cp /tmp/ci-test.txt local/images/ci-test.txt
+              mc rm local/images/ci-test.txt
+              echo "Write test passed"
+            '
         env:
           POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
 
