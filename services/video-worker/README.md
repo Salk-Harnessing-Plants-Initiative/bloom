@@ -22,7 +22,7 @@ Frontend                    PostgreSQL                 Video Worker
 
 ```bash
 cd services/video-worker
-pip install -r requirements.txt
+uv sync --frozen
 ```
 
 ### 2. Install FFmpeg
