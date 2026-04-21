@@ -65,21 +65,21 @@ Removes ~30 lines of `jq`/`seq`/`sleep` per job (prod + staging = 60 lines total
 
 Current audit of [docker-compose.prod.yml](docker-compose.prod.yml): **16 services, only 4 custom files have healthchecks** (`langchain-agent`, `bloommcp`, `supabase-minio`, `db-prod`). Without healthchecks on the other 11, Layer 1's `--wait` treats them as healthy the instant they're `running`, even if the app inside is crashed.
 
-Add `healthcheck:` blocks to every remaining service. The probe tool (`wget` vs `curl` vs `node` vs a service-native CLI) depends on what each image actually ships — verified by `docker run --rm --entrypoint sh <image> -c "command -v <tool>"` against the pinned tags:
+Add `healthcheck:` blocks to every remaining service. Probe tool (`wget` vs `curl` vs `node` vs service-native CLI) depends on what each image ships. Endpoint paths match the upstream reference compose (`supabase/supabase:master/docker/docker-compose.yml`) or upstream source where the reference compose differs:
 
-| Service       | Probe                                                                                                                                                                        |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `caddy`     | `wget -q --spider http://localhost:2021/caddy-health` (new Caddyfile route on internal `:2021` listener returning 200; BusyBox wget in `caddy:2.11.2-alpine`)               |
-| `bloom-web` | `wget -q --spider http://localhost:3000/api/health` (new Next.js route in `web/app/api/health/route.ts`; BusyBox wget in `node:20-alpine`)                                 |
-| `kong`      | `kong health` (built-in admin command, exit 0 = healthy)                                                                                                                   |
-| `auth`      | `wget -q --spider http://localhost:9999/health` (GoTrue built-in; wget present in `supabase/gotrue:v2.188.1` Alpine base)                                                  |
-| `rest`      | **No healthcheck possible** — `postgrest/postgrest:v12.2.12` is a scratch image (no shell, no wget, no curl, no node). `--wait` treats no-healthcheck as ready-when-running. See #161 for follow-up options (sidecar / custom Dockerfile / kong-indirect). |
-| `realtime`  | `curl -sf http://localhost:4000/api/health` via `CMD-SHELL` (debian-slim Elixir image has curl + sh but NOT wget — verified)                                               |
-| `storage`   | `wget -q --spider http://localhost:5000/status` (storage-api built-in; Alpine base has wget)                                                                               |
-| `supavisor` | `curl -sf http://localhost:4000/api/health` via `CMD-SHELL` (debian-slim Elixir image has curl + sh but NOT wget — verified, same as realtime)                             |
-| `studio`    | `wget -q --spider http://localhost:3000/api/profile` (studio has Alpine wget; endpoint returns 200 for unauth on 2026.03.30 build)                                         |
-| `imgproxy`  | `imgproxy health` (built-in CLI subcommand, imgproxy v3.10+)                                                                                                               |
-| `meta`      | `node -e "require('http').get(...)..."` via `CMD-SHELL` (postgres-meta image has bash + node but NOT wget or curl — verified; node probe against `/health` with 200 check) |
+| Service       | Probe                                                                                                                                                                                   |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `caddy`     | `wget -q --spider http://localhost:2021/caddy-health` (our new Caddyfile listener on `:2021`)                                                                                         |
+| `bloom-web` | `wget -q --spider http://localhost:3000/api/health` (our new Next.js route)                                                                                                           |
+| `kong`      | `kong health` (built-in admin command)                                                                                                                                                |
+| `auth`      | `wget -q --spider http://localhost:9999/health` (GoTrue built-in; matches upstream)                                                                                                   |
+| `rest`      | **None** — `postgrest/postgrest` is `FROM scratch` (no shell, no probe tool). See #161 for follow-up options (sidecar / custom Dockerfile / kong-indirect).                           |
+| `realtime`  | `curl -sf http://localhost:4000/healthcheck` via `CMD-SHELL` (public health route; `/api/health` does NOT exist upstream; image has curl but no wget)                                 |
+| `storage`   | `wget -q --spider http://localhost:5000/status` (storage-api built-in; matches upstream)                                                                                              |
+| `supavisor` | `curl -sf http://localhost:4000/api/health` via `CMD-SHELL` (matches upstream; image has curl but no wget)                                                                            |
+| `studio`    | `wget -q --spider http://localhost:3000/api/platform/profile` (matches upstream; `/api/profile` does NOT exist — the path that was initially proposed returns 404)                    |
+| `imgproxy`  | `imgproxy health` (built-in CLI subcommand)                                                                                                                                           |
+| `meta`      | `node -e "..."` via `CMD-SHELL` (postgres-meta image has bash + node, no wget/curl; probes `/health` for HTTP 200)                                                                    |
 
 **Excluded**: `minio-init` is a one-shot container — Docker Compose's `--wait` treats `service_completed_successfully` as ready, so no healthcheck is needed.
 

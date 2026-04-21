@@ -315,12 +315,10 @@ services:
       [
         "postgrest"
       ]
-    # No healthcheck: postgrest/postgrest:v12.2.12 is a scratch image — no
-    # shell, no wget, no curl. No in-container probe is possible.
-    # `docker compose up --wait` treats no-healthcheck services as
-    # ready-when-running, which is the same semantics we had before this PR.
-    # Verified: `docker run --rm --entrypoint sh postgrest/postgrest:v12.2.12`
-    # fails with "executable file not found in $PATH".
+    # No healthcheck: the postgrest image is FROM scratch — no shell, no
+    # wget, no curl, so no in-container probe is possible. `--wait` treats
+    # no-healthcheck services as ready-when-running. See #161 for follow-up
+    # (sidecar / custom Dockerfile / kong-indirect).
 
   # -------------------
   # Realtime Analytics
@@ -353,11 +351,12 @@ services:
       APP_NAME: realtime
       SEED_SELF_HOST: true
       RUN_JANITOR: true
-    # supabase/realtime:v2.34.47 is debian-slim + Elixir: has curl + sh, NO wget.
-    # Verified today: `docker run --rm --entrypoint sh supabase/realtime:v2.34.47
-    # -c "command -v wget"` returns empty; `command -v curl` returns /usr/bin/curl.
+    # Probe uses curl: supabase/realtime is debian-slim Elixir, has curl but
+    # no wget. Path is /healthcheck (public, unauthenticated) — the only
+    # other realtime health endpoint is /api/tenants/:tenant_id/health which
+    # requires a JWT. /api/health does NOT exist.
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:4000/api/health"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:4000/healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -539,9 +538,8 @@ services:
         "-c",
         "/app/bin/migrate && /app/bin/supavisor eval \"$$(cat /etc/pooler/pooler.exs)\" && /app/bin/server"
       ]
-    # supabase/supavisor:2.7.4 is debian-slim + Elixir: has curl + sh, NO wget.
-    # Same family as realtime — verified via `docker run --rm --entrypoint sh
-    # supabase/supavisor:2.7.4 -c "command -v wget"` (returns empty).
+    # Probe uses curl (debian-slim Elixir image, no wget). /api/health is the
+    # documented supavisor health endpoint, used by upstream supabase compose.
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:4000/api/health"]
       interval: 10s
@@ -576,8 +574,10 @@ services:
       SUPABASE_PUBLIC_URL: ${STUDIO_SUPABASE_PUBLIC_URL}
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+    # Path is /api/platform/profile — matches upstream supabase compose.
+    # /api/profile does not exist in the studio Next.js build.
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/profile"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/platform/profile"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -626,11 +626,10 @@ services:
       PG_META_DB_NAME: ${POSTGRES_DB}
       PG_META_DB_USER: supabase_admin
       PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
-    # supabase/postgres-meta:v0.96.2 has bash + node but NO wget or curl
-    # (verified today via `docker run --rm --entrypoint sh <image> -c
-    # "command -v wget && command -v curl"` — both return empty). Use a
-    # node-based HTTP probe against /health. Exit 0 iff the endpoint returns
-    # 200; exit 1 on any connection error or non-200 status.
+    # Node-based probe: postgres-meta image has bash + node but no wget/curl.
+    # Upstream supabase compose defines no healthcheck for meta (relies on
+    # depends_on: db service_healthy), but meta's /health endpoint returns
+    # 200 when the DB connection is live — this surfaces DB-disconnect faster.
     healthcheck:
       test:
         - "CMD-SHELL"

@@ -43,6 +43,14 @@ Every long-running service in `docker-compose.prod.yml` MUST define a `healthche
 - **THEN** the probe command MUST use a tool (wget, curl, native CLI, node one-liner, bash `/dev/tcp`, etc.) verified to exist in that image
 - **AND** the choice MUST be verifiable via `docker run --rm --entrypoint sh <image> -c "command -v <tool>"`
 
+#### Scenario: Probe endpoint path is verified against an authoritative reference
+
+- **GIVEN** a healthcheck probes an HTTP endpoint on a third-party service
+- **WHEN** a path is chosen (e.g. `/health`, `/api/health`, `/healthcheck`, `/api/platform/profile`)
+- **THEN** the path MUST be verified against at least one of: (a) the upstream image's source code for that tag, (b) the upstream reference compose file (e.g. `supabase/supabase:master/docker/docker-compose.yml`), or (c) an actual `docker run` against the pinned image with `curl` probing the path and asserting HTTP 200
+- **AND** "the proposal says X" MUST NOT substitute for verification — prior-PR wording is not authoritative for endpoint correctness
+- **AND** a path that does not exist on the service returns 404, leaving the healthcheck in a failure loop, the service stuck in `Health: starting`, and `--wait` timing out at `--wait-timeout`
+
 #### Scenario: bloom-web is considered healthy only when its HTTP health endpoint responds
 
 - **GIVEN** `bloom-web` is running

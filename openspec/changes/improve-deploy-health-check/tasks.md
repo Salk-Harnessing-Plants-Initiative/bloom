@@ -17,10 +17,10 @@ Each healthcheck uses `interval: 10s, timeout: 5s, retries: 5`, with `start_peri
 - [x] 2.2 `bloom-web`: `wget -q --spider http://localhost:3000/api/health` — adds new `web/app/api/health/route.ts` returning `{ ok: true, commit: <sha> }`
 - [x] 2.3 `kong`: `kong health` (built-in CLI)
 - [x] 2.4 `auth` (supabase/gotrue:v2.188.1): `wget -q --spider http://localhost:9999/health` (wget verified present in Alpine base)
-- [x] 2.5 `realtime` (supabase/realtime:v2.34.47): `CMD-SHELL curl -sf http://localhost:4000/api/health` — image is debian-slim, has curl + sh but NOT wget. Verified via `docker run --rm --entrypoint sh <image> -c "command -v wget"` (empty).
+- [x] 2.5 `realtime` (supabase/realtime:v2.34.47): `CMD-SHELL curl -sf http://localhost:4000/healthcheck` — image is debian-slim, has curl + sh but NOT wget. Path is `/healthcheck` (public) — `/api/health` does NOT exist (upstream realtime router defines only `/healthcheck` public and `/api/tenants/:id/health` authenticated). Path bug caught by blm3886 after initial commit proposed `/api/health`.
 - [x] 2.6 `storage` (supabase/storage-api:v1.48.14): `wget -q --spider http://localhost:5000/status` (wget verified present)
 - [x] 2.7 `supavisor` (supabase/supavisor:2.7.4): `CMD-SHELL curl -sf http://localhost:4000/api/health` — same image family as realtime, same no-wget-but-has-curl verification
-- [x] 2.8 `studio`: `wget -q --spider http://localhost:3000/api/profile`
+- [x] 2.8 `studio`: `wget -q --spider http://localhost:3000/api/platform/profile` — matches upstream supabase compose. `/api/profile` (initially proposed) does NOT exist in the studio Next.js build.
 - [x] 2.9 `imgproxy`: `imgproxy health` (built-in CLI, v3.10+)
 - [x] 2.10 `meta` (supabase/postgres-meta:v0.96.2): `CMD-SHELL node -e "require('http').get(...)..."` node-based probe — image has bash + node but NO wget or curl. Verified via `docker run` that both `command -v wget` and `command -v curl` return empty.
 - [x] 2.11 `rest` (postgrest/postgrest:v12.2.12): **NO healthcheck** — image is `FROM scratch` with no shell, no wget, no curl, no node. `--wait` treats no-healthcheck as ready-when-running. Follow-up at #161 to add indirect coverage (sidecar / custom Dockerfile / kong-indirect).
