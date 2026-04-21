@@ -241,6 +241,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Setup uv BEFORE compose starts — the compose stack creates
+      # root-owned `volumes/db/data/` (postgres bind mount), and setup-uv's
+      # cache-dependency glob scans `**/uv.lock` across the whole workspace.
+      # Running setup-uv after compose is up causes EACCES when the glob
+      # tries to descend into the root-owned volumes directory.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+
       - name: Generate .env.ci from secrets
         run: |
           echo "POSTGRES_DB=postgres" > .env.ci
@@ -397,11 +405,11 @@ jobs:
         env:
           POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
 
-      - name: Setup uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
-
       # Runs 22 integration tests (smoke, auth, RLS, storage, API routing) against the live compose stack
       # Skips if tests/integration/ doesn't exist on this branch
+      # (uv is already installed by the `Setup uv` step early in this job —
+      # moved there to run before the compose stack creates root-owned
+      # `volumes/db/data/`, which otherwise breaks setup-uv's workspace glob.)
       - name: Run integration tests
         run: |
           if [ -d "tests/integration" ]; then
