@@ -12,6 +12,7 @@ Covers every control-flow branch of the pre-commit lockfile drift check:
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -167,3 +168,47 @@ def test_subprocess_filenotfound_is_caught_and_recorded(
     assert "langchain" in err
     # Install-hint URL surfaces so the developer knows what to do.
     assert "https://docs.astral.sh/uv" in err
+
+
+# ---------- Test G (real subprocess) ----------
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="real uv binary not on PATH")
+def test_real_subprocess_against_clean_tmp_repo(
+    check_uv_locks_module, tmp_path, capsys
+):
+    """Guards the `subprocess.run(["uv", "lock", "--check"], ...)` contract.
+
+    The other tests mock subprocess.run, so a typo like
+    `["uv", "sync", "--check"]` (non-existent subcommand) would pass all of
+    them. This test invokes a real uv and asserts check_services() agrees
+    with the real binary on a known-clean repo.
+    """
+    # Build a minimal service directory with a valid pyproject.toml + lock.
+    service_dir = tmp_path / "langchain"
+    service_dir.mkdir()
+    (service_dir / "pyproject.toml").write_text(
+        '[project]\n'
+        'name = "tmp-clean"\n'
+        'version = "0.0.0"\n'
+        'requires-python = ">=3.11"\n'
+        'dependencies = []\n'
+    )
+    # Generate a real lockfile so `uv lock --check` has something to validate.
+    lock_result = subprocess.run(
+        ["uv", "lock"], cwd=service_dir, capture_output=True, text=True, timeout=60,
+    )
+    assert lock_result.returncode == 0, (
+        f"uv lock failed during test setup: {lock_result.stderr}"
+    )
+    assert (service_dir / "uv.lock").exists()
+
+    # Only langchain exists under tmp_path; bloommcp + video-worker are skipped.
+    rc = check_uv_locks_module.check_services(tmp_path)
+
+    assert rc == 0, "check_services should return 0 for a clean tmp repo"
+    captured = capsys.readouterr()
+    # The per-service "check ..." progress line proves the real subprocess ran.
+    assert "check langchain" in captured.out
+    # The two missing services should surface as skips, not failures.
+    assert "skip  bloommcp" in captured.out
+    assert "skip  services/video-worker" in captured.out

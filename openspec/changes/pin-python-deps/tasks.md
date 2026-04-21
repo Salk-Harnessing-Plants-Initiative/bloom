@@ -180,6 +180,23 @@ Seven items surfaced by a parallel 5-subagent review (Code Quality · Testing ·
   - Replace trailing `rm -f /tmp/reqs.txt` in both the main Python Audit block and the Quick Pre-Merge block with `trap "rm -f /tmp/reqs.txt" EXIT` at the start of each block
   - Ensures cleanup runs on both success and failure paths
 
+### Round-4 reviewer findings (blm3886 review on 2026-04-21)
+
+- [x] 12.10 **Lockfile-drift CI check (fixes implementation gap vs. spec.md:74)**:
+  - Spec scenario "CI detects lockfile drift" (spec.md:74) claims `uv sync --frozen` catches drift, but the actual CI uses `uv export --frozen` which **verified to return exit 0 even with drifted `pyproject.toml`** (reviewer-reported; confirmed locally on 2026-04-21 by injecting a fake dep into `bloommcp/pyproject.toml` without regenerating the lock — `uv export --frozen` exited 0; `uv lock --check` exited 1).
+  - Add a new step to the `python-audit` job in `.github/workflows/pr-checks.yml`, BEFORE the three `uvx pip-audit@2.10.0` steps: `- name: Verify uv lockfiles are synced` / `run: python scripts/check-uv-locks.py`
+  - Reason for placement: `scripts/check-uv-locks.py` calls `uv lock --check` in each service dir, which is the tool that actually detects drift. Pre-commit catches drift locally, but pre-commit can be bypassed (`--no-verify`, web-UI merge, Dependabot auto-merge); CI is the enforced gate.
+  - No new tool install needed — the `setup-uv` step already makes `uv` available.
+
+- [x] 12.11 **Real-subprocess integration test for `check_services()`** (closes TDD gap introduced by 12.1):
+  - The 6 existing tests all monkeypatch `subprocess.run`, meaning the `["uv", "lock", "--check"]` command string itself is never executed. A typo like `["uv", "sync", "--check"]` (non-existent subcommand) would pass all 6 mocked tests.
+  - Add `test_real_subprocess_against_clean_tmp_repo` to `tests/unit/test_check_uv_locks.py`:
+    - `@pytest.mark.skipif(shutil.which("uv") is None, reason="real uv not on PATH")`
+    - Create a tmp repo with one real service dir containing a minimal valid `pyproject.toml` + committed `uv.lock` (generate the lock via `uv lock` in the test setup)
+    - Call `check_services(tmp_repo)` with no monkeypatching
+    - Assert returns 0 (lockfile in sync) and that `uv lock --check` was actually invoked (verify via stdout capture of the `check <service> ...` line)
+  - Verify the test catches the regression by: temporarily changing `["uv", "lock", "--check"]` to `["uv", "sync", "--nonexistent-flag"]` → test must fail → restore → test must pass. Confirms the test actually exercises the subprocess contract.
+
 ### Follow-up (filed separately, NOT in this PR)
 
 - [ ] 12.9 **Numerical reproducibility smoke test** — file as a new GitHub issue (NOT a task in this PR):

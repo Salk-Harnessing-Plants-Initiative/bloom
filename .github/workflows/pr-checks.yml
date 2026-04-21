@@ -91,6 +91,14 @@ jobs:
       - name: Run Python unit tests
         run: uv run --with pytest pytest tests/unit/ -v --tb=short
 
+      # Enforce lockfile-pyproject sync on the server side. Pre-commit catches
+      # this locally but can be bypassed (--no-verify, web-UI merge, Dependabot
+      # auto-merge). `uv export --frozen` (used by the audit steps below) exits
+      # 0 even on drift — `uv lock --check` is the actual detector, invoked
+      # per-service by scripts/check-uv-locks.py.
+      - name: Verify uv lockfiles are synced
+        run: python scripts/check-uv-locks.py
+
       # Checks langchain agent Python packages for vulnerabilities
       - name: Audit langchain dependencies
         run: cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
