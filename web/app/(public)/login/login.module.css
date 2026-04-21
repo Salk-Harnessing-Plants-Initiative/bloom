@@ -1,0 +1,465 @@
+/*
+ * Login page styling — ports reference/bloom-login-v2/index.html to the
+ * real Next.js app. Scoped via CSS Module so nothing leaks into the
+ * authenticated routes. Design tokens live here (not in globals.css)
+ * because they are login-specific.
+ */
+
+.page {
+  --ink: #1b2a1f;
+  --ink-soft: #3c4a3e;
+  --cream: #f4efe0;
+  --cream-2: #faf6ea;
+  --stone-600: #5a5746;
+  --stone-400: #94907f;
+  --stone-200: #ded8c6;
+  --stone-100: #eee7d5;
+  --stone-50: #faf7ec;
+  --leaf: #4a9a6a;
+  --leaf-deep: #2f6b4c;
+  --sage: #c7d9a8;
+  --gold: #c9a24a;
+
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--cream);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ──────── Terrarium backdrop ──────── */
+.bgWash {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(
+      1100px 800px at 20% 30%,
+      rgba(219, 233, 191, 0.5),
+      transparent 60%
+    ),
+    radial-gradient(
+      900px 700px at 85% 80%,
+      rgba(201, 162, 74, 0.1),
+      transparent 70%
+    ),
+    radial-gradient(
+      600px 500px at 50% 100%,
+      rgba(74, 154, 106, 0.12),
+      transparent 70%
+    ),
+    var(--cream);
+}
+
+.bgGrain {
+  position: absolute;
+  inset: 0;
+  opacity: 0.18;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+  z-index: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+}
+
+/* ──────── Plants ──────── */
+.plant {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none; /* decorative only — never steal clicks from form */
+}
+.plant img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0.35;
+  filter: saturate(0.75) contrast(0.95);
+}
+
+/* Plant placements — match reference/bloom-login-v2/index.html */
+.p1  { top:    6%; left:    3%; width: 240px; height: 240px; }
+.p2  { top:    4%; left:   40%; width: 200px; height: 200px; }
+.p3  { top:   28%; left:    1%; width: 280px; height: 280px; }
+.p4  { top:    2%; right:   2%; width: 200px; height: 200px; }
+.p5  { bottom:  5%; left:    4%; width: 260px; height: 260px; }
+.p6  { bottom:  2%; left:   26%; width: 180px; height: 180px; }
+.p7  { bottom:  6%; right:  22%; width: 180px; height: 180px; }
+.p8  { bottom:  4%; right:   2%; width: 240px; height: 240px; }
+.p9  { top:   55%; left:   14%; width: 140px; height: 140px; }
+.p10 { bottom:  8%; left:   44%; width: 140px; height: 140px; }
+
+/* Gentle drift — only when the user has not requested reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes drift1 {
+    0%, 100% { transform: translate(0, 0); }
+    50%      { transform: translate(8px, -10px); }
+  }
+  @keyframes drift2 {
+    0%, 100% { transform: translate(0, 0); }
+    50%      { transform: translate(-6px, 8px); }
+  }
+  @keyframes drift3 {
+    0%, 100% { transform: translate(0, 0); }
+    50%      { transform: translate(10px, 6px); }
+  }
+  .d1 { animation: drift1 14s ease-in-out infinite; }
+  .d2 { animation: drift2 18s ease-in-out infinite; }
+  .d3 { animation: drift3 16s ease-in-out infinite; }
+}
+
+/* ──────── Foreground ──────── */
+.pageInner {
+  position: relative;
+  z-index: 5;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 56px 24px;
+}
+
+.topRow {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.hpiLink {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--leaf-deep);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: opacity 0.15s;
+}
+.hpiLink:hover {
+  opacity: 0.7;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.middle {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1.08fr;
+  gap: 40px;
+  align-items: center;
+  padding: 8px 0;
+}
+
+/* ──────── Hero (left column) ──────── */
+.hero {
+  max-width: 600px;
+}
+
+.logoRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 24px;
+}
+.logoRow img {
+  height: 88px;
+  width: 88px;
+  display: block;
+}
+.wordmark {
+  font-family: var(--font-fraunces), Georgia, serif;
+  font-style: italic;
+  font-weight: 600;
+  font-size: 76px;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  line-height: 1;
+}
+
+.kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--leaf-deep);
+  margin-bottom: 24px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+.kicker::before {
+  content: "";
+  width: 28px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.5;
+}
+
+.heroTitle {
+  font-family: var(--font-fraunces), Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(34px, 3.8vw, 48px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin: 0 0 18px;
+  color: var(--ink-soft);
+}
+.heroTitle .accent {
+  color: var(--leaf-deep);
+}
+
+.heroSub {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--stone-600);
+  max-width: 460px;
+  margin: 0;
+}
+
+/* ──────── Sign-in form card (right column) ──────── */
+.formCard {
+  background: rgba(250, 246, 234, 0.88);
+  backdrop-filter: blur(14px) saturate(1.1);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  border: 1px solid rgba(222, 216, 198, 0.7);
+  border-radius: 10px;
+  padding: 30px 36px;
+  max-width: 500px;
+  width: 100%;
+  justify-self: start;
+  margin-left: -8px;
+  box-shadow:
+    0 30px 80px rgba(28, 44, 32, 0.12),
+    0 4px 14px rgba(28, 44, 32, 0.06);
+}
+
+.formTitle {
+  font-family: var(--font-fraunces), Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: 28px;
+  letter-spacing: -0.015em;
+  line-height: 1.1;
+  margin: 0 0 4px;
+  color: var(--ink);
+}
+
+.formHint {
+  font-size: 12px;
+  color: var(--stone-600);
+  margin-bottom: 20px;
+  line-height: 1.5;
+}
+
+.label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--stone-600);
+  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+}
+
+.field {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--stone-200);
+  border-radius: 6px;
+  background: var(--stone-50);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    background 0.15s;
+  margin-bottom: 14px;
+}
+.field:focus-within {
+  border-color: var(--leaf);
+  box-shadow: 0 0 0 3px rgba(74, 154, 106, 0.18);
+  background: #fff;
+}
+.field input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--ink);
+  font-family: inherit;
+  min-width: 0;
+}
+.field .fieldSuffix {
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--stone-600);
+  border-left: 1px solid var(--stone-200);
+  background: var(--stone-100);
+  border-radius: 0 6px 6px 0;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: -4px 0 18px;
+}
+
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--stone-600);
+  cursor: pointer;
+}
+.checkbox input {
+  width: 13px;
+  height: 13px;
+  accent-color: var(--leaf);
+}
+
+.forgot {
+  font-size: 12px;
+  color: var(--leaf-deep);
+  font-weight: 500;
+}
+.forgot:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.btnSubmit {
+  width: 100%;
+  background: var(--leaf-deep);
+  color: var(--cream-2);
+  border: none;
+  padding: 11px 18px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    transform 0.05s;
+  font-family: inherit;
+  letter-spacing: 0.01em;
+}
+.btnSubmit:hover { background: var(--ink); }
+.btnSubmit:active { transform: translateY(1px); }
+.btnSubmit:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Error / success banners inside the form card */
+.banner {
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 14px;
+  line-height: 1.4;
+}
+.bannerError {
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(220, 38, 38, 0.3);
+  color: #991b1b;
+}
+.bannerSuccess {
+  background: rgba(74, 154, 106, 0.1);
+  border: 1px solid rgba(74, 154, 106, 0.35);
+  color: var(--leaf-deep);
+}
+
+.modeToggle {
+  margin-top: 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--stone-600);
+}
+.modeToggle button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--leaf-deep);
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+}
+.modeToggle button:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ──────── Stats strip ──────── */
+.statsStrip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  margin: 16px 0 18px;
+  background: rgba(222, 216, 198, 0.7);
+  border: 1px solid rgba(222, 216, 198, 0.7);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(28, 44, 32, 0.06);
+}
+.stat {
+  background: rgba(250, 246, 234, 0.85);
+  backdrop-filter: blur(10px);
+  padding: 14px 18px;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.statNum {
+  font-family: var(--font-fraunces), Georgia, serif;
+  font-style: italic;
+  font-size: 32px;
+  line-height: 1;
+  color: var(--leaf-deep);
+  letter-spacing: -0.02em;
+  flex-shrink: 0;
+}
+.statMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.statLabel {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--stone-600);
+  font-weight: 500;
+}
+.statSub {
+  font-size: 11px;
+  color: var(--stone-600);
+  line-height: 1.35;
+}
+
+/* ──────── Bottom row ──────── */
+.bottomRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--stone-600);
+}
+.bottomRow a {
+  color: var(--leaf-deep);
+}
+.bottomRow a:hover {
+  text-decoration: underline;
+}
+.footLinks {
+  display: flex;
+  gap: 20px;
+}
