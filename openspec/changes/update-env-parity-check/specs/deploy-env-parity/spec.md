@@ -2,7 +2,7 @@
 
 ### Requirement: Env Block Discovery
 
-The parity checker SHALL locate env-file heredoc bodies inside `.github/workflows/deploy.yml` by matching any line whose content satisfies `cat\s*>\s*[^<]*\.env\.(prod|staging)\s*<<\s*'([A-Z_]+)'`. The captured env name drives which block the body feeds, and the captured terminator is matched against stripped lines of subsequent content until the closing marker is found.
+The parity checker SHALL locate env-file heredoc bodies inside `.github/workflows/deploy.yml` by matching any line whose content satisfies `cat\s*>\s*[^<]*\.env\.(prod|staging)\s*<<\s*'([A-Z_]+)'`. The captured env name drives which block the body feeds, and the captured terminator is matched against stripped lines of subsequent content until the closing marker is found. The regex intentionally matches only **unquoted** paths — paths wrapped in quotes (e.g. `cat > "/opt/bloom/.env.prod" << 'EOF'`) are not supported. If deploy.yml ever needs quoted paths, this requirement MUST be amended alongside the regex; do not silently widen the regex to tolerate quotes without updating the spec.
 
 #### Scenario: Prod block detected with dynamic terminator
 
@@ -25,7 +25,7 @@ The parity checker SHALL locate env-file heredoc bodies inside `.github/workflow
 
 ### Requirement: Exactly Two Env Blocks
 
-The parity checker SHALL require exactly one prod block and exactly one staging block in `deploy.yml`. Any other count — zero, one, three, or the presence of an `.env.<other>` heredoc — SHALL cause the checker to exit non-zero.
+The parity checker SHALL require exactly one prod block and exactly one staging block in `deploy.yml`. Any other count — zero, one, three, the presence of an `.env.<other>` heredoc, or a duplicate of either `.env.prod` or `.env.staging` — SHALL cause the checker to exit non-zero. Duplicate blocks of the same env name MUST NOT be silently collapsed; the drift they mask is exactly the class of bug this check exists to catch.
 
 #### Scenario: Zero env blocks fails
 
@@ -39,6 +39,19 @@ The parity checker SHALL require exactly one prod block and exactly one staging 
 - **WHEN** the checker runs
 - **THEN** it exits non-zero with an error naming `.env.dev` as an unexpected env block, with its line number
 
+#### Scenario: Duplicate prod block fails
+
+- **GIVEN** `deploy.yml` contains TWO `.env.prod` heredocs (e.g. from a bad copy-paste) and one `.env.staging` heredoc
+- **WHEN** the checker runs
+- **THEN** it exits non-zero with an error identifying the second `.env.prod` heredoc as a duplicate, with its start line number
+- **AND** the first `.env.prod` heredoc is NOT silently overwritten by the second
+
+#### Scenario: Duplicate staging block fails
+
+- **GIVEN** `deploy.yml` contains one `.env.prod` heredoc and TWO `.env.staging` heredocs
+- **WHEN** the checker runs
+- **THEN** it exits non-zero with an error identifying the second `.env.staging` heredoc as a duplicate, with its start line number
+
 #### Scenario: Exactly one of each passes discovery
 
 - **GIVEN** `deploy.yml` contains exactly one `.env.prod` heredoc and one `.env.staging` heredoc
@@ -47,7 +60,7 @@ The parity checker SHALL require exactly one prod block and exactly one staging 
 
 ### Requirement: LHS Variable Parity
 
-The parity checker SHALL assert that the set of variable names declared on the left of `=` is identical between the prod and staging blocks. Blank lines and lines whose first non-whitespace character is `#` SHALL be ignored.
+The parity checker SHALL assert that the set of variable names declared on the left of `=` is identical between the prod and staging blocks. Blank lines and lines whose first non-whitespace character is `#` SHALL be ignored. A variable name that appears on the LHS more than once within a single block SHALL be reported as a duplicate — not silently collapsed — since the later declaration masks the earlier one and any divergence between them is invisible to downstream parity checks.
 
 #### Scenario: Missing var in staging fails
 
@@ -55,6 +68,13 @@ The parity checker SHALL assert that the set of variable names declared on the l
 - **AND** staging block has no `NEW_VAR=` line
 - **WHEN** the checker runs
 - **THEN** it exits non-zero with an error listing `NEW_VAR` as missing from staging
+
+#### Scenario: Missing var in prod fails
+
+- **GIVEN** staging block declares `NEW_VAR=${{ secrets.STAGING_NEW_VAR }}`
+- **AND** prod block has no `NEW_VAR=` line
+- **WHEN** the checker runs
+- **THEN** it exits non-zero with an error listing `NEW_VAR` as missing from prod
 
 #### Scenario: Identical var sets pass
 
@@ -67,6 +87,13 @@ The parity checker SHALL assert that the set of variable names declared on the l
 - **GIVEN** either block contains lines starting with `#` or blank lines interspersed with var lines
 - **WHEN** the checker runs
 - **THEN** the comment and blank lines contribute nothing to the LHS set and no error is raised for them
+
+#### Scenario: Duplicate LHS within one block fails
+
+- **GIVEN** the prod block declares `POSTGRES_DB=...` on two different lines
+- **WHEN** the checker runs
+- **THEN** it exits non-zero with an error identifying the second occurrence of `POSTGRES_DB` as a duplicate in the prod block, with its line number
+- **AND** the same requirement applies symmetrically when the duplicate is in the staging block
 
 ### Requirement: RHS Prefix Correctness Per Block
 

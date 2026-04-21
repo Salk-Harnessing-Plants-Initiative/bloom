@@ -30,17 +30,23 @@ CANONICAL_REF = re.compile(r"^(PROD|STAGING)_[A-Z][A-Z0-9_]*$")
 
 
 def discover_blocks(path: Path):
-    """Walk the file, find every env heredoc, return (blocks, unexpected, unclosed).
+    """Walk the file, find every env heredoc, return (blocks, unexpected, unclosed, duplicates).
 
-    blocks: {env_name: (start_line, body_lines)} for prod/staging only.
+    blocks: {env_name: (start_line, body_lines)} for the FIRST prod/staging
+            heredoc seen; any subsequent duplicate goes in `duplicates`.
     unexpected: [(start_line, env_name)] for env names other than prod/staging.
     unclosed: [(start_line, env_name)] for heredocs with no matching terminator.
+    duplicates: [(start_line, env_name)] for the 2nd+ occurrence of .env.prod
+                or .env.staging. Silently collapsing duplicates would hide the
+                exact class of drift this check exists to catch, so we preserve
+                the first and flag the rest.
     body_lines: list of (1-based line_number, raw_content) for every line
                 between the opening marker and the terminator.
     """
     blocks: dict[str, tuple[int, list[tuple[int, str]]]] = {}
     unexpected: list[tuple[int, str]] = []
     unclosed: list[tuple[int, str]] = []
+    duplicates: list[tuple[int, str]] = []
 
     text = path.read_text().splitlines()
     i = 0
@@ -70,18 +76,36 @@ def discover_blocks(path: Path):
             continue
 
         if env_name in ("prod", "staging"):
-            blocks[env_name] = (start_line, body)
+            if env_name in blocks:
+                duplicates.append((start_line, env_name))
+            else:
+                blocks[env_name] = (start_line, body)
         else:
             unexpected.append((start_line, env_name))
 
         i = j + 1
 
-    return blocks, unexpected, unclosed
+    return blocks, unexpected, unclosed, duplicates
 
 
-def parse_block(body: list[tuple[int, str]]) -> dict[str, tuple[int, str, list[str]]]:
-    """{lhs: (line_number, raw_line, [secret_refs])}."""
+def parse_block(
+    body: list[tuple[int, str]],
+) -> tuple[
+    dict[str, tuple[int, str, list[str]]],
+    list[tuple[int, str, str]],
+]:
+    """Parse an env-heredoc body.
+
+    Returns (parsed, duplicate_lhs):
+      parsed: {lhs: (line_number, raw_line, [secret_refs])} keyed on the FIRST
+              occurrence of each LHS — matches the prior API.
+      duplicate_lhs: [(line_number, lhs, raw_line)] for every 2nd+ occurrence of
+                     the same LHS within this block. Must be flagged, not silently
+                     collapsed — the later declaration masks the earlier and any
+                     divergence between them is invisible to downstream parity.
+    """
     parsed: dict[str, tuple[int, str, list[str]]] = {}
+    duplicate_lhs: list[tuple[int, str, str]] = []
     for line_no, raw in body:
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
@@ -91,8 +115,11 @@ def parse_block(body: list[tuple[int, str]]) -> dict[str, tuple[int, str, list[s
             continue
         lhs = m.group(1)
         refs = SECRET_REF.findall(raw)
-        parsed[lhs] = (line_no, raw, refs)
-    return parsed
+        if lhs in parsed:
+            duplicate_lhs.append((line_no, lhs, raw))
+        else:
+            parsed[lhs] = (line_no, raw, refs)
+    return parsed, duplicate_lhs
 
 
 class ErrorReporter:
@@ -115,7 +142,7 @@ def main(path_str: str) -> int:
         return 2
 
     reporter = ErrorReporter(path_str)
-    blocks, unexpected, unclosed = discover_blocks(path)
+    blocks, unexpected, unclosed, duplicate_blocks = discover_blocks(path)
 
     for start_line, env_name in unclosed:
         reporter.report(
@@ -131,7 +158,15 @@ def main(path_str: str) -> int:
             f"unexpected env block: .env.{env_name} (only .env.prod and .env.staging are allowed)",
         )
 
-    if not unclosed and not unexpected and not blocks:
+    for start_line, env_name in duplicate_blocks:
+        reporter.report(
+            start_line,
+            "duplicate env block",
+            f"duplicate env block: a second .env.{env_name} heredoc was found "
+            f"(the first would be silently overwritten; remove or merge the duplicate)",
+        )
+
+    if not unclosed and not unexpected and not duplicate_blocks and not blocks:
         reporter.report(1, "0 env blocks found, expected 2", "0 env blocks found, expected 2")
         return 1
 
@@ -147,8 +182,25 @@ def main(path_str: str) -> int:
         )
         return 1
 
-    prod = parse_block(blocks["prod"][1])
-    staging = parse_block(blocks["staging"][1])
+    prod, prod_duplicate_lhs = parse_block(blocks["prod"][1])
+    staging, staging_duplicate_lhs = parse_block(blocks["staging"][1])
+
+    for line_no, lhs, raw in prod_duplicate_lhs:
+        reporter.report(
+            line_no,
+            "duplicate LHS",
+            f"duplicate LHS in prod block: {lhs} declared more than once "
+            f"(later declarations silently mask earlier ones)",
+            raw,
+        )
+    for line_no, lhs, raw in staging_duplicate_lhs:
+        reporter.report(
+            line_no,
+            "duplicate LHS",
+            f"duplicate LHS in staging block: {lhs} declared more than once "
+            f"(later declarations silently mask earlier ones)",
+            raw,
+        )
 
     # (b) LHS parity
     prod_lhs = set(prod.keys())
@@ -198,7 +250,7 @@ def main(path_str: str) -> int:
         for _lhs, (_line, _raw, refs) in parsed.items():
             for ref in refs:
                 if CANONICAL_REF.match(ref) and ref.startswith(prefix + "_"):
-                    found.add(ref[len(prefix) + 1 :])
+                    found.add(ref.removeprefix(prefix + "_"))
         return found
 
     prod_suffixes = suffixes(prod, "PROD")

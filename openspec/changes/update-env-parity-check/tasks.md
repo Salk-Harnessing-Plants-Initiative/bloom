@@ -76,3 +76,25 @@ Expected format on cross-prefix leak:
   .github/workflows/deploy.yml:215: wrong-prefix: PROD_POSTGRES_DB appears in staging block
   <offending line content>
 ```
+
+## 6. Round-4 review fixes (post-merge of pin-python-deps)
+
+After this change was drafted, PR #126 (`pin-python-deps`) landed and established uv/CI conventions (SHA-pinned `setup-uv`, unit tests centralized in `python-audit`, no `setup-python` when `setup-uv` is present). A round-4 review surfaced gaps in the parser's silent-overwrite semantics plus several test/CI alignment issues. Addressed together to keep the env-parity capability coherent:
+
+- [x] 6.1 **Parser hardening: duplicate `.env.prod` / `.env.staging` heredocs** — `discover_blocks` previously let a second heredoc silently overwrite the first via dict assignment. Now returns a `duplicates` list; `main()` reports each as `duplicate env block` with its start line. Spec amended at "Exactly Two Env Blocks" with scenarios for duplicate-prod and duplicate-staging (both must fail).
+- [x] 6.2 **Parser hardening: duplicate LHS within one block** — `parse_block` previously let a second `POSTGRES_DB=...` in the same block silently overwrite the first. Now returns `(parsed, duplicate_lhs)`; `main()` reports each duplicate as `duplicate LHS` with its line and the offending raw content. Spec amended at "LHS Variable Parity" with a scenario for duplicate-in-one-block (must fail symmetrically for either side).
+- [x] 6.3 **Spec: document unquoted-path constraint** — "Env Block Discovery" prose now explicitly notes that the regex matches only unquoted paths; any future need for quoted paths requires amending both the regex and the spec.
+- [x] 6.4 **CI: SHA-pin `astral-sh/setup-uv` per PR #126 convention** — replaces `@v3` (mutable tag) with the 40-char SHA `37802adc...` + `# v7.6.0` comment in `verify-env-parity` job. Matches the same pin used by `python-audit` and `compose-health-check` in the same file.
+- [x] 6.5 **CI: drop redundant `actions/setup-python@v5`** — `setup-uv` manages Python (via `.python-version` or `--python` flag). Removing `setup-python` saves ~15s per run and eliminates the two-Python-interpreters-in-one-job inconsistency (script ran under system `python3`, tests ran under uv's python).
+- [x] 6.6 **CI: drop the dedicated `pytest` step from `verify-env-parity`** — `python-audit` already runs `pytest tests/unit/` per PR #126's convention, which covers `tests/unit/test_verify_env_parity.py`. Keeping a second invocation here caused the same test file to run twice after merge.
+- [x] 6.7 **Test: `assert_three_channels` path separator fix** — the stderr/stdout regex used `.*/` (POSIX-only). Changed to `.*?` so the path-prefix check works on Windows dev machines too. Ensures the test suite is not silently passing by accident on Linux CI while failing locally.
+- [x] 6.8 **Test: symmetric direction coverage** — added `test_lhs_missing_in_prod_fails` and `test_literal_in_prod_secret_in_staging_fails`. Round-3 tests only covered one direction of asymmetry for these requirements; the spec always demanded symmetry.
+- [x] 6.9 **Test: exit-code-2 contract** — added `test_missing_file_returns_exit_2` (file not found) and `test_no_args_returns_exit_2`. CI consumers distinguish exit 1 (parity violation) from exit 2 (usage/IO); documented in the script but previously uncovered.
+- [x] 6.10 **Test: silent-skip characterization** — added `test_empty_heredoc_body_passes` and `test_lowercase_lhs_is_silently_skipped`. Both document CURRENT behavior (not endorsements). If policy tightens to "flag empty blocks" or "flag lowercase LHS as malformed", these tests surface the change loudly rather than silently.
+- [x] 6.11 **Test: tighten `test_malformed_heredoc_fails_fast`** — previously only checked for `"unclosed heredoc" in result.stderr`, missing the whole point of the PR (inline GitHub annotations). Now uses `assert_three_channels` to verify stderr + `::error file=...` annotation + failure class together.
+- [x] 6.12 **Test: remove dead code** — `test_composite_value_with_one_leaked_ref_fails` had `prod_url = leaky.replace(...)` immediately overwritten on the next line. Dropped.
+- [x] 6.13 **Script: `ref.removeprefix(prefix + "_")`** replaces `ref[len(prefix) + 1 :]` — Python 3.9+ idiom, same behavior, clearer intent.
+
+### Follow-up (filed separately as a GitHub issue)
+
+- [ ] 6.14 **Migrate repository secrets to environment-scoped secrets** (the real fix): deploy.yml already uses `environment: production` / `environment: staging` for approval gates. Moving `secrets.PROD_X` / `secrets.STAGING_X` (120+ repo-level secrets with name-based scoping) to GitHub's environment-scoped `secrets.X` makes the two heredoc bodies byte-identical — drift becomes structurally impossible and this parity checker becomes dead code. Out of scope for Monday's first prod deploy (migrating 120 secrets + restructuring deploy.yml the week before launch is too risky). Track as a post-deploy refactor.

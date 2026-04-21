@@ -53,8 +53,13 @@ jobs:
 
   # Ensures prod and staging env blocks in deploy.yml stay in sync.
   # Validates LHS parity, RHS prefix correctness, RHS suffix parity, per-LHS
-  # secret-ref consistency, and composite multi-ref lines. See the authoritative
-  # spec at openspec/changes/update-env-parity-check/specs/deploy-env-parity/spec.md
+  # secret-ref consistency, duplicate heredoc/LHS detection, and composite
+  # multi-ref lines. See the authoritative spec at
+  # openspec/changes/update-env-parity-check/specs/deploy-env-parity/spec.md
+  #
+  # Unit tests for scripts/verify_env_parity.py run in the `python-audit` job
+  # alongside the rest of tests/unit/ (pin-python-deps convention) — do NOT
+  # duplicate the pytest invocation here.
   verify-env-parity:
     name: Verify prod/staging env parity
     runs-on: ubuntu-latest
@@ -62,19 +67,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      # setup-uv also installs Python via .python-version if present; single
+      # Python manager per job, SHA-pinned per the pin-python-deps supply-chain
+      # convention (matches python-audit + compose-health-check in this file).
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
-      - name: Run verify_env_parity on deploy.yml
-        run: python3 scripts/verify_env_parity.py .github/workflows/deploy.yml
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-
-      - name: Run unit tests for verify_env_parity
-        run: uv run --with pytest pytest tests/unit/test_verify_env_parity.py -v
+      - name: Verify prod/staging env parity
+        run: uv run --python 3.11 python scripts/verify_env_parity.py .github/workflows/deploy.yml
 
   # Scans Python dependencies for known CVEs
   python-audit:
