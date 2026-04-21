@@ -60,7 +60,7 @@ updates:
       - "github-actions"
 
   # Python dependencies (langchain)
-  - package-ecosystem: "pip"
+  - package-ecosystem: "uv"
     directory: "/langchain"
     schedule:
       interval: "weekly"
@@ -70,8 +70,18 @@ updates:
       - "python"
 
   # Python dependencies (bloommcp)
-  - package-ecosystem: "pip"
+  - package-ecosystem: "uv"
     directory: "/bloommcp"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    labels:
+      - "dependencies"
+      - "python"
+
+  # Python dependencies (video-worker)
+  - package-ecosystem: "uv"
+    directory: "/services/video-worker"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 0
