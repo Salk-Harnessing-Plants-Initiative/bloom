@@ -86,6 +86,7 @@ services:
       # Kept in sync with docker-compose.prod.yml for dev/prod parity, even
       # though dev has a writable root FS. See the prod compose for rationale.
       NUMBA_CACHE_DIR: /tmp/numba
+      PYTHONPYCACHEPREFIX: /tmp/pycache
     volumes:
       - ./bloommcp:/app
       - ./bloommcp/data/SLEAP_OUT_CSV:/app/data/SLEAP_OUT_CSV

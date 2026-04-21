@@ -149,8 +149,13 @@ services:
       context: ./bloommcp
       dockerfile: Dockerfile
     read_only: true
+    # /tmp tmpfs: mode 1777 matches standard Linux perms (sticky, world-writable)
+    # so numba/cpython can create their cache subdirs unconditionally. size=100m
+    # is defensive — numba cache is ~KB, but an explicit cap prevents any noisy
+    # neighbor on /tmp from starving the cache. Used by NUMBA_CACHE_DIR +
+    # PYTHONPYCACHEPREFIX below.
     tmpfs:
-      - /tmp
+      - /tmp:mode=1777,size=100m
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -170,8 +175,18 @@ services:
       # to site-packages/__pycache__/ and fails under read_only: true.
       # /tmp is tmpfs-mounted above, so /tmp/numba is writable. Only
       # bloommcp needs this — bloom-web (Node.js) and langchain-agent
-      # (no numba imports) do not.
+      # (no numba imports; confirmed via grep of langchain/uv.lock) do not.
+      # Cache is ephemeral (tmpfs wipes on container restart), so the first
+      # UMAP call after every restart re-JITs — acceptable for this deploy;
+      # revisit with a named volume if restart-frequent.
       NUMBA_CACHE_DIR: /tmp/numba
+      # CPython bytecode cache. Same root-cause as NUMBA_CACHE_DIR — without
+      # this, CPython tries to write .pyc files to site-packages/__pycache__/
+      # on first import. CPython degrades gracefully on write failure (falls
+      # back to re-parsing source every import) but emits noisy warnings and
+      # pays re-parse cost on every cold start. Redirecting to /tmp/pycache
+      # restores the normal caching path.
+      PYTHONPYCACHEPREFIX: /tmp/pycache
     volumes:
       - ./bloommcp/data/SLEAP_OUT_CSV:/app/data/SLEAP_OUT_CSV
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
