@@ -74,7 +74,7 @@ jobs:
           fi
           echo "prod and staging env blocks are in sync ($(echo "$PROD_VARS" | wc -l) vars)"
 
-  # Scans Python dependencies for known CVEs
+  # Scans Python dependencies for known CVEs via lockfile export
   python-audit:
     name: Python Security Audit for CVEs
     runs-on: ubuntu-latest
@@ -82,22 +82,34 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
-      # uv, pip-audit
-      - name: Install uv and pip-audit
-        run: pip install uv && uv pip install --system pip-audit
+      # Fast feedback on pure-Python utility scripts. Placed in python-audit
+      # (not compose-health-check) because this job runs in parallel, has no
+      # continue-on-error, and already has uv installed.
+      - name: Run Python unit tests
+        run: uv run --with pytest pytest tests/unit/ -v --tb=short
+
+      # Enforce lockfile-pyproject sync on the server side. Pre-commit catches
+      # this locally but can be bypassed (--no-verify, web-UI merge, Dependabot
+      # auto-merge). `uv export --frozen` (used by the audit steps below) exits
+      # 0 even on drift — `uv lock --check` is the actual detector, invoked
+      # per-service by scripts/check-uv-locks.py.
+      - name: Verify uv lockfiles are synced
+        run: python scripts/check-uv-locks.py
 
       # Checks langchain agent Python packages for vulnerabilities
       - name: Audit langchain dependencies
-        run: pip-audit -r langchain/requirements.txt
+        run: cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
       # Checks bloommcp server Python packages for vulnerabilities
       - name: Audit bloommcp dependencies
-        run: pip-audit -r bloommcp/requirements.txt
+        run: cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+
+      # Checks video-worker Python packages for vulnerabilities
+      - name: Audit video-worker dependencies
+        run: cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
   docker-build:
     name: Build Docker Images & Scan for CVEs
@@ -228,6 +240,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # Setup uv BEFORE compose starts — the compose stack creates
+      # root-owned `volumes/db/data/` (postgres bind mount), and setup-uv's
+      # cache-dependency glob scans `**/uv.lock` across the whole workspace.
+      # Running setup-uv after compose is up causes EACCES when the glob
+      # tries to descend into the root-owned volumes directory.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: Generate .env.ci from secrets
         run: |
@@ -387,10 +407,12 @@ jobs:
 
       # Runs 22 integration tests (smoke, auth, RLS, storage, API routing) against the live compose stack
       # Skips if tests/integration/ doesn't exist on this branch
+      # (uv is already installed by the `Setup uv` step early in this job —
+      # moved there to run before the compose stack creates root-owned
+      # `volumes/db/data/`, which otherwise breaks setup-uv's workspace glob.)
       - name: Run integration tests
         run: |
           if [ -d "tests/integration" ]; then
-            pip install uv
             uv run --with pytest pytest tests/integration/ -v --tb=short
           else
             echo "No integration tests found — skipping"
