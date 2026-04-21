@@ -315,12 +315,12 @@ services:
       [
         "postgrest"
       ]
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+    # No healthcheck: postgrest/postgrest:v12.2.12 is a scratch image — no
+    # shell, no wget, no curl. No in-container probe is possible.
+    # `docker compose up --wait` treats no-healthcheck services as
+    # ready-when-running, which is the same semantics we had before this PR.
+    # Verified: `docker run --rm --entrypoint sh postgrest/postgrest:v12.2.12`
+    # fails with "executable file not found in $PATH".
 
   # -------------------
   # Realtime Analytics
@@ -353,8 +353,11 @@ services:
       APP_NAME: realtime
       SEED_SELF_HOST: true
       RUN_JANITOR: true
+    # supabase/realtime:v2.34.47 is debian-slim + Elixir: has curl + sh, NO wget.
+    # Verified today: `docker run --rm --entrypoint sh supabase/realtime:v2.34.47
+    # -c "command -v wget"` returns empty; `command -v curl` returns /usr/bin/curl.
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4000/api/health"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:4000/api/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -536,8 +539,11 @@ services:
         "-c",
         "/app/bin/migrate && /app/bin/supavisor eval \"$$(cat /etc/pooler/pooler.exs)\" && /app/bin/server"
       ]
+    # supabase/supavisor:2.7.4 is debian-slim + Elixir: has curl + sh, NO wget.
+    # Same family as realtime — verified via `docker run --rm --entrypoint sh
+    # supabase/supavisor:2.7.4 -c "command -v wget"` (returns empty).
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4000/api/health"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:4000/api/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -620,8 +626,15 @@ services:
       PG_META_DB_NAME: ${POSTGRES_DB}
       PG_META_DB_USER: supabase_admin
       PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+    # supabase/postgres-meta:v0.96.2 has bash + node but NO wget or curl
+    # (verified today via `docker run --rm --entrypoint sh <image> -c
+    # "command -v wget && command -v curl"` — both return empty). Use a
+    # node-based HTTP probe against /health. Exit 0 iff the endpoint returns
+    # 200; exit 1 on any connection error or non-200 status.
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      test:
+        - "CMD-SHELL"
+        - "node -e \"require('http').get('http://localhost:8080/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))\""
       interval: 10s
       timeout: 5s
       retries: 5

@@ -134,7 +134,7 @@ jobs:
             git reset --hard origin/main
           "
 
-      - name: Verify Docker Compose version (>= 2.17 required for --wait)
+      - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             COMPOSE_VER=\$(docker compose version --short 2>/dev/null | head -1)
@@ -142,10 +142,17 @@ jobs:
               echo '::error::docker compose not found on server'
               exit 1
             fi
+            # Strip leading 'v' — some installs report 'v2.21.0', which would
+            # break the numeric comparison below (MAJOR=v2 is not -lt 2).
+            COMPOSE_VER=\${COMPOSE_VER#v}
             MAJOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f1)
             MINOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f2)
+            # --wait arrived in Compose v2.1.1 (Oct 2021); --wait-timeout in
+            # v2.17.0 (Mar 2023). Without --wait-timeout, --wait defaults to
+            # waiting indefinitely — we want the 600s ceiling, so 2.17 is the
+            # real minimum here.
             if [ \"\$MAJOR\" -lt 2 ] || { [ \"\$MAJOR\" -eq 2 ] && [ \"\$MINOR\" -lt 17 ]; }; then
-              echo \"::error::Docker Compose \$COMPOSE_VER found — need >= 2.17 for --wait\"
+              echo \"::error::Docker Compose \$COMPOSE_VER found — need >= 2.17 for --wait-timeout\"
               exit 1
             fi
             echo \"Docker Compose \$COMPOSE_VER ok\"
@@ -153,6 +160,7 @@ jobs:
 
       - name: Deploy production stack
         run: |
+          : "${PROD_DEPLOY_PATH:?PROD_DEPLOY_PATH secret must be set (empty → would cd to \$HOME)}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
@@ -161,6 +169,8 @@ jobs:
             echo 'Production deployed successfully!'
             docker compose -f docker-compose.prod.yml --env-file .env.prod ps
           "
+        env:
+          PROD_DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
 
       - name: Deploy diagnostics on failure
         if: failure()
@@ -179,17 +189,38 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            # Domain values live in the committed .env.prod.defaults (merged
+            # into .env.prod at deploy time by PR #144). Source them directly
+            # from .env.prod on the server — NOT from secrets.*_DOMAIN_MAIN
+            # which no longer exist as GitHub Secrets.
+            DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.prod | cut -d= -f2-)
+            DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.prod | cut -d= -f2-)
+            DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.prod | cut -d= -f2-)
+            PORT=\$(grep '^CADDY_HTTP_LISTEN_PORT=' .env.prod | cut -d= -f2-)
+            : \"\${DOMAIN_MAIN:?missing DOMAIN_MAIN in .env.prod}\"
+            : \"\${DOMAIN_STUDIO:?missing DOMAIN_STUDIO in .env.prod}\"
+            : \"\${DOMAIN_MINIO:?missing DOMAIN_MINIO in .env.prod}\"
+            : \"\${PORT:?missing CADDY_HTTP_LISTEN_PORT in .env.prod}\"
+
             failed=0
-            for endpoint in '/' '/api' '/studio'; do
-              STATUS=\$(curl -s -o /dev/null -w '%{http_code}' \
-                -H 'Host: ${{ secrets.PROD_DOMAIN_MAIN }}' \
+            # Per-Host probes — Caddy routes studio + minio on SUBDOMAINS, not
+            # paths on the apex. curl -L -k follows the auto-HTTPS 308 redirect
+            # and accepts Caddy's \`tls internal\` self-signed cert (PR #145).
+            # Success window is 2xx/3xx only — 4xx (e.g. unmapped path) is a
+            # routing bug we want to surface, not tolerate.
+            for probe in \"\$DOMAIN_MAIN|/\" \"\$DOMAIN_MAIN|/api/\" \"\$DOMAIN_STUDIO|/\" \"\$DOMAIN_MINIO|/\" \"\$DOMAIN_MAIN|/api/health\"; do
+              HOST=\"\${probe%|*}\"
+              ENDPOINT=\"\${probe#*|}\"
+              STATUS=\$(curl -sLk -o /dev/null -w '%{http_code}' \
+                -H \"Host: \$HOST\" \
                 --max-time 10 \
-                http://localhost\$endpoint || echo 000)
-              if [ \"\$STATUS\" -ge 500 ] || [ \"\$STATUS\" -eq 000 ]; then
-                echo \"::error::Smoke test failed on \$endpoint (HTTP \$STATUS)\"
+                \"http://localhost:\$PORT\$ENDPOINT\" || echo 000)
+              if [ \"\$STATUS\" -lt 200 ] || [ \"\$STATUS\" -ge 400 ]; then
+                echo \"::error::Smoke test failed on \$HOST\$ENDPOINT (HTTP \$STATUS)\"
                 failed=1
               else
-                echo \"  \$endpoint -> \$STATUS\"
+                echo \"  \$HOST\$ENDPOINT -> \$STATUS\"
               fi
             done
             exit \$failed
@@ -205,8 +236,15 @@ jobs:
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
               git reset --hard \$PREV || { echo \"::error::Rollback failed: could not reset to \$PREV — SHA may be unreachable\"; exit 1; }
-              docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose up failed — container state may be inconsistent, manual inspection required\"; exit 1; }
-              echo 'Rollback complete — previous version restored'
+              # Rollback matches the forward deploy's strictness: use --wait so
+              # we don't silently 'succeed' while the rolled-back stack is also
+              # broken. Shorter 300s timeout (vs 600s forward) because rollback
+              # reuses already-built images — cold-build is not in the critical
+              # path.
+              docker compose -f docker-compose.prod.yml --env-file .env.prod \
+                up -d --build --remove-orphans --wait --wait-timeout 300 \
+                || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
+              echo 'Rollback complete — previous version restored and healthy'
             else
               echo '::error::No previous SHA saved — manual recovery required'
               exit 1
@@ -334,7 +372,7 @@ jobs:
             git reset --hard origin/staging
           "
 
-      - name: Verify Docker Compose version (>= 2.17 required for --wait)
+      - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             COMPOSE_VER=\$(docker compose version --short 2>/dev/null | head -1)
@@ -342,10 +380,14 @@ jobs:
               echo '::error::docker compose not found on server'
               exit 1
             fi
+            # Strip leading 'v' — some installs report 'v2.21.0'.
+            COMPOSE_VER=\${COMPOSE_VER#v}
             MAJOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f1)
             MINOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f2)
+            # --wait arrived in v2.1.1; --wait-timeout in v2.17. We need the
+            # latter so the ceiling applies.
             if [ \"\$MAJOR\" -lt 2 ] || { [ \"\$MAJOR\" -eq 2 ] && [ \"\$MINOR\" -lt 17 ]; }; then
-              echo \"::error::Docker Compose \$COMPOSE_VER found — need >= 2.17 for --wait\"
+              echo \"::error::Docker Compose \$COMPOSE_VER found — need >= 2.17 for --wait-timeout\"
               exit 1
             fi
             echo \"Docker Compose \$COMPOSE_VER ok\"
@@ -379,17 +421,33 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            # Domains + port live in committed .env.staging.defaults merged
+            # into .env.staging at deploy time (PR #144). Source from the
+            # server-side file — NOT from secrets.STAGING_DOMAIN_MAIN etc.
+            # which no longer exist.
+            DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.staging | cut -d= -f2-)
+            DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.staging | cut -d= -f2-)
+            DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.staging | cut -d= -f2-)
+            PORT=\$(grep '^CADDY_HTTP_LISTEN_PORT=' .env.staging | cut -d= -f2-)
+            : \"\${DOMAIN_MAIN:?missing DOMAIN_MAIN in .env.staging}\"
+            : \"\${DOMAIN_STUDIO:?missing DOMAIN_STUDIO in .env.staging}\"
+            : \"\${DOMAIN_MINIO:?missing DOMAIN_MINIO in .env.staging}\"
+            : \"\${PORT:?missing CADDY_HTTP_LISTEN_PORT in .env.staging}\"
+
             failed=0
-            for endpoint in '/' '/api' '/studio'; do
-              STATUS=\$(curl -s -o /dev/null -w '%{http_code}' \
-                -H 'Host: ${{ secrets.STAGING_DOMAIN_MAIN }}' \
+            for probe in \"\$DOMAIN_MAIN|/\" \"\$DOMAIN_MAIN|/api/\" \"\$DOMAIN_STUDIO|/\" \"\$DOMAIN_MINIO|/\" \"\$DOMAIN_MAIN|/api/health\"; do
+              HOST=\"\${probe%|*}\"
+              ENDPOINT=\"\${probe#*|}\"
+              STATUS=\$(curl -sLk -o /dev/null -w '%{http_code}' \
+                -H \"Host: \$HOST\" \
                 --max-time 10 \
-                http://localhost:${{ secrets.STAGING_CADDY_HTTP_LISTEN_PORT }}\$endpoint || echo 000)
-              if [ \"\$STATUS\" -ge 500 ] || [ \"\$STATUS\" -eq 000 ]; then
-                echo \"::error::Smoke test failed on \$endpoint (HTTP \$STATUS)\"
+                \"http://localhost:\$PORT\$ENDPOINT\" || echo 000)
+              if [ \"\$STATUS\" -lt 200 ] || [ \"\$STATUS\" -ge 400 ]; then
+                echo \"::error::Smoke test failed on \$HOST\$ENDPOINT (HTTP \$STATUS)\"
                 failed=1
               else
-                echo \"  \$endpoint -> \$STATUS\"
+                echo \"  \$HOST\$ENDPOINT -> \$STATUS\"
               fi
             done
             exit \$failed
@@ -405,8 +463,13 @@ jobs:
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
               git reset --hard \$PREV || { echo \"::error::Rollback failed: could not reset to \$PREV — SHA may be unreachable\"; exit 1; }
-              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build --remove-orphans || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose up failed — container state may be inconsistent, manual inspection required\"; exit 1; }
-              echo 'Rollback complete — previous version restored'
+              # Symmetric --wait with forward deploy — see prod rollback for
+              # rationale. Shorter 300s timeout since rollback reuses built
+              # images.
+              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
+                up -d --build --remove-orphans --wait --wait-timeout 300 \
+                || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
+              echo 'Rollback complete — previous version restored and healthy'
             else
               echo '::error::No previous SHA saved — manual recovery required'
               exit 1
