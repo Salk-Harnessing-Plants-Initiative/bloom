@@ -134,27 +134,28 @@ export async function searchGenes(
 }
 
 /**
- * Download the per-gene Float32 expression sidecar from object storage and
- * decode it as a Float32Array. Values are log-normalized (Seurat NormalizeData
- * or equivalent) and MUST be used unmodified downstream — the colorbar and
+ * Download the per-gene Float32 expression sidecar and decode it as a
+ * Float32Array. Values are log-normalized (Seurat NormalizeData or
+ * equivalent) and MUST be used unmodified downstream — the colorbar and
  * shader perform range mapping at render time, not here.
  *
- * Uses the Supabase storage client (not a raw fetch against MinIO) so the
- * anon JWT is sent as a header — the `scrna` bucket is authenticated-read,
- * not public-read, and raw MinIO returns 403 for anonymous GETs.
+ * Reads directly from the `scrna` MinIO bucket via the storage URL (see
+ * `getStorageBaseUrl`). The Phase 1 ingest uploaded objects straight to
+ * MinIO at `scrna/counts/<dataset>/<gene>.bin` (bypassing Supabase
+ * Storage's `bloom-storage/storage-single-tenant/...` layout), so the
+ * supabase-js storage client can't resolve them — but MinIO itself
+ * serves them fine once the bucket allows anonymous GETs.
  */
 export async function fetchGeneBin(
   datasetName: string,
   geneName: string,
 ): Promise<Float32Array> {
-  const supabase = createClientSupabaseClient();
-  const objectPath = `counts/${datasetName}/${geneName}.bin`;
-  const { data, error } = await supabase.storage
-    .from(STORAGE_BUCKET)
-    .download(objectPath);
-  if (error) {
-    throw new Error(`fetchGeneBin failed for ${geneName}: ${error.message}`);
+  const base = getStorageBaseUrl();
+  const url = `${base}/${STORAGE_BUCKET}/counts/${encodeURIComponent(datasetName)}/${encodeURIComponent(geneName)}.bin`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`fetchGeneBin failed for ${geneName}: HTTP ${res.status}`);
   }
-  const buf = await data.arrayBuffer();
+  const buf = await res.arrayBuffer();
   return new Float32Array(buf);
 }
