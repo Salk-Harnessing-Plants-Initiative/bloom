@@ -167,7 +167,7 @@ jobs:
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
               git reset --hard \$PREV || { echo \"::error::Rollback failed: could not reset to \$PREV — SHA may be unreachable\"; exit 1; }
-              docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans
+              docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose up failed — container state may be inconsistent, manual inspection required\"; exit 1; }
               echo 'Rollback complete — previous version restored'
             else
               echo '::error::No previous SHA saved — manual recovery required'
@@ -329,7 +329,7 @@ jobs:
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
               git reset --hard \$PREV || { echo \"::error::Rollback failed: could not reset to \$PREV — SHA may be unreachable\"; exit 1; }
-              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build --remove-orphans
+              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build --remove-orphans || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose up failed — container state may be inconsistent, manual inspection required\"; exit 1; }
               echo 'Rollback complete — previous version restored'
             else
               echo '::error::No previous SHA saved — manual recovery required'

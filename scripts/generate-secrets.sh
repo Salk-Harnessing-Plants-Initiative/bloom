@@ -15,7 +15,16 @@ PREFIX=$(echo "$ENV" | tr '[:lower:]' '[:upper:]')
 if [ "$MODE" = "--file" ]; then
   # IMPORTANT: .gitignore has a matching rule (.secrets-*.txt) to prevent
   # accidental commit. If you change this filename format, update .gitignore.
-  OUTPUT=".secrets-${ENV}-$(date +%s).txt"
+  # $$ (pid) suffix handles the case where two ops users run this in the
+  # same second (date +%s is second-precision) without clobbering each other.
+  # umask 077 ensures the file is born at mode 0600 — the final `chmod 600`
+  # at the end of the script closes the window permanently, but during the
+  # multi-second write phase a default umask (022 → 0644) would let another
+  # user on a shared machine cat the partially-written file. umask 077
+  # eliminates that race window.
+  OUTPUT=".secrets-${ENV}-$(date +%s)-$$.txt"
+  umask 077
+  echo "Writing secrets to $OUTPUT (mode 0600 throughout; delete after use)" >&2
   exec > "$OUTPUT"
 fi
 
