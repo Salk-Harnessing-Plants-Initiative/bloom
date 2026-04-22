@@ -74,7 +74,7 @@
 .plant {
   position: absolute;
   z-index: 1;
-  pointer-events: none; /* decorative only — never steal clicks from form */
+  cursor: default;
 }
 .plant img {
   display: block;
@@ -83,19 +83,64 @@
   object-fit: contain;
   opacity: 0.35;
   filter: saturate(0.75) contrast(0.95);
+  transition: opacity 0.4s, filter 0.4s, transform 0.4s;
+}
+.plant:hover {
+  z-index: 10; /* lift above pageInner (z:5) so callout renders over cards */
+}
+.plant:hover img {
+  opacity: 0.95;
+  filter: saturate(1.05) contrast(1);
+  transform: scale(1.04);
 }
 
-/* Plant placements — match reference/bloom-login-v2/index.html */
-.p1  { top:    6%; left:    3%; width: 240px; height: 240px; }
-.p2  { top:    4%; left:   40%; width: 200px; height: 200px; }
-.p3  { top:   28%; left:    1%; width: 280px; height: 280px; }
-.p4  { top:    2%; right:   2%; width: 200px; height: 200px; }
-.p5  { bottom:  5%; left:    4%; width: 260px; height: 260px; }
-.p6  { bottom:  2%; left:   26%; width: 180px; height: 180px; }
-.p7  { bottom:  6%; right:  22%; width: 180px; height: 180px; }
-.p8  { bottom:  4%; right:   2%; width: 240px; height: 240px; }
-.p9  { top:   55%; left:   14%; width: 140px; height: 140px; }
-.p10 { bottom:  8%; left:   44%; width: 140px; height: 140px; }
+.callout {
+  position: absolute;
+  left: 50%;
+  bottom: -14px;
+  transform: translate(-50%, 4px);
+  pointer-events: none;
+  z-index: 6;
+  padding: 8px 12px;
+  background: var(--cream-2);
+  border: 1px solid var(--stone-200);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.25s, transform 0.25s;
+  line-height: 1.4;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+.callout strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+.plant:hover .callout {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/*
+ * Plant placements — kept in the viewport corners and side margins so
+ * the watercolors stay visible (never tucked under the form card or
+ * stats strip). The stats strip sits roughly at 77-87% of viewport
+ * height, the form card in the right half at 25-70% vertical, so
+ * right-side plants stay above/below those zones.
+ */
+.p1  { top:    3%; left:   1%;  width: 200px; height: 200px; }
+.p2  { top:    4%; left:  38%;  width: 150px; height: 150px; }
+.p3  { top:   30%; left:  -2%;  width: 240px; height: 240px; }
+.p4  { top:    3%; right:  1%;  width: 180px; height: 180px; }
+.p5  { top:   54%; left:  -2%;  width: 200px; height: 200px; }
+.p6  { top:   30%; right:  0%;  width: 160px; height: 160px; } /* right of form card */
+.p7  { top:    6%; right: 22%;  width: 140px; height: 140px; }
+.p8  { top:   58%; right: -3%;  width: 200px; height: 200px; }
+.p9  { top:   68%; right: 14%;  width: 180px; height: 180px; } /* below form card */
+.p10 { top:   48%; left:  42%;  width: 120px; height: 120px; }
+.p11 { top:   72%; left:  18%;  width: 170px; height: 170px; } /* below subtitle */
+.p12 { top:   18%; left:  26%;  width: 110px; height: 110px; } /* upper mid accent */
 
 /* Gentle drift — only when the user has not requested reduced motion. */
 @media (prefers-reduced-motion: no-preference) {
@@ -125,6 +170,16 @@
   display: flex;
   flex-direction: column;
   padding: 20px 56px 24px;
+  pointer-events: none; /* empty foreground regions pass hovers to plants */
+}
+.pageInner a,
+.pageInner button,
+.pageInner input,
+.pageInner label,
+.pageInner .formCard,
+.pageInner .statsStrip,
+.pageInner .stat {
+  pointer-events: auto;
 }
 
 .topRow {
