@@ -213,8 +213,9 @@
   margin: 0 0 18px;
   color: var(--ink-soft);
 }
-.heroTitle .accent {
-  color: var(--leaf-deep);
+.heroTitle em {
+  font-style: italic;
+  color: var(--leaf);
 }
 
 .heroSub {
