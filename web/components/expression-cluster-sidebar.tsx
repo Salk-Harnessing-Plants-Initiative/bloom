@@ -1,13 +1,5 @@
 "use client";
 
-import Box from "@mui/material/Box";
-import Checkbox from "@mui/material/Checkbox";
-import List from "@mui/material/List";
-import ListItem from "@mui/material/ListItem";
-import ListItemButton from "@mui/material/ListItemButton";
-import Typography from "@mui/material/Typography";
-import Link from "@mui/material/Link";
-
 import type { Database } from "@/lib/database.types";
 
 type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
@@ -30,9 +22,9 @@ export interface ExpressionClusterSidebarProps {
 }
 
 /**
- * Vertical list of clusters with color swatches, visibility checkboxes,
- * and click-name-to-solo behaviour. Catalog-driven — names and colors
- * come from scrna_clusters, not client-side hashing.
+ * Vertical list of clusters styled as a quiet stat rail: colored bullet,
+ * name, cell count, visibility indicator. Row click solos the cluster;
+ * the right-edge dot toggles visibility without soloing.
  */
 export function ExpressionClusterSidebar({
   clusters,
@@ -43,118 +35,109 @@ export function ExpressionClusterSidebar({
   onShowAll,
   onHideAll,
 }: ExpressionClusterSidebarProps) {
+  const soloCount = clusters.length - hiddenOrdinals.size;
+
   return (
-    <Box
+    <div
       data-testid="expression-cluster-sidebar"
-      sx={{
-        width: 280,
-        maxHeight: "100%",
-        overflowY: "auto",
-        borderRight: "1px solid",
-        borderColor: "divider",
-      }}
+      className="w-72 h-full overflow-y-auto border-r border-stone-200 bg-white"
     >
-      <Box
-        sx={{
-          px: 2,
-          pt: 2,
-          pb: 1,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "baseline",
-        }}
-      >
-        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+      <div className="flex items-baseline justify-between px-4 pt-4 pb-2">
+        <div className="text-xs uppercase tracking-widest text-stone-500">
           Clusters ({clusters.length})
-        </Typography>
-        <Box sx={{ display: "flex", gap: 1 }}>
-          <Link
-            component="button"
+        </div>
+        <div className="flex gap-3 text-[11px]">
+          <button
             type="button"
             onClick={onShowAll}
-            sx={{ fontSize: 12 }}
+            className="text-lime-700 hover:underline"
           >
             Show all
-          </Link>
-          <Link
-            component="button"
+          </button>
+          <button
             type="button"
             onClick={onHideAll}
-            sx={{ fontSize: 12 }}
+            className="text-stone-500 hover:underline"
           >
             Hide all
-          </Link>
-        </Box>
-      </Box>
-      <List dense disablePadding>
+          </button>
+        </div>
+      </div>
+
+      <ul className="pb-4">
         {clusters.map((c) => {
           const visible = !hiddenOrdinals.has(c.ordinal);
-          // A cluster is "solo" when it is the only visible one.
-          const soloCount = clusters.length - hiddenOrdinals.size;
           const isSolo = soloCount === 1 && visible;
           const count = cellCounts?.[c.ordinal];
+          const color = c.color ?? "#a8a29e";
+          const label = c.name ?? c.cluster_id;
+
           return (
-            <ListItem
-              key={c.ordinal}
-              disablePadding
-              sx={{
-                bgcolor: isSolo ? "action.selected" : "transparent",
-              }}
-              secondaryAction={
-                count != null ? (
-                  <Typography
-                    variant="caption"
-                    sx={{ fontFamily: "monospace", pr: 1 }}
-                  >
-                    {count.toLocaleString()}
-                  </Typography>
-                ) : null
-              }
-            >
-              <ListItemButton
+            <li key={c.ordinal}>
+              <div
+                className={[
+                  "group flex items-center gap-3 px-4 py-2 cursor-pointer transition-colors",
+                  isSolo
+                    ? "bg-amber-50"
+                    : "hover:bg-stone-50/70",
+                ].join(" ")}
                 onClick={() => onSolo(c.ordinal)}
-                sx={{ gap: 1, minHeight: 36 }}
                 title="Click to show only this cluster (click again to restore)"
               >
-                <Checkbox
-                  checked={visible}
+                <span
+                  aria-hidden
+                  className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
+                  style={{ background: visible ? color : "transparent", border: visible ? "none" : `1px solid ${color}` }}
+                />
+                <span
+                  className={[
+                    "flex-1 truncate text-sm",
+                    isSolo
+                      ? "text-stone-900 font-medium"
+                      : visible
+                        ? "text-stone-700"
+                        : "text-stone-400",
+                  ].join(" ")}
+                  title={label}
+                >
+                  {label}
+                </span>
+                {count != null ? (
+                  <span
+                    className={[
+                      "text-xs tabular-nums shrink-0",
+                      isSolo
+                        ? "text-stone-700"
+                        : visible
+                          ? "text-stone-500"
+                          : "text-stone-300",
+                    ].join(" ")}
+                  >
+                    {count.toLocaleString()}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
                   onClick={(e) => {
                     e.stopPropagation();
                     onVisibilityChange(c.ordinal, !visible);
                   }}
-                  size="small"
-                  sx={{ p: 0.5 }}
-                />
-                <Box
-                  aria-hidden
-                  sx={{
-                    width: 12,
-                    height: 12,
-                    borderRadius: 0.5,
-                    background: c.color ?? "#888",
-                    flexShrink: 0,
-                    border: "1px solid rgba(0,0,0,0.12)",
-                  }}
-                />
-                <Typography
-                  variant="body2"
-                  sx={{
-                    flex: 1,
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    fontWeight: isSolo ? 600 : 400,
-                  }}
-                  title={c.name ?? c.cluster_id}
+                  aria-label={visible ? "Hide cluster" : "Show cluster"}
+                  className="shrink-0 p-1 -mr-1 rounded-full hover:bg-stone-100"
                 >
-                  {c.name ?? c.cluster_id}
-                </Typography>
-              </ListItemButton>
-            </ListItem>
+                  <span
+                    className={[
+                      "block h-2 w-2 rounded-full transition-colors",
+                      visible ? "bg-stone-500" : "bg-transparent border border-stone-300",
+                    ].join(" ")}
+                  />
+                </button>
+              </div>
+            </li>
           );
         })}
-      </List>
-    </Box>
+      </ul>
+    </div>
   );
 }
 
