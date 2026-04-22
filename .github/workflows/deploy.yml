@@ -22,6 +22,11 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
     runs-on: ubuntu-latest
     environment: production
+    concurrency:
+      # Shared group for both prod and staging — only one deploy runs at a
+      # time across the whole repo (single Salk server, single docker daemon).
+      group: deploy-bloom
+      cancel-in-progress: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -129,32 +134,132 @@ jobs:
             git reset --hard origin/main
           "
 
-      - name: Deploy production stack
+      - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
-            cd ${{ secrets.PROD_DEPLOY_PATH }}
-            docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans
+            # set -euo pipefail: without this, an unparseable MAJOR/MINOR (e.g.
+            # 'docker compose version --short' returning something unexpected)
+            # would make the numeric -lt comparison below error out WITHOUT
+            # failing the script — then the 'ok' line would print and the
+            # deploy would proceed with a possibly-too-old Compose. Copilot
+            # round-1 finding; we want the preflight to abort loudly on any
+            # parse failure.
+            set -euo pipefail
+            COMPOSE_VER=\$(docker compose version --short 2>/dev/null | head -1)
+            if [ -z \"\$COMPOSE_VER\" ]; then
+              echo '::error::docker compose not found on server'
+              exit 1
+            fi
+            # Strip leading 'v' — some installs report 'v2.21.0', which would
+            # break the numeric comparison below (MAJOR=v2 is not -lt 2).
+            COMPOSE_VER=\${COMPOSE_VER#v}
+            MAJOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f1)
+            MINOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f2)
+            # Validate MAJOR and MINOR are integers. If 'docker compose version
+            # --short' returns something we don't expect (e.g., 'dev' or empty
+            # after the strip), the -lt comparison would error. Fail loudly.
+            if ! [[ \"\$MAJOR\" =~ ^[0-9]+\$ && \"\$MINOR\" =~ ^[0-9]+\$ ]]; then
+              echo \"::error::Could not parse Docker Compose version from '\$COMPOSE_VER' (MAJOR='\$MAJOR' MINOR='\$MINOR')\"
+              exit 1
+            fi
+            # --wait arrived in Compose v2.1.1 (Oct 2021); --wait-timeout in
+            # v2.17.0 (Mar 2023). Without --wait-timeout, --wait defaults to
+            # waiting indefinitely — we want the 600s ceiling, so 2.17 is the
+            # real minimum here.
+            if [ \"\$MAJOR\" -lt 2 ] || { [ \"\$MAJOR\" -eq 2 ] && [ \"\$MINOR\" -lt 17 ]; }; then
+              echo \"::error::Docker Compose \$COMPOSE_VER found — need >= 2.17 for --wait-timeout\"
+              exit 1
+            fi
+            echo \"Docker Compose \$COMPOSE_VER ok\"
           "
 
-      - name: Health check
+      - name: Deploy production stack
+        run: |
+          : "${PROD_DEPLOY_PATH:?PROD_DEPLOY_PATH secret must be set (empty → would cd to \$HOME)}"
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            docker compose -f docker-compose.prod.yml --env-file .env.prod \
+              up -d --build --remove-orphans --wait --wait-timeout 600
+            echo 'Production deployed successfully!'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod ps
+          "
+        env:
+          PROD_DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+
+      - name: Deploy diagnostics on failure
+        if: failure()
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            for i in \$(seq 1 60); do
-              UNHEALTHY=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps --format json | jq '[.[] | select(.State == \"restarting\" or .Health == \"unhealthy\")] | length' 2>/dev/null || echo 99)
-              EXITED=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps --format json | jq '[.[] | select(.State == \"exited\" and .ExitCode != 0)] | length' 2>/dev/null || echo 99)
-              echo \"  unhealthy=\$UNHEALTHY exited=\$EXITED (\$i/60)\"
-              if [ \"\$UNHEALTHY\" -eq 0 ] && [ \"\$EXITED\" -eq 0 ]; then
-                echo 'Production deployed successfully!'
-                docker compose -f docker-compose.prod.yml --env-file .env.prod ps
-                exit 0
+            echo '::group::docker compose ps'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod ps || true
+            echo '::endgroup::'
+            echo '::group::docker compose logs --tail=200'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=200 || true
+            echo '::endgroup::'
+          "
+
+      - name: Smoke test
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            # Source DOMAIN_* and port from the server-side .env.prod file
+            # generated earlier in this workflow (from GitHub Secrets — the
+            # env-config split to committed defaults lands in PR #144). Using
+            # the deployed .env.prod as the runtime source of truth here keeps
+            # the smoke test robust to that upcoming refactor without code
+            # changes — after #144 merges, .env.prod is merged from
+            # .env.prod.defaults + secrets, same file, same grep.
+            DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.prod | cut -d= -f2-)
+            DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.prod | cut -d= -f2-)
+            DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.prod | cut -d= -f2-)
+            PORT=\$(grep '^CADDY_HTTP_LISTEN_PORT=' .env.prod | cut -d= -f2-)
+            : \"\${DOMAIN_MAIN:?missing DOMAIN_MAIN in .env.prod}\"
+            : \"\${DOMAIN_STUDIO:?missing DOMAIN_STUDIO in .env.prod}\"
+            : \"\${DOMAIN_MINIO:?missing DOMAIN_MINIO in .env.prod}\"
+            : \"\${PORT:?missing CADDY_HTTP_LISTEN_PORT in .env.prod}\"
+
+            failed=0
+            # Per-Host probes — Caddy routes studio + minio on SUBDOMAINS, not
+            # paths on the apex. curl -L -k follows the auto-HTTPS 308 redirect
+            # and accepts Caddy's \`tls internal\` self-signed cert (PR #145).
+            # Success window is 2xx/3xx only — 4xx (e.g. unmapped path) is a
+            # routing bug we want to surface, not tolerate.
+            for probe in \"\$DOMAIN_MAIN|/\" \"\$DOMAIN_MAIN|/api/\" \"\$DOMAIN_STUDIO|/\" \"\$DOMAIN_MINIO|/\" \"\$DOMAIN_MAIN|/api/health\"; do
+              HOST=\"\${probe%|*}\"
+              ENDPOINT=\"\${probe#*|}\"
+              STATUS=\$(curl -sLk -o /dev/null -w '%{http_code}' \
+                -H \"Host: \$HOST\" \
+                --max-time 10 \
+                \"http://localhost:\$PORT\$ENDPOINT\" || echo 000)
+              if [ \"\$STATUS\" -lt 200 ] || [ \"\$STATUS\" -ge 400 ]; then
+                echo \"::error::Smoke test failed on \$HOST\$ENDPOINT (HTTP \$STATUS)\"
+                failed=1
+              else
+                echo \"  \$HOST\$ENDPOINT -> \$STATUS\"
               fi
-              sleep 5
             done
-            echo 'DEPLOY FAILED: services in bad state'
-            docker compose -f docker-compose.prod.yml --env-file .env.prod ps
-            docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=50
-            exit 1
+            exit \$failed
+          "
+
+      # Duplicate of the diagnostics step above. GH Actions evaluates `if:
+      # failure()` based on whether any PRIOR step in the job failed — so a
+      # diagnostics step placed BEFORE the smoke test only fires on deploy-step
+      # failures. For routing/app failures caught by the smoke test, we need
+      # another diagnostics step AFTER it. Copilot round-1 finding.
+      - name: Smoke-test diagnostics on failure
+        if: failure()
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            echo '::group::docker compose ps'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod ps || true
+            echo '::endgroup::'
+            echo '::group::docker compose logs --tail=200'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=200 || true
+            echo '::endgroup::'
           "
 
       - name: Rollback on failure
@@ -167,8 +272,15 @@ jobs:
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
               git reset --hard \$PREV || { echo \"::error::Rollback failed: could not reset to \$PREV — SHA may be unreachable\"; exit 1; }
-              docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose up failed — container state may be inconsistent, manual inspection required\"; exit 1; }
-              echo 'Rollback complete — previous version restored'
+              # Rollback matches the forward deploy's strictness: use --wait so
+              # we don't silently 'succeed' while the rolled-back stack is also
+              # broken. Shorter 300s timeout (vs 600s forward) because rollback
+              # reuses already-built images — cold-build is not in the critical
+              # path.
+              docker compose -f docker-compose.prod.yml --env-file .env.prod \
+                up -d --build --remove-orphans --wait --wait-timeout 300 \
+                || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
+              echo 'Rollback complete — previous version restored and healthy'
             else
               echo '::error::No previous SHA saved — manual recovery required'
               exit 1
@@ -184,6 +296,11 @@ jobs:
     if: github.ref == 'refs/heads/staging' || github.event.inputs.environment == 'staging'
     runs-on: ubuntu-latest
     environment: staging
+    concurrency:
+      # Shared group for both prod and staging — only one deploy runs at a
+      # time across the whole repo (single Salk server, single docker daemon).
+      group: deploy-bloom
+      cancel-in-progress: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -291,32 +408,114 @@ jobs:
             git reset --hard origin/staging
           "
 
-      - name: Deploy staging stack
+      - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
-            cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build --remove-orphans
+            # See prod version of this step for why set -euo pipefail is load-
+            # bearing here (unparseable MAJOR/MINOR would otherwise silently
+            # allow the deploy to proceed with a too-old Compose).
+            set -euo pipefail
+            COMPOSE_VER=\$(docker compose version --short 2>/dev/null | head -1)
+            if [ -z \"\$COMPOSE_VER\" ]; then
+              echo '::error::docker compose not found on server'
+              exit 1
+            fi
+            # Strip leading 'v' — some installs report 'v2.21.0'.
+            COMPOSE_VER=\${COMPOSE_VER#v}
+            MAJOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f1)
+            MINOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f2)
+            if ! [[ \"\$MAJOR\" =~ ^[0-9]+\$ && \"\$MINOR\" =~ ^[0-9]+\$ ]]; then
+              echo \"::error::Could not parse Docker Compose version from '\$COMPOSE_VER' (MAJOR='\$MAJOR' MINOR='\$MINOR')\"
+              exit 1
+            fi
+            # --wait arrived in v2.1.1; --wait-timeout in v2.17. We need the
+            # latter so the ceiling applies.
+            if [ \"\$MAJOR\" -lt 2 ] || { [ \"\$MAJOR\" -eq 2 ] && [ \"\$MINOR\" -lt 17 ]; }; then
+              echo \"::error::Docker Compose \$COMPOSE_VER found — need >= 2.17 for --wait-timeout\"
+              exit 1
+            fi
+            echo \"Docker Compose \$COMPOSE_VER ok\"
           "
 
-      - name: Health check
+      - name: Deploy staging stack
+        run: |
+          : "${STAGING_DEPLOY_PATH:?STAGING_DEPLOY_PATH secret must be set (empty → would cd to \$HOME)}"
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
+              up -d --build --remove-orphans --wait --wait-timeout 600
+            echo 'Staging deployed successfully!'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
+          "
+        env:
+          STAGING_DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+
+      - name: Deploy diagnostics on failure
+        if: failure()
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            for i in \$(seq 1 60); do
-              UNHEALTHY=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps --format json | jq '[.[] | select(.State == \"restarting\" or .Health == \"unhealthy\")] | length' 2>/dev/null || echo 99)
-              EXITED=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps --format json | jq '[.[] | select(.State == \"exited\" and .ExitCode != 0)] | length' 2>/dev/null || echo 99)
-              echo \"  unhealthy=\$UNHEALTHY exited=\$EXITED (\$i/60)\"
-              if [ \"\$UNHEALTHY\" -eq 0 ] && [ \"\$EXITED\" -eq 0 ]; then
-                echo 'Staging deployed successfully!'
-                docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
-                exit 0
+            echo '::group::docker compose ps'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps || true
+            echo '::endgroup::'
+            echo '::group::docker compose logs --tail=200'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --tail=200 || true
+            echo '::endgroup::'
+          "
+
+      - name: Smoke test
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            # Source DOMAIN_* and port from the server-side .env.staging file
+            # generated earlier in this workflow (from GitHub Secrets today;
+            # from .env.staging.defaults + secrets after PR #144 merges).
+            # Reading from the deployed .env file is the runtime source of
+            # truth for this smoke test — robust across that config-source
+            # refactor without code changes here.
+            DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.staging | cut -d= -f2-)
+            DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.staging | cut -d= -f2-)
+            DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.staging | cut -d= -f2-)
+            PORT=\$(grep '^CADDY_HTTP_LISTEN_PORT=' .env.staging | cut -d= -f2-)
+            : \"\${DOMAIN_MAIN:?missing DOMAIN_MAIN in .env.staging}\"
+            : \"\${DOMAIN_STUDIO:?missing DOMAIN_STUDIO in .env.staging}\"
+            : \"\${DOMAIN_MINIO:?missing DOMAIN_MINIO in .env.staging}\"
+            : \"\${PORT:?missing CADDY_HTTP_LISTEN_PORT in .env.staging}\"
+
+            failed=0
+            for probe in \"\$DOMAIN_MAIN|/\" \"\$DOMAIN_MAIN|/api/\" \"\$DOMAIN_STUDIO|/\" \"\$DOMAIN_MINIO|/\" \"\$DOMAIN_MAIN|/api/health\"; do
+              HOST=\"\${probe%|*}\"
+              ENDPOINT=\"\${probe#*|}\"
+              STATUS=\$(curl -sLk -o /dev/null -w '%{http_code}' \
+                -H \"Host: \$HOST\" \
+                --max-time 10 \
+                \"http://localhost:\$PORT\$ENDPOINT\" || echo 000)
+              if [ \"\$STATUS\" -lt 200 ] || [ \"\$STATUS\" -ge 400 ]; then
+                echo \"::error::Smoke test failed on \$HOST\$ENDPOINT (HTTP \$STATUS)\"
+                failed=1
+              else
+                echo \"  \$HOST\$ENDPOINT -> \$STATUS\"
               fi
-              sleep 5
             done
-            echo 'DEPLOY FAILED: services in bad state'
-            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
-            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --tail=50
-            exit 1
+            exit \$failed
+          "
+
+      # Second diagnostics step — see prod version for rationale (smoke test
+      # failures don't fire the earlier diagnostics step which is gated by
+      # deploy-step failure, not any-step failure). Copilot round-1 finding.
+      - name: Smoke-test diagnostics on failure
+        if: failure()
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            echo '::group::docker compose ps'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps || true
+            echo '::endgroup::'
+            echo '::group::docker compose logs --tail=200'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --tail=200 || true
+            echo '::endgroup::'
           "
 
       - name: Rollback on failure
@@ -329,8 +528,13 @@ jobs:
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
               git reset --hard \$PREV || { echo \"::error::Rollback failed: could not reset to \$PREV — SHA may be unreachable\"; exit 1; }
-              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build --remove-orphans || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose up failed — container state may be inconsistent, manual inspection required\"; exit 1; }
-              echo 'Rollback complete — previous version restored'
+              # Symmetric --wait with forward deploy — see prod rollback for
+              # rationale. Shorter 300s timeout since rollback reuses built
+              # images.
+              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
+                up -d --build --remove-orphans --wait --wait-timeout 300 \
+                || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
+              echo 'Rollback complete — previous version restored and healthy'
             else
               echo '::error::No previous SHA saved — manual recovery required'
               exit 1

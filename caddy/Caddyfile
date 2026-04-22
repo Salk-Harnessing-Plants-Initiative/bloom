@@ -75,3 +75,13 @@
 		}
 	}
 }
+
+# -------------------
+# Internal Health Endpoint
+# -------------------
+# Used by Docker healthcheck only. Not exposed externally (port 2021 is
+# not published in docker-compose). Bind to :2021 on a fresh listener
+# so it doesn't collide with the public 80/443 blocks above.
+:2021 {
+	respond /caddy-health "ok" 200
+}
