@@ -35,13 +35,18 @@ async function resolveFallbackIcon(
 ): Promise<string> {
   const slug = slugify(commonName)
   if (!slug) return DEFAULT_ICON
-  const iconFile = `${slug}.svg`
-  try {
-    await fs.access(path.join(ICON_DIR, iconFile))
-    return `/species-icons/${iconFile}`
-  } catch {
-    return DEFAULT_ICON
+  // Prefer PNG (watercolor) over SVG (line-art) so the richer illustration
+  // wins when both exist for the same species.
+  for (const ext of ['png', 'svg']) {
+    const iconFile = `${slug}.${ext}`
+    try {
+      await fs.access(path.join(ICON_DIR, iconFile))
+      return `/species-icons/${iconFile}`
+    } catch {
+      // try next extension
+    }
   }
+  return DEFAULT_ICON
 }
 
 export default async function Illustration({
@@ -60,12 +65,11 @@ export default async function Illustration({
         src={objectUrl}
         width={192}
         height={192}
-        className="w-full h-full object-cover rounded-full"
+        className="w-full h-full object-contain"
       />
     )
   }
 
-  // Fallback: per-species SVG from /public/species-icons, or a shared default.
   const fallback = await resolveFallbackIcon(commonName)
   return (
     // eslint-disable-next-line @next/next/no-img-element
