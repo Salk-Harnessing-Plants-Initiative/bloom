@@ -98,3 +98,16 @@ prompts/.claude/
 
 # setup/deployment notes (local only)
 .setup/
+
+# local-only design references (prototypes, handoff docs)
+reference/
+
+# supabase CLI session cache
+supabase/.temp/
+
+# uv lockfile (not used for production, only local ingest runs)
+uv.lock
+
+# agents scratch (claude skill system)
+.agents/
+skills-lock.json
