@@ -4,74 +4,38 @@ import {
   createServerSupabaseClient,
   getUser,
 } from "@/lib/supabase/server";
-import Link from "next/link";
 
 export const metadata = {
   title: "Bloom",
   description: "Web app for Salk Harnessing Plants Initiative",
 };
 
-const navLinks = [
-  // {
-  //   name: "Accessions",
-  //   href: "/app/accessions",
-  // },
-  // {
-  //   name: "Genotypes",
-  //   href: "/app/genotypes",
-  // },
+const navSections = [
   {
-    name: "Phenotypes",
-    href: "/app/phenotypes",
-  },
-  // {
-  //   name: "Pipelines",
-  //   href: "/app/pipelines",
-  // },
-  {
-    name: "Traits",
-    href: "/app/traits",
+    heading: null,
+    items: [{ name: "Home", href: "/app" }],
   },
   {
-    name: "Genes",
-    href: "/app/genes",
-  },
-  // {
-  //   name: "Genomes",
-  //   href: "/app/jbrowse",
-  // },
-  {
-    name: "Expression",
-    href: "/app/expression",
-  },
-  // {
-  //   name: "PyGCMS",
-  //   href: "/app/pygcms",
-  // },
-  // {
-  //   name: "Greenhouse",
-  //   href: "/app/greenhouse",
-  // },
-  {
-    name: "Timeline",
-    href: "/app/timeline",
+    heading: "Data",
+    items: [
+      { name: "Phenotypes", href: "/app/phenotypes" },
+      { name: "Traits", href: "/app/traits" },
+      { name: "Genes", href: "/app/genes" },
+      { name: "Expression", href: "/app/expression" },
+    ],
   },
   {
-    name: "Translation",
-    href: "/app/translation",
+    heading: "Research",
+    items: [
+      { name: "Timeline", href: "/app/timeline" },
+      { name: "Translation", href: "/app/translation" },
+      { name: "Software", href: "/app/software" },
+    ],
   },
   {
-    name: "Software",
-    href: "/app/software",
+    heading: "Tools",
+    items: [{ name: "Bloom Assistant", href: "/chat" }],
   },
-  {
-    name: "Bloom Assistant",
-    href: "/chat",
-  },
-  // {
-  //   name: "Settings",
-  //   href: "/app/settings",
-  // },
 ];
 
 export default async function DashboardLayout({
@@ -90,35 +54,24 @@ export default async function DashboardLayout({
 
   if (!user) {
     redirect("/login");
-  } else {
-    return (
-      <main className="min-h-screen flex flex-col bg-stone-100">
-        <div className="absolute left-12 top-8 align-middle">
-          <Link href="/">
-            <img src="/logo.png" className="h-12 inline" />
-          </Link>
-        </div>
-        <div className="absolute right-12 top-8">
-          <div className="flex text-sm">
-            <span className="ml-auto">
-              <span className="flex gap-4">
-                {user.email} <span className="border-r"></span>{" "}
-                <form action={signOut}>
-                  <button className="hover:underline">Logout</button>
-                </form>
-              </span>
-            </span>
-          </div>
-        </div>
-        <div className="mt-20 flex flex-col">
-          <div className="flex flex-row">
-            <div className="ml-12 mt-6 w-40 select-none">
-              <Navigation navLinks={navLinks} />
-            </div>
-            <div className="mt-6 ml-6 flex-grow pb-8">{children}</div>
-          </div>
-        </div>
-      </main>
-    );
   }
+
+  return (
+    <main className="min-h-screen flex bg-stone-100">
+      <aside className="w-60 shrink-0 border-r border-stone-200 bg-stone-100 px-6 py-8">
+        <Navigation sections={navSections} />
+      </aside>
+
+      <div className="flex-1 flex flex-col min-w-0">
+        <header className="flex items-center justify-end gap-4 px-12 py-6 text-sm text-stone-700">
+          <span>{user.email}</span>
+          <span className="text-stone-300">·</span>
+          <form action={signOut}>
+            <button className="hover:underline">Logout</button>
+          </form>
+        </header>
+        <div className="flex-1 px-12 pb-12">{children}</div>
+      </div>
+    </main>
+  );
 }
