@@ -9,6 +9,7 @@ import { ExpressionPca3d } from "@/components/expression-pca3d";
 import { ExpressionGeneSearch } from "@/components/expression-gene-search";
 import { ExpressionColorbar } from "@/components/expression-colorbar";
 import { ExpressionClusterSidebar } from "@/components/expression-cluster-sidebar";
+import { ExpressionClusterDetailPanel } from "@/components/expression-cluster-detail-panel";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import ToggleButton from "@mui/material/ToggleButton";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
@@ -192,6 +193,21 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
               />
             </Box>
           )}
+          {(() => {
+            const clusters = meta?.clusters ?? [];
+            if (clusters.length === 0) return null;
+            const soloCount = clusters.length - hidden.size;
+            if (soloCount === 1) return null;
+            return (
+              <span
+                className="ml-auto inline-flex items-center gap-2 rounded-full border border-lime-200 bg-lime-50/70 px-3 py-1 text-xs text-lime-800"
+                role="status"
+              >
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-lime-500 shadow-[0_0_4px_rgba(132,204,22,0.8)]" />
+                Click a cluster for details
+              </span>
+            );
+          })()}
         </Box>
 
         {/* canvas */}
@@ -212,18 +228,36 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
         )}
       </Box>
 
-      {/* colorbar: only when UMAP + gene is active */}
-      <Box sx={{ width: 120, display: "flex", justifyContent: "flex-start", pt: 6 }}>
+      {/* right rail: colorbar (optional) + cluster detail panel (on solo) */}
+      <Box sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 2 }}>
         {viewMode === "umap2d" && geneName && exprRange && (
-          <ExpressionColorbar
-            geneName={geneName}
-            dataMin={exprRange.min}
-            dataMax={exprRange.max}
-            range={exprRange}
-            onRangeChange={setExprRange}
-            unitsLabel={unitsLabel}
-          />
+          <Box sx={{ width: 120 }}>
+            <ExpressionColorbar
+              geneName={geneName}
+              dataMin={exprRange.min}
+              dataMax={exprRange.max}
+              range={exprRange}
+              onRangeChange={setExprRange}
+              unitsLabel={unitsLabel}
+            />
+          </Box>
         )}
+        {(() => {
+          const clusters = meta?.clusters ?? [];
+          if (clusters.length === 0) return null;
+          const soloCount = clusters.length - hidden.size;
+          if (soloCount !== 1) return null;
+          const soloCluster = clusters.find((c) => !hidden.has(c.ordinal));
+          if (!soloCluster) return null;
+          return (
+            <ExpressionClusterDetailPanel
+              datasetId={datasetId}
+              clusterId={soloCluster.cluster_id}
+              clusterName={soloCluster.name}
+              clusterColor={soloCluster.color}
+            />
+          );
+        })()}
       </Box>
     </Box>
   );
