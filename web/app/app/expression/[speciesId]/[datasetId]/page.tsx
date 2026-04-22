@@ -6,6 +6,7 @@ import {
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
 import { ExpressionCockpit } from "@/components/expression-cockpit";
+import ExpressionDatasetBanner from "@/components/expression-dataset-banner";
 
 export default async function Dataset({
   params,
@@ -62,6 +63,8 @@ export default async function Dataset({
         <span className="text-stone-300">&nbsp;▸&nbsp;</span>
         <span className="text-stone-900">{dataset.name}</span>
       </div>
+
+      <ExpressionDatasetBanner datasetId={datasetId} speciesId={speciesId} />
 
       {dataset.people && (
         <div className="mb-6">
