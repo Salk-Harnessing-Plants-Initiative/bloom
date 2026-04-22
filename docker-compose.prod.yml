@@ -574,14 +574,21 @@ services:
       SUPABASE_PUBLIC_URL: ${STUDIO_SUPABASE_PUBLIC_URL}
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
-    # Path is /api/platform/profile — matches upstream supabase compose.
-    # /api/profile does not exist in the studio Next.js build.
+    # supabase/studio:2026.03.30-sha-12a43e5 ships Node but NOT wget or curl
+    # (verified: `docker exec <container> which wget` returns empty). Use
+    # node's built-in fetch against /api/platform/profile — matches both
+    # Supabase's upstream docker-compose.yml and bloom's own dev compose
+    # (which reports healthy for 3+ days with this exact probe).
+    # Ref: https://github.com/supabase/supabase/blob/master/docker/docker-compose.yml
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/platform/profile"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch('http://studio:3000/api/platform/profile').then((r) => {if (r.status !== 200) throw new Error(r.status)})"
+      interval: 5s
+      timeout: 10s
+      retries: 3
 
   # -------------------
   # ImgProxy
