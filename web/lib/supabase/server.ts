@@ -80,10 +80,12 @@ export async function getUser() {
       error,
     } = await supabase.auth.getUser()
     
-    if (error) {
+    // "Auth session missing!" is the expected state for unauthenticated
+    // visitors on public routes — not an error worth logging.
+    if (error && error.name !== 'AuthSessionMissingError') {
       console.error('[getUser] Error:', error.message)
     }
-    
+
     return user
   } catch (error) {
     return null
