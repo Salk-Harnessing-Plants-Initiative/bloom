@@ -127,8 +127,10 @@ export function ExpressionClusterSidebar({
                 >
                   <span
                     className={[
-                      "block h-2 w-2 rounded-full transition-colors",
-                      visible ? "bg-stone-500" : "bg-transparent border border-stone-300",
+                      "block h-2 w-2 rounded-full transition-all",
+                      visible
+                        ? "bg-lime-500 shadow-[0_0_6px_rgba(132,204,22,0.75)]"
+                        : "bg-transparent border border-stone-300",
                     ].join(" ")}
                   />
                 </button>
