@@ -4,6 +4,7 @@ Supports multiple LLM providers: OpenAI, Local (vLLM)
 """
 import os
 from typing import Optional, Literal
+from urllib.parse import urlsplit
 
 import httpx
 from langgraph.prebuilt import create_react_agent
@@ -15,6 +16,7 @@ from psycopg_pool import AsyncConnectionPool
 import logging
 from rich.logging import RichHandler
 from rich.traceback import install
+from db_url import compose_postgres_url
 from tools import all_tools, generic_tools, scrna_tools, cyl_tools, context_tools
 
 install()
@@ -29,32 +31,11 @@ logging.basicConfig(
 #################################################### Agent Setup ####################################################
 
 # Postgres connection URL for persistent conversation memory.
-# Built from individual POSTGRES_* env vars by default (they come from
-# deploy-time .env.<env>.defaults + GitHub Secrets per the deploy-env-config
-# spec). LANGCHAIN_POSTGRES_URL can still be set as an override for local
-# dev against an arbitrary database.
-#
-# No fallback values: a missing POSTGRES_HOST would otherwise default to
-# "localhost" (the agent container itself) and produce a confusing
-# "connection refused" instead of the real "env var not set" error.
-_pg_url_override = os.getenv("LANGCHAIN_POSTGRES_URL")
-if _pg_url_override:
-    POSTGRES_URL = _pg_url_override
-else:
-    _required = ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB")
-    _missing = [k for k in _required if not os.getenv(k)]
-    if _missing:
-        raise RuntimeError(
-            f"Database configuration incomplete: missing env vars {_missing}. "
-            "Set LANGCHAIN_POSTGRES_URL (local dev) or all of POSTGRES_USER/PASSWORD/HOST/PORT/DB (prod)."
-        )
-    POSTGRES_URL = "postgresql://{user}:{password}@{host}:{port}/{db}".format(
-        user=os.environ["POSTGRES_USER"],
-        password=os.environ["POSTGRES_PASSWORD"],
-        host=os.environ["POSTGRES_HOST"],
-        port=os.environ["POSTGRES_PORT"],
-        db=os.environ["POSTGRES_DB"],
-    )
+# Built from individual POSTGRES_* env vars — same code path in dev, CI,
+# and prod so a bug in the composition never hides in only one environment.
+# Password is percent-encoded inside compose_postgres_url so characters
+# with URL-reserved meanings (@, :, /, #, %) can't corrupt the URL.
+POSTGRES_URL = compose_postgres_url()
 
 
 async def setup_checkpointer() -> AsyncPostgresSaver:
@@ -85,11 +66,10 @@ async def setup_checkpointer() -> AsyncPostgresSaver:
 
     checkpointer = AsyncPostgresSaver(pool)
     logger = logging.getLogger(__name__)
-    # lgtm[py/clear-text-logging-sensitive-data] — .split('@')[-1] strips the
-    # user:password prefix of a postgresql:// URL; only host:port/db is logged.
-    # CodeQL's taint analysis can't verify the sanitization. Proper fix with
-    # urllib.parse tracked as a follow-up issue.
-    logger.info(f"PostgresSaver initialized with pool (min=2, max=10) → {POSTGRES_URL.split('@')[-1]}")
+    # urlsplit().hostname returns only the hostname — no user, no password,
+    # no port. CodeQL accepts this as a proper sanitization.
+    host = urlsplit(POSTGRES_URL).hostname or "<unknown>"
+    logger.info(f"PostgresSaver initialized with pool (min=2, max=10) → host={host}")
     return checkpointer
 
 
