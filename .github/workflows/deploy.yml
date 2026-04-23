@@ -39,9 +39,21 @@ jobs:
           echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+      - name: Snapshot existing .env.prod for rollback
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            if [ -f .env.prod ]; then
+              cp -p .env.prod .env.prod.previous
+              echo 'Saved .env.prod as .env.prod.previous (mode preserved)'
+            else
+              echo 'No existing .env.prod — first deploy, skipping snapshot'
+            fi
+          "
+
       - name: Generate .env.prod on server
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "cat > ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod << 'ENVEOF'
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "umask 077 && cat > ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod << 'ENVEOF'
           POSTGRES_DB=${{ secrets.PROD_POSTGRES_DB }}
           POSTGRES_USER=${{ secrets.PROD_POSTGRES_USER }}
           POSTGRES_PASSWORD=${{ secrets.PROD_POSTGRES_PASSWORD }}
@@ -271,6 +283,12 @@ jobs:
             if [ -f .previous_sha ]; then
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
+              if [ -f .env.prod.previous ]; then
+                cp -p .env.prod.previous .env.prod
+                echo 'Restored previous .env.prod (mode preserved)'
+              else
+                echo 'WARNING: no .env.prod.previous — rolling back with current .env.prod'
+              fi
               git reset --hard \$PREV || { echo \"::error::Rollback failed: could not reset to \$PREV — SHA may be unreachable\"; exit 1; }
               # Rollback matches the forward deploy's strictness: use --wait so
               # we don't silently 'succeed' while the rolled-back stack is also
@@ -313,9 +331,21 @@ jobs:
           echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+      - name: Snapshot existing .env.staging for rollback
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            if [ -f .env.staging ]; then
+              cp -p .env.staging .env.staging.previous
+              echo 'Saved .env.staging as .env.staging.previous (mode preserved)'
+            else
+              echo 'No existing .env.staging — first deploy, skipping snapshot'
+            fi
+          "
+
       - name: Generate .env.staging on server
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "cat > ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging << 'ENVEOF'
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "umask 077 && cat > ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging << 'ENVEOF'
           POSTGRES_DB=${{ secrets.STAGING_POSTGRES_DB }}
           POSTGRES_USER=${{ secrets.STAGING_POSTGRES_USER }}
           POSTGRES_PASSWORD=${{ secrets.STAGING_POSTGRES_PASSWORD }}
@@ -527,6 +557,12 @@ jobs:
             if [ -f .previous_sha ]; then
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
+              if [ -f .env.staging.previous ]; then
+                cp -p .env.staging.previous .env.staging
+                echo 'Restored previous .env.staging (mode preserved)'
+              else
+                echo 'WARNING: no .env.staging.previous — rolling back with current .env.staging'
+              fi
               git reset --hard \$PREV || { echo \"::error::Rollback failed: could not reset to \$PREV — SHA may be unreachable\"; exit 1; }
               # Symmetric --wait with forward deploy — see prod rollback for
               # rationale. Shorter 300s timeout since rollback reuses built
