@@ -96,12 +96,35 @@ jobs:
 
       - name: Validate .env.prod has all required keys
         run: |
+          set -euo pipefail
           f="${{ secrets.PROD_DEPLOY_PATH }}/.env.prod"
-          required="POSTGRES_PASSWORD JWT_SECRET ANON_KEY SERVICE_ROLE_KEY DB_ENC_KEY MINIO_ROOT_USER MINIO_ROOT_PASSWORD DASHBOARD_USERNAME DASHBOARD_PASSWORD BLOOMMCP_API_KEY VAULT_ENC_KEY SUPAVISOR_ENC_KEY SECRET_KEY_BASE OPENAI_API_KEY DOMAIN_MAIN POSTGRES_USER POSTGRES_HOST POSTGRES_DB MINIO_DATA_PATH"
+          compose="${{ github.workspace }}/docker-compose.prod.yml"
+          # Derive the required-keys list from every ${VAR} reference in the compose
+          # file — the authoritative source of what the app actually needs at runtime.
+          # Hardcoded lists drift; deriving keeps the check automatically in sync.
+          # Filter: COMPOSE_PROJECT_NAME is used by docker-compose itself (not an
+          # app env var); NEXT_PUBLIC_SUPABASE_COOKIE_NAME is derived from
+          # SUPABASE_COOKIE_NAME in compose, not set directly in .env.prod.
+          required=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*' "$compose" \
+            | sed 's/^\${//' \
+            | sort -u \
+            | grep -v -E '^(COMPOSE_PROJECT_NAME|NEXT_PUBLIC_SUPABASE_COOKIE_NAME)$')
+          missing=()
           for k in $required; do
-            grep -qE "^${k}=.+" "$f" || { echo "::error::Missing or empty key in $f: $k"; exit 1; }
+            # The [^[:space:]#] anchor rejects empty values, whitespace-only
+            # values, and values that start with # (common paste-from-password-manager
+            # or forgotten-placeholder accidents that silently break auth in prod).
+            if ! grep -qE "^${k}=[^[:space:]#].*" "$f"; then
+              missing+=("$k")
+            fi
           done
-          echo "✓ .env.prod validated ($(wc -l < "$f") lines)"
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing or empty required keys in $f:"
+            for k in "${missing[@]}"; do echo "  - $k"; done
+            exit 1
+          fi
+          count=$(echo "$required" | wc -w | tr -d ' ')
+          echo "✓ .env.prod validated ($(wc -l < "$f") lines, $count keys checked)"
 
       # Catches the case where the runner user (who writes .env.prod at mode 600)
       # and DEPLOY_USER (who reads it when docker compose runs) diverge. Without
@@ -256,12 +279,29 @@ jobs:
 
       - name: Validate .env.staging has all required keys
         run: |
+          set -euo pipefail
           f="${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
-          required="POSTGRES_PASSWORD JWT_SECRET ANON_KEY SERVICE_ROLE_KEY DB_ENC_KEY MINIO_ROOT_USER MINIO_ROOT_PASSWORD DASHBOARD_USERNAME DASHBOARD_PASSWORD BLOOMMCP_API_KEY VAULT_ENC_KEY SUPAVISOR_ENC_KEY SECRET_KEY_BASE OPENAI_API_KEY DOMAIN_MAIN POSTGRES_USER POSTGRES_HOST POSTGRES_DB MINIO_DATA_PATH"
+          compose="${{ github.workspace }}/docker-compose.prod.yml"
+          # See deploy-production's equivalent step for rationale. Same compose
+          # file is the source of truth for both environments — the env-file
+          # differs only in values, never in the set of required keys.
+          required=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*' "$compose" \
+            | sed 's/^\${//' \
+            | sort -u \
+            | grep -v -E '^(COMPOSE_PROJECT_NAME|NEXT_PUBLIC_SUPABASE_COOKIE_NAME)$')
+          missing=()
           for k in $required; do
-            grep -qE "^${k}=.+" "$f" || { echo "::error::Missing or empty key in $f: $k"; exit 1; }
+            if ! grep -qE "^${k}=[^[:space:]#].*" "$f"; then
+              missing+=("$k")
+            fi
           done
-          echo "✓ .env.staging validated ($(wc -l < "$f") lines)"
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing or empty required keys in $f:"
+            for k in "${missing[@]}"; do echo "  - $k"; done
+            exit 1
+          fi
+          count=$(echo "$required" | wc -w | tr -d ' ')
+          echo "✓ .env.staging validated ($(wc -l < "$f") lines, $count keys checked)"
 
       # See deploy-production's equivalent step for rationale.
       - name: Verify DEPLOY_USER can read .env.staging
