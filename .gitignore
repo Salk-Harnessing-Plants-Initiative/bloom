@@ -92,6 +92,7 @@ scripts/compute_de_genes.py
 scripts/compute_de_local.py
 scripts/compute_de.py
 scripts/generate_KEYS
+scripts/dev/
 *.bak
 
 prompts/.claude/
