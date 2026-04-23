@@ -95,36 +95,12 @@ jobs:
           SECRETS
 
       - name: Validate .env.prod has all required keys
+        # Logic lives in scripts/validate_env.sh so workflow and unit tests
+        # share one source of truth and can never drift.
         run: |
-          set -euo pipefail
-          f="${{ secrets.PROD_DEPLOY_PATH }}/.env.prod"
-          compose="${{ github.workspace }}/docker-compose.prod.yml"
-          # Derive the required-keys list from every ${VAR} reference in the compose
-          # file — the authoritative source of what the app actually needs at runtime.
-          # Hardcoded lists drift; deriving keeps the check automatically in sync.
-          # Filter: COMPOSE_PROJECT_NAME is used by docker-compose itself (not an
-          # app env var); NEXT_PUBLIC_SUPABASE_COOKIE_NAME is derived from
-          # SUPABASE_COOKIE_NAME in compose, not set directly in .env.prod.
-          required=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*' "$compose" \
-            | sed 's/^\${//' \
-            | sort -u \
-            | grep -v -E '^(COMPOSE_PROJECT_NAME|NEXT_PUBLIC_SUPABASE_COOKIE_NAME)$')
-          missing=()
-          for k in $required; do
-            # The [^[:space:]#] anchor rejects empty values, whitespace-only
-            # values, and values that start with # (common paste-from-password-manager
-            # or forgotten-placeholder accidents that silently break auth in prod).
-            if ! grep -qE "^${k}=[^[:space:]#].*" "$f"; then
-              missing+=("$k")
-            fi
-          done
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Missing or empty required keys in $f:"
-            for k in "${missing[@]}"; do echo "  - $k"; done
-            exit 1
-          fi
-          count=$(echo "$required" | wc -w | tr -d ' ')
-          echo "✓ .env.prod validated ($(wc -l < "$f") lines, $count keys checked)"
+          bash "${{ github.workspace }}/scripts/validate_env.sh" \
+            "${{ secrets.PROD_DEPLOY_PATH }}/.env.prod" \
+            "${{ github.workspace }}/docker-compose.prod.yml"
 
       # Catches the case where the runner user (who writes .env.prod at mode 600)
       # and DEPLOY_USER (who reads it when docker compose runs) diverge. Without
@@ -278,30 +254,12 @@ jobs:
           SECRETS
 
       - name: Validate .env.staging has all required keys
+        # Same script as the prod validator — the compose file is the
+        # source of truth for both environments.
         run: |
-          set -euo pipefail
-          f="${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
-          compose="${{ github.workspace }}/docker-compose.prod.yml"
-          # See deploy-production's equivalent step for rationale. Same compose
-          # file is the source of truth for both environments — the env-file
-          # differs only in values, never in the set of required keys.
-          required=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*' "$compose" \
-            | sed 's/^\${//' \
-            | sort -u \
-            | grep -v -E '^(COMPOSE_PROJECT_NAME|NEXT_PUBLIC_SUPABASE_COOKIE_NAME)$')
-          missing=()
-          for k in $required; do
-            if ! grep -qE "^${k}=[^[:space:]#].*" "$f"; then
-              missing+=("$k")
-            fi
-          done
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Missing or empty required keys in $f:"
-            for k in "${missing[@]}"; do echo "  - $k"; done
-            exit 1
-          fi
-          count=$(echo "$required" | wc -w | tr -d ' ')
-          echo "✓ .env.staging validated ($(wc -l < "$f") lines, $count keys checked)"
+          bash "${{ github.workspace }}/scripts/validate_env.sh" \
+            "${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging" \
+            "${{ github.workspace }}/docker-compose.prod.yml"
 
       # See deploy-production's equivalent step for rationale.
       - name: Verify DEPLOY_USER can read .env.staging

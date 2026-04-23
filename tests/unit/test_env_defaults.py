@@ -193,3 +193,71 @@ def test_all_compose_vars_are_sourced():
     assert not unresolved, (
         f"docker-compose.prod.yml references vars with no source: {sorted(unresolved)}"
     )
+
+
+# --- Negative-path tests for scripts/validate_env.sh -----------------------
+#
+# These tests invoke the same validator script that deploy.yml calls, so the
+# workflow and tests can never drift. The script is scripts/validate_env.sh.
+
+VALIDATOR_SCRIPT = REPO_ROOT / "scripts" / "validate_env.sh"
+
+# Minimal compose file that references just three vars, so scratch env
+# files can be small enough to read in a glance.
+_MINI_COMPOSE = """\
+services:
+  app:
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SITE_URL: ${SITE_URL}
+"""
+
+
+def _run_validator(tmp_path: Path, env_content: str) -> subprocess.CompletedProcess:
+    env_file = tmp_path / ".env.test"
+    env_file.write_text(env_content)
+    compose_file = tmp_path / "docker-compose.test.yml"
+    compose_file.write_text(_MINI_COMPOSE)
+    return subprocess.run(
+        ["bash", str(VALIDATOR_SCRIPT), str(env_file), str(compose_file)],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_validator_rejects_missing_required_key(tmp_path):
+    """Validator must fail when a key referenced by compose is absent from
+    the env file. Guards against the old hardcoded-19-keys drift."""
+    # POSTGRES_PASSWORD intentionally missing
+    content = "POSTGRES_USER=admin\nSITE_URL=https://example.com\n"
+    result = _run_validator(tmp_path, content)
+    assert result.returncode == 1, f"expected exit 1, got {result.returncode}: {result.stderr}"
+    assert "POSTGRES_PASSWORD" in result.stderr
+
+
+def test_validator_rejects_whitespace_only_value(tmp_path):
+    """Validator must reject KEY= with whitespace-only value. The old regex
+    `=.+` accepted these silently (trailing-space paste accidents)."""
+    content = (
+        "POSTGRES_USER=admin\n"
+        "POSTGRES_PASSWORD= \n"  # single trailing space — passes old regex, fails new
+        "SITE_URL=https://example.com\n"
+    )
+    result = _run_validator(tmp_path, content)
+    assert result.returncode == 1, f"expected exit 1, got {result.returncode}: {result.stderr}"
+    assert "POSTGRES_PASSWORD" in result.stderr
+
+
+def test_validator_rejects_comment_started_value(tmp_path):
+    """Validator must reject KEY=#value. These look like forgotten
+    placeholders (KEY=#paste-here-later) — the old regex treated them as
+    legitimate values."""
+    content = (
+        "POSTGRES_USER=admin\n"
+        "POSTGRES_PASSWORD=#todo\n"
+        "SITE_URL=https://example.com\n"
+    )
+    result = _run_validator(tmp_path, content)
+    assert result.returncode == 1, f"expected exit 1, got {result.returncode}: {result.stderr}"
+    assert "POSTGRES_PASSWORD" in result.stderr
