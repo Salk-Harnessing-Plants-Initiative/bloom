@@ -69,12 +69,32 @@ jobs:
 
       - name: Append secrets to .env.prod
         run: |
+          set -euo pipefail
           umask 077
-          cat >> "${{ secrets.PROD_DEPLOY_PATH }}/.env.prod" << 'SECRETS' || {
-            echo "::error::Failed writing secrets to .env.prod; removing partial file"
-            rm -f "${{ secrets.PROD_DEPLOY_PATH }}/.env.prod"
+          f="${{ secrets.PROD_DEPLOY_PATH }}/.env.prod"
+          prev="${{ secrets.PROD_DEPLOY_PATH }}/.env.prod.previous"
+
+          # If the append is interrupted mid-write (workflow cancel, SIGTERM
+          # from timeout-minutes, SSH drop, any ERR), restore the previous
+          # good .env.prod from the snapshot so the next read sees a whole
+          # file, never a half-written one.
+          _restore_on_interrupt() {
+            if [ -f "$prev" ]; then
+              echo "::warning::Interrupt during secrets append — restoring .env.prod from snapshot" >&2
+              cp -p "$prev" "$f"
+            else
+              echo "::warning::Interrupt during secrets append — no snapshot to restore; removing partial file" >&2
+              rm -f "$f"
+            fi
             exit 1
           }
+          trap _restore_on_interrupt INT TERM HUP ERR
+
+          # The `# _EOF_MARKER_` sentinel is the last line of the heredoc.
+          # The validator step rejects any env file whose last line isn't
+          # the marker — guarantees truncated files never reach
+          # `docker compose up`.
+          cat >> "$f" << 'SECRETS'
           POSTGRES_PASSWORD=${{ secrets.PROD_POSTGRES_PASSWORD }}
           JWT_SECRET=${{ secrets.PROD_JWT_SECRET }}
           ANON_KEY=${{ secrets.PROD_ANON_KEY }}
@@ -92,7 +112,12 @@ jobs:
           OPENAI_API_KEY=${{ secrets.PROD_OPENAI_API_KEY }}
           LANGCHAIN_API_KEY=${{ secrets.PROD_LANGCHAIN_API_KEY }}
           MINIO_DATA_PATH=${{ secrets.PROD_MINIO_DATA_PATH }}
+          # _EOF_MARKER_
           SECRETS
+
+          # Heredoc completed without interrupt — clear the trap so normal
+          # deploy flow continues (snapshot stays for rollback use).
+          trap - INT TERM HUP ERR
 
       - name: Validate .env.prod has all required keys
         # Logic lives in scripts/validate_env.sh so workflow and unit tests
@@ -227,13 +252,27 @@ jobs:
             "${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
 
       - name: Append secrets to .env.staging
+        # Same trap + sentinel-marker pattern as the prod step; see that
+        # step for the full rationale.
         run: |
+          set -euo pipefail
           umask 077
-          cat >> "${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging" << 'SECRETS' || {
-            echo "::error::Failed writing secrets to .env.staging; removing partial file"
-            rm -f "${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
+          f="${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
+          prev="${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging.previous"
+
+          _restore_on_interrupt() {
+            if [ -f "$prev" ]; then
+              echo "::warning::Interrupt during secrets append — restoring .env.staging from snapshot" >&2
+              cp -p "$prev" "$f"
+            else
+              echo "::warning::Interrupt during secrets append — no snapshot to restore; removing partial file" >&2
+              rm -f "$f"
+            fi
             exit 1
           }
+          trap _restore_on_interrupt INT TERM HUP ERR
+
+          cat >> "$f" << 'SECRETS'
           POSTGRES_PASSWORD=${{ secrets.STAGING_POSTGRES_PASSWORD }}
           JWT_SECRET=${{ secrets.STAGING_JWT_SECRET }}
           ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
@@ -251,7 +290,10 @@ jobs:
           OPENAI_API_KEY=${{ secrets.STAGING_OPENAI_API_KEY }}
           LANGCHAIN_API_KEY=${{ secrets.STAGING_LANGCHAIN_API_KEY }}
           MINIO_DATA_PATH=${{ secrets.STAGING_MINIO_DATA_PATH }}
+          # _EOF_MARKER_
           SECRETS
+
+          trap - INT TERM HUP ERR
 
       - name: Validate .env.staging has all required keys
         # Same script as the prod validator — the compose file is the

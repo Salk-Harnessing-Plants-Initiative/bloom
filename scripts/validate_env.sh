@@ -53,6 +53,18 @@ if [ ! -r "$compose_file" ]; then
   exit 2
 fi
 
+# Reject truncated files before checking individual keys.
+# The deploy workflow's "Append secrets" step writes `# _EOF_MARKER_` as
+# the last line of its heredoc. If the marker is missing, the write was
+# interrupted (workflow cancel, timeout, SSH drop, process killed) and
+# the file is partial — docker compose would otherwise happily read it
+# with missing secret values.
+if ! tail -n1 "$env_file" | grep -q '^# _EOF_MARKER_$'; then
+  echo "::error::Partial env file detected (missing EOF marker): $env_file" >&2
+  echo "  The append step was interrupted mid-write. Re-run the deploy." >&2
+  exit 1
+fi
+
 # Derive required-keys list from every ${VAR} reference in compose.
 required=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*' "$compose_file" \
   | sed 's/^\${//' \

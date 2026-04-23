@@ -214,8 +214,18 @@ services:
 """
 
 
-def _run_validator(tmp_path: Path, env_content: str) -> subprocess.CompletedProcess:
+def _run_validator(
+    tmp_path: Path,
+    env_content: str,
+    with_eof_marker: bool = True,
+) -> subprocess.CompletedProcess:
     env_file = tmp_path / ".env.test"
+    if with_eof_marker:
+        # Mirror what the deploy's heredoc does — the marker is the
+        # last line and tells the validator the file is not truncated.
+        if not env_content.endswith("\n"):
+            env_content += "\n"
+        env_content += "# _EOF_MARKER_\n"
     env_file.write_text(env_content)
     compose_file = tmp_path / "docker-compose.test.yml"
     compose_file.write_text(_MINI_COMPOSE)
@@ -261,3 +271,21 @@ def test_validator_rejects_comment_started_value(tmp_path):
     result = _run_validator(tmp_path, content)
     assert result.returncode == 1, f"expected exit 1, got {result.returncode}: {result.stderr}"
     assert "POSTGRES_PASSWORD" in result.stderr
+
+
+def test_validator_rejects_missing_eof_marker(tmp_path):
+    """Validator must reject a file whose last line is not # _EOF_MARKER_.
+    A missing marker indicates the heredoc write was interrupted
+    (workflow cancel, SSH drop, SIGTERM from timeout-minutes) and the
+    file is truncated — the rest of the validator would pass but
+    containers would start with missing secrets."""
+    # All required keys are present and well-formed — only the marker is
+    # missing. with_eof_marker=False simulates a truncated write.
+    content = (
+        "POSTGRES_USER=admin\n"
+        "POSTGRES_PASSWORD=realpassword\n"
+        "SITE_URL=https://example.com\n"
+    )
+    result = _run_validator(tmp_path, content, with_eof_marker=False)
+    assert result.returncode == 1, f"expected exit 1, got {result.returncode}: {result.stderr}"
+    assert "EOF marker" in result.stderr or "Partial" in result.stderr
