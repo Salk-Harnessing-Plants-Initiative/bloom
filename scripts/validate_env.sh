@@ -27,6 +27,12 @@
 #                                        an env var the app reads
 #   NEXT_PUBLIC_SUPABASE_COOKIE_NAME  — derived from SUPABASE_COOKIE_NAME in
 #                                        compose, not set directly in .env
+#   CADDY_HTTP_PORT                   — shipped empty in .env.*.defaults by
+#                                        design; signals "auto-HTTPS only, no
+#                                        plain-HTTP bind". Compose expands
+#                                        ${CADDY_HTTP_PORT} to "" either way,
+#                                        and the Caddyfile branches on the
+#                                        empty value
 #
 # Value regex: ^KEY=[^[:space:]#].*
 #   Rejects: KEY=  |  KEY=<whitespace>  |  KEY=#placeholder
@@ -69,7 +75,7 @@ fi
 required=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*' "$compose_file" \
   | sed 's/^\${//' \
   | sort -u \
-  | grep -v -E '^(COMPOSE_PROJECT_NAME|NEXT_PUBLIC_SUPABASE_COOKIE_NAME)$')
+  | grep -v -E '^(COMPOSE_PROJECT_NAME|NEXT_PUBLIC_SUPABASE_COOKIE_NAME|CADDY_HTTP_PORT)$')
 
 missing=()
 for k in $required; do

@@ -289,3 +289,58 @@ def test_validator_rejects_missing_eof_marker(tmp_path):
     result = _run_validator(tmp_path, content, with_eof_marker=False)
     assert result.returncode == 1, f"expected exit 1, got {result.returncode}: {result.stderr}"
     assert "EOF marker" in result.stderr or "Partial" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "defaults_path,env_label",
+    [(PROD_DEFAULTS, "prod"), (STAGING_DEFAULTS, "staging")],
+)
+def test_validator_accepts_real_defaults_plus_fake_secrets(
+    tmp_path, defaults_path: Path, env_label: str
+):
+    """End-to-end: run the real committed defaults file through the real
+    validator against the real compose file.
+
+    The existing negative-path tests use a mini compose fixture — they can't
+    catch the case where a committed default ships an empty value that the
+    validator then rejects (the original CADDY_HTTP_PORT= regression). This
+    test assembles the file the way deploy.yml does — defaults installed,
+    plausible secrets appended, EOF marker — and asserts the validator
+    accepts it.
+    """
+    compose_text = COMPOSE_FILE.read_text()
+    referenced = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*)\}", compose_text))
+    FILTERED = {"COMPOSE_PROJECT_NAME", "NEXT_PUBLIC_SUPABASE_COOKIE_NAME", "CADDY_HTTP_PORT"}
+    required = referenced - FILTERED
+
+    defaults_text = defaults_path.read_text()
+    defaults_keys = {
+        line.split("=", 1)[0]
+        for line in defaults_text.splitlines()
+        if line and not line.startswith("#") and "=" in line
+    }
+
+    appended = "\n".join(
+        f"{k}=fake-{k.lower()}" for k in sorted(required - defaults_keys)
+    )
+    content = defaults_text.rstrip("\n") + "\n" + appended + "\n"
+    result = _run_validator_real_compose(tmp_path, content)
+    assert result.returncode == 0, (
+        f"validator rejected a file assembled from real {env_label} defaults"
+        f" + fake secrets.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+def _run_validator_real_compose(tmp_path: Path, env_content: str) -> subprocess.CompletedProcess:
+    """Variant of _run_validator that uses the REAL docker-compose.prod.yml
+    instead of a mini fixture. Always appends the EOF marker."""
+    env_file = tmp_path / ".env.test"
+    if not env_content.endswith("\n"):
+        env_content += "\n"
+    env_content += "# _EOF_MARKER_\n"
+    env_file.write_text(env_content)
+    return subprocess.run(
+        ["bash", str(VALIDATOR_SCRIPT), str(env_file), str(COMPOSE_FILE)],
+        capture_output=True,
+        text=True,
+    )
