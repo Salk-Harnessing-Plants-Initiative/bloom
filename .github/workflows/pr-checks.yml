@@ -2,7 +2,13 @@ name: PR Checks
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, staging]
+
+# Minimum required across jobs. Read-only by default; individual jobs that
+# need to post sticky PR comments (Trivy reports) rely on pull-requests: write.
+permissions:
+  contents: read
+  pull-requests: write
 
 env:
   # Supabase CLI version — matched to what's installed on the Salk deploy
@@ -56,15 +62,11 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
           NEXT_PUBLIC_SUPABASE_COOKIE_NAME: sb-localhost-auth-token
 
-  # Ensures prod and staging env blocks in deploy.yml stay in sync.
-  # Validates LHS parity, RHS prefix correctness, RHS suffix parity, per-LHS
-  # secret-ref consistency, duplicate heredoc/LHS detection, and composite
-  # multi-ref lines. See the authoritative spec at
-  # openspec/changes/update-env-parity-check/specs/deploy-env-parity/spec.md
-  #
-  # Unit tests for scripts/verify_env_parity.py run in the `python-audit` job
-  # alongside the rest of tests/unit/ (pin-python-deps convention) — do NOT
-  # duplicate the pytest invocation here.
+  # Ensures prod and staging secret-append blocks in deploy.yml stay in sync.
+  # Non-sensitive config lives in .env.{prod,staging}.defaults and is verified
+  # by validate-env-defaults below. Implementation: scripts/verify_env_parity.py.
+  # Unit tests for that script run in the `python-audit` job alongside the
+  # rest of tests/unit/ — do NOT duplicate the pytest invocation here.
   verify-env-parity:
     name: Verify prod/staging env parity
     runs-on: ubuntu-latest
@@ -80,6 +82,26 @@ jobs:
 
       - name: Verify prod/staging env parity
         run: uv run --python 3.11 python scripts/verify_env_parity.py .github/workflows/deploy.yml
+
+  # Guards the Committed Defaults contract: no secrets leak into the defaults
+  # files, prod/staging key sets are identical, disambiguating values differ,
+  # and every ${VAR} in docker-compose.prod.yml has a source.
+  validate-env-defaults:
+    name: Validate committed env defaults
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run env-defaults unit tests
+        run: |
+          pip install uv
+          uv run --with pytest pytest tests/unit/test_env_defaults.py -v --tb=short
 
   # Scans Python dependencies for known CVEs via lockfile export
   python-audit:

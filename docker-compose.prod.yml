@@ -127,7 +127,9 @@ services:
       BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
       BLOOM_PLOTS_DIR: ${BLOOM_PLOTS_DIR}
       BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
-      LANGCHAIN_POSTGRES_URL: ${LANGCHAIN_POSTGRES_URL}
+      # LANGCHAIN_POSTGRES_URL is derived inside the container from
+      # POSTGRES_USER/PASSWORD/HOST/PORT/DB (see langchain/agent.py). Not
+      # passed here to avoid a composition that spans the defaults/secrets split.
       JWT_SECRET: ${JWT_SECRET}
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}

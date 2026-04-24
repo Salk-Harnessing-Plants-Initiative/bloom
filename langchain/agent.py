@@ -15,6 +15,7 @@ from psycopg_pool import AsyncConnectionPool
 import logging
 from rich.logging import RichHandler
 from rich.traceback import install
+from db_url import compose_postgres_url
 from tools import all_tools, generic_tools, scrna_tools, cyl_tools, context_tools
 
 install()
@@ -29,23 +30,11 @@ logging.basicConfig(
 #################################################### Agent Setup ####################################################
 
 # Postgres connection URL for persistent conversation memory.
-# Use LANGCHAIN_POSTGRES_URL directly, or build from individual POSTGRES_* env vars.
-_pg_url_override = os.getenv("LANGCHAIN_POSTGRES_URL")
-if _pg_url_override:
-    POSTGRES_URL = _pg_url_override
-else:
-    _pg_password = os.getenv("POSTGRES_PASSWORD")
-    if not _pg_password:
-        raise RuntimeError(
-            "Database configuration required: set LANGCHAIN_POSTGRES_URL or POSTGRES_PASSWORD"
-        )
-    POSTGRES_URL = "postgresql://{user}:{password}@{host}:{port}/{db}".format(
-        user=os.getenv("POSTGRES_USER", "postgres"),
-        password=_pg_password,
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=os.getenv("POSTGRES_PORT", "5432"),
-        db=os.getenv("POSTGRES_DB", "postgres"),
-    )
+# Built from individual POSTGRES_* env vars — same code path in dev, CI,
+# and prod so a bug in the composition never hides in only one environment.
+# Password is percent-encoded inside compose_postgres_url so characters
+# with URL-reserved meanings (@, :, /, #, %) can't corrupt the URL.
+POSTGRES_URL = compose_postgres_url()
 
 
 async def setup_checkpointer() -> AsyncPostgresSaver:
@@ -76,7 +65,12 @@ async def setup_checkpointer() -> AsyncPostgresSaver:
 
     checkpointer = AsyncPostgresSaver(pool)
     logger = logging.getLogger(__name__)
-    logger.info(f"PostgresSaver initialized with pool (min=2, max=10) → {POSTGRES_URL.split('@')[-1]}")
+    # Read POSTGRES_HOST directly from the environment for logging. Deriving
+    # the host from POSTGRES_URL would pass through a value that carries the
+    # password upstream, and CodeQL's taint tracker doesn't recognize
+    # urlsplit().hostname as a sanitizer for py/clear-text-logging-sensitive-data.
+    host = os.environ.get("POSTGRES_HOST", "<unknown>")
+    logger.info(f"PostgresSaver initialized with pool (min=2, max=10) → host={host}")
     return checkpointer
 
 
