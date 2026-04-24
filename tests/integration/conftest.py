@@ -84,3 +84,47 @@ def api_request(path: str, api_key: str = None, method: str = "GET", data: dict 
 def api():
     """Fixture that returns the api_request helper."""
     return api_request
+
+
+# -----------------------------------------------------------------------------
+# Database fixtures — connect directly to Postgres via the host-exposed port
+# (127.0.0.1:${POSTGRES_HOST_PORT}) for assertions that need SQL, not just HTTP.
+# Used by test_migrations.py.
+# -----------------------------------------------------------------------------
+
+POSTGRES_USER = os.environ.get("POSTGRES_USER", _env.get("POSTGRES_USER", "supabase_admin"))
+POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", _env.get("POSTGRES_PASSWORD", ""))
+POSTGRES_DB = os.environ.get("POSTGRES_DB", _env.get("POSTGRES_DB", "postgres"))
+POSTGRES_HOST_PORT = os.environ.get("POSTGRES_HOST_PORT", _env.get("POSTGRES_HOST_PORT", "5432"))
+
+
+@pytest.fixture
+def pg_conn():
+    """
+    Connect to Postgres via the host-exposed port. Requires `psycopg[binary]`.
+
+    If `POSTGRES_PASSWORD` is set in the environment we treat a DB as
+    expected-available and FAIL on missing psycopg — a silent skip there
+    masks the whole point of the migration-runner integration tests. If
+    no password is configured (local dev without a compose stack) we skip.
+    """
+    try:
+        import psycopg  # type: ignore
+    except ImportError:
+        if POSTGRES_PASSWORD:
+            pytest.fail(
+                "psycopg not installed in a DB-configured environment. "
+                "Install with `uv pip install 'psycopg[binary]'` or add "
+                "`--with 'psycopg[binary]'` to the pytest invocation."
+            )
+        pytest.skip("psycopg not installed and no POSTGRES_PASSWORD set — local-dev skip")
+
+    conninfo = (
+        f"host=127.0.0.1 port={POSTGRES_HOST_PORT} "
+        f"dbname={POSTGRES_DB} user={POSTGRES_USER} password={POSTGRES_PASSWORD}"
+    )
+    conn = psycopg.connect(conninfo)
+    try:
+        yield conn
+    finally:
+        conn.close()

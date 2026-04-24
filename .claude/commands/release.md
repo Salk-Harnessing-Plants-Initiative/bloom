@@ -276,9 +276,8 @@ EOF
 # Wait for review and CI checks
 gh pr checks --watch
 
-# After approval, merge
-echo "Request review from maintainers, then merge when approved"
-gh pr merge --squash --delete-branch
+# After approval, the maintainer merges manually via GitHub UI
+echo "Request review from maintainers, then they merge when approved"
 ```
 
 ### Step 9: Create GitHub Release
@@ -650,7 +649,7 @@ git push origin release/v$NEW_VERSION
 docker compose -f docker-compose.prod.yml build --no-cache
 
 # Common causes:
-# 1. Dependency version conflicts (check package.json, requirements.txt)
+# 1. Dependency version conflicts (check package.json, pyproject.toml, uv.lock)
 # 2. Missing environment variables
 # 3. File permissions in Docker context
 

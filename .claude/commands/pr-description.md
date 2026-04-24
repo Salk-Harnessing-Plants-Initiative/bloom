@@ -52,8 +52,8 @@ Closes #<issue_number>
 If the PR modifies `langchain/` or `bloommcp/`:
 
 - [ ] FastAPI routes follow existing patterns
-- [ ] Python dependencies updated in `requirements.txt`
-- [ ] `pip-audit` passes on updated requirements
+- [ ] Python dependencies updated in `pyproject.toml` with `uv add` and `uv lock`
+- [ ] `uv export | uvx pip-audit` passes on updated requirements
 - [ ] Integration tests cover new endpoints
 - [ ] Error responses return appropriate HTTP status codes
 
