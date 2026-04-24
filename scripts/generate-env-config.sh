@@ -24,8 +24,6 @@ if [ "$ENV" = "prod" ]; then
   CADDY_HTTP_PORT=""
   # Data paths live on /data (40 TB) — root filesystem is only 98 GB.
   MINIO_DATA_PATH="/data/bloom/minio-data"
-  # Standard 443 = no port suffix in user-facing URLs.
-  URL_PORT_SUFFIX=""
   DEPLOY_PATH="/data/bloom/production"
 elif [ "$ENV" = "staging" ]; then
   # Staging uses `staging-` prefix on each subdomain so users and logs can
@@ -38,10 +36,20 @@ elif [ "$ENV" = "staging" ]; then
   CADDY_HTTPS_LISTEN_PORT="8443"
   CADDY_HTTP_PORT=""
   MINIO_DATA_PATH="/data/bloom/minio-staging"
-  # Non-standard HTTPS port must appear in all user-facing URLs so browsers
-  # and clients know where to connect.
-  URL_PORT_SUFFIX=":${CADDY_HTTPS_LISTEN_PORT}"
   DEPLOY_PATH="/data/bloom/staging"
+else
+  echo "Error: ENV must be 'prod' or 'staging' (got '$ENV')" >&2
+  echo "Usage: $0 [prod|staging]" >&2
+  exit 1
+fi
+
+# Standard HTTPS (443) = no port suffix in user-facing URLs.
+# Non-standard (e.g. 8443) must appear in URLs so clients know where to connect.
+# Computed once from the env-specific port so there's only one source of truth.
+if [ "$CADDY_HTTPS_LISTEN_PORT" = "443" ]; then
+  URL_PORT_SUFFIX=""
+else
+  URL_PORT_SUFFIX=":${CADDY_HTTPS_LISTEN_PORT}"
 fi
 
 SITE_URL="https://${DOMAIN_MAIN}${URL_PORT_SUFFIX}"
