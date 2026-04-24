@@ -56,7 +56,15 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
           NEXT_PUBLIC_SUPABASE_COOKIE_NAME: sb-localhost-auth-token
 
-  # Ensures prod and staging env blocks in deploy.yml stay in sync
+  # Ensures prod and staging env blocks in deploy.yml stay in sync.
+  # Validates LHS parity, RHS prefix correctness, RHS suffix parity, per-LHS
+  # secret-ref consistency, duplicate heredoc/LHS detection, and composite
+  # multi-ref lines. See the authoritative spec at
+  # openspec/changes/update-env-parity-check/specs/deploy-env-parity/spec.md
+  #
+  # Unit tests for scripts/verify_env_parity.py run in the `python-audit` job
+  # alongside the rest of tests/unit/ (pin-python-deps convention) — do NOT
+  # duplicate the pytest invocation here.
   verify-env-parity:
     name: Verify prod/staging env parity
     runs-on: ubuntu-latest
@@ -64,22 +72,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Compare prod vs staging env vars
-        run: |
-          PROD_VARS=$(grep -oE '^[[:space:]]+[A-Z_]+=\$\{\{ secrets\.PROD_' .github/workflows/deploy.yml | awk -F'=' '{print $1}' | tr -d ' ' | sort -u)
-          STAGING_VARS=$(grep -oE '^[[:space:]]+[A-Z_]+=\$\{\{ secrets\.STAGING_' .github/workflows/deploy.yml | awk -F'=' '{print $1}' | tr -d ' ' | sort -u)
-          if [ -z "$PROD_VARS" ] || [ -z "$STAGING_VARS" ]; then
-            echo "::warning::No env vars found in deploy.yml — skipping parity check"
-            exit 0
-          fi
-          if ! diff <(echo "$PROD_VARS") <(echo "$STAGING_VARS"); then
-            echo ""
-            echo "::error::prod and staging env blocks have drifted — add missing vars to both"
-            exit 1
-          fi
-          echo "prod and staging env blocks are in sync ($(echo "$PROD_VARS" | wc -l) vars)"
+      # setup-uv also installs Python via .python-version if present; single
+      # Python manager per job, SHA-pinned per the pin-python-deps supply-chain
+      # convention (matches python-audit + compose-health-check in this file).
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
-  # Scans Python dependencies for known CVEs
+      - name: Verify prod/staging env parity
+        run: uv run --python 3.11 python scripts/verify_env_parity.py .github/workflows/deploy.yml
+
+  # Scans Python dependencies for known CVEs via lockfile export
   python-audit:
     name: Python Security Audit for CVEs
     runs-on: ubuntu-latest
@@ -87,22 +89,36 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
-      # uv, pip-audit
-      - name: Install uv and pip-audit
-        run: pip install uv && uv pip install --system pip-audit
+      # Fast feedback on pure-Python utility scripts. Placed in python-audit
+      # (not compose-health-check) because this job runs in parallel, has no
+      # continue-on-error, and already has uv installed. The `test` extra is
+      # pinned in the root pyproject.toml — one source of truth for both
+      # unit + integration test runs.
+      - name: Run Python unit tests
+        run: uv run --extra test pytest tests/unit/ -v --tb=short
+
+      # Enforce lockfile-pyproject sync on the server side. Pre-commit catches
+      # this locally but can be bypassed (--no-verify, web-UI merge, Dependabot
+      # auto-merge). `uv export --frozen` (used by the audit steps below) exits
+      # 0 even on drift — `uv lock --check` is the actual detector, invoked
+      # per-service by scripts/check-uv-locks.py.
+      - name: Verify uv lockfiles are synced
+        run: python scripts/check-uv-locks.py
 
       # Checks langchain agent Python packages for vulnerabilities
       - name: Audit langchain dependencies
-        run: pip-audit -r langchain/requirements.txt
+        run: cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
       # Checks bloommcp server Python packages for vulnerabilities
       - name: Audit bloommcp dependencies
-        run: pip-audit -r bloommcp/requirements.txt
+        run: cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+
+      # Checks video-worker Python packages for vulnerabilities
+      - name: Audit video-worker dependencies
+        run: cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
   docker-build:
     name: Build Docker Images & Scan for CVEs
@@ -241,11 +257,18 @@ jobs:
   compose-health-check:
     name: Docker Compose Health Check
     needs: docker-build
-    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # Setup uv BEFORE compose starts — the compose stack creates
+      # root-owned `volumes/db/data/` (postgres bind mount), and setup-uv's
+      # cache-dependency glob scans `**/uv.lock` across the whole workspace.
+      # Running setup-uv after compose is up causes EACCES when the glob
+      # tries to descend into the root-owned volumes directory.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: Install Supabase CLI
         run: |
@@ -456,21 +479,36 @@ jobs:
       - name: Verify MinIO writes
         run: |
           echo "=== Testing file write to MinIO ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T supabase-minio \
-            sh -c 'echo "ci-test" > /tmp/ci-test.txt && mc cp /tmp/ci-test.txt local/images/ci-test.txt && mc rm local/images/ci-test.txt && echo "Write test passed"' 2>&1 || echo "::warning::MinIO write test failed"
+          # Run mc in a one-off minio/mc container. The supabase-minio container
+          # (minio/minio image) has no mc CLI, which is why the previous invocation
+          # was silently failing as a warning on every run. Override the init
+          # entrypoint (create-buckets.sh) so we can drive a write-delete probe.
+          docker compose -f docker-compose.prod.yml --env-file .env.ci run --rm \
+            --entrypoint sh minio-init -c '
+              set -e
+              mc alias set local http://supabase-minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+              echo "ci-test" > /tmp/ci-test.txt
+              mc cp /tmp/ci-test.txt local/images/ci-test.txt
+              mc rm local/images/ci-test.txt
+              echo "Write test passed"
+            '
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
 
-      # Runs integration tests (smoke, auth, RLS, storage, API routing,
-      # migration runner) against the live compose stack. Skips the whole
-      # step if the tests directory is absent.
+      # Integration tests — smoke, auth, RLS, storage, API routing, migration
+      # runner. Skips the whole step if `tests/integration/` is absent.
       #
-      # psycopg[binary] is required for the `pg_conn` fixture used by the
-      # migration-runner tests; without it the fixture FAILS (not skips) when
-      # POSTGRES_PASSWORD is set — see tests/integration/conftest.py.
+      # `uv run --extra test` installs the test-deps group pinned in the root
+      # pyproject.toml (pytest + psycopg[binary]). psycopg is required by the
+      # `pg_conn` fixture used by the migration-runner tests; without it the
+      # fixture FAILS (not skips) when POSTGRES_PASSWORD is set — see
+      # tests/integration/conftest.py.
+      #
+      # uv is already installed by the `Setup uv` step early in this job.
       - name: Run integration tests
         run: |
           if [ -d "tests/integration" ]; then
-            pip install uv
-            uv run --with pytest --with 'psycopg[binary]' pytest tests/integration/ -v --tb=short
+            uv run --extra test pytest tests/integration/ -v --tb=short
           else
             echo "No integration tests found — skipping"
           fi

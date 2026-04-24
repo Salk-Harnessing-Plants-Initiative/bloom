@@ -226,35 +226,43 @@ apply-migrations-local:
 		echo "Applied $$applied migration(s) successfully."; \
 	fi
 
+# Preflight helper: fail fast with an actionable message if `uv` is not on PATH.
+# Used as a prerequisite by every target that invokes `uv run ...` below so the
+# developer gets a clear install hint instead of a generic `uv: command not found`
+# coming out of the middle of a script.
+.PHONY: check-uv
+check-uv:
+	@command -v uv >/dev/null 2>&1 || ( \
+		echo "Error: uv is required but not installed or not on PATH."; \
+		echo "Install: https://docs.astral.sh/uv/getting-started/installation/"; \
+		exit 1; \
+	)
+
 ## Load test data into development database
 .PHONY: load-test-data
-load-test-data:
+load-test-data: check-uv
 	@echo "Loading test data into development database..."
 	@if ! docker ps | grep -q db-dev; then \
 		echo "Error: Development database not running. Start with 'make dev-up' first."; \
 		exit 1; \
 	fi
-	@echo "Installing Python dependencies..."
-	@python3 -m pip install --quiet supabase pandas 2>/dev/null || (echo "Error: Failed to install dependencies. Install with: pip install supabase pandas" && exit 1)
 	@echo "Running data loader script..."
-	@python3 scripts/load_test_data.py
+	@uv run --with supabase,pandas -- python3 scripts/load_test_data.py
 
 ## Upload test images to MinIO storage
 .PHONY: upload-images
-upload-images:
+upload-images: check-uv
 	@echo "Uploading test images to MinIO storage..."
 	@if ! docker ps | grep -q supabase-minio; then \
 		echo "Error: MinIO not running. Start with 'make dev-up' first."; \
 		exit 1; \
 	fi
-	@echo "Installing Python dependencies..."
-	@python3 -m pip install --quiet supabase 2>/dev/null || (echo "Error: Failed to install dependencies. Install with: pip install supabase" && exit 1)
 	@echo "Running image uploader script..."
-	@python3 scripts/upload_test_images.py
+	@uv run --with supabase -- python3 scripts/upload_test_images.py
 
 ## Create a new MinIO bucket
 .PHONY: create-bucket
-create-bucket:
+create-bucket: check-uv
 	@if [ -z "$(BUCKET)" ]; then \
 		echo "Error: BUCKET name required. Usage: make create-bucket BUCKET=my-bucket-name [PUBLIC=true]"; \
 		exit 1; \
@@ -263,25 +271,21 @@ create-bucket:
 		echo "Error: MinIO not running. Start with 'make dev-up' first."; \
 		exit 1; \
 	fi
-	@echo "Installing Python dependencies..."
-	@python3 -m pip install --quiet supabase 2>/dev/null || (echo "Error: Failed to install dependencies. Install with: pip install supabase" && exit 1)
 	@echo "Creating bucket via Supabase Storage API..."
 	@if [ "$(PUBLIC)" = "true" ]; then \
-		python3 scripts/create_bucket.py create $(BUCKET) public; \
+		uv run --with supabase -- python3 scripts/create_bucket.py create $(BUCKET) public; \
 	else \
-		python3 scripts/create_bucket.py create $(BUCKET); \
+		uv run --with supabase -- python3 scripts/create_bucket.py create $(BUCKET); \
 	fi
 
 ## List all MinIO buckets
 .PHONY: list-buckets
-list-buckets:
+list-buckets: check-uv
 	@if ! docker ps | grep -q supabase-minio; then \
 		echo "Error: MinIO not running. Start with 'make dev-up' first."; \
 		exit 1; \
 	fi
-	@echo "Installing Python dependencies..."
-	@python3 -m pip install --quiet supabase 2>/dev/null || (echo "Error: Failed to install dependencies. Install with: pip install supabase" && exit 1)
-	@python3 scripts/create_bucket.py list
+	@uv run --with supabase -- python3 scripts/create_bucket.py list
 
 # Force rebuild (even without changes)
 .PHONY: rebuild
