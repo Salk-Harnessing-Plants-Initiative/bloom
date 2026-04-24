@@ -2,8 +2,10 @@
 # =============================================================================
 # Generate unique secrets for a Bloom environment (prod/staging/ci)
 # Usage:
-#   ./scripts/generate-secrets.sh [prod|staging|ci]           # stdout (default)
+#   ./scripts/generate-secrets.sh [prod|staging|ci]           # stdout (decorated)
 #   ./scripts/generate-secrets.sh [prod|staging|ci] --file    # write to file
+#   ./scripts/generate-secrets.sh [prod|staging|ci] --raw     # KEY=VALUE lines
+#                                                              (for pipelines)
 # =============================================================================
 
 set -e
@@ -28,13 +30,15 @@ if [ "$MODE" = "--file" ]; then
   exec > "$OUTPUT"
 fi
 
-echo "=================================================="
-echo "Generating secrets for: $ENV"
-echo "Prefix: ${PREFIX}_"
-echo "=================================================="
-echo ""
-echo "Add these to GitHub → Settings → Secrets → Actions:"
-echo ""
+if [ "$MODE" != "--raw" ]; then
+  echo "=================================================="
+  echo "Generating secrets for: $ENV"
+  echo "Prefix: ${PREFIX}_"
+  echo "=================================================="
+  echo ""
+  echo "Add these to GitHub → Settings → Secrets → Actions:"
+  echo ""
+fi
 
 # Generate random values
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
@@ -67,6 +71,23 @@ ANON_KEY="${ANON_HEADER}.${ANON_PAYLOAD}.${ANON_SIGNATURE}"
 SERVICE_PAYLOAD=$(echo -n "{\"role\":\"service_role\",\"iss\":\"supabase\",\"aud\":\"authenticated\",\"iat\":$NOW,\"exp\":$EXP}" | base64 | tr -d '=' | tr '+/' '-_' | tr -d '\n')
 SERVICE_SIGNATURE=$(echo -n "${ANON_HEADER}.${SERVICE_PAYLOAD}" | openssl dgst -sha256 -hmac "$JWT_SECRET" -binary | base64 | tr -d '=' | tr '+/' '-_' | tr -d '\n')
 SERVICE_ROLE_KEY="${ANON_HEADER}.${SERVICE_PAYLOAD}.${SERVICE_SIGNATURE}"
+
+if [ "$MODE" = "--raw" ]; then
+  # Machine-readable output — KEY=VALUE lines only, no decoration.
+  # Consumed by scripts/setup-env-secrets.sh to pipeline generate → upload.
+  echo "${PREFIX}_POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
+  echo "${PREFIX}_JWT_SECRET=$JWT_SECRET"
+  echo "${PREFIX}_ANON_KEY=$ANON_KEY"
+  echo "${PREFIX}_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
+  echo "${PREFIX}_SUPAVISOR_ENC_KEY=$SUPAVISOR_ENC_KEY"
+  echo "${PREFIX}_VAULT_ENC_KEY=$VAULT_ENC_KEY"
+  echo "${PREFIX}_SECRET_KEY_BASE=$SECRET_KEY_BASE"
+  echo "${PREFIX}_MINIO_PASSWORD=$MINIO_PASSWORD"
+  echo "${PREFIX}_DB_ENC_KEY=$DB_ENC_KEY"
+  echo "${PREFIX}_DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD"
+  echo "${PREFIX}_BLOOMMCP_API_KEY=$BLOOMMCP_API_KEY"
+  exit 0
+fi
 
 echo "Secret Name                          | Value"
 echo "-------------------------------------|------"
