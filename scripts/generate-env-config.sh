@@ -13,26 +13,48 @@ ENV="${1:-prod}"
 PREFIX=$(echo "$ENV" | tr '[:lower:]' '[:upper:]')
 
 if [ "$ENV" = "prod" ]; then
-  DOMAIN_MAIN="bloom.salk.edu"
-  DOMAIN_STUDIO="studio.bloom.salk.edu"
-  DOMAIN_MINIO="minio.bloom.salk.edu"
+  # Production uses the server's hostname-matching domain (bloom-dev.salk.edu)
+  # since bloom-dev IS the production host. The parent domain already resolves
+  # in Salk DNS; Salk IT only needs to add the studio./minio. subdomains.
+  DOMAIN_MAIN="bloom-dev.salk.edu"
+  DOMAIN_STUDIO="studio.bloom-dev.salk.edu"
+  DOMAIN_MINIO="minio.bloom-dev.salk.edu"
   CADDY_HTTP_LISTEN_PORT="80"
   CADDY_HTTPS_LISTEN_PORT="443"
   CADDY_HTTP_PORT=""
-  MINIO_DATA_PATH="/data/bloom/minio"
-  SITE_URL="https://${DOMAIN_MAIN}"
-  DEPLOY_PATH="/opt/bloom/production"
+  # Data paths live on /data (40 TB) — root filesystem is only 98 GB.
+  MINIO_DATA_PATH="/data/bloom/minio-data"
+  DEPLOY_PATH="/data/bloom/production"
 elif [ "$ENV" = "staging" ]; then
-  DOMAIN_MAIN="staging.bloom.salk.edu"
-  DOMAIN_STUDIO="staging-studio.bloom.salk.edu"
-  DOMAIN_MINIO="staging-minio.bloom.salk.edu"
+  # Staging uses `staging-` prefix on each subdomain so users and logs can
+  # tell environments apart at a glance. Non-standard ports so prod + staging
+  # can coexist on the same server.
+  DOMAIN_MAIN="staging-bloom-dev.salk.edu"
+  DOMAIN_STUDIO="staging-studio.bloom-dev.salk.edu"
+  DOMAIN_MINIO="staging-minio.bloom-dev.salk.edu"
   CADDY_HTTP_LISTEN_PORT="8080"
   CADDY_HTTPS_LISTEN_PORT="8443"
   CADDY_HTTP_PORT=""
   MINIO_DATA_PATH="/data/bloom/minio-staging"
-  SITE_URL="https://${DOMAIN_MAIN}"
-  DEPLOY_PATH="/opt/bloom/staging"
+  DEPLOY_PATH="/data/bloom/staging"
+else
+  echo "Error: ENV must be 'prod' or 'staging' (got '$ENV')" >&2
+  echo "Usage: $0 [prod|staging]" >&2
+  exit 1
 fi
+
+# Standard HTTPS (443) = no port suffix in user-facing URLs.
+# Non-standard (e.g. 8443) must appear in URLs so clients know where to connect.
+# Computed once from the env-specific port so there's only one source of truth.
+if [ "$CADDY_HTTPS_LISTEN_PORT" = "443" ]; then
+  URL_PORT_SUFFIX=""
+else
+  URL_PORT_SUFFIX=":${CADDY_HTTPS_LISTEN_PORT}"
+fi
+
+SITE_URL="https://${DOMAIN_MAIN}${URL_PORT_SUFFIX}"
+STUDIO_URL="https://${DOMAIN_STUDIO}${URL_PORT_SUFFIX}"
+MINIO_URL="https://${DOMAIN_MINIO}${URL_PORT_SUFFIX}"
 
 echo "=================================================="
 echo "Environment config for: $ENV"
@@ -79,12 +101,12 @@ echo "${PREFIX}_DASHBOARD_USERNAME                | admin"
 # Studio
 echo "${PREFIX}_STUDIO_DEFAULT_ORGANIZATION       | Bloom"
 echo "${PREFIX}_STUDIO_DEFAULT_PROJECT             | default"
-echo "${PREFIX}_STUDIO_SUPABASE_PUBLIC_URL         | https://${DOMAIN_STUDIO}"
+echo "${PREFIX}_STUDIO_SUPABASE_PUBLIC_URL         | $STUDIO_URL"
 
 # MinIO
 echo "${PREFIX}_MINIO_ROOT_USER                   | supabase"
 echo "${PREFIX}_MINIO_DATA_PATH                   | $MINIO_DATA_PATH"
-echo "${PREFIX}_MINIO_BROWSER_REDIRECT_URL         | https://${DOMAIN_MINIO}"
+echo "${PREFIX}_MINIO_BROWSER_REDIRECT_URL         | $MINIO_URL"
 
 # URLs
 echo "${PREFIX}_SITE_URL                          | $SITE_URL"
