@@ -4,7 +4,6 @@ Supports multiple LLM providers: OpenAI, Local (vLLM)
 """
 import os
 from typing import Optional, Literal
-from urllib.parse import urlsplit
 
 import httpx
 from langgraph.prebuilt import create_react_agent
@@ -66,9 +65,11 @@ async def setup_checkpointer() -> AsyncPostgresSaver:
 
     checkpointer = AsyncPostgresSaver(pool)
     logger = logging.getLogger(__name__)
-    # urlsplit().hostname returns only the hostname — no user, no password,
-    # no port. CodeQL accepts this as a proper sanitization.
-    host = urlsplit(POSTGRES_URL).hostname or "<unknown>"
+    # Read POSTGRES_HOST directly from the environment for logging. Deriving
+    # the host from POSTGRES_URL would pass through a value that carries the
+    # password upstream, and CodeQL's taint tracker doesn't recognize
+    # urlsplit().hostname as a sanitizer for py/clear-text-logging-sensitive-data.
+    host = os.environ.get("POSTGRES_HOST", "<unknown>")
     logger.info(f"PostgresSaver initialized with pool (min=2, max=10) → host={host}")
     return checkpointer
 
