@@ -130,8 +130,11 @@ def test_db_push_is_idempotent(pg_conn, supabase_db_url):
         cur.execute("SELECT count(*) FROM supabase_migrations.schema_migrations")
         before = cur.fetchone()[0]
 
+    # `--debug` works around supabase/cli#4839 — without it the CLI tries a
+    # TLS handshake against a non-TLS Postgres and fails. The deploy
+    # workflow passes --debug for the same reason.
     result = subprocess.run(
-        ["supabase", "db", "push", "--db-url", supabase_db_url, "--yes"],
+        ["supabase", "db", "push", "--db-url", supabase_db_url, "--debug", "--yes"],
         capture_output=True,
         text=True,
         timeout=300,
