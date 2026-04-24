@@ -128,3 +128,12 @@ def pg_conn():
         yield conn
     finally:
         conn.close()
+
+
+@pytest.fixture
+def supabase_db_url():
+    """Postgres connection URL formatted for `supabase db push --db-url`."""
+    return (
+        f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:"
+        f"{POSTGRES_HOST_PORT}/{POSTGRES_DB}?sslmode=disable"
+    )
