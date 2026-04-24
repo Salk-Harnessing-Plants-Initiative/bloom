@@ -86,6 +86,7 @@ DOCUMENTATION.md
 TROUBLESHOOTING.md
 prompts/
 .claude/settings.local.json
+.claude/draft-pr/
 langchain/ANALYSIS_OUTPUT/
 langchain/PLOTS_DIR/
 scripts/compute_de_genes.py

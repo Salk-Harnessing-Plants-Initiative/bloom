@@ -1,154 +1,138 @@
-'use client'
+import { redirect } from "next/navigation";
+import { getUser } from "@/lib/supabase/server";
+import LoginForm from "./LoginForm";
+import styles from "./login.module.css";
 
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { createClientSupabaseClient } from '@/lib/supabase/client'
+const PLANTS: Array<{
+  src: string;
+  cls: string;
+  drift?: 1 | 2 | 3;
+  name: string;
+  traits: number;
+}> = [
+  { src: "/login/wheat-watercolor.png", cls: "p1", drift: 1, name: "Wheat", traits: 47 },
+  { src: "/login/amaranth-watercolor.png", cls: "p2", drift: 2, name: "Amaranth", traits: 32 },
+  { src: "/login/spinach-watercolor.png", cls: "p4", drift: 1, name: "Spinach", traits: 28 },
+  { src: "/login/alfalfa-watercolor.svg", cls: "p5", drift: 2, name: "Alfalfa", traits: 18 },
+  { src: "/login/rice-watercolor.svg", cls: "p6", drift: 3, name: "Rice", traits: 52 },
+  { src: "/login/pennycress-watercolor.svg", cls: "p7", drift: 1, name: "Pennycress", traits: 25 },
+  { src: "/login/soybean-watercolor.svg", cls: "p8", drift: 3, name: "Soybean", traits: 15 },
+  { src: "/login/sorghum-watercolor.svg", cls: "p9", drift: 1, name: "Sorghum", traits: 12 },
+  { src: "/login/tomato-watercolor.png", cls: "p10", drift: 2, name: "Tomato", traits: 53 },
+  { src: "/login/canola-watercolor.svg", cls: "p11", drift: 3, name: "Canola", traits: 7 },
+];
 
-export default function Login() {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [view, setView] = useState('sign-in')
-  const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
-  const router = useRouter()
-  const supabase = createClientSupabaseClient()
-
-  const handleSignUp = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    if (!email) {
-      setError('Please fill in the email field')
-      return
-    }
-    if (!password) {
-      setError('Please fill in the password field')
-      return
-    }
-    const { data, error } = await supabase.auth.signUp({
-      email: email + '@salk.edu',
-      password,
-      options: {
-        emailRedirectTo: `${location.origin}/auth/callback`,
-        data: {
-          is_admin: false,
-        },
-      },
-    })
-    if (error) {
-      setError(error.message)
-    }
-    else if (data?.user) {
-      // User created — auto sign in
-      setSuccess('Account created successfully! Signing you in...')
-      setError('')
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: email + '@salk.edu',
-        password,
-      })
-      if (signInError) {
-        setError(signInError.message)
-        setSuccess('')
-      } else {
-        router.push('/app')
-      }
-    }
-  }
-
-  const handleSignIn = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const { error } = await supabase.auth.signInWithPassword({
-      email: email + '@salk.edu',
-      password,
-    })
-
-    if (error) {
-      setError(error.message)
-    }
-    else {
-      // Use window.location instead of router.push to force a full page reload
-      // This ensures the middleware picks up the new auth cookies
-      // window.location.href = '/app'
-      router.push('/app')
-    }
+export default async function LoginPage() {
+  const user = await getUser();
+  if (user) {
+    redirect("/app");
   }
 
   return (
-    <div className="flex-1 flex flex-col mx-auto w-full max-w-sm justify-center gap-2">
-      {success ? (
-        <p className="text-center text-green-700">{success}</p>
-      ) : (
-        <form
-          className="flex-1 flex flex-col w-full max-w-sm justify-center gap-2"
-          onSubmit={view === 'sign-in' ? handleSignIn : handleSignUp}
-        >
-          <label className="text-md text-neutral-400" htmlFor="email">
-            Email
-          </label>
-          <div className='flex flex-row'>
-            <input
-              className="flex-1 rounded-md px-4 py-2 bg-inherit border mb-6"
-              name="email"
-              onChange={(e) => {
-                if (!e.target.value.includes('@')) {
-                  setEmail(e.target.value)
-                }
-              }}
-              value={email}
-              placeholder="your-login"
-            />
-            <span className="flex-none rounded-md pl-4 py-2 bg-inherit mb-6">@salk.edu</span>
-          </div>
+    <div className={styles.page}>
+      <div className={styles.bgWash} aria-hidden />
+      <div className={styles.bgGrain} aria-hidden />
 
-          <label className="text-md text-neutral-400" htmlFor="password">
-            Password
-          </label>
-          <input
-            className="rounded-md px-4 py-2 bg-inherit border mb-6"
-            type="password"
-            name="password"
-            onChange={(e) => setPassword(e.target.value)}
-            value={password}
-            placeholder="password"
-          />
-          {view === 'sign-in' ? (
-            <>
-              <button className="bg-green-700 rounded px-4 py-2 text-neutral-200 mb-6">
-                Sign In
-              </button>
-              <p className="text-sm text-neutral-500 text-center">
-                Don't have an account?
-                <button
-                  type="button"
-                  className="ml-1 underline"
-                  onClick={() => setView('sign-up')}
-                >
-                  Sign Up Now
-                </button>
-              </p>
-            </>
-          ) : null}
-          {view === 'sign-up' ? (
-            <>
-              <button className="bg-green-700 rounded px-4 py-2 text-neutral-200 mb-6">
-                Sign Up
-              </button>
-              <p className="text-sm text-neutral-500 text-center">
-                Already have an account?
-                <button
-                  className="ml-1 underline"
-                  onClick={() => setView('sign-in')}
-                >
-                  Sign In Now
-                </button>
-              </p>
-            </>
-          ) : null}
-          {error ? (
-            <p className="text-sm text-red-700 text-center">
-              {error}
+      {PLANTS.map((p, i) => (
+        <div
+          key={i}
+          className={`${styles.plant} ${styles[p.cls]}${
+            p.drift ? ` ${styles[`drift${p.drift}`]}` : ""
+          }`}
+        >
+          <img src={p.src} alt={p.name} />
+          <div className={styles.callout} role="tooltip">
+            <strong>{p.name}</strong> · {p.traits} traits measured
+          </div>
+        </div>
+      ))}
+
+      <div className={styles.pageInner}>
+        <div className={styles.topRow}>
+          <a
+            className={styles.hpiLink}
+            href="https://www.salk.edu/harnessing-plants-initiative/"
+            target="_blank"
+            rel="noopener"
+          >
+            SALK HPI ↗
+          </a>
+        </div>
+
+        <div className={styles.middle}>
+          <section className={styles.hero}>
+            <div className={styles.logoRow}>
+              <img
+                src="/login/logo-mark.png"
+                alt="Bloom"
+                width={88}
+                height={88}
+              />
+              <span className={styles.wordmark}>Bloom</span>
+            </div>
+            <p className={styles.kicker}>THE DATA PLATFORM</p>
+            <h1 className={styles.heroTitle}>
+              For the plants <em>solving</em> climate change.
+            </h1>
+            <p className={styles.heroSub}>
+              Phenotyping scans, single-cell expression, gene candidates, and
+              eight years of field work from the Salk Harnessing Plants
+              Initiative.
             </p>
-          ) : null}
-        </form>
-      )}
+          </section>
+
+          <LoginForm />
+        </div>
+
+        <div className={styles.statsStrip}>
+          <div className={styles.stat}>
+            <div className={styles.statNum}>16</div>
+            <div className={styles.statMeta}>
+              <div className={styles.statLabel}>SPECIES</div>
+              <div className={styles.statSub}>
+                Engineered for deeper roots, more suberin
+              </div>
+            </div>
+          </div>
+          <div className={styles.stat}>
+            <div className={styles.statNum}>235</div>
+            <div className={styles.statMeta}>
+              <div className={styles.statLabel}>EXPERIMENTS</div>
+              <div className={styles.statSub}>Across 8 years of waves</div>
+            </div>
+          </div>
+          <div className={styles.stat}>
+            <div className={styles.statNum}>131</div>
+            <div className={styles.statMeta}>
+              <div className={styles.statLabel}>GENE CANDIDATES</div>
+              <div className={styles.statSub}>Orthologs, progress, notes</div>
+            </div>
+          </div>
+          <div className={styles.stat}>
+            <div className={styles.statNum}>11</div>
+            <div className={styles.statMeta}>
+              <div className={styles.statLabel}>EXPRESSION ATLASES</div>
+              <div className={styles.statSub}>
+                Single-cell RNA · UMAPs, DE
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className={styles.bottomRow}>
+          <span>© 2026 Salk Institute · HPI</span>
+          <div className={styles.footLinks}>
+            <a
+              href="https://www.salk.edu/harnessing-plants-initiative/"
+              target="_blank"
+              rel="noopener"
+            >
+              About HPI
+            </a>
+            <a href="mailto:dbutler@salk.edu?subject=Bloom%20support">Support</a>
+          </div>
+        </div>
+      </div>
     </div>
-  )
+  );
 }
