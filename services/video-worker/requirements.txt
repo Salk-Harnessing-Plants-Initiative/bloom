@@ -1,5 +1,0 @@
-# Video Worker Dependencies
-psycopg2-binary>=2.9.0
-boto3>=1.40.0
-pillow>=12.0.0
-numpy>=2.0.0

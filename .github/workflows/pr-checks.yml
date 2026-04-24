@@ -10,6 +10,11 @@ permissions:
   contents: read
   pull-requests: write
 
+env:
+  # Supabase CLI version — matched to what's installed on the Salk deploy
+  # server (documented in #135). Change here + on the server together.
+  SUPABASE_VERSION: "2.92.1"
+
 jobs:
   build-and-audit:
     name: Build & npm CVE Audit
@@ -59,7 +64,9 @@ jobs:
 
   # Ensures prod and staging secret-append blocks in deploy.yml stay in sync.
   # Non-sensitive config lives in .env.{prod,staging}.defaults and is verified
-  # by validate-env-defaults below.
+  # by validate-env-defaults below. Implementation: scripts/verify_env_parity.py.
+  # Unit tests for that script run in the `python-audit` job alongside the
+  # rest of tests/unit/ — do NOT duplicate the pytest invocation here.
   verify-env-parity:
     name: Verify prod/staging env parity
     runs-on: ubuntu-latest
@@ -67,25 +74,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Compare prod vs staging env vars
-        run: |
-          PROD_VARS=$(grep -oE '^[[:space:]]+[A-Z_]+=\$\{\{ secrets\.PROD_' .github/workflows/deploy.yml | awk -F'=' '{print $1}' | tr -d ' ' | sort -u)
-          STAGING_VARS=$(grep -oE '^[[:space:]]+[A-Z_]+=\$\{\{ secrets\.STAGING_' .github/workflows/deploy.yml | awk -F'=' '{print $1}' | tr -d ' ' | sort -u)
-          if [ -z "$PROD_VARS" ] || [ -z "$STAGING_VARS" ]; then
-            echo "::warning::No env vars found in deploy.yml — skipping parity check"
-            exit 0
-          fi
-          if ! diff <(echo "$PROD_VARS") <(echo "$STAGING_VARS"); then
-            echo ""
-            echo "::error::prod and staging env blocks have drifted — add missing vars to both"
-            exit 1
-          fi
-          echo "prod and staging env blocks are in sync ($(echo "$PROD_VARS" | wc -l) vars)"
+      # setup-uv also installs Python via .python-version if present; single
+      # Python manager per job, SHA-pinned per the pin-python-deps supply-chain
+      # convention (matches python-audit + compose-health-check in this file).
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+
+      - name: Verify prod/staging env parity
+        run: uv run --python 3.11 python scripts/verify_env_parity.py .github/workflows/deploy.yml
 
   # Guards the Committed Defaults contract: no secrets leak into the defaults
   # files, prod/staging key sets are identical, disambiguating values differ,
   # and every ${VAR} in docker-compose.prod.yml has a source.
-  # See openspec/changes/refactor-env-config-committed-defaults/specs/deploy-env-config/spec.md
   validate-env-defaults:
     name: Validate committed env defaults
     runs-on: ubuntu-latest
@@ -103,7 +103,7 @@ jobs:
           pip install uv
           uv run --with pytest pytest tests/unit/test_env_defaults.py -v --tb=short
 
-  # Scans Python dependencies for known CVEs
+  # Scans Python dependencies for known CVEs via lockfile export
   python-audit:
     name: Python Security Audit for CVEs
     runs-on: ubuntu-latest
@@ -111,22 +111,36 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
-      # uv, pip-audit
-      - name: Install uv and pip-audit
-        run: pip install uv && uv pip install --system pip-audit
+      # Fast feedback on pure-Python utility scripts. Placed in python-audit
+      # (not compose-health-check) because this job runs in parallel, has no
+      # continue-on-error, and already has uv installed. The `test` extra is
+      # pinned in the root pyproject.toml — one source of truth for both
+      # unit + integration test runs.
+      - name: Run Python unit tests
+        run: uv run --extra test pytest tests/unit/ -v --tb=short
+
+      # Enforce lockfile-pyproject sync on the server side. Pre-commit catches
+      # this locally but can be bypassed (--no-verify, web-UI merge, Dependabot
+      # auto-merge). `uv export --frozen` (used by the audit steps below) exits
+      # 0 even on drift — `uv lock --check` is the actual detector, invoked
+      # per-service by scripts/check-uv-locks.py.
+      - name: Verify uv lockfiles are synced
+        run: python scripts/check-uv-locks.py
 
       # Checks langchain agent Python packages for vulnerabilities
       - name: Audit langchain dependencies
-        run: pip-audit -r langchain/requirements.txt
+        run: cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
       # Checks bloommcp server Python packages for vulnerabilities
       - name: Audit bloommcp dependencies
-        run: pip-audit -r bloommcp/requirements.txt
+        run: cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+
+      # Checks video-worker Python packages for vulnerabilities
+      - name: Audit video-worker dependencies
+        run: cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
   docker-build:
     name: Build Docker Images & Scan for CVEs
@@ -249,14 +263,40 @@ jobs:
           exit-code: '1'
           trivyignores: '.trivyignore'
 
-  compose-health-check:
-    name: Docker Compose Health Check
-    needs: docker-build
-    continue-on-error: true
+  lint-migrations:
+    name: Lint new migration filenames + timestamps
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Need full history so the lint can diff against origin/main
+          fetch-depth: 0
+
+      - name: Run migration lint
+        run: ./scripts/lint_migrations.sh origin/${{ github.base_ref }}
+
+  compose-health-check:
+    name: Docker Compose Health Check
+    needs: docker-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Setup uv BEFORE compose starts — the compose stack creates
+      # root-owned `volumes/db/data/` (postgres bind mount), and setup-uv's
+      # cache-dependency glob scans `**/uv.lock` across the whole workspace.
+      # Running setup-uv after compose is up causes EACCES when the glob
+      # tries to descend into the root-owned volumes directory.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+
+      - name: Install Supabase CLI
+        run: |
+          curl -LO https://github.com/supabase/cli/releases/download/v${SUPABASE_VERSION}/supabase_${SUPABASE_VERSION}_linux_amd64.deb
+          sudo apt install -y ./supabase_${SUPABASE_VERSION}_linux_amd64.deb
+          supabase --version | grep -q "${SUPABASE_VERSION}"
 
       - name: Generate .env.ci from secrets
         run: |
@@ -264,6 +304,7 @@ jobs:
           echo "POSTGRES_USER=supabase_admin" >> .env.ci
           echo "POSTGRES_PORT=5432" >> .env.ci
           echo "POSTGRES_HOST=db-prod" >> .env.ci
+          echo "POSTGRES_HOST_PORT=5432" >> .env.ci
           echo "PGRST_DB_SCHEMAS=public,auth,storage" >> .env.ci
           echo "JWT_EXPIRY=3600" >> .env.ci
           echo "ENABLE_ANONYMOUS_USERS=false" >> .env.ci
@@ -307,6 +348,7 @@ jobs:
           echo "CADDY_HTTP_LISTEN_PORT=80" >> .env.ci
           echo "CADDY_HTTPS_LISTEN_PORT=443" >> .env.ci
           echo "CADDY_HTTP_PORT=:80" >> .env.ci
+          echo "CADDY_TLS_DIRECTIVE=" >> .env.ci
           echo "KONG_PORT=8000" >> .env.ci
           echo "BLOOM_WEB_PORT=3000" >> .env.ci
           echo "STUDIO_PORT=3000" >> .env.ci
@@ -386,41 +428,110 @@ jobs:
           echo "::error::Timeout waiting for storage schema"
           exit 1
 
-      # Apply migrations — populates storage.buckets and adds RLS policies
+      # Apply migrations via Supabase CLI — same code path as the prod and staging deploys.
+      # Creates `supabase_migrations.schema_migrations` on first run, skips already-applied
+      # migrations, wraps each in a transaction, takes an advisory lock.
       - name: Apply database migrations
         run: |
-          echo "Applying migrations in order:"
-          ls -1 supabase/migrations/*.sql | sort
-          for migration in supabase/migrations/*.sql; do
-            echo "  Running: $(basename $migration)"
-            docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$migration" 2>&1 || {
-              echo "::error::Migration failed: $(basename $migration)"
-              exit 1
-            }
-          done
-          echo "Migrations complete!"
-        env:
-          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+          # Extract only the Postgres connection vars we need. Avoids
+          # `set -a; source .env.ci; set +a` which would export every secret
+          # in the file to the subprocess environment.
+          PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
+          PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
+          echo "::add-mask::$PG_PASSWORD"
+          PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
+          PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
+          : "${PG_USER:?POSTGRES_USER missing from .env.ci}"
+          : "${PG_PASSWORD:?POSTGRES_PASSWORD missing from .env.ci}"
+          : "${PG_DB:?POSTGRES_DB missing from .env.ci}"
+          : "${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.ci}"
+          # --debug works around supabase-cli #4839 (sslmode=disable silently
+          # ignored without it on self-hosted Postgres without TLS). Not
+          # verbose-logging for the sake of it — it actually changes the code
+          # path that makes the connection succeed.
+          supabase db push \
+            --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}?sslmode=disable" \
+            --debug \
+            --yes || {
+            echo "::error title=Migration failed (CI)::See 'Migration status on failure' step and the Migration summary at top of run for applied vs pending state."
+            exit 1
+          }
 
-      - name: Verify buckets
+      # Layer B — runs only on failure. Prints applied-vs-pending state so an
+      # on-call engineer can see which migration broke without digging through
+      # step logs. `|| true` stops a diagnostic-fetch failure from masking
+      # the original migration error.
+      - name: Show migration status on failure
+        if: failure()
         run: |
-          echo "=== Checking storage.buckets table ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
-            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "SELECT id, name FROM storage.buckets;" 2>&1
-          echo ""
+          PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
+          PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
+          echo "::add-mask::$PG_PASSWORD"
+          PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
+          PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
+          : "${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.ci}"
+          supabase migration list \
+            --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}?sslmode=disable" \
+            --debug \
+            || echo "::warning::Could not fetch migration status"
+
+      # Layer C — fenced code block of migration state in the run's summary panel.
+      # Uses CLI's native text output (the `-o json` flag does NOT exist on
+      # `migration list` in the pinned CLI version — see SUPABASE_VERSION above).
+      - name: Migration summary
+        if: always()
+        run: |
+          PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
+          PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
+          echo "::add-mask::$PG_PASSWORD"
+          PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
+          PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
+          : "${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.ci}"
+          {
+            echo "## Database migration state"
+            echo ""
+            echo '```'
+            supabase migration list \
+              --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}?sslmode=disable" \
+              --debug \
+              2>/dev/null \
+              || echo "(migration state fetch failed)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify MinIO writes
+        run: |
           echo "=== Testing file write to MinIO ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T supabase-minio \
-            sh -c 'echo "ci-test" > /tmp/ci-test.txt && mc cp /tmp/ci-test.txt local/images/ci-test.txt && mc rm local/images/ci-test.txt && echo "Write test passed"' 2>&1 || echo "::warning::MinIO write test failed"
+          # Run mc in a one-off minio/mc container. The supabase-minio container
+          # (minio/minio image) has no mc CLI, which is why the previous invocation
+          # was silently failing as a warning on every run. Override the init
+          # entrypoint (create-buckets.sh) so we can drive a write-delete probe.
+          docker compose -f docker-compose.prod.yml --env-file .env.ci run --rm \
+            --entrypoint sh minio-init -c '
+              set -e
+              mc alias set local http://supabase-minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+              echo "ci-test" > /tmp/ci-test.txt
+              mc cp /tmp/ci-test.txt local/images/ci-test.txt
+              mc rm local/images/ci-test.txt
+              echo "Write test passed"
+            '
         env:
           POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
 
-      # Runs 22 integration tests (smoke, auth, RLS, storage, API routing) against the live compose stack
-      # Skips if tests/integration/ doesn't exist on this branch
+      # Integration tests — smoke, auth, RLS, storage, API routing, migration
+      # runner. Skips the whole step if `tests/integration/` is absent.
+      #
+      # `uv run --extra test` installs the test-deps group pinned in the root
+      # pyproject.toml (pytest + psycopg[binary]). psycopg is required by the
+      # `pg_conn` fixture used by the migration-runner tests; without it the
+      # fixture FAILS (not skips) when POSTGRES_PASSWORD is set — see
+      # tests/integration/conftest.py.
+      #
+      # uv is already installed by the `Setup uv` step early in this job.
       - name: Run integration tests
         run: |
           if [ -d "tests/integration" ]; then
-            pip install uv
-            uv run --with pytest pytest tests/integration/ -v --tb=short
+            uv run --extra test pytest tests/integration/ -v --tb=short
           else
             echo "No integration tests found — skipping"
           fi
@@ -428,6 +539,10 @@ jobs:
           TEST_BASE_URL: http://localhost
           ANON_KEY: ${{ secrets.CI_ANON_KEY }}
           SERVICE_ROLE_KEY: ${{ secrets.CI_SERVICE_ROLE_KEY }}
+          POSTGRES_USER: supabase_admin
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+          POSTGRES_DB: postgres
+          POSTGRES_HOST_PORT: "5432"
 
       - name: Debug logs on failure
         if: failure()

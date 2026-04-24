@@ -123,7 +123,7 @@ uv run pre-commit install
 
 What CI actually checks:
 - `build-and-audit` job: `npm audit --audit-level=critical`, `npx tsc --noEmit` (type check), `npm run build` (Next.js build)
-- `python-audit` job: `pip-audit` for CVE scanning only (no Black/Ruff/mypy)
+- `python-audit` job: `uv export | uvx pip-audit` for CVE scanning only (no Black/Ruff/mypy)
 
 ## Common Issues
 
