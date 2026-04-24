@@ -16,6 +16,12 @@ on:
           - staging
           - production
 
+env:
+  # Supabase CLI version — MUST match the value pinned in pr-checks.yml and
+  # the version installed on the Salk deploy server. Before deploy each
+  # migration step asserts `supabase --version` equals this.
+  SUPABASE_VERSION: "2.92.1"
+
 jobs:
   deploy-production:
     name: Deploy to Production
@@ -183,16 +189,32 @@ jobs:
 
       # Apply migrations via Supabase CLI (installed on the Salk server per #135).
       # Extract only Postgres connection vars — avoids leaking JWT_SECRET / keys
-      # into the subprocess environment.
+      # into the subprocess environment. The `: "${VAR:?msg}"` guards fail the
+      # remote script with a clear error if any key is missing from .env.prod,
+      # rather than letting `supabase db push` fail later with a cryptic URL
+      # parse / auth error.
       - name: Apply database migrations (production)
+        env:
+          EXPECTED_CLI_VERSION: ${{ env.SUPABASE_VERSION }}
         run: |
           echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
+            command -v supabase >/dev/null || { echo '::error::supabase CLI not found on deploy host'; exit 1; }
+            ACTUAL_CLI_VERSION=\$(supabase --version | tr -d '[:space:]')
+            if [ \"\$ACTUAL_CLI_VERSION\" != \"$EXPECTED_CLI_VERSION\" ]; then
+              echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
+              exit 1
+            fi
             PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
             PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
             PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
             PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
+            : \"\${PG_USER:?POSTGRES_USER missing from .env.prod}\"
+            : \"\${PG_PASSWORD:?POSTGRES_PASSWORD missing from .env.prod}\"
+            : \"\${PG_DB:?POSTGRES_DB missing from .env.prod}\"
+            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.prod}\"
             supabase db push --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug --yes
           " || {
             echo '::error title=Migration failed (production)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
@@ -211,12 +233,13 @@ jobs:
             PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
             PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
             PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
+            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.prod}\"
             supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
           " || echo '::warning::Could not fetch migration status'
 
-      # Layer C: migration state as a markdown table in the run summary.
-      # Uses CLI's native markdown output (the `-o json` flag does NOT exist
-      # on `migration list` in v2.90.0).
+      # Layer C: migration state as a fenced code block in the run summary.
+      # Uses CLI's native text output (the `-o json` flag does NOT exist on
+      # `migration list` in the pinned CLI version — see env.SUPABASE_VERSION).
       - name: Migration summary (production)
         if: always()
         run: |
@@ -231,6 +254,7 @@ jobs:
               PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
               PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
               PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
+              : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.prod}\"
               supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
             " 2>/dev/null || echo '(migration state fetch failed)'
             echo '```'
@@ -239,6 +263,11 @@ jobs:
       - name: Rollback on failure
         if: failure()
         run: |
+          # DB state is NOT rolled back by this step. If `Apply database
+          # migrations` succeeded before the failing step, the database is now
+          # on a newer schema than the code being restored. Follow-up tracked
+          # in the `improve-deploy-migration-rollback` OpenSpec proposal.
+          echo '::warning title=Database schema NOT reverted::Rollback reverts code only. If migrations were applied before failure, manual DB intervention may be required.'
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
             if [ -f .previous_sha ]; then
@@ -417,14 +446,27 @@ jobs:
           "
 
       - name: Apply database migrations (staging)
+        env:
+          EXPECTED_CLI_VERSION: ${{ env.SUPABASE_VERSION }}
         run: |
           echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            command -v supabase >/dev/null || { echo '::error::supabase CLI not found on deploy host'; exit 1; }
+            ACTUAL_CLI_VERSION=\$(supabase --version | tr -d '[:space:]')
+            if [ \"\$ACTUAL_CLI_VERSION\" != \"$EXPECTED_CLI_VERSION\" ]; then
+              echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
+              exit 1
+            fi
             PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
             PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
             PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
             PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
+            : \"\${PG_USER:?POSTGRES_USER missing from .env.staging}\"
+            : \"\${PG_PASSWORD:?POSTGRES_PASSWORD missing from .env.staging}\"
+            : \"\${PG_DB:?POSTGRES_DB missing from .env.staging}\"
+            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.staging}\"
             supabase db push --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug --yes
           " || {
             echo '::error title=Migration failed (staging)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
@@ -441,6 +483,7 @@ jobs:
             PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
             PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
             PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
+            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.staging}\"
             supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
           " || echo '::warning::Could not fetch migration status'
 
@@ -458,6 +501,7 @@ jobs:
               PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
               PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
               PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
+              : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.staging}\"
               supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
             " 2>/dev/null || echo '(migration state fetch failed)'
             echo '```'
@@ -466,6 +510,9 @@ jobs:
       - name: Rollback on failure
         if: failure()
         run: |
+          # DB state is NOT rolled back by this step. See the matching comment
+          # on the production rollback step above.
+          echo '::warning title=Database schema NOT reverted::Rollback reverts code only. If migrations were applied before failure, manual DB intervention may be required.'
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
             if [ -f .previous_sha ]; then

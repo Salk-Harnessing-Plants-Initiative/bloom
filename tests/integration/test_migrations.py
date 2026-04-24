@@ -38,20 +38,33 @@ def test_tracking_table_in_canonical_schema(pg_conn):
 def test_all_migrations_recorded(pg_conn):
     """
     Every `supabase/migrations/*.sql` file must have a matching row in
-    `supabase_migrations.schema_migrations` after `db push` runs. If the row
-    count is less, `db push` silently skipped something.
+    `supabase_migrations.schema_migrations` after `db push` runs, and the
+    tracking table must not contain orphan rows that don't correspond to
+    a file on disk. A set comparison catches both directions — count
+    equality passes trivially if the same total hides missing+extra rows.
     """
     migration_files = sorted(glob.glob(str(REPO_ROOT / "supabase/migrations/*.sql")))
     assert migration_files, "No migration files found; fixture/layout may have changed"
 
-    with pg_conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM supabase_migrations.schema_migrations")
-        recorded = cur.fetchone()[0]
+    # Filename → version (strip the first 14-digit timestamp prefix). The
+    # Supabase CLI records this timestamp in the `version` column.
+    file_versions = {Path(f).name.split("_", 1)[0] for f in migration_files}
 
-    assert recorded == len(migration_files), (
-        f"Tracking table has {recorded} rows but there are "
-        f"{len(migration_files)} migration files. Missing migrations will "
-        f"silently be re-applied on the next deploy."
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT version FROM supabase_migrations.schema_migrations")
+        recorded_versions = {row[0] for row in cur.fetchall()}
+
+    missing_from_db = file_versions - recorded_versions
+    orphans_in_db = recorded_versions - file_versions
+
+    assert not missing_from_db, (
+        f"{len(missing_from_db)} migration file(s) NOT recorded in "
+        f"supabase_migrations.schema_migrations — db push silently skipped: "
+        f"{sorted(missing_from_db)}"
+    )
+    assert not orphans_in_db, (
+        f"{len(orphans_in_db)} tracking-table row(s) have no matching file "
+        f"on disk — structural drift: {sorted(orphans_in_db)}"
     )
 
 

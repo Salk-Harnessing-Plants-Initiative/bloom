@@ -101,14 +101,23 @@ POSTGRES_HOST_PORT = os.environ.get("POSTGRES_HOST_PORT", _env.get("POSTGRES_HOS
 @pytest.fixture
 def pg_conn():
     """
-    Connect to Postgres via the host-exposed port. Requires `psycopg[binary]`
-    (add to test requirements). Skips the test if psycopg isn't installed so
-    the rest of the suite runs even without the new dependency.
+    Connect to Postgres via the host-exposed port. Requires `psycopg[binary]`.
+
+    If `POSTGRES_PASSWORD` is set in the environment we treat a DB as
+    expected-available and FAIL on missing psycopg — a silent skip there
+    masks the whole point of the migration-runner integration tests. If
+    no password is configured (local dev without a compose stack) we skip.
     """
     try:
         import psycopg  # type: ignore
     except ImportError:
-        pytest.skip("psycopg not installed — `uv pip install 'psycopg[binary]'` to enable")
+        if POSTGRES_PASSWORD:
+            pytest.fail(
+                "psycopg not installed in a DB-configured environment. "
+                "Install with `uv pip install 'psycopg[binary]'` or add "
+                "`--with 'psycopg[binary]'` to the pytest invocation."
+            )
+        pytest.skip("psycopg not installed and no POSTGRES_PASSWORD set — local-dev skip")
 
     conninfo = (
         f"host=127.0.0.1 port={POSTGRES_HOST_PORT} "

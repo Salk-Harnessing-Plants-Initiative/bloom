@@ -395,6 +395,10 @@ jobs:
           echo "::add-mask::$PG_PASSWORD"
           PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
           PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
+          : "${PG_USER:?POSTGRES_USER missing from .env.ci}"
+          : "${PG_PASSWORD:?POSTGRES_PASSWORD missing from .env.ci}"
+          : "${PG_DB:?POSTGRES_DB missing from .env.ci}"
+          : "${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.ci}"
           # --debug works around supabase-cli #4839 (sslmode=disable silently
           # ignored without it on self-hosted Postgres without TLS). Not
           # verbose-logging for the sake of it — it actually changes the code
@@ -419,14 +423,15 @@ jobs:
           echo "::add-mask::$PG_PASSWORD"
           PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
           PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
+          : "${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.ci}"
           supabase migration list \
             --db-url "postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_HOST_PORT}/${PG_DB}?sslmode=disable" \
             --debug \
             || echo "::warning::Could not fetch migration status"
 
-      # Layer C — markdown table of migration state in the run's summary panel.
-      # Uses CLI's native markdown output (the `-o json` flag does NOT exist on
-      # `migration list` in v2.90.0).
+      # Layer C — fenced code block of migration state in the run's summary panel.
+      # Uses CLI's native text output (the `-o json` flag does NOT exist on
+      # `migration list` in the pinned CLI version — see SUPABASE_VERSION above).
       - name: Migration summary
         if: always()
         run: |
@@ -435,6 +440,7 @@ jobs:
           echo "::add-mask::$PG_PASSWORD"
           PG_DB=$(grep -E '^POSTGRES_DB=' .env.ci | cut -d= -f2-)
           PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' .env.ci | cut -d= -f2-)
+          : "${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.ci}"
           {
             echo "## Database migration state"
             echo ""
@@ -453,13 +459,18 @@ jobs:
           docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T supabase-minio \
             sh -c 'echo "ci-test" > /tmp/ci-test.txt && mc cp /tmp/ci-test.txt local/images/ci-test.txt && mc rm local/images/ci-test.txt && echo "Write test passed"' 2>&1 || echo "::warning::MinIO write test failed"
 
-      # Runs 22 integration tests (smoke, auth, RLS, storage, API routing) against the live compose stack
-      # Skips if tests/integration/ doesn't exist on this branch
+      # Runs integration tests (smoke, auth, RLS, storage, API routing,
+      # migration runner) against the live compose stack. Skips the whole
+      # step if the tests directory is absent.
+      #
+      # psycopg[binary] is required for the `pg_conn` fixture used by the
+      # migration-runner tests; without it the fixture FAILS (not skips) when
+      # POSTGRES_PASSWORD is set — see tests/integration/conftest.py.
       - name: Run integration tests
         run: |
           if [ -d "tests/integration" ]; then
             pip install uv
-            uv run --with pytest pytest tests/integration/ -v --tb=short
+            uv run --with pytest --with 'psycopg[binary]' pytest tests/integration/ -v --tb=short
           else
             echo "No integration tests found — skipping"
           fi
@@ -467,6 +478,10 @@ jobs:
           TEST_BASE_URL: http://localhost
           ANON_KEY: ${{ secrets.CI_ANON_KEY }}
           SERVICE_ROLE_KEY: ${{ secrets.CI_SERVICE_ROLE_KEY }}
+          POSTGRES_USER: supabase_admin
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+          POSTGRES_DB: postgres
+          POSTGRES_HOST_PORT: "5432"
 
       - name: Debug logs on failure
         if: failure()
