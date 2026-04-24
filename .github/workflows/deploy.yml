@@ -74,37 +74,37 @@ jobs:
 
       - name: Install env defaults on server
         run: |
+          # Write to .env.prod.next (not .env.prod). The real .env.prod
+          # stays the last-good file until the atomic rename in the next
+          # step. rm -f clears any stale .next from a previously-crashed
+          # deploy so install doesn't refuse on an existing file.
+          rm -f "${{ secrets.PROD_DEPLOY_PATH }}/.env.prod.next"
           install -m 600 "${{ github.workspace }}/.env.prod.defaults" \
-            "${{ secrets.PROD_DEPLOY_PATH }}/.env.prod"
+            "${{ secrets.PROD_DEPLOY_PATH }}/.env.prod.next"
 
-      - name: Append secrets to .env.prod
+      - name: Append secrets, validate, and promote to .env.prod
         run: |
           set -euo pipefail
           umask 077
-          f="${{ secrets.PROD_DEPLOY_PATH }}/.env.prod"
-          prev="${{ secrets.PROD_DEPLOY_PATH }}/.env.prod.previous"
+          f_next="${{ secrets.PROD_DEPLOY_PATH }}/.env.prod.next"
+          f_final="${{ secrets.PROD_DEPLOY_PATH }}/.env.prod"
 
-          # If the append is interrupted mid-write (workflow cancel, SIGTERM
-          # from timeout-minutes, SSH drop, any ERR), restore the previous
-          # good .env.prod from the snapshot so the next read sees a whole
-          # file, never a half-written one.
-          _restore_on_interrupt() {
-            if [ -f "$prev" ]; then
-              echo "::warning::Interrupt during secrets append — restoring .env.prod from snapshot" >&2
-              cp -p "$prev" "$f"
-            else
-              echo "::warning::Interrupt during secrets append — no snapshot to restore; removing partial file" >&2
-              rm -f "$f"
-            fi
+          # If anything fails before the atomic rename, remove the partial
+          # .env.prod.next. The real .env.prod is untouched — this deploy
+          # exits cleanly with the previous good env intact, so the next
+          # deploy's snapshot step can't copy a poisoned file into
+          # .env.prod.previous.
+          _cleanup_on_interrupt() {
+            echo "::warning::Interrupt during env assembly — removing partial .env.prod.next (last-good .env.prod preserved)" >&2
+            rm -f "$f_next"
             exit 1
           }
-          trap _restore_on_interrupt INT TERM HUP ERR
+          trap _cleanup_on_interrupt INT TERM HUP ERR
 
           # The `# _EOF_MARKER_` sentinel is the last line of the heredoc.
-          # The validator step rejects any env file whose last line isn't
-          # the marker — guarantees truncated files never reach
-          # `docker compose up`.
-          cat >> "$f" << 'SECRETS'
+          # The validator rejects any env file whose last line isn't the
+          # marker — guarantees truncated files never reach the rename.
+          cat >> "$f_next" << 'SECRETS'
           POSTGRES_PASSWORD=${{ secrets.PROD_POSTGRES_PASSWORD }}
           JWT_SECRET=${{ secrets.PROD_JWT_SECRET }}
           ANON_KEY=${{ secrets.PROD_ANON_KEY }}
@@ -125,17 +125,17 @@ jobs:
           # _EOF_MARKER_
           SECRETS
 
-          # Validate the assembled file while the trap is still armed so a
-          # missing/malformed key triggers _restore_on_interrupt (restores
-          # the snapshot or removes the partial file). Logic lives in
-          # scripts/validate_env.sh so workflow and unit tests share one
-          # source of truth and can never drift.
+          # Validate under the trap so a bad file triggers cleanup.
           bash "${{ github.workspace }}/scripts/validate_env.sh" \
-            "$f" \
+            "$f_next" \
             "${{ github.workspace }}/docker-compose.prod.yml"
 
-          # Validation passed — clear the trap so normal deploy flow
-          # continues (snapshot stays for rollback use).
+          # Atomic rename: single syscall on the same filesystem. Either
+          # .env.prod is fully replaced by the new file, or it stays the
+          # old file — never a half-written state. Compose and future
+          # snapshot steps only ever see a fully-assembled .env.prod.
+          mv "$f_next" "$f_final"
+
           trap - INT TERM HUP ERR
 
       # Catches the case where the runner user (who writes .env.prod at mode 600)
@@ -518,31 +518,27 @@ jobs:
 
       - name: Install env defaults on server
         run: |
+          # Write to .env.staging.next (atomic-rename pattern) — see prod step.
+          rm -f "${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging.next"
           install -m 600 "${{ github.workspace }}/.env.staging.defaults" \
-            "${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
+            "${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging.next"
 
-      - name: Append secrets to .env.staging
-        # Same trap + sentinel-marker pattern as the prod step; see that
-        # step for the full rationale.
+      - name: Append secrets, validate, and promote to .env.staging
+        # Atomic-rename pattern mirrors prod; see prod step for full rationale.
         run: |
           set -euo pipefail
           umask 077
-          f="${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
-          prev="${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging.previous"
+          f_next="${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging.next"
+          f_final="${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
 
-          _restore_on_interrupt() {
-            if [ -f "$prev" ]; then
-              echo "::warning::Interrupt during secrets append — restoring .env.staging from snapshot" >&2
-              cp -p "$prev" "$f"
-            else
-              echo "::warning::Interrupt during secrets append — no snapshot to restore; removing partial file" >&2
-              rm -f "$f"
-            fi
+          _cleanup_on_interrupt() {
+            echo "::warning::Interrupt during env assembly — removing partial .env.staging.next (last-good .env.staging preserved)" >&2
+            rm -f "$f_next"
             exit 1
           }
-          trap _restore_on_interrupt INT TERM HUP ERR
+          trap _cleanup_on_interrupt INT TERM HUP ERR
 
-          cat >> "$f" << 'SECRETS'
+          cat >> "$f_next" << 'SECRETS'
           POSTGRES_PASSWORD=${{ secrets.STAGING_POSTGRES_PASSWORD }}
           JWT_SECRET=${{ secrets.STAGING_JWT_SECRET }}
           ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
@@ -563,11 +559,11 @@ jobs:
           # _EOF_MARKER_
           SECRETS
 
-          # See prod step for rationale — validate under the trap so the
-          # restore path covers validation failures too.
           bash "${{ github.workspace }}/scripts/validate_env.sh" \
-            "$f" \
+            "$f_next" \
             "${{ github.workspace }}/docker-compose.prod.yml"
+
+          mv "$f_next" "$f_final"
 
           trap - INT TERM HUP ERR
 
