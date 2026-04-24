@@ -2,7 +2,7 @@ name: PR Checks
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, staging]
 
 # Minimum required across jobs. Read-only by default; individual jobs that
 # need to post sticky PR comments (Trivy reports) rely on pull-requests: write.
