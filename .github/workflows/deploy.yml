@@ -16,6 +16,12 @@ on:
           - staging
           - production
 
+env:
+  # Supabase CLI version — MUST match the value pinned in pr-checks.yml and
+  # the version installed on the Salk deploy server. Before deploy each
+  # migration step asserts `supabase --version` equals this.
+  SUPABASE_VERSION: "2.92.1"
+
 jobs:
   deploy-production:
     name: Deploy to Production
@@ -74,6 +80,7 @@ jobs:
           CADDY_HTTP_LISTEN_PORT=${{ secrets.PROD_CADDY_HTTP_LISTEN_PORT }}
           CADDY_HTTPS_LISTEN_PORT=${{ secrets.PROD_CADDY_HTTPS_LISTEN_PORT }}
           CADDY_HTTP_PORT=
+          POSTGRES_HOST_PORT=5432
           KONG_PORT=${{ secrets.PROD_KONG_PORT }}
           BLOOM_WEB_PORT=${{ secrets.PROD_BLOOM_WEB_PORT }}
           STUDIO_PORT=${{ secrets.PROD_STUDIO_PORT }}
@@ -274,9 +281,110 @@ jobs:
             echo '::endgroup::'
           "
 
+      # storage-api creates `storage.buckets` asynchronously on startup. The
+      # container-level healthcheck signals "Fastify listening" — NOT "schema
+      # ready". Poll for the table so migrations that reference it don't race
+      # storage-api's internal init. (Preserves the polling intent from #138
+      # item 1, positioned post-health-check to fit PR #142's structure.)
+      - name: Wait for storage schema (production)
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            for i in \$(seq 1 60); do
+              if docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T db-prod \
+                   psql -U supabase_admin -d postgres -tAc \
+                   \"SELECT 1 FROM information_schema.tables WHERE table_schema='storage' AND table_name='buckets'\" 2>/dev/null \
+                   | grep -q '^1\$'; then
+                echo 'storage.buckets ready (attempt '\$i')'
+                exit 0
+              fi
+              sleep 2
+            done
+            echo '::error::storage.buckets did not appear within 120s — storage-api schema init failed'
+            exit 1
+          "
+
+      # Apply migrations via Supabase CLI (installed on the Salk server per #135).
+      # Extract only Postgres connection vars — avoids leaking JWT_SECRET / keys
+      # into the subprocess environment. The `: "${VAR:?msg}"` guards fail the
+      # remote script with a clear error if any key is missing from .env.prod,
+      # rather than letting `supabase db push` fail later with a cryptic URL
+      # parse / auth error.
+      - name: Apply database migrations (production)
+        env:
+          EXPECTED_CLI_VERSION: ${{ env.SUPABASE_VERSION }}
+        run: |
+          echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            command -v supabase >/dev/null || { echo '::error::supabase CLI not found on deploy host'; exit 1; }
+            ACTUAL_CLI_VERSION=\$(supabase --version | tr -d '[:space:]')
+            if [ \"\$ACTUAL_CLI_VERSION\" != \"$EXPECTED_CLI_VERSION\" ]; then
+              echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
+              exit 1
+            fi
+            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
+            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
+            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
+            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
+            : \"\${PG_USER:?POSTGRES_USER missing from .env.prod}\"
+            : \"\${PG_PASSWORD:?POSTGRES_PASSWORD missing from .env.prod}\"
+            : \"\${PG_DB:?POSTGRES_DB missing from .env.prod}\"
+            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.prod}\"
+            supabase db push --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug --yes
+          " || {
+            echo '::error title=Migration failed (production)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
+            exit 1
+          }
+
+      # Layer B: diagnostic on any failure upstream. Lists applied vs pending
+      # so on-call can see which migration broke without scrolling logs.
+      - name: Show migration status on failure (production)
+        if: failure()
+        run: |
+          echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
+            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
+            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
+            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
+            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.prod}\"
+            supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
+          " || echo '::warning::Could not fetch migration status'
+
+      # Layer C: migration state as a fenced code block in the run summary.
+      # Uses CLI's native text output (the `-o json` flag does NOT exist on
+      # `migration list` in the pinned CLI version — see env.SUPABASE_VERSION).
+      - name: Migration summary (production)
+        if: always()
+        run: |
+          echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
+          {
+            echo "## Database migration state (production)"
+            echo ""
+            echo '```'
+            ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+              cd ${{ secrets.PROD_DEPLOY_PATH }}
+              PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
+              PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
+              PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
+              PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
+              : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.prod}\"
+              supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
+            " 2>/dev/null || echo '(migration state fetch failed)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Rollback on failure
         if: failure()
         run: |
+          # DB state is NOT rolled back by this step. If `Apply database
+          # migrations` succeeded before the failing step, the database is now
+          # on a newer schema than the code being restored. Follow-up tracked
+          # in issue #177.
+          echo '::warning title=Database schema NOT reverted::Rollback reverts code only. If migrations were applied before failure, manual DB intervention may be required. See https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/177.'
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -e
             cd ${{ secrets.PROD_DEPLOY_PATH }}
@@ -366,6 +474,7 @@ jobs:
           CADDY_HTTP_LISTEN_PORT=${{ secrets.STAGING_CADDY_HTTP_LISTEN_PORT }}
           CADDY_HTTPS_LISTEN_PORT=${{ secrets.STAGING_CADDY_HTTPS_LISTEN_PORT }}
           CADDY_HTTP_PORT=
+          POSTGRES_HOST_PORT=5433
           KONG_PORT=${{ secrets.STAGING_KONG_PORT }}
           BLOOM_WEB_PORT=${{ secrets.STAGING_BLOOM_WEB_PORT }}
           STUDIO_PORT=${{ secrets.STAGING_STUDIO_PORT }}
@@ -548,9 +657,93 @@ jobs:
             echo '::endgroup::'
           "
 
+      # See production "Wait for storage schema" step for the reasoning.
+      - name: Wait for storage schema (staging)
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            for i in \$(seq 1 60); do
+              if docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T db-prod \
+                   psql -U supabase_admin -d postgres -tAc \
+                   \"SELECT 1 FROM information_schema.tables WHERE table_schema='storage' AND table_name='buckets'\" 2>/dev/null \
+                   | grep -q '^1\$'; then
+                echo 'storage.buckets ready (attempt '\$i')'
+                exit 0
+              fi
+              sleep 2
+            done
+            echo '::error::storage.buckets did not appear within 120s — storage-api schema init failed'
+            exit 1
+          "
+
+      - name: Apply database migrations (staging)
+        env:
+          EXPECTED_CLI_VERSION: ${{ env.SUPABASE_VERSION }}
+        run: |
+          echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            command -v supabase >/dev/null || { echo '::error::supabase CLI not found on deploy host'; exit 1; }
+            ACTUAL_CLI_VERSION=\$(supabase --version | tr -d '[:space:]')
+            if [ \"\$ACTUAL_CLI_VERSION\" != \"$EXPECTED_CLI_VERSION\" ]; then
+              echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
+              exit 1
+            fi
+            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
+            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
+            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
+            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
+            : \"\${PG_USER:?POSTGRES_USER missing from .env.staging}\"
+            : \"\${PG_PASSWORD:?POSTGRES_PASSWORD missing from .env.staging}\"
+            : \"\${PG_DB:?POSTGRES_DB missing from .env.staging}\"
+            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.staging}\"
+            supabase db push --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug --yes
+          " || {
+            echo '::error title=Migration failed (staging)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
+            exit 1
+          }
+
+      - name: Show migration status on failure (staging)
+        if: failure()
+        run: |
+          echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
+            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
+            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
+            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
+            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.staging}\"
+            supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
+          " || echo '::warning::Could not fetch migration status'
+
+      - name: Migration summary (staging)
+        if: always()
+        run: |
+          echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
+          {
+            echo "## Database migration state (staging)"
+            echo ""
+            echo '```'
+            ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+              cd ${{ secrets.STAGING_DEPLOY_PATH }}
+              PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
+              PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
+              PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
+              PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
+              : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.staging}\"
+              supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
+            " 2>/dev/null || echo '(migration state fetch failed)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Rollback on failure
         if: failure()
         run: |
+          # DB state is NOT rolled back by this step. See the matching comment
+          # on the production rollback step above and issue #177.
+          echo '::warning title=Database schema NOT reverted::Rollback reverts code only. If migrations were applied before failure, manual DB intervention may be required. See https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/177.'
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -e
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
