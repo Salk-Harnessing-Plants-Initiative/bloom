@@ -305,6 +305,34 @@ jobs:
             exit 1
           "
 
+      # Gate: only invoke `supabase db push` when pending > 0. Parses
+      # `supabase migration list` output — rows with a LOCAL timestamp but
+      # no REMOTE timestamp are pending migrations. Fail-open: an empty /
+      # unparseable result defaults to 1 so the push still runs.
+      - name: Check for pending migrations (production)
+        id: check_migrations_prod
+        run: |
+          echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
+          PENDING=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -eu
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
+            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
+            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
+            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
+            supabase migration list \
+              --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" \
+              2>/dev/null \
+              | awk -F'|' 'NR>2 && \$1 ~ /[0-9]{14}/ && \$2 !~ /[0-9]/ {c++} END {print c+0}'
+          ")
+          echo "Pending migrations: ${PENDING:-unknown}"
+          echo "pending=${PENDING:-1}" >> "$GITHUB_OUTPUT"
+          if [ "${PENDING:-1}" -eq 0 ]; then
+            echo "::notice title=Migrations::No pending migrations — skipping db push"
+          else
+            echo "::notice title=Migrations::${PENDING:-1} pending migration(s) — running db push"
+          fi
+
       # Apply migrations via Supabase CLI (installed on the Salk server per #135).
       # Extract only Postgres connection vars — avoids leaking JWT_SECRET / keys
       # into the subprocess environment. The `: "${VAR:?msg}"` guards fail the
@@ -312,6 +340,7 @@ jobs:
       # rather than letting `supabase db push` fail later with a cryptic URL
       # parse / auth error.
       - name: Apply database migrations (production)
+        if: steps.check_migrations_prod.outputs.pending != '0'
         env:
           EXPECTED_CLI_VERSION: ${{ env.SUPABASE_VERSION }}
         run: |
@@ -678,7 +707,32 @@ jobs:
             exit 1
           "
 
+      - name: Check for pending migrations (staging)
+        id: check_migrations_staging
+        run: |
+          echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
+          PENDING=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -eu
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
+            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
+            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
+            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
+            supabase migration list \
+              --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" \
+              2>/dev/null \
+              | awk -F'|' 'NR>2 && \$1 ~ /[0-9]{14}/ && \$2 !~ /[0-9]/ {c++} END {print c+0}'
+          ")
+          echo "Pending migrations: ${PENDING:-unknown}"
+          echo "pending=${PENDING:-1}" >> "$GITHUB_OUTPUT"
+          if [ "${PENDING:-1}" -eq 0 ]; then
+            echo "::notice title=Migrations::No pending migrations — skipping db push"
+          else
+            echo "::notice title=Migrations::${PENDING:-1} pending migration(s) — running db push"
+          fi
+
       - name: Apply database migrations (staging)
+        if: steps.check_migrations_staging.outputs.pending != '0'
         env:
           EXPECTED_CLI_VERSION: ${{ env.SUPABASE_VERSION }}
         run: |
