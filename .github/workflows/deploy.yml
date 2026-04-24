@@ -80,6 +80,7 @@ jobs:
           CADDY_HTTP_LISTEN_PORT=${{ secrets.PROD_CADDY_HTTP_LISTEN_PORT }}
           CADDY_HTTPS_LISTEN_PORT=${{ secrets.PROD_CADDY_HTTPS_LISTEN_PORT }}
           CADDY_HTTP_PORT=
+          CADDY_TLS_DIRECTIVE=tls internal
           POSTGRES_HOST_PORT=5432
           KONG_PORT=${{ secrets.PROD_KONG_PORT }}
           BLOOM_WEB_PORT=${{ secrets.PROD_BLOOM_WEB_PORT }}
@@ -474,6 +475,7 @@ jobs:
           CADDY_HTTP_LISTEN_PORT=${{ secrets.STAGING_CADDY_HTTP_LISTEN_PORT }}
           CADDY_HTTPS_LISTEN_PORT=${{ secrets.STAGING_CADDY_HTTPS_LISTEN_PORT }}
           CADDY_HTTP_PORT=
+          CADDY_TLS_DIRECTIVE=tls internal
           POSTGRES_HOST_PORT=5433
           KONG_PORT=${{ secrets.STAGING_KONG_PORT }}
           BLOOM_WEB_PORT=${{ secrets.STAGING_BLOOM_WEB_PORT }}
