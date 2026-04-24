@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Verify prod/staging env-block parity in a GitHub Actions deploy workflow.
 
-Scope: structural check of the `cat > .env.prod << 'ENVEOF' ... ENVEOF` and
-`cat > .env.staging << 'ENVEOF' ... ENVEOF` heredocs inside a workflow YAML.
-Catches cross-prefix secret leaks, composite-value drift, literal-vs-secret
-asymmetry, unexpected env blocks, and malformed `${{ secrets.X }}` refs.
+Scope: structural check of the secret-append heredocs inside deploy.yml —
 
-Authoritative spec:
-    openspec/changes/update-env-parity-check/specs/deploy-env-parity/spec.md
+    f="…/.env.prod"
+    cat >> "$f" << 'SECRETS'
+      KEY=${{ secrets.PROD_KEY }}
+      …
+      SECRETS
+
+…and the mirror block for `.env.staging`. Catches cross-prefix secret leaks,
+composite-value drift, literal-vs-secret asymmetry, unexpected env blocks,
+and malformed `${{ secrets.X }}` refs.
 
 Usage:
     python3 scripts/verify_env_parity.py .github/workflows/deploy.yml
@@ -21,8 +25,23 @@ import re
 import sys
 from pathlib import Path
 
+# Match either legacy (`cat > .env.prod << 'EOF'`) or new-style append
+# (`cat >> "$f" << 'SECRETS'`) heredoc starts. group(1) is the captured env
+# name if the cat line names it directly; group(2) is the shell var (like `f`)
+# if the cat line references one; group(3) is the terminator. Exactly one of
+# group(1) / group(2) is populated on a match.
 HEREDOC_START = re.compile(
-    r"cat\s*>\s*[^<]*\.env\.([a-z][a-z0-9_]*)\s*<<\s*'([A-Z_]+)'"
+    r"""cat\s*>>?\s*(?:
+        [^<"'\s]*\.env\.(?P<env_inline>[a-z][a-z0-9_]*)
+      |
+        ["']?\$\{?(?P<shell_var>\w+)\}?["']?
+    )\s*<<\s*'(?P<terminator>[A-Z_]+)'""",
+    re.VERBOSE,
+)
+# Matches a shell assignment of a path ending in `.env.<env>`.
+# Used to resolve the env name for heredocs that write through a variable.
+VAR_ASSIGN = re.compile(
+    r"""^\s*(?P<var>\w+)=["'][^"']*\.env\.(?P<env>[a-z][a-z0-9_]*)["']"""
 )
 LINE_PARSER = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
 SECRET_REF = re.compile(r"\$\{\{\s*secrets\.([^}\s]+)\s*\}\}")
@@ -56,9 +75,26 @@ def discover_blocks(path: Path):
             i += 1
             continue
 
-        env_name = m.group(1)
-        terminator = m.group(2)
+        terminator = m.group("terminator")
         start_line = i + 1
+
+        env_name = m.group("env_inline")
+        if env_name is None:
+            # Heredoc writes through a shell var (e.g. `cat >> "$f"`). Walk
+            # back from this line to find the assignment that set that var
+            # to a `.env.<env>` path, and use that env name.
+            shell_var = m.group("shell_var")
+            for k in range(i - 1, max(-1, i - 50), -1):
+                am = VAR_ASSIGN.match(text[k])
+                if am and am.group("var") == shell_var:
+                    env_name = am.group("env")
+                    break
+            if env_name is None:
+                # Indeterminate heredoc target — skip without flagging;
+                # surrounding context (step name, job structure) would need
+                # human review, not a mechanical parity check.
+                i += 1
+                continue
 
         body: list[tuple[int, str]] = []
         j = i + 1
