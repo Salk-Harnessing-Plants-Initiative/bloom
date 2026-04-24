@@ -125,17 +125,18 @@ jobs:
           # _EOF_MARKER_
           SECRETS
 
-          # Heredoc completed without interrupt — clear the trap so normal
-          # deploy flow continues (snapshot stays for rollback use).
-          trap - INT TERM HUP ERR
-
-      - name: Validate .env.prod has all required keys
-        # Logic lives in scripts/validate_env.sh so workflow and unit tests
-        # share one source of truth and can never drift.
-        run: |
+          # Validate the assembled file while the trap is still armed so a
+          # missing/malformed key triggers _restore_on_interrupt (restores
+          # the snapshot or removes the partial file). Logic lives in
+          # scripts/validate_env.sh so workflow and unit tests share one
+          # source of truth and can never drift.
           bash "${{ github.workspace }}/scripts/validate_env.sh" \
-            "${{ secrets.PROD_DEPLOY_PATH }}/.env.prod" \
+            "$f" \
             "${{ github.workspace }}/docker-compose.prod.yml"
+
+          # Validation passed — clear the trap so normal deploy flow
+          # continues (snapshot stays for rollback use).
+          trap - INT TERM HUP ERR
 
       # Catches the case where the runner user (who writes .env.prod at mode 600)
       # and DEPLOY_USER (who reads it when docker compose runs) diverge. Without
@@ -562,15 +563,13 @@ jobs:
           # _EOF_MARKER_
           SECRETS
 
-          trap - INT TERM HUP ERR
-
-      - name: Validate .env.staging has all required keys
-        # Same script as the prod validator — the compose file is the
-        # source of truth for both environments.
-        run: |
+          # See prod step for rationale — validate under the trap so the
+          # restore path covers validation failures too.
           bash "${{ github.workspace }}/scripts/validate_env.sh" \
-            "${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging" \
+            "$f" \
             "${{ github.workspace }}/docker-compose.prod.yml"
+
+          trap - INT TERM HUP ERR
 
       # See deploy-production's equivalent step for rationale.
       - name: Verify DEPLOY_USER can read .env.staging
