@@ -214,7 +214,7 @@ docker build --target builder -f web/Dockerfile.bloom-web.prod .
 docker exec db-dev pg_isready -U supabase_admin -h localhost
 
 # Apply migrations
-make apply-migrations-local
+make migrate-local
 
 # Check migration status
 docker exec db-dev psql -U supabase_admin -d postgres -c "SELECT * FROM _migrations ORDER BY applied_at;"
@@ -298,7 +298,7 @@ When CI fails:
 - [ ] Can you reproduce locally?
 - [ ] Are all Docker services healthy? (`docker compose ps`)
 - [ ] Is the database ready? (`docker exec db-dev pg_isready`)
-- [ ] Are migrations applied? (`make apply-migrations-local`)
+- [ ] Are migrations applied? (`make migrate-local`)
 - [ ] Are environment variables set?
 - [ ] Did a dependency update introduce a CVE? (`npm audit` / `uv export | uvx pip-audit`)
 - [ ] Is the Docker build cache stale? (`docker compose build --no-cache`)

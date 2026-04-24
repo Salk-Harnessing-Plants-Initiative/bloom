@@ -307,30 +307,40 @@ jobs:
 
       # Gate: only invoke `supabase db push` when pending > 0. Parses
       # `supabase migration list` output — rows with a LOCAL timestamp but
-      # no REMOTE timestamp are pending migrations. Fail-open: an empty /
-      # unparseable result defaults to 1 so the push still runs.
+      # no REMOTE timestamp are pending migrations. `--debug` is required to
+      # dodge supabase/cli#4839 (TLS handshake against non-TLS Postgres).
+      # Fail-open: any SSH/CLI error, empty stdout, or header-only output
+      # produces `pending=unknown`, which the Apply step's `!= '0'` check
+      # treats as "run the push" — never silently skip on ambiguous signal.
       - name: Check for pending migrations (production)
         id: check_migrations_prod
         run: |
           echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
           PENDING=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
-            set -eu
+            set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
             PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
             PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
             PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
             PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
-            supabase migration list \
+            supabase migration list --debug \
               --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" \
               2>/dev/null \
-              | awk -F'|' 'NR>2 && \$1 ~ /[0-9]{14}/ && \$2 !~ /[0-9]/ {c++} END {print c+0}'
-          ")
-          echo "Pending migrations: ${PENDING:-unknown}"
-          echo "pending=${PENDING:-1}" >> "$GITHUB_OUTPUT"
-          if [ "${PENDING:-1}" -eq 0 ]; then
-            echo "::notice title=Migrations::No pending migrations — skipping db push"
+              | awk -F'|' 'NR>2 && \$1 ~ /[0-9]{14}/ && \$2 !~ /[0-9]/ {c++} END { if (NR < 3) { print \"unknown\"; exit 2 } print c+0 }'
+          ") || PENDING="unknown"
+          case "$PENDING" in ''|*[!0-9]*) PENDING="unknown" ;; esac
+          if [ "$PENDING" = "unknown" ]; then
+            echo "pending=unknown" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Migrations::Could not determine pending migration count — forcing db push (fail-open)"
+            echo "⚠️ Migration gate (prod): unable to parse \`supabase migration list\` output — forcing \`db push\` (fail-open)." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PENDING" -eq 0 ]; then
+            echo "pending=0" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Migrations::No pending migrations — skipping db push"
+            echo "ℹ️ Migration gate (prod): 0 pending — \`supabase db push\` skipped." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::notice title=Migrations::${PENDING:-1} pending migration(s) — running db push"
+            echo "pending=$PENDING" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Migrations::$PENDING pending migration(s) — running db push"
+            echo "✅ Migration gate (prod): $PENDING pending — running \`supabase db push\`." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       # Apply migrations via Supabase CLI (installed on the Salk server per #135).
@@ -707,28 +717,37 @@ jobs:
             exit 1
           "
 
+      # See the production gate (above) for the full rationale — staging
+      # uses the identical pattern so the two envs can't silently diverge.
       - name: Check for pending migrations (staging)
         id: check_migrations_staging
         run: |
           echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
           PENDING=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
-            set -eu
+            set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
             PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
             PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
             PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
             PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
-            supabase migration list \
+            supabase migration list --debug \
               --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" \
               2>/dev/null \
-              | awk -F'|' 'NR>2 && \$1 ~ /[0-9]{14}/ && \$2 !~ /[0-9]/ {c++} END {print c+0}'
-          ")
-          echo "Pending migrations: ${PENDING:-unknown}"
-          echo "pending=${PENDING:-1}" >> "$GITHUB_OUTPUT"
-          if [ "${PENDING:-1}" -eq 0 ]; then
-            echo "::notice title=Migrations::No pending migrations — skipping db push"
+              | awk -F'|' 'NR>2 && \$1 ~ /[0-9]{14}/ && \$2 !~ /[0-9]/ {c++} END { if (NR < 3) { print \"unknown\"; exit 2 } print c+0 }'
+          ") || PENDING="unknown"
+          case "$PENDING" in ''|*[!0-9]*) PENDING="unknown" ;; esac
+          if [ "$PENDING" = "unknown" ]; then
+            echo "pending=unknown" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Migrations::Could not determine pending migration count — forcing db push (fail-open)"
+            echo "⚠️ Migration gate (staging): unable to parse \`supabase migration list\` output — forcing \`db push\` (fail-open)." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PENDING" -eq 0 ]; then
+            echo "pending=0" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Migrations::No pending migrations — skipping db push"
+            echo "ℹ️ Migration gate (staging): 0 pending — \`supabase db push\` skipped." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::notice title=Migrations::${PENDING:-1} pending migration(s) — running db push"
+            echo "pending=$PENDING" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Migrations::$PENDING pending migration(s) — running db push"
+            echo "✅ Migration gate (staging): $PENDING pending — running \`supabase db push\`." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Apply database migrations (staging)

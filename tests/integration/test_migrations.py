@@ -8,11 +8,22 @@ on POSTGRES_HOST_PORT.
 """
 
 import glob
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+
+def _scrub_db_url(text: str) -> str:
+    """Redact embedded password from any `postgresql://user:pass@host/...` URL
+    before the string is included in an assertion message that may surface in
+    CI logs. `supabase db push --debug` can echo connection diagnostics to
+    stderr; we don't want to trust third-party CLIs to keep secrets out of
+    their debug output across version bumps.
+    """
+    return re.sub(r"(postgresql://[^:/@]+:)[^@\s]+(@)", r"\1***\2", text)
 
 
 REPO_ROOT = Path(__file__).parent.parent.parent
@@ -137,13 +148,20 @@ def test_db_push_is_idempotent(pg_conn, supabase_db_url):
         ["supabase", "db", "push", "--db-url", supabase_db_url, "--debug", "--yes"],
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=60,
     )
     assert result.returncode == 0, (
         f"`supabase db push` returned {result.returncode} on second run "
-        f"(expected no-op). stderr tail: {result.stderr[-500:]}"
+        f"(expected no-op). "
+        f"stdout tail: {_scrub_db_url(result.stdout[-500:])} "
+        f"stderr tail: {_scrub_db_url(result.stderr[-500:])}"
     )
 
+    # psycopg3 connections default to autocommit=False, so the `before`
+    # SELECT above opened a transaction and pinned an MVCC snapshot.
+    # End that transaction so the `after` SELECT reads a fresh snapshot
+    # that can observe any writes the out-of-process `supabase db push`
+    # may have committed concurrently.
     pg_conn.rollback()
     with pg_conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM supabase_migrations.schema_migrations")

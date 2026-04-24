@@ -235,7 +235,7 @@ ls -lh supabase/migrations/
   - [ ] Policy configuration (public vs private)
 - [ ] **Supabase configuration documented**
   - [ ] Self-hosted setup
-  - [ ] Migration workflow (`make apply-migrations-local`)
+  - [ ] Migration workflow (`make migrate-local`)
   - [ ] RLS policy guidelines
   - [ ] Studio UI access
   - [ ] Subpath deployment configuration
@@ -679,7 +679,7 @@ cp .env.dev.example .env.dev
 make dev-up
 
 # 5. Initialize database
-make apply-migrations-local
+make migrate-local
 
 # 6. Load test data
 cd web && npm run init-env
@@ -752,7 +752,7 @@ docker compose -f docker-compose.dev.yml logs -f web
 - [ ] Set up domain DNS records
 - [ ] Configure Supabase production instance
 - [ ] Initialize MinIO buckets and policies
-- [ ] Run database migrations: `make apply-migrations-local`
+- [ ] Run database migrations: `make migrate-local`
 - [ ] Test all endpoints with production URLs
 - [ ] Set up backup strategy (PostgreSQL, MinIO)
 - [ ] Configure monitoring and alerting
@@ -894,7 +894,7 @@ docker compose ps
 \```bash
 
 # Run Supabase migrations
-make apply-migrations-local
+make migrate-local
 
 # Load test data (optional)
 cd web && npm run init-env
@@ -962,7 +962,7 @@ docker compose -f docker-compose.dev.yml logs -f web
 **Database:**
 
 - Edit schemas in `supabase/migrations/`
-- Apply migrations: `make apply-migrations-local`
+- Apply migrations: `make migrate-local`
 - Create new migration: `supabase migration new <name>`
 
 ### Stopping Services
@@ -990,7 +990,7 @@ docker volume rm bloom_db-data
 
 # Restart and re-initialize
 make dev-up
-make apply-migrations-local
+make migrate-local
 cd web && npm run init-env
 \```
 
