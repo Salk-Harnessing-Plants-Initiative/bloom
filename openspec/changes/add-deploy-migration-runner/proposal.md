@@ -25,10 +25,10 @@ This proposal adopts **CLI installed on server + localhost port mapping** as the
 Documented as a pre-deploy step in [#135](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/135):
 
 ```bash
-SUPABASE_VERSION=2.90.0
+SUPABASE_VERSION=2.92.1
 curl -LO https://github.com/supabase/cli/releases/download/v${SUPABASE_VERSION}/supabase_${SUPABASE_VERSION}_linux_amd64.deb
 sudo apt install -y ./supabase_${SUPABASE_VERSION}_linux_amd64.deb
-supabase --version    # verify v2.90.0
+supabase --version    # verify v2.92.1
 ```
 
 The `-y` flag is mandatory for non-interactive installation. The CLI-version verification and port-collision check (are `127.0.0.1:5432` / `127.0.0.1:5433` free?) are documented as one-time manual pre-deploy steps in #135, not workflow automation — the Salk server is single-tenant and you control it.
@@ -37,7 +37,7 @@ The `-y` flag is mandatory for non-interactive installation. The CLI-version ver
 
 ```yaml
 env:
-  SUPABASE_VERSION: "2.90.0"
+  SUPABASE_VERSION: "2.92.1"
 
 # ...
 
@@ -204,7 +204,7 @@ Workflow step: `run: ./scripts/lint_migrations.sh`. Testable via pytest + git fi
     " || echo '::warning::Diagnostic fetch failed'
 ```
 
-**Layer C — Migration state in `$GITHUB_STEP_SUMMARY` (every run).** Uses raw `supabase migration list` markdown output — the `-o json` flag does NOT exist on `migration list` in v2.90.0 (verified against CLI source at the pinned tag):
+**Layer C — Migration state in `$GITHUB_STEP_SUMMARY` (every run).** Uses raw `supabase migration list` markdown output — the `-o json` flag does NOT exist on `migration list` in v2.92.1 (verified against CLI source at the pinned tag):
 
 ```yaml
 - name: Migration summary
@@ -270,7 +270,7 @@ Enforced by: branch protection on `main` (migration files review-gated), SSH acc
 
 ## Out of scope (tracked separately)
 
-This proposal is deliberately scoped to **migration application** for Monday's first deploy. The following are deferred to a follow-up proposal (`improve-deploy-migration-rollback`):
+This proposal is deliberately scoped to **migration application** for Monday's first deploy. The following are deferred to a follow-up tracked in [#177](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/177):
 
 - Automatic rollback of committed-in-batch migrations on failure
 - CI lint requiring rollback file for every new migration
@@ -302,7 +302,7 @@ This proposal is deliberately scoped to **migration application** for Monday's f
 ## Dependencies
 
 - **Docker Compose v2.17+** (PR #142 already requires)
-- **Supabase CLI v2.90.0** on server and CI runner (pinned; `.deb` from GitHub releases)
+- **Supabase CLI v2.92.1** on server and CI runner (pinned; `.deb` from GitHub releases)
 - **PR #142** must merge first — this proposal positions migrations after that PR's health-check step
 
 ## Risks

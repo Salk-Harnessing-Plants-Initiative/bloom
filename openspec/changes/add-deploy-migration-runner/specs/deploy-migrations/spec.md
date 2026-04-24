@@ -4,19 +4,19 @@
 
 Apply Supabase database migrations during CI, production deploy, and staging deploy using the official Supabase CLI. Close the gap where the current deploy workflow has no migration step (services would start against an unmigrated schema) and the current CI uses an inline hand-rolled loop that is not safe to re-run on persistent prod/staging databases.
 
-Rollback automation, rollback-file pairing, partial-apply state contract, RLS partial-apply mitigation, and per-deploy `pg_dump` snapshots are intentionally out of scope for this change and deferred to a follow-up proposal (`improve-deploy-migration-rollback`). A one-time `pg_dump` before Monday's first deploy is documented as an optional pre-deploy recommendation in [#135](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/135), not a spec requirement.
+Rollback automation, rollback-file pairing, partial-apply state contract, RLS partial-apply mitigation, and per-deploy `pg_dump` snapshots are intentionally out of scope for this change and deferred to follow-up work tracked in [#177](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/177). A one-time `pg_dump` before Monday's first deploy is documented as an optional pre-deploy recommendation in [#135](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/135), not a spec requirement.
 
 ## ADDED Requirements
 
 ### Requirement: Supabase CLI MUST be pinned to the same version on the server and CI runner
 
-The Salk deploy server and the GitHub Actions runner used by `pr-checks.yml` MUST have the Supabase CLI installed at the same pinned version (v2.90.0). Server install and version verification are documented as manual pre-deploy steps in [#135](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/135) (the server is single-tenant and operator-controlled). CI installs the CLI automatically at job start.
+The Salk deploy server and the GitHub Actions runner used by `pr-checks.yml` MUST have the Supabase CLI installed at the same pinned version (v2.92.1). Server install and version verification are documented as manual pre-deploy steps in [#135](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/135) (the server is single-tenant and operator-controlled). CI installs the CLI automatically at job start.
 
 #### Scenario: Salk server has the CLI installed at the pinned version
 
 Given the Salk deploy server has had its pre-deploy setup completed per #135
 When an operator runs `supabase --version` on the server
-Then the output MUST match the pinned version (v2.90.0)
+Then the output MUST match the pinned version (v2.92.1)
 
 #### Scenario: CI runner installs the CLI at the same pinned version non-interactively
 
@@ -168,7 +168,7 @@ And tests MUST cover: valid filename + valid timestamp, malformed filename, stal
 
 ### Requirement: Migration failures MUST be highly visible on GitHub Actions
 
-Default step failure (red X with CLI error in step logs) is insufficient. Each deploy and CI run MUST produce three layers of visibility: a top-of-run error banner on failure, an actionable `migration list` diagnostic step, and a markdown summary panel on every run. Layer C MUST use the CLI's native markdown output — the `-o json` flag does NOT exist on the `migration list` subcommand in Supabase CLI v2.90.0.
+Default step failure (red X with CLI error in step logs) is insufficient. Each deploy and CI run MUST produce three layers of visibility: a top-of-run error banner on failure, an actionable `migration list` diagnostic step, and a markdown summary panel on every run. Layer C MUST use the CLI's native markdown output — the `-o json` flag does NOT exist on the `migration list` subcommand in Supabase CLI v2.92.1.
 
 #### Scenario: Migration failure emits a workflow error annotation
 
@@ -190,7 +190,7 @@ Given the workflow has attempted migrations (success or failure)
 When the job finishes
 Then a step with `if: always()` MUST write markdown to `$GITHUB_STEP_SUMMARY`
 And the markdown MUST contain the raw output of `supabase migration list --db-url <url>` (a markdown table with `Local | Remote | Time (UTC)` columns emitted natively by the CLI)
-And the implementation MUST NOT rely on `-o json` — that flag does not exist on the `migration list` subcommand in Supabase CLI v2.90.0
+And the implementation MUST NOT rely on `-o json` — that flag does not exist on the `migration list` subcommand in Supabase CLI v2.92.1
 
 ### Requirement: Migration credentials MUST NOT appear in process argv, logs, or step summaries
 
