@@ -8,7 +8,11 @@ on POSTGRES_HOST_PORT.
 """
 
 import glob
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).parent.parent.parent
@@ -110,3 +114,39 @@ def test_migration_timestamps_are_unique(pg_conn):
             f"Duplicate timestamps in tracking table: {duplicates}. "
             f"Two migration files share a 14-digit prefix — rename one."
         )
+
+
+def test_db_push_is_idempotent(pg_conn, supabase_db_url):
+    """
+    `supabase db push` must be a no-op when every local migration is already
+    recorded in the remote tracking table. If idempotency breaks, every deploy
+    re-applies all migrations — the destructive ones (DROP TABLE, DROP COLUMN)
+    would silently wipe real data on the second run.
+    """
+    if not shutil.which("supabase"):
+        pytest.skip("supabase CLI not on PATH")
+
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM supabase_migrations.schema_migrations")
+        before = cur.fetchone()[0]
+
+    result = subprocess.run(
+        ["supabase", "db", "push", "--db-url", supabase_db_url, "--yes"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, (
+        f"`supabase db push` returned {result.returncode} on second run "
+        f"(expected no-op). stderr tail: {result.stderr[-500:]}"
+    )
+
+    pg_conn.rollback()
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM supabase_migrations.schema_migrations")
+        after = cur.fetchone()[0]
+
+    assert after == before, (
+        f"tracking table changed (before={before}, after={after}) when no "
+        f"migrations were pending — idempotency invariant broken"
+    )
