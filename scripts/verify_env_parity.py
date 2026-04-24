@@ -38,10 +38,13 @@ HEREDOC_START = re.compile(
     )\s*<<\s*'(?P<terminator>[A-Z_]+)'""",
     re.VERBOSE,
 )
-# Matches a shell assignment of a path ending in `.env.<env>`.
-# Used to resolve the env name for heredocs that write through a variable.
+# Matches a shell assignment of a path containing `.env.<env>` before the
+# closing quote. The atomic-rename pattern writes to `.env.prod.next` /
+# `.env.staging.next` as a staging name that's renamed to `.env.prod` /
+# `.env.staging` after validation, so the env name can be followed by a
+# `.next` (or similar) suffix before the closing quote.
 VAR_ASSIGN = re.compile(
-    r"""^\s*(?P<var>\w+)=["'][^"']*\.env\.(?P<env>[a-z][a-z0-9_]*)["']"""
+    r"""^\s*(?P<var>\w+)=["'][^"']*\.env\.(?P<env>[a-z][a-z0-9_]*)(?:\.[a-z0-9_]+)?["']"""
 )
 LINE_PARSER = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
 SECRET_REF = re.compile(r"\$\{\{\s*secrets\.([^}\s]+)\s*\}\}")
