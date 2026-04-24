@@ -86,7 +86,7 @@ export default async function LoginPage() {
 
         <div className={styles.statsStrip}>
           <div className={styles.stat}>
-            <div className={styles.statNum}>14</div>
+            <div className={styles.statNum}>16</div>
             <div className={styles.statMeta}>
               <div className={styles.statLabel}>SPECIES</div>
               <div className={styles.statSub}>
@@ -95,14 +95,14 @@ export default async function LoginPage() {
             </div>
           </div>
           <div className={styles.stat}>
-            <div className={styles.statNum}>47</div>
+            <div className={styles.statNum}>235</div>
             <div className={styles.statMeta}>
               <div className={styles.statLabel}>EXPERIMENTS</div>
               <div className={styles.statSub}>Across 8 years of waves</div>
             </div>
           </div>
           <div className={styles.stat}>
-            <div className={styles.statNum}>450</div>
+            <div className={styles.statNum}>131</div>
             <div className={styles.statMeta}>
               <div className={styles.statLabel}>GENE CANDIDATES</div>
               <div className={styles.statSub}>Orthologs, progress, notes</div>
