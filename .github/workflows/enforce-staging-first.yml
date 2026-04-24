@@ -1,0 +1,27 @@
+name: Enforce staging-first merge
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check-source:
+    name: Enforce staging-first merge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject if source is not staging or a revert branch
+        run: |
+          src="${{ github.head_ref }}"
+          if [ "$src" = "staging" ]; then
+            echo "source=$src — allowed"
+            exit 0
+          fi
+          if [[ "$src" == revert-* ]]; then
+            echo "source=$src — allowed (revert PR from GitHub UI)"
+            exit 0
+          fi
+          echo "::error::PRs to main must come from 'staging' (got: '$src'). Reverts from the GitHub UI (revert-*) are also allowed."
+          exit 1
