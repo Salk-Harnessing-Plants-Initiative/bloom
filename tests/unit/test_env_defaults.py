@@ -41,6 +41,7 @@ SENSITIVE_INVENTORY = {
     "SECRET_KEY_BASE",
     "OPENAI_API_KEY",
     "LANGCHAIN_API_KEY",
+    "BLOOM_AGENT_KEY",
     # Infrastructure-topology paths — also secret-bucket
     "DEPLOY_PATH",
     "MINIO_DATA_PATH",
