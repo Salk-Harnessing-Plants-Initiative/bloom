@@ -274,12 +274,19 @@ jobs:
             failed=0
             _probe() {
               local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
-              local status
-              if [ -n \"\$extra\" ]; then
-                status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
-              else
-                status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
-              fi
+              # Retry up to 3 times on connection failure (status 000) — Caddy's
+              # \`tls internal\` generates certs lazily on first handshake; the
+              # first probe after a fresh deploy can race the cert generation.
+              local status=000
+              for _ in 1 2 3; do
+                if [ -n \"\$extra\" ]; then
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                else
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                fi
+                [ \"\$status\" != \"000\" ] && break
+                sleep 2
+              done
               if [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
                 echo \"::error::Smoke test failed on \$host\$path (HTTP \$status)\"
                 failed=1
@@ -701,12 +708,19 @@ jobs:
             failed=0
             _probe() {
               local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
-              local status
-              if [ -n \"\$extra\" ]; then
-                status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
-              else
-                status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
-              fi
+              # Retry up to 3 times on connection failure (status 000) — Caddy's
+              # \`tls internal\` generates certs lazily on first handshake; the
+              # first probe after a fresh deploy can race the cert generation.
+              local status=000
+              for _ in 1 2 3; do
+                if [ -n \"\$extra\" ]; then
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                else
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                fi
+                [ \"\$status\" != \"000\" ] && break
+                sleep 2
+              done
               if [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
                 echo \"::error::Smoke test failed on \$host\$path (HTTP \$status)\"
                 failed=1
