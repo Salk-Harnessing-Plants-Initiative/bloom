@@ -344,6 +344,8 @@ jobs:
           echo "LANGCHAIN_TRACING_V2=false" >> .env.ci
           echo "LANGCHAIN_API_KEY=" >> .env.ci
           echo "LANGCHAIN_PROJECT=bloom-ci" >> .env.ci
+          echo "LOCAL_LLM_URL=http://disabled" >> .env.ci
+          echo "LOCAL_LLM_MODEL=skip" >> .env.ci
           echo "CORS_ORIGINS=http://localhost" >> .env.ci
           echo "CADDY_HTTP_LISTEN_PORT=80" >> .env.ci
           echo "CADDY_HTTPS_LISTEN_PORT=443" >> .env.ci
@@ -365,6 +367,7 @@ jobs:
           echo "MINIO_ROOT_PASSWORD=${{ secrets.CI_MINIO_PASSWORD }}" >> .env.ci
           echo "DB_ENC_KEY=${{ secrets.CI_DB_ENC_KEY }}" >> .env.ci
           echo "LANGCHAIN_POSTGRES_URL=postgresql://supabase_admin:${{ secrets.CI_POSTGRES_PASSWORD }}@db-prod:5432/postgres" >> .env.ci
+          echo "BLOOM_AGENT_KEY=${{ secrets.CI_BLOOM_AGENT_KEY }}" >> .env.ci
 
       - name: Create MinIO data directory
         run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci

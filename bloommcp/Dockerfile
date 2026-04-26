@@ -37,7 +37,7 @@ COPY --chown=bloom:bloom . .
 
 EXPOSE 8811
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8811/mcp')" || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=60s \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8811/health', timeout=3).close()" || exit 1
 
 CMD ["python", "server.py"]

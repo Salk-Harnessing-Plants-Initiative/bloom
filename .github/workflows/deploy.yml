@@ -122,6 +122,7 @@ jobs:
           OPENAI_API_KEY=${{ secrets.PROD_OPENAI_API_KEY }}
           LANGCHAIN_API_KEY=${{ secrets.PROD_LANGCHAIN_API_KEY }}
           MINIO_DATA_PATH=${{ secrets.PROD_MINIO_DATA_PATH }}
+          BLOOM_AGENT_KEY=${{ secrets.PROD_BLOOM_AGENT_KEY }}
           # _EOF_MARKER_
           SECRETS
 
@@ -246,42 +247,59 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            # Source DOMAIN_* and port from the server-side .env.prod file
-            # generated earlier in this workflow (from GitHub Secrets — the
-            # env-config split to committed defaults lands in PR #144). Using
-            # the deployed .env.prod as the runtime source of truth here keeps
-            # the smoke test robust to that upcoming refactor without code
-            # changes — after #144 merges, .env.prod is merged from
-            # .env.prod.defaults + secrets, same file, same grep.
+            # Connectivity smoke test — hits 4 endpoints through Caddy and
+            # asserts each returns a 2xx/3xx:
+            #   1. <main>/                bloom-web frontend
+            #   2. <studio>/              Studio UI
+            #   3. <minio>/               MinIO console
+            #   4. <main>/api/rest/v1/    Kong key-auth -> ACL -> REST -> DB
+            #                             (sends apikey header)
+            #
+            # Probes HTTPS directly via --resolve (forces domain -> 127.0.0.1)
+            # so the test works regardless of whether CADDY_HTTPS_LISTEN_PORT
+            # is 443 (prod) or 8443 (staging). Avoids the HTTP -> HTTPS redirect
+            # dance that fails when the redirect target port isn't published.
             DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.prod | cut -d= -f2-)
             DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.prod | cut -d= -f2-)
             DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.prod | cut -d= -f2-)
-            PORT=\$(grep '^CADDY_HTTP_LISTEN_PORT=' .env.prod | cut -d= -f2-)
+            PORT=\$(grep '^CADDY_HTTPS_LISTEN_PORT=' .env.prod | cut -d= -f2-)
+            ANON_KEY=\$(grep '^ANON_KEY=' .env.prod | cut -d= -f2-)
             : \"\${DOMAIN_MAIN:?missing DOMAIN_MAIN in .env.prod}\"
             : \"\${DOMAIN_STUDIO:?missing DOMAIN_STUDIO in .env.prod}\"
             : \"\${DOMAIN_MINIO:?missing DOMAIN_MINIO in .env.prod}\"
-            : \"\${PORT:?missing CADDY_HTTP_LISTEN_PORT in .env.prod}\"
+            : \"\${PORT:?missing CADDY_HTTPS_LISTEN_PORT in .env.prod}\"
+            : \"\${ANON_KEY:?missing ANON_KEY in .env.prod}\"
+            echo \"::add-mask::\$ANON_KEY\"
 
             failed=0
-            # Per-Host probes — Caddy routes studio + minio on SUBDOMAINS, not
-            # paths on the apex. curl -L -k follows the auto-HTTPS 308 redirect
-            # and accepts Caddy's \`tls internal\` self-signed cert (PR #145).
-            # Success window is 2xx/3xx only — 4xx (e.g. unmapped path) is a
-            # routing bug we want to surface, not tolerate.
-            for probe in \"\$DOMAIN_MAIN|/\" \"\$DOMAIN_MAIN|/api/\" \"\$DOMAIN_STUDIO|/\" \"\$DOMAIN_MINIO|/\" \"\$DOMAIN_MAIN|/api/health\"; do
-              HOST=\"\${probe%|*}\"
-              ENDPOINT=\"\${probe#*|}\"
-              STATUS=\$(curl -sLk -o /dev/null -w '%{http_code}' \
-                -H \"Host: \$HOST\" \
-                --max-time 10 \
-                \"http://localhost:\$PORT\$ENDPOINT\" || echo 000)
-              if [ \"\$STATUS\" -lt 200 ] || [ \"\$STATUS\" -ge 400 ]; then
-                echo \"::error::Smoke test failed on \$HOST\$ENDPOINT (HTTP \$STATUS)\"
+            _probe() {
+              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
+              # Retry up to 3 times on connection failure (status 000) — Caddy's
+              # \`tls internal\` generates certs lazily on first handshake; the
+              # first probe after a fresh deploy can race the cert generation.
+              local status=000
+              for _ in 1 2 3; do
+                if [ -n \"\$extra\" ]; then
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                else
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                fi
+                [ \"\$status\" != \"000\" ] && break
+                sleep 2
+              done
+              if [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
+                echo \"::error::Smoke test failed on \$host\$path (HTTP \$status)\"
                 failed=1
               else
-                echo \"  \$HOST\$ENDPOINT -> \$STATUS\"
+                echo \"  \$host\$path -> \$status\"
               fi
-            done
+            }
+
+            _probe \"\$DOMAIN_MAIN\"   \"/\"
+            _probe \"\$DOMAIN_STUDIO\" \"/\"
+            _probe \"\$DOMAIN_MINIO\"  \"/\"
+            _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
+
             exit \$failed
           "
 
@@ -556,6 +574,7 @@ jobs:
           OPENAI_API_KEY=${{ secrets.STAGING_OPENAI_API_KEY }}
           LANGCHAIN_API_KEY=${{ secrets.STAGING_LANGCHAIN_API_KEY }}
           MINIO_DATA_PATH=${{ secrets.STAGING_MINIO_DATA_PATH }}
+          BLOOM_AGENT_KEY=${{ secrets.STAGING_BLOOM_AGENT_KEY }}
           # _EOF_MARKER_
           SECRETS
 
@@ -662,36 +681,59 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            # Source DOMAIN_* and port from the server-side .env.staging file
-            # generated earlier in this workflow (from GitHub Secrets today;
-            # from .env.staging.defaults + secrets after PR #144 merges).
-            # Reading from the deployed .env file is the runtime source of
-            # truth for this smoke test — robust across that config-source
-            # refactor without code changes here.
+            # Connectivity smoke test — hits 4 endpoints through Caddy and
+            # asserts each returns a 2xx/3xx:
+            #   1. <main>/                bloom-web frontend
+            #   2. <studio>/              Studio UI
+            #   3. <minio>/               MinIO console
+            #   4. <main>/api/rest/v1/    Kong key-auth -> ACL -> REST -> DB
+            #                             (sends apikey header)
+            #
+            # Probes HTTPS directly via --resolve (forces domain -> 127.0.0.1)
+            # so the test works regardless of whether CADDY_HTTPS_LISTEN_PORT
+            # is 443 (prod) or 8443 (staging). Avoids the HTTP -> HTTPS redirect
+            # dance that fails when the redirect target port isn't published.
             DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.staging | cut -d= -f2-)
             DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.staging | cut -d= -f2-)
             DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.staging | cut -d= -f2-)
-            PORT=\$(grep '^CADDY_HTTP_LISTEN_PORT=' .env.staging | cut -d= -f2-)
+            PORT=\$(grep '^CADDY_HTTPS_LISTEN_PORT=' .env.staging | cut -d= -f2-)
+            ANON_KEY=\$(grep '^ANON_KEY=' .env.staging | cut -d= -f2-)
             : \"\${DOMAIN_MAIN:?missing DOMAIN_MAIN in .env.staging}\"
             : \"\${DOMAIN_STUDIO:?missing DOMAIN_STUDIO in .env.staging}\"
             : \"\${DOMAIN_MINIO:?missing DOMAIN_MINIO in .env.staging}\"
-            : \"\${PORT:?missing CADDY_HTTP_LISTEN_PORT in .env.staging}\"
+            : \"\${PORT:?missing CADDY_HTTPS_LISTEN_PORT in .env.staging}\"
+            : \"\${ANON_KEY:?missing ANON_KEY in .env.staging}\"
+            echo \"::add-mask::\$ANON_KEY\"
 
             failed=0
-            for probe in \"\$DOMAIN_MAIN|/\" \"\$DOMAIN_MAIN|/api/\" \"\$DOMAIN_STUDIO|/\" \"\$DOMAIN_MINIO|/\" \"\$DOMAIN_MAIN|/api/health\"; do
-              HOST=\"\${probe%|*}\"
-              ENDPOINT=\"\${probe#*|}\"
-              STATUS=\$(curl -sLk -o /dev/null -w '%{http_code}' \
-                -H \"Host: \$HOST\" \
-                --max-time 10 \
-                \"http://localhost:\$PORT\$ENDPOINT\" || echo 000)
-              if [ \"\$STATUS\" -lt 200 ] || [ \"\$STATUS\" -ge 400 ]; then
-                echo \"::error::Smoke test failed on \$HOST\$ENDPOINT (HTTP \$STATUS)\"
+            _probe() {
+              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
+              # Retry up to 3 times on connection failure (status 000) — Caddy's
+              # \`tls internal\` generates certs lazily on first handshake; the
+              # first probe after a fresh deploy can race the cert generation.
+              local status=000
+              for _ in 1 2 3; do
+                if [ -n \"\$extra\" ]; then
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                else
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                fi
+                [ \"\$status\" != \"000\" ] && break
+                sleep 2
+              done
+              if [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
+                echo \"::error::Smoke test failed on \$host\$path (HTTP \$status)\"
                 failed=1
               else
-                echo \"  \$HOST\$ENDPOINT -> \$STATUS\"
+                echo \"  \$host\$path -> \$status\"
               fi
-            done
+            }
+
+            _probe \"\$DOMAIN_MAIN\"   \"/\"
+            _probe \"\$DOMAIN_STUDIO\" \"/\"
+            _probe \"\$DOMAIN_MINIO\"  \"/\"
+            _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
+
             exit \$failed
           "
 
