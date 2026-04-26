@@ -330,8 +330,10 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
             for i in \$(seq 1 60); do
-              if docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T db-prod \
+              if docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
+                   -e PGPASSWORD=\"\$PG_PASSWORD\" db-prod \
                    psql -U supabase_admin -d postgres -tAc \
                    \"SELECT 1 FROM information_schema.tables WHERE table_schema='storage' AND table_name='buckets'\" 2>/dev/null \
                    | grep -q '^1\$'; then
@@ -758,8 +760,10 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
             for i in \$(seq 1 60); do
-              if docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T db-prod \
+              if docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T \
+                   -e PGPASSWORD=\"\$PG_PASSWORD\" db-prod \
                    psql -U supabase_admin -d postgres -tAc \
                    \"SELECT 1 FROM information_schema.tables WHERE table_schema='storage' AND table_name='buckets'\" 2>/dev/null \
                    | grep -q '^1\$'; then
