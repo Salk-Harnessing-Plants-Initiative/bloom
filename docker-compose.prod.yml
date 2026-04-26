@@ -94,7 +94,9 @@ services:
       - kong
     healthcheck:
       # node:20-alpine has BusyBox wget (supports --spider). curl is not installed.
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      # 127.0.0.1 (not localhost) — BusyBox tries IPv6 first; Next.js binds
+      # IPv4 only, so localhost resolves to ::1 and the probe fails.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -121,6 +123,7 @@ services:
     environment:
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      BLOOM_AGENT_KEY: ${BLOOM_AGENT_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: gpt-4o
       BLOOM_MCP_URL: http://bloommcp:8811/mcp
@@ -139,6 +142,8 @@ services:
       LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2}
       LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY}
       LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT}
+      LOCAL_LLM_URL: ${LOCAL_LLM_URL}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
       CORS_ORIGINS: ${CORS_ORIGINS}
     volumes:
@@ -209,11 +214,6 @@ services:
       - ./bloommcp/data/ANALYSIS_OUTPUT:/app/data/ANALYSIS_OUTPUT
     networks:
       - supanet
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import os,urllib.request; r=urllib.request.Request('http://localhost:8811/mcp', headers={'Authorization': 'Bearer '+os.environ.get('BLOOMMCP_API_KEY','')}); urllib.request.urlopen(r)\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
     depends_on:
       - kong
     restart: unless-stopped
@@ -444,7 +444,7 @@ services:
       ENABLE_IMAGE_TRANSFORMATION: "true"
       IMGPROXY_URL: ${IMGPROXY_URL}
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5000/status"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5000/status"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -467,7 +467,9 @@ services:
       - FOWNER
       - DAC_OVERRIDE
     networks:
-      - supanet
+      supanet:
+        aliases:
+          - db
     expose:
       - "5432"
     ports:
@@ -575,7 +577,7 @@ services:
     environment:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-
+      EDGE_FUNCTIONS_MANAGEMENT_FOLDER: /tmp/edge-functions
       DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
       DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
