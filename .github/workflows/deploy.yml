@@ -122,6 +122,7 @@ jobs:
           OPENAI_API_KEY=${{ secrets.PROD_OPENAI_API_KEY }}
           LANGCHAIN_API_KEY=${{ secrets.PROD_LANGCHAIN_API_KEY }}
           MINIO_DATA_PATH=${{ secrets.PROD_MINIO_DATA_PATH }}
+          BLOOM_AGENT_KEY=${{ secrets.PROD_BLOOM_AGENT_KEY }}
           # _EOF_MARKER_
           SECRETS
 
@@ -566,6 +567,7 @@ jobs:
           OPENAI_API_KEY=${{ secrets.STAGING_OPENAI_API_KEY }}
           LANGCHAIN_API_KEY=${{ secrets.STAGING_LANGCHAIN_API_KEY }}
           MINIO_DATA_PATH=${{ secrets.STAGING_MINIO_DATA_PATH }}
+          BLOOM_AGENT_KEY=${{ secrets.STAGING_BLOOM_AGENT_KEY }}
           # _EOF_MARKER_
           SECRETS
 
