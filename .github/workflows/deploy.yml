@@ -330,8 +330,10 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
             for i in \$(seq 1 60); do
-              if docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T db-prod \
+              if docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
+                   -e PGPASSWORD=\"\$PG_PASSWORD\" db-prod \
                    psql -U supabase_admin -d postgres -tAc \
                    \"SELECT 1 FROM information_schema.tables WHERE table_schema='storage' AND table_name='buckets'\" 2>/dev/null \
                    | grep -q '^1\$'; then
@@ -358,13 +360,7 @@ jobs:
           PENDING=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
-            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
-            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
-            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
-            supabase migration list --debug \
-              --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" \
-              2>/dev/null \
+            bash scripts/deploy_run_supabase.sh prod 'migration list --debug' 2>/dev/null \
               | awk -F'|' 'NR>2 && \$1 ~ /[0-9]{14}/ && \$2 !~ /[0-9]/ {c++} END { if (NR < 3) { print \"unknown\"; exit 2 } print c+0 }'
           ") || PENDING="unknown"
           case "$PENDING" in ''|*[!0-9]*) PENDING="unknown" ;; esac
@@ -403,15 +399,7 @@ jobs:
               echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
               exit 1
             fi
-            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
-            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
-            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
-            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
-            : \"\${PG_USER:?POSTGRES_USER missing from .env.prod}\"
-            : \"\${PG_PASSWORD:?POSTGRES_PASSWORD missing from .env.prod}\"
-            : \"\${PG_DB:?POSTGRES_DB missing from .env.prod}\"
-            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.prod}\"
-            supabase db push --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug --yes
+            bash scripts/deploy_run_supabase.sh prod 'db push --debug --yes'
           " || {
             echo '::error title=Migration failed (production)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
             exit 1
@@ -425,12 +413,7 @@ jobs:
           echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
-            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
-            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
-            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
-            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.prod}\"
-            supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
+            bash scripts/deploy_run_supabase.sh prod 'migration list --debug'
           " || echo '::warning::Could not fetch migration status'
 
       # Layer C: migration state as a fenced code block in the run summary.
@@ -446,12 +429,7 @@ jobs:
             echo '```'
             ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
               cd ${{ secrets.PROD_DEPLOY_PATH }}
-              PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
-              PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
-              PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
-              PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
-              : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.prod}\"
-              supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
+              bash scripts/deploy_run_supabase.sh prod 'migration list --debug'
             " 2>/dev/null || echo '(migration state fetch failed)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -758,8 +736,10 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
             for i in \$(seq 1 60); do
-              if docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T db-prod \
+              if docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T \
+                   -e PGPASSWORD=\"\$PG_PASSWORD\" db-prod \
                    psql -U supabase_admin -d postgres -tAc \
                    \"SELECT 1 FROM information_schema.tables WHERE table_schema='storage' AND table_name='buckets'\" 2>/dev/null \
                    | grep -q '^1\$'; then
@@ -781,13 +761,7 @@ jobs:
           PENDING=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
-            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
-            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
-            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
-            supabase migration list --debug \
-              --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" \
-              2>/dev/null \
+            bash scripts/deploy_run_supabase.sh staging 'migration list --debug' 2>/dev/null \
               | awk -F'|' 'NR>2 && \$1 ~ /[0-9]{14}/ && \$2 !~ /[0-9]/ {c++} END { if (NR < 3) { print \"unknown\"; exit 2 } print c+0 }'
           ") || PENDING="unknown"
           case "$PENDING" in ''|*[!0-9]*) PENDING="unknown" ;; esac
@@ -820,15 +794,7 @@ jobs:
               echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
               exit 1
             fi
-            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
-            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
-            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
-            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
-            : \"\${PG_USER:?POSTGRES_USER missing from .env.staging}\"
-            : \"\${PG_PASSWORD:?POSTGRES_PASSWORD missing from .env.staging}\"
-            : \"\${PG_DB:?POSTGRES_DB missing from .env.staging}\"
-            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.staging}\"
-            supabase db push --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug --yes
+            bash scripts/deploy_run_supabase.sh staging 'db push --debug --yes'
           " || {
             echo '::error title=Migration failed (staging)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
             exit 1
@@ -840,12 +806,7 @@ jobs:
           echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
-            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
-            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
-            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
-            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.staging}\"
-            supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
+            bash scripts/deploy_run_supabase.sh staging 'migration list --debug'
           " || echo '::warning::Could not fetch migration status'
 
       - name: Migration summary (staging)
@@ -858,12 +819,7 @@ jobs:
             echo '```'
             ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
               cd ${{ secrets.STAGING_DEPLOY_PATH }}
-              PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
-              PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
-              PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
-              PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
-              : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.staging}\"
-              supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
+              bash scripts/deploy_run_supabase.sh staging 'migration list --debug'
             " 2>/dev/null || echo '(migration state fetch failed)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
