@@ -13,13 +13,13 @@ const PLANTS: Array<{
   { src: "/login/wheat-watercolor.png", cls: "p1", drift: 1, name: "Wheat", traits: 47 },
   { src: "/login/amaranth-watercolor.png", cls: "p2", drift: 2, name: "Amaranth", traits: 32 },
   { src: "/login/spinach-watercolor.png", cls: "p4", drift: 1, name: "Spinach", traits: 28 },
-  { src: "/login/alfalfa-watercolor.svg", cls: "p5", drift: 2, name: "Alfalfa", traits: 18 },
-  { src: "/login/rice-watercolor.svg", cls: "p6", drift: 3, name: "Rice", traits: 52 },
-  { src: "/login/pennycress-watercolor.svg", cls: "p7", drift: 1, name: "Pennycress", traits: 25 },
-  { src: "/login/soybean-watercolor.svg", cls: "p8", drift: 3, name: "Soybean", traits: 15 },
-  { src: "/login/sorghum-watercolor.svg", cls: "p9", drift: 1, name: "Sorghum", traits: 12 },
+  { src: "/login/alfalfa-watercolor.png", cls: "p5", drift: 2, name: "Alfalfa", traits: 18 },
+  { src: "/login/rice-watercolor.png", cls: "p6", drift: 3, name: "Rice", traits: 52 },
+  { src: "/login/pennycress-watercolor.png", cls: "p7", drift: 1, name: "Pennycress", traits: 25 },
+  { src: "/login/soybean-watercolor.png", cls: "p8", drift: 3, name: "Soybean", traits: 15 },
+  { src: "/login/sorghum-watercolor.png", cls: "p9", drift: 1, name: "Sorghum", traits: 12 },
   { src: "/login/tomato-watercolor.png", cls: "p10", drift: 2, name: "Tomato", traits: 53 },
-  { src: "/login/canola-watercolor.svg", cls: "p11", drift: 3, name: "Canola", traits: 7 },
+  { src: "/login/canola-watercolor.png", cls: "p11", drift: 3, name: "Canola", traits: 7 },
 ];
 
 export default async function LoginPage() {
