@@ -42,7 +42,7 @@ export default async function LoginPage() {
         >
           <img src={p.src} alt={p.name} />
           <div className={styles.callout} role="tooltip">
-            <strong>{p.name}</strong> · {p.traits} traits measured
+            <strong>{p.name}</strong>
           </div>
         </div>
       ))}
