@@ -2,10 +2,7 @@ import { redirect } from "next/navigation";
 import Mixpanel from "mixpanel";
 import { getUser } from "@/lib/supabase/server";
 import { HomeHero } from "@/components/home-hero";
-import {
-  fetchHomeSpeciesMontage,
-  fetchSpeciesCount,
-} from "@/app/app/home-lib/species-montage";
+import { fetchSpeciesCount } from "@/app/app/home-lib/species-montage";
 
 function deriveFirstName(
   user: {
@@ -55,20 +52,13 @@ export default async function HomePage() {
     url: "/app",
   });
 
-  const [speciesCount, montage] = await Promise.all([
-    fetchSpeciesCount(),
-    fetchHomeSpeciesMontage(5),
-  ]);
+  const speciesCount = await fetchSpeciesCount();
 
   const firstName = deriveFirstName(user);
 
   return (
     <div className="max-w-6xl mx-auto pb-16">
-      <HomeHero
-        firstName={firstName}
-        speciesCount={speciesCount}
-        montage={montage}
-      />
+      <HomeHero firstName={firstName} speciesCount={speciesCount} />
     </div>
   );
 }
