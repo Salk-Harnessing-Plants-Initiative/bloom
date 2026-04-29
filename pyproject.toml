@@ -4,6 +4,15 @@ version = "0.1.0"
 description = "Integration tests for Bloom v2"
 requires-python = ">=3.11"
 
+# Test-runner deps — pinned per the pin-python-deps convention (PR #126).
+# Invoked in CI via `uv run --extra test pytest ...` rather than inline
+# `--with` flags so the pins are the single source of truth.
+[project.optional-dependencies]
+test = [
+    "pytest>=8.3,<9",
+    "psycopg[binary]==3.3.3",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

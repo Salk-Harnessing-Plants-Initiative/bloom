@@ -16,7 +16,7 @@ Guide for creating and managing database migrations in Bloom. The project uses s
 make new-migration name=add_experiment_status
 
 # Apply pending migrations to local dev database
-make apply-migrations-local
+make migrate-local
 
 # Generate TypeScript types from database schema
 make gen-types
@@ -86,7 +86,7 @@ CREATE INDEX IF NOT EXISTS idx_experiments_created_by ON public.experiments(crea
 make dev-up
 
 # Apply the migration
-make apply-migrations-local
+make migrate-local
 ```
 
 ### 4. Generate Types
@@ -158,7 +158,7 @@ CREATE POLICY "Service role full access" ON public.my_table
 # Stop dev stack, remove volumes, restart, reapply migrations
 docker compose -f docker-compose.dev.yml down -v
 make dev-up
-make apply-migrations-local
+make migrate-local
 
 # Optionally reload test data
 make load-test-data
@@ -180,7 +180,7 @@ PGPASSWORD=postgres psql -h localhost -p 5432 -U supabase_admin -d postgres \
     -c "DELETE FROM _migrations WHERE name = '<filename>.sql';"
 
 # Re-apply
-make apply-migrations-local
+make migrate-local
 ```
 
 ### Foreign key constraint errors

@@ -22,7 +22,7 @@ help:
 	@echo "  make reset-storage    - Reset dev DB and storage (destructive)"
 	@echo "  make drop-tables      - Drop all tables in public schema"
 	@echo "  make new-migration name=xxx - Create a new migration file"
-	@echo "  make apply-migrations-local - Apply database migrations locally"
+	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
 	@echo "  make upload-images    - Upload test images to MinIO storage"
 	@echo "  make create-bucket    - Create a new S3 bucket (BUCKET=name [PUBLIC=true])"
@@ -193,38 +193,24 @@ new-migration:
 	echo "" >> $$filename; \
 	echo "Created: $$filename"
 
-## Apply database migrations locally (only unapplied ones)
-.PHONY: apply-migrations-local
-apply-migrations-local:
-	@echo "Applying database migrations to local development database..."
+## Apply migrations to local dev DB via Supabase CLI.
+## Tracking lives in `supabase_migrations.schema_migrations` (CLI-managed) —
+## the old `public._migrations` table used by the removed apply-migrations-local
+## rule is no longer read or written.
+.PHONY: migrate-local
+migrate-local:
+	@command -v supabase >/dev/null 2>&1 || ( \
+		echo "Error: supabase CLI not found on PATH."; \
+		echo "Install: brew install supabase/tap/supabase"; \
+		exit 1; \
+	)
 	@if ! docker ps | grep -q db-dev; then \
 		echo "Error: Development database not running. Start with 'make dev-up' first."; \
 		exit 1; \
 	fi
-	@echo "Creating migrations tracking table if not exists..."
-	@PGPASSWORD=$${POSTGRES_PASSWORD:-postgres} psql -h localhost -p 5432 -U supabase_admin -d postgres -c \
-		"CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT NOW());" > /dev/null 2>&1
-	@echo "Checking for unapplied migrations..."
-	@applied=0; \
-	for file in $$(ls -1 supabase/migrations/*.sql 2>/dev/null | sort); do \
-		if [ -f "$$file" ]; then \
-			filename=$$(basename "$$file"); \
-			is_applied=$$(PGPASSWORD=$${POSTGRES_PASSWORD:-postgres} psql -h localhost -p 5432 -U supabase_admin -d postgres -tAc \
-				"SELECT 1 FROM _migrations WHERE name = '$$filename';" 2>/dev/null); \
-			if [ -z "$$is_applied" ]; then \
-				echo "Applying: $$filename"; \
-				PGPASSWORD=$${POSTGRES_PASSWORD:-postgres} psql -h localhost -p 5432 -U supabase_admin -d postgres -f "$$file" 2>&1 | grep -v "already exists" | grep -v "does not exist, skipping" || true; \
-				PGPASSWORD=$${POSTGRES_PASSWORD:-postgres} psql -h localhost -p 5432 -U supabase_admin -d postgres -c \
-					"INSERT INTO _migrations (name) VALUES ('$$filename');" > /dev/null 2>&1; \
-				applied=$$((applied + 1)); \
-			fi \
-		fi \
-	done; \
-	if [ $$applied -eq 0 ]; then \
-		echo "No new migrations to apply."; \
-	else \
-		echo "Applied $$applied migration(s) successfully."; \
-	fi
+	@supabase db push \
+		--db-url "postgresql://supabase_admin:$${POSTGRES_PASSWORD:-postgres}@127.0.0.1:5432/postgres?sslmode=disable" \
+		--yes
 
 # Preflight helper: fail fast with an actionable message if `uv` is not on PATH.
 # Used as a prerequisite by every target that invokes `uv run ...` below so the

@@ -34,6 +34,16 @@ yarn-error.log*
 **/.env
 **/.env.*
 .env.prod
+# Rollback snapshots written by the deploy workflow (contain prior secrets)
+.env.prod.previous
+.env.staging.previous
+**/.env.prod.previous
+**/.env.staging.previous
+# Committed deploy-time config defaults (NOT secrets — see the files themselves)
+!.env.prod.defaults
+!.env.staging.defaults
+!**/.env.prod.defaults
+!**/.env.staging.defaults
 
 # generated secret dumps from scripts/generate-secrets.sh --file
 .secrets-*.txt

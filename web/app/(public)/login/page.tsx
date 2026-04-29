@@ -13,13 +13,13 @@ const PLANTS: Array<{
   { src: "/login/wheat-watercolor.png", cls: "p1", drift: 1, name: "Wheat", traits: 47 },
   { src: "/login/amaranth-watercolor.png", cls: "p2", drift: 2, name: "Amaranth", traits: 32 },
   { src: "/login/spinach-watercolor.png", cls: "p4", drift: 1, name: "Spinach", traits: 28 },
-  { src: "/login/alfalfa-watercolor.svg", cls: "p5", drift: 2, name: "Alfalfa", traits: 18 },
-  { src: "/login/rice-watercolor.svg", cls: "p6", drift: 3, name: "Rice", traits: 52 },
-  { src: "/login/pennycress-watercolor.svg", cls: "p7", drift: 1, name: "Pennycress", traits: 25 },
-  { src: "/login/soybean-watercolor.svg", cls: "p8", drift: 3, name: "Soybean", traits: 15 },
-  { src: "/login/sorghum-watercolor.svg", cls: "p9", drift: 1, name: "Sorghum", traits: 12 },
+  { src: "/login/alfalfa-watercolor.png", cls: "p5", drift: 2, name: "Alfalfa", traits: 18 },
+  { src: "/login/rice-watercolor.png", cls: "p6", drift: 3, name: "Rice", traits: 52 },
+  { src: "/login/pennycress-watercolor.png", cls: "p7", drift: 1, name: "Pennycress", traits: 25 },
+  { src: "/login/soybean-watercolor.png", cls: "p8", drift: 3, name: "Soybean", traits: 15 },
+  { src: "/login/sorghum-watercolor.png", cls: "p9", drift: 1, name: "Sorghum", traits: 12 },
   { src: "/login/tomato-watercolor.png", cls: "p10", drift: 2, name: "Tomato", traits: 53 },
-  { src: "/login/canola-watercolor.svg", cls: "p11", drift: 3, name: "Canola", traits: 7 },
+  { src: "/login/canola-watercolor.png", cls: "p11", drift: 3, name: "Canola", traits: 7 },
 ];
 
 export default async function LoginPage() {
@@ -37,12 +37,12 @@ export default async function LoginPage() {
         <div
           key={i}
           className={`${styles.plant} ${styles[p.cls]}${
-            p.drift ? ` ${styles[`drift${p.drift}`]}` : ""
+            p.drift ? ` ${styles[`d${p.drift}`]}` : ""
           }`}
         >
           <img src={p.src} alt={p.name} />
           <div className={styles.callout} role="tooltip">
-            <strong>{p.name}</strong> · {p.traits} traits measured
+            <strong>{p.name}</strong>
           </div>
         </div>
       ))}
@@ -86,7 +86,7 @@ export default async function LoginPage() {
 
         <div className={styles.statsStrip}>
           <div className={styles.stat}>
-            <div className={styles.statNum}>14</div>
+            <div className={styles.statNum}>16</div>
             <div className={styles.statMeta}>
               <div className={styles.statLabel}>SPECIES</div>
               <div className={styles.statSub}>
@@ -95,14 +95,14 @@ export default async function LoginPage() {
             </div>
           </div>
           <div className={styles.stat}>
-            <div className={styles.statNum}>47</div>
+            <div className={styles.statNum}>235</div>
             <div className={styles.statMeta}>
               <div className={styles.statLabel}>EXPERIMENTS</div>
               <div className={styles.statSub}>Across 8 years of waves</div>
             </div>
           </div>
           <div className={styles.stat}>
-            <div className={styles.statNum}>450</div>
+            <div className={styles.statNum}>131</div>
             <div className={styles.statMeta}>
               <div className={styles.statLabel}>GENE CANDIDATES</div>
               <div className={styles.statSub}>Orthologs, progress, notes</div>

@@ -52,7 +52,7 @@ Key services: `bloom-web`, `langchain-agent`, `bloommcp`, `db-dev`, `supabase-mi
 
 ```bash
 docker exec db-dev pg_isready -U supabase_admin -h localhost
-make apply-migrations-local
+make migrate-local
 make gen-types
 ```
 

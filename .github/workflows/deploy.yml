@@ -15,13 +15,37 @@ on:
         options:
           - staging
           - production
+      runner:
+        description: 'Runner (ubuntu-latest ONLY for un-wedging CI; real deploys need self-hosted)'
+        required: false
+        default: 'self-hosted'
+        type: choice
+        options:
+          - self-hosted
+          - ubuntu-latest
+
+env:
+  # Supabase CLI version — MUST match the value pinned in pr-checks.yml and
+  # the version installed on the Salk deploy server. Before deploy each
+  # migration step asserts `supabase --version` equals this.
+  SUPABASE_VERSION: "2.92.1"
 
 jobs:
   deploy-production:
     name: Deploy to Production
     if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
-    runs-on: ubuntu-latest
+    # Escape hatch: workflow_dispatch can switch to ubuntu-latest to un-wedge
+    # CI when the self-hosted runner is offline/hung. The deploy will still
+    # fail (GitHub-hosted runners have no route to the Salk server), but
+    # it fails fast instead of queuing for 24h.
+    runs-on: ${{ github.event.inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "salk-network"]') }}
+    timeout-minutes: 30
     environment: production
+    concurrency:
+      # Shared group for both prod and staging — only one deploy runs at a
+      # time across the whole repo (single Salk server, single docker daemon).
+      group: deploy-bloom
+      cancel-in-progress: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -34,73 +58,96 @@ jobs:
           echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      - name: Generate .env.prod on server
+      # The runner is co-located with the deploy target (same host, running as
+      # bloom-deploy). Env-file assembly uses direct local filesystem commands
+      # rather than SSH/scp loopback — simpler, atomic, no network hop.
+
+      - name: Snapshot existing .env.prod for rollback
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "cat > ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod << 'ENVEOF'
-          POSTGRES_DB=${{ secrets.PROD_POSTGRES_DB }}
-          POSTGRES_USER=${{ secrets.PROD_POSTGRES_USER }}
+          cd ${{ secrets.PROD_DEPLOY_PATH }}
+          if [ -f .env.prod ]; then
+            cp -p .env.prod .env.prod.previous
+            echo "Saved .env.prod as .env.prod.previous"
+          else
+            echo "No existing .env.prod — first deploy, skipping snapshot"
+          fi
+
+      - name: Install env defaults on server
+        run: |
+          # Write to .env.prod.next (not .env.prod). The real .env.prod
+          # stays the last-good file until the atomic rename in the next
+          # step. rm -f clears any stale .next from a previously-crashed
+          # deploy so install doesn't refuse on an existing file.
+          rm -f "${{ secrets.PROD_DEPLOY_PATH }}/.env.prod.next"
+          install -m 600 "${{ github.workspace }}/.env.prod.defaults" \
+            "${{ secrets.PROD_DEPLOY_PATH }}/.env.prod.next"
+
+      - name: Append secrets, validate, and promote to .env.prod
+        run: |
+          set -euo pipefail
+          umask 077
+          f_next="${{ secrets.PROD_DEPLOY_PATH }}/.env.prod.next"
+          f_final="${{ secrets.PROD_DEPLOY_PATH }}/.env.prod"
+
+          # If anything fails before the atomic rename, remove the partial
+          # .env.prod.next. The real .env.prod is untouched — this deploy
+          # exits cleanly with the previous good env intact, so the next
+          # deploy's snapshot step can't copy a poisoned file into
+          # .env.prod.previous.
+          _cleanup_on_interrupt() {
+            echo "::warning::Interrupt during env assembly — removing partial .env.prod.next (last-good .env.prod preserved)" >&2
+            rm -f "$f_next"
+            exit 1
+          }
+          trap _cleanup_on_interrupt INT TERM HUP ERR
+
+          # The `# _EOF_MARKER_` sentinel is the last line of the heredoc.
+          # The validator rejects any env file whose last line isn't the
+          # marker — guarantees truncated files never reach the rename.
+          cat >> "$f_next" << 'SECRETS'
           POSTGRES_PASSWORD=${{ secrets.PROD_POSTGRES_PASSWORD }}
-          POSTGRES_PORT=${{ secrets.PROD_POSTGRES_PORT }}
-          POSTGRES_HOST=${{ secrets.PROD_POSTGRES_HOST }}
-          PGRST_DB_SCHEMAS=${{ secrets.PROD_PGRST_DB_SCHEMAS }}
-          ANON_KEY=${{ secrets.PROD_ANON_KEY }}
-          SERVICE_ROLE_KEY=${{ secrets.PROD_SERVICE_ROLE_KEY }}
           JWT_SECRET=${{ secrets.PROD_JWT_SECRET }}
-          JWT_EXPIRY=${{ secrets.PROD_JWT_EXPIRY }}
-          SUPAVISOR_ENC_KEY=${{ secrets.PROD_SUPAVISOR_ENC_KEY }}
-          VAULT_ENC_KEY=${{ secrets.PROD_VAULT_ENC_KEY }}
-          SECRET_KEY_BASE=${{ secrets.PROD_SECRET_KEY_BASE }}
+          ANON_KEY=${{ secrets.PROD_ANON_KEY }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.PROD_ANON_KEY }}
+          SERVICE_ROLE_KEY=${{ secrets.PROD_SERVICE_ROLE_KEY }}
           DB_ENC_KEY=${{ secrets.PROD_DB_ENC_KEY }}
-          DOMAIN_MAIN=${{ secrets.PROD_DOMAIN_MAIN }}
-          DOMAIN_STUDIO=${{ secrets.PROD_DOMAIN_STUDIO }}
-          DOMAIN_MINIO=${{ secrets.PROD_DOMAIN_MINIO }}
-          CADDY_HTTP_LISTEN_PORT=${{ secrets.PROD_CADDY_HTTP_LISTEN_PORT }}
-          CADDY_HTTPS_LISTEN_PORT=${{ secrets.PROD_CADDY_HTTPS_LISTEN_PORT }}
-          CADDY_HTTP_PORT=
-          KONG_PORT=${{ secrets.PROD_KONG_PORT }}
-          BLOOM_WEB_PORT=${{ secrets.PROD_BLOOM_WEB_PORT }}
-          STUDIO_PORT=${{ secrets.PROD_STUDIO_PORT }}
-          MINIO_CONSOLE_PORT=${{ secrets.PROD_MINIO_CONSOLE_PORT }}
+          VAULT_ENC_KEY=${{ secrets.PROD_VAULT_ENC_KEY }}
+          SUPAVISOR_ENC_KEY=${{ secrets.PROD_SUPAVISOR_ENC_KEY }}
+          SECRET_KEY_BASE=${{ secrets.PROD_SECRET_KEY_BASE }}
           MINIO_ROOT_USER=${{ secrets.PROD_MINIO_ROOT_USER }}
           MINIO_ROOT_PASSWORD=${{ secrets.PROD_MINIO_PASSWORD }}
-          MINIO_DATA_PATH=${{ secrets.PROD_MINIO_DATA_PATH }}
-          MINIO_BROWSER_REDIRECT_URL=${{ secrets.PROD_MINIO_BROWSER_REDIRECT_URL }}
-          POOLER_TENANT_ID=${{ secrets.PROD_POOLER_TENANT_ID }}
-          POOLER_DEFAULT_POOL_SIZE=${{ secrets.PROD_POOLER_DEFAULT_POOL_SIZE }}
-          POOLER_MAX_CLIENT_CONN=${{ secrets.PROD_POOLER_MAX_CLIENT_CONN }}
-          POOLER_DB_POOL_SIZE=${{ secrets.PROD_POOLER_DB_POOL_SIZE }}
           DASHBOARD_USERNAME=${{ secrets.PROD_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.PROD_DASHBOARD_PASSWORD }}
-          SITE_URL=${{ secrets.PROD_SITE_URL }}
-          API_EXTERNAL_URL=${{ secrets.PROD_API_EXTERNAL_URL }}
-          ADDITIONAL_REDIRECT_URLS=${{ secrets.PROD_ADDITIONAL_REDIRECT_URLS }}
-          ENABLE_ANONYMOUS_USERS=${{ secrets.PROD_ENABLE_ANONYMOUS_USERS }}
-          ENABLE_EMAIL_SIGNUP=${{ secrets.PROD_ENABLE_EMAIL_SIGNUP }}
-          ENABLE_EMAIL_AUTOCONFIRM=${{ secrets.PROD_ENABLE_EMAIL_AUTOCONFIRM }}
-          DISABLE_SIGNUP=${{ secrets.PROD_DISABLE_SIGNUP }}
-          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.PROD_NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.PROD_ANON_KEY }}
-          NEXT_PUBLIC_APP_URL=${{ secrets.PROD_NEXT_PUBLIC_APP_URL }}
-          SUPABASE_URL=${{ secrets.PROD_SUPABASE_URL }}
-          SUPABASE_PUBLIC_URL=${{ secrets.PROD_SUPABASE_PUBLIC_URL }}
-          SUPABASE_COOKIE_NAME=${{ secrets.PROD_SUPABASE_COOKIE_NAME }}
-          STUDIO_DEFAULT_ORGANIZATION=${{ secrets.PROD_STUDIO_DEFAULT_ORGANIZATION }}
-          STUDIO_DEFAULT_PROJECT=${{ secrets.PROD_STUDIO_DEFAULT_PROJECT }}
-          STUDIO_SUPABASE_PUBLIC_URL=${{ secrets.PROD_STUDIO_SUPABASE_PUBLIC_URL }}
-          IMGPROXY_URL=${{ secrets.PROD_IMGPROXY_URL }}
-          IMGPROXY_ENABLE_WEBP_DETECTION=${{ secrets.PROD_IMGPROXY_ENABLE_WEBP_DETECTION }}
-          BLOOM_PLOTS_DIR=${{ secrets.PROD_BLOOM_PLOTS_DIR }}
-          BLOOM_PLOTS_URL=${{ secrets.PROD_BLOOM_PLOTS_URL }}
           BLOOMMCP_API_KEY=${{ secrets.PROD_BLOOMMCP_API_KEY }}
-          BLOOM_MCP_URL=${{ secrets.PROD_BLOOM_MCP_URL }}
           OPENAI_API_KEY=${{ secrets.PROD_OPENAI_API_KEY }}
-          CORS_ORIGINS=${{ secrets.PROD_CORS_ORIGINS }}
-          LANGCHAIN_TRACING_V2=${{ secrets.PROD_LANGCHAIN_TRACING_V2 }}
           LANGCHAIN_API_KEY=${{ secrets.PROD_LANGCHAIN_API_KEY }}
-          LANGCHAIN_PROJECT=${{ secrets.PROD_LANGCHAIN_PROJECT }}
-          LANGCHAIN_POSTGRES_URL=postgresql://${{ secrets.PROD_POSTGRES_USER }}:${{ secrets.PROD_POSTGRES_PASSWORD }}@${{ secrets.PROD_POSTGRES_HOST }}:${{ secrets.PROD_POSTGRES_PORT }}/${{ secrets.PROD_POSTGRES_DB }}
-          ENVEOF
-          chmod 600 ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod"
+          MINIO_DATA_PATH=${{ secrets.PROD_MINIO_DATA_PATH }}
+          BLOOM_AGENT_KEY=${{ secrets.PROD_BLOOM_AGENT_KEY }}
+          # _EOF_MARKER_
+          SECRETS
+
+          # Validate under the trap so a bad file triggers cleanup.
+          bash "${{ github.workspace }}/scripts/validate_env.sh" \
+            "$f_next" \
+            "${{ github.workspace }}/docker-compose.prod.yml"
+
+          # Atomic rename: single syscall on the same filesystem. Either
+          # .env.prod is fully replaced by the new file, or it stays the
+          # old file — never a half-written state. Compose and future
+          # snapshot steps only ever see a fully-assembled .env.prod.
+          mv "$f_next" "$f_final"
+
+          trap - INT TERM HUP ERR
+
+      # Catches the case where the runner user (who writes .env.prod at mode 600)
+      # and DEPLOY_USER (who reads it when docker compose runs) diverge. Without
+      # this check, docker compose would silently read an empty env and every
+      # service would start with blank credentials.
+      - name: Verify DEPLOY_USER can read .env.prod
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "test -r ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod" \
+            || { echo "::error::DEPLOY_USER cannot read .env.prod — runner-user and DEPLOY_USER must match, or group-readable perms needed"; exit 1; }
 
       - name: Save previous SHA for rollback
         run: |
@@ -129,46 +176,294 @@ jobs:
             git reset --hard origin/main
           "
 
-      - name: Deploy production stack
+      - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
-            cd ${{ secrets.PROD_DEPLOY_PATH }}
-            docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans
+            # set -euo pipefail: without this, an unparseable MAJOR/MINOR (e.g.
+            # 'docker compose version --short' returning something unexpected)
+            # would make the numeric -lt comparison below error out WITHOUT
+            # failing the script — then the 'ok' line would print and the
+            # deploy would proceed with a possibly-too-old Compose. Copilot
+            # round-1 finding; we want the preflight to abort loudly on any
+            # parse failure.
+            set -euo pipefail
+            COMPOSE_VER=\$(docker compose version --short 2>/dev/null | head -1)
+            if [ -z \"\$COMPOSE_VER\" ]; then
+              echo '::error::docker compose not found on server'
+              exit 1
+            fi
+            # Strip leading 'v' — some installs report 'v2.21.0', which would
+            # break the numeric comparison below (MAJOR=v2 is not -lt 2).
+            COMPOSE_VER=\${COMPOSE_VER#v}
+            MAJOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f1)
+            MINOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f2)
+            # Validate MAJOR and MINOR are integers. If 'docker compose version
+            # --short' returns something we don't expect (e.g., 'dev' or empty
+            # after the strip), the -lt comparison would error. Fail loudly.
+            if ! [[ \"\$MAJOR\" =~ ^[0-9]+\$ && \"\$MINOR\" =~ ^[0-9]+\$ ]]; then
+              echo \"::error::Could not parse Docker Compose version from '\$COMPOSE_VER' (MAJOR='\$MAJOR' MINOR='\$MINOR')\"
+              exit 1
+            fi
+            # --wait arrived in Compose v2.1.1 (Oct 2021); --wait-timeout in
+            # v2.17.0 (Mar 2023). Without --wait-timeout, --wait defaults to
+            # waiting indefinitely — we want the 600s ceiling, so 2.17 is the
+            # real minimum here.
+            if [ \"\$MAJOR\" -lt 2 ] || { [ \"\$MAJOR\" -eq 2 ] && [ \"\$MINOR\" -lt 17 ]; }; then
+              echo \"::error::Docker Compose \$COMPOSE_VER found — need >= 2.17 for --wait-timeout\"
+              exit 1
+            fi
+            echo \"Docker Compose \$COMPOSE_VER ok\"
           "
 
-      - name: Health check
+      - name: Deploy production stack
+        run: |
+          : "${PROD_DEPLOY_PATH:?PROD_DEPLOY_PATH secret must be set (empty → would cd to \$HOME)}"
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            docker compose -f docker-compose.prod.yml --env-file .env.prod \
+              up -d --build --remove-orphans --wait --wait-timeout 600
+            echo 'Production deployed successfully!'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod ps
+          "
+        env:
+          PROD_DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+
+      - name: Deploy diagnostics on failure
+        if: failure()
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
+            echo '::group::docker compose ps'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod ps || true
+            echo '::endgroup::'
+            echo '::group::docker compose logs --tail=200'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=200 || true
+            echo '::endgroup::'
+          "
+
+      - name: Smoke test
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            # Connectivity smoke test — hits 4 endpoints through Caddy and
+            # asserts each returns a 2xx/3xx:
+            #   1. <main>/                bloom-web frontend
+            #   2. <studio>/              Studio UI
+            #   3. <minio>/               MinIO console
+            #   4. <main>/api/rest/v1/    Kong key-auth -> ACL -> REST -> DB
+            #                             (sends apikey header)
+            #
+            # Probes HTTPS directly via --resolve (forces domain -> 127.0.0.1)
+            # so the test works regardless of whether CADDY_HTTPS_LISTEN_PORT
+            # is 443 (prod) or 8443 (staging). Avoids the HTTP -> HTTPS redirect
+            # dance that fails when the redirect target port isn't published.
+            DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.prod | cut -d= -f2-)
+            DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.prod | cut -d= -f2-)
+            DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.prod | cut -d= -f2-)
+            PORT=\$(grep '^CADDY_HTTPS_LISTEN_PORT=' .env.prod | cut -d= -f2-)
+            ANON_KEY=\$(grep '^ANON_KEY=' .env.prod | cut -d= -f2-)
+            : \"\${DOMAIN_MAIN:?missing DOMAIN_MAIN in .env.prod}\"
+            : \"\${DOMAIN_STUDIO:?missing DOMAIN_STUDIO in .env.prod}\"
+            : \"\${DOMAIN_MINIO:?missing DOMAIN_MINIO in .env.prod}\"
+            : \"\${PORT:?missing CADDY_HTTPS_LISTEN_PORT in .env.prod}\"
+            : \"\${ANON_KEY:?missing ANON_KEY in .env.prod}\"
+            echo \"::add-mask::\$ANON_KEY\"
+
+            failed=0
+            _probe() {
+              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
+              # Retry up to 3 times on connection failure (status 000) — Caddy's
+              # \`tls internal\` generates certs lazily on first handshake; the
+              # first probe after a fresh deploy can race the cert generation.
+              local status=000
+              for _ in 1 2 3; do
+                if [ -n \"\$extra\" ]; then
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                else
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                fi
+                [ \"\$status\" != \"000\" ] && break
+                sleep 2
+              done
+              if [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
+                echo \"::error::Smoke test failed on \$host\$path (HTTP \$status)\"
+                failed=1
+              else
+                echo \"  \$host\$path -> \$status\"
+              fi
+            }
+
+            _probe \"\$DOMAIN_MAIN\"   \"/\"
+            _probe \"\$DOMAIN_STUDIO\" \"/\"
+            _probe \"\$DOMAIN_MINIO\"  \"/\"
+            _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
+
+            exit \$failed
+          "
+
+      # Duplicate of the diagnostics step above. GH Actions evaluates `if:
+      # failure()` based on whether any PRIOR step in the job failed — so a
+      # diagnostics step placed BEFORE the smoke test only fires on deploy-step
+      # failures. For routing/app failures caught by the smoke test, we need
+      # another diagnostics step AFTER it. Copilot round-1 finding.
+      - name: Smoke-test diagnostics on failure
+        if: failure()
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            echo '::group::docker compose ps'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod ps || true
+            echo '::endgroup::'
+            echo '::group::docker compose logs --tail=200'
+            docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=200 || true
+            echo '::endgroup::'
+          "
+
+      # storage-api creates `storage.buckets` asynchronously on startup. The
+      # container-level healthcheck signals "Fastify listening" — NOT "schema
+      # ready". Poll for the table so migrations that reference it don't race
+      # storage-api's internal init. (Preserves the polling intent from #138
+      # item 1, positioned post-health-check to fit PR #142's structure.)
+      - name: Wait for storage schema (production)
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
             for i in \$(seq 1 60); do
-              UNHEALTHY=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps --format json | jq '[.[] | select(.State == \"restarting\" or .Health == \"unhealthy\")] | length' 2>/dev/null || echo 99)
-              EXITED=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps --format json | jq '[.[] | select(.State == \"exited\" and .ExitCode != 0)] | length' 2>/dev/null || echo 99)
-              echo \"  unhealthy=\$UNHEALTHY exited=\$EXITED (\$i/60)\"
-              if [ \"\$UNHEALTHY\" -eq 0 ] && [ \"\$EXITED\" -eq 0 ]; then
-                echo 'Production deployed successfully!'
-                docker compose -f docker-compose.prod.yml --env-file .env.prod ps
+              if docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
+                   -e PGPASSWORD=\"\$PG_PASSWORD\" db-prod \
+                   psql -U supabase_admin -d postgres -tAc \
+                   \"SELECT 1 FROM information_schema.tables WHERE table_schema='storage' AND table_name='buckets'\" 2>/dev/null \
+                   | grep -q '^1\$'; then
+                echo 'storage.buckets ready (attempt '\$i')'
                 exit 0
               fi
-              sleep 5
+              sleep 2
             done
-            echo 'DEPLOY FAILED: services in bad state'
-            docker compose -f docker-compose.prod.yml --env-file .env.prod ps
-            docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=50
+            echo '::error::storage.buckets did not appear within 120s — storage-api schema init failed'
             exit 1
           "
+
+      # Gate: only invoke `supabase db push` when pending > 0. Parses
+      # `supabase migration list` output — rows with a LOCAL timestamp but
+      # no REMOTE timestamp are pending migrations. `--debug` is required to
+      # dodge supabase/cli#4839 (TLS handshake against non-TLS Postgres).
+      # Fail-open: any SSH/CLI error, empty stdout, or header-only output
+      # produces `pending=unknown`, which the Apply step's `!= '0'` check
+      # treats as "run the push" — never silently skip on ambiguous signal.
+      - name: Check for pending migrations (production)
+        id: check_migrations_prod
+        run: |
+          echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
+          PENDING=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            bash scripts/deploy_run_supabase.sh prod 'migration list --debug' 2>/dev/null \
+              | awk -F'|' 'NR>2 && \$1 ~ /[0-9]{14}/ && \$2 !~ /[0-9]/ {c++} END { if (NR < 3) { print \"unknown\"; exit 2 } print c+0 }'
+          ") || PENDING="unknown"
+          case "$PENDING" in ''|*[!0-9]*) PENDING="unknown" ;; esac
+          if [ "$PENDING" = "unknown" ]; then
+            echo "pending=unknown" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Migrations::Could not determine pending migration count — forcing db push (fail-open)"
+            echo "⚠️ Migration gate (prod): unable to parse \`supabase migration list\` output — forcing \`db push\` (fail-open)." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PENDING" -eq 0 ]; then
+            echo "pending=0" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Migrations::No pending migrations — skipping db push"
+            echo "ℹ️ Migration gate (prod): 0 pending — \`supabase db push\` skipped." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "pending=$PENDING" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Migrations::$PENDING pending migration(s) — running db push"
+            echo "✅ Migration gate (prod): $PENDING pending — running \`supabase db push\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Apply migrations via Supabase CLI (installed on the Salk server per #135).
+      # Extract only Postgres connection vars — avoids leaking JWT_SECRET / keys
+      # into the subprocess environment. The `: "${VAR:?msg}"` guards fail the
+      # remote script with a clear error if any key is missing from .env.prod,
+      # rather than letting `supabase db push` fail later with a cryptic URL
+      # parse / auth error.
+      - name: Apply database migrations (production)
+        if: steps.check_migrations_prod.outputs.pending != '0'
+        env:
+          EXPECTED_CLI_VERSION: ${{ env.SUPABASE_VERSION }}
+        run: |
+          echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            command -v supabase >/dev/null || { echo '::error::supabase CLI not found on deploy host'; exit 1; }
+            ACTUAL_CLI_VERSION=\$(supabase --version | tr -d '[:space:]')
+            if [ \"\$ACTUAL_CLI_VERSION\" != \"$EXPECTED_CLI_VERSION\" ]; then
+              echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
+              exit 1
+            fi
+            bash scripts/deploy_run_supabase.sh prod 'db push --debug --yes'
+          " || {
+            echo '::error title=Migration failed (production)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
+            exit 1
+          }
+
+      # Layer B: diagnostic on any failure upstream. Lists applied vs pending
+      # so on-call can see which migration broke without scrolling logs.
+      - name: Show migration status on failure (production)
+        if: failure()
+        run: |
+          echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            bash scripts/deploy_run_supabase.sh prod 'migration list --debug'
+          " || echo '::warning::Could not fetch migration status'
+
+      # Layer C: migration state as a fenced code block in the run summary.
+      # Uses CLI's native text output (the `-o json` flag does NOT exist on
+      # `migration list` in the pinned CLI version — see env.SUPABASE_VERSION).
+      - name: Migration summary (production)
+        if: always()
+        run: |
+          echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
+          {
+            echo "## Database migration state (production)"
+            echo ""
+            echo '```'
+            ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+              cd ${{ secrets.PROD_DEPLOY_PATH }}
+              bash scripts/deploy_run_supabase.sh prod 'migration list --debug'
+            " 2>/dev/null || echo '(migration state fetch failed)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rollback on failure
         if: failure()
         run: |
+          # DB state is NOT rolled back by this step. If `Apply database
+          # migrations` succeeded before the failing step, the database is now
+          # on a newer schema than the code being restored. Follow-up tracked
+          # in issue #177.
+          echo '::warning title=Database schema NOT reverted::Rollback reverts code only. If migrations were applied before failure, manual DB intervention may be required. See https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/177.'
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -e
             cd ${{ secrets.PROD_DEPLOY_PATH }}
             if [ -f .previous_sha ]; then
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
+              if [ -f .env.prod.previous ]; then
+                cp -p .env.prod.previous .env.prod
+                echo 'Restored previous .env.prod (mode preserved)'
+              else
+                echo 'WARNING: no .env.prod.previous — rolling back with current .env.prod'
+              fi
               git reset --hard \$PREV || { echo \"::error::Rollback failed: could not reset to \$PREV — SHA may be unreachable\"; exit 1; }
-              docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose up failed — container state may be inconsistent, manual inspection required\"; exit 1; }
-              echo 'Rollback complete — previous version restored'
+              # Rollback matches the forward deploy's strictness: use --wait so
+              # we don't silently 'succeed' while the rolled-back stack is also
+              # broken. Shorter 300s timeout (vs 600s forward) because rollback
+              # reuses already-built images — cold-build is not in the critical
+              # path.
+              docker compose -f docker-compose.prod.yml --env-file .env.prod \
+                up -d --build --remove-orphans --wait --wait-timeout 300 \
+                || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
+              echo 'Rollback complete — previous version restored and healthy'
             else
               echo '::error::No previous SHA saved — manual recovery required'
               exit 1
@@ -182,8 +477,15 @@ jobs:
   deploy-staging:
     name: Deploy to Staging
     if: github.ref == 'refs/heads/staging' || github.event.inputs.environment == 'staging'
-    runs-on: ubuntu-latest
+    # Escape hatch: see deploy-production for rationale.
+    runs-on: ${{ github.event.inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "salk-network"]') }}
+    timeout-minutes: 30
     environment: staging
+    concurrency:
+      # Shared group for both prod and staging — only one deploy runs at a
+      # time across the whole repo (single Salk server, single docker daemon).
+      group: deploy-bloom
+      cancel-in-progress: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -196,73 +498,78 @@ jobs:
           echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      - name: Generate .env.staging on server
+      # The runner is co-located with the deploy target (same host, running as
+      # bloom-deploy). Env-file assembly uses direct local filesystem commands
+      # rather than SSH/scp loopback — simpler, atomic, no network hop.
+
+      - name: Snapshot existing .env.staging for rollback
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "cat > ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging << 'ENVEOF'
-          POSTGRES_DB=${{ secrets.STAGING_POSTGRES_DB }}
-          POSTGRES_USER=${{ secrets.STAGING_POSTGRES_USER }}
+          cd ${{ secrets.STAGING_DEPLOY_PATH }}
+          if [ -f .env.staging ]; then
+            cp -p .env.staging .env.staging.previous
+            echo "Saved .env.staging as .env.staging.previous"
+          else
+            echo "No existing .env.staging — first deploy, skipping snapshot"
+          fi
+
+      - name: Install env defaults on server
+        run: |
+          # Write to .env.staging.next (atomic-rename pattern) — see prod step.
+          rm -f "${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging.next"
+          install -m 600 "${{ github.workspace }}/.env.staging.defaults" \
+            "${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging.next"
+
+      - name: Append secrets, validate, and promote to .env.staging
+        # Atomic-rename pattern mirrors prod; see prod step for full rationale.
+        run: |
+          set -euo pipefail
+          umask 077
+          f_next="${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging.next"
+          f_final="${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
+
+          _cleanup_on_interrupt() {
+            echo "::warning::Interrupt during env assembly — removing partial .env.staging.next (last-good .env.staging preserved)" >&2
+            rm -f "$f_next"
+            exit 1
+          }
+          trap _cleanup_on_interrupt INT TERM HUP ERR
+
+          cat >> "$f_next" << 'SECRETS'
           POSTGRES_PASSWORD=${{ secrets.STAGING_POSTGRES_PASSWORD }}
-          POSTGRES_PORT=${{ secrets.STAGING_POSTGRES_PORT }}
-          POSTGRES_HOST=${{ secrets.STAGING_POSTGRES_HOST }}
-          PGRST_DB_SCHEMAS=${{ secrets.STAGING_PGRST_DB_SCHEMAS }}
-          ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
-          SERVICE_ROLE_KEY=${{ secrets.STAGING_SERVICE_ROLE_KEY }}
           JWT_SECRET=${{ secrets.STAGING_JWT_SECRET }}
-          JWT_EXPIRY=${{ secrets.STAGING_JWT_EXPIRY }}
-          SUPAVISOR_ENC_KEY=${{ secrets.STAGING_SUPAVISOR_ENC_KEY }}
-          VAULT_ENC_KEY=${{ secrets.STAGING_VAULT_ENC_KEY }}
-          SECRET_KEY_BASE=${{ secrets.STAGING_SECRET_KEY_BASE }}
+          ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
+          SERVICE_ROLE_KEY=${{ secrets.STAGING_SERVICE_ROLE_KEY }}
           DB_ENC_KEY=${{ secrets.STAGING_DB_ENC_KEY }}
-          DOMAIN_MAIN=${{ secrets.STAGING_DOMAIN_MAIN }}
-          DOMAIN_STUDIO=${{ secrets.STAGING_DOMAIN_STUDIO }}
-          DOMAIN_MINIO=${{ secrets.STAGING_DOMAIN_MINIO }}
-          CADDY_HTTP_LISTEN_PORT=${{ secrets.STAGING_CADDY_HTTP_LISTEN_PORT }}
-          CADDY_HTTPS_LISTEN_PORT=${{ secrets.STAGING_CADDY_HTTPS_LISTEN_PORT }}
-          CADDY_HTTP_PORT=
-          KONG_PORT=${{ secrets.STAGING_KONG_PORT }}
-          BLOOM_WEB_PORT=${{ secrets.STAGING_BLOOM_WEB_PORT }}
-          STUDIO_PORT=${{ secrets.STAGING_STUDIO_PORT }}
-          MINIO_CONSOLE_PORT=${{ secrets.STAGING_MINIO_CONSOLE_PORT }}
+          VAULT_ENC_KEY=${{ secrets.STAGING_VAULT_ENC_KEY }}
+          SUPAVISOR_ENC_KEY=${{ secrets.STAGING_SUPAVISOR_ENC_KEY }}
+          SECRET_KEY_BASE=${{ secrets.STAGING_SECRET_KEY_BASE }}
           MINIO_ROOT_USER=${{ secrets.STAGING_MINIO_ROOT_USER }}
           MINIO_ROOT_PASSWORD=${{ secrets.STAGING_MINIO_PASSWORD }}
-          MINIO_DATA_PATH=${{ secrets.STAGING_MINIO_DATA_PATH }}
-          MINIO_BROWSER_REDIRECT_URL=${{ secrets.STAGING_MINIO_BROWSER_REDIRECT_URL }}
-          POOLER_TENANT_ID=${{ secrets.STAGING_POOLER_TENANT_ID }}
-          POOLER_DEFAULT_POOL_SIZE=${{ secrets.STAGING_POOLER_DEFAULT_POOL_SIZE }}
-          POOLER_MAX_CLIENT_CONN=${{ secrets.STAGING_POOLER_MAX_CLIENT_CONN }}
-          POOLER_DB_POOL_SIZE=${{ secrets.STAGING_POOLER_DB_POOL_SIZE }}
           DASHBOARD_USERNAME=${{ secrets.STAGING_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.STAGING_DASHBOARD_PASSWORD }}
-          SITE_URL=${{ secrets.STAGING_SITE_URL }}
-          API_EXTERNAL_URL=${{ secrets.STAGING_API_EXTERNAL_URL }}
-          ADDITIONAL_REDIRECT_URLS=${{ secrets.STAGING_ADDITIONAL_REDIRECT_URLS }}
-          ENABLE_ANONYMOUS_USERS=${{ secrets.STAGING_ENABLE_ANONYMOUS_USERS }}
-          ENABLE_EMAIL_SIGNUP=${{ secrets.STAGING_ENABLE_EMAIL_SIGNUP }}
-          ENABLE_EMAIL_AUTOCONFIRM=${{ secrets.STAGING_ENABLE_EMAIL_AUTOCONFIRM }}
-          DISABLE_SIGNUP=${{ secrets.STAGING_DISABLE_SIGNUP }}
-          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.STAGING_NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
-          NEXT_PUBLIC_APP_URL=${{ secrets.STAGING_NEXT_PUBLIC_APP_URL }}
-          SUPABASE_URL=${{ secrets.STAGING_SUPABASE_URL }}
-          SUPABASE_PUBLIC_URL=${{ secrets.STAGING_SUPABASE_PUBLIC_URL }}
-          SUPABASE_COOKIE_NAME=${{ secrets.STAGING_SUPABASE_COOKIE_NAME }}
-          STUDIO_DEFAULT_ORGANIZATION=${{ secrets.STAGING_STUDIO_DEFAULT_ORGANIZATION }}
-          STUDIO_DEFAULT_PROJECT=${{ secrets.STAGING_STUDIO_DEFAULT_PROJECT }}
-          STUDIO_SUPABASE_PUBLIC_URL=${{ secrets.STAGING_STUDIO_SUPABASE_PUBLIC_URL }}
-          IMGPROXY_URL=${{ secrets.STAGING_IMGPROXY_URL }}
-          IMGPROXY_ENABLE_WEBP_DETECTION=${{ secrets.STAGING_IMGPROXY_ENABLE_WEBP_DETECTION }}
-          BLOOM_PLOTS_DIR=${{ secrets.STAGING_BLOOM_PLOTS_DIR }}
-          BLOOM_PLOTS_URL=${{ secrets.STAGING_BLOOM_PLOTS_URL }}
           BLOOMMCP_API_KEY=${{ secrets.STAGING_BLOOMMCP_API_KEY }}
-          BLOOM_MCP_URL=${{ secrets.STAGING_BLOOM_MCP_URL }}
           OPENAI_API_KEY=${{ secrets.STAGING_OPENAI_API_KEY }}
-          CORS_ORIGINS=${{ secrets.STAGING_CORS_ORIGINS }}
-          LANGCHAIN_TRACING_V2=${{ secrets.STAGING_LANGCHAIN_TRACING_V2 }}
           LANGCHAIN_API_KEY=${{ secrets.STAGING_LANGCHAIN_API_KEY }}
-          LANGCHAIN_PROJECT=${{ secrets.STAGING_LANGCHAIN_PROJECT }}
-          LANGCHAIN_POSTGRES_URL=postgresql://${{ secrets.STAGING_POSTGRES_USER }}:${{ secrets.STAGING_POSTGRES_PASSWORD }}@${{ secrets.STAGING_POSTGRES_HOST }}:${{ secrets.STAGING_POSTGRES_PORT }}/${{ secrets.STAGING_POSTGRES_DB }}
-          ENVEOF
-          chmod 600 ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
+          MINIO_DATA_PATH=${{ secrets.STAGING_MINIO_DATA_PATH }}
+          BLOOM_AGENT_KEY=${{ secrets.STAGING_BLOOM_AGENT_KEY }}
+          # _EOF_MARKER_
+          SECRETS
+
+          bash "${{ github.workspace }}/scripts/validate_env.sh" \
+            "$f_next" \
+            "${{ github.workspace }}/docker-compose.prod.yml"
+
+          mv "$f_next" "$f_final"
+
+          trap - INT TERM HUP ERR
+
+      # See deploy-production's equivalent step for rationale.
+      - name: Verify DEPLOY_USER can read .env.staging
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "test -r ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging" \
+            || { echo "::error::DEPLOY_USER cannot read .env.staging — runner-user and DEPLOY_USER must match, or group-readable perms needed"; exit 1; }
 
       - name: Save previous SHA for rollback
         run: |
@@ -291,46 +598,258 @@ jobs:
             git reset --hard origin/staging
           "
 
-      - name: Deploy staging stack
+      - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
-            cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build --remove-orphans
+            # See prod version of this step for why set -euo pipefail is load-
+            # bearing here (unparseable MAJOR/MINOR would otherwise silently
+            # allow the deploy to proceed with a too-old Compose).
+            set -euo pipefail
+            COMPOSE_VER=\$(docker compose version --short 2>/dev/null | head -1)
+            if [ -z \"\$COMPOSE_VER\" ]; then
+              echo '::error::docker compose not found on server'
+              exit 1
+            fi
+            # Strip leading 'v' — some installs report 'v2.21.0'.
+            COMPOSE_VER=\${COMPOSE_VER#v}
+            MAJOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f1)
+            MINOR=\$(echo \"\$COMPOSE_VER\" | cut -d. -f2)
+            if ! [[ \"\$MAJOR\" =~ ^[0-9]+\$ && \"\$MINOR\" =~ ^[0-9]+\$ ]]; then
+              echo \"::error::Could not parse Docker Compose version from '\$COMPOSE_VER' (MAJOR='\$MAJOR' MINOR='\$MINOR')\"
+              exit 1
+            fi
+            # --wait arrived in v2.1.1; --wait-timeout in v2.17. We need the
+            # latter so the ceiling applies.
+            if [ \"\$MAJOR\" -lt 2 ] || { [ \"\$MAJOR\" -eq 2 ] && [ \"\$MINOR\" -lt 17 ]; }; then
+              echo \"::error::Docker Compose \$COMPOSE_VER found — need >= 2.17 for --wait-timeout\"
+              exit 1
+            fi
+            echo \"Docker Compose \$COMPOSE_VER ok\"
           "
 
-      - name: Health check
+      - name: Deploy staging stack
+        run: |
+          : "${STAGING_DEPLOY_PATH:?STAGING_DEPLOY_PATH secret must be set (empty → would cd to \$HOME)}"
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
+              up -d --build --remove-orphans --wait --wait-timeout 600
+            echo 'Staging deployed successfully!'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
+          "
+        env:
+          STAGING_DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+
+      - name: Deploy diagnostics on failure
+        if: failure()
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            echo '::group::docker compose ps'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps || true
+            echo '::endgroup::'
+            echo '::group::docker compose logs --tail=200'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --tail=200 || true
+            echo '::endgroup::'
+          "
+
+      - name: Smoke test
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            # Connectivity smoke test — hits 4 endpoints through Caddy and
+            # asserts each returns a 2xx/3xx:
+            #   1. <main>/                bloom-web frontend
+            #   2. <studio>/              Studio UI
+            #   3. <minio>/               MinIO console
+            #   4. <main>/api/rest/v1/    Kong key-auth -> ACL -> REST -> DB
+            #                             (sends apikey header)
+            #
+            # Probes HTTPS directly via --resolve (forces domain -> 127.0.0.1)
+            # so the test works regardless of whether CADDY_HTTPS_LISTEN_PORT
+            # is 443 (prod) or 8443 (staging). Avoids the HTTP -> HTTPS redirect
+            # dance that fails when the redirect target port isn't published.
+            DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.staging | cut -d= -f2-)
+            DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.staging | cut -d= -f2-)
+            DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.staging | cut -d= -f2-)
+            PORT=\$(grep '^CADDY_HTTPS_LISTEN_PORT=' .env.staging | cut -d= -f2-)
+            ANON_KEY=\$(grep '^ANON_KEY=' .env.staging | cut -d= -f2-)
+            : \"\${DOMAIN_MAIN:?missing DOMAIN_MAIN in .env.staging}\"
+            : \"\${DOMAIN_STUDIO:?missing DOMAIN_STUDIO in .env.staging}\"
+            : \"\${DOMAIN_MINIO:?missing DOMAIN_MINIO in .env.staging}\"
+            : \"\${PORT:?missing CADDY_HTTPS_LISTEN_PORT in .env.staging}\"
+            : \"\${ANON_KEY:?missing ANON_KEY in .env.staging}\"
+            echo \"::add-mask::\$ANON_KEY\"
+
+            failed=0
+            _probe() {
+              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
+              # Retry up to 3 times on connection failure (status 000) — Caddy's
+              # \`tls internal\` generates certs lazily on first handshake; the
+              # first probe after a fresh deploy can race the cert generation.
+              local status=000
+              for _ in 1 2 3; do
+                if [ -n \"\$extra\" ]; then
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                else
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                fi
+                [ \"\$status\" != \"000\" ] && break
+                sleep 2
+              done
+              if [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
+                echo \"::error::Smoke test failed on \$host\$path (HTTP \$status)\"
+                failed=1
+              else
+                echo \"  \$host\$path -> \$status\"
+              fi
+            }
+
+            _probe \"\$DOMAIN_MAIN\"   \"/\"
+            _probe \"\$DOMAIN_STUDIO\" \"/\"
+            _probe \"\$DOMAIN_MINIO\"  \"/\"
+            _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
+
+            exit \$failed
+          "
+
+      # Second diagnostics step — see prod version for rationale (smoke test
+      # failures don't fire the earlier diagnostics step which is gated by
+      # deploy-step failure, not any-step failure). Copilot round-1 finding.
+      - name: Smoke-test diagnostics on failure
+        if: failure()
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            echo '::group::docker compose ps'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps || true
+            echo '::endgroup::'
+            echo '::group::docker compose logs --tail=200'
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --tail=200 || true
+            echo '::endgroup::'
+          "
+
+      # See production "Wait for storage schema" step for the reasoning.
+      - name: Wait for storage schema (staging)
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
             for i in \$(seq 1 60); do
-              UNHEALTHY=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps --format json | jq '[.[] | select(.State == \"restarting\" or .Health == \"unhealthy\")] | length' 2>/dev/null || echo 99)
-              EXITED=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps --format json | jq '[.[] | select(.State == \"exited\" and .ExitCode != 0)] | length' 2>/dev/null || echo 99)
-              echo \"  unhealthy=\$UNHEALTHY exited=\$EXITED (\$i/60)\"
-              if [ \"\$UNHEALTHY\" -eq 0 ] && [ \"\$EXITED\" -eq 0 ]; then
-                echo 'Staging deployed successfully!'
-                docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
+              if docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T \
+                   -e PGPASSWORD=\"\$PG_PASSWORD\" db-prod \
+                   psql -U supabase_admin -d postgres -tAc \
+                   \"SELECT 1 FROM information_schema.tables WHERE table_schema='storage' AND table_name='buckets'\" 2>/dev/null \
+                   | grep -q '^1\$'; then
+                echo 'storage.buckets ready (attempt '\$i')'
                 exit 0
               fi
-              sleep 5
+              sleep 2
             done
-            echo 'DEPLOY FAILED: services in bad state'
-            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps
-            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --tail=50
+            echo '::error::storage.buckets did not appear within 120s — storage-api schema init failed'
             exit 1
           "
+
+      # See the production gate (above) for the full rationale — staging
+      # uses the identical pattern so the two envs can't silently diverge.
+      - name: Check for pending migrations (staging)
+        id: check_migrations_staging
+        run: |
+          echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
+          PENDING=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            bash scripts/deploy_run_supabase.sh staging 'migration list --debug' 2>/dev/null \
+              | awk -F'|' 'NR>2 && \$1 ~ /[0-9]{14}/ && \$2 !~ /[0-9]/ {c++} END { if (NR < 3) { print \"unknown\"; exit 2 } print c+0 }'
+          ") || PENDING="unknown"
+          case "$PENDING" in ''|*[!0-9]*) PENDING="unknown" ;; esac
+          if [ "$PENDING" = "unknown" ]; then
+            echo "pending=unknown" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Migrations::Could not determine pending migration count — forcing db push (fail-open)"
+            echo "⚠️ Migration gate (staging): unable to parse \`supabase migration list\` output — forcing \`db push\` (fail-open)." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PENDING" -eq 0 ]; then
+            echo "pending=0" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Migrations::No pending migrations — skipping db push"
+            echo "ℹ️ Migration gate (staging): 0 pending — \`supabase db push\` skipped." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "pending=$PENDING" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Migrations::$PENDING pending migration(s) — running db push"
+            echo "✅ Migration gate (staging): $PENDING pending — running \`supabase db push\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Apply database migrations (staging)
+        if: steps.check_migrations_staging.outputs.pending != '0'
+        env:
+          EXPECTED_CLI_VERSION: ${{ env.SUPABASE_VERSION }}
+        run: |
+          echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            command -v supabase >/dev/null || { echo '::error::supabase CLI not found on deploy host'; exit 1; }
+            ACTUAL_CLI_VERSION=\$(supabase --version | tr -d '[:space:]')
+            if [ \"\$ACTUAL_CLI_VERSION\" != \"$EXPECTED_CLI_VERSION\" ]; then
+              echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
+              exit 1
+            fi
+            bash scripts/deploy_run_supabase.sh staging 'db push --debug --yes'
+          " || {
+            echo '::error title=Migration failed (staging)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
+            exit 1
+          }
+
+      - name: Show migration status on failure (staging)
+        if: failure()
+        run: |
+          echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            bash scripts/deploy_run_supabase.sh staging 'migration list --debug'
+          " || echo '::warning::Could not fetch migration status'
+
+      - name: Migration summary (staging)
+        if: always()
+        run: |
+          echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
+          {
+            echo "## Database migration state (staging)"
+            echo ""
+            echo '```'
+            ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+              cd ${{ secrets.STAGING_DEPLOY_PATH }}
+              bash scripts/deploy_run_supabase.sh staging 'migration list --debug'
+            " 2>/dev/null || echo '(migration state fetch failed)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rollback on failure
         if: failure()
         run: |
+          # DB state is NOT rolled back by this step. See the matching comment
+          # on the production rollback step above and issue #177.
+          echo '::warning title=Database schema NOT reverted::Rollback reverts code only. If migrations were applied before failure, manual DB intervention may be required. See https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/177.'
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -e
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
             if [ -f .previous_sha ]; then
               PREV=\$(cat .previous_sha)
               echo \"Rolling back to \$PREV\"
+              if [ -f .env.staging.previous ]; then
+                cp -p .env.staging.previous .env.staging
+                echo 'Restored previous .env.staging (mode preserved)'
+              else
+                echo 'WARNING: no .env.staging.previous — rolling back with current .env.staging'
+              fi
               git reset --hard \$PREV || { echo \"::error::Rollback failed: could not reset to \$PREV — SHA may be unreachable\"; exit 1; }
-              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build --remove-orphans || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose up failed — container state may be inconsistent, manual inspection required\"; exit 1; }
-              echo 'Rollback complete — previous version restored'
+              # Symmetric --wait with forward deploy — see prod rollback for
+              # rationale. Shorter 300s timeout since rollback reuses built
+              # images.
+              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
+                up -d --build --remove-orphans --wait --wait-timeout 300 \
+                || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
+              echo 'Rollback complete — previous version restored and healthy'
             else
               echo '::error::No previous SHA saved — manual recovery required'
               exit 1

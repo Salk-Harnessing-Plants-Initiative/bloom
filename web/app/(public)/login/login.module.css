@@ -433,12 +433,6 @@
 }
 
 .modeToggle {
-  margin-top: 14px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--stone-600);
-}
-.modeToggle button {
   background: none;
   border: none;
   padding: 0;
@@ -448,7 +442,7 @@
   font-family: inherit;
   font-size: inherit;
 }
-.modeToggle button:hover {
+.modeToggle:hover {
   text-decoration: underline;
   text-underline-offset: 3px;
 }

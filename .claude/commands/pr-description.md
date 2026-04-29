@@ -72,7 +72,7 @@ If the PR modifies `web/`:
 
 If the PR includes migrations in `supabase/migrations/`:
 
-- [ ] Migration tested locally: `make apply-migrations-local`
+- [ ] Migration tested locally: `make migrate-local`
 - [ ] RLS policies added for new tables
 - [ ] TypeScript types regenerated: `make gen-types`
 - [ ] Rollback SQL documented (if destructive)
