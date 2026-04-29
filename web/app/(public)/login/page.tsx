@@ -72,7 +72,7 @@ export default async function LoginPage() {
             </div>
             <p className={styles.kicker}>THE DATA PLATFORM</p>
             <h1 className={styles.heroTitle}>
-              For the plants <em>solving</em> climate change.
+              From the <em>Salk</em> Harnessing Plants Initiative.
             </h1>
             <p className={styles.heroSub}>
               Phenotyping scans, single-cell expression, gene candidates, and
