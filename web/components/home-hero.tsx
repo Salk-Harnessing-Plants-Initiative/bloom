@@ -1,23 +1,32 @@
 import Link from "next/link";
-import Illustration from "@/components/illustration";
-import type { SpeciesMontageRow } from "@/app/app/home-lib/species-montage";
 import { numberToWord } from "@/app/app/home-lib/number-to-word";
 
 interface Props {
   firstName: string | null;
   speciesCount: number;
-  montage: SpeciesMontageRow[];
 }
 
-const MONTAGE_SLOTS = [
-  "top-4 left-0 h-44 w-44",
-  "top-0 left-36 h-36 w-36",
-  "top-40 left-52 h-40 w-40",
-  "top-20 left-20 h-32 w-32",
-  "top-56 left-4 h-36 w-36",
+const HERO_PLANTS = [
+  { src: "/login/arabidopsis-watercolor.png", name: "Arabidopsis" },
+  { src: "/login/wheat-watercolor.png", name: "Wheat" },
+  { src: "/login/tomato-watercolor.png", name: "Tomato" },
+  { src: "/login/amaranth-watercolor.png", name: "Amaranth" },
+  { src: "/login/sugar-beet-watercolor.png", name: "Sugar beet" },
+  { src: "/login/spinach-watercolor.png", name: "Spinach" },
+  { src: "/login/sorghum-watercolor.png", name: "Sorghum" },
 ];
 
-export function HomeHero({ firstName, speciesCount, montage }: Props) {
+const MONTAGE_SLOTS = [
+  "top-0  left-0  h-36 w-36",
+  "top-2  left-36 h-44 w-44",
+  "top-4  left-72 h-32 w-32",
+  "top-44 left-12 h-28 w-28",
+  "top-40 left-48 h-36 w-36",
+  "top-72 left-20 h-32 w-32",
+  "top-80 left-56 h-28 w-28",
+];
+
+export function HomeHero({ firstName, speciesCount }: Props) {
   const word = numberToWord(speciesCount);
 
   return (
@@ -56,25 +65,24 @@ export function HomeHero({ firstName, speciesCount, montage }: Props) {
         </div>
       </div>
 
-      <div
-        className="relative h-[360px] w-full pointer-events-none"
-        aria-hidden
-      >
-        {montage.slice(0, 5).map((sp, i) => (
+      <div className="relative h-[440px] w-full" aria-hidden>
+        {HERO_PLANTS.map((p, i) => (
           <div
-            key={sp.id}
-            className={`absolute ${MONTAGE_SLOTS[i % MONTAGE_SLOTS.length]} pointer-events-auto`}
+            key={p.name}
+            className={`absolute ${MONTAGE_SLOTS[i]}`}
             style={{
               animation: `home-plant-drift ${14 + i * 2}s ease-in-out infinite`,
               animationDelay: `${i * -2}s`,
-              filter: "saturate(0.85) contrast(0.95)",
-              opacity: 0.9,
+              filter: "saturate(0.9) contrast(0.96)",
+              opacity: 0.92,
             }}
-            title={sp.common_name ?? ""}
+            title={p.name}
           >
-            <Illustration
-              path={sp.illustration_path}
-              commonName={sp.common_name}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={p.src}
+              alt={p.name}
+              className="w-full h-full object-contain"
             />
           </div>
         ))}
