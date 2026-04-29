@@ -37,7 +37,7 @@ export default async function LoginPage() {
         <div
           key={i}
           className={`${styles.plant} ${styles[p.cls]}${
-            p.drift ? ` ${styles[`drift${p.drift}`]}` : ""
+            p.drift ? ` ${styles[`d${p.drift}`]}` : ""
           }`}
         >
           <img src={p.src} alt={p.name} />
