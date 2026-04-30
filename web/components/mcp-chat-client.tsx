@@ -144,6 +144,8 @@ export default function MCPChat() {
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [streamStatus, setStreamStatus] = useState<string>("");
+  const [activeTools, setActiveTools] = useState<string[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeThreadId, setActiveThreadId] = useState<string>("default");
 
@@ -320,81 +322,99 @@ export default function MCPChat() {
 
   function startRequest(text: string) {
     setStreaming(true);
+    setStreamStatus("Thinking...");
+    setActiveTools([]);
     setMessages((m) => [...m, { from: "bot", text: "" }]);
-    const url = `${API_BASE_URL}/langchain/chat`;
+    const streamUrl = `${API_BASE_URL}/langchain/chat/stream`;
 
     (async () => {
       try {
-        const body: any = {
-          prompt: text,
-          provider: settings.provider,
-          model: settings.model,
-          tool_set: settings.toolSet || "generic",
-          mcp_tool_names: settings.mcpToolNames || [],
-          thread_id: activeThreadId,
-        };
-
         const token = await getAuthToken();
-        if (!token) {
-          throw new Error("Please log in to use the Bloom Assistant.");
-        }
+        if (!token) throw new Error("Please log in to use the Bloom Assistant.");
 
-        const resp = await fetch(url, {
+        const resp = await fetch(streamUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${token}`,
+            Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify(body),
+          body: JSON.stringify({
+            prompt: text,
+            provider: settings.provider,
+            model: settings.model,
+            tool_set: settings.toolSet || "generic",
+            mcp_tool_names: settings.mcpToolNames || [],
+            thread_id: activeThreadId,
+          }),
         });
-        const rawBody = await resp.text();
+
         if (!resp.ok) {
-          throw new Error(`Agent request failed ${resp.status}: ${rawBody}`);
+          const errBody = await resp.text();
+          throw new Error(`Agent request failed ${resp.status}: ${errBody}`);
         }
-        let data: any = null;
-        try {
-          data = JSON.parse(rawBody);
-        } catch {
-          // rawBody already captured above
-        }
+        if (!resp.body) throw new Error("No response body");
 
-        const parts: string[] = [];
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let accumulatedText = "";
+        let buffer = "";
+        const toolsUsed: string[] = [];
 
-        if (data && data.answer) {
-          parts.push(data.answer);
-        }
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        if (data && data.tools_used && data.tools_used.length > 0) {
-          parts.push("\nTools: " + data.tools_used.join(", "));
-        }
+          buffer += decoder.decode(value, { stream: true });
+          // SSE lines are separated by \n; events end with a blank line.
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
 
-        if (data && data.error) {
-          parts.push(`Error: ${data.error}`);
-          if (data.detail) {
-            parts.push(`Details: ${data.detail}`);
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            let event: { type?: string; content?: string };
+            try {
+              event = JSON.parse(line.slice(6));
+            } catch {
+              continue; // skip malformed SSE line
+            }
+
+            if (event.type === "status") {
+              setStreamStatus(event.content ?? "");
+            } else if (event.type === "tool" && event.content) {
+              toolsUsed.push(event.content);
+              setActiveTools([...toolsUsed]);
+              setStreamStatus(`Using ${event.content}...`);
+            } else if (event.type === "tool_done") {
+              setStreamStatus("Thinking...");
+            } else if (event.type === "token" && event.content) {
+              accumulatedText += event.content;
+              setMessages((msgs) => {
+                const copy = [...msgs];
+                const last = copy[copy.length - 1];
+                if (last && last.from === "bot") {
+                  copy[copy.length - 1] = { from: "bot", text: accumulatedText };
+                }
+                return copy;
+              });
+            } else if (event.type === "error" && event.content) {
+              accumulatedText += `\n\nError: ${event.content}`;
+              setMessages((msgs) => {
+                const copy = [...msgs];
+                const last = copy[copy.length - 1];
+                if (last && last.from === "bot") {
+                  copy[copy.length - 1] = { from: "bot", text: accumulatedText };
+                }
+                return copy;
+              });
+            }
+            // 'done' is handled implicitly when the reader finishes
           }
         }
-
-        if (rawBody) {
-          parts.push("--- Raw response body (non-JSON) ---\n" + rawBody);
-        }
-
-        const textOut = parts.join("\n\n");
-        setMessages((msgs) => {
-          const copy = [...msgs];
-          const last = copy.slice(-1)[0];
-          if (last && last.from === "bot") {
-            copy[copy.length - 1] = { from: "bot", text: textOut };
-          } else {
-            copy.push({ from: "bot", text: textOut });
-          }
-          return copy;
-        });
 
         // Refresh thread list after message (new thread may appear, timestamps update)
         fetchThreads();
-      } catch (err: any) {
-        const errMsg = `Error contacting agent: ${err?.message ?? String(err)}`;
+      } catch (err: unknown) {
+        const errMsg = `Error contacting agent: ${err instanceof Error ? err.message : String(err)}`;
         setMessages((msgs) => {
           const copy = [...msgs];
           const last = copy.slice(-1)[0];
@@ -407,6 +427,8 @@ export default function MCPChat() {
         });
       } finally {
         setStreaming(false);
+        setStreamStatus("");
+        setActiveTools([]);
       }
     })();
   }
@@ -985,23 +1007,47 @@ export default function MCPChat() {
               <div
                 style={{
                   display: "flex",
-                  alignItems: "center",
-                  gap: 10,
+                  flexDirection: "column",
+                  gap: 8,
                   padding: "12px 0",
                 }}
               >
-                <span
-                  style={{
-                    width: 20,
-                    height: 20,
-                    border: "3px solid rgba(0,0,0,0.12)",
-                    borderTopColor: "#0ea5a4",
-                    borderRadius: "50%",
-                    display: "inline-block",
-                    animation: "mcp-spin 0.9s linear infinite",
-                  }}
-                />
-                <span style={{ color: "#64748b", fontSize: 14 }}>Thinking...</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span
+                    style={{
+                      width: 20,
+                      height: 20,
+                      border: "3px solid rgba(0,0,0,0.12)",
+                      borderTopColor: "#0ea5a4",
+                      borderRadius: "50%",
+                      display: "inline-block",
+                      animation: "mcp-spin 0.9s linear infinite",
+                    }}
+                  />
+                  <span style={{ color: "#64748b", fontSize: 14 }}>
+                    {streamStatus || "Thinking..."}
+                  </span>
+                </div>
+                {activeTools.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, paddingLeft: 30 }}>
+                    {activeTools.map((toolName, idx) => (
+                      <span
+                        key={`${toolName}-${idx}`}
+                        style={{
+                          background: "#e0f2f1",
+                          color: "#0d9695",
+                          padding: "4px 10px",
+                          borderRadius: 12,
+                          fontSize: 12,
+                          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                          border: "1px solid #b2dfdb",
+                        }}
+                      >
+                        {toolName}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
             <div ref={messagesEndRef} />
