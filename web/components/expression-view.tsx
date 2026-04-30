@@ -180,7 +180,8 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
             aria-label="View mode"
           >
             <ToggleButton value="umap2d">UMAP 2D</ToggleButton>
-            <ToggleButton value="pca3d">PCA 3D</ToggleButton>
+            {/* PCA 3D temporarily hidden — re-enable once it's polished */}
+            {/* <ToggleButton value="pca3d">PCA 3D</ToggleButton> */}
           </ToggleButtonGroup>
           {viewMode === "umap2d" && (
             <Box sx={{ maxWidth: 360, flex: 1 }}>
