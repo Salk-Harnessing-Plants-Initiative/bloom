@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import createREGL, { type Regl } from "regl";
+import createREGL, { type Regl, type Buffer as ReglBuffer, type DrawCommand } from "regl";
 
 import {
   fetchCells,
@@ -46,24 +46,15 @@ interface LoadedData {
   dataset: Dataset;
   clusters: Cluster[];
   cells: CellArraysRow[];
-  /** positions packed as [x0, y0, x1, y1, ...] */
   positions: Float32Array;
-  /** rgba colors packed as [r0, g0, b0, a0, ...] from cluster palette */
   clusterColors: Float32Array;
-  /** length N, 1.0 visible / 0.0 hidden */
   visibility: Float32Array;
-  /** per-cell cluster ordinal, kept for recomputing visibility */
   clusterOrdinals: Uint8Array;
-  /** normalization: maps dataset coord → [-1, 1] NDC region */
   normScale: number;
   normCenterX: number;
   normCenterY: number;
 }
 
-/**
- * Hex color string like "#4d7c0f" → normalized [r, g, b] components in [0, 1].
- * Unknown/missing colors fall back to gray so the shader still renders.
- */
 function hexToRgb(hex: string | null): [number, number, number] {
   if (!hex) return [0.5, 0.5, 0.5];
   const trimmed = hex.replace(/^#/, "");
@@ -73,7 +64,6 @@ function hexToRgb(hex: string | null): [number, number, number] {
   return [((n >> 16) & 0xff) / 255, ((n >> 8) & 0xff) / 255, (n & 0xff) / 255];
 }
 
-/** Build a Float32Array of packed rgba colors, one per cell, from the cluster palette. */
 function packClusterColors(
   cells: CellArraysRow[],
   clusters: Cluster[],
@@ -93,7 +83,6 @@ function packClusterColors(
   return out;
 }
 
-/** Build Float32Array positions and compute normalization so coords map to ~[-1, 1]. */
 function packPositions(cells: CellArraysRow[]): {
   positions: Float32Array;
   normScale: number;
@@ -120,7 +109,6 @@ function packPositions(cells: CellArraysRow[]): {
   const rangeY = maxY - minY;
   const range = Math.max(rangeX, rangeY) || 1;
   const scale = 2 / (range * NORMALIZE_PADDING);
-  // pre-center positions in-place so the shader only needs to scale + translate
   for (let i = 0; i < n; i++) {
     positions[i * 2] = (positions[i * 2] - centerX) * scale;
     positions[i * 2 + 1] = (positions[i * 2 + 1] - centerY) * scale;
@@ -137,9 +125,31 @@ export function ExpressionUmap({
   onExpressionRangeChanged,
 }: ExpressionUmapProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // The init effect creates the regl context exactly once per dataset and
+  // stores all GPU handles in refs. Subsequent state changes (camera,
+  // visibility, expression) update existing buffers via `subdata` — never
+  // re-create the WebGL context. This avoids a context-cap exhaustion bug
+  // (Safari/Firefox cap at 16 contexts) that black-canvased the cockpit
+  // after a few seconds of pan/zoom under the previous implementation.
   const reglRef = useRef<Regl | null>(null);
+  const positionBufferRef = useRef<ReglBuffer | null>(null);
+  const colorBufferRef = useRef<ReglBuffer | null>(null);
+  const visibilityBufferRef = useRef<ReglBuffer | null>(null);
+  const expressionBufferRef = useRef<ReglBuffer | null>(null);
+  const drawClustersRef = useRef<DrawCommand | null>(null);
+  const drawExpressionRef = useRef<DrawCommand | null>(null);
+  /**
+   * Length the GPU buffers were allocated for. Used as a B5 race guard:
+   * subdata writes from the [visibility] / [expressionArr] effects must
+   * skip when their array length doesn't match this — the init effect
+   * for the new dataset hasn't completed re-allocating the buffers yet.
+   */
+  const cellCountRef = useRef<number>(0);
+
   const [data, setData] = useState<LoadedData | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [webglError, setWebglError] = useState<string | null>(null);
   const [expressionArr, setExpressionArr] = useState<Float32Array | null>(null);
   const [expressionRange, setExpressionRange] = useState<{
     min: number;
@@ -148,6 +158,21 @@ export function ExpressionUmap({
 
   const [zoom, setZoom] = useState(1);
   const [translate, setTranslate] = useState<[number, number]>([0, 0]);
+
+  // Refs the RAF tick reads from. Camera + expression range/array live in
+  // React state so DevTools can inspect them; this mirror keeps the refs
+  // current so the long-lived render loop doesn't need an effect dep on
+  // any of them.
+  const zoomRef = useRef(zoom);
+  const translateRef = useRef(translate);
+  const expressionArrRef = useRef(expressionArr);
+  const expressionRangeRef = useRef(expressionRange);
+  useEffect(() => {
+    zoomRef.current = zoom;
+    translateRef.current = translate;
+    expressionArrRef.current = expressionArr;
+    expressionRangeRef.current = expressionRange;
+  });
 
   // -------- data load ---------------------------------------------------------
   useEffect(() => {
@@ -252,14 +277,37 @@ export function ExpressionUmap({
     return out;
   }, [data, hiddenClusters]);
 
-  // -------- regl init + render loop ------------------------------------------
+  // -------- regl init + render loop (runs ONCE per dataset) ------------------
   useEffect(() => {
     if (!data || !canvasRef.current) return;
     const canvas = canvasRef.current;
-    const regl = createREGL({
-      canvas,
-      attributes: { antialias: true, preserveDrawingBuffer: false },
-    });
+    setWebglError(null);
+
+    let regl: Regl;
+    try {
+      regl = createREGL({
+        canvas,
+        attributes: { antialias: true, preserveDrawingBuffer: false },
+        // I4 fix: regl reports context-creation failure via this callback,
+        // not by throwing. Legacy try/catch only catches rare argument
+        // errors; onDone catches "WebGL is unavailable" cases.
+        onDone: (err) => {
+          if (err) {
+            setWebglError(
+              "WebGL is required for the UMAP visualization. Please enable WebGL or update your browser.",
+            );
+          }
+        },
+      });
+    } catch (err) {
+      setWebglError(
+        err instanceof Error
+          ? `WebGL setup failed: ${err.message}`
+          : "WebGL setup failed.",
+      );
+      return;
+    }
+
     reglRef.current = regl;
 
     const positionBuffer = regl.buffer(data.positions);
@@ -268,6 +316,11 @@ export function ExpressionUmap({
     const expressionBuffer = regl.buffer(
       expressionArr ?? new Float32Array(data.cells.length),
     );
+    positionBufferRef.current = positionBuffer;
+    colorBufferRef.current = colorBuffer;
+    visibilityBufferRef.current = visibilityBuffer;
+    expressionBufferRef.current = expressionBuffer;
+    cellCountRef.current = data.cells.length;
 
     const drawClusters = regl({
       vert: POINT_VERT,
@@ -315,19 +368,38 @@ export function ExpressionUmap({
       depth: { enable: false },
     });
 
+    drawClustersRef.current = drawClusters;
+    drawExpressionRef.current = drawExpression;
+
+    // Mid-session WebGL context loss (e.g., user opens 16+ tabs and the
+    // browser drops the oldest context). Default browser behaviour
+    // discards the context permanently unless preventDefault is called;
+    // we surface a fallback panel either way since we don't auto-restore.
+    const handleContextLost = (e: Event) => {
+      e.preventDefault();
+      setWebglError(
+        "WebGL context was lost. Reload the page to re-render the UMAP.",
+      );
+    };
+    canvas.addEventListener("webglcontextlost", handleContextLost);
+
     let rafId = 0;
     const tick = () => {
       regl.poll();
       regl.clear({ color: [0.05, 0.05, 0.08, 1], depth: 1 });
-      if (expressionArr && expressionRange) {
+      const expArr = expressionArrRef.current;
+      const expRange = expressionRangeRef.current;
+      const z = zoomRef.current;
+      const t = translateRef.current;
+      if (expArr && expRange) {
         drawExpression({
-          zoom,
-          translate,
-          expMin: expressionRange.min,
-          expMax: expressionRange.max,
+          zoom: z,
+          translate: t,
+          expMin: expRange.min,
+          expMax: expRange.max,
         });
       } else {
-        drawClusters({ zoom, translate });
+        drawClusters({ zoom: z, translate: t });
       }
       rafId = requestAnimationFrame(tick);
     };
@@ -335,14 +407,51 @@ export function ExpressionUmap({
 
     return () => {
       cancelAnimationFrame(rafId);
+      canvas.removeEventListener("webglcontextlost", handleContextLost);
       positionBuffer.destroy();
       colorBuffer.destroy();
       visibilityBuffer.destroy();
       expressionBuffer.destroy();
       regl.destroy();
       reglRef.current = null;
+      positionBufferRef.current = null;
+      colorBufferRef.current = null;
+      visibilityBufferRef.current = null;
+      expressionBufferRef.current = null;
+      drawClustersRef.current = null;
+      drawExpressionRef.current = null;
+      cellCountRef.current = 0;
     };
-  }, [data, visibility, expressionArr, expressionRange, zoom, translate]);
+    // Only re-run init when the loaded dataset changes. Camera state,
+    // visibility, and expression buffers are updated in separate effects
+    // below — they MUST NOT trigger init re-run, otherwise pan/zoom
+    // (which mutates state every frame) tears down the WebGL context.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  // -------- visibility update (in-place subdata) ------------------------------
+  useEffect(() => {
+    const buf = visibilityBufferRef.current;
+    if (!buf || !visibility) return;
+    // B5 race guard: between the moment data flips to a new dataset and
+    // when the init effect finishes recreating the GPU buffers at the
+    // new size, this effect may fire with the new (different-length)
+    // visibility array. Writing into a buffer of the wrong size would
+    // produce garbage rendering. Skip the write; init will populate the
+    // buffer with the latest visibility from its closure.
+    if (visibility.length !== cellCountRef.current) return;
+    buf.subdata(visibility);
+  }, [visibility]);
+
+  // -------- expression update (in-place subdata) ------------------------------
+  useEffect(() => {
+    const buf = expressionBufferRef.current;
+    if (!buf) return;
+    const arr = expressionArr ?? new Float32Array(cellCountRef.current);
+    // Same B5 race guard as the visibility effect.
+    if (arr.length !== cellCountRef.current) return;
+    buf.subdata(arr);
+  }, [expressionArr]);
 
   // -------- zoom / pan handlers ----------------------------------------------
   const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -357,28 +466,31 @@ export function ExpressionUmap({
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       e.currentTarget.setPointerCapture(e.pointerId);
+      // Read translate from the ref so this handler stays referentially
+      // stable and doesn't cause re-renders / dep churn upstream.
+      const t = translateRef.current;
       dragState.current = {
         x: e.clientX,
         y: e.clientY,
-        origTx: translate[0],
-        origTy: translate[1],
+        origTx: t[0],
+        origTy: t[1],
       };
     },
-    [translate],
+    [],
   );
   const handlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       if (!dragState.current || !canvasRef.current) return;
       const rect = canvasRef.current.getBoundingClientRect();
-      // Convert pixel delta to NDC delta, divide by zoom so drag feels 1:1 on screen
       const dx = ((e.clientX - dragState.current.x) / rect.width) * 2;
       const dy = -((e.clientY - dragState.current.y) / rect.height) * 2;
+      const z = zoomRef.current;
       setTranslate([
-        dragState.current.origTx + dx / zoom,
-        dragState.current.origTy + dy / zoom,
+        dragState.current.origTx + dx / z,
+        dragState.current.origTy + dy / z,
       ]);
     },
-    [zoom],
+    [],
   );
   const handlePointerUp = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -402,6 +514,28 @@ export function ExpressionUmap({
         }}
       >
         Failed to load UMAP: {loadError}
+      </div>
+    );
+  }
+  if (webglError) {
+    return (
+      <div
+        role="alert"
+        data-testid="expression-umap-fallback"
+        style={{
+          height,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#18181b",
+          color: "#fbbf24",
+          borderRadius: 8,
+          fontFamily: "system-ui, sans-serif",
+          padding: 24,
+          textAlign: "center",
+        }}
+      >
+        {webglError}
       </div>
     );
   }
