@@ -137,9 +137,9 @@ async def create_thread(request: CreateThreadRequest, user_id: str = Depends(dep
                 "created_at": row[3].isoformat() if row[3] else None,
                 "updated_at": row[4].isoformat() if row[4] else None,
             }
-    except Exception as e:
+    except Exception:
         logger.exception(f"Error creating thread for user {user_id}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error has occurred.")
 
 
 @app.get("/langchain/threads")
@@ -192,9 +192,9 @@ async def clear_thread(thread_id: str, user_id: str = Depends(deps.get_current_u
                 (user_id, thread_id),
             )
         return {"status": "deleted", "thread_id": thread_id}
-    except Exception as e:
+    except Exception:
         logger.exception(f"Error deleting thread {thread_id} for user {user_id}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error has occurred.")
 
 
 # ─── Meta + health ────────────────────────────────────────────────────────────
