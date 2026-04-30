@@ -39,7 +39,7 @@ AS $$
 $$;
 
 GRANT EXECUTE ON FUNCTION public.scrna_gene_search(BIGINT, TEXT, INT)
-  TO anon, authenticated, bloom_agent;
+  TO anon, authenticated, bloom_user, bloom_admin, bloom_agent;
 
 CREATE OR REPLACE FUNCTION public.scrna_cell_arrays(
   ds_id BIGINT
@@ -76,6 +76,6 @@ AS $$
 $$;
 
 GRANT EXECUTE ON FUNCTION public.scrna_cell_arrays(BIGINT)
-  TO anon, authenticated, bloom_agent;
+  TO anon, authenticated, bloom_user, bloom_admin, bloom_agent;
 
 COMMIT;

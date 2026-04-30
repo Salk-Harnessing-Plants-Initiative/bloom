@@ -68,4 +68,9 @@ DROP POLICY IF EXISTS agent_read_scrna_cluster_neighbors ON public.scrna_cluster
 CREATE POLICY agent_read_scrna_cluster_neighbors
   ON public.scrna_cluster_neighbors FOR SELECT TO bloom_agent USING (true);
 
+-- Explicit table grants for bloom_* roles (composite PK, no sequence).
+GRANT SELECT, INSERT, UPDATE ON public.scrna_cluster_neighbors TO bloom_user;
+GRANT ALL                  ON public.scrna_cluster_neighbors TO bloom_admin;
+GRANT SELECT               ON public.scrna_cluster_neighbors TO bloom_agent;
+
 COMMIT;

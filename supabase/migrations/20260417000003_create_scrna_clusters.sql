@@ -65,4 +65,15 @@ DROP POLICY IF EXISTS agent_read_scrna_clusters ON public.scrna_clusters;
 CREATE POLICY agent_read_scrna_clusters
   ON public.scrna_clusters FOR SELECT TO bloom_agent USING (true);
 
+-- Explicit table + sequence grants for bloom_* roles. ALTER DEFAULT
+-- PRIVILEGES in 20260414002000_security_groups.sql only applies to
+-- objects created by the same role that ran the ALTER, so cannot be
+-- relied on across migration runs by different superusers.
+GRANT SELECT, INSERT, UPDATE ON public.scrna_clusters TO bloom_user;
+GRANT ALL                  ON public.scrna_clusters TO bloom_admin;
+GRANT SELECT               ON public.scrna_clusters TO bloom_agent;
+
+GRANT USAGE, SELECT ON SEQUENCE public.scrna_clusters_id_seq TO bloom_user, bloom_admin;
+GRANT USAGE         ON SEQUENCE public.scrna_clusters_id_seq TO bloom_agent;
+
 COMMIT;
