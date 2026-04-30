@@ -122,10 +122,11 @@ async def chat(
             model=model,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
+        logger.warning("Invalid chat request for user %s: %s", user_id, e)
+        raise HTTPException(status_code=400, detail="Invalid request.")
+    except Exception:
         logger.exception(f"Chat error for user {user_id}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error has occurred.")
 
 
 # ─── Streaming chat ───────────────────────────────────────────────────────────
@@ -156,7 +157,8 @@ async def chat_stream(
             try:
                 agent, _provider, _model = _resolve_agent(body, checkpointer)
             except ValueError as e:
-                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                logger.warning("Invalid chat stream request for user %s: %s", user_id, e)
+                yield f"data: {json.dumps({'type': 'error', 'content': 'Invalid request.'})}\n\n"
                 return
 
             scoped_thread = f"{user_id}:{body.thread_id}"
@@ -189,8 +191,8 @@ async def chat_stream(
 
             await _upsert_thread_metadata(checkpointer, user_id, body.thread_id, body.prompt)
 
-        except Exception as e:
+        except Exception:
             logger.exception(f"Stream error for user {user_id}")
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'content': 'An internal error has occurred.'})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
