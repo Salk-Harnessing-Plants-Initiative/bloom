@@ -1,5 +1,4 @@
 -- Migration: scrna_add_indexes
--- Phase 1 of Expression Explorer (add-scrna-expression-schema).
 -- Adds indexes to all scrna_* tables for dataset-scoped queries and
 -- enables pg_trgm for gene-name autocomplete.
 --
