@@ -212,6 +212,30 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
                 allow_partial=False,
                 start_on="human",
             )
+        # Coerce every SystemMessage into a single merged block at the start,
+        # ALWAYS led by SYSTEM_PROMPT.
+        #
+        # Why we own the system block here:
+        #   - vLLM with Qwen's chat template only allows ONE system block at
+        #     index 0; any second SystemMessage triggers "System message must
+        #     be at the beginning."
+        #   - create_react_agent normally prepends its own SystemMessage from
+        #     the `prompt=...` argument, which collides with whatever this
+        #     hook produces (resulting in two consecutive system blocks).
+        #   - To keep the contract single-source, we pass `prompt=None` to
+        #     create_react_agent and always emit exactly one merged
+        #     SystemMessage here. Every line of SYSTEM_PROMPT plus any
+        #     reminders or summaries are preserved by joining with blank
+        #     lines so no instruction is silently dropped.
+        system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
+        non_system_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
+        parts = [SYSTEM_PROMPT]
+        for m in system_msgs:
+            content = str(m.content) if m.content else ""
+            if content and content not in parts:  # dedupe identical blocks
+                parts.append(content)
+        merged_content = "\n\n".join(parts)
+        messages = [SystemMessage(content=merged_content)] + non_system_msgs
         return {"llm_input_messages": messages}
     return pre_model_hook
 
@@ -349,16 +373,21 @@ def create_agent(
     # subsequent tier (top router, domain subgraphs, analysis router, MCP
     # leaves, parallel recipes) has a real graph to attach nodes to.
     #
-    # Today this graph has one node, `freeform`, which wraps the prebuilt
-    # ReAct agent verbatim — same prompt, same tools, same pre-model hook.
-    # Behavior is byte-for-byte identical to the pre-refactor agent. The
-    # checkpointer lives on the OUTER graph; the inner subgraph stays
-    # checkpointer=None so the parent's `messages` reducer is the single
-    # source of truth for thread state.
+    # The graph has one node, `freeform`, which wraps the prebuilt ReAct
+    # agent. The checkpointer lives on the OUTER graph; the inner subgraph
+    # stays checkpointer=None so the parent's `messages` reducer is the
+    # single source of truth for thread state.
+    #
+    # system_prompt=None on purpose: the pre_model_hook owns the entire
+    # SystemMessage block (it merges SYSTEM_PROMPT, the get_agent_context
+    # reminder, and any summary into a single SystemMessage at index 0).
+    # Setting system_prompt=SYSTEM_PROMPT here would cause create_react_agent
+    # to ALSO prepend its own SystemMessage, producing two consecutive
+    # system blocks which Qwen's chat template rejects.
     freeform = build_freeform_subgraph(
         llm=llm,
         tools=tools,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=None,
         pre_model_hook=make_pre_model_hook(provider, llm=llm),
         checkpointer=None,
     )
