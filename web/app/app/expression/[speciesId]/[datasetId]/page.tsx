@@ -11,8 +11,6 @@ import { ExpressionCockpit } from "@/components/expression-cockpit";
 export default async function Dataset({
   params,
 }: {
-  // Next.js dynamic route params are always strings; parse to numbers
-  // at the boundary below.
   params: Promise<{ datasetId: string; speciesId: string }>;
 }) {
   const { datasetId, speciesId } = await params;
@@ -46,10 +44,6 @@ export default async function Dataset({
 
   return (
     <div>
-      {/* Top navigation bar — the breadcrumb sits in a border-bottom
-          strip spanning the shared container width set by the parent
-          route layout, so the "All species" link stays at the same
-          screen position across the three expression routes. */}
       <div className="text-sm mb-6 pb-4 border-b border-stone-200 select-none">
         <Link
           href="/app/expression"

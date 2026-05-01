@@ -126,12 +126,9 @@ export function ExpressionUmap({
 }: ExpressionUmapProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // The init effect creates the regl context exactly once per dataset and
-  // stores all GPU handles in refs. Subsequent state changes (camera,
-  // visibility, expression) update existing buffers via `subdata` — never
-  // re-create the WebGL context. This avoids a context-cap exhaustion bug
-  // (Safari/Firefox cap at 16 contexts) that black-canvased the cockpit
-  // after a few seconds of pan/zoom under the previous implementation.
+  // The init effect creates the regl context once per dataset and stores
+  // GPU handles in refs. Camera, visibility, and expression updates write
+  // to existing buffers via `subdata` — they never re-create the context.
   const reglRef = useRef<Regl | null>(null);
   const positionBufferRef = useRef<ReglBuffer | null>(null);
   const colorBufferRef = useRef<ReglBuffer | null>(null);
@@ -140,10 +137,10 @@ export function ExpressionUmap({
   const drawClustersRef = useRef<DrawCommand | null>(null);
   const drawExpressionRef = useRef<DrawCommand | null>(null);
   /**
-   * Length the GPU buffers were allocated for. Used as a B5 race guard:
-   * subdata writes from the [visibility] / [expressionArr] effects must
-   * skip when their array length doesn't match this — the init effect
-   * for the new dataset hasn't completed re-allocating the buffers yet.
+   * Length the GPU buffers were allocated for. Subdata writes from the
+   * [visibility] / [expressionArr] effects skip when array length doesn't
+   * match this — guards against writing into a buffer that's mid-resize
+   * during a dataset switch.
    */
   const cellCountRef = useRef<number>(0);
 
@@ -159,10 +156,8 @@ export function ExpressionUmap({
   const [zoom, setZoom] = useState(1);
   const [translate, setTranslate] = useState<[number, number]>([0, 0]);
 
-  // Refs the RAF tick reads from. Camera + expression range/array live in
-  // React state so DevTools can inspect them; this mirror keeps the refs
-  // current so the long-lived render loop doesn't need an effect dep on
-  // any of them.
+  // Refs the RAF tick reads each frame, kept in sync with React state
+  // by the mirror effect below. Lets the render loop skip effect deps.
   const zoomRef = useRef(zoom);
   const translateRef = useRef(translate);
   const expressionArrRef = useRef(expressionArr);
@@ -288,9 +283,7 @@ export function ExpressionUmap({
       regl = createREGL({
         canvas,
         attributes: { antialias: true, preserveDrawingBuffer: false },
-        // I4 fix: regl reports context-creation failure via this callback,
-        // not by throwing. Legacy try/catch only catches rare argument
-        // errors; onDone catches "WebGL is unavailable" cases.
+        // regl reports context-creation failure via onDone, not by throwing.
         onDone: (err) => {
           if (err) {
             setWebglError(
@@ -371,10 +364,7 @@ export function ExpressionUmap({
     drawClustersRef.current = drawClusters;
     drawExpressionRef.current = drawExpression;
 
-    // Mid-session WebGL context loss (e.g., user opens 16+ tabs and the
-    // browser drops the oldest context). Default browser behaviour
-    // discards the context permanently unless preventDefault is called;
-    // we surface a fallback panel either way since we don't auto-restore.
+    // Mid-session WebGL context loss — surface the fallback panel.
     const handleContextLost = (e: Event) => {
       e.preventDefault();
       setWebglError(
@@ -422,10 +412,9 @@ export function ExpressionUmap({
       drawExpressionRef.current = null;
       cellCountRef.current = 0;
     };
-    // Only re-run init when the loaded dataset changes. Camera state,
-    // visibility, and expression buffers are updated in separate effects
-    // below — they MUST NOT trigger init re-run, otherwise pan/zoom
-    // (which mutates state every frame) tears down the WebGL context.
+    // Only re-init on dataset change. Camera and buffer updates flow
+    // through their own effects below; including them here would tear
+    // down the WebGL context on every pan/zoom frame.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
@@ -433,12 +422,8 @@ export function ExpressionUmap({
   useEffect(() => {
     const buf = visibilityBufferRef.current;
     if (!buf || !visibility) return;
-    // B5 race guard: between the moment data flips to a new dataset and
-    // when the init effect finishes recreating the GPU buffers at the
-    // new size, this effect may fire with the new (different-length)
-    // visibility array. Writing into a buffer of the wrong size would
-    // produce garbage rendering. Skip the write; init will populate the
-    // buffer with the latest visibility from its closure.
+    // Skip the write if the buffer is mid-resize for a new dataset; init
+    // will populate it with the latest visibility on the next render.
     if (visibility.length !== cellCountRef.current) return;
     buf.subdata(visibility);
   }, [visibility]);
@@ -448,7 +433,6 @@ export function ExpressionUmap({
     const buf = expressionBufferRef.current;
     if (!buf) return;
     const arr = expressionArr ?? new Float32Array(cellCountRef.current);
-    // Same B5 race guard as the visibility effect.
     if (arr.length !== cellCountRef.current) return;
     buf.subdata(arr);
   }, [expressionArr]);
@@ -466,8 +450,6 @@ export function ExpressionUmap({
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       e.currentTarget.setPointerCapture(e.pointerId);
-      // Read translate from the ref so this handler stays referentially
-      // stable and doesn't cause re-renders / dep churn upstream.
       const t = translateRef.current;
       dragState.current = {
         x: e.clientX,

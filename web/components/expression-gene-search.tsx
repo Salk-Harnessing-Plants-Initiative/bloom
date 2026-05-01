@@ -17,10 +17,7 @@ export interface ExpressionGeneSearchProps {
   disabled?: boolean;
 }
 
-/**
- * Debounced gene-name autocomplete backed by the scrna_gene_search RPC.
- * Prefix match on gene_name, trigram-indexed. Returns up to 20 matches.
- */
+/** Debounced gene-name autocomplete (prefix match, up to 20 results). */
 export function ExpressionGeneSearch({
   datasetId,
   value,

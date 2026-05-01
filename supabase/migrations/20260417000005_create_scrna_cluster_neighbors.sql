@@ -1,5 +1,4 @@
 -- Migration: create_scrna_cluster_neighbors
--- Phase 1 of Expression Explorer (add-scrna-expression-schema).
 -- Precomputed top-K nearest clusters per cluster, ranked by similarity.
 -- Similarity = 1.0 / (1.0 + euclidean_distance(centroids)), values in (0, 1].
 --

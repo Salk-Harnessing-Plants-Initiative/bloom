@@ -164,111 +164,6 @@ export type Database = {
         }
         Relationships: []
       }
-      checkpoint_blobs: {
-        Row: {
-          blob: string | null
-          channel: string
-          checkpoint_ns: string
-          thread_id: string
-          type: string
-          version: string
-        }
-        Insert: {
-          blob?: string | null
-          channel: string
-          checkpoint_ns?: string
-          thread_id: string
-          type: string
-          version: string
-        }
-        Update: {
-          blob?: string | null
-          channel?: string
-          checkpoint_ns?: string
-          thread_id?: string
-          type?: string
-          version?: string
-        }
-        Relationships: []
-      }
-      checkpoint_migrations: {
-        Row: {
-          v: number
-        }
-        Insert: {
-          v: number
-        }
-        Update: {
-          v?: number
-        }
-        Relationships: []
-      }
-      checkpoint_writes: {
-        Row: {
-          blob: string
-          channel: string
-          checkpoint_id: string
-          checkpoint_ns: string
-          idx: number
-          task_id: string
-          task_path: string
-          thread_id: string
-          type: string | null
-        }
-        Insert: {
-          blob: string
-          channel: string
-          checkpoint_id: string
-          checkpoint_ns?: string
-          idx: number
-          task_id: string
-          task_path?: string
-          thread_id: string
-          type?: string | null
-        }
-        Update: {
-          blob?: string
-          channel?: string
-          checkpoint_id?: string
-          checkpoint_ns?: string
-          idx?: number
-          task_id?: string
-          task_path?: string
-          thread_id?: string
-          type?: string | null
-        }
-        Relationships: []
-      }
-      checkpoints: {
-        Row: {
-          checkpoint: Json
-          checkpoint_id: string
-          checkpoint_ns: string
-          metadata: Json
-          parent_checkpoint_id: string | null
-          thread_id: string
-          type: string | null
-        }
-        Insert: {
-          checkpoint: Json
-          checkpoint_id: string
-          checkpoint_ns?: string
-          metadata?: Json
-          parent_checkpoint_id?: string | null
-          thread_id: string
-          type?: string | null
-        }
-        Update: {
-          checkpoint?: Json
-          checkpoint_id?: string
-          checkpoint_ns?: string
-          metadata?: Json
-          parent_checkpoint_id?: string | null
-          thread_id?: string
-          type?: string | null
-        }
-        Relationships: []
-      }
       cyl_camera_settings: {
         Row: {
           id: string
@@ -1752,11 +1647,6 @@ export type Database = {
           cluster_id: string | null
           dataset_id: number
           id: number
-          pc1: number | null
-          pc2: number | null
-          pc3: number | null
-          pc4: number | null
-          pc5: number | null
           replicate: string | null
           x: number | null
           y: number | null
@@ -1767,11 +1657,6 @@ export type Database = {
           cluster_id?: string | null
           dataset_id: number
           id?: number
-          pc1?: number | null
-          pc2?: number | null
-          pc3?: number | null
-          pc4?: number | null
-          pc5?: number | null
           replicate?: string | null
           x?: number | null
           y?: number | null
@@ -1782,11 +1667,6 @@ export type Database = {
           cluster_id?: string | null
           dataset_id?: number
           id?: number
-          pc1?: number | null
-          pc2?: number | null
-          pc3?: number | null
-          pc4?: number | null
-          pc5?: number | null
           replicate?: string | null
           x?: number | null
           y?: number | null
@@ -1843,11 +1723,6 @@ export type Database = {
       scrna_cluster_stats: {
         Row: {
           cell_count: number
-          centroid_pc1: number | null
-          centroid_pc2: number | null
-          centroid_pc3: number | null
-          centroid_pc4: number | null
-          centroid_pc5: number | null
           centroid_x: number | null
           centroid_y: number | null
           cluster_id: string
@@ -1857,11 +1732,6 @@ export type Database = {
         }
         Insert: {
           cell_count: number
-          centroid_pc1?: number | null
-          centroid_pc2?: number | null
-          centroid_pc3?: number | null
-          centroid_pc4?: number | null
-          centroid_pc5?: number | null
           centroid_x?: number | null
           centroid_y?: number | null
           cluster_id: string
@@ -1871,11 +1741,6 @@ export type Database = {
         }
         Update: {
           cell_count?: number
-          centroid_pc1?: number | null
-          centroid_pc2?: number | null
-          centroid_pc3?: number | null
-          centroid_pc4?: number | null
-          centroid_pc5?: number | null
           centroid_x?: number | null
           centroid_y?: number | null
           cluster_id?: string
@@ -2495,22 +2360,59 @@ export type Database = {
         }[]
       }
       insert_cyl_qc_codes: { Args: { qc_codes: Json }; Returns: undefined }
-      insert_image: {
-        Args: {
-          accession_name: string
-          date_scanned_: string
-          device_name: string
-          experiment: string
-          frame_number_: number
-          germ_day: number
-          germ_day_color: string
-          plant_age_days: number
-          plant_qr_code: string
-          species_common_name: string
-          wave_number: number
-        }
-        Returns: number
-      }
+      insert_image:
+        | {
+            Args: {
+              accession_name: string
+              date_scanned_: string
+              device_name: string
+              experiment: string
+              frame_number_: number
+              germ_day: number
+              germ_day_color: string
+              plant_age_days: number
+              plant_qr_code: string
+              species_common_name: string
+              wave_number: number
+            }
+            Returns: number
+          }
+        | {
+            Args: {
+              accession_name: string
+              date_scanned_: string
+              device_name: string
+              experiment: string
+              frame_number_: number
+              germ_day: number
+              germ_day_color: string
+              phenotyper_email: string
+              phenotyper_name: string
+              plant_age_days: number
+              plant_qr_code: string
+              scientist_email: string
+              scientist_name: string
+              species_common_name: string
+              wave_number: number
+            }
+            Returns: number
+          }
+        | {
+            Args: {
+              accession_name: string
+              date_scanned_: string
+              device_name: string
+              experiment: string
+              frame_number_: number
+              germ_day: number
+              germ_day_color: string
+              plant_age_days: number
+              plant_qr_code: string
+              species_common_name: string
+              wave_number: number
+            }
+            Returns: number
+          }
       insert_image_v2_0: {
         Args: {
           accession_name: string
@@ -2531,42 +2433,65 @@ export type Database = {
         }
         Returns: number
       }
-      insert_image_v3_0: {
-        Args: {
-          accession_name: string
-          brightness: number
-          contrast: number
-          date_scanned_: string
-          device_name: string
-          experiment: string
-          exposure_time: number
-          frame_number_: number
-          gain: number
-          gamma: number
-          germ_day: number
-          germ_day_color: string
-          num_frames: number
-          phenotyper_email: string
-          phenotyper_name: string
-          plant_age_days: number
-          plant_qr_code: string
-          scientist_email: string
-          scientist_name: string
-          seconds_per_rot: number
-          species_common_name: string
-          wave_number: number
-        }
-        Returns: number
-      }
+      insert_image_v3_0:
+        | {
+            Args: {
+              accession_name: string
+              brightness: number
+              contrast: number
+              date_scanned_: string
+              device_name: string
+              experiment: string
+              exposure_time: number
+              frame_number_: number
+              gain: number
+              gamma: number
+              germ_day: number
+              germ_day_color: string
+              num_frames: number
+              phenotyper_email: string
+              phenotyper_name: string
+              plant_age_days: number
+              plant_qr_code: string
+              scientist_email: string
+              scientist_name: string
+              seconds_per_rot: number
+              species_common_name: string
+              wave_number: number
+            }
+            Returns: number
+          }
+        | {
+            Args: {
+              accession_name: string
+              brightness: number
+              contrast: number
+              date_scanned_: string
+              device_name: string
+              experiment: string
+              exposure_time: number
+              frame_number_: number
+              gain: number
+              gamma: number
+              germ_day: number
+              germ_day_color: string
+              num_frames: number
+              phenotyper_email: string
+              phenotyper_name: string
+              plant_age_days: number
+              plant_qr_code: string
+              scientist_email: string
+              scientist_name: string
+              seconds_per_rot: number
+              species_common_name: string
+              wave_number: number
+            }
+            Returns: number
+          }
       scrna_cell_arrays: {
         Args: { ds_id: number }
         Returns: {
           cluster_ordinal: number
-          pc1: number
-          pc2: number
-          pc3: number
-          pc4: number
-          pc5: number
           x: number
           y: number
         }[]

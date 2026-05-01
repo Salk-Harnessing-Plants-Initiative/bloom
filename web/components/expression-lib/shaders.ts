@@ -1,19 +1,6 @@
-/**
- * GLSL shader sources for the Expression UMAP canvas.
- *
- * Two rendering modes:
- *   - Cluster-colored: each cell's color is a vec4 from the cluster palette,
- *     passed as a per-vertex attribute.
- *   - Gene-expression-colored: each cell's log-normalized expression value is
- *     passed as a per-vertex float attribute; the fragment shader maps it
- *     through the viridis LUT (uniform array) after min/max normalization.
- *
- * The vertex shader is shared between modes (positions, zoom, translate,
- * pointSize, visibility). The mode is selected at the regl draw-command
- * level by choosing which fragment shader to pair with.
- */
+/** GLSL shader sources for the Expression UMAP canvas. */
 
-/** Shared point-scatter vertex shader — used by both rendering modes. */
+/** Shared point-scatter vertex shader. */
 export const POINT_VERT = `
   precision mediump float;
   attribute vec2 position;
@@ -48,10 +35,7 @@ export const CLUSTER_FRAG = `
   }
 `;
 
-/**
- * Gene-expression vertex shader — takes a per-cell float expression attribute
- * instead of a vec4 color. Normalizes against uniforms expMin and expMax.
- */
+/** Gene-expression vertex shader — normalizes per-cell expression against expMin/expMax. */
 export const EXPRESSION_VERT = `
   precision mediump float;
   attribute vec2 position;
@@ -75,13 +59,9 @@ export const EXPRESSION_VERT = `
 `;
 
 /**
- * Fragment shader — gene-expression mode. Samples the 11-stop viridis LUT
- * using the normalized expression value t.
- *
- * WebGL 1 / GLSL ES 1.0 forbids dynamic indexing into uniform arrays in the
- * fragment shader (must be a constant expression). We work around this by
- * baking the 11 stops in as `const vec3` and using an unrolled if/else
- * ladder. The stop values MUST match VIRIDIS_STOPS in viridis.ts.
+ * Gene-expression fragment shader — viridis colormap from normalized t.
+ * The 11 stops are inlined as constants because GLSL ES 1.0 forbids
+ * dynamic indexing into uniform arrays. They MUST match VIRIDIS_STOPS in viridis.ts.
  */
 export const EXPRESSION_FRAG = `
   precision mediump float;

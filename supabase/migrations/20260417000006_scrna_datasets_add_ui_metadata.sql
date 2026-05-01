@@ -1,5 +1,4 @@
 -- Migration: scrna_datasets_add_ui_metadata
--- Phase 1 of Expression Explorer (add-scrna-expression-schema).
 -- Adds nine nullable columns to scrna_datasets:
 --   Display:       assay, resolution, n_cells, n_genes, pc_variance (REAL[])
 --   Colorbar:      expression_units (documents the normalization applied)

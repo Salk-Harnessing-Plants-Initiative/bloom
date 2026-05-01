@@ -1,5 +1,4 @@
 -- Migration: create_scrna_cluster_stats
--- Phase 1 of Expression Explorer (add-scrna-expression-schema).
 -- Precomputed per-cluster statistics written at ingest time so the
 -- drill-down panel can render without per-cluster Storage round-trips.
 --
@@ -15,11 +14,6 @@ CREATE TABLE IF NOT EXISTS public.scrna_cluster_stats (
   pct           REAL   NOT NULL,
   centroid_x    REAL,
   centroid_y    REAL,
-  centroid_pc1  REAL,
-  centroid_pc2  REAL,
-  centroid_pc3  REAL,
-  centroid_pc4  REAL,
-  centroid_pc5  REAL,
   markers       JSONB,
   PRIMARY KEY (dataset_id, cluster_id),
   FOREIGN KEY (dataset_id, cluster_id)

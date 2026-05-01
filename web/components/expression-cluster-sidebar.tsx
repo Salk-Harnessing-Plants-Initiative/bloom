@@ -15,25 +15,16 @@ type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
 export interface ExpressionClusterSidebarProps {
   clusters: Cluster[];
   hiddenOrdinals: ReadonlySet<number>;
-  /** Per-cluster counts (from scrna_cluster_stats). Optional; falls back to null */
+  /** Per-cluster cell counts, keyed by ordinal. */
   cellCounts?: Record<number, number>;
   onVisibilityChange: (ordinal: number, visible: boolean) => void;
-  /**
-   * Solo a cluster: hide all others so only this one is visible. Clicking
-   * a cluster that is already solo restores full visibility. Parent
-   * updates the hidden-ordinals set to match, so checkboxes stay in sync
-   * with what is actually rendered.
-   */
+  /** Hide all clusters except this one. Clicking again restores full visibility. */
   onSolo: (ordinal: number) => void;
   onShowAll: () => void;
   onHideAll: () => void;
 }
 
-/**
- * Vertical list of clusters with color swatches, visibility checkboxes,
- * and click-name-to-solo behaviour. Catalog-driven — names and colors
- * come from scrna_clusters, not client-side hashing.
- */
+/** Vertical list of clusters with color swatches, visibility checkboxes, and click-name-to-solo. */
 export function ExpressionClusterSidebar({
   clusters,
   hiddenOrdinals,

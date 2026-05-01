@@ -1,11 +1,4 @@
-/**
- * Typed fetch helpers for the Expression UMAP view.
- *
- * Uses the shared Supabase client for PostgREST calls (RLS + auth
- * headers handled automatically) and a raw fetch for per-gene `.bin`
- * downloads from object storage. The storage base URL is resolved from
- * NEXT_PUBLIC_STORAGE_URL with a dev default of http://localhost:9100.
- */
+/** Typed fetch helpers for the Expression UMAP view. */
 
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import type { Database } from "@/lib/database.types";
@@ -17,24 +10,15 @@ const DEFAULT_STORAGE_URL = "http://localhost:9100";
 const STORAGE_BUCKET = "scrna";
 const GENE_SEARCH_DEFAULT_LIMIT = 20;
 
-/** The shape of a row returned by the `scrna_cell_arrays` RPC. */
+/** Row returned by the `scrna_cell_arrays` RPC. */
 export interface CellArraysRow {
   x: number;
   y: number;
-  pc1: number | null;
-  pc2: number | null;
-  pc3: number | null;
-  pc4: number | null;
-  pc5: number | null;
   cluster_ordinal: number;
 }
 
-/**
- * Resolve the storage base URL for `.bin` fetches. Reads from
- * NEXT_PUBLIC_STORAGE_URL at call time (not module load) so tests
- * can override via `process.env` per-test.
- */
-export function getStorageBaseUrl(): string {
+/** Storage base URL for `.bin` fetches, from NEXT_PUBLIC_STORAGE_URL. */
+function getStorageBaseUrl(): string {
   const fromEnv =
     typeof process !== "undefined" ? process.env?.NEXT_PUBLIC_STORAGE_URL : undefined;
   if (fromEnv && fromEnv.length > 0) {
@@ -48,7 +32,7 @@ export function getStorageBaseUrl(): string {
   return DEFAULT_STORAGE_URL;
 }
 
-/** Fetch a single dataset row, or null if the id is not found. */
+/** Fetch a single dataset row, or null if not found. */
 export async function fetchDataset(datasetId: number): Promise<Dataset | null> {
   const supabase = createClientSupabaseClient();
   const { data, error } = await supabase
@@ -57,27 +41,6 @@ export async function fetchDataset(datasetId: number): Promise<Dataset | null> {
     .eq("id", datasetId)
     .maybeSingle();
   if (error) throw new Error(`fetchDataset failed: ${error.message}`);
-  return (data as Dataset | null) ?? null;
-}
-
-/**
- * Resolve the first non-deleted scRNA dataset for a species slug. Matches the
- * existing expression-scatterplot behavior: single-dataset-per-species for now.
- * Returns null when no dataset exists for that species.
- */
-export async function fetchDatasetBySpeciesCommonName(
-  commonName: string,
-): Promise<Dataset | null> {
-  const supabase = createClientSupabaseClient();
-  const { data, error } = await supabase
-    .from("scrna_datasets")
-    .select("*, species!inner(common_name)")
-    .eq("species.common_name", commonName)
-    .is("deleted_at", null)
-    .order("id", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw new Error(`fetchDatasetBySpecies failed: ${error.message}`);
   return (data as Dataset | null) ?? null;
 }
 
@@ -93,10 +56,7 @@ export async function fetchClusters(datasetId: number): Promise<Cluster[]> {
   return (data as Cluster[]) ?? [];
 }
 
-/**
- * Fetch all per-cell arrays for a dataset in a single RPC call.
- * Replaces the legacy 1000-row `.range()` pagination loop.
- */
+/** Fetch all per-cell arrays for a dataset in a single RPC call. */
 export async function fetchCells(datasetId: number): Promise<CellArraysRow[]> {
   const supabase = createClientSupabaseClient();
   const { data, error } = await supabase.rpc("scrna_cell_arrays", {
@@ -106,10 +66,7 @@ export async function fetchCells(datasetId: number): Promise<CellArraysRow[]> {
   return (data as CellArraysRow[]) ?? [];
 }
 
-/**
- * Prefix-search gene names in a dataset via the trigram-indexed RPC.
- * Debounce on the caller side; this function does no debouncing.
- */
+/** Prefix-search gene names in a dataset. Caller is responsible for debouncing. */
 export async function searchGenes(
   datasetId: number,
   q: string,
@@ -126,19 +83,7 @@ export async function searchGenes(
   return (data ?? []).map((row) => row.gene_name);
 }
 
-/**
- * Download the per-gene Float32 expression sidecar and decode it as a
- * Float32Array. Values are log-normalized (Seurat NormalizeData or
- * equivalent) and MUST be used unmodified downstream — the colorbar and
- * shader perform range mapping at render time, not here.
- *
- * Reads directly from the `scrna` MinIO bucket via the storage URL (see
- * `getStorageBaseUrl`). The Phase 1 ingest uploaded objects straight to
- * MinIO at `scrna/counts/<dataset>/<gene>.bin` (bypassing Supabase
- * Storage's `bloom-storage/storage-single-tenant/...` layout), so the
- * supabase-js storage client can't resolve them — but MinIO itself
- * serves them fine once the bucket allows anonymous GETs.
- */
+/** Download a per-gene expression vector as a Float32Array. */
 export async function fetchGeneBin(
   datasetName: string,
   geneName: string,

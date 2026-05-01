@@ -16,16 +16,7 @@ export interface ExpressionCockpitProps {
   datasetName: string;
 }
 
-/**
- * Five-tab cockpit around a dataset. Tab 0 uses the Phase 2 ExpressionView
- * (new UMAP + PCA 3D + cluster sidebar + gene search + colorbar). Tabs
- * 1-4 preserve the legacy analysis components (gene-level explorer,
- * correlation, differential expression, downloads) so no functionality
- * is lost in the redesign.
- *
- * Tab strip styling follows the Next.js handoff prototype:
- * clean Tailwind, lime-700 accent, stone palette. Not MUI.
- */
+/** Five-tab cockpit around a dataset: UMAP, gene-level, correlation, DE, downloads. */
 export function ExpressionCockpit({
   datasetId,
   datasetName,

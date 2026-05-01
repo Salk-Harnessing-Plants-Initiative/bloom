@@ -1,52 +1,33 @@
 "use client";
 import * as React from 'react';
-import { useState , useEffect} from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useState } from 'react';
 import Box from '@mui/material/Box';
-import Typography from '@mui/material/Typography';
 import InputLabel from '@mui/material/InputLabel';
 import MenuItem from '@mui/material/MenuItem';
 import FormControl from '@mui/material/FormControl';
 import Select, { SelectChangeEvent } from '@mui/material/Select';
-import ExportScatterPlot from './expression-scatterplot';
 import ExpressionGeneLevel from './expression-genelevel';
 import DifferentialExpressionAnalysis from './expression-differential-analysis';
-import ExpressionCorrelation from './expression-correlation-section';
 import BasicTabs from './expression-correlation-page';
 import ExpressonDownloadFiles from './expression-download-files';
 import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
-import { Database } from "@/lib/database.types";
-import { createClientSupabaseClient } from "@/lib/supabase/client";
-import ExpressionMetadata  from './expression-metadata';
-import { RawCountsQC } from './expression-qc-raw-reads';
+import ExpressionMetadata from './expression-metadata';
 import { ExpressionView } from './expression-view';
 
 
 export interface ExpressionPageProps {
-
     specieslist: {
-
         id: number;
-
         name: string;
-
         scientist_id: number | null;
-
         species_id: number;
-
         url: string | null;
-
         people: {
-
             email: string | null;
-
             id: number;
-
             name: string | null;
-
         } | null;
-
     }[];
 }
 
@@ -80,13 +61,9 @@ function a11yProps(index: number) {
 }
 
 export default function ExpressionPage({ specieslist }: ExpressionPageProps) {
-
-    const supabase = createClientSupabaseClient();
-    const searchParams = useSearchParams();
-    const legacy = searchParams?.get('legacy') === '1';
     const [file_id, setFileid] = useState(0)
     const [file_name, setFileName] = useState('')
-    const [slected_val, setSelectedVal] = useState({ file_id: specieslist[0]?.id || null, file_name:  specieslist[0]?.name || null })
+    const [slected_val, setSelectedVal] = useState({ file_id: specieslist[0]?.id || null, file_name: specieslist[0]?.name || null })
     const [results, setResults] = useState(false);
     const [value, setValue] = useState(0);
 
@@ -101,7 +78,6 @@ export default function ExpressionPage({ specieslist }: ExpressionPageProps) {
     const handleChange = (_event: React.SyntheticEvent, newValue: number) => {
         setValue(newValue);
     };
-      
 
     return (
         <div>
@@ -122,7 +98,7 @@ export default function ExpressionPage({ specieslist }: ExpressionPageProps) {
                 </FormControl>
             </Box>
 
-            {file_id > 0 && <ExpressionMetadata file_id={file_id}/>}
+            {file_id > 0 && <ExpressionMetadata file_id={file_id} />}
 
             <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
                 <Tabs value={value} onChange={handleChange} aria-label="basic tabs example">
@@ -135,10 +111,7 @@ export default function ExpressionPage({ specieslist }: ExpressionPageProps) {
             </Box>
 
             <CustomTabPanel value={value} index={0}>
-                {results && (legacy
-                    ? <ExportScatterPlot file_id={file_id} file_name={file_name} />
-                    : <ExpressionView datasetId={file_id} datasetName={file_name} />
-                )}
+                {results && <ExpressionView datasetId={file_id} datasetName={file_name} />}
             </CustomTabPanel>
             <CustomTabPanel value={value} index={1}>
                 {results && <ExpressionGeneLevel file_id={file_id} />}
@@ -151,18 +124,7 @@ export default function ExpressionPage({ specieslist }: ExpressionPageProps) {
             </CustomTabPanel>
             <CustomTabPanel value={value} index={4}>
                 {results && <ExpressonDownloadFiles file_id={file_id} file_name={file_name} />}
-            </CustomTabPanel> 
-
-            {/* {results && (
-                <>
-                    {/* <ExpressonDownloadFiles file_id={file_id} file_name={file_name} />
-                    <ExportScatterPlot file_id={file_id} file_name={file_name} />
-                    <ExpressionGeneLevel file_id={file_id} /> 
-                    <ExpressionCorrelation file_id={file_id} />
-                </>
-            )}  */}
-
+            </CustomTabPanel>
         </div>
     )
-
 }

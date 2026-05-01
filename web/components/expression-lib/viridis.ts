@@ -1,10 +1,4 @@
-/**
- * Viridis colormap LUT (11 stops) ported from the Expression Explorer
- * prototype's `data.jsx`. Used by both the JS viridis() helper and the
- * WebGL fragment shader (uniform vec3 viridis[11]).
- *
- * Each stop is [r, g, b] with components in [0, 1].
- */
+/** Viridis colormap, 11 stops. Each stop is [r, g, b] with components in [0, 1]. */
 
 export const VIRIDIS_STOPS: readonly (readonly [number, number, number])[] = [
   [0.267, 0.005, 0.329],
@@ -20,10 +14,7 @@ export const VIRIDIS_STOPS: readonly (readonly [number, number, number])[] = [
   [0.993, 0.906, 0.144],
 ] as const;
 
-/**
- * Map t in [0, 1] to an [r, g, b] triple via linear interpolation between
- * the VIRIDIS_STOPS. Values outside [0, 1] are clamped.
- */
+/** Map t in [0, 1] to an [r, g, b] triple. Values outside the range are clamped. */
 export function viridis(t: number): [number, number, number] {
   const clamped = Math.max(0, Math.min(1, t));
   const n = VIRIDIS_STOPS.length - 1;
@@ -38,10 +29,7 @@ export function viridis(t: number): [number, number, number] {
   ];
 }
 
-/**
- * Flatten VIRIDIS_STOPS into a Float32Array of length 33 for passing
- * to WebGL as a `uniform vec3 viridis[11]` block.
- */
+/** Flatten VIRIDIS_STOPS into a Float32Array for a WebGL `uniform vec3 viridis[11]`. */
 export function viridisUniformArray(): Float32Array {
   const out = new Float32Array(VIRIDIS_STOPS.length * 3);
   for (let i = 0; i < VIRIDIS_STOPS.length; i++) {

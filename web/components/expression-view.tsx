@@ -5,12 +5,9 @@ import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 
 import { ExpressionUmap } from "@/components/expression-umap";
-import { ExpressionPca3d } from "@/components/expression-pca3d";
 import { ExpressionGeneSearch } from "@/components/expression-gene-search";
 import { ExpressionColorbar } from "@/components/expression-colorbar";
 import { ExpressionClusterSidebar } from "@/components/expression-cluster-sidebar";
-import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
-import ToggleButton from "@mui/material/ToggleButton";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import type { Database } from "@/lib/database.types";
 
@@ -32,11 +29,7 @@ interface LoadedMeta {
   counts: Record<number, number>;
 }
 
-/**
- * Orchestrator for the new Expression UMAP view. Owns per-view state:
- * selected gene, cluster visibility, cluster highlight, colorbar range.
- * Composes the canvas + gene search + colorbar + sidebar.
- */
+/** Composes the UMAP canvas + gene search + colorbar + cluster sidebar for a dataset. */
 export function ExpressionView({ datasetId }: ExpressionViewProps) {
   const [meta, setMeta] = useState<LoadedMeta | null>(null);
   const [geneName, setGeneName] = useState<string | null>(null);
@@ -44,7 +37,6 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   const [exprRange, setExprRange] = useState<{ min: number; max: number } | null>(
     null,
   );
-  const [viewMode, setViewMode] = useState<"umap2d" | "pca3d">("umap2d");
 
   useEffect(() => {
     // load cluster counts from scrna_cluster_stats alongside the
@@ -109,11 +101,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
     setHidden(new Set(meta.clusters.map((c) => c.ordinal)));
   }, [meta]);
 
-  /**
-   * Solo: hide every other cluster so only the clicked one is visible.
-   * If the clicked cluster is already the only visible one, restore full
-   * visibility. Checkbox state follows because it derives from `hidden`.
-   */
+  /** Hide all clusters except this one. Clicking again restores full visibility. */
   const handleSolo = useCallback(
     (ordinal: number) => {
       if (!meta) return;
@@ -168,54 +156,31 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           </Box>
         )}
 
-        {/* view mode + gene search */}
+        {/* gene search */}
         <Box sx={{ display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" }}>
-          <ToggleButtonGroup
-            size="small"
-            value={viewMode}
-            exclusive
-            onChange={(_e, v) => {
-              if (v) setViewMode(v as "umap2d" | "pca3d");
-            }}
-            aria-label="View mode"
-          >
-            <ToggleButton value="umap2d">UMAP 2D</ToggleButton>
-            {/* PCA 3D temporarily hidden — re-enable once it's polished */}
-            {/* <ToggleButton value="pca3d">PCA 3D</ToggleButton> */}
-          </ToggleButtonGroup>
-          {viewMode === "umap2d" && (
-            <Box sx={{ maxWidth: 360, flex: 1 }}>
-              <ExpressionGeneSearch
-                datasetId={datasetId}
-                value={geneName}
-                onChange={setGeneName}
-                disabled={!meta}
-              />
-            </Box>
-          )}
+          <Box sx={{ maxWidth: 360, flex: 1 }}>
+            <ExpressionGeneSearch
+              datasetId={datasetId}
+              value={geneName}
+              onChange={setGeneName}
+              disabled={!meta}
+            />
+          </Box>
         </Box>
 
         {/* canvas */}
-        {viewMode === "umap2d" ? (
-          <ExpressionUmap
-            datasetId={datasetId}
-            geneName={geneName}
-            hiddenClusters={hidden}
-            onDataLoaded={handleDataLoaded}
-            onExpressionRangeChanged={setExprRange}
-          />
-        ) : (
-          <ExpressionPca3d
-            datasetId={datasetId}
-            hiddenClusters={hidden}
-            onDataLoaded={handleDataLoaded}
-          />
-        )}
+        <ExpressionUmap
+          datasetId={datasetId}
+          geneName={geneName}
+          hiddenClusters={hidden}
+          onDataLoaded={handleDataLoaded}
+          onExpressionRangeChanged={setExprRange}
+        />
       </Box>
 
-      {/* colorbar: only when UMAP + gene is active */}
+      {/* colorbar: only when a gene is selected */}
       <Box sx={{ width: 120, display: "flex", justifyContent: "flex-start", pt: 6 }}>
-        {viewMode === "umap2d" && geneName && exprRange && (
+        {geneName && exprRange && (
           <ExpressionColorbar
             geneName={geneName}
             dataMin={exprRange.min}

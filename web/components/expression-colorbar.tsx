@@ -32,12 +32,7 @@ function viridisCssGradient(): string {
   return `linear-gradient(to top, ${stops.join(", ")})`;
 }
 
-/**
- * Vertical viridis colorbar with a two-handle MUI Slider alongside it.
- * The values are log-normalized expression units (unmodified from the
- * source normalization); the caption surfaces `unitsLabel` so users
- * can read the scale literally rather than interpreting a [0, 1] ramp.
- */
+/** Vertical viridis colorbar with a two-handle range slider for the expression scale. */
 export function ExpressionColorbar({
   dataMin,
   dataMax,

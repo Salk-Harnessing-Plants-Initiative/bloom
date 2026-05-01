@@ -1,5 +1,4 @@
 -- Migration: create_scrna_clusters
--- Phase 1 of Expression Explorer (add-scrna-expression-schema).
 -- Creates scrna_clusters — the authoritative per-dataset cluster catalog
 -- with a contiguous ordinal (0..K-1) for Uint8Array packing, plus human-
 -- readable name and hex color.

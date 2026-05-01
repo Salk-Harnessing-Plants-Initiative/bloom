@@ -1,17 +1,9 @@
 "use client";
 
 import { createTheme, ThemeProvider } from "@mui/material/styles";
-import CssBaseline from "@mui/material/CssBaseline";
 import type { ReactNode } from "react";
 
-/**
- * Tailwind palette colors we need MUI to match. Kept as a single source
- * of truth so the two systems stay in sync.
- *   lime-700  #4d7c0f  -> primary accent (buttons, toggles, sliders, checkboxes)
- *   stone-500 #78716c  -> secondary / muted text
- *   stone-50  #fafaf9  -> page background
- *   stone-900 #1c1917  -> primary text
- */
+/** Tailwind palette colors mirrored into MUI so the two systems stay in sync. */
 const tailwindLime700 = "#4d7c0f";
 const tailwindLime800 = "#3f6212";
 const tailwindStone500 = "#78716c";
@@ -66,18 +58,9 @@ const expressionTheme = createTheme({
   },
 });
 
-/**
- * Scoped MUI theme provider. Wrap only the expression subtree so we don't
- * disturb MUI defaults used by the rest of the app.
- */
+/** Scoped MUI theme provider — wrap only the expression subtree. */
 export function ExpressionThemeProvider({ children }: { children: ReactNode }) {
-  return (
-    <ThemeProvider theme={expressionTheme}>
-      {/* Not calling CssBaseline at scope level to avoid fighting the app's
-          global body styling; rely on palette + component overrides only. */}
-      {children}
-    </ThemeProvider>
-  );
+  return <ThemeProvider theme={expressionTheme}>{children}</ThemeProvider>;
 }
 
 export default ExpressionThemeProvider;
