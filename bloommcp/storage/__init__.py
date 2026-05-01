@@ -8,12 +8,24 @@ from .manifest import (
     validate_schema,
     write_manifest_atomic,
 )
+from .schema import (
+    CURRENT_SCHEMA_VERSION,
+    CodeVersions,
+    ExperimentBlock,
+    Manifest,
+    VersionEntry,
+)
 from .versioning import next_version_id, slugify, version_dir_name
 
 __all__ = [
     "AnalysisDir",
+    "CURRENT_SCHEMA_VERSION",
+    "CodeVersions",
+    "ExperimentBlock",
     "KNOWN_SCHEMA_VERSION",
+    "Manifest",
     "ManifestSchemaError",
+    "VersionEntry",
     "get_code_versions",
     "next_version_id",
     "read_manifest",

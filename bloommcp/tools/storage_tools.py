@@ -49,9 +49,9 @@ def list_existing_analyses(experiment_filename: str) -> str:
             errors.append(f"{tool_class}: {e}")
             continue
         if versions:
-            by_tool_class[tool_class] = versions
+            by_tool_class[tool_class] = [v.model_dump(mode="json") for v in versions]
 
-    response = {
+    response: dict = {
         "experiment_filename": experiment_filename,
         "analyses": by_tool_class,
     }
@@ -61,7 +61,7 @@ def list_existing_analyses(experiment_filename: str) -> str:
         )
     if errors:
         response["errors"] = errors
-    return json.dumps(response, indent=2, default=str)
+    return json.dumps(response, indent=2)
 
 
 def register(mcp):

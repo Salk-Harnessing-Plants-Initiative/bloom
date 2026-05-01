@@ -1,6 +1,9 @@
 """Version-label allocation and on-disk directory-name construction."""
 import re
 from datetime import date
+from typing import Optional
+
+from .schema import Manifest
 
 _SLUG_PATTERN = re.compile(r"[^a-z0-9_]+")
 _MAX_SLUG_LEN = 32
@@ -14,13 +17,13 @@ def slugify(label: str) -> str:
     return s[:_MAX_SLUG_LEN]
 
 
-def next_version_id(manifest: dict | None) -> str:
+def next_version_id(manifest: Optional[Manifest]) -> str:
     """Return the next v<N> id, never reusing N even after deletion."""
-    if not manifest or not manifest.get("versions"):
+    if manifest is None or not manifest.versions:
         return "v1"
     max_n = 0
-    for entry in manifest["versions"]:
-        vid = entry.get("id", "")
+    for entry in manifest.versions:
+        vid = entry.id
         if not vid.startswith("v"):
             continue
         head = vid[1:].split("_", 1)[0]
@@ -33,8 +36,8 @@ def next_version_id(manifest: dict | None) -> str:
 
 def version_dir_name(
     version_id: str,
-    user_label: str | None = None,
-    today: date | None = None,
+    user_label: Optional[str] = None,
+    today: Optional[date] = None,
 ) -> str:
     """Build v<N>_<YYYY-MM-DD>[_<slug>]."""
     d = (today or date.today()).isoformat()

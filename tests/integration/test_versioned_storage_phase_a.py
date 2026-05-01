@@ -32,9 +32,15 @@ os.environ.setdefault("BLOOM_OUTPUT_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_URL", "http://test.invalid")
 
+from pydantic import ValidationError  # noqa: E402
+
 from storage import (  # noqa: E402
     AnalysisDir,
+    CodeVersions,
+    ExperimentBlock,
+    Manifest,
     ManifestSchemaError,
+    VersionEntry,
     next_version_id,
     read_manifest,
     slugify,
@@ -42,6 +48,49 @@ from storage import (  # noqa: E402
     version_dir_name,
     write_manifest_atomic,
 )
+
+
+def _make_version_entry(
+    *,
+    id: str = "v1",
+    created_at: str = "2026-04-20T00:00:00Z",
+    tool: str = "clean_experiment_data",
+    params: dict | None = None,
+    based_on_version: str = "raw",
+    code_versions: CodeVersions | None = None,
+    outputs: dict[str, str] | None = None,
+    user_label: str | None = None,
+) -> VersionEntry:
+    return VersionEntry(
+        id=id,
+        created_at=created_at,
+        tool=tool,
+        params=params or {},
+        based_on_version=based_on_version,
+        code_versions=code_versions
+        or CodeVersions(bloommcp="0.1.0", sleap_roots_analyze="unknown"),
+        outputs=outputs or {},
+        user_label=user_label,
+    )
+
+
+def _make_manifest(
+    *,
+    filename: str = "foo.csv",
+    versions: list[VersionEntry] | None = None,
+    latest: str | None = None,
+    input_sha256: str = "abc",
+) -> Manifest:
+    versions = versions or []
+    return Manifest(
+        experiment=ExperimentBlock(
+            filename=filename,
+            source_path=f".../{filename}",
+            input_sha256=input_sha256,
+        ),
+        versions=versions,
+        latest=latest if latest is not None else (versions[-1].id if versions else None),
+    )
 
 
 # ─── Manifest schema enforcement ───────────────────────────────────────────────
@@ -71,53 +120,64 @@ def test_read_manifest_rejects_unknown_future_version(tmp_path):
 # ─── Atomic writes ─────────────────────────────────────────────────────────────
 
 def test_write_manifest_atomic_round_trips(tmp_path):
-    manifest = {
-        "manifest_schema_version": 1,
-        "experiment": {"filename": "foo.csv", "source_path": "...", "input_sha256": "abc"},
-        "versions": [
-            {
-                "id": "v1",
-                "created_at": "2026-04-20T14:23:11Z",
-                "tool": "clean_experiment_data",
-                "params": {"contamination": 0.05},
-                "based_on_version": "raw",
-                "code_versions": {"bloommcp": "0.1.0", "sleap_roots_analyze": "unknown"},
-                "outputs": {"_cleaned.csv": "v1_2026-04-20/_cleaned.csv"},
-                "user_label": None,
-            }
-        ],
-        "latest": "v1",
-    }
+    entry = _make_version_entry(
+        id="v1",
+        created_at="2026-04-20T14:23:11Z",
+        tool="clean_experiment_data",
+        params={"contamination": 0.05},
+        outputs={"_cleaned.csv": "v1_2026-04-20/_cleaned.csv"},
+    )
+    manifest = _make_manifest(versions=[entry], latest="v1")
     write_manifest_atomic(tmp_path, manifest)
     assert (tmp_path / "manifest.json").exists()
-    assert read_manifest(tmp_path) == manifest
+    round_tripped = read_manifest(tmp_path)
+    assert round_tripped == manifest
 
 
 def test_write_manifest_atomic_leaves_no_tmp_files(tmp_path):
-    write_manifest_atomic(tmp_path, {"manifest_schema_version": 1, "versions": []})
+    write_manifest_atomic(tmp_path, _make_manifest())
     leftover_tmps = list(tmp_path.glob("manifest.json.tmp.*"))
     assert leftover_tmps == []
+
+
+def test_manifest_rejects_extra_fields():
+    """Strict mode catches writer bugs that emit unexpected keys."""
+    with pytest.raises(ValidationError):
+        Manifest.model_validate({
+            "manifest_schema_version": 1,
+            "experiment": {"filename": "x.csv", "source_path": "...", "input_sha256": ""},
+            "versions": [],
+            "latest": None,
+            "this_field_should_not_exist": True,
+        })
 
 
 # ─── Versioning ────────────────────────────────────────────────────────────────
 
 def test_next_version_id_starts_at_v1():
     assert next_version_id(None) == "v1"
-    assert next_version_id({"versions": []}) == "v1"
+    assert next_version_id(_make_manifest(versions=[])) == "v1"
 
 
 def test_next_version_id_skips_deleted_ids():
-    manifest = {
-        "versions": [
-            {"id": "v1"},
-            {"id": "v3"},
+    manifest = _make_manifest(
+        versions=[
+            _make_version_entry(id="v1"),
+            _make_version_entry(id="v3"),
         ],
-    }
+        latest="v3",
+    )
     assert next_version_id(manifest) == "v4"
 
 
 def test_next_version_id_handles_legacy_suffix():
-    manifest = {"versions": [{"id": "v0_legacy"}, {"id": "v2"}]}
+    manifest = _make_manifest(
+        versions=[
+            _make_version_entry(id="v0_legacy"),
+            _make_version_entry(id="v2"),
+        ],
+        latest="v2",
+    )
     assert next_version_id(manifest) == "v3"
 
 
@@ -136,7 +196,7 @@ def test_version_dir_name_with_and_without_label():
 
 # ─── AnalysisDir ───────────────────────────────────────────────────────────────
 
-def _seed_qc_dir(output_root: Path, stem: str, manifest: dict) -> Path:
+def _seed_qc_dir(output_root: Path, stem: str, manifest: Manifest) -> Path:
     qc_dir = output_root / f"qc_{stem}"
     qc_dir.mkdir(parents=True)
     write_manifest_atomic(qc_dir, manifest)
@@ -152,36 +212,32 @@ def test_analysis_dir_no_manifest(tmp_path):
 
 
 def test_analysis_dir_resolves_latest_pointer(tmp_path):
-    manifest = {
-        "manifest_schema_version": 1,
-        "experiment": {"filename": "foo.csv", "source_path": "...", "input_sha256": ""},
-        "versions": [
-            {"id": "v1", "created_at": "2026-04-20T00:00:00Z"},
-            {"id": "v2", "created_at": "2026-04-25T00:00:00Z"},
+    manifest = _make_manifest(
+        versions=[
+            _make_version_entry(id="v1", created_at="2026-04-20T00:00:00Z"),
+            _make_version_entry(id="v2", created_at="2026-04-25T00:00:00Z"),
         ],
-        "latest": "v2",
-    }
+        latest="v2",
+    )
     _seed_qc_dir(tmp_path, "foo", manifest)
     ad = AnalysisDir(tmp_path, "foo.csv", "qc")
 
-    assert ad.get_version("latest")["id"] == "v2"
-    assert ad.get_version("v1")["id"] == "v1"
+    assert ad.get_version("latest").id == "v2"
+    assert ad.get_version("v1").id == "v1"
     assert ad.get_version("v99") is None
 
 
 def test_analysis_dir_list_versions_sorted_by_created_at(tmp_path):
-    manifest = {
-        "manifest_schema_version": 1,
-        "experiment": {"filename": "foo.csv", "source_path": "...", "input_sha256": ""},
-        "versions": [
-            {"id": "v2", "created_at": "2026-04-25T00:00:00Z"},
-            {"id": "v1", "created_at": "2026-04-20T00:00:00Z"},
+    manifest = _make_manifest(
+        versions=[
+            _make_version_entry(id="v2", created_at="2026-04-25T00:00:00Z"),
+            _make_version_entry(id="v1", created_at="2026-04-20T00:00:00Z"),
         ],
-        "latest": "v2",
-    }
+        latest="v2",
+    )
     _seed_qc_dir(tmp_path, "foo", manifest)
     ad = AnalysisDir(tmp_path, "foo.csv", "qc")
-    ids = [v["id"] for v in ad.list_versions()]
+    ids = [v.id for v in ad.list_versions()]
     assert ids == ["v1", "v2"]
 
 
@@ -244,23 +300,15 @@ def test_load_experiment_data_raw_skips_cached_cleaned(tmp_path):
     _write_csv(version_subdir / "_cleaned.csv", "trait_a,trait_b\n9.9,9.9\n")
     write_manifest_atomic(
         qc_dir,
-        {
-            "manifest_schema_version": 1,
-            "experiment": {"filename": "bar.csv", "source_path": "...", "input_sha256": ""},
-            "versions": [
-                {
-                    "id": "v1",
-                    "created_at": "2026-04-20T00:00:00Z",
-                    "tool": "clean_experiment_data",
-                    "params": {},
-                    "based_on_version": "raw",
-                    "code_versions": {"bloommcp": "0.1.0", "sleap_roots_analyze": "unknown"},
-                    "outputs": {"_cleaned.csv": "v1_2026-04-20/_cleaned.csv"},
-                    "user_label": None,
-                }
+        _make_manifest(
+            filename="bar.csv",
+            versions=[
+                _make_version_entry(
+                    outputs={"_cleaned.csv": "v1_2026-04-20/_cleaned.csv"},
+                ),
             ],
-            "latest": "v1",
-        },
+            latest="v1",
+        ),
     )
 
     df_raw, _, _, source_raw = load_experiment_data(
@@ -323,23 +371,16 @@ def test_list_existing_analyses_reports_qc_versions(tmp_path, monkeypatch):
     output_dir = tmp_path / "output"
     _write_csv(traits_dir / "bar.csv", "trait_a\n1.0\n")
 
-    qc_manifest = {
-        "manifest_schema_version": 1,
-        "experiment": {"filename": "bar.csv", "source_path": "...", "input_sha256": "abc"},
-        "versions": [
-            {
-                "id": "v1",
-                "created_at": "2026-04-20T00:00:00Z",
-                "tool": "clean_experiment_data",
-                "params": {"contamination": 0.05},
-                "based_on_version": "raw",
-                "code_versions": {"bloommcp": "0.1.0", "sleap_roots_analyze": "unknown"},
-                "outputs": {"_cleaned.csv": "v1_2026-04-20/_cleaned.csv"},
-                "user_label": None,
-            }
+    qc_manifest = _make_manifest(
+        filename="bar.csv",
+        versions=[
+            _make_version_entry(
+                params={"contamination": 0.05},
+                outputs={"_cleaned.csv": "v1_2026-04-20/_cleaned.csv"},
+            ),
         ],
-        "latest": "v1",
-    }
+        latest="v1",
+    )
     _seed_qc_dir(output_dir, "bar", qc_manifest)
 
     import source.experiment_utils as eu
