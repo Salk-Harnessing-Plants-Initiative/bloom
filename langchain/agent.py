@@ -6,8 +6,8 @@ import os
 from typing import Optional, Literal
 
 import httpx
-from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import trim_messages, SystemMessage, AIMessage, HumanMessage
 from psycopg_pool import AsyncConnectionPool
@@ -16,6 +16,8 @@ import logging
 from rich.logging import RichHandler
 from rich.traceback import install
 from db_url import compose_postgres_url
+from graph.freeform import build_freeform_subgraph
+from graph.state import AgentState
 from tools import all_tools, generic_tools, scrna_tools, cyl_tools, context_tools
 
 install()
@@ -342,10 +344,27 @@ def create_agent(
     if mcp_tools:
         tools = tools + mcp_tools
 
-    return create_react_agent(
-        model=llm,
+    # Tier 0 of the upgrade-agent-architecture roadmap: replace the opaque
+    # `create_react_agent` return with an explicit StateGraph so every
+    # subsequent tier (top router, domain subgraphs, analysis router, MCP
+    # leaves, parallel recipes) has a real graph to attach nodes to.
+    #
+    # Today this graph has one node, `freeform`, which wraps the prebuilt
+    # ReAct agent verbatim — same prompt, same tools, same pre-model hook.
+    # Behavior is byte-for-byte identical to the pre-refactor agent. The
+    # checkpointer lives on the OUTER graph; the inner subgraph stays
+    # checkpointer=None so the parent's `messages` reducer is the single
+    # source of truth for thread state.
+    freeform = build_freeform_subgraph(
+        llm=llm,
         tools=tools,
-        prompt=SYSTEM_PROMPT,
-        checkpointer=checkpointer,
+        system_prompt=SYSTEM_PROMPT,
         pre_model_hook=make_pre_model_hook(provider, llm=llm),
+        checkpointer=None,
     )
+
+    builder = StateGraph(AgentState)
+    builder.add_node("freeform", freeform)
+    builder.add_edge(START, "freeform")
+    builder.add_edge("freeform", END)
+    return builder.compile(checkpointer=checkpointer)
