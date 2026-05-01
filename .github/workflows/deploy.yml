@@ -152,9 +152,10 @@ jobs:
       - name: Save previous SHA for rollback
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            mkdir -p '${{ secrets.PROD_DEPLOY_PATH }}.state'
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            git rev-parse HEAD > .previous_sha
-            echo \"Saved previous SHA: \$(cat .previous_sha)\"
+            git rev-parse HEAD > '${{ secrets.PROD_DEPLOY_PATH }}.state/previous_sha'
+            echo \"Saved previous SHA: \$(cat '${{ secrets.PROD_DEPLOY_PATH }}.state/previous_sha')\"
           "
 
       - name: Pull latest code
@@ -445,8 +446,8 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -e
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            if [ -f .previous_sha ]; then
-              PREV=\$(cat .previous_sha)
+            if [ -f '${{ secrets.PROD_DEPLOY_PATH }}.state/previous_sha' ]; then
+              PREV=\$(cat '${{ secrets.PROD_DEPLOY_PATH }}.state/previous_sha')
               echo \"Rolling back to \$PREV\"
               if [ -f .env.prod.previous ]; then
                 cp -p .env.prod.previous .env.prod
@@ -574,9 +575,10 @@ jobs:
       - name: Save previous SHA for rollback
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            mkdir -p '${{ secrets.STAGING_DEPLOY_PATH }}.state'
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            git rev-parse HEAD > .previous_sha
-            echo \"Saved previous SHA: \$(cat .previous_sha)\"
+            git rev-parse HEAD > '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha'
+            echo \"Saved previous SHA: \$(cat '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha')\"
           "
 
       - name: Pull latest code
@@ -833,8 +835,8 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -e
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            if [ -f .previous_sha ]; then
-              PREV=\$(cat .previous_sha)
+            if [ -f '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha' ]; then
+              PREV=\$(cat '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha')
               echo \"Rolling back to \$PREV\"
               if [ -f .env.staging.previous ]; then
                 cp -p .env.staging.previous .env.staging
