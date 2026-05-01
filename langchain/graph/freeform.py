@@ -44,10 +44,20 @@ def build_freeform_subgraph(
         `astream_events` — drop-in for the previous `create_react_agent`
         return value.
     """
+    # IMPORTANT: prompt=None on purpose, even though `system_prompt` is in our
+    # function signature. The pre_model_hook (in langchain/agent.py) owns the
+    # entire SystemMessage block — it merges SYSTEM_PROMPT plus any reminders
+    # and summaries into exactly one SystemMessage at index 0. Passing
+    # prompt=system_prompt here would cause create_react_agent to ALSO prepend
+    # its own SystemMessage, producing two consecutive system blocks which
+    # Qwen's chat template rejects ("System message must be at the beginning").
+    # We keep `system_prompt` in the signature so the caller's intent is
+    # documented at the call site, but it's intentionally unused here.
+    _ = system_prompt
     return create_react_agent(
         model=llm,
         tools=tools,
-        prompt=system_prompt,
+        prompt=None,
         pre_model_hook=pre_model_hook,
         checkpointer=checkpointer,
     )

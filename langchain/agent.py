@@ -212,6 +212,30 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
                 allow_partial=False,
                 start_on="human",
             )
+        # Coerce every SystemMessage into a single merged block at the start,
+        # ALWAYS led by SYSTEM_PROMPT.
+        #
+        # Why we own the system block here:
+        #   - vLLM with Qwen's chat template only allows ONE system block at
+        #     index 0; any second SystemMessage triggers "System message must
+        #     be at the beginning."
+        #   - create_react_agent normally prepends its own SystemMessage from
+        #     the `prompt=...` argument, which collides with whatever this
+        #     hook produces (resulting in two consecutive system blocks).
+        #   - To keep the contract single-source, build_freeform_subgraph
+        #     passes `prompt=None` to create_react_agent and we always emit
+        #     exactly one merged SystemMessage here. Every line of
+        #     SYSTEM_PROMPT plus any reminders or summaries are preserved by
+        #     joining with blank lines so no instruction is silently dropped.
+        system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
+        non_system_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
+        parts = [SYSTEM_PROMPT]
+        for m in system_msgs:
+            content = str(m.content) if m.content else ""
+            if content and content not in parts:  # dedupe identical blocks
+                parts.append(content)
+        merged_content = "\n\n".join(parts)
+        messages = [SystemMessage(content=merged_content)] + non_system_msgs
         return {"llm_input_messages": messages}
     return pre_model_hook
 
