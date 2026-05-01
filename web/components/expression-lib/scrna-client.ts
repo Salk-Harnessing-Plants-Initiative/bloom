@@ -99,14 +99,9 @@ export async function fetchClusters(datasetId: number): Promise<Cluster[]> {
  */
 export async function fetchCells(datasetId: number): Promise<CellArraysRow[]> {
   const supabase = createClientSupabaseClient();
-  // The RPC is typed in database.types.ts; call generically.
-  const { data, error } = await (supabase.rpc as unknown as (
-    fn: string,
-    args: Record<string, unknown>,
-  ) => Promise<{ data: CellArraysRow[] | null; error: { message: string } | null }>)(
-    "scrna_cell_arrays",
-    { ds_id: datasetId },
-  );
+  const { data, error } = await supabase.rpc("scrna_cell_arrays", {
+    ds_id: datasetId,
+  });
   if (error) throw new Error(`fetchCells failed: ${error.message}`);
   return (data as CellArraysRow[]) ?? [];
 }
@@ -122,13 +117,11 @@ export async function searchGenes(
 ): Promise<string[]> {
   if (!q) return [];
   const supabase = createClientSupabaseClient();
-  const { data, error } = await (supabase.rpc as unknown as (
-    fn: string,
-    args: Record<string, unknown>,
-  ) => Promise<{
-    data: { gene_name: string }[] | null;
-    error: { message: string } | null;
-  }>)("scrna_gene_search", { ds_id: datasetId, q, lim: limit });
+  const { data, error } = await supabase.rpc("scrna_gene_search", {
+    ds_id: datasetId,
+    q,
+    lim: limit,
+  });
   if (error) throw new Error(`searchGenes failed: ${error.message}`);
   return (data ?? []).map((row) => row.gene_name);
 }

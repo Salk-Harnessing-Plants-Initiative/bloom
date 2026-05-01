@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import {
   createServerSupabaseClient,
   getUser,
@@ -10,10 +11,14 @@ import { ExpressionCockpit } from "@/components/expression-cockpit";
 export default async function Dataset({
   params,
 }: {
-  params: Promise<{ datasetId: number; speciesId: number }>;
+  // Next.js dynamic route params are always strings; parse to numbers
+  // at the boundary below.
+  params: Promise<{ datasetId: string; speciesId: string }>;
 }) {
   const { datasetId, speciesId } = await params;
-  const dataset = await getDataset(datasetId);
+  const datasetIdNum = Number(datasetId);
+  if (!Number.isFinite(datasetIdNum)) notFound();
+  const dataset = await getDataset(datasetIdNum);
 
   const user = await getUser();
   const mixpanel = process.env.MIXPANEL_TOKEN
@@ -69,7 +74,7 @@ export default async function Dataset({
         </div>
       )}
 
-      <ExpressionCockpit datasetId={datasetId} datasetName={dataset.name} />
+      <ExpressionCockpit datasetId={datasetIdNum} datasetName={dataset.name} />
     </div>
   );
 }
