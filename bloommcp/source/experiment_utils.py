@@ -194,20 +194,20 @@ def _resolve_versioned_cleaned(
             f"Use list_existing_analyses to see available versions."
         )
 
-    rel = (entry.get("outputs") or {}).get("_cleaned.csv")
+    rel = entry.outputs.get("_cleaned.csv")
     if not rel:
         if version == "latest":
             return None, None, None
         return None, None, (
-            f"Version {entry['id']} has no cleaned CSV output."
+            f"Version {entry.id} has no cleaned CSV output."
         )
 
     path = analysis_dir.path / rel
     if not path.exists():
         return None, None, (
-            f"Manifest references {rel} for version {entry['id']} but the file is missing."
+            f"Manifest references {rel} for version {entry.id} but the file is missing."
         )
-    return path, f"{entry['id']}_cleaned", None
+    return path, f"{entry.id}_cleaned", None
 
 
 def load_experiment_data(

@@ -1,8 +1,10 @@
 """Per-experiment, per-tool-class directory abstraction (read-only in Phase A)."""
 import hashlib
 from pathlib import Path
+from typing import Optional
 
 from .manifest import read_manifest
+from .schema import Manifest, VersionEntry
 
 _HASH_CHUNK_BYTES = 1024 * 1024
 
@@ -21,31 +23,30 @@ class AnalysisDir:
         self.tool_class = tool_class
         self.stem = Path(experiment_filename).stem
         self.path = self.output_root / f"{tool_class}_{self.stem}"
-        self._cached_input_sha256: str | None = None
+        self._cached_input_sha256: Optional[str] = None
 
-    def read_manifest(self) -> dict | None:
+    def read_manifest(self) -> Optional[Manifest]:
         if not self.path.exists():
             return None
         return read_manifest(self.path)
 
-    def list_versions(self) -> list[dict]:
+    def list_versions(self) -> list[VersionEntry]:
         """All version entries sorted by created_at; empty list if no manifest."""
         manifest = self.read_manifest()
-        if not manifest:
+        if manifest is None:
             return []
-        versions = list(manifest.get("versions", []))
-        return sorted(versions, key=lambda v: v.get("created_at", ""))
+        return sorted(manifest.versions, key=lambda v: v.created_at)
 
-    def get_version(self, version_id: str) -> dict | None:
+    def get_version(self, version_id: str) -> Optional[VersionEntry]:
         """Resolve a version by id, or "latest" via the manifest's latest pointer."""
         manifest = self.read_manifest()
-        if not manifest:
+        if manifest is None:
             return None
-        target_id = manifest.get("latest") if version_id == "latest" else version_id
+        target_id = manifest.latest if version_id == "latest" else version_id
         if not target_id:
             return None
-        for entry in manifest.get("versions", []):
-            if entry.get("id") == target_id:
+        for entry in manifest.versions:
+            if entry.id == target_id:
                 return entry
         return None
 
