@@ -19,6 +19,7 @@ ALWAYS_INCLUDE_MCP_TOOLS = {
     "list_available_experiments",
     "load_experiment_data",
     "inspect_data_quality",
+    "list_existing_analyses",
 }
 
 VALID_TOOL_SETS = ["all", "scrna", "cyl", "generic"]

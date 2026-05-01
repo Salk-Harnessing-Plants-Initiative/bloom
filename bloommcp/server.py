@@ -27,6 +27,7 @@ from tools import (
     outlier_tools,
     viz_tools,
     correlation_tools,
+    storage_tools,
 )
 
 # --- Authentication ---
@@ -62,6 +63,7 @@ clustering_tools.register(mcp)
 outlier_tools.register(mcp)
 viz_tools.register(mcp)
 correlation_tools.register(mcp)
+storage_tools.register(mcp)
 
 # --- Health Endpoint ---
 # GET for Docker healthchecks. Bypasses MCP's SSE/JSON-RPC
