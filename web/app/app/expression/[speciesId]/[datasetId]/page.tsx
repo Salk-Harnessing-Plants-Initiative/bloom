@@ -7,6 +7,7 @@ import {
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
 import { ExpressionCockpit } from "@/components/expression-cockpit";
+import ExpressionDatasetBanner from "@/components/expression-dataset-banner";
 
 export default async function Dataset({
   params,
@@ -15,7 +16,8 @@ export default async function Dataset({
 }) {
   const { datasetId, speciesId } = await params;
   const datasetIdNum = Number(datasetId);
-  if (!Number.isFinite(datasetIdNum)) notFound();
+  const speciesIdNum = Number(speciesId);
+  if (!Number.isFinite(datasetIdNum) || !Number.isFinite(speciesIdNum)) notFound();
   const dataset = await getDataset(datasetIdNum);
 
   const user = await getUser();
@@ -61,6 +63,8 @@ export default async function Dataset({
         <span className="text-stone-300">&nbsp;▸&nbsp;</span>
         <span className="text-stone-900">{dataset.name}</span>
       </div>
+
+      <ExpressionDatasetBanner datasetId={datasetIdNum} speciesId={speciesIdNum} />
 
       {dataset.people && (
         <div className="mb-6">
