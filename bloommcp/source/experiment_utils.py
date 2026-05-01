@@ -166,39 +166,97 @@ def _find_column(columns, patterns: list[str]) -> Optional[str]:
     return None
 
 
+def _resolve_versioned_cleaned(
+    o_dir: Path,
+    stem: str,
+    version: str,
+) -> tuple[Optional[Path], Optional[str], Optional[str]]:
+    """Resolve a versioned cleaned CSV via the QC manifest.
+
+    Returns (path, source_label, error). On success, error is None and path
+    points at an existing _cleaned.csv. On miss with version="latest", returns
+    (None, None, None) so the caller falls back. On explicit version="v<N>"
+    miss, returns (None, None, error_string).
+    """
+    from storage import AnalysisDir, ManifestSchemaError
+
+    analysis_dir = AnalysisDir(o_dir, f"{stem}.csv", "qc")
+    try:
+        entry = analysis_dir.get_version(version)
+    except ManifestSchemaError as e:
+        return None, None, f"manifest schema error for '{stem}': {e}"
+
+    if entry is None:
+        if version == "latest":
+            return None, None, None
+        return None, None, (
+            f"Version {version!r} not found for experiment '{stem}'. "
+            f"Use list_existing_analyses to see available versions."
+        )
+
+    rel = (entry.get("outputs") or {}).get("_cleaned.csv")
+    if not rel:
+        if version == "latest":
+            return None, None, None
+        return None, None, (
+            f"Version {entry['id']} has no cleaned CSV output."
+        )
+
+    path = analysis_dir.path / rel
+    if not path.exists():
+        return None, None, (
+            f"Manifest references {rel} for version {entry['id']} but the file is missing."
+        )
+    return path, f"{entry['id']}_cleaned", None
+
+
 def load_experiment_data(
     filename: str,
     traits_dir: Optional[Path] = None,
     output_dir: Optional[Path] = None,
     require_clean: bool = False,
+    version: str = "latest",
 ) -> tuple:
     """Load experiment CSV with auto-detected columns.
 
-    Checks for cleaned CSV first, falls back to raw.
+    Resolution order for version="latest" (the default):
+      1. Versioned manifest entry (qc_<stem>/manifest.json -> latest -> _cleaned.csv)
+      2. Legacy un-versioned cleaned CSV (qc_<stem>/<stem>_cleaned.csv) — preserves
+         pre-migration behaviour; replaced by v0_legacy after the Phase B migration runs
+      3. Raw CSV from BLOOM_TRAITS_DIR
 
     Args:
         filename: CSV filename (e.g., "alfalfa_gwas_wave2.csv")
         traits_dir: Override for BLOOM_TRAITS_DIR
         output_dir: Override for BLOOM_OUTPUT_DIR
         require_clean: If True, fail when no cleaned CSV exists (for UMAP)
+        version: "latest" (default), "raw", or an explicit "v<N>"
 
     Returns:
         (df, trait_cols, column_config, source_label)
-        column_config is the dict from detect_columns()
+        source_label is one of "raw", "legacy_cleaned", or "v<N>_cleaned".
         On error: (None, None, None, error_string)
     """
     t_dir = traits_dir or TRAITS_DIR
     o_dir = output_dir or OUTPUT_DIR
     stem = Path(filename).stem
 
-    # 1. Check for cleaned CSV from previous QC run
-    cleaned_path = o_dir / f"qc_{stem}" / f"{stem}_cleaned.csv"
-    if cleaned_path.exists():
-        df = pd.read_csv(cleaned_path)
-        config = detect_columns(df)
-        return df, config["trait_cols"], config, f"cleaned ({cleaned_path.name})"
+    if version != "raw":
+        cleaned_path, source_label, error = _resolve_versioned_cleaned(o_dir, stem, version)
+        if error:
+            return None, None, None, error
+        if cleaned_path is not None:
+            df = pd.read_csv(cleaned_path)
+            config = detect_columns(df)
+            return df, config["trait_cols"], config, source_label
 
-    # 2. Hard-fail if clean required (e.g., UMAP)
+        if version == "latest":
+            legacy_path = o_dir / f"qc_{stem}" / f"{stem}_cleaned.csv"
+            if legacy_path.exists():
+                df = pd.read_csv(legacy_path)
+                config = detect_columns(df)
+                return df, config["trait_cols"], config, "legacy_cleaned"
+
     if require_clean:
         return None, None, None, (
             f"No cleaned dataset found for '{filename}'. "
@@ -206,14 +264,12 @@ def load_experiment_data(
             "Run clean_experiment_data first."
         )
 
-    # 3. Fallback to raw CSV
     raw_path = t_dir / filename
     if raw_path.exists():
         df = pd.read_csv(raw_path)
         config = detect_columns(df)
-        return df, config["trait_cols"], config, "raw (run clean_experiment_data for better results)"
+        return df, config["trait_cols"], config, "raw"
 
-    # 4. Not found
     available = [f.name for f in t_dir.glob("*.csv")] if t_dir.exists() else []
     avail_str = ", ".join(available) if available else "none"
     return None, None, None, f"File '{filename}' not found in {t_dir}. Available: {avail_str}"
