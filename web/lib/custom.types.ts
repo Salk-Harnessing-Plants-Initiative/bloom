@@ -15,6 +15,14 @@ export type SpeciesWithRNADatasets = Species & {
   scrna_datasets: RNADataset[]
 }
 
+export type RNADatasetWithPerson = RNADataset & {
+  people: Person | null
+}
+
+export type SpeciesWithRNADatasetsAndPeople = Species & {
+  scrna_datasets: RNADatasetWithPerson[]
+}
+
 export type TraitData = {
   scan_id: number
   date_scanned: string
