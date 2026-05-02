@@ -95,6 +95,11 @@ docker-compose.prod copy.yml
 DOCUMENTATION.md
 TROUBLESHOOTING.md
 prompts/
+# Re-include the langchain agent's prompt module (the gitignore rule above
+# catches Claude-Code planning folders named `prompts/`; this re-includes
+# the production code path the agent uses for graph-node prompts).
+!langchain/prompts/
+!langchain/prompts/**
 .claude/settings.local.json
 .claude/draft-pr/
 langchain/ANALYSIS_OUTPUT/
