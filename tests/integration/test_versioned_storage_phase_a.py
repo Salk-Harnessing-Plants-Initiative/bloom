@@ -1,4 +1,4 @@
-"""Phase A storage layer: read-side, manifest, version resolution, introspection.
+"""storage layer: read-side, manifest, version resolution, introspection.
 
 These tests are filesystem-only — they do NOT require the compose stack. They
 run against the storage modules directly, using tmp_path for isolation.

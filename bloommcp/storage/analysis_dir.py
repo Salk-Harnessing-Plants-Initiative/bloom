@@ -1,4 +1,4 @@
-"""Per-experiment, per-tool-class directory abstraction (read-only in Phase A)."""
+"""Per-experiment, per-tool-class directory abstraction."""
 import hashlib
 from pathlib import Path
 from typing import Optional
