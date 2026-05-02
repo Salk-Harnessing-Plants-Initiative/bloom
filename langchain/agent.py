@@ -16,6 +16,7 @@ import logging
 from rich.logging import RichHandler
 from rich.traceback import install
 from db_url import compose_postgres_url
+from graph.context_loader import make_context_loader_node
 from graph.freeform import build_freeform_subgraph
 from graph.state import AgentState
 from tools import all_tools, generic_tools, scrna_tools, cyl_tools, context_tools
@@ -82,16 +83,6 @@ async def setup_checkpointer() -> AsyncPostgresSaver:
 def _count_tokens(messages) -> int:
     """Approximate token count (~4 chars per token)."""
     return sum(len(str(m.content)) for m in messages) // 4
-
-
-def _has_context_call(messages) -> bool:
-    """Check if get_agent_context was already called in the conversation."""
-    for msg in messages:
-        if isinstance(msg, AIMessage) and msg.tool_calls:
-            for tc in msg.tool_calls:
-                if tc.get("name") == "get_agent_context":
-                    return True
-    return False
 
 
 SUMMARIZATION_PROMPT = """Summarize the following conversation between a user and an AI assistant on a plant biology platform.
@@ -174,12 +165,10 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
 
     async def pre_model_hook(state):
         messages = state["messages"]
-        # Safety net: remind to call get_agent_context on first turn
-        if len(messages) <= 2 and not _has_context_call(messages):
-                reminder = SystemMessage(
-                    content="Remember: call get_agent_context to learn about available data sources before answering."
-                )
-                messages = [messages[0], reminder] + messages[1:] if messages else [reminder]
+        # Reminder injection removed — `graph.context_loader.context_loader_node`
+        # injects the agent context deterministically as a SystemMessage at the
+        # start of every graph invocation, so the LLM no longer needs a hint to
+        # remember to call get_agent_context.
         total_tokens = _count_tokens(messages)
         if total_tokens > thresholds["summarize_at"]:
             # Find the split point: keep the last N tokens of messages
@@ -363,8 +352,18 @@ def create_agent(
         checkpointer=None,
     )
 
+    # Deterministic context-loader runs before the ReAct loop on every
+    # invocation. Replaces the prior reminder-injection branch in
+    # make_pre_model_hook — the LLM no longer needs to be told to call
+    # get_agent_context because the context is already in state.messages
+    # by the time freeform runs. Closure over tool_set so the same parent
+    # graph shape works for any tool subset selection.
+    context_loader = make_context_loader_node(tool_set=tool_set)
+
     builder = StateGraph(AgentState)
+    builder.add_node("context_loader", context_loader)
     builder.add_node("freeform", freeform)
-    builder.add_edge(START, "freeform")
+    builder.add_edge(START, "context_loader")
+    builder.add_edge("context_loader", "freeform")
     builder.add_edge("freeform", END)
     return builder.compile(checkpointer=checkpointer)
