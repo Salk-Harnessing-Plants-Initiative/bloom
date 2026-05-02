@@ -23,6 +23,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import create_react_agent
 from pydantic import BaseModel, Field
 
+from graph.leaves.qc import build_qc_leaf
 from graph.state import AgentState
 from prompts.analysis_freeform import ANALYSIS_FREEFORM_PROMPT
 from prompts.analysis_router import (
@@ -158,7 +159,9 @@ def build_analysis_subgraph(llm, mcp_tools: list, pre_model_hook=None):
     analysis_router = make_analysis_router_node(llm)
 
     # Inner ReAct loop with MCP-only tools and the analysis-focused prompt.
-    # checkpointer=None — parent graph in agent.py owns thread state.
+    # Catch-all for analysis requests that don't fit one of the specialized
+    # Tier 3 leaves (and the destination for analysis_router's
+    # `analysis_freeform` classification).
     analysis_freeform = create_react_agent(
         model=llm,
         tools=mcp_tools or [],
@@ -167,15 +170,27 @@ def build_analysis_subgraph(llm, mcp_tools: list, pre_model_hook=None):
         checkpointer=None,
     )
 
+    # qc leaf — Tier 3 specialized leaf for data quality + outlier detection.
+    # Sees only the 11 QC + outlier tools (plus list_existing_analyses) under
+    # the QC_PROMPT, so the LLM reasons over a tight surface and the leaf's
+    # workflow rules (check existing analyses first, surface source labels,
+    # pick the right outlier method) anchor the decision-making.
+    qc_leaf = build_qc_leaf(
+        llm=llm,
+        mcp_tools=mcp_tools or [],
+        pre_model_hook=pre_model_hook,
+    )
+
     builder = StateGraph(AgentState)
     builder.add_node("analysis_router", analysis_router)
     builder.add_node("analysis_freeform", analysis_freeform)
+    builder.add_node("qc_leaf", qc_leaf)
     builder.add_edge(START, "analysis_router")
     builder.add_conditional_edges(
         "analysis_router",
         lambda state: state["analysis_route"],
         {
-            "qc": "analysis_freeform",
+            "qc": "qc_leaf",
             "stats": "analysis_freeform",
             "dimred_cluster": "analysis_freeform",
             "viz": "analysis_freeform",
@@ -183,5 +198,6 @@ def build_analysis_subgraph(llm, mcp_tools: list, pre_model_hook=None):
             "analysis_freeform": "analysis_freeform",
         },
     )
+    builder.add_edge("qc_leaf", END)
     builder.add_edge("analysis_freeform", END)
     return builder.compile()
