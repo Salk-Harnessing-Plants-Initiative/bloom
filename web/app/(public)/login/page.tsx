@@ -98,7 +98,6 @@ export default async function LoginPage() {
             <div className={styles.statNum}>235</div>
             <div className={styles.statMeta}>
               <div className={styles.statLabel}>EXPERIMENTS</div>
-              <div className={styles.statSub}>Across 8 years of waves</div>
             </div>
           </div>
           <div className={styles.stat}>
