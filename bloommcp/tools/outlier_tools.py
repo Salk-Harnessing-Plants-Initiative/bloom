@@ -2,7 +2,9 @@
 MCP Tool Wrappers for SLEAP Outlier Detection.
 
 Wraps functions from source/outlier_detection.py. Uses source/experiment_utils.py for
-dynamic experiment discovery and column auto-detection.
+dynamic experiment discovery and column auto-detection. All write sites use the
+versioned storage layer: each detection call lands in a new outlier_<stem>/v<N>_*/
+directory and appends a manifest entry.
 """
 
 import json
@@ -17,7 +19,19 @@ from source.outlier_detection import (
     combine_outlier_methods,
     remove_outliers_from_data,
 )
-from source.experiment_utils import load_experiment_data as _load_data, OUTPUT_DIR
+from source.experiment_utils import load_experiment_data as _load_data, OUTPUT_DIR, TRAITS_DIR
+from storage import AnalysisDir, AnalysisWriter
+
+
+def _writer_for(filename: str) -> AnalysisWriter:
+    """Build an AnalysisWriter targeting the canonical outlier_<stem> directory."""
+    source = TRAITS_DIR / filename
+    return AnalysisWriter(
+        OUTPUT_DIR,
+        filename,
+        "outlier",
+        source_csv=source if source.exists() else None,
+    )
 
 
 # ============================================================================
@@ -27,6 +41,7 @@ from source.experiment_utils import load_experiment_data as _load_data, OUTPUT_D
 def detect_outliers_mahalanobis(
     filename: str,
     chi2_percentile: float = 97.5,
+    user_label: str | None = None,
 ) -> str:
     """Detect outliers using Mahalanobis distance in PCA space.
 
@@ -37,6 +52,7 @@ def detect_outliers_mahalanobis(
     Args:
         filename: CSV filename from list_available_experiments
         chi2_percentile: Chi-squared percentile for threshold (default 97.5 = top 2.5%)
+        user_label: Optional sluggified label tagged onto the version directory
     """
     df, trait_cols, config, source = _load_data(filename)
     if df is None:
@@ -56,8 +72,26 @@ def detect_outliers_mahalanobis(
     n_outliers = result["n_outliers"]
     pct = n_outliers / n_samples * 100 if n_samples > 0 else 0
 
+    writer = _writer_for(filename)
+    version_dir = writer.create_version(
+        tool_name="detect_outliers_mahalanobis",
+        params={"chi2_percentile": chi2_percentile},
+        user_label=user_label,
+    )
+    summary = {
+        "method": "Mahalanobis",
+        "n_outliers": n_outliers,
+        "n_samples": n_samples,
+        "outlier_indices": result["outlier_indices"],
+        "chi2_percentile": chi2_percentile,
+    }
+    (version_dir / "mahalanobis_outliers.json").write_text(json.dumps(summary, indent=2))
+    entry = writer.commit({
+        "mahalanobis_outliers.json": f"{version_dir.name}/mahalanobis_outliers.json",
+    })
+
     lines = [
-        f"Mahalanobis Outlier Detection: {stem} (source: {source})",
+        f"Mahalanobis Outlier Detection: {stem} (source: {source}, version: {entry.id})",
         f"  {n_samples} samples, {len(trait_cols)} traits",
         f"  PCA components: {result['n_components']} (variance: {result['cumulative_variance_explained'] * 100:.1f}%)",
         f"  Threshold: chi2 at {chi2_percentile}th percentile = {result['threshold_value']:.2f}",
@@ -83,16 +117,7 @@ def detect_outliers_mahalanobis(
         for idx, dist in outlier_dists[:5]:
             lines.append(f"    Sample {idx}: distance = {dist:.2f}")
 
-    out_dir = OUTPUT_DIR / f"outliers_{stem}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    summary = {
-        "method": "Mahalanobis",
-        "n_outliers": n_outliers,
-        "n_samples": n_samples,
-        "outlier_indices": result["outlier_indices"],
-        "chi2_percentile": chi2_percentile,
-    }
-    (out_dir / "mahalanobis_outliers.json").write_text(json.dumps(summary, indent=2))
+    lines.append(f"\n  Saved: {version_dir}/mahalanobis_outliers.json")
 
     return "\n".join(lines)
 
@@ -104,6 +129,7 @@ def detect_outliers_mahalanobis(
 def detect_outliers_isolation_forest(
     filename: str,
     contamination: float = 0.1,
+    user_label: str | None = None,
 ) -> str:
     """Detect outliers using Isolation Forest.
 
@@ -114,6 +140,7 @@ def detect_outliers_isolation_forest(
     Args:
         filename: CSV filename from list_available_experiments
         contamination: Expected proportion of outliers (default 0.1 = 10%)
+        user_label: Optional sluggified label tagged onto the version directory
     """
     df, trait_cols, config, source = _load_data(filename)
     if df is None:
@@ -136,8 +163,26 @@ def detect_outliers_isolation_forest(
     n_outliers = result["n_outliers"]
     pct = n_outliers / n_samples * 100 if n_samples > 0 else 0
 
+    writer = _writer_for(filename)
+    version_dir = writer.create_version(
+        tool_name="detect_outliers_isolation_forest",
+        params={"contamination": contamination},
+        user_label=user_label,
+    )
+    summary = {
+        "method": "IsolationForest",
+        "n_outliers": n_outliers,
+        "n_samples": n_samples,
+        "outlier_indices": result["outlier_indices"],
+        "contamination": contamination,
+    }
+    (version_dir / "isolation_forest_outliers.json").write_text(json.dumps(summary, indent=2))
+    entry = writer.commit({
+        "isolation_forest_outliers.json": f"{version_dir.name}/isolation_forest_outliers.json",
+    })
+
     lines = [
-        f"Isolation Forest Outlier Detection: {stem} (source: {source})",
+        f"Isolation Forest Outlier Detection: {stem} (source: {source}, version: {entry.id})",
         f"  {n_samples} samples, {len(trait_cols)} traits",
         f"  Contamination: {contamination} ({contamination * 100:.0f}% expected)",
         f"  Outliers found: {n_outliers} ({pct:.1f}%)",
@@ -153,16 +198,7 @@ def detect_outliers_isolation_forest(
         for idx, score in outlier_scores[:5]:
             lines.append(f"    Sample {idx}: anomaly score = {score:.4f}")
 
-    out_dir = OUTPUT_DIR / f"outliers_{stem}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    summary = {
-        "method": "IsolationForest",
-        "n_outliers": n_outliers,
-        "n_samples": n_samples,
-        "outlier_indices": result["outlier_indices"],
-        "contamination": contamination,
-    }
-    (out_dir / "isolation_forest_outliers.json").write_text(json.dumps(summary, indent=2))
+    lines.append(f"\n  Saved: {version_dir}/isolation_forest_outliers.json")
 
     return "\n".join(lines)
 
@@ -174,6 +210,7 @@ def detect_outliers_isolation_forest(
 def detect_outliers_pca(
     filename: str,
     outlier_threshold: float = 2.5,
+    user_label: str | None = None,
 ) -> str:
     """Detect outliers using PCA reconstruction error.
 
@@ -184,6 +221,7 @@ def detect_outliers_pca(
     Args:
         filename: CSV filename from list_available_experiments
         outlier_threshold: Std deviations above mean error for outlier cutoff (default 2.5)
+        user_label: Optional sluggified label tagged onto the version directory
     """
     df, trait_cols, config, source = _load_data(filename)
     if df is None:
@@ -203,8 +241,26 @@ def detect_outliers_pca(
     n_outliers = result["n_outliers"]
     pct = n_outliers / n_samples * 100 if n_samples > 0 else 0
 
+    writer = _writer_for(filename)
+    version_dir = writer.create_version(
+        tool_name="detect_outliers_pca",
+        params={"outlier_threshold": outlier_threshold},
+        user_label=user_label,
+    )
+    summary = {
+        "method": "PCA",
+        "n_outliers": n_outliers,
+        "n_samples": n_samples,
+        "outlier_indices": result["outlier_indices"],
+        "outlier_threshold": outlier_threshold,
+    }
+    (version_dir / "pca_outliers.json").write_text(json.dumps(summary, indent=2))
+    entry = writer.commit({
+        "pca_outliers.json": f"{version_dir.name}/pca_outliers.json",
+    })
+
     lines = [
-        f"PCA Reconstruction Outlier Detection: {stem} (source: {source})",
+        f"PCA Reconstruction Outlier Detection: {stem} (source: {source}, version: {entry.id})",
         f"  {n_samples} samples, {len(trait_cols)} traits",
         f"  PCA components: {result['n_components']} (variance: {result['total_variance_explained'] * 100:.1f}%)",
         f"  Threshold: mean + {outlier_threshold} * std = {result['threshold_value']:.2f}",
@@ -221,16 +277,7 @@ def detect_outliers_pca(
         for idx, err in outlier_errs[:5]:
             lines.append(f"    Sample {idx}: error = {err:.4f}")
 
-    out_dir = OUTPUT_DIR / f"outliers_{stem}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    summary = {
-        "method": "PCA",
-        "n_outliers": n_outliers,
-        "n_samples": n_samples,
-        "outlier_indices": result["outlier_indices"],
-        "outlier_threshold": outlier_threshold,
-    }
-    (out_dir / "pca_outliers.json").write_text(json.dumps(summary, indent=2))
+    lines.append(f"\n  Saved: {version_dir}/pca_outliers.json")
 
     return "\n".join(lines)
 
@@ -242,6 +289,7 @@ def detect_outliers_pca(
 def run_consensus_outlier_detection(
     filename: str,
     consensus_threshold: float = 0.5,
+    user_label: str | None = None,
 ) -> str:
     """Run all 3 outlier detection methods and report consensus results.
 
@@ -252,6 +300,7 @@ def run_consensus_outlier_detection(
     Args:
         filename: CSV filename from list_available_experiments
         consensus_threshold: Fraction of methods that must agree (default 0.5 = 2 of 3)
+        user_label: Optional sluggified label tagged onto the version directory
     """
     df, trait_cols, config, source = _load_data(filename)
     if df is None:
@@ -276,19 +325,37 @@ def run_consensus_outlier_detection(
     n_consensus = combined["n_consensus_outliers"]
     methods_used = combined["agreement_summary"]["methods_compared"]
 
-    lines = [
-        f"Consensus Outlier Detection: {stem} (source: {source})",
-        f"  Methods used: {', '.join(methods_used)} ({len(methods_used)} total)",
-        f"  Consensus rule: >= {consensus_threshold * 100:.0f}% agreement",
-        "",
-        "  Per-method results:",
-    ]
-
     method_counts = {
         "mahalanobis": mahal.get("n_outliers", 0) if "error" not in mahal else "failed",
         "isolation_forest": iso.get("n_outliers", 0) if "error" not in iso else "failed",
         "pca": pca_res.get("n_outliers", 0) if "error" not in pca_res else "failed",
     }
+
+    writer = _writer_for(filename)
+    version_dir = writer.create_version(
+        tool_name="run_consensus_outlier_detection",
+        params={"consensus_threshold": consensus_threshold},
+        user_label=user_label,
+    )
+    summary = {
+        "method": "Consensus",
+        "n_consensus_outliers": n_consensus,
+        "consensus_outliers": combined["consensus_outliers"],
+        "consensus_threshold": consensus_threshold,
+        "method_counts": {k: v for k, v in method_counts.items() if v != "failed"},
+    }
+    (version_dir / "consensus_outliers.json").write_text(json.dumps(summary, indent=2))
+    entry = writer.commit({
+        "consensus_outliers.json": f"{version_dir.name}/consensus_outliers.json",
+    })
+
+    lines = [
+        f"Consensus Outlier Detection: {stem} (source: {source}, version: {entry.id})",
+        f"  Methods used: {', '.join(methods_used)} ({len(methods_used)} total)",
+        f"  Consensus rule: >= {consensus_threshold * 100:.0f}% agreement",
+        "",
+        "  Per-method results:",
+    ]
 
     for method, count in method_counts.items():
         lines.append(f"    {method}: {count} outliers")
@@ -309,16 +376,7 @@ def run_consensus_outlier_detection(
         if n_consensus > 20:
             lines.append(f"    ... ({n_consensus - 20} more)")
 
-    out_dir = OUTPUT_DIR / f"outliers_{stem}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    summary = {
-        "method": "Consensus",
-        "n_consensus_outliers": n_consensus,
-        "consensus_outliers": combined["consensus_outliers"],
-        "consensus_threshold": consensus_threshold,
-        "method_counts": {k: v for k, v in method_counts.items() if v != "failed"},
-    }
-    (out_dir / "consensus_outliers.json").write_text(json.dumps(summary, indent=2))
+    lines.append(f"\n  Saved: {version_dir}/consensus_outliers.json")
 
     return "\n".join(lines)
 
@@ -327,18 +385,64 @@ def run_consensus_outlier_detection(
 # Tool 5: Remove Detected Outliers
 # ============================================================================
 
+_METHOD_TOOL_NAMES = {
+    "consensus": "run_consensus_outlier_detection",
+    "mahalanobis": "detect_outliers_mahalanobis",
+    "isolation_forest": "detect_outliers_isolation_forest",
+    "pca": "detect_outliers_pca",
+}
+
+_METHOD_OUTPUT_FILES = {
+    "consensus": "consensus_outliers.json",
+    "mahalanobis": "mahalanobis_outliers.json",
+    "isolation_forest": "isolation_forest_outliers.json",
+    "pca": "pca_outliers.json",
+}
+
+
+def _find_latest_method_version(filename: str, method: str):
+    """Walk the outlier manifest for the latest entry produced by the named method.
+
+    Returns (version_entry, version_dir_path) or (None, None) if no run found.
+    """
+    analysis_dir = AnalysisDir(OUTPUT_DIR, filename, "outlier")
+    manifest = analysis_dir.read_manifest()
+    if manifest is None:
+        return None, None
+
+    target_tool = _METHOD_TOOL_NAMES[method]
+    expected_output = _METHOD_OUTPUT_FILES[method]
+    matching = [v for v in manifest.versions if v.tool == target_tool]
+    if not matching:
+        return None, None
+
+    matching.sort(key=lambda v: v.created_at, reverse=True)
+    for entry in matching:
+        rel = entry.outputs.get(expected_output)
+        if not rel:
+            continue
+        full = analysis_dir.path / rel
+        if full.exists():
+            return entry, full
+    return None, None
+
+
 def remove_detected_outliers(
     filename: str,
     method: str = "consensus",
+    user_label: str | None = None,
 ) -> str:
     """Remove outliers detected by a previous detection run and save cleaned CSV.
 
-    Reads outlier indices from a saved JSON result file and removes those
-    samples from the dataset. Saves cleaned CSV to BLOOM_OUTPUT_DIR.
+    Walks the outlier_<stem>/manifest.json for the latest run of the chosen
+    method, reads its outlier indices, removes those samples from the dataset,
+    and writes the cleaned CSV + flagged outlier rows into a new versioned
+    directory. Re-running creates a new v<N>_*/.
 
     Args:
         filename: CSV filename from list_available_experiments
         method: Which detection result to use (consensus, mahalanobis, isolation_forest, pca)
+        user_label: Optional sluggified label tagged onto the version directory
     """
     df, trait_cols, config, source = _load_data(filename)
     if df is None:
@@ -346,20 +450,11 @@ def remove_detected_outliers(
 
     stem = Path(filename).stem
 
-    method_files = {
-        "consensus": "consensus_outliers.json",
-        "mahalanobis": "mahalanobis_outliers.json",
-        "isolation_forest": "isolation_forest_outliers.json",
-        "pca": "pca_outliers.json",
-    }
+    if method not in _METHOD_OUTPUT_FILES:
+        return f"Unknown method '{method}'. Choose from: {', '.join(_METHOD_OUTPUT_FILES.keys())}"
 
-    if method not in method_files:
-        return f"Unknown method '{method}'. Choose from: {', '.join(method_files.keys())}"
-
-    out_dir = OUTPUT_DIR / f"outliers_{stem}"
-    json_path = out_dir / method_files[method]
-
-    if not json_path.exists():
+    src_entry, json_path = _find_latest_method_version(filename, method)
+    if json_path is None:
         return (
             f"No saved {method} results found for '{stem}'. "
             f"Run the detection tool first (e.g., run_consensus_outlier_detection)."
@@ -376,20 +471,28 @@ def remove_detected_outliers(
         df, outlier_indices, keep_metadata=True, return_outliers=True,
     )
 
-    cleaned_dir = OUTPUT_DIR / f"outliers_{stem}"
-    cleaned_dir.mkdir(parents=True, exist_ok=True)
-    cleaned_path = cleaned_dir / f"{stem}_outliers_removed.csv"
+    writer = _writer_for(filename)
+    version_dir = writer.create_version(
+        tool_name="remove_detected_outliers",
+        params={"method": method, "source_version": src_entry.id},
+        user_label=user_label,
+    )
+    cleaned_path = version_dir / f"{stem}_outliers_removed.csv"
     cleaned_df.to_csv(cleaned_path, index=False)
-
-    outlier_path = cleaned_dir / f"{stem}_outlier_samples.csv"
+    outlier_path = version_dir / f"{stem}_outlier_samples.csv"
     outlier_df.to_csv(outlier_path, index=False)
+
+    entry = writer.commit({
+        f"{stem}_outliers_removed.csv": f"{version_dir.name}/{stem}_outliers_removed.csv",
+        f"{stem}_outlier_samples.csv": f"{version_dir.name}/{stem}_outlier_samples.csv",
+    })
 
     n_original = len(df)
     n_removed = len(outlier_df)
     n_remaining = len(cleaned_df)
 
     lines = [
-        f"Outlier Removal: {stem} (method: {method})",
+        f"Outlier Removal: {stem} (method: {method}, version: {entry.id}, source: {src_entry.id})",
         f"  Original samples: {n_original}",
         f"  Outliers removed: {n_removed}",
         f"  Remaining samples: {n_remaining}",

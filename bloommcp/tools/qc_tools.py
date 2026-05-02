@@ -265,6 +265,7 @@ def clean_experiment_data(
     max_nans_per_trait: float = 0.3,
     max_nans_per_sample: float = 0.2,
     min_samples_per_trait: int = 10,
+    user_label: str | None = None,
 ) -> str:
     """Apply data cleanup filters to a SLEAP experiment and save cleaned CSV.
 
@@ -274,7 +275,9 @@ def clean_experiment_data(
     3. Remove samples with too many NaN values
     4. Remove traits with insufficient valid samples
 
-    Saves the cleaned CSV and a JSON log to the output directory.
+    Saves the cleaned CSV and a JSON log into a versioned subdirectory of
+    BLOOM_OUTPUT_DIR/qc_<stem>/. Re-running creates a new v<N>_*/ rather
+    than overwriting the prior result.
 
     Args:
         filename: CSV filename from list_available_experiments
@@ -282,6 +285,7 @@ def clean_experiment_data(
         max_nans_per_trait: Max fraction of NaN per trait before removal (0-1, default 0.3)
         max_nans_per_sample: Max fraction of NaN per sample before removal (0-1, default 0.2)
         min_samples_per_trait: Min valid samples per trait (default 10)
+        user_label: Optional sluggified label tagged onto the version directory
     """
     df, trait_cols, config, source = _load_data(filename)
     if df is None:
@@ -291,7 +295,6 @@ def clean_experiment_data(
     original_samples = len(df)
     original_traits = len(trait_cols)
 
-    # Apply cleanup filters
     df_clean, cleanup_log = cleanup.apply_data_cleanup_filters(
         df, trait_cols,
         max_zeros_per_trait=max_zeros_per_trait,
@@ -300,25 +303,42 @@ def clean_experiment_data(
         min_samples_per_trait=min_samples_per_trait,
     )
 
-    # Save cleaned data and log
     from source.data_utils import convert_to_json_serializable
+    from storage import AnalysisWriter
 
-    qc_dir = OUTPUT_DIR / f"qc_{stem}"
-    qc_dir.mkdir(parents=True, exist_ok=True)
+    writer = AnalysisWriter(
+        OUTPUT_DIR,
+        filename,
+        "qc",
+        source_csv=TRAITS_DIR / filename if (TRAITS_DIR / filename).exists() else None,
+    )
+    version_dir = writer.create_version(
+        tool_name="clean_experiment_data",
+        params={
+            "max_zeros_per_trait": max_zeros_per_trait,
+            "max_nans_per_trait": max_nans_per_trait,
+            "max_nans_per_sample": max_nans_per_sample,
+            "min_samples_per_trait": min_samples_per_trait,
+        },
+        user_label=user_label,
+    )
 
-    cleaned_csv_path = qc_dir / f"{stem}_cleaned.csv"
+    cleaned_csv_path = version_dir / "_cleaned.csv"
     df_clean.to_csv(cleaned_csv_path, index=False)
-
-    log_path = qc_dir / "cleanup_log.json"
+    log_path = version_dir / "cleanup_log.json"
     with open(log_path, "w") as f:
         json.dump(convert_to_json_serializable(cleanup_log), f, indent=2)
 
-    # Format results
+    entry = writer.commit({
+        "_cleaned.csv": f"{version_dir.name}/_cleaned.csv",
+        "cleanup_log.json": f"{version_dir.name}/cleanup_log.json",
+    })
+
     final_samples = cleanup_log["final_samples"]
     final_traits = cleanup_log["final_traits"]
 
     lines = [
-        f"Data Cleanup Results: {filename}",
+        f"Data Cleanup Results: {filename} (version: {entry.id})",
         f"  Samples: {original_samples} -> {final_samples} "
         f"({final_samples / original_samples * 100:.1f}% retained)",
         f"  Traits: {original_traits} -> {final_traits} "
@@ -344,7 +364,7 @@ def clean_experiment_data(
         if len(removed_traits) > 15:
             lines.append(f"  ... and {len(removed_traits) - 15} more")
 
-    lines.append(f"\nOutput files:")
+    lines.append(f"\nVersion: {entry.id}")
     lines.append(f"  Cleaned CSV: {cleaned_csv_path}")
     lines.append(f"  Cleanup log: {log_path}")
 
