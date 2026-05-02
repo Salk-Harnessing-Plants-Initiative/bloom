@@ -72,7 +72,7 @@ export default async function LoginPage() {
             </div>
             <p className={styles.kicker}>THE DATA PLATFORM</p>
             <h1 className={styles.heroTitle}>
-              For the plants <em>solving</em> climate change.
+              From the <em>Salk</em> Harnessing Plants Initiative.
             </h1>
             <p className={styles.heroSub}>
               Phenotyping scans, single-cell expression, gene candidates, and
@@ -98,7 +98,6 @@ export default async function LoginPage() {
             <div className={styles.statNum}>235</div>
             <div className={styles.statMeta}>
               <div className={styles.statLabel}>EXPERIMENTS</div>
-              <div className={styles.statSub}>Across 8 years of waves</div>
             </div>
           </div>
           <div className={styles.stat}>
