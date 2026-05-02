@@ -16,6 +16,7 @@ import logging
 from rich.logging import RichHandler
 from rich.traceback import install
 from db_url import compose_postgres_url
+from graph.analysis import build_analysis_subgraph
 from graph.context_loader import make_context_loader_node
 from graph.freeform import build_freeform_subgraph
 from graph.router import make_top_router_node
@@ -368,9 +369,23 @@ def create_agent(
     # leaf (single-provider strategy per master Decision 4).
     top_router = make_top_router_node(llm)
 
+    # Analysis subgraph: second-level router + analysis_freeform fallback leaf.
+    # Plugged in at the parent's "analysis" route destination. Inside the
+    # subgraph, an LLM sub-classifier writes state["analysis_route"] into one
+    # of 6 sub-buckets (qc, stats, dimred_cluster, viz, correlation,
+    # analysis_freeform); every value currently dispatches to analysis_freeform
+    # until Tier 3 sub-proposals land specialized leaves. The leaf sees only
+    # MCP tools — native scrna/cyl/generic stay in the top-level freeform.
+    analysis_subgraph = build_analysis_subgraph(
+        llm=llm,
+        mcp_tools=mcp_tools or [],
+        pre_model_hook=make_pre_model_hook(provider, llm=llm),
+    )
+
     builder = StateGraph(AgentState)
     builder.add_node("context_loader", context_loader)
     builder.add_node("top_router", top_router)
+    builder.add_node("analysis_subgraph", analysis_subgraph)
     builder.add_node("freeform", freeform)
     builder.add_edge(START, "context_loader")
     builder.add_edge("context_loader", "top_router")
@@ -380,9 +395,10 @@ def create_agent(
         {
             "phenotyping": "freeform",
             "scrna": "freeform",
-            "analysis": "freeform",
+            "analysis": "analysis_subgraph",
             "freeform": "freeform",
         },
     )
+    builder.add_edge("analysis_subgraph", END)
     builder.add_edge("freeform", END)
     return builder.compile(checkpointer=checkpointer)
