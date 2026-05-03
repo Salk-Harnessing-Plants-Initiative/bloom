@@ -94,7 +94,7 @@ function saveThreadId(id: string) {
 function loadSettings(): LLMSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return { provider: "local", model: "Qwen/Qwen3.5-9B", toolSet: "generic", mcpToolNames: [] };
+    if (!raw) return { provider: "local", model: "Qwen/Qwen3-8B", toolSet: "generic", mcpToolNames: [] };
     const parsed = JSON.parse(raw);
     if (!parsed.toolSet) parsed.toolSet = "generic";
     if (!parsed.mcpToolNames) parsed.mcpToolNames = [];
@@ -102,7 +102,7 @@ function loadSettings(): LLMSettings {
     if (parsed.provider === "claude") parsed.provider = "local";
     return parsed;
   } catch {
-    return { provider: "local", model: "Qwen/Qwen3.5-9B", toolSet: "generic", mcpToolNames: [] };
+    return { provider: "local", model: "Qwen/Qwen3-8B", toolSet: "generic", mcpToolNames: [] };
   }
 }
 
@@ -149,6 +149,15 @@ export default function MCPChat() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeThreadId, setActiveThreadId] = useState<string>("default");
 
+  // When the agent calls ask_user, the SSE stream emits an `ask_user` event
+  // with a question. The graph is paused until the user replies. We track
+  // the paused thread here so the next prompt submission goes to
+  // /chat/resume instead of /chat/stream. Cleared when the user submits a
+  // reply (or starts a new thread).
+  const [pendingClarification, setPendingClarification] = useState<{
+    threadId: string;
+  } | null>(null);
+
   // Thread history
   const [threads, setThreads] = useState<ThreadInfo[]>([]);
   const [historyCollapsed, setHistoryCollapsed] = useState(false);
@@ -166,19 +175,7 @@ export default function MCPChat() {
         return r.json();
       })
       .then((data) => {
-        if (!data.models) return;
-        setAvailableModels(data.models);
-        // Reconcile saved model against what the backend is actually serving.
-        // If the saved model isn't in the available list, swap to the first one
-        // and persist. Prevents 404s from a stale localStorage entry pointing at
-        // a model that's been replaced or renamed server-side.
-        setSettings((prev) => {
-          const valid = data.models[prev.provider] || [];
-          if (valid.length === 0 || valid.includes(prev.model)) return prev;
-          const fixed = { ...prev, model: valid[0] };
-          saveSettings(fixed);
-          return fixed;
-        });
+        if (data.models) setAvailableModels(data.models);
       })
       .catch(() => {});
   }, []);
@@ -186,7 +183,7 @@ export default function MCPChat() {
   // LLM Settings
   const [settings, setSettings] = useState<LLMSettings>(() => ({
     provider: "local",
-    model: "Qwen/Qwen3.5-9B",
+    model: "Qwen/Qwen3-8B",
     toolSet: "generic",
     mcpToolNames: [],
   }));
@@ -288,6 +285,10 @@ export default function MCPChat() {
     setActiveThreadId(newThreadId);
     saveThreadId(newThreadId);
     setMessages([]);
+    // Pending clarification belongs to the previous thread — clear it so a
+    // new conversation doesn't accidentally route the next prompt to /resume
+    // against the wrong thread_id.
+    setPendingClarification(null);
     // Refresh thread list so it stays current
     fetchThreads();
   }
@@ -303,6 +304,9 @@ export default function MCPChat() {
     saveThreadId(threadId);
     const savedMessages = loadMessagesForThread(threadId);
     setMessages(savedMessages);
+    // Pending clarification is bound to the previous thread; clear it so the
+    // next submission doesn't try to resume against the wrong graph.
+    setPendingClarification(null);
   }
 
   async function handleDeleteThread(threadId: string) {
@@ -329,7 +333,16 @@ export default function MCPChat() {
     const text = prompt.trim();
     setMessages((m) => [...m, { from: "user", text }]);
     setPrompt("");
-    startRequest(text);
+    // If the agent is paused on an `ask_user` interrupt, route the next
+    // submission to /chat/resume so the typed text feeds back into the
+    // paused graph as the tool's return value. Otherwise it's a fresh prompt.
+    if (pendingClarification) {
+      const paused = pendingClarification;
+      setPendingClarification(null);
+      resumeRequest(text, paused.threadId);
+    } else {
+      startRequest(text);
+    }
   }
 
   function startRequest(text: string) {
@@ -383,7 +396,7 @@ export default function MCPChat() {
 
           for (const line of lines) {
             if (!line.startsWith("data: ")) continue;
-            let event: { type?: string; content?: string };
+            let event: { type?: string; content?: string; thread_id?: string };
             try {
               event = JSON.parse(line.slice(6));
             } catch {
@@ -418,12 +431,164 @@ export default function MCPChat() {
                 }
                 return copy;
               });
+            } else if (event.type === "ask_user" && event.content) {
+              // Backend pauses the graph on `interrupt()` and surfaces the
+              // question here. We render it as the bot's most recent message
+              // and flag the thread as awaiting a reply — the next prompt
+              // submission will POST to /chat/resume instead of /chat/stream.
+              accumulatedText = event.content;
+              setMessages((msgs) => {
+                const copy = [...msgs];
+                const last = copy[copy.length - 1];
+                if (last && last.from === "bot") {
+                  copy[copy.length - 1] = { from: "bot", text: accumulatedText };
+                } else {
+                  copy.push({ from: "bot", text: accumulatedText });
+                }
+                return copy;
+              });
+              setPendingClarification({
+                threadId: event.thread_id || activeThreadId,
+              });
             }
             // 'done' is handled implicitly when the reader finishes
           }
         }
 
         // Refresh thread list after message (new thread may appear, timestamps update)
+        fetchThreads();
+      } catch (err: unknown) {
+        const errMsg = `Error contacting agent: ${err instanceof Error ? err.message : String(err)}`;
+        setMessages((msgs) => {
+          const copy = [...msgs];
+          const last = copy.slice(-1)[0];
+          if (last && last.from === "bot") {
+            copy[copy.length - 1] = { from: "bot", text: errMsg };
+          } else {
+            copy.push({ from: "bot", text: errMsg });
+          }
+          return copy;
+        });
+      } finally {
+        setStreaming(false);
+        setStreamStatus("");
+        setActiveTools([]);
+      }
+    })();
+  }
+
+  // Resume a chat that paused on an `ask_user` interrupt. Sends the user's
+  // reply to /chat/resume; the backend feeds it back into the paused graph
+  // via Command(resume=reply), and streams the continuation. The event
+  // vocabulary is identical to /chat/stream — including a fresh `ask_user`
+  // event if the agent asks a follow-up.
+  function resumeRequest(reply: string, threadId: string) {
+    setStreaming(true);
+    setStreamStatus("Thinking...");
+    setActiveTools([]);
+    setMessages((m) => [...m, { from: "bot", text: "" }]);
+    const resumeUrl = `${API_BASE_URL}/langchain/chat/resume`;
+
+    (async () => {
+      try {
+        const token = await getAuthToken();
+        if (!token) throw new Error("Please log in to use the Bloom Assistant.");
+
+        const resp = await fetch(resumeUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            thread_id: threadId,
+            reply,
+            provider: settings.provider,
+            model: settings.model,
+            tool_set: settings.toolSet || "generic",
+            mcp_tool_names: settings.mcpToolNames || [],
+          }),
+        });
+
+        if (!resp.ok) {
+          const errBody = await resp.text();
+          throw new Error(`Agent resume failed ${resp.status}: ${errBody}`);
+        }
+        if (!resp.body) throw new Error("No response body");
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let accumulatedText = "";
+        let buffer = "";
+        const toolsUsed: string[] = [];
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            let event: { type?: string; content?: string; thread_id?: string };
+            try {
+              event = JSON.parse(line.slice(6));
+            } catch {
+              continue;
+            }
+
+            if (event.type === "status") {
+              setStreamStatus(event.content ?? "");
+            } else if (event.type === "tool" && event.content) {
+              toolsUsed.push(event.content);
+              setActiveTools([...toolsUsed]);
+              setStreamStatus(`Using ${event.content}...`);
+            } else if (event.type === "tool_done") {
+              setStreamStatus("Thinking...");
+            } else if (event.type === "token" && event.content) {
+              accumulatedText += event.content;
+              setMessages((msgs) => {
+                const copy = [...msgs];
+                const last = copy[copy.length - 1];
+                if (last && last.from === "bot") {
+                  copy[copy.length - 1] = { from: "bot", text: accumulatedText };
+                }
+                return copy;
+              });
+            } else if (event.type === "error" && event.content) {
+              accumulatedText += `\n\nError: ${event.content}`;
+              setMessages((msgs) => {
+                const copy = [...msgs];
+                const last = copy[copy.length - 1];
+                if (last && last.from === "bot") {
+                  copy[copy.length - 1] = { from: "bot", text: accumulatedText };
+                }
+                return copy;
+              });
+            } else if (event.type === "ask_user" && event.content) {
+              // Multi-turn clarification: the agent asked another question
+              // after the previous reply. Render and arm pendingClarification
+              // again so the next prompt submission also routes to /resume.
+              accumulatedText = event.content;
+              setMessages((msgs) => {
+                const copy = [...msgs];
+                const last = copy[copy.length - 1];
+                if (last && last.from === "bot") {
+                  copy[copy.length - 1] = { from: "bot", text: accumulatedText };
+                } else {
+                  copy.push({ from: "bot", text: accumulatedText });
+                }
+                return copy;
+              });
+              setPendingClarification({
+                threadId: event.thread_id || threadId,
+              });
+            }
+          }
+        }
+
         fetchThreads();
       } catch (err: unknown) {
         const errMsg = `Error contacting agent: ${err instanceof Error ? err.message : String(err)}`;
@@ -1084,7 +1249,11 @@ export default function MCPChat() {
                   sendPrompt();
                 }
               }}
-              placeholder="Ask about datasets, genes, or run analysis..."
+              placeholder={
+                pendingClarification
+                  ? "Type your answer to the agent's question..."
+                  : "Ask about datasets, genes, or run analysis..."
+              }
               style={{
                 flex: 1,
                 padding: "14px 16px",
