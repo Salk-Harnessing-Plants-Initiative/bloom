@@ -175,7 +175,19 @@ export default function MCPChat() {
         return r.json();
       })
       .then((data) => {
-        if (data.models) setAvailableModels(data.models);
+        if (!data.models) return;
+        setAvailableModels(data.models);
+        // Reconcile saved model against what the backend is actually serving.
+        // If the saved model isn't in the available list, swap to the first
+        // one and persist. Prevents 404s from a stale localStorage entry
+        // pointing at a model that's been replaced or renamed server-side.
+        setSettings((prev) => {
+          const valid = data.models[prev.provider] || [];
+          if (valid.length === 0 || valid.includes(prev.model)) return prev;
+          const fixed = { ...prev, model: valid[0] };
+          saveSettings(fixed);
+          return fixed;
+        });
       })
       .catch(() => {});
   }, []);
@@ -183,7 +195,7 @@ export default function MCPChat() {
   // LLM Settings
   const [settings, setSettings] = useState<LLMSettings>(() => ({
     provider: "local",
-    model: "Qwen/Qwen3-8B",
+    model: "Qwen/Qwen3.5-9B",
     toolSet: "generic",
     mcpToolNames: [],
   }));
