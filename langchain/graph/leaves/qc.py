@@ -54,7 +54,7 @@ def filter_qc_tools(mcp_tools):
     return [t for t in mcp_tools if getattr(t, "name", None) in QC_LEAF_TOOL_NAMES]
 
 
-def build_qc_leaf(llm, mcp_tools, pre_model_hook=None):
+def build_qc_leaf(llm, mcp_tools, pre_model_hook=None, post_model_hook=None):
     """Build the compiled QC leaf — a ReAct loop over the narrowed tool surface.
 
     Args:
@@ -63,6 +63,9 @@ def build_qc_leaf(llm, mcp_tools, pre_model_hook=None):
         mcp_tools: The full MCP tool list. Filtered to QC + outlier internally.
         pre_model_hook: Optional pre-LLM-call hook (token trim / summarize /
             single-SystemMessage merge) applied to every LLM call in the loop.
+        post_model_hook: Optional post-LLM-call hook. PR #208 wires the
+            empty-AIMessage safety net here so silent termination is
+            architecturally impossible regardless of which leaf runs.
 
     Returns:
         A compiled subgraph (CompiledStateGraph) suitable for use as a node
@@ -75,5 +78,6 @@ def build_qc_leaf(llm, mcp_tools, pre_model_hook=None):
         tools=qc_tools,
         prompt=QC_PROMPT,
         pre_model_hook=pre_model_hook,
+        post_model_hook=post_model_hook,
         checkpointer=None,
     )

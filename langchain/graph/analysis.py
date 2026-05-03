@@ -128,7 +128,7 @@ def make_analysis_router_node(llm):
     return analysis_router_node
 
 
-def build_analysis_subgraph(llm, mcp_tools: list, pre_model_hook=None):
+def build_analysis_subgraph(llm, mcp_tools: list, pre_model_hook=None, post_model_hook=None):
     """Build the compiled analysis subgraph.
 
     Args:
@@ -139,6 +139,10 @@ def build_analysis_subgraph(llm, mcp_tools: list, pre_model_hook=None):
             level `freeform` leaf is the catch-all for those.
         pre_model_hook: Optional pre-LLM-call hook (token trim / summarize /
             single-SystemMessage merge) applied to the inner ReAct loop.
+        post_model_hook: Optional post-LLM-call hook. PR #208 wires the
+            empty-AIMessage safety net here — same hook the freeform leaf
+            uses, applied to every analysis leaf so silent termination is
+            architecturally impossible regardless of which route runs.
 
     Topology inside the subgraph:
 
@@ -167,6 +171,7 @@ def build_analysis_subgraph(llm, mcp_tools: list, pre_model_hook=None):
         tools=mcp_tools or [],
         prompt=ANALYSIS_FREEFORM_PROMPT,
         pre_model_hook=pre_model_hook,
+        post_model_hook=post_model_hook,
         checkpointer=None,
     )
 
@@ -179,6 +184,7 @@ def build_analysis_subgraph(llm, mcp_tools: list, pre_model_hook=None):
         llm=llm,
         mcp_tools=mcp_tools or [],
         pre_model_hook=pre_model_hook,
+        post_model_hook=post_model_hook,
     )
 
     builder = StateGraph(AgentState)
