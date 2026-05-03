@@ -20,6 +20,22 @@ class ChatResponse(BaseModel):
     model: str
 
 
+class ChatResumeRequest(BaseModel):
+    """Resume a chat that paused on an ask_user clarification.
+
+    Symmetric with ChatRequest minus `prompt` (replaced with `reply`).
+    Frontend should keep provider/model/tool_set/mcp_tool_names in sync
+    with the original chat session — same agent factory must be reused
+    so the resumed graph picks up where it paused.
+    """
+    thread_id: str
+    reply: str
+    provider: str = "openai"
+    model: Optional[str] = None
+    tool_set: str = "all"
+    mcp_tool_names: list[str] = Field(default_factory=list)
+
+
 class CreateThreadRequest(BaseModel):
     thread_id: str
     title: Optional[str] = None

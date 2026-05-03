@@ -24,6 +24,7 @@ def build_freeform_subgraph(
     tools: list,
     system_prompt: str,
     pre_model_hook=None,
+    post_model_hook=None,
     checkpointer=None,
 ):
     """Build the compiled freeform subgraph.
@@ -33,6 +34,11 @@ def build_freeform_subgraph(
         tools: Tool callables the LLM can invoke, including any MCP tools.
         system_prompt: Top-level instructions string passed as `prompt=`.
         pre_model_hook: Optional pre-LLM-call hook (token trim / summarize).
+        post_model_hook: Optional post-LLM-call hook. PR #208 wires the
+            empty-AIMessage safety net here — detects empty content + no
+            tool_calls, replaces with a forced `ask_user` clarification or a
+            bounded-retries failure message. Without this hook, the leaf can
+            silently terminate.
         checkpointer: Pass `None` here when the subgraph is used as a node
             inside a parent graph — the parent owns checkpointing in that
             case so the parent's `messages` field is the canonical history.
@@ -49,5 +55,6 @@ def build_freeform_subgraph(
         tools=tools,
         prompt=system_prompt,
         pre_model_hook=pre_model_hook,
+        post_model_hook=post_model_hook,
         checkpointer=checkpointer,
     )

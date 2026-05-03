@@ -39,7 +39,13 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage MCP client and PostgresSaver: connect on startup, close on shutdown."""
-    # Initialize PostgresSaver checkpointer
+    # Initialize PostgresSaver checkpointer.
+    # The checkpointer is required for HITL clarification flows: when the
+    # agent calls `ask_user`, `interrupt()` snapshots state to the
+    # checkpointer so a later POST /chat/resume can wake it up. Without a
+    # checkpointer, `interrupt()` raises `InvalidUpdateError`. We log a
+    # loud warning here so missing-checkpointer is visible at boot rather
+    # than surfacing as a non-obvious runtime error mid-conversation.
     try:
         checkpointer = await setup_checkpointer()
         app.state.checkpointer = checkpointer
@@ -47,6 +53,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize PostgresSaver: {e}. Conversations will not persist.")
         app.state.checkpointer = None
+        logger.warning(
+            "Agent HITL clarification flow (ask_user tool) is DISABLED — "
+            "interrupt() requires a checkpointer. Fix the Postgres connection "
+            "to enable clarifications."
+        )
 
     # Connect to MCP servers (with retry — bloommcp may still be starting)
     mcp_client = None

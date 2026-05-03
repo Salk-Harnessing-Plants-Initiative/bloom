@@ -5,6 +5,7 @@ Provides on-demand schema, rules, and tool discovery so the system prompt
 stays minimal and tokens are only spent when needed.
 """
 from langchain_core.tools import tool
+from langgraph.types import interrupt
 
 
 # ==================== Context Payloads ====================
@@ -150,6 +151,42 @@ def list_available_tools() -> list[dict]:
     ]
 
 
+@tool
+def ask_user(question: str) -> str:
+    """Ask the user a clarifying question when you cannot proceed without more information.
+
+    Use this when:
+      - The user's request is ambiguous and discovery tools (list_traits_tool,
+        list_experiments_tool, list_species_tool, etc.) cannot resolve it on
+        their own. For example: "compare experiments" with no specific
+        experiment named when several exist.
+      - You are missing essential information that no tool can supply.
+      - You have tried discovery tools and the ambiguity remains.
+
+    Do NOT use this as a first response to uncertainty. Always exhaust
+    deterministic discovery (list_*) tools first — clarifying through tools
+    is faster and less disruptive than bouncing the question back to the user.
+
+    NEVER respond with empty content when you cannot answer. Call ask_user
+    with a specific question instead.
+
+    Args:
+        question: A specific, focused question that the user can answer in
+            one sentence. Avoid open-ended phrasing like "what do you want?"
+            — be concrete: "Which alfalfa experiment did you mean — Wave
+            Series 1 (id=1) or Wave Series 2 (id=2)?".
+
+    Returns:
+        The user's reply as a string. Use this reply to continue the
+        conversation as if the user had provided the information up front.
+    """
+    return interrupt({"type": "clarification", "question": question})
+
+
 # ==================== Tool List ====================
 
-context_tools = [get_agent_context, list_available_tools]
+# ask_user is part of context_tools so every leaf and route includes it —
+# clarification is universal, not domain-specific. The runtime safety net
+# in agent.py (post_model_hook) also forces ask_user on empty AIMessages
+# regardless of whether the LLM follows the prompt rule.
+context_tools = [get_agent_context, list_available_tools, ask_user]
