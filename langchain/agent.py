@@ -16,7 +16,10 @@ import logging
 from rich.logging import RichHandler
 from rich.traceback import install
 from db_url import compose_postgres_url
+from graph.analysis import build_analysis_subgraph
+from graph.context_loader import make_context_loader_node
 from graph.freeform import build_freeform_subgraph
+from graph.router import make_top_router_node
 from graph.state import AgentState
 from tools import all_tools, generic_tools, scrna_tools, cyl_tools, context_tools
 
@@ -82,16 +85,6 @@ async def setup_checkpointer() -> AsyncPostgresSaver:
 def _count_tokens(messages) -> int:
     """Approximate token count (~4 chars per token)."""
     return sum(len(str(m.content)) for m in messages) // 4
-
-
-def _has_context_call(messages) -> bool:
-    """Check if get_agent_context was already called in the conversation."""
-    for msg in messages:
-        if isinstance(msg, AIMessage) and msg.tool_calls:
-            for tc in msg.tool_calls:
-                if tc.get("name") == "get_agent_context":
-                    return True
-    return False
 
 
 SUMMARIZATION_PROMPT = """Summarize the following conversation between a user and an AI assistant on a plant biology platform.
@@ -174,12 +167,10 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
 
     async def pre_model_hook(state):
         messages = state["messages"]
-        # Safety net: remind to call get_agent_context on first turn
-        if len(messages) <= 2 and not _has_context_call(messages):
-                reminder = SystemMessage(
-                    content="Remember: call get_agent_context to learn about available data sources before answering."
-                )
-                messages = [messages[0], reminder] + messages[1:] if messages else [reminder]
+        # Reminder injection removed — `graph.context_loader.context_loader_node`
+        # injects the agent context deterministically as a SystemMessage at the
+        # start of every graph invocation, so the LLM no longer needs a hint to
+        # remember to call get_agent_context.
         total_tokens = _count_tokens(messages)
         if total_tokens > thresholds["summarize_at"]:
             # Find the split point: keep the last N tokens of messages
@@ -212,30 +203,6 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
                 allow_partial=False,
                 start_on="human",
             )
-        # Coerce every SystemMessage into a single merged block at the start,
-        # ALWAYS led by SYSTEM_PROMPT.
-        #
-        # Why we own the system block here:
-        #   - vLLM with Qwen's chat template only allows ONE system block at
-        #     index 0; any second SystemMessage triggers "System message must
-        #     be at the beginning."
-        #   - create_react_agent normally prepends its own SystemMessage from
-        #     the `prompt=...` argument, which collides with whatever this
-        #     hook produces (resulting in two consecutive system blocks).
-        #   - To keep the contract single-source, build_freeform_subgraph
-        #     passes `prompt=None` to create_react_agent and we always emit
-        #     exactly one merged SystemMessage here. Every line of
-        #     SYSTEM_PROMPT plus any reminders or summaries are preserved by
-        #     joining with blank lines so no instruction is silently dropped.
-        system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
-        non_system_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
-        parts = [SYSTEM_PROMPT]
-        for m in system_msgs:
-            content = str(m.content) if m.content else ""
-            if content and content not in parts:  # dedupe identical blocks
-                parts.append(content)
-        merged_content = "\n\n".join(parts)
-        messages = [SystemMessage(content=merged_content)] + non_system_msgs
         return {"llm_input_messages": messages}
     return pre_model_hook
 
@@ -387,8 +354,51 @@ def create_agent(
         checkpointer=None,
     )
 
+    # Deterministic context-loader runs before the ReAct loop on every
+    # invocation. Replaces the prior reminder-injection branch in
+    # make_pre_model_hook — the LLM no longer needs to be told to call
+    # get_agent_context because the context is already in state.messages
+    # by the time freeform runs. Closure over tool_set so the same parent
+    # graph shape works for any tool subset selection.
+    context_loader = make_context_loader_node(tool_set=tool_set)
+
+    # Top-level router: classifies every request into one of four buckets
+    # and writes state["route"]. Until Tier 2 subgraphs land, every route
+    # value dispatches to the existing freeform leaf — wiring only, no
+    # behaviour change for end users. The router uses the same LLM as the
+    # leaf (single-provider strategy per master Decision 4).
+    top_router = make_top_router_node(llm)
+
+    # Analysis subgraph: second-level router + analysis_freeform fallback leaf.
+    # Plugged in at the parent's "analysis" route destination. Inside the
+    # subgraph, an LLM sub-classifier writes state["analysis_route"] into one
+    # of 6 sub-buckets (qc, stats, dimred_cluster, viz, correlation,
+    # analysis_freeform); every value currently dispatches to analysis_freeform
+    # until Tier 3 sub-proposals land specialized leaves. The leaf sees only
+    # MCP tools — native scrna/cyl/generic stay in the top-level freeform.
+    analysis_subgraph = build_analysis_subgraph(
+        llm=llm,
+        mcp_tools=mcp_tools or [],
+        pre_model_hook=make_pre_model_hook(provider, llm=llm),
+    )
+
     builder = StateGraph(AgentState)
+    builder.add_node("context_loader", context_loader)
+    builder.add_node("top_router", top_router)
+    builder.add_node("analysis_subgraph", analysis_subgraph)
     builder.add_node("freeform", freeform)
-    builder.add_edge(START, "freeform")
+    builder.add_edge(START, "context_loader")
+    builder.add_edge("context_loader", "top_router")
+    builder.add_conditional_edges(
+        "top_router",
+        lambda state: state["route"],
+        {
+            "phenotyping": "freeform",
+            "scrna": "freeform",
+            "analysis": "analysis_subgraph",
+            "freeform": "freeform",
+        },
+    )
+    builder.add_edge("analysis_subgraph", END)
     builder.add_edge("freeform", END)
     return builder.compile(checkpointer=checkpointer)
