@@ -3,19 +3,31 @@ Bloom LangChain Agent - Uses PostgREST (Supabase) for data queries
 Supports multiple LLM providers: OpenAI, Local (vLLM)
 """
 import os
+import uuid
 from typing import Optional, Literal
 
 import httpx
-from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import trim_messages, SystemMessage, AIMessage, HumanMessage
+from langchain_core.messages import (
+    trim_messages,
+    SystemMessage,
+    AIMessage,
+    HumanMessage,
+    RemoveMessage,
+)
 from psycopg_pool import AsyncConnectionPool
 
 import logging
 from rich.logging import RichHandler
 from rich.traceback import install
 from db_url import compose_postgres_url
+from graph.analysis import build_analysis_subgraph
+from graph.context_loader import make_context_loader_node
+from graph.freeform import build_freeform_subgraph
+from graph.router import make_top_router_node
+from graph.state import AgentState
 from tools import all_tools, generic_tools, scrna_tools, cyl_tools, context_tools
 
 install()
@@ -80,16 +92,6 @@ async def setup_checkpointer() -> AsyncPostgresSaver:
 def _count_tokens(messages) -> int:
     """Approximate token count (~4 chars per token)."""
     return sum(len(str(m.content)) for m in messages) // 4
-
-
-def _has_context_call(messages) -> bool:
-    """Check if get_agent_context was already called in the conversation."""
-    for msg in messages:
-        if isinstance(msg, AIMessage) and msg.tool_calls:
-            for tc in msg.tool_calls:
-                if tc.get("name") == "get_agent_context":
-                    return True
-    return False
 
 
 SUMMARIZATION_PROMPT = """Summarize the following conversation between a user and an AI assistant on a plant biology platform.
@@ -172,12 +174,10 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
 
     async def pre_model_hook(state):
         messages = state["messages"]
-        # Safety net: remind to call get_agent_context on first turn
-        if len(messages) <= 2 and not _has_context_call(messages):
-                reminder = SystemMessage(
-                    content="Remember: call get_agent_context to learn about available data sources before answering."
-                )
-                messages = [messages[0], reminder] + messages[1:] if messages else [reminder]
+        # Reminder injection removed — `graph.context_loader.context_loader_node`
+        # injects the agent context deterministically as a SystemMessage at the
+        # start of every graph invocation, so the LLM no longer needs a hint to
+        # remember to call get_agent_context.
         total_tokens = _count_tokens(messages)
         if total_tokens > thresholds["summarize_at"]:
             # Find the split point: keep the last N tokens of messages
@@ -210,8 +210,152 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
                 allow_partial=False,
                 start_on="human",
             )
+        # Coerce every SystemMessage into a single merged block at index 0,
+        # ALWAYS led by SYSTEM_PROMPT. Same as PR #197 — required because
+        # vLLM with Qwen's chat template only allows ONE SystemMessage at
+        # index 0; any second SystemMessage (e.g., from context_loader plus
+        # create_react_agent's own prompt) triggers "System message must be
+        # at the beginning." We pass prompt=None to create_react_agent in
+        # build_freeform_subgraph and merge SystemMessages here instead.
+        system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
+        non_system_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
+        parts = [SYSTEM_PROMPT]
+        for m in system_msgs:
+            content = str(m.content) if m.content else ""
+            if content and content not in parts:
+                parts.append(content)
+        merged_content = "\n\n".join(parts)
+        messages = [SystemMessage(content=merged_content)] + non_system_msgs
         return {"llm_input_messages": messages}
     return pre_model_hook
+
+
+#################################################### Runtime Safety Net (Empty AIMessage Detection) ####################################################
+
+
+# Recovery question templates for the runtime safety net. The post_model_hook
+# uses these deterministic templates indexed by consecutive forced-clarification
+# count. Three rounds before bail. We do NOT call an LLM to generate recovery
+# text — recovery is the failure boundary; predictable text is more useful
+# than generated text.
+RECOVERY_QUESTIONS = (
+    "I'm not sure how to proceed with that question. Could you tell me more "
+    "about what you're looking for?",
+    "I'm still having trouble. Could you give me more specifics — like the "
+    "experiment name, trait name, or what kind of answer you're after?",
+    "I'm not making progress on this. Could you rephrase the question, or "
+    "break it into a smaller part?",
+)
+
+# Final terminal message after 3 forced clarifications without progress.
+# The graph terminates normally with this as a content-only AIMessage.
+FAILURE_MESSAGE = (
+    "I'm having trouble processing this request. Could you try rephrasing it, "
+    "or start a new conversation?"
+)
+
+# Bound on consecutive forced clarifications before the runtime gives up.
+# Tunable via env if the production data suggests a different value.
+MAX_FORCED_CLARIFICATIONS = int(os.getenv("MAX_FORCED_CLARIFICATIONS", "3"))
+
+# Tool-call id prefix used to mark forced asks. Walk-back logic distinguishes
+# forced asks (auto-emitted by the runtime) from LLM-driven asks (the LLM
+# explicitly chose to ask). Only forced asks count toward the bound.
+FORCED_ASK_ID_PREFIX = "forced-"
+
+
+def _count_consecutive_forced_asks(messages) -> int:
+    """Walk back through messages and count consecutive forced ask_user
+    tool_calls since the last non-forced AIMessage.
+
+    The chain breaks on:
+      - any AIMessage with content (a normal final answer)
+      - any AIMessage with tool_calls that are NOT all forced asks (the LLM
+        chose to call a real tool, indicating recovery)
+
+    The chain extends through forced-ask tool_calls and their corresponding
+    ToolMessage results (the user's reply) — we count one bump per AIMessage
+    that emitted a forced ask.
+
+    Returns the count of consecutive forced asks. Used to index
+    RECOVERY_QUESTIONS and to decide whether to bail.
+    """
+    count = 0
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage):
+            # Any normal AIMessage breaks the chain
+            if msg.content:
+                return count
+            if not msg.tool_calls:
+                # An empty AIMessage (the very one we're inspecting on the
+                # current turn) doesn't extend the chain by itself; we extend
+                # only when a forced ask was actually emitted.
+                continue
+            # Check if all tool_calls are forced (forced-* prefix)
+            ids = [str(tc.get("id", "")) for tc in msg.tool_calls]
+            all_forced = all(i.startswith(FORCED_ASK_ID_PREFIX) for i in ids)
+            if not all_forced:
+                # The LLM emitted a real tool_call → chain breaks
+                return count
+            count += 1
+        # HumanMessage / ToolMessage / SystemMessage are part of the chain
+        # only when they sit between forced-ask AIMessages; they don't bump
+        # the count themselves. Continue walking back.
+    return count
+
+
+def make_post_model_hook():
+    """Create a post-model hook that prevents silent termination.
+
+    Guarantees: no leaf or react agent can produce a terminal AIMessage
+    with empty content AND empty tool_calls. Every empty AIMessage gets
+    replaced with one of two things:
+      (a) a forced ask_user tool_call, if we haven't bailed yet, OR
+      (b) a final AIMessage with FAILURE_MESSAGE, if we've already forced
+          MAX_FORCED_CLARIFICATIONS consecutive asks.
+
+    Forced asks are marked with tool_call.id prefix "forced-N-<uuid>" so
+    the walk-back counter can distinguish them from LLM-driven asks. Only
+    forced asks count toward the bound.
+
+    The hook returns a partial state update with a RemoveMessage for the
+    empty AIMessage and the replacement message. The add_messages reducer
+    handles RemoveMessage by removing the matching id from state.
+    """
+    async def post_model_hook(state):
+        messages = state.get("messages") or []
+        if not messages:
+            return None
+        last = messages[-1]
+        if not isinstance(last, AIMessage):
+            return None
+        if last.content or last.tool_calls:
+            return None  # normal turn, leave alone
+
+        # Empty AIMessage detected — apply the safety net.
+        # Walk back over the message list to count consecutive forced asks
+        # already in the history (excluding the empty one we just produced).
+        forced_so_far = _count_consecutive_forced_asks(messages[:-1])
+
+        if forced_so_far >= MAX_FORCED_CLARIFICATIONS:
+            # Bound hit. Replace empty with a real failure message and let
+            # the graph terminate normally (no tool_calls = END).
+            replacement = AIMessage(content=FAILURE_MESSAGE)
+        else:
+            # Force a clarification with the next-indexed recovery question.
+            question = RECOVERY_QUESTIONS[forced_so_far]
+            forced_id = f"{FORCED_ASK_ID_PREFIX}{forced_so_far + 1}-{uuid.uuid4().hex[:8]}"
+            replacement = AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": "ask_user",
+                    "args": {"question": question},
+                    "id": forced_id,
+                }],
+            )
+        return {"messages": [RemoveMessage(id=last.id), replacement]}
+
+    return post_model_hook
 
 
 #################################################### LLM Setup ####################################################
@@ -302,7 +446,36 @@ def get_llm(
 
 SYSTEM_PROMPT = """You are a helpful assistant for the Bloom plant phenotyping platform.
 You have READ-ONLY access. You cannot create, update, or delete data.
-Call get_agent_context at the start of a conversation to learn about available data sources and schema."""
+Call get_agent_context at the start of a conversation to learn about available data sources and schema.
+
+# Handling uncertainty
+
+When the user references something by everyday name (a trait, an
+experiment, an accession, a species), and the schema-side identifier is
+ambiguous or unknown, FIRST call the corresponding discovery tool to
+translate or disambiguate:
+  - For traits, call list_traits_tool to see schema names like
+    'primary_length' before using them in compare_waves_trait_tool or
+    similar.
+  - For experiments, call list_experiments_tool when the user names an
+    experiment and you don't know its id.
+  - For species, call list_species_tool similarly.
+
+Only after discovery has been attempted and ambiguity remains
+unresolvable should you call ask_user. Discovery first, ask second.
+
+# No silent termination
+
+NEVER respond with empty content. If you cannot answer a question — for
+any reason — call the ask_user tool with a specific, focused question
+explaining what you need. The user prefers a visible follow-up question
+to a blank reply.
+
+If you've already asked for clarification 1-2 times without progress, the
+runtime will surface a graceful failure message — but you should not rely
+on that fallback. Make every clarification question count: be specific,
+list the options you found via discovery, and ask the smallest possible
+follow-up that lets you proceed."""
 
 
 def create_agent(
@@ -342,10 +515,73 @@ def create_agent(
     if mcp_tools:
         tools = tools + mcp_tools
 
-    return create_react_agent(
-        model=llm,
+    # Tier 0 of the upgrade-agent-architecture roadmap: replace the opaque
+    # `create_react_agent` return with an explicit StateGraph so every
+    # subsequent tier (top router, domain subgraphs, analysis router, MCP
+    # leaves, parallel recipes) has a real graph to attach nodes to.
+    #
+    # The freeform leaf wraps the prebuilt ReAct agent — same prompt, same
+    # tools, same pre-model hook PLUS the post_model_hook from PR #208 which
+    # detects empty AIMessages and forces an ask_user clarification (bounded
+    # to MAX_FORCED_CLARIFICATIONS retries before a graceful failure). The
+    # checkpointer lives on the OUTER graph; the inner subgraph stays
+    # checkpointer=None so the parent's `messages` reducer is the single
+    # source of truth for thread state.
+    freeform = build_freeform_subgraph(
+        llm=llm,
         tools=tools,
-        prompt=SYSTEM_PROMPT,
-        checkpointer=checkpointer,
+        system_prompt=SYSTEM_PROMPT,
         pre_model_hook=make_pre_model_hook(provider, llm=llm),
+        post_model_hook=make_post_model_hook(),
+        checkpointer=None,
     )
+
+    # Deterministic context-loader runs before the ReAct loop on every
+    # invocation. Replaces the prior reminder-injection branch in
+    # make_pre_model_hook — the LLM no longer needs to be told to call
+    # get_agent_context because the context is already in state.messages
+    # by the time freeform runs. Closure over tool_set so the same parent
+    # graph shape works for any tool subset selection.
+    context_loader = make_context_loader_node(tool_set=tool_set)
+
+    # Top-level router: classifies every request into one of four buckets
+    # and writes state["route"]. Until Tier 2 subgraphs land, every route
+    # value dispatches to the existing freeform leaf — wiring only, no
+    # behaviour change for end users. The router uses the same LLM as the
+    # leaf (single-provider strategy per master Decision 4).
+    top_router = make_top_router_node(llm)
+
+    # Analysis subgraph: second-level router + analysis_freeform fallback leaf.
+    # Plugged in at the parent's "analysis" route destination. Inside the
+    # subgraph, an LLM sub-classifier writes state["analysis_route"] into one
+    # of 6 sub-buckets (qc, stats, dimred_cluster, viz, correlation,
+    # analysis_freeform); every value currently dispatches to analysis_freeform
+    # until Tier 3 sub-proposals land specialized leaves. The leaf sees only
+    # MCP tools — native scrna/cyl/generic stay in the top-level freeform.
+    analysis_subgraph = build_analysis_subgraph(
+        llm=llm,
+        mcp_tools=mcp_tools or [],
+        pre_model_hook=make_pre_model_hook(provider, llm=llm),
+        post_model_hook=make_post_model_hook(),
+    )
+
+    builder = StateGraph(AgentState)
+    builder.add_node("context_loader", context_loader)
+    builder.add_node("top_router", top_router)
+    builder.add_node("analysis_subgraph", analysis_subgraph)
+    builder.add_node("freeform", freeform)
+    builder.add_edge(START, "context_loader")
+    builder.add_edge("context_loader", "top_router")
+    builder.add_conditional_edges(
+        "top_router",
+        lambda state: state["route"],
+        {
+            "phenotyping": "freeform",
+            "scrna": "freeform",
+            "analysis": "analysis_subgraph",
+            "freeform": "freeform",
+        },
+    )
+    builder.add_edge("analysis_subgraph", END)
+    builder.add_edge("freeform", END)
+    return builder.compile(checkpointer=checkpointer)

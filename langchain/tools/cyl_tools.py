@@ -14,7 +14,7 @@ def list_experiments_tool(limit: int = 50) -> list:
         f"{REST_URL}/cyl_experiments",
         headers=get_headers(),
         params={
-            "select": "id,name,created_at,slack_channel,species(id,common_name),people(id,name)",
+            "select": "id,name,created_at,species(id,common_name),people(id,name)",
             "limit": limit
         }
     )
@@ -31,7 +31,7 @@ def get_experiment_by_id_tool(experiment_id: int) -> dict:
         headers=get_headers(),
         params={
             "id": f"eq.{experiment_id}",
-            "select": "id,name,created_at,slack_channel,species(id,common_name,genus,species),people(id,name,email)"
+            "select": "id,name,created_at,species(id,common_name,genus,species),people(id,name,email)"
         }
     )
     if response.status_code != 200:
