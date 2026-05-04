@@ -25,6 +25,8 @@ ALWAYS_INCLUDE_MCP_TOOLS = {
 
 VALID_TOOL_SETS = ["all", "scrna", "cyl", "generic"]
 
+ROUTER_NODES_INTERNAL = frozenset({"top_router", "analysis_router"})
+
 
 # ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -215,6 +217,9 @@ async def chat_stream(
                     yield f"data: {json.dumps({'type': 'tool_done', 'content': tool_name})}\n\n"
 
                 elif kind == "on_chat_model_stream":
+                    node = event.get("metadata", {}).get("langgraph_node", "")
+                    if node in ROUTER_NODES_INTERNAL:
+                        continue
                     chunk = event.get("data", {}).get("chunk")
                     if chunk and isinstance(getattr(chunk, "content", None), str) and chunk.content:
                         yield f"data: {json.dumps({'type': 'token', 'content': chunk.content})}\n\n"
@@ -311,6 +316,9 @@ async def chat_resume(
                     yield f"data: {json.dumps({'type': 'tool_done', 'content': tool_name})}\n\n"
 
                 elif kind == "on_chat_model_stream":
+                    node = event.get("metadata", {}).get("langgraph_node", "")
+                    if node in ROUTER_NODES_INTERNAL:
+                        continue
                     chunk = event.get("data", {}).get("chunk")
                     if chunk and isinstance(getattr(chunk, "content", None), str) and chunk.content:
                         yield f"data: {json.dumps({'type': 'token', 'content': chunk.content})}\n\n"
