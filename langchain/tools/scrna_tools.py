@@ -111,7 +111,7 @@ def get_clusters_by_dataset_tool(dataset_id: int) -> list | str:
                 "name": c.get("name"),
                 "color": c.get("color"),
                 "ordinal": c.get("ordinal"),
-                "cell_count": counts.get(c["cluster_id"]),
+                "cell_count": counts.get(c["cluster_id"]),  # null until scrna_cluster_stats backfill lands
             }
             for c in clusters
         ]
