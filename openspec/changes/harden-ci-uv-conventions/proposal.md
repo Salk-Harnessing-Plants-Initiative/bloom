@@ -13,9 +13,10 @@ This change closes the gap by adding an automated regression-guard test, fixing 
 ## What Changes
 
 - **ADD** a unit test (`tests/unit/test_ci_workflow_uv_conventions.py`) that parses every `.github/workflows/*.yml` and `*.yaml` file using PyYAML and asserts three invariants:
-  - No `run:` step (anywhere) installs uv via pip (`pip install uv`, with any flags or prefixes — but not packages whose names start with `uv-`).
-  - No job that uses uv (any step `uses: astral-sh/setup-uv@...` OR a `run:` command whose first token is `uv`) also contains an `actions/setup-python@` step.
-  - Any `run:` block that contains BOTH `uv run` AND `pytest` MUST use `--extra test` and MUST NOT pass `--with` (which would bring in pytest or other test deps outside the locked test environment).
+  - No `run:` step (anywhere) installs uv via pip — i.e. `pip install` (or `pip3 install`, or `python -m pip install`) MUST NOT have `uv` as a package argument. Packages whose names start with `uv-` (e.g. `uv-helper`) are NOT flagged.
+  - No job that uses uv (any step `uses: astral-sh/setup-uv@...` OR a `run:` command containing `uv` as the first token of any pipeline segment, including after `&&`/`;`/`|`) also contains an `actions/setup-python@` step.
+  - Any `run:` block that contains BOTH `uv run` AND `pytest` MUST use `--extra test` and MUST NOT pass `--with` (which would bring in pytest or other test deps outside the project's declared test extra).
+  - Backslash line-continuations (`\` at end of line) are joined into logical lines before scanning, so a regression that splits a forbidden command across two physical lines does not slip through.
 - **EXTEND** the `python-dependency-management` spec with two new ADDED requirements (no MODIFIED, so the delta composes cleanly with PR #160 regardless of merge order):
   - "CI workflow uv conventions SHALL be enforced by an automated test"
   - "Test dependencies in CI SHALL come from the root pyproject.toml test extra"
