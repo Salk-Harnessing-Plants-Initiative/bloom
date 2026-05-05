@@ -10,12 +10,20 @@ const DEFAULT_STORAGE_URL = "http://localhost:9100";
 const STORAGE_BUCKET = "scrna";
 const GENE_SEARCH_DEFAULT_LIMIT = 20;
 
-/** Row returned by the `scrna_cell_arrays` RPC. */
+/** Row returned by the `scrna_cell_arrays` RPC.
+ *
+ * `cluster_ordinal === 255` is the orphan sentinel: the cell's `cluster_id`
+ * does not appear in `scrna_clusters` for this dataset. Real clusters are
+ * 0..254 (CHECK constraint on `scrna_clusters.ordinal`).
+ */
 export interface CellArraysRow {
   x: number;
   y: number;
   cluster_ordinal: number;
 }
+
+/** Cluster ordinal returned by the RPC for cells with no matching catalog row. */
+export const ORPHAN_CLUSTER_ORDINAL = 255;
 
 /** Storage base URL for `.bin` fetches, from NEXT_PUBLIC_STORAGE_URL. */
 function getStorageBaseUrl(): string {

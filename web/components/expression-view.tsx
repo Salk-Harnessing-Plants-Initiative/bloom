@@ -26,6 +26,8 @@ interface LoadedMeta {
   dataset: Dataset;
   clusters: Cluster[];
   cellCount: number;
+  /** Cells whose `cluster_id` had no row in `scrna_clusters` (sentinel ordinal 255). */
+  orphanCount: number;
   /** from scrna_cluster_stats.cell_count, keyed by ordinal */
   counts: Record<number, number>;
 }
@@ -73,11 +75,17 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   }, [datasetId]);
 
   const handleDataLoaded = useCallback(
-    (ctx: { dataset: Dataset; clusters: Cluster[]; cellCount: number }) => {
+    (ctx: {
+      dataset: Dataset;
+      clusters: Cluster[];
+      cellCount: number;
+      orphanCount: number;
+    }) => {
       setMeta((prev) => ({
         dataset: ctx.dataset,
         clusters: ctx.clusters,
         cellCount: ctx.cellCount,
+        orphanCount: ctx.orphanCount,
         counts: prev?.counts ?? {},
       }));
     },
@@ -183,6 +191,20 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
             );
           })()}
         </Box>
+
+        {/* orphan-cell warning */}
+        {meta && meta.orphanCount > 0 && (
+          <span
+            className="inline-flex items-center gap-2 self-start rounded-full border border-amber-200 bg-amber-50/70 px-3 py-1 text-xs text-amber-900"
+            role="status"
+          >
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500" />
+            {meta.orphanCount.toLocaleString()} cell
+            {meta.orphanCount === 1 ? "" : "s"} (
+            {((meta.orphanCount / meta.cellCount) * 100).toFixed(1)}%) have no
+            cluster assignment — shown in gray
+          </span>
+        )}
 
         {/* canvas */}
         <ExpressionUmap

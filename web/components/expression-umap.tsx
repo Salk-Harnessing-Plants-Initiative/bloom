@@ -8,6 +8,7 @@ import {
   fetchClusters,
   fetchDataset,
   fetchGeneBin,
+  ORPHAN_CLUSTER_ORDINAL,
   type CellArraysRow,
 } from "@/components/expression-lib/scrna-client";
 import {
@@ -24,6 +25,8 @@ type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
 const DEFAULT_POINT_SIZE = 4.0;
 const NORMALIZE_PADDING = 1.05; // give a small border around the UMAP bbox
 
+const ORPHAN_GRAY: [number, number, number] = [0.6, 0.6, 0.6];
+
 export interface ExpressionUmapProps {
   datasetId: number;
   /** Currently-selected gene for expression overlay; null = color by cluster */
@@ -37,6 +40,8 @@ export interface ExpressionUmapProps {
     dataset: Dataset;
     clusters: Cluster[];
     cellCount: number;
+    /** Cells whose `cluster_id` had no row in `scrna_clusters` (sentinel ordinal 255). */
+    orphanCount: number;
   }) => void;
   /** Fires whenever the currently-overlaid gene's min/max changes */
   onExpressionRangeChanged?: (range: { min: number; max: number } | null) => void;
@@ -74,7 +79,11 @@ function packClusterColors(
   }
   const out = new Float32Array(cells.length * 4);
   for (let i = 0; i < cells.length; i++) {
-    const rgb = paletteRgb.get(cells[i].cluster_ordinal) ?? [0.5, 0.5, 0.5];
+    const ord = cells[i].cluster_ordinal;
+    const rgb =
+      ord === ORPHAN_CLUSTER_ORDINAL
+        ? ORPHAN_GRAY
+        : paletteRgb.get(ord) ?? ORPHAN_GRAY;
     out[i * 4] = rgb[0];
     out[i * 4 + 1] = rgb[1];
     out[i * 4 + 2] = rgb[2];
@@ -192,8 +201,10 @@ export function ExpressionUmap({
         const visibility = new Float32Array(cells.length);
         visibility.fill(1.0);
         const clusterOrdinals = new Uint8Array(cells.length);
+        let orphanCount = 0;
         for (let i = 0; i < cells.length; i++) {
           clusterOrdinals[i] = cells[i].cluster_ordinal;
+          if (cells[i].cluster_ordinal === ORPHAN_CLUSTER_ORDINAL) orphanCount++;
         }
         const loaded: LoadedData = {
           dataset,
@@ -208,7 +219,12 @@ export function ExpressionUmap({
           normCenterY,
         };
         setData(loaded);
-        onDataLoaded?.({ dataset, clusters, cellCount: cells.length });
+        onDataLoaded?.({
+          dataset,
+          clusters,
+          cellCount: cells.length,
+          orphanCount,
+        });
       } catch (err) {
         if (!cancelled) {
           setLoadError(err instanceof Error ? err.message : String(err));
