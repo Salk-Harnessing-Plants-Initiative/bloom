@@ -11,6 +11,11 @@ requires-python = ">=3.11"
 test = [
     "pytest>=8.3,<9",
     "psycopg[binary]==3.3.3",
+    # required by tests/integration/* — they sys.path-import langchain agent
+    # and bloommcp modules and need these resolvable at collection time.
+    "langchain-core>=0.3.0",
+    "langgraph>=0.2.0",
+    "pydantic>=2.0.0",
 ]
 
 [tool.pytest.ini_options]
