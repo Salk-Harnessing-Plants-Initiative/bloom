@@ -93,15 +93,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: Run env-defaults unit tests
-        run: |
-          pip install uv
-          uv run --with pytest pytest tests/unit/test_env_defaults.py -v --tb=short
+        run: uv run --extra test pytest tests/unit/test_env_defaults.py -v --tb=short
 
   # Scans Python dependencies for known CVEs via lockfile export
   python-audit:
