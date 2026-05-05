@@ -3,13 +3,20 @@ Bloom LangChain Agent - Uses PostgREST (Supabase) for data queries
 Supports multiple LLM providers: OpenAI, Local (vLLM)
 """
 import os
+import uuid
 from typing import Optional, Literal
 
 import httpx
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import trim_messages, SystemMessage, AIMessage, HumanMessage
+from langchain_core.messages import (
+    trim_messages,
+    SystemMessage,
+    AIMessage,
+    HumanMessage,
+    RemoveMessage,
+)
 from psycopg_pool import AsyncConnectionPool
 
 import logging
@@ -214,6 +221,134 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
     return pre_model_hook
 
 
+#################################################### Runtime Safety Net (Empty AIMessage Detection) ####################################################
+
+
+# Recovery question templates for the runtime safety net. The post_model_hook
+# uses these deterministic templates indexed by consecutive forced-clarification
+# count. Three rounds before bail. We do NOT call an LLM to generate recovery
+# text — recovery is the failure boundary; predictable text is more useful
+# than generated text.
+RECOVERY_QUESTIONS = (
+    "I'm not sure how to proceed with that question. Could you tell me more "
+    "about what you're looking for?",
+    "I'm still having trouble. Could you give me more specifics — like the "
+    "experiment name, trait name, or what kind of answer you're after?",
+    "I'm not making progress on this. Could you rephrase the question, or "
+    "break it into a smaller part?",
+)
+
+# Final terminal message after 3 forced clarifications without progress.
+# The graph terminates normally with this as a content-only AIMessage.
+FAILURE_MESSAGE = (
+    "I'm having trouble processing this request. Could you try rephrasing it, "
+    "or start a new conversation?"
+)
+
+# Bound on consecutive forced clarifications before the runtime gives up.
+# Tunable via env if the production data suggests a different value.
+MAX_FORCED_CLARIFICATIONS = int(os.getenv("MAX_FORCED_CLARIFICATIONS", "3"))
+
+# Tool-call id prefix used to mark forced asks. Walk-back logic distinguishes
+# forced asks (auto-emitted by the runtime) from LLM-driven asks (the LLM
+# explicitly chose to ask). Only forced asks count toward the bound.
+FORCED_ASK_ID_PREFIX = "forced-"
+
+
+def _count_consecutive_forced_asks(messages) -> int:
+    """Walk back through messages and count consecutive forced ask_user
+    tool_calls since the last non-forced AIMessage.
+
+    The chain breaks on:
+      - any AIMessage with content (a normal final answer)
+      - any AIMessage with tool_calls that are NOT all forced asks (the LLM
+        chose to call a real tool, indicating recovery)
+
+    The chain extends through forced-ask tool_calls and their corresponding
+    ToolMessage results (the user's reply) — we count one bump per AIMessage
+    that emitted a forced ask.
+
+    Returns the count of consecutive forced asks. Used to index
+    RECOVERY_QUESTIONS and to decide whether to bail.
+    """
+    count = 0
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage):
+            # Any normal AIMessage breaks the chain
+            if msg.content:
+                return count
+            if not msg.tool_calls:
+                # An empty AIMessage (the very one we're inspecting on the
+                # current turn) doesn't extend the chain by itself; we extend
+                # only when a forced ask was actually emitted.
+                continue
+            # Check if all tool_calls are forced (forced-* prefix)
+            ids = [str(tc.get("id", "")) for tc in msg.tool_calls]
+            all_forced = all(i.startswith(FORCED_ASK_ID_PREFIX) for i in ids)
+            if not all_forced:
+                # The LLM emitted a real tool_call → chain breaks
+                return count
+            count += 1
+        # HumanMessage / ToolMessage / SystemMessage are part of the chain
+        # only when they sit between forced-ask AIMessages; they don't bump
+        # the count themselves. Continue walking back.
+    return count
+
+
+def make_post_model_hook():
+    """Create a post-model hook that prevents silent termination.
+
+    Guarantees: no leaf or react agent can produce a terminal AIMessage
+    with empty content AND empty tool_calls. Every empty AIMessage gets
+    replaced with one of two things:
+      (a) a forced ask_user tool_call, if we haven't bailed yet, OR
+      (b) a final AIMessage with FAILURE_MESSAGE, if we've already forced
+          MAX_FORCED_CLARIFICATIONS consecutive asks.
+
+    Forced asks are marked with tool_call.id prefix "forced-N-<uuid>" so
+    the walk-back counter can distinguish them from LLM-driven asks. Only
+    forced asks count toward the bound.
+
+    The hook returns a partial state update with a RemoveMessage for the
+    empty AIMessage and the replacement message. The add_messages reducer
+    handles RemoveMessage by removing the matching id from state.
+    """
+    async def post_model_hook(state):
+        messages = state.get("messages") or []
+        if not messages:
+            return None
+        last = messages[-1]
+        if not isinstance(last, AIMessage):
+            return None
+        if last.content or last.tool_calls:
+            return None  # normal turn, leave alone
+
+        # Empty AIMessage detected — apply the safety net.
+        # Walk back over the message list to count consecutive forced asks
+        # already in the history (excluding the empty one we just produced).
+        forced_so_far = _count_consecutive_forced_asks(messages[:-1])
+
+        if forced_so_far >= MAX_FORCED_CLARIFICATIONS:
+            # Bound hit. Replace empty with a real failure message and let
+            # the graph terminate normally (no tool_calls = END).
+            replacement = AIMessage(content=FAILURE_MESSAGE)
+        else:
+            # Force a clarification with the next-indexed recovery question.
+            question = RECOVERY_QUESTIONS[forced_so_far]
+            forced_id = f"{FORCED_ASK_ID_PREFIX}{forced_so_far + 1}-{uuid.uuid4().hex[:8]}"
+            replacement = AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": "ask_user",
+                    "args": {"question": question},
+                    "id": forced_id,
+                }],
+            )
+        return {"messages": [RemoveMessage(id=last.id), replacement]}
+
+    return post_model_hook
+
+
 #################################################### LLM Setup ####################################################
 
 
@@ -302,7 +437,36 @@ def get_llm(
 
 SYSTEM_PROMPT = """You are a helpful assistant for the Bloom plant phenotyping platform.
 You have READ-ONLY access. You cannot create, update, or delete data.
-Call get_agent_context at the start of a conversation to learn about available data sources and schema."""
+Call get_agent_context at the start of a conversation to learn about available data sources and schema.
+
+# Handling uncertainty
+
+When the user references something by everyday name (a trait, an
+experiment, an accession, a species), and the schema-side identifier is
+ambiguous or unknown, FIRST call the corresponding discovery tool to
+translate or disambiguate:
+  - For traits, call list_traits_tool to see schema names like
+    'primary_length' before using them in compare_waves_trait_tool or
+    similar.
+  - For experiments, call list_experiments_tool when the user names an
+    experiment and you don't know its id.
+  - For species, call list_species_tool similarly.
+
+Only after discovery has been attempted and ambiguity remains
+unresolvable should you call ask_user. Discovery first, ask second.
+
+# No silent termination
+
+NEVER respond with empty content. If you cannot answer a question — for
+any reason — call the ask_user tool with a specific, focused question
+explaining what you need. The user prefers a visible follow-up question
+to a blank reply.
+
+If you've already asked for clarification 1-2 times without progress, the
+runtime will surface a graceful failure message — but you should not rely
+on that fallback. Make every clarification question count: be specific,
+list the options you found via discovery, and ask the smallest possible
+follow-up that lets you proceed."""
 
 
 def create_agent(
@@ -342,10 +506,17 @@ def create_agent(
     if mcp_tools:
         tools = tools + mcp_tools
 
+    # post_model_hook is the runtime safety net: any AIMessage with empty
+    # content AND empty tool_calls gets replaced with a forced ask_user
+    # tool_call (or, after MAX_FORCED_CLARIFICATIONS consecutive forced asks,
+    # a graceful failure AIMessage). Combined with the SYSTEM_PROMPT rules
+    # (discover-then-ask, no-silent-termination), this guarantees the loop
+    # never terminates with empty content escaping back to the user.
     return create_react_agent(
         model=llm,
         tools=tools,
         prompt=SYSTEM_PROMPT,
         checkpointer=checkpointer,
         pre_model_hook=make_pre_model_hook(provider, llm=llm),
+        post_model_hook=make_post_model_hook(),
     )
