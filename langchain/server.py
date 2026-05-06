@@ -200,13 +200,13 @@ async def clear_thread(thread_id: str, user_id: str = Depends(deps.get_current_u
 # ─── Meta + health ────────────────────────────────────────────────────────────
 
 @app.get("/langchain/models", response_model=ModelsResponse)
-async def get_models():
+async def get_models(user_id: str = Depends(deps.get_current_user)):
     """Get available models for each provider."""
     return ModelsResponse(models=AVAILABLE_MODELS)
 
 
 @app.get("/langchain/mcp-tools")
-async def get_mcp_tools():
+async def get_mcp_tools(user_id: str = Depends(deps.get_current_user)):
     """List connected MCP tools with their names and descriptions."""
     return {
         "tools": [
