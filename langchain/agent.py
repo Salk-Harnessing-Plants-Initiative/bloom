@@ -10,6 +10,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import trim_messages, SystemMessage, AIMessage, HumanMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from psycopg_pool import AsyncConnectionPool
 
 import logging
@@ -81,11 +82,6 @@ async def setup_checkpointer() -> AsyncPostgresSaver:
 #################################################### Context Management ####################################################
 
 
-def _count_tokens(messages) -> int:
-    """Approximate token count (~4 chars per token)."""
-    return sum(len(str(m.content)) for m in messages) // 4
-
-
 SUMMARIZATION_PROMPT = """Summarize the following conversation between a user and an AI assistant on a plant biology platform.
 
 RULES:
@@ -146,14 +142,17 @@ async def _llm_summarize(messages: list, llm) -> str:
         return _extract_summary(messages)
 
 
-# Token thresholds by provider
+# Token thresholds by provider. Local "summarize_at" / "keep_recent" target
+# 70% / 35% of Spark Qwen3.5-9B's 262K window — leaves ~62K headroom at the
+# threshold for reasoning, tool calls, and the final answer; ~152K free
+# after summarization fires. OpenAI ratio is the same shape against GPT-4o's 128K.
 TOKEN_THRESHOLDS = {
-    "local": {"summarize_at": 6000, "keep_recent": 4000},
+    "local": {"summarize_at": 180000, "keep_recent": 90000},
     "openai": {"summarize_at": 100000, "keep_recent": 50000},
 }
 
 
-def make_pre_model_hook(provider: str = "openai", llm=None):
+def make_pre_model_hook(provider: str = "openai", llm=None, tools=None):
     """Create a pre-model hook with LLM summarization and context injection.
 
     Returns an async function that:
@@ -170,14 +169,13 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
         # injects the agent context deterministically as a SystemMessage at the
         # start of every graph invocation, so the LLM no longer needs a hint to
         # remember to call get_agent_context.
-        total_tokens = _count_tokens(messages)
+        total_tokens = count_tokens_approximately(messages, tools=tools)
         if total_tokens > thresholds["summarize_at"]:
-            # Find the split point: keep the last N tokens of messages
             keep_tokens = thresholds["keep_recent"]
             recent = []
             running = 0
             for msg in reversed(messages):
-                msg_tokens = len(str(msg.content)) // 4
+                msg_tokens = count_tokens_approximately([msg])
                 if running + msg_tokens > keep_tokens:
                     break
                 recent.insert(0, msg)
@@ -192,12 +190,11 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
                 summary_msg = SystemMessage(content=summary_text)
                 messages = [summary_msg] + recent
         else:
-            # Simple trim as fallback
             messages = trim_messages(
                 messages,
                 strategy="last",
                 max_tokens=thresholds["summarize_at"],
-                token_counter=lambda msgs: sum(len(str(m.content)) for m in msgs) // 4,
+                token_counter=count_tokens_approximately,
                 include_system=True,
                 allow_partial=False,
                 start_on="human",
@@ -378,7 +375,7 @@ def create_agent(
         llm=llm,
         tools=tools,
         system_prompt=None,
-        pre_model_hook=make_pre_model_hook(provider, llm=llm),
+        pre_model_hook=make_pre_model_hook(provider, llm=llm, tools=tools),
         checkpointer=None,
     )
 
