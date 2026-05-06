@@ -37,6 +37,15 @@
 		reverse_proxy kong:{$KONG_PORT}
 	}
 
+	# LangChain agent — preserve /langchain prefix (FastAPI routes are
+	# defined as /langchain/chat, /langchain/chat/stream, etc).
+	# flush_interval -1 forwards SSE chunks immediately without buffering.
+	handle /langchain/* {
+		reverse_proxy langchain-agent:5002 {
+			flush_interval -1
+		}
+	}
+
 	# Bloom Frontend
 	handle {
 		reverse_proxy bloom-web:{$BLOOM_WEB_PORT}

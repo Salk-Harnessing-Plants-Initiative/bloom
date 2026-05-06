@@ -160,12 +160,15 @@ export default function MCPChat() {
   const [AVAILABLE_MODELS, setAvailableModels] = useState<Record<string, string[]>>(AVAILABLE_MODELS_DEFAULT);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/langchain/models`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data) => {
+    (async () => {
+      try {
+        const token = await getAuthToken();
+        if (!token) return;
+        const r = await fetch(`${API_BASE_URL}/langchain/models`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!r.ok) return;
+        const data = await r.json();
         if (!data.models) return;
         setAvailableModels(data.models);
         // Reconcile saved model against what the backend is actually serving.
@@ -179,8 +182,8 @@ export default function MCPChat() {
           saveSettings(fixed);
           return fixed;
         });
-      })
-      .catch(() => {});
+      } catch {}
+    })();
   }, []);
 
   // LLM Settings
@@ -222,17 +225,31 @@ export default function MCPChat() {
     if (savedMessages.length > 0) setMessages(savedMessages);
 
     // Fetch available MCP tools from backend
-    fetch(`${API_BASE_URL}/langchain/mcp-tools`)
-      .then((r) => r.json())
-      .then((data) => {
+    (async () => {
+      try {
+        const token = await getAuthToken();
+        if (!token) {
+          setAvailableMcpTools([]);
+          return;
+        }
+        const r = await fetch(`${API_BASE_URL}/langchain/mcp-tools`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!r.ok) {
+          setAvailableMcpTools([]);
+          return;
+        }
+        const data = await r.json();
         const HIDDEN_TOOLS = new Set([
           "list_available_experiments",
           "load_experiment_data",
           "inspect_data_quality",
         ]);
         setAvailableMcpTools((data.tools || []).filter((t: MCPTool) => !HIDDEN_TOOLS.has(t.name)));
-      })
-      .catch(() => setAvailableMcpTools([]));
+      } catch {
+        setAvailableMcpTools([]);
+      }
+    })();
 
     // Fetch thread history
     fetchThreads();
