@@ -11,12 +11,12 @@ Guide for debugging CI failures in Bloom (Next.js + FastAPI/LangGraph + FastMCP 
 
 ## CI Pipeline Overview
 
-### PR Checks (`pr-checks.yml`) — runs on PRs to `main`
+### PR Checks (`pr-checks.yml`) — runs on PRs to `main` and `staging`
 
 | Job | Purpose | Key Commands |
 |---|---|---|
 | `build-and-audit` | npm CVE audit, TypeScript check, Next.js build | `npm ci`, `npm audit --audit-level=critical`, `npx tsc --noEmit`, `npm run build` |
-| `python-audit` | Python CVE scanning | `uv export --frozen --no-hashes` piped to `uvx pip-audit` per service |
+| `python-audit` | Python CVE scanning | `uv export --frozen --no-hashes` piped to `uvx pip-audit@2.10.0` per service (pinned per the `python-dependency-management` spec) |
 | `docker-build` | Build + Trivy scan Docker images | Build `bloom-web`, `langchain-agent`, `bloommcp`; Trivy CRITICAL gate |
 | `compose-health-check` | Full stack integration tests | Start prod compose, wait 180s for health, `uv run --with pytest pytest tests/integration/` |
 | `extract-pinned-images` | Extract pinned images for matrix scan | Grep `image:` from compose |
@@ -97,9 +97,9 @@ cd web && npx tsc --noEmit && npm run build
 **Debug locally:**
 
 ```bash
-cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 ```
 
 **Common failures:**
@@ -274,9 +274,9 @@ export CI=true
 npm ci && npm audit --audit-level=critical && cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Phase 2: python-audit
-cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
 # Phase 3: docker-build
 docker compose -f docker-compose.prod.yml build

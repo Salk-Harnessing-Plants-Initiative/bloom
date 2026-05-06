@@ -35,9 +35,9 @@ cd web && npx tsc --noEmit && npm run build
 Matches the `python-audit` job:
 
 ```bash
-cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 ```
 
 ## Docker Build (~5-10 min)
@@ -108,9 +108,9 @@ npm audit --audit-level=critical
 cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Phase 2: python-audit
-cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
 # Phase 3: docker-build
 docker compose -f docker-compose.prod.yml build

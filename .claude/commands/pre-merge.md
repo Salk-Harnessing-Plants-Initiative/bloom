@@ -29,7 +29,7 @@ cd web && npx tsc --noEmit && npm run build && cd ..
 
 ## Step 2: Python Audit (matches `python-audit` job)
 
-Audits each service's full transitive dependency tree via its lockfile. A temp file is used for local runs because `/dev/stdin` is not portable on Windows/MSYS; CI runs `| uvx pip-audit -r /dev/stdin` directly because it's on Linux.
+Audits each service's full transitive dependency tree via its lockfile. A temp file is used for local runs because `/dev/stdin` is not portable on Windows/MSYS; CI runs `| uvx pip-audit@2.10.0 -r /dev/stdin` directly because it's on Linux. The `@2.10.0` pin is required by the `python-dependency-management` spec ("CI security-scanning tools SHALL be pinned to specific versions") so local runs don't drift from CI behavior.
 
 ```bash
 # Subshell + EXIT trap so /tmp/reqs.txt is cleaned up on both success and
@@ -39,7 +39,7 @@ Audits each service's full transitive dependency tree via its lockfile. A temp f
   trap "rm -f /tmp/reqs.txt" EXIT
   for svc in langchain bloommcp services/video-worker; do
     echo "=== Auditing $svc ==="
-    (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit -r /tmp/reqs.txt) || exit 1
+    (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit@2.10.0 -r /tmp/reqs.txt) || exit 1
   done
 )
 ```
@@ -117,11 +117,14 @@ cd ../bloommcp && uv run black --check . && uv run ruff check .
 
 ## Step 9: Final Verification
 
-```bash
-git fetch origin main
-git merge-base --is-ancestor origin/main HEAD && echo "Up to date" || echo "Needs rebase"
+This repo is staging-first — most PRs target `staging`, except for consolidation rollups (e.g. `staging → main`) which target `main`. Detect the actual base branch from the PR rather than hard-coding it, so the rebase check matches what GitHub will compare against:
 
+```bash
 unset GITHUB_TOKEN
+BASE=$(gh pr view <PR_NUMBER> --json baseRefName -q .baseRefName)
+git fetch origin "$BASE"
+git merge-base --is-ancestor "origin/$BASE" HEAD && echo "Up to date with origin/$BASE" || echo "Needs rebase against origin/$BASE"
+
 gh pr checks <PR_NUMBER>
 ```
 
@@ -133,12 +136,13 @@ For small changes, the minimum checks:
 # TypeScript (if web/ touched)
 cd web && npx tsc --noEmit && npm run build && cd ..
 
-# Python audit (if any pyproject.toml/uv.lock touched)
+# Python audit (if any pyproject.toml/uv.lock touched). pip-audit pinned to match
+# CI per the python-dependency-management spec.
 # Subshell + EXIT trap so /tmp/reqs.txt is cleaned up on success AND failure.
 (
   trap "rm -f /tmp/reqs.txt" EXIT
   for svc in langchain bloommcp services/video-worker; do
-    (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit -r /tmp/reqs.txt) || exit 1
+    (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit@2.10.0 -r /tmp/reqs.txt) || exit 1
   done
 )
 ```
@@ -148,7 +152,7 @@ cd web && npx tsc --noEmit && npm run build && cd ..
 - [ ] All CI jobs pass (`gh pr checks`)
 - [ ] Code reviewed and approved
 - [ ] Review comments addressed
-- [ ] Branch up to date with main
+- [ ] Branch up to date with the PR's base branch (`gh pr view <PR_NUMBER> --json baseRefName` — usually `staging`)
 - [ ] No merge conflicts
 - [ ] Documentation updated (if applicable)
 - [ ] CHANGELOG updated (if applicable)
