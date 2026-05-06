@@ -18,6 +18,7 @@ from rich.traceback import install
 from db_url import compose_postgres_url
 from graph.context_loader import make_context_loader_node
 from graph.freeform import build_freeform_subgraph
+from graph.router import make_top_router_node
 from graph.state import AgentState
 from tools import all_tools, generic_tools, scrna_tools, cyl_tools, context_tools
 
@@ -389,10 +390,28 @@ def create_agent(
     # graph shape works for any tool subset selection.
     context_loader = make_context_loader_node(tool_set=tool_set)
 
+    # Top-level router: classifies every request into one of four buckets
+    # and writes state["route"]. Until Tier 2 subgraphs land, every route
+    # value dispatches to the existing freeform leaf — wiring only, no
+    # behaviour change for end users. The router uses the same LLM as the
+    # leaf (single-provider strategy per master Decision 4).
+    top_router = make_top_router_node(llm)
+
     builder = StateGraph(AgentState)
     builder.add_node("context_loader", context_loader)
+    builder.add_node("top_router", top_router)
     builder.add_node("freeform", freeform)
     builder.add_edge(START, "context_loader")
-    builder.add_edge("context_loader", "freeform")
+    builder.add_edge("context_loader", "top_router")
+    builder.add_conditional_edges(
+        "top_router",
+        lambda state: state["route"],
+        {
+            "phenotyping": "freeform",
+            "scrna": "freeform",
+            "analysis": "freeform",
+            "freeform": "freeform",
+        },
+    )
     builder.add_edge("freeform", END)
     return builder.compile(checkpointer=checkpointer)
