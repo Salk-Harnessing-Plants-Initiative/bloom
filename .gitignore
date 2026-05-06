@@ -34,6 +34,16 @@ yarn-error.log*
 **/.env
 **/.env.*
 .env.prod
+# Rollback snapshots written by the deploy workflow (contain prior secrets)
+.env.prod.previous
+.env.staging.previous
+**/.env.prod.previous
+**/.env.staging.previous
+# Committed deploy-time config defaults (NOT secrets — see the files themselves)
+!.env.prod.defaults
+!.env.staging.defaults
+!**/.env.prod.defaults
+!**/.env.staging.defaults
 
 # generated secret dumps from scripts/generate-secrets.sh --file
 .secrets-*.txt
@@ -86,15 +96,30 @@ DOCUMENTATION.md
 TROUBLESHOOTING.md
 prompts/
 .claude/settings.local.json
+.claude/draft-pr/
 langchain/ANALYSIS_OUTPUT/
 langchain/PLOTS_DIR/
 scripts/compute_de_genes.py
 scripts/compute_de_local.py
 scripts/compute_de.py
 scripts/generate_KEYS
+scripts/dev/
 *.bak
 
 prompts/.claude/
 
 # setup/deployment notes (local only)
 .setup/
+
+# local-only design references (prototypes, handoff docs)
+reference/
+
+# supabase CLI session cache
+supabase/.temp/
+
+# uv lockfile (not used for production, only local ingest runs)
+uv.lock
+
+# agents scratch (claude skill system)
+.agents/
+skills-lock.json

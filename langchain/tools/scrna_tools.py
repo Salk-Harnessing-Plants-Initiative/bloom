@@ -74,28 +74,49 @@ def search_datasets_by_species_tool(species_name: str) -> list:
 
 
 @tool
-def get_clusters_by_dataset_tool(dataset_id: int) -> list:
-    """Fetch all unique clusters for a given dataset.
-    Returns cluster_id and count of cells in each cluster.
+def get_clusters_by_dataset_tool(dataset_id: int) -> list | str:
+    """Fetch all clusters for a given dataset else return "No clusters found for dataset {dataset_id}."
+
+    Returns cluster_id, name, color, ordinal, and cell_count per cluster.
     """
-    response = httpx.get(
-        f"{REST_URL}/scrna_cells",
+    clusters_resp = httpx.get(
+        f"{REST_URL}/scrna_clusters",
         headers=get_headers(),
         params={
             "dataset_id": f"eq.{dataset_id}",
-            "select": "cluster_id"
-        }
+            "select": "cluster_id,name,color,ordinal",
+            "order": "ordinal.asc",
+        },
     )
-    if response.status_code != 200:
-        raise Exception(f"Failed to fetch clusters: {response.text}")
+    if clusters_resp.status_code != 200:
+        raise Exception(f"Failed to fetch clusters: {clusters_resp.text}")
+    clusters = clusters_resp.json()
 
-    cells = response.json()
-    cluster_counts = {}
-    for cell in cells:
-        cid = cell.get("cluster_id", "unknown")
-        cluster_counts[cid] = cluster_counts.get(cid, 0) + 1
-
-    return [{"cluster_id": k, "cell_count": v} for k, v in sorted(cluster_counts.items())]
+    if clusters:
+        stats_resp = httpx.get(
+            f"{REST_URL}/scrna_cluster_stats",
+            headers=get_headers(),
+            params={
+                "dataset_id": f"eq.{dataset_id}",
+                "select": "cluster_id,cell_count",
+            },
+        )
+        counts = {}
+        if stats_resp.status_code == 200:
+            for row in stats_resp.json():
+                counts[row["cluster_id"]] = row["cell_count"]
+        return [
+            {
+                "cluster_id": c["cluster_id"],
+                "name": c.get("name"),
+                "color": c.get("color"),
+                "ordinal": c.get("ordinal"),
+                "cell_count": counts.get(c["cluster_id"]),  # null until scrna_cluster_stats backfill lands
+            }
+            for c in clusters
+        ]
+    else:
+        return f"No clusters found for dataset {dataset_id}."
 
 
 @tool

@@ -39,3 +39,13 @@ CVE-2026-30836
 # not yet rebuilt with it. Reassess on next node:20-alpine SHA bump.
 # Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-31789
 CVE-2026-31789
+
+# libgnutls30t64 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
+# DTLS handshake parsing — out-of-bounds read on malformed fragments,
+# DoS-only (Red Hat CVSS A:H, C:N, I:N). The langchain agent runs uvicorn/
+# FastAPI over TCP only (port 5002), exposes no UDP listener, and has no
+# DTLS client code; libgnutls30t64 is a transitive Debian base package,
+# not used by the application. None of the three exploit preconditions hold.
+# Reassess on next python:3.11-slim SHA bump or when Debian publishes a fix.
+# Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-33845
+CVE-2026-33845

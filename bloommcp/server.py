@@ -16,6 +16,8 @@ import hmac
 import os
 
 from fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
 
 from tools import (
     qc_tools,
@@ -61,6 +63,12 @@ outlier_tools.register(mcp)
 viz_tools.register(mcp)
 correlation_tools.register(mcp)
 
+# --- Health Endpoint ---
+# GET for Docker healthchecks. Bypasses MCP's SSE/JSON-RPC
+# protocol so probes don't need an API key, custom Accept header, or POST body.
+@mcp.custom_route("/health", methods=["GET"])
+async def health(_: Request) -> PlainTextResponse:
+    return PlainTextResponse("ok")
 
 # --- Entry Point ---
 

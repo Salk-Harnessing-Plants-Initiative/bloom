@@ -5,47 +5,40 @@ Production-ready: PostgresSaver, JWT auth, agent caching
 
 Endpoints:
     POST /langchain/chat         - Process a chat message (requires auth)
+    POST /langchain/chat/stream  - Stream a chat response over SSE (requires auth)
     GET  /langchain/models       - List available LLM providers and models
     GET  /langchain/mcp-tools    - List connected MCP tools
     POST /langchain/threads      - Create/upsert thread metadata (requires auth)
     GET  /langchain/threads      - List user's conversation threads (requires auth)
     DELETE /langchain/threads/:id - Clear a conversation thread (requires auth)
     GET  /health                 - Health check
+
+Layout:
+    server.py         - app, lifespan, CORS, mounts, threads/meta/health endpoints
+    deps.py           - JWT auth, agent cache, MCP runtime state
+    schemas.py        - Pydantic request/response models
+    routes/chat.py    - /chat and /chat/stream endpoints
 """
 import os
-import jwt
 import logging
-from typing import Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends, Header
+
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-from agent import create_agent, AVAILABLE_MODELS, setup_checkpointer
-from langchain_core.messages import AIMessage
+
+import deps
+from agent import AVAILABLE_MODELS, setup_checkpointer
 from mcp_config import MCP_SERVERS
+from routes import chat as chat_routes
+from schemas import CreateThreadRequest, ModelsResponse
 
 logger = logging.getLogger(__name__)
-
-# JWT secret for Supabase Auth token validation (required)
-JWT_SECRET = os.getenv("JWT_SECRET")
-if not JWT_SECRET:
-    raise RuntimeError("JWT_SECRET environment variable is required")
-
-# MCP client state (populated at startup)
-mcp_client = None
-mcp_tools = []
-
-# Agent cache: keyed by (provider, model, tool_set, frozenset(mcp_tool_names))
-_agent_cache: dict = {}
-_AGENT_CACHE_MAX = 16
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage MCP client and PostgresSaver: connect on startup, close on shutdown."""
-    global mcp_client, mcp_tools
-
     # Initialize PostgresSaver checkpointer
     try:
         checkpointer = await setup_checkpointer()
@@ -56,6 +49,8 @@ async def lifespan(app: FastAPI):
         app.state.checkpointer = None
 
     # Connect to MCP servers (with retry — bloommcp may still be starting)
+    mcp_client = None
+    mcp_tools: list = []
     if MCP_SERVERS:
         import asyncio
         from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -71,18 +66,20 @@ async def lifespan(app: FastAPI):
                     logger.info(f"MCP connection attempt {attempt}/{max_retries} failed, retrying in 3s...")
                     await asyncio.sleep(3)
                 else:
-                    logger.warning(f"Failed to connect to MCP servers after {max_retries} attempts: {e}. Agent will run with native tools only.")
+                    logger.warning(
+                        f"Failed to connect to MCP servers after {max_retries} attempts: {e}. "
+                        f"Agent will run with native tools only."
+                    )
                     mcp_client = None
                     mcp_tools = []
     else:
         logger.info("No MCP servers configured. Agent will run with native tools only.")
 
+    deps.set_mcp_state(mcp_client, mcp_tools)
+
     yield
 
-    # Cleanup
-    mcp_client = None
-    mcp_tools = []
-    _agent_cache.clear()
+    deps.clear_runtime_state()
     if hasattr(app.state, 'checkpointer') and app.state.checkpointer:
         try:
             await app.state.checkpointer.conn.close()
@@ -107,224 +104,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ─── Auth ──────────────────────────────────────────────────────────────────────
-
-async def get_current_user(authorization: str = Header(default=None)) -> str:
-    """Extract and validate Supabase JWT from Authorization header.
-
-    Returns the user UUID (sub claim) from the token.
-    """
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header required")
-
-    # Strip "Bearer " prefix
-    token = authorization.replace("Bearer ", "").strip()
-    if not token:
-        raise HTTPException(status_code=401, detail="Bearer token required")
-
-    try:
-        payload = jwt.decode(
-            token,
-            JWT_SECRET,
-            algorithms=["HS256"],
-            audience="authenticated",
-        )
-        user_id = payload.get("sub")
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid token: missing sub claim")
-        return user_id
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+# Chat + streaming endpoints live in routes/chat.py
+app.include_router(chat_routes.router)
 
 
-# ─── Agent Cache ───────────────────────────────────────────────────────────────
-
-def get_or_create_agent(
-    provider: str,
-    model: str,
-    tool_set: str,
-    filtered_mcp_tools: list,
-    checkpointer,
-):
-    """Get a cached agent or create a new one.
-
-    Agents are cached by (provider, model, tool_set, mcp_tool_names) key.
-    LRU eviction when cache exceeds _AGENT_CACHE_MAX entries.
-    """
-    mcp_tool_key = frozenset(t.name for t in filtered_mcp_tools) if filtered_mcp_tools else frozenset()
-    cache_key = (provider, model, tool_set, mcp_tool_key)
-
-    if cache_key in _agent_cache:
-        logger.debug(f"Agent cache hit: {cache_key}")
-        return _agent_cache[cache_key]
-
-    # Evict oldest if cache full
-    if len(_agent_cache) >= _AGENT_CACHE_MAX:
-        oldest_key = next(iter(_agent_cache))
-        del _agent_cache[oldest_key]
-        logger.debug(f"Agent cache evicted: {oldest_key}")
-
-    agent = create_agent(
-        provider=provider,
-        model=model,
-        tool_set=tool_set,
-        mcp_tools=filtered_mcp_tools,
-        checkpointer=checkpointer,
-    )
-    _agent_cache[cache_key] = agent
-    logger.info(f"Agent cache miss — created: provider={provider}, model={model}, tool_set={tool_set}, mcp_tools={len(filtered_mcp_tools)}")
-    return agent
-
-
-# ─── Request/Response Models ──────────────────────────────────────────────────
-
-class ChatRequest(BaseModel):
-    prompt: str
-    provider: str = "openai"  # "openai" or "local"
-    model: Optional[str] = None  # Defaults to first model for provider
-    tool_set: str = "all"  # "all", "scrna", "cyl", "generic"
-    mcp_tool_names: list[str] = Field(default_factory=list)  # Filter MCP tools by name (empty = foundational only)
-    thread_id: str = "default"  # Conversation thread ID for memory persistence
-
-
-class ChatResponse(BaseModel):
-    answer: str
-    tools_used: list[str]
-    provider: str
-    model: str
-
-
-class CreateThreadRequest(BaseModel):
-    thread_id: str
-    title: Optional[str] = None
-
-
-class ModelsResponse(BaseModel):
-    models: dict[str, list[str]]
-
-
-# ─── Endpoints ────────────────────────────────────────────────────────────────
-
-@app.post("/langchain/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, user_id: str = Depends(get_current_user)):
-    """Process a chat message through the LangChain agent. Requires authentication."""
-    try:
-        provider = request.provider.lower()
-        model = request.model
-
-        # Validate provider
-        if provider not in AVAILABLE_MODELS:
-            raise ValueError(f"Unknown provider: {provider}. Choose from: openai, local")
-
-        # Default model if not specified
-        if not model:
-            model = AVAILABLE_MODELS[provider][0]
-
-        # Validate tool_set
-        valid_tool_sets = ["all", "scrna", "cyl", "generic"]
-        tool_set = request.tool_set.lower() if request.tool_set else "all"
-        if tool_set not in valid_tool_sets:
-            raise ValueError(f"Unknown tool_set: {tool_set}. Choose from: {valid_tool_sets}")
-
-        # Filter MCP tools by name.
-        # Foundational tools are always included so the agent can discover and load data.
-        ALWAYS_INCLUDE_MCP_TOOLS = {
-            "list_available_experiments",
-            "load_experiment_data",
-            "inspect_data_quality",
-        }
-        if request.mcp_tool_names:
-            selected = set(request.mcp_tool_names) | ALWAYS_INCLUDE_MCP_TOOLS
-            filtered_mcp_tools = [t for t in mcp_tools if t.name in selected]
-        else:
-            filtered_mcp_tools = [t for t in mcp_tools if t.name in ALWAYS_INCLUDE_MCP_TOOLS]
-
-        # Get or create cached agent
-        checkpointer = getattr(app.state, 'checkpointer', None)
-        agent = get_or_create_agent(
-            provider=provider,
-            model=model,
-            tool_set=tool_set,
-            filtered_mcp_tools=filtered_mcp_tools,
-            checkpointer=checkpointer,
-        )
-
-        # Scope thread_id to user for isolation
-        scoped_thread = f"{user_id}:{request.thread_id}"
-
-        response = await agent.ainvoke(
-            {"messages": [("user", request.prompt)]},
-            config={"configurable": {"thread_id": scoped_thread}},
-        )
-        messages = response["messages"]
-
-        tools_used = []
-        final_answer = ""
-
-        for msg in messages:
-            if isinstance(msg, AIMessage) and msg.tool_calls:
-                for tool_call in msg.tool_calls:
-                    tools_used.append(tool_call['name'])
-            elif isinstance(msg, AIMessage) and not msg.tool_calls:
-                final_answer = msg.content
-
-        # Auto-create thread metadata and set title from first user message
-        if checkpointer and request.thread_id != "default":
-            try:
-                title = request.prompt[:100].strip()
-                if len(request.prompt) > 100:
-                    title += "..."
-                async with checkpointer.conn.connection() as conn:
-                    await conn.execute(
-                        """
-                        INSERT INTO chat_threads (user_id, thread_id, title)
-                        VALUES (%s::uuid, %s, %s)
-                        ON CONFLICT (user_id, thread_id)
-                        DO UPDATE SET
-                            updated_at = now(),
-                            title = COALESCE(chat_threads.title, EXCLUDED.title)
-                        """,
-                        (user_id, request.thread_id, title),
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to upsert thread metadata: {e}")
-
-        return ChatResponse(
-            answer=final_answer,
-            tools_used=tools_used,
-            provider=provider,
-            model=model,
-        )
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception(f"Chat error for user {user_id}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/langchain/models", response_model=ModelsResponse)
-async def get_models():
-    """Get available models for each provider."""
-    return ModelsResponse(models=AVAILABLE_MODELS)
-
-
-@app.get("/langchain/mcp-tools")
-async def get_mcp_tools():
-    """List connected MCP tools with their names and descriptions."""
-    return {
-        "tools": [
-            {"name": t.name, "description": t.description}
-            for t in mcp_tools
-        ]
-    }
-
+# ─── Threads ──────────────────────────────────────────────────────────────────
 
 @app.post("/langchain/threads")
-async def create_thread(request: CreateThreadRequest, user_id: str = Depends(get_current_user)):
+async def create_thread(request: CreateThreadRequest, user_id: str = Depends(deps.get_current_user)):
     """Create or upsert a thread metadata entry for the authenticated user."""
     checkpointer = getattr(app.state, 'checkpointer', None)
     if not checkpointer:
@@ -350,13 +137,13 @@ async def create_thread(request: CreateThreadRequest, user_id: str = Depends(get
                 "created_at": row[3].isoformat() if row[3] else None,
                 "updated_at": row[4].isoformat() if row[4] else None,
             }
-    except Exception as e:
+    except Exception:
         logger.exception(f"Error creating thread for user {user_id}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error has occurred.")
 
 
 @app.get("/langchain/threads")
-async def list_threads(user_id: str = Depends(get_current_user)):
+async def list_threads(user_id: str = Depends(deps.get_current_user)):
     """List conversation threads for the authenticated user from chat_threads table."""
     checkpointer = getattr(app.state, 'checkpointer', None)
     if not checkpointer:
@@ -391,7 +178,7 @@ async def list_threads(user_id: str = Depends(get_current_user)):
 
 
 @app.delete("/langchain/threads/{thread_id}")
-async def clear_thread(thread_id: str, user_id: str = Depends(get_current_user)):
+async def clear_thread(thread_id: str, user_id: str = Depends(deps.get_current_user)):
     """Soft-delete a conversation thread. Marks deleted_at timestamp instead of
     permanently removing data. Checkpoint data is preserved for potential recovery."""
     checkpointer = getattr(app.state, 'checkpointer', None)
@@ -405,9 +192,28 @@ async def clear_thread(thread_id: str, user_id: str = Depends(get_current_user))
                 (user_id, thread_id),
             )
         return {"status": "deleted", "thread_id": thread_id}
-    except Exception as e:
+    except Exception:
         logger.exception(f"Error deleting thread {thread_id} for user {user_id}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error has occurred.")
+
+
+# ─── Meta + health ────────────────────────────────────────────────────────────
+
+@app.get("/langchain/models", response_model=ModelsResponse)
+async def get_models():
+    """Get available models for each provider."""
+    return ModelsResponse(models=AVAILABLE_MODELS)
+
+
+@app.get("/langchain/mcp-tools")
+async def get_mcp_tools():
+    """List connected MCP tools with their names and descriptions."""
+    return {
+        "tools": [
+            {"name": t.name, "description": t.description}
+            for t in deps.mcp_tools
+        ]
+    }
 
 
 @app.get("/health")
@@ -416,7 +222,7 @@ async def health():
     return {
         "status": "ok",
         "checkpointer": "postgres" if checkpointer else "none",
-        "mcp_tools": len(mcp_tools),
+        "mcp_tools": len(deps.mcp_tools),
     }
 
 

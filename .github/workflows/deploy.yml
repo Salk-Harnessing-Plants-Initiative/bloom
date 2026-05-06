@@ -15,6 +15,14 @@ on:
         options:
           - staging
           - production
+      runner:
+        description: 'Runner (ubuntu-latest ONLY for un-wedging CI; real deploys need self-hosted)'
+        required: false
+        default: 'self-hosted'
+        type: choice
+        options:
+          - self-hosted
+          - ubuntu-latest
 
 env:
   # Supabase CLI version — MUST match the value pinned in pr-checks.yml and
@@ -26,7 +34,12 @@ jobs:
   deploy-production:
     name: Deploy to Production
     if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
-    runs-on: ubuntu-latest
+    # Escape hatch: workflow_dispatch can switch to ubuntu-latest to un-wedge
+    # CI when the self-hosted runner is offline/hung. The deploy will still
+    # fail (GitHub-hosted runners have no route to the Salk server), but
+    # it fails fast instead of queuing for 24h.
+    runs-on: ${{ github.event.inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "salk-network"]') }}
+    timeout-minutes: 30
     environment: production
     concurrency:
       # Shared group for both prod and staging — only one deploy runs at a
@@ -45,94 +58,104 @@ jobs:
           echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+      # The runner is co-located with the deploy target (same host, running as
+      # bloom-deploy). Env-file assembly uses direct local filesystem commands
+      # rather than SSH/scp loopback — simpler, atomic, no network hop.
+
       - name: Snapshot existing .env.prod for rollback
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
-            cd ${{ secrets.PROD_DEPLOY_PATH }}
-            if [ -f .env.prod ]; then
-              cp -p .env.prod .env.prod.previous
-              echo 'Saved .env.prod as .env.prod.previous (mode preserved)'
-            else
-              echo 'No existing .env.prod — first deploy, skipping snapshot'
-            fi
-          "
+          cd ${{ secrets.PROD_DEPLOY_PATH }}
+          if [ -f .env.prod ]; then
+            cp -p .env.prod .env.prod.previous
+            echo "Saved .env.prod as .env.prod.previous"
+          else
+            echo "No existing .env.prod — first deploy, skipping snapshot"
+          fi
 
-      - name: Generate .env.prod on server
+      - name: Install env defaults on server
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "umask 077 && cat > ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod << 'ENVEOF'
-          POSTGRES_DB=${{ secrets.PROD_POSTGRES_DB }}
-          POSTGRES_USER=${{ secrets.PROD_POSTGRES_USER }}
+          # Write to .env.prod.next (not .env.prod). The real .env.prod
+          # stays the last-good file until the atomic rename in the next
+          # step. rm -f clears any stale .next from a previously-crashed
+          # deploy so install doesn't refuse on an existing file.
+          rm -f "${{ secrets.PROD_DEPLOY_PATH }}/.env.prod.next"
+          install -m 600 "${{ github.workspace }}/.env.prod.defaults" \
+            "${{ secrets.PROD_DEPLOY_PATH }}/.env.prod.next"
+
+      - name: Append secrets, validate, and promote to .env.prod
+        run: |
+          set -euo pipefail
+          umask 077
+          f_next="${{ secrets.PROD_DEPLOY_PATH }}/.env.prod.next"
+          f_final="${{ secrets.PROD_DEPLOY_PATH }}/.env.prod"
+
+          # If anything fails before the atomic rename, remove the partial
+          # .env.prod.next. The real .env.prod is untouched — this deploy
+          # exits cleanly with the previous good env intact, so the next
+          # deploy's snapshot step can't copy a poisoned file into
+          # .env.prod.previous.
+          _cleanup_on_interrupt() {
+            echo "::warning::Interrupt during env assembly — removing partial .env.prod.next (last-good .env.prod preserved)" >&2
+            rm -f "$f_next"
+            exit 1
+          }
+          trap _cleanup_on_interrupt INT TERM HUP ERR
+
+          # The `# _EOF_MARKER_` sentinel is the last line of the heredoc.
+          # The validator rejects any env file whose last line isn't the
+          # marker — guarantees truncated files never reach the rename.
+          cat >> "$f_next" << 'SECRETS'
           POSTGRES_PASSWORD=${{ secrets.PROD_POSTGRES_PASSWORD }}
-          POSTGRES_PORT=${{ secrets.PROD_POSTGRES_PORT }}
-          POSTGRES_HOST=${{ secrets.PROD_POSTGRES_HOST }}
-          PGRST_DB_SCHEMAS=${{ secrets.PROD_PGRST_DB_SCHEMAS }}
-          ANON_KEY=${{ secrets.PROD_ANON_KEY }}
-          SERVICE_ROLE_KEY=${{ secrets.PROD_SERVICE_ROLE_KEY }}
           JWT_SECRET=${{ secrets.PROD_JWT_SECRET }}
-          JWT_EXPIRY=${{ secrets.PROD_JWT_EXPIRY }}
-          SUPAVISOR_ENC_KEY=${{ secrets.PROD_SUPAVISOR_ENC_KEY }}
-          VAULT_ENC_KEY=${{ secrets.PROD_VAULT_ENC_KEY }}
-          SECRET_KEY_BASE=${{ secrets.PROD_SECRET_KEY_BASE }}
+          ANON_KEY=${{ secrets.PROD_ANON_KEY }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.PROD_ANON_KEY }}
+          SERVICE_ROLE_KEY=${{ secrets.PROD_SERVICE_ROLE_KEY }}
           DB_ENC_KEY=${{ secrets.PROD_DB_ENC_KEY }}
-          DOMAIN_MAIN=${{ secrets.PROD_DOMAIN_MAIN }}
-          DOMAIN_STUDIO=${{ secrets.PROD_DOMAIN_STUDIO }}
-          DOMAIN_MINIO=${{ secrets.PROD_DOMAIN_MINIO }}
-          CADDY_HTTP_LISTEN_PORT=${{ secrets.PROD_CADDY_HTTP_LISTEN_PORT }}
-          CADDY_HTTPS_LISTEN_PORT=${{ secrets.PROD_CADDY_HTTPS_LISTEN_PORT }}
-          CADDY_HTTP_PORT=
-          CADDY_TLS_DIRECTIVE=tls internal
-          POSTGRES_HOST_PORT=5432
-          KONG_PORT=${{ secrets.PROD_KONG_PORT }}
-          BLOOM_WEB_PORT=${{ secrets.PROD_BLOOM_WEB_PORT }}
-          STUDIO_PORT=${{ secrets.PROD_STUDIO_PORT }}
-          MINIO_CONSOLE_PORT=${{ secrets.PROD_MINIO_CONSOLE_PORT }}
+          VAULT_ENC_KEY=${{ secrets.PROD_VAULT_ENC_KEY }}
+          SUPAVISOR_ENC_KEY=${{ secrets.PROD_SUPAVISOR_ENC_KEY }}
+          SECRET_KEY_BASE=${{ secrets.PROD_SECRET_KEY_BASE }}
           MINIO_ROOT_USER=${{ secrets.PROD_MINIO_ROOT_USER }}
           MINIO_ROOT_PASSWORD=${{ secrets.PROD_MINIO_PASSWORD }}
-          MINIO_DATA_PATH=${{ secrets.PROD_MINIO_DATA_PATH }}
-          MINIO_BROWSER_REDIRECT_URL=${{ secrets.PROD_MINIO_BROWSER_REDIRECT_URL }}
-          POOLER_TENANT_ID=${{ secrets.PROD_POOLER_TENANT_ID }}
-          POOLER_DEFAULT_POOL_SIZE=${{ secrets.PROD_POOLER_DEFAULT_POOL_SIZE }}
-          POOLER_MAX_CLIENT_CONN=${{ secrets.PROD_POOLER_MAX_CLIENT_CONN }}
-          POOLER_DB_POOL_SIZE=${{ secrets.PROD_POOLER_DB_POOL_SIZE }}
           DASHBOARD_USERNAME=${{ secrets.PROD_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.PROD_DASHBOARD_PASSWORD }}
-          SITE_URL=${{ secrets.PROD_SITE_URL }}
-          API_EXTERNAL_URL=${{ secrets.PROD_API_EXTERNAL_URL }}
-          ADDITIONAL_REDIRECT_URLS=${{ secrets.PROD_ADDITIONAL_REDIRECT_URLS }}
-          ENABLE_ANONYMOUS_USERS=${{ secrets.PROD_ENABLE_ANONYMOUS_USERS }}
-          ENABLE_EMAIL_SIGNUP=${{ secrets.PROD_ENABLE_EMAIL_SIGNUP }}
-          ENABLE_EMAIL_AUTOCONFIRM=${{ secrets.PROD_ENABLE_EMAIL_AUTOCONFIRM }}
-          DISABLE_SIGNUP=${{ secrets.PROD_DISABLE_SIGNUP }}
-          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.PROD_NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.PROD_ANON_KEY }}
-          NEXT_PUBLIC_APP_URL=${{ secrets.PROD_NEXT_PUBLIC_APP_URL }}
-          SUPABASE_URL=${{ secrets.PROD_SUPABASE_URL }}
-          SUPABASE_PUBLIC_URL=${{ secrets.PROD_SUPABASE_PUBLIC_URL }}
-          SUPABASE_COOKIE_NAME=${{ secrets.PROD_SUPABASE_COOKIE_NAME }}
-          STUDIO_DEFAULT_ORGANIZATION=${{ secrets.PROD_STUDIO_DEFAULT_ORGANIZATION }}
-          STUDIO_DEFAULT_PROJECT=${{ secrets.PROD_STUDIO_DEFAULT_PROJECT }}
-          STUDIO_SUPABASE_PUBLIC_URL=${{ secrets.PROD_STUDIO_SUPABASE_PUBLIC_URL }}
-          IMGPROXY_URL=${{ secrets.PROD_IMGPROXY_URL }}
-          IMGPROXY_ENABLE_WEBP_DETECTION=${{ secrets.PROD_IMGPROXY_ENABLE_WEBP_DETECTION }}
-          BLOOM_PLOTS_DIR=${{ secrets.PROD_BLOOM_PLOTS_DIR }}
-          BLOOM_PLOTS_URL=${{ secrets.PROD_BLOOM_PLOTS_URL }}
           BLOOMMCP_API_KEY=${{ secrets.PROD_BLOOMMCP_API_KEY }}
-          BLOOM_MCP_URL=${{ secrets.PROD_BLOOM_MCP_URL }}
           OPENAI_API_KEY=${{ secrets.PROD_OPENAI_API_KEY }}
-          CORS_ORIGINS=${{ secrets.PROD_CORS_ORIGINS }}
-          LANGCHAIN_TRACING_V2=${{ secrets.PROD_LANGCHAIN_TRACING_V2 }}
           LANGCHAIN_API_KEY=${{ secrets.PROD_LANGCHAIN_API_KEY }}
-          LANGCHAIN_PROJECT=${{ secrets.PROD_LANGCHAIN_PROJECT }}
-          LANGCHAIN_POSTGRES_URL=postgresql://${{ secrets.PROD_POSTGRES_USER }}:${{ secrets.PROD_POSTGRES_PASSWORD }}@${{ secrets.PROD_POSTGRES_HOST }}:${{ secrets.PROD_POSTGRES_PORT }}/${{ secrets.PROD_POSTGRES_DB }}
-          ENVEOF
-          chmod 600 ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod"
+          MINIO_DATA_PATH=${{ secrets.PROD_MINIO_DATA_PATH }}
+          BLOOM_AGENT_KEY=${{ secrets.PROD_BLOOM_AGENT_KEY }}
+          # _EOF_MARKER_
+          SECRETS
+
+          # Validate under the trap so a bad file triggers cleanup.
+          bash "${{ github.workspace }}/scripts/validate_env.sh" \
+            "$f_next" \
+            "${{ github.workspace }}/docker-compose.prod.yml"
+
+          # Atomic rename: single syscall on the same filesystem. Either
+          # .env.prod is fully replaced by the new file, or it stays the
+          # old file — never a half-written state. Compose and future
+          # snapshot steps only ever see a fully-assembled .env.prod.
+          mv "$f_next" "$f_final"
+
+          trap - INT TERM HUP ERR
+
+      # Catches the case where the runner user (who writes .env.prod at mode 600)
+      # and DEPLOY_USER (who reads it when docker compose runs) diverge. Without
+      # this check, docker compose would silently read an empty env and every
+      # service would start with blank credentials.
+      - name: Verify DEPLOY_USER can read .env.prod
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "test -r ${{ secrets.PROD_DEPLOY_PATH }}/.env.prod" \
+            || { echo "::error::DEPLOY_USER cannot read .env.prod — runner-user and DEPLOY_USER must match, or group-readable perms needed"; exit 1; }
 
       - name: Save previous SHA for rollback
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            mkdir -p '${{ secrets.PROD_DEPLOY_PATH }}.state'
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            git rev-parse HEAD > .previous_sha
-            echo \"Saved previous SHA: \$(cat .previous_sha)\"
+            git rev-parse HEAD > '${{ secrets.PROD_DEPLOY_PATH }}.state/previous_sha'
+            echo \"Saved previous SHA: \$(cat '${{ secrets.PROD_DEPLOY_PATH }}.state/previous_sha')\"
           "
 
       - name: Pull latest code
@@ -225,42 +248,59 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            # Source DOMAIN_* and port from the server-side .env.prod file
-            # generated earlier in this workflow (from GitHub Secrets — the
-            # env-config split to committed defaults lands in PR #144). Using
-            # the deployed .env.prod as the runtime source of truth here keeps
-            # the smoke test robust to that upcoming refactor without code
-            # changes — after #144 merges, .env.prod is merged from
-            # .env.prod.defaults + secrets, same file, same grep.
+            # Connectivity smoke test — hits 4 endpoints through Caddy and
+            # asserts each returns a 2xx/3xx:
+            #   1. <main>/                bloom-web frontend
+            #   2. <studio>/              Studio UI
+            #   3. <minio>/               MinIO console
+            #   4. <main>/api/rest/v1/    Kong key-auth -> ACL -> REST -> DB
+            #                             (sends apikey header)
+            #
+            # Probes HTTPS directly via --resolve (forces domain -> 127.0.0.1)
+            # so the test works regardless of whether CADDY_HTTPS_LISTEN_PORT
+            # is 443 (prod) or 8443 (staging). Avoids the HTTP -> HTTPS redirect
+            # dance that fails when the redirect target port isn't published.
             DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.prod | cut -d= -f2-)
             DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.prod | cut -d= -f2-)
             DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.prod | cut -d= -f2-)
-            PORT=\$(grep '^CADDY_HTTP_LISTEN_PORT=' .env.prod | cut -d= -f2-)
+            PORT=\$(grep '^CADDY_HTTPS_LISTEN_PORT=' .env.prod | cut -d= -f2-)
+            ANON_KEY=\$(grep '^ANON_KEY=' .env.prod | cut -d= -f2-)
             : \"\${DOMAIN_MAIN:?missing DOMAIN_MAIN in .env.prod}\"
             : \"\${DOMAIN_STUDIO:?missing DOMAIN_STUDIO in .env.prod}\"
             : \"\${DOMAIN_MINIO:?missing DOMAIN_MINIO in .env.prod}\"
-            : \"\${PORT:?missing CADDY_HTTP_LISTEN_PORT in .env.prod}\"
+            : \"\${PORT:?missing CADDY_HTTPS_LISTEN_PORT in .env.prod}\"
+            : \"\${ANON_KEY:?missing ANON_KEY in .env.prod}\"
+            echo \"::add-mask::\$ANON_KEY\"
 
             failed=0
-            # Per-Host probes — Caddy routes studio + minio on SUBDOMAINS, not
-            # paths on the apex. curl -L -k follows the auto-HTTPS 308 redirect
-            # and accepts Caddy's \`tls internal\` self-signed cert (PR #145).
-            # Success window is 2xx/3xx only — 4xx (e.g. unmapped path) is a
-            # routing bug we want to surface, not tolerate.
-            for probe in \"\$DOMAIN_MAIN|/\" \"\$DOMAIN_MAIN|/api/\" \"\$DOMAIN_STUDIO|/\" \"\$DOMAIN_MINIO|/\" \"\$DOMAIN_MAIN|/api/health\"; do
-              HOST=\"\${probe%|*}\"
-              ENDPOINT=\"\${probe#*|}\"
-              STATUS=\$(curl -sLk -o /dev/null -w '%{http_code}' \
-                -H \"Host: \$HOST\" \
-                --max-time 10 \
-                \"http://localhost:\$PORT\$ENDPOINT\" || echo 000)
-              if [ \"\$STATUS\" -lt 200 ] || [ \"\$STATUS\" -ge 400 ]; then
-                echo \"::error::Smoke test failed on \$HOST\$ENDPOINT (HTTP \$STATUS)\"
+            _probe() {
+              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
+              # Retry up to 3 times on connection failure (status 000) — Caddy's
+              # \`tls internal\` generates certs lazily on first handshake; the
+              # first probe after a fresh deploy can race the cert generation.
+              local status=000
+              for _ in 1 2 3; do
+                if [ -n \"\$extra\" ]; then
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                else
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                fi
+                [ \"\$status\" != \"000\" ] && break
+                sleep 2
+              done
+              if [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
+                echo \"::error::Smoke test failed on \$host\$path (HTTP \$status)\"
                 failed=1
               else
-                echo \"  \$HOST\$ENDPOINT -> \$STATUS\"
+                echo \"  \$host\$path -> \$status\"
               fi
-            done
+            }
+
+            _probe \"\$DOMAIN_MAIN\"   \"/\"
+            _probe \"\$DOMAIN_STUDIO\" \"/\"
+            _probe \"\$DOMAIN_MINIO\"  \"/\"
+            _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
+
             exit \$failed
           "
 
@@ -291,8 +331,10 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
             for i in \$(seq 1 60); do
-              if docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T db-prod \
+              if docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
+                   -e PGPASSWORD=\"\$PG_PASSWORD\" db-prod \
                    psql -U supabase_admin -d postgres -tAc \
                    \"SELECT 1 FROM information_schema.tables WHERE table_schema='storage' AND table_name='buckets'\" 2>/dev/null \
                    | grep -q '^1\$'; then
@@ -319,13 +361,7 @@ jobs:
           PENDING=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
-            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
-            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
-            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
-            supabase migration list --debug \
-              --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" \
-              2>/dev/null \
+            bash scripts/deploy_run_supabase.sh prod 'migration list --debug' 2>/dev/null \
               | awk -F'|' 'NR>2 && \$1 ~ /[0-9]{14}/ && \$2 !~ /[0-9]/ {c++} END { if (NR < 3) { print \"unknown\"; exit 2 } print c+0 }'
           ") || PENDING="unknown"
           case "$PENDING" in ''|*[!0-9]*) PENDING="unknown" ;; esac
@@ -364,15 +400,7 @@ jobs:
               echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
               exit 1
             fi
-            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
-            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
-            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
-            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
-            : \"\${PG_USER:?POSTGRES_USER missing from .env.prod}\"
-            : \"\${PG_PASSWORD:?POSTGRES_PASSWORD missing from .env.prod}\"
-            : \"\${PG_DB:?POSTGRES_DB missing from .env.prod}\"
-            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.prod}\"
-            supabase db push --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug --yes
+            bash scripts/deploy_run_supabase.sh prod 'db push --debug --yes'
           " || {
             echo '::error title=Migration failed (production)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
             exit 1
@@ -386,12 +414,7 @@ jobs:
           echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
-            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
-            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
-            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
-            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.prod}\"
-            supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
+            bash scripts/deploy_run_supabase.sh prod 'migration list --debug'
           " || echo '::warning::Could not fetch migration status'
 
       # Layer C: migration state as a fenced code block in the run summary.
@@ -407,12 +430,7 @@ jobs:
             echo '```'
             ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
               cd ${{ secrets.PROD_DEPLOY_PATH }}
-              PG_USER=\$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2-)
-              PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
-              PG_DB=\$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2-)
-              PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.prod | cut -d= -f2-)
-              : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.prod}\"
-              supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
+              bash scripts/deploy_run_supabase.sh prod 'migration list --debug'
             " 2>/dev/null || echo '(migration state fetch failed)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -428,8 +446,8 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -e
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            if [ -f .previous_sha ]; then
-              PREV=\$(cat .previous_sha)
+            if [ -f '${{ secrets.PROD_DEPLOY_PATH }}.state/previous_sha' ]; then
+              PREV=\$(cat '${{ secrets.PROD_DEPLOY_PATH }}.state/previous_sha')
               echo \"Rolling back to \$PREV\"
               if [ -f .env.prod.previous ]; then
                 cp -p .env.prod.previous .env.prod
@@ -460,7 +478,9 @@ jobs:
   deploy-staging:
     name: Deploy to Staging
     if: github.ref == 'refs/heads/staging' || github.event.inputs.environment == 'staging'
-    runs-on: ubuntu-latest
+    # Escape hatch: see deploy-production for rationale.
+    runs-on: ${{ github.event.inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "salk-network"]') }}
+    timeout-minutes: 30
     environment: staging
     concurrency:
       # Shared group for both prod and staging — only one deploy runs at a
@@ -479,94 +499,86 @@ jobs:
           echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+      # The runner is co-located with the deploy target (same host, running as
+      # bloom-deploy). Env-file assembly uses direct local filesystem commands
+      # rather than SSH/scp loopback — simpler, atomic, no network hop.
+
       - name: Snapshot existing .env.staging for rollback
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
-            cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            if [ -f .env.staging ]; then
-              cp -p .env.staging .env.staging.previous
-              echo 'Saved .env.staging as .env.staging.previous (mode preserved)'
-            else
-              echo 'No existing .env.staging — first deploy, skipping snapshot'
-            fi
-          "
+          cd ${{ secrets.STAGING_DEPLOY_PATH }}
+          if [ -f .env.staging ]; then
+            cp -p .env.staging .env.staging.previous
+            echo "Saved .env.staging as .env.staging.previous"
+          else
+            echo "No existing .env.staging — first deploy, skipping snapshot"
+          fi
 
-      - name: Generate .env.staging on server
+      - name: Install env defaults on server
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "umask 077 && cat > ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging << 'ENVEOF'
-          POSTGRES_DB=${{ secrets.STAGING_POSTGRES_DB }}
-          POSTGRES_USER=${{ secrets.STAGING_POSTGRES_USER }}
+          # Write to .env.staging.next (atomic-rename pattern) — see prod step.
+          rm -f "${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging.next"
+          install -m 600 "${{ github.workspace }}/.env.staging.defaults" \
+            "${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging.next"
+
+      - name: Append secrets, validate, and promote to .env.staging
+        # Atomic-rename pattern mirrors prod; see prod step for full rationale.
+        run: |
+          set -euo pipefail
+          umask 077
+          f_next="${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging.next"
+          f_final="${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
+
+          _cleanup_on_interrupt() {
+            echo "::warning::Interrupt during env assembly — removing partial .env.staging.next (last-good .env.staging preserved)" >&2
+            rm -f "$f_next"
+            exit 1
+          }
+          trap _cleanup_on_interrupt INT TERM HUP ERR
+
+          cat >> "$f_next" << 'SECRETS'
           POSTGRES_PASSWORD=${{ secrets.STAGING_POSTGRES_PASSWORD }}
-          POSTGRES_PORT=${{ secrets.STAGING_POSTGRES_PORT }}
-          POSTGRES_HOST=${{ secrets.STAGING_POSTGRES_HOST }}
-          PGRST_DB_SCHEMAS=${{ secrets.STAGING_PGRST_DB_SCHEMAS }}
-          ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
-          SERVICE_ROLE_KEY=${{ secrets.STAGING_SERVICE_ROLE_KEY }}
           JWT_SECRET=${{ secrets.STAGING_JWT_SECRET }}
-          JWT_EXPIRY=${{ secrets.STAGING_JWT_EXPIRY }}
-          SUPAVISOR_ENC_KEY=${{ secrets.STAGING_SUPAVISOR_ENC_KEY }}
-          VAULT_ENC_KEY=${{ secrets.STAGING_VAULT_ENC_KEY }}
-          SECRET_KEY_BASE=${{ secrets.STAGING_SECRET_KEY_BASE }}
+          ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
+          SERVICE_ROLE_KEY=${{ secrets.STAGING_SERVICE_ROLE_KEY }}
           DB_ENC_KEY=${{ secrets.STAGING_DB_ENC_KEY }}
-          DOMAIN_MAIN=${{ secrets.STAGING_DOMAIN_MAIN }}
-          DOMAIN_STUDIO=${{ secrets.STAGING_DOMAIN_STUDIO }}
-          DOMAIN_MINIO=${{ secrets.STAGING_DOMAIN_MINIO }}
-          CADDY_HTTP_LISTEN_PORT=${{ secrets.STAGING_CADDY_HTTP_LISTEN_PORT }}
-          CADDY_HTTPS_LISTEN_PORT=${{ secrets.STAGING_CADDY_HTTPS_LISTEN_PORT }}
-          CADDY_HTTP_PORT=
-          CADDY_TLS_DIRECTIVE=tls internal
-          POSTGRES_HOST_PORT=5433
-          KONG_PORT=${{ secrets.STAGING_KONG_PORT }}
-          BLOOM_WEB_PORT=${{ secrets.STAGING_BLOOM_WEB_PORT }}
-          STUDIO_PORT=${{ secrets.STAGING_STUDIO_PORT }}
-          MINIO_CONSOLE_PORT=${{ secrets.STAGING_MINIO_CONSOLE_PORT }}
+          VAULT_ENC_KEY=${{ secrets.STAGING_VAULT_ENC_KEY }}
+          SUPAVISOR_ENC_KEY=${{ secrets.STAGING_SUPAVISOR_ENC_KEY }}
+          SECRET_KEY_BASE=${{ secrets.STAGING_SECRET_KEY_BASE }}
           MINIO_ROOT_USER=${{ secrets.STAGING_MINIO_ROOT_USER }}
           MINIO_ROOT_PASSWORD=${{ secrets.STAGING_MINIO_PASSWORD }}
-          MINIO_DATA_PATH=${{ secrets.STAGING_MINIO_DATA_PATH }}
-          MINIO_BROWSER_REDIRECT_URL=${{ secrets.STAGING_MINIO_BROWSER_REDIRECT_URL }}
-          POOLER_TENANT_ID=${{ secrets.STAGING_POOLER_TENANT_ID }}
-          POOLER_DEFAULT_POOL_SIZE=${{ secrets.STAGING_POOLER_DEFAULT_POOL_SIZE }}
-          POOLER_MAX_CLIENT_CONN=${{ secrets.STAGING_POOLER_MAX_CLIENT_CONN }}
-          POOLER_DB_POOL_SIZE=${{ secrets.STAGING_POOLER_DB_POOL_SIZE }}
           DASHBOARD_USERNAME=${{ secrets.STAGING_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.STAGING_DASHBOARD_PASSWORD }}
-          SITE_URL=${{ secrets.STAGING_SITE_URL }}
-          API_EXTERNAL_URL=${{ secrets.STAGING_API_EXTERNAL_URL }}
-          ADDITIONAL_REDIRECT_URLS=${{ secrets.STAGING_ADDITIONAL_REDIRECT_URLS }}
-          ENABLE_ANONYMOUS_USERS=${{ secrets.STAGING_ENABLE_ANONYMOUS_USERS }}
-          ENABLE_EMAIL_SIGNUP=${{ secrets.STAGING_ENABLE_EMAIL_SIGNUP }}
-          ENABLE_EMAIL_AUTOCONFIRM=${{ secrets.STAGING_ENABLE_EMAIL_AUTOCONFIRM }}
-          DISABLE_SIGNUP=${{ secrets.STAGING_DISABLE_SIGNUP }}
-          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.STAGING_NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
-          NEXT_PUBLIC_APP_URL=${{ secrets.STAGING_NEXT_PUBLIC_APP_URL }}
-          SUPABASE_URL=${{ secrets.STAGING_SUPABASE_URL }}
-          SUPABASE_PUBLIC_URL=${{ secrets.STAGING_SUPABASE_PUBLIC_URL }}
-          SUPABASE_COOKIE_NAME=${{ secrets.STAGING_SUPABASE_COOKIE_NAME }}
-          STUDIO_DEFAULT_ORGANIZATION=${{ secrets.STAGING_STUDIO_DEFAULT_ORGANIZATION }}
-          STUDIO_DEFAULT_PROJECT=${{ secrets.STAGING_STUDIO_DEFAULT_PROJECT }}
-          STUDIO_SUPABASE_PUBLIC_URL=${{ secrets.STAGING_STUDIO_SUPABASE_PUBLIC_URL }}
-          IMGPROXY_URL=${{ secrets.STAGING_IMGPROXY_URL }}
-          IMGPROXY_ENABLE_WEBP_DETECTION=${{ secrets.STAGING_IMGPROXY_ENABLE_WEBP_DETECTION }}
-          BLOOM_PLOTS_DIR=${{ secrets.STAGING_BLOOM_PLOTS_DIR }}
-          BLOOM_PLOTS_URL=${{ secrets.STAGING_BLOOM_PLOTS_URL }}
           BLOOMMCP_API_KEY=${{ secrets.STAGING_BLOOMMCP_API_KEY }}
-          BLOOM_MCP_URL=${{ secrets.STAGING_BLOOM_MCP_URL }}
           OPENAI_API_KEY=${{ secrets.STAGING_OPENAI_API_KEY }}
-          CORS_ORIGINS=${{ secrets.STAGING_CORS_ORIGINS }}
-          LANGCHAIN_TRACING_V2=${{ secrets.STAGING_LANGCHAIN_TRACING_V2 }}
           LANGCHAIN_API_KEY=${{ secrets.STAGING_LANGCHAIN_API_KEY }}
-          LANGCHAIN_PROJECT=${{ secrets.STAGING_LANGCHAIN_PROJECT }}
-          LANGCHAIN_POSTGRES_URL=postgresql://${{ secrets.STAGING_POSTGRES_USER }}:${{ secrets.STAGING_POSTGRES_PASSWORD }}@${{ secrets.STAGING_POSTGRES_HOST }}:${{ secrets.STAGING_POSTGRES_PORT }}/${{ secrets.STAGING_POSTGRES_DB }}
-          ENVEOF
-          chmod 600 ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging"
+          MINIO_DATA_PATH=${{ secrets.STAGING_MINIO_DATA_PATH }}
+          BLOOM_AGENT_KEY=${{ secrets.STAGING_BLOOM_AGENT_KEY }}
+          # _EOF_MARKER_
+          SECRETS
+
+          bash "${{ github.workspace }}/scripts/validate_env.sh" \
+            "$f_next" \
+            "${{ github.workspace }}/docker-compose.prod.yml"
+
+          mv "$f_next" "$f_final"
+
+          trap - INT TERM HUP ERR
+
+      # See deploy-production's equivalent step for rationale.
+      - name: Verify DEPLOY_USER can read .env.staging
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "test -r ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging" \
+            || { echo "::error::DEPLOY_USER cannot read .env.staging — runner-user and DEPLOY_USER must match, or group-readable perms needed"; exit 1; }
 
       - name: Save previous SHA for rollback
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            mkdir -p '${{ secrets.STAGING_DEPLOY_PATH }}.state'
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            git rev-parse HEAD > .previous_sha
-            echo \"Saved previous SHA: \$(cat .previous_sha)\"
+            git rev-parse HEAD > '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha'
+            echo \"Saved previous SHA: \$(cat '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha')\"
           "
 
       - name: Pull latest code
@@ -649,36 +661,59 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            # Source DOMAIN_* and port from the server-side .env.staging file
-            # generated earlier in this workflow (from GitHub Secrets today;
-            # from .env.staging.defaults + secrets after PR #144 merges).
-            # Reading from the deployed .env file is the runtime source of
-            # truth for this smoke test — robust across that config-source
-            # refactor without code changes here.
+            # Connectivity smoke test — hits 4 endpoints through Caddy and
+            # asserts each returns a 2xx/3xx:
+            #   1. <main>/                bloom-web frontend
+            #   2. <studio>/              Studio UI
+            #   3. <minio>/               MinIO console
+            #   4. <main>/api/rest/v1/    Kong key-auth -> ACL -> REST -> DB
+            #                             (sends apikey header)
+            #
+            # Probes HTTPS directly via --resolve (forces domain -> 127.0.0.1)
+            # so the test works regardless of whether CADDY_HTTPS_LISTEN_PORT
+            # is 443 (prod) or 8443 (staging). Avoids the HTTP -> HTTPS redirect
+            # dance that fails when the redirect target port isn't published.
             DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.staging | cut -d= -f2-)
             DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.staging | cut -d= -f2-)
             DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.staging | cut -d= -f2-)
-            PORT=\$(grep '^CADDY_HTTP_LISTEN_PORT=' .env.staging | cut -d= -f2-)
+            PORT=\$(grep '^CADDY_HTTPS_LISTEN_PORT=' .env.staging | cut -d= -f2-)
+            ANON_KEY=\$(grep '^ANON_KEY=' .env.staging | cut -d= -f2-)
             : \"\${DOMAIN_MAIN:?missing DOMAIN_MAIN in .env.staging}\"
             : \"\${DOMAIN_STUDIO:?missing DOMAIN_STUDIO in .env.staging}\"
             : \"\${DOMAIN_MINIO:?missing DOMAIN_MINIO in .env.staging}\"
-            : \"\${PORT:?missing CADDY_HTTP_LISTEN_PORT in .env.staging}\"
+            : \"\${PORT:?missing CADDY_HTTPS_LISTEN_PORT in .env.staging}\"
+            : \"\${ANON_KEY:?missing ANON_KEY in .env.staging}\"
+            echo \"::add-mask::\$ANON_KEY\"
 
             failed=0
-            for probe in \"\$DOMAIN_MAIN|/\" \"\$DOMAIN_MAIN|/api/\" \"\$DOMAIN_STUDIO|/\" \"\$DOMAIN_MINIO|/\" \"\$DOMAIN_MAIN|/api/health\"; do
-              HOST=\"\${probe%|*}\"
-              ENDPOINT=\"\${probe#*|}\"
-              STATUS=\$(curl -sLk -o /dev/null -w '%{http_code}' \
-                -H \"Host: \$HOST\" \
-                --max-time 10 \
-                \"http://localhost:\$PORT\$ENDPOINT\" || echo 000)
-              if [ \"\$STATUS\" -lt 200 ] || [ \"\$STATUS\" -ge 400 ]; then
-                echo \"::error::Smoke test failed on \$HOST\$ENDPOINT (HTTP \$STATUS)\"
+            _probe() {
+              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
+              # Retry up to 3 times on connection failure (status 000) — Caddy's
+              # \`tls internal\` generates certs lazily on first handshake; the
+              # first probe after a fresh deploy can race the cert generation.
+              local status=000
+              for _ in 1 2 3; do
+                if [ -n \"\$extra\" ]; then
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                else
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
+                fi
+                [ \"\$status\" != \"000\" ] && break
+                sleep 2
+              done
+              if [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
+                echo \"::error::Smoke test failed on \$host\$path (HTTP \$status)\"
                 failed=1
               else
-                echo \"  \$HOST\$ENDPOINT -> \$STATUS\"
+                echo \"  \$host\$path -> \$status\"
               fi
-            done
+            }
+
+            _probe \"\$DOMAIN_MAIN\"   \"/\"
+            _probe \"\$DOMAIN_STUDIO\" \"/\"
+            _probe \"\$DOMAIN_MINIO\"  \"/\"
+            _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
+
             exit \$failed
           "
 
@@ -703,8 +738,10 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
             for i in \$(seq 1 60); do
-              if docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T db-prod \
+              if docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T \
+                   -e PGPASSWORD=\"\$PG_PASSWORD\" db-prod \
                    psql -U supabase_admin -d postgres -tAc \
                    \"SELECT 1 FROM information_schema.tables WHERE table_schema='storage' AND table_name='buckets'\" 2>/dev/null \
                    | grep -q '^1\$'; then
@@ -726,13 +763,7 @@ jobs:
           PENDING=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
-            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
-            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
-            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
-            supabase migration list --debug \
-              --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" \
-              2>/dev/null \
+            bash scripts/deploy_run_supabase.sh staging 'migration list --debug' 2>/dev/null \
               | awk -F'|' 'NR>2 && \$1 ~ /[0-9]{14}/ && \$2 !~ /[0-9]/ {c++} END { if (NR < 3) { print \"unknown\"; exit 2 } print c+0 }'
           ") || PENDING="unknown"
           case "$PENDING" in ''|*[!0-9]*) PENDING="unknown" ;; esac
@@ -765,15 +796,7 @@ jobs:
               echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
               exit 1
             fi
-            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
-            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
-            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
-            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
-            : \"\${PG_USER:?POSTGRES_USER missing from .env.staging}\"
-            : \"\${PG_PASSWORD:?POSTGRES_PASSWORD missing from .env.staging}\"
-            : \"\${PG_DB:?POSTGRES_DB missing from .env.staging}\"
-            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.staging}\"
-            supabase db push --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug --yes
+            bash scripts/deploy_run_supabase.sh staging 'db push --debug --yes'
           " || {
             echo '::error title=Migration failed (staging)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
             exit 1
@@ -785,12 +808,7 @@ jobs:
           echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
-            PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
-            PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
-            PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
-            : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.staging}\"
-            supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
+            bash scripts/deploy_run_supabase.sh staging 'migration list --debug'
           " || echo '::warning::Could not fetch migration status'
 
       - name: Migration summary (staging)
@@ -803,12 +821,7 @@ jobs:
             echo '```'
             ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
               cd ${{ secrets.STAGING_DEPLOY_PATH }}
-              PG_USER=\$(grep -E '^POSTGRES_USER=' .env.staging | cut -d= -f2-)
-              PG_PASSWORD=\$(grep -E '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
-              PG_DB=\$(grep -E '^POSTGRES_DB=' .env.staging | cut -d= -f2-)
-              PG_HOST_PORT=\$(grep -E '^POSTGRES_HOST_PORT=' .env.staging | cut -d= -f2-)
-              : \"\${PG_HOST_PORT:?POSTGRES_HOST_PORT missing from .env.staging}\"
-              supabase migration list --db-url \"postgresql://\${PG_USER}:\${PG_PASSWORD}@127.0.0.1:\${PG_HOST_PORT}/\${PG_DB}?sslmode=disable\" --debug
+              bash scripts/deploy_run_supabase.sh staging 'migration list --debug'
             " 2>/dev/null || echo '(migration state fetch failed)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -822,8 +835,8 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -e
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            if [ -f .previous_sha ]; then
-              PREV=\$(cat .previous_sha)
+            if [ -f '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha' ]; then
+              PREV=\$(cat '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha')
               echo \"Rolling back to \$PREV\"
               if [ -f .env.staging.previous ]; then
                 cp -p .env.staging.previous .env.staging

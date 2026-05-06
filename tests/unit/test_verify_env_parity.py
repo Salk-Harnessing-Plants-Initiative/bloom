@@ -29,20 +29,29 @@ def write_deploy(tmp_path: Path, body: str) -> Path:
     return f
 
 
-def prod_heredoc(body_lines: list[str], terminator: str = "ENVEOF") -> str:
+def prod_heredoc(body_lines: list[str], terminator: str = "SECRETS") -> str:
+    """Emit the new-style secret-append block for .env.prod.
+
+    Matches the shape produced by deploy.yml — a shell-var assignment that
+    names the target env file, followed by a `cat >> "$f"` heredoc. The
+    parity script resolves the env name by walking back from the heredoc
+    to that assignment.
+    """
     indent = "          "
     lines = [
-        f"{indent}ssh cmd \"cat > /opt/bloom/production/.env.prod << '{terminator}'",
+        f'{indent}f="/opt/bloom/production/.env.prod"',
+        f'{indent}cat >> "$f" << \'{terminator}\'',
     ]
     lines.extend(f"{indent}{l}" for l in body_lines)
     lines.append(f"{indent}{terminator}")
     return "\n".join(lines)
 
 
-def staging_heredoc(body_lines: list[str], terminator: str = "ENVEOF") -> str:
+def staging_heredoc(body_lines: list[str], terminator: str = "SECRETS") -> str:
     indent = "          "
     lines = [
-        f"{indent}ssh cmd \"cat > /opt/bloom/staging/.env.staging << '{terminator}'",
+        f'{indent}f="/opt/bloom/staging/.env.staging"',
+        f'{indent}cat >> "$f" << \'{terminator}\'',
     ]
     lines.extend(f"{indent}{l}" for l in body_lines)
     lines.append(f"{indent}{terminator}")
@@ -299,14 +308,15 @@ def test_literal_in_one_block_secret_in_other_fails(tmp_path):
 
 
 def test_malformed_heredoc_fails_fast(tmp_path):
-    # Prod heredoc start with no matching ENVEOF. Tightened to assert the
-    # three-channel contract (stderr line, GitHub annotation, failure class)
-    # so a regression that drops the annotation is caught.
+    # Prod heredoc start with no matching terminator. Asserts the three-channel
+    # contract (stderr line, GitHub annotation, failure class) so a regression
+    # that drops the annotation is caught.
     indent = "          "
     body = (
-        f"{indent}ssh cmd \"cat > /opt/bloom/production/.env.prod << 'ENVEOF'\n"
+        f'{indent}f="/opt/bloom/production/.env.prod"\n'
+        f"{indent}cat >> \"$f\" << 'SECRETS'\n"
         f"{indent}POSTGRES_DB=${{{{ secrets.PROD_POSTGRES_DB }}}}\n"
-        # No closing ENVEOF!
+        # No closing SECRETS!
     )
     f = write_deploy(tmp_path, body)
     result = run(f)
@@ -316,7 +326,8 @@ def test_malformed_heredoc_fails_fast(tmp_path):
 def test_third_env_block_fails(tmp_path):
     indent = "          "
     dev_heredoc = (
-        f"{indent}ssh cmd \"cat > /opt/bloom/dev/.env.dev << 'DEVEOF'\n"
+        f'{indent}f="/opt/bloom/dev/.env.dev"\n'
+        f"{indent}cat >> \"$f\" << 'DEVEOF'\n"
         f"{indent}FOO=bar\n"
         f"{indent}DEVEOF"
     )

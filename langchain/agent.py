@@ -6,8 +6,8 @@ import os
 from typing import Optional, Literal
 
 import httpx
-from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import trim_messages, SystemMessage, AIMessage, HumanMessage
 from psycopg_pool import AsyncConnectionPool
@@ -15,6 +15,10 @@ from psycopg_pool import AsyncConnectionPool
 import logging
 from rich.logging import RichHandler
 from rich.traceback import install
+from db_url import compose_postgres_url
+from graph.context_loader import make_context_loader_node
+from graph.freeform import build_freeform_subgraph
+from graph.state import AgentState
 from tools import all_tools, generic_tools, scrna_tools, cyl_tools, context_tools
 
 install()
@@ -29,23 +33,11 @@ logging.basicConfig(
 #################################################### Agent Setup ####################################################
 
 # Postgres connection URL for persistent conversation memory.
-# Use LANGCHAIN_POSTGRES_URL directly, or build from individual POSTGRES_* env vars.
-_pg_url_override = os.getenv("LANGCHAIN_POSTGRES_URL")
-if _pg_url_override:
-    POSTGRES_URL = _pg_url_override
-else:
-    _pg_password = os.getenv("POSTGRES_PASSWORD")
-    if not _pg_password:
-        raise RuntimeError(
-            "Database configuration required: set LANGCHAIN_POSTGRES_URL or POSTGRES_PASSWORD"
-        )
-    POSTGRES_URL = "postgresql://{user}:{password}@{host}:{port}/{db}".format(
-        user=os.getenv("POSTGRES_USER", "postgres"),
-        password=_pg_password,
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=os.getenv("POSTGRES_PORT", "5432"),
-        db=os.getenv("POSTGRES_DB", "postgres"),
-    )
+# Built from individual POSTGRES_* env vars — same code path in dev, CI,
+# and prod so a bug in the composition never hides in only one environment.
+# Password is percent-encoded inside compose_postgres_url so characters
+# with URL-reserved meanings (@, :, /, #, %) can't corrupt the URL.
+POSTGRES_URL = compose_postgres_url()
 
 
 async def setup_checkpointer() -> AsyncPostgresSaver:
@@ -76,7 +68,12 @@ async def setup_checkpointer() -> AsyncPostgresSaver:
 
     checkpointer = AsyncPostgresSaver(pool)
     logger = logging.getLogger(__name__)
-    logger.info(f"PostgresSaver initialized with pool (min=2, max=10) → {POSTGRES_URL.split('@')[-1]}")
+    # Read POSTGRES_HOST directly from the environment for logging. Deriving
+    # the host from POSTGRES_URL would pass through a value that carries the
+    # password upstream, and CodeQL's taint tracker doesn't recognize
+    # urlsplit().hostname as a sanitizer for py/clear-text-logging-sensitive-data.
+    host = os.environ.get("POSTGRES_HOST", "<unknown>")
+    logger.info(f"PostgresSaver initialized with pool (min=2, max=10) → host={host}")
     return checkpointer
 
 
@@ -86,16 +83,6 @@ async def setup_checkpointer() -> AsyncPostgresSaver:
 def _count_tokens(messages) -> int:
     """Approximate token count (~4 chars per token)."""
     return sum(len(str(m.content)) for m in messages) // 4
-
-
-def _has_context_call(messages) -> bool:
-    """Check if get_agent_context was already called in the conversation."""
-    for msg in messages:
-        if isinstance(msg, AIMessage) and msg.tool_calls:
-            for tc in msg.tool_calls:
-                if tc.get("name") == "get_agent_context":
-                    return True
-    return False
 
 
 SUMMARIZATION_PROMPT = """Summarize the following conversation between a user and an AI assistant on a plant biology platform.
@@ -178,12 +165,10 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
 
     async def pre_model_hook(state):
         messages = state["messages"]
-        # Safety net: remind to call get_agent_context on first turn
-        if len(messages) <= 2 and not _has_context_call(messages):
-                reminder = SystemMessage(
-                    content="Remember: call get_agent_context to learn about available data sources before answering."
-                )
-                messages = [messages[0], reminder] + messages[1:] if messages else [reminder]
+        # Reminder injection removed — `graph.context_loader.context_loader_node`
+        # injects the agent context deterministically as a SystemMessage at the
+        # start of every graph invocation, so the LLM no longer needs a hint to
+        # remember to call get_agent_context.
         total_tokens = _count_tokens(messages)
         if total_tokens > thresholds["summarize_at"]:
             # Find the split point: keep the last N tokens of messages
@@ -216,6 +201,30 @@ def make_pre_model_hook(provider: str = "openai", llm=None):
                 allow_partial=False,
                 start_on="human",
             )
+        # Coerce every SystemMessage into a single merged block at the start,
+        # ALWAYS led by SYSTEM_PROMPT.
+        #
+        # Why we own the system block here:
+        #   - vLLM with Qwen's chat template only allows ONE system block at
+        #     index 0; any second SystemMessage triggers "System message must
+        #     be at the beginning."
+        #   - create_react_agent normally prepends its own SystemMessage from
+        #     the `prompt=...` argument, which collides with whatever this
+        #     hook produces (resulting in two consecutive system blocks).
+        #   - To keep the contract single-source, we pass `prompt=None` to
+        #     create_react_agent and always emit exactly one merged
+        #     SystemMessage here. Every line of SYSTEM_PROMPT plus any
+        #     reminders or summaries are preserved by joining with blank
+        #     lines so no instruction is silently dropped.
+        system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
+        non_system_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
+        parts = [SYSTEM_PROMPT]
+        for m in system_msgs:
+            content = str(m.content) if m.content else ""
+            if content and content not in parts:  # dedupe identical blocks
+                parts.append(content)
+        merged_content = "\n\n".join(parts)
+        messages = [SystemMessage(content=merged_content)] + non_system_msgs
         return {"llm_input_messages": messages}
     return pre_model_hook
 
@@ -348,10 +357,42 @@ def create_agent(
     if mcp_tools:
         tools = tools + mcp_tools
 
-    return create_react_agent(
-        model=llm,
+    # Tier 0 of the upgrade-agent-architecture roadmap: replace the opaque
+    # `create_react_agent` return with an explicit StateGraph so every
+    # subsequent tier (top router, domain subgraphs, analysis router, MCP
+    # leaves, parallel recipes) has a real graph to attach nodes to.
+    #
+    # The graph has one node, `freeform`, which wraps the prebuilt ReAct
+    # agent. The checkpointer lives on the OUTER graph; the inner subgraph
+    # stays checkpointer=None so the parent's `messages` reducer is the
+    # single source of truth for thread state.
+    #
+    # system_prompt=None on purpose: the pre_model_hook owns the entire
+    # SystemMessage block (it merges SYSTEM_PROMPT, the get_agent_context
+    # reminder, and any summary into a single SystemMessage at index 0).
+    # Setting system_prompt=SYSTEM_PROMPT here would cause create_react_agent
+    # to ALSO prepend its own SystemMessage, producing two consecutive
+    # system blocks which Qwen's chat template rejects.
+    freeform = build_freeform_subgraph(
+        llm=llm,
         tools=tools,
-        prompt=SYSTEM_PROMPT,
-        checkpointer=checkpointer,
+        system_prompt=None,
         pre_model_hook=make_pre_model_hook(provider, llm=llm),
+        checkpointer=None,
     )
+
+    # Deterministic context-loader runs before the ReAct loop on every
+    # invocation. Replaces the prior reminder-injection branch in
+    # make_pre_model_hook — the LLM no longer needs to be told to call
+    # get_agent_context because the context is already in state.messages
+    # by the time freeform runs. Closure over tool_set so the same parent
+    # graph shape works for any tool subset selection.
+    context_loader = make_context_loader_node(tool_set=tool_set)
+
+    builder = StateGraph(AgentState)
+    builder.add_node("context_loader", context_loader)
+    builder.add_node("freeform", freeform)
+    builder.add_edge(START, "context_loader")
+    builder.add_edge("context_loader", "freeform")
+    builder.add_edge("freeform", END)
+    return builder.compile(checkpointer=checkpointer)
