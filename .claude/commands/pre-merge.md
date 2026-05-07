@@ -72,7 +72,7 @@ Requires a populated `.env.dev` — if missing, run `/validate-env` first.
 ```bash
 make prod-up
 docker compose -f docker-compose.prod.yml ps
-uv run --with pytest pytest tests/integration/ -v --tb=short
+uv run --extra test pytest tests/integration/ -v --tb=short
 make prod-down
 ```
 

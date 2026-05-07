@@ -25,11 +25,11 @@ Bloom is a full-stack web application for biological/scientific data visualizati
 
 ### Storage & Infrastructure
 
-- **Object Storage**: MinIO (S3-compatible) on ports 9100-9101
+- **Object Storage**: MinIO (S3-compatible) — container ports 9000 (S3 API) / 9001 (console); host ports via `${MINIO_PORT}` / `${MINIO_CONSOLE_PORT}`
 - **API Gateway**: Kong on port 8000 (Supabase services)
-- **Reverse Proxy**: Caddy in production (replaces the older Nginx setup as of #94); no reverse proxy in development (services are accessed directly)
+- **Reverse Proxy**: Caddy in staging and production (replaces the older Nginx setup as of #94); no reverse proxy in development (services are accessed directly)
 - **Containerization**: Docker Compose with separate `docker-compose.dev.yml` / `docker-compose.prod.yml`
-- **Volume Management**: Persistent volumes for Supabase (`volumes/`) and MinIO (`minio_data/`)
+- **Volume Management**: Persistent volumes for Supabase (`volumes/`) and MinIO (host path set via `${MINIO_DATA_PATH}` — defaults to `./volumes/minio-dev` locally; staging/prod set it via secrets)
 
 ### Ports
 
@@ -40,12 +40,12 @@ Container-internal ports (same in every environment — hard-coded in each servi
 - `bloommcp`: 8811
 - Kong Gateway: 8000
 - PostgreSQL: 5432
-- MinIO: 9100-9101
-- Supabase Studio: 55323
+- MinIO: 9000 (S3 API) / 9001 (console)
+- Supabase Studio: 3000 (different container than `bloom-web`, so the shared port doesn't collide)
 
 Host-facing port mappings differ per environment:
 
-- **Local dev** (`docker-compose.dev.yml`): `langchain-agent` and `bloommcp` are bound to the host via `${LANGCHAIN_PORT}` / `${BLOOMMCP_PORT}` for direct access (no Caddy in front).
+- **Local dev** (`docker-compose.dev.yml`): `langchain-agent` and `bloommcp` are bound to the host via `${LANGCHAIN_PORT}` / `${BLOOMMCP_PORT}` for direct access (no Caddy in front). MinIO and Studio are bound via `${MINIO_PORT}` / `${MINIO_CONSOLE_PORT}` / `${STUDIO_PORT}`.
 - **Staging and production** (both use `docker-compose.prod.yml`, differentiated only by env files — `.env.staging.defaults` vs `.env.prod.defaults`): `langchain-agent` and `bloommcp` use `expose:` instead of `ports:` — they are reachable only over the internal Docker network, behind Caddy. The only host-facing port is Caddy's HTTPS listener (`CADDY_HTTPS_LISTEN_PORT`, set per env).
 - A few host-facing ports differ between staging and prod via env vars — e.g., `POSTGRES_HOST_PORT=5432` (prod) vs `5433` (staging) (see comment at `docker-compose.prod.yml:481`).
 
@@ -169,7 +169,7 @@ Host-facing port mappings differ per environment:
 
 - **React version**: ships with Next.js 16.2.0 (the `react: 18.2.0` override block in root `package.json` is currently disabled — `_overrides_disabled`)
 - **Python version**: 3.11 for all Python services (pinned per-service via `.python-version`)
-- **Storage requirement**: MinIO needs a writable `minio_data/` directory at the repo root (gitignored; `chmod 777` for Docker)
+- **Storage requirement**: MinIO needs a writable host directory bind-mounted to `/data` via `${MINIO_DATA_PATH}` — defaults to `./volumes/minio-dev` for local dev (gitignored under `volumes/`); CI uses `/tmp/minio-ci`; staging/prod set it via secrets. Some host setups need `chmod 777` on that directory for Docker to write to it.
 
 ### Infrastructure Constraints
 
@@ -209,7 +209,7 @@ Host-facing port mappings differ per environment:
 ### Network Dependencies
 
 - **Kong API Gateway**: Routes requests to Supabase services
-- **Caddy**: Reverse proxy in staging and production (replaces older Nginx)
+- **Caddy**: Reverse proxy in staging and production (replaces older Nginx); auto-HTTPS via `tls internal` in staging (`CADDY_TLS_DIRECTIVE`)
 - **Inter-service communication**: Services communicate via the `supanet` Docker network
 
 ### Development Tools
