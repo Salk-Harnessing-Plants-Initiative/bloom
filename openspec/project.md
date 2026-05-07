@@ -29,7 +29,7 @@ Bloom is a full-stack web application for biological/scientific data visualizati
 - **API Gateway**: Kong on port 8000 (Supabase services)
 - **Reverse Proxy**: Caddy in staging and production (replaces the older Nginx setup as of #94); no reverse proxy in development (services are accessed directly)
 - **Containerization**: Docker Compose with separate `docker-compose.dev.yml` / `docker-compose.prod.yml`
-- **Volume Management**: Persistent volumes for Supabase (`volumes/`) and MinIO (host path set via `${MINIO_DATA_PATH}` — defaults to `./volumes/minio-dev` locally; staging/prod set it via secrets)
+- **Volume Management**: Persistent volumes for Supabase (`volumes/`) and MinIO (host path set per-environment via `${MINIO_DATA_PATH}` — for local dev, set in your `.env.dev` (see `DEV_SETUP.md`); CI uses `/tmp/minio-ci`; staging and prod set it via secrets)
 
 ### Ports
 
@@ -169,7 +169,7 @@ Host-facing port mappings differ per environment:
 
 - **React version**: ships with Next.js 16.2.0 (the `react: 18.2.0` override block in root `package.json` is currently disabled — `_overrides_disabled`)
 - **Python version**: 3.11 for all Python services (pinned per-service via `.python-version`)
-- **Storage requirement**: MinIO needs a writable host directory bind-mounted to `/data` via `${MINIO_DATA_PATH}` — defaults to `./volumes/minio-dev` for local dev (gitignored under `volumes/`); CI uses `/tmp/minio-ci`; staging/prod set it via secrets. Some host setups need `chmod 777` on that directory for Docker to write to it.
+- **Storage requirement**: MinIO needs a writable host directory bind-mounted to `/data` via `${MINIO_DATA_PATH}`. The path is environment-specific: local dev sets it in `.env.dev` (see `DEV_SETUP.md` for the recommended layout); CI uses `/tmp/minio-ci`; staging and prod set it via secrets. The directory must be writable by the MinIO container's user — preferred fix is to match host UID/GID to the container's (`chmod 770` on the data dir is enough); `chmod 777` is a last-resort dev workaround and should not be propagated to staging/prod.
 
 ### Infrastructure Constraints
 

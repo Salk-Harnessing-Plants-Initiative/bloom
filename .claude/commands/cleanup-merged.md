@@ -31,10 +31,12 @@ gh pr list --state merged --author @me
 This repo is staging-first: feature PRs merge into `staging`, and `staging` is periodically promoted to `main`. Default to `staging` here. Use `main` only when cleaning up a consolidation rollup PR (e.g. a `staging → main` promotion) — `gh pr view <number> --json baseRefName` will tell you which.
 
 ```bash
-# Switch to the branch the PR was merged into (usually staging)
-git checkout staging
+# Switch to the branch the PR was merged into
+git checkout staging   # or `main` for staging → main consolidation rollups
 
-# Pull latest changes
+# Pull latest changes — STOP and resolve if this fails
+# (diverged history, network, lock file, etc.). Don't proceed to `git branch -d`
+# against a stale base — verify the merge is visible locally first.
 git pull
 
 # Verify you're up to date
