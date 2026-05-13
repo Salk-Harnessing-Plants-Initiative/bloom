@@ -49,3 +49,14 @@ CVE-2026-31789
 # Reassess on next python:3.11-slim SHA bump or when Debian publishes a fix.
 # Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-33845
 CVE-2026-33845
+
+# libssh2-1t64 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
+# Integer overflow via large username or password during SSH client
+# authentication. The langchain agent never initiates SSH connections —
+# libssh2 is a transitive base-image package (pulled by curl/git), not
+# linked or invoked by application code. Exploit requires acting as an SSH
+# client against a malicious server with attacker-controlled credentials,
+# which never happens in our runtime path.
+# Reassess on next python:3.11-slim SHA bump or when Debian publishes a fix.
+# Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-7598
+CVE-2026-7598
