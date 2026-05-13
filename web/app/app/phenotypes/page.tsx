@@ -98,7 +98,7 @@ async function getSpeciesList(): Promise<SpeciesWithExperiments[] | null> {
   const { data } = await supabase
     .from("species")
     .select("*, cyl_experiments!inner(id, name)")
-    .neq("cyl_experiments.deleted", true);
+    .is("cyl_experiments.deleted_at", null);
 
   const typedData = data as SpeciesWithExperiments[] | null;
 
