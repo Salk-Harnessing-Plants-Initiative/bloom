@@ -9,9 +9,10 @@ import { Key } from "react";
 export default async function Species({
   params,
 }: {
-  params: { speciesId: number };
+  params: Promise<{ speciesId: number }>;
 }) {
-  const species: any  = await getSpeciesWithExperiments(params.speciesId);
+  const { speciesId } = await params;
+  const species: any  = await getSpeciesWithExperiments(speciesId);
 
   const user = await getUser();
 
@@ -21,7 +22,7 @@ export default async function Species({
 
   mixpanel?.track("Page view", {
     distinct_id: user?.email,
-    url: `/app/traits/${params.speciesId}`,
+    url: `/app/traits/${speciesId}`,
   });
 
   return (
@@ -99,7 +100,7 @@ async function getSpeciesWithExperiments(speciesId: number) {
       "*, cyl_experiments!inner(*, cyl_waves(*, cyl_plants(*, accessions(*))))"
     )
     .eq("id", speciesId)
-    .neq("cyl_experiments.deleted", true)
+    .is("cyl_experiments.deleted_at", null)
     .single();
 
   return data;

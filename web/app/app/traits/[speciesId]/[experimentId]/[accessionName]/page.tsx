@@ -6,15 +6,16 @@ import PlantImage from '@/components/plant-image';
 import { Key } from 'react';
 
 
-export default async function Accession({ params }: { params: { experimentId: number, accessionName: string } }) {
+export default async function Accession({ params }: { params: Promise<{ experimentId: number, accessionName: string }> }) {
 
-  const experiment : any = await getExperimentWithSpecies(params.experimentId)
+  const { experimentId, accessionName } = await params;
+  const experiment : any = await getExperimentWithSpecies(experimentId)
   const species = experiment?.species
   const experimentName = capitalizeFirstLetter(experiment?.name.replaceAll('-', ' ') ?? '')
   const speciesName = species?.common_name ?? ''
 
-  const lineNameUnescaped = params.accessionName.replaceAll('%20', ' ')
-  const plants: any  = await getPlants(lineNameUnescaped, params.experimentId)  
+  const lineNameUnescaped = accessionName.replaceAll('%20', ' ')
+  const plants: any  = await getPlants(lineNameUnescaped, experimentId)
 
   return (
     <div className=''>
@@ -59,7 +60,7 @@ export default async function Accession({ params }: { params: { experimentId: nu
                     {scan.cyl_images.map((image: { id: Key | null | undefined; object_path: string | null; }) => (
                       <div key={image.id} className='text-center'>
                         <div className='pb-1'>Day {scan.plant_age_days}</div>
-                        <Link href={`/app/phenotypes/${species?.id}/${experiment?.id}/${params.accessionName}/${image.id}`}>
+                        <Link href={`/app/phenotypes/${species?.id}/${experiment?.id}/${accessionName}/${image.id}`}>
                           <PlantImage path={image.object_path} thumb={true} />
                         </Link>
                       </div>

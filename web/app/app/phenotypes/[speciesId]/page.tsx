@@ -226,7 +226,7 @@ async function getSpeciesWithExperiments(speciesId: number) {
       "*, cyl_experiments!inner(*, people(*), cyl_waves(*, cyl_plants(*, accessions(*))))"
     )
     .eq("id", speciesId)
-    .neq("cyl_experiments.deleted", true)
+    .is("cyl_experiments.deleted_at", null)
     .single();
 
   return data;
