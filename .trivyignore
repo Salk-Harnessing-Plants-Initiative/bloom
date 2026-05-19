@@ -49,3 +49,23 @@ CVE-2026-31789
 # Reassess on next python:3.11-slim SHA bump or when Debian publishes a fix.
 # Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-33845
 CVE-2026-33845
+
+# libgnutls30t64 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
+# GnuTLS authentication bypass via NUL character in username. The langchain
+# agent does not authenticate clients via GnuTLS (FastAPI uses Supabase JWT
+# over plain TCP), so the affected code path is not reachable. Transitive
+# Debian base package, no fix available upstream. Reassess on next SHA bump.
+CVE-2026-42010
+
+# libpython3.13 / python3.13 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
+# xml.parsers.expat / xml.etree.ElementTree insufficient hash randomization
+# entropy. The agent runs python3.11 (not 3.13); python3.13 ships as a base
+# Debian package but is never executed. Agent input is JSON via FastAPI, no
+# untrusted XML parsing. No fix available. Reassess on next SHA bump.
+CVE-2026-7210
+
+# libssh2-1t64 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
+# Integer overflow on large username/password arguments. The agent does not
+# use libssh2 / SSH at runtime; transitive Debian base package. No fix
+# available upstream. Reassess on next SHA bump.
+CVE-2026-7598
