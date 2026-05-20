@@ -1,7 +1,6 @@
 export const revalidate = 60 // revalidate this page every 60 seconds
 
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import Image from 'next/image'
 import { promises as fs } from 'fs'
 import path from 'path'
 
@@ -60,11 +59,10 @@ export default async function Illustration({
 
   if (objectUrl) {
     return (
-      <Image
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
         alt={commonName ?? 'Species illustration'}
         src={objectUrl}
-        width={192}
-        height={192}
         className="w-full h-full object-contain"
       />
     )

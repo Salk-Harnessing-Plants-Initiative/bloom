@@ -94,7 +94,7 @@ function saveThreadId(id: string) {
 function loadSettings(): LLMSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return { provider: "local", model: "Qwen/Qwen3-8B", toolSet: "generic", mcpToolNames: [] };
+    if (!raw) return { provider: "local", model: "Qwen/Qwen3.5-9B", toolSet: "generic", mcpToolNames: [] };
     const parsed = JSON.parse(raw);
     if (!parsed.toolSet) parsed.toolSet = "generic";
     if (!parsed.mcpToolNames) parsed.mcpToolNames = [];
@@ -102,7 +102,7 @@ function loadSettings(): LLMSettings {
     if (parsed.provider === "claude") parsed.provider = "local";
     return parsed;
   } catch {
-    return { provider: "local", model: "Qwen/Qwen3-8B", toolSet: "generic", mcpToolNames: [] };
+    return { provider: "local", model: "Qwen/Qwen3.5-9B", toolSet: "generic", mcpToolNames: [] };
   }
 }
 
@@ -160,21 +160,36 @@ export default function MCPChat() {
   const [AVAILABLE_MODELS, setAvailableModels] = useState<Record<string, string[]>>(AVAILABLE_MODELS_DEFAULT);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/langchain/models`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data) => {
-        if (data.models) setAvailableModels(data.models);
-      })
-      .catch(() => {});
+    (async () => {
+      try {
+        const token = await getAuthToken();
+        if (!token) return;
+        const r = await fetch(`${API_BASE_URL}/langchain/models`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (!data.models) return;
+        setAvailableModels(data.models);
+        // Reconcile saved model against what the backend is actually serving.
+        // If the saved model isn't in the available list, swap to the first one
+        // and persist. Prevents 404s from a stale localStorage entry pointing at
+        // a model that's been replaced or renamed server-side.
+        setSettings((prev) => {
+          const valid = data.models[prev.provider] || [];
+          if (valid.length === 0 || valid.includes(prev.model)) return prev;
+          const fixed = { ...prev, model: valid[0] };
+          saveSettings(fixed);
+          return fixed;
+        });
+      } catch {}
+    })();
   }, []);
 
   // LLM Settings
   const [settings, setSettings] = useState<LLMSettings>(() => ({
     provider: "local",
-    model: "Qwen/Qwen3-8B",
+    model: "Qwen/Qwen3.5-9B",
     toolSet: "generic",
     mcpToolNames: [],
   }));
@@ -210,17 +225,31 @@ export default function MCPChat() {
     if (savedMessages.length > 0) setMessages(savedMessages);
 
     // Fetch available MCP tools from backend
-    fetch(`${API_BASE_URL}/langchain/mcp-tools`)
-      .then((r) => r.json())
-      .then((data) => {
+    (async () => {
+      try {
+        const token = await getAuthToken();
+        if (!token) {
+          setAvailableMcpTools([]);
+          return;
+        }
+        const r = await fetch(`${API_BASE_URL}/langchain/mcp-tools`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!r.ok) {
+          setAvailableMcpTools([]);
+          return;
+        }
+        const data = await r.json();
         const HIDDEN_TOOLS = new Set([
           "list_available_experiments",
           "load_experiment_data",
           "inspect_data_quality",
         ]);
         setAvailableMcpTools((data.tools || []).filter((t: MCPTool) => !HIDDEN_TOOLS.has(t.name)));
-      })
-      .catch(() => setAvailableMcpTools([]));
+      } catch {
+        setAvailableMcpTools([]);
+      }
+    })();
 
     // Fetch thread history
     fetchThreads();
