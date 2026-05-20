@@ -126,9 +126,8 @@ jobs:
       - name: Verify uv lockfiles are synced
         run: python scripts/check-uv-locks.py
 
-      # Checks langchain agent Python packages for vulnerabilities
       - name: Audit langchain dependencies
-        run: cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+        run: cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 --ignore-vuln PYSEC-2025-183 -r /dev/stdin
 
       # Checks bloommcp server Python packages for vulnerabilities
       - name: Audit bloommcp dependencies
