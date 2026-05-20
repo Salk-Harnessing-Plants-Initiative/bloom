@@ -75,7 +75,9 @@ def make_top_router_node(llm):
 
         try:
             messages = _build_classifier_messages(user_text)
-            decision = await classifier.ainvoke(messages)
+            decision = await classifier.ainvoke(
+                messages, config={"tags": ["router_internal"]}
+            )
         except Exception as exc:
             logger.warning(
                 "top_router: classifier raised %s, falling back to %s",
