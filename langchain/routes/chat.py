@@ -183,6 +183,8 @@ async def chat_stream(
                     yield f"data: {json.dumps({'type': 'tool_done', 'content': tool_name})}\n\n"
 
                 elif kind == "on_chat_model_stream":
+                    if "router_internal" in (event.get("tags") or []):
+                        continue
                     chunk = event.get("data", {}).get("chunk")
                     if chunk and isinstance(getattr(chunk, "content", None), str) and chunk.content:
                         yield f"data: {json.dumps({'type': 'token', 'content': chunk.content})}\n\n"
