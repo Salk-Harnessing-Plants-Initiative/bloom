@@ -91,15 +91,17 @@ END;
 $function$;
 
 -- 7. RLS policies on every public table for bloom_writer.
--- Role membership grants table privileges, but RLS policies are checked
--- separately by current_role. Add writer_<verb>_<table> mirroring the
--- existing user_<verb>_<table> naming. INSERT and UPDATE use
--- WITH CHECK (true) — bloom_writer is trusted, no ownership filter.
+-- Skip tables from Langraph implementation. 
+-- check Postgres applies before allowing CREATE POLICY.
 DO $$
 DECLARE
   r RECORD;
 BEGIN
-  FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+  FOR r IN
+    SELECT tablename
+    FROM pg_tables
+    WHERE schemaname = 'public'
+      AND pg_has_role(current_user, tableowner, 'MEMBER')
   LOOP
     EXECUTE format('DROP POLICY IF EXISTS writer_select_%I ON public.%I', r.tablename, r.tablename);
     EXECUTE format('CREATE POLICY writer_select_%I ON public.%I FOR SELECT TO bloom_writer USING (true)', r.tablename, r.tablename);
