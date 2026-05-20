@@ -1,6 +1,7 @@
-export const revalidate = 60 // revalidate this page every 60 seconds
+export const revalidate = 60 
 
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { toPublicStorageUrl } from '@/lib/supabase/storage-url'
 import { promises as fs } from 'fs'
 import path from 'path'
 
@@ -18,7 +19,7 @@ async function getObjectUrl(storagePath: string): Promise<string | null> {
     console.log('Illustration error:', error)
     return null
   }
-  return data?.signedUrl ?? null
+  return toPublicStorageUrl(data?.signedUrl)
 }
 
 function slugify(value: string | null | undefined): string {
