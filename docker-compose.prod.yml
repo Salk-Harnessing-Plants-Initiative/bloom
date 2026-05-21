@@ -46,6 +46,7 @@ services:
       CADDY_TLS_DIRECTIVE: ${CADDY_TLS_DIRECTIVE}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/certs:/etc/caddy/certs:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
