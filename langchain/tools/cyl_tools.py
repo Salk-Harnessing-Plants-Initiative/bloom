@@ -32,6 +32,88 @@ def _distinct_trait_names_for_experiments(experiment_ids: list[int]) -> list[str
 
 
 @tool
+def compare_trait_between_experiments_tool(
+    experiment_a_id: int,
+    experiment_b_id: int,
+    trait_name: str,
+) -> dict:
+    """Compare a trait's aggregate stats between exactly two experiments.
+
+    Returns wave-level breakdowns (count, mean, std, min, max) for the named
+    trait in both experiments. Use this when the user asks how a trait
+    differs across two experiments.
+
+    Workflow:
+      1. Use list_experiments_tool first to discover experiment IDs
+      2. Pass the two IDs and the trait name here
+
+    NOT for:
+      - Single-experiment trait stats — use get_experiment_trait_stats_tool
+      - 3+ experiment comparisons — this tool is two-experiment only.
+        Tell the user that a wider comparison isn't supported yet rather
+        than chaining pairwise calls (which would be statistically misleading).
+
+    If the trait name doesn't match anything in the requested experiments,
+    the tool returns a suggestions payload instead of running the query.
+    Surface the suggestions to the user and retry with their selection.
+
+    Returns:
+        Success: {"rows": [...wave-level stats...], "experiment_a_name", ...}
+        Trait miss: {"error": "trait not found", "trait_name", "suggestions", "sample_traits"}
+        No data: {"rows": [], "note": "..."}
+    """
+    if experiment_a_id == experiment_b_id:
+        raise ValueError(
+            "compare_trait_between_experiments_tool requires two distinct experiment IDs. "
+            "For single-experiment trait stats, use get_experiment_trait_stats_tool."
+        )
+
+    candidates = _distinct_trait_names_for_experiments([experiment_a_id, experiment_b_id])
+    resolved = _resolve_trait_name(trait_name, candidates)
+    if not resolved["matched"]:
+        return {
+            "error": "trait not found",
+            "trait_name": trait_name,
+            "suggestions": resolved["suggestions"],
+            "sample_traits": resolved["sample_traits"],
+        }
+
+    ids_csv = f"{experiment_a_id},{experiment_b_id}"
+    response = httpx.get(
+        f"{REST_URL}/cyl_trait_by_experiment_wave",
+        headers=get_headers(),
+        params={
+            "experiment_id": f"in.({ids_csv})",
+            "trait_name": f"eq.{trait_name}",
+            "select": "experiment_id,experiment_name,wave_id,wave_number,trait_name,n,mean,std,min_value,max_value",
+            "order": "experiment_id.asc,wave_number.asc",
+        },
+    )
+    if response.status_code != 200:
+        raise Exception(f"Failed to compare trait: {response.text}")
+    rows = response.json()
+
+    if not rows:
+        return {
+            "rows": [],
+            "trait_name": trait_name,
+            "note": "no matching scans for this trait in either experiment",
+        }
+
+    exp_a_name = next((r["experiment_name"] for r in rows if r["experiment_id"] == experiment_a_id), None)
+    exp_b_name = next((r["experiment_name"] for r in rows if r["experiment_id"] == experiment_b_id), None)
+
+    return {
+        "rows": rows,
+        "trait_name": trait_name,
+        "experiment_a_id": experiment_a_id,
+        "experiment_a_name": exp_a_name,
+        "experiment_b_id": experiment_b_id,
+        "experiment_b_name": exp_b_name,
+    }
+
+
+@tool
 def list_experiments_tool(limit: int = 50) -> list:
     """List all cylinder phenotyping experiments with species info."""
     response = httpx.get(
