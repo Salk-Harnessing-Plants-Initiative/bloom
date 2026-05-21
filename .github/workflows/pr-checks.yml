@@ -306,6 +306,11 @@ jobs:
           echo "ENABLE_EMAIL_SIGNUP=true" >> .env.ci
           echo "ENABLE_EMAIL_AUTOCONFIRM=true" >> .env.ci
           echo "DISABLE_SIGNUP=false" >> .env.ci
+          echo "SMTP_HOST=localhost" >> .env.ci
+          echo "SMTP_PORT=25" >> .env.ci
+          echo "SMTP_ADMIN_EMAIL=noreply@bloom-ci.local" >> .env.ci
+          echo "SMTP_SENDER_NAME=Bloom CI" >> .env.ci
+          echo "SMTP_MAX_FREQUENCY=60s" >> .env.ci
           echo "API_EXTERNAL_URL=http://localhost:9999" >> .env.ci
           echo "ADDITIONAL_REDIRECT_URLS=http://localhost" >> .env.ci
           echo "SITE_URL=http://localhost" >> .env.ci
