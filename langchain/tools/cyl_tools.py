@@ -5,6 +5,30 @@ from typing import Optional
 import httpx
 from langchain_core.tools import tool
 from .base import REST_URL, get_headers
+from trait_name_resolver import _resolve_trait_name 
+
+
+def _distinct_trait_names_for_experiments(experiment_ids: list[int]) -> list[str]:
+    """Return deduplicated trait names present in cyl_scan_traits for the
+    requested experiments, via the cyl_trait_by_experiment_wave view.
+
+    Used by tools that accept a trait_name argument to build the candidate
+    set for fuzzy resolution via _resolve_trait_name.
+    """
+    if not experiment_ids:
+        return []
+    ids_csv = ",".join(str(i) for i in experiment_ids)
+    response = httpx.get(
+        f"{REST_URL}/cyl_trait_by_experiment_wave",
+        headers=get_headers(),
+        params={
+            "experiment_id": f"in.({ids_csv})",
+            "select": "trait_name",
+        },
+    )
+    if response.status_code != 200:
+        raise Exception(f"Failed to fetch trait names: {response.text}")
+    return sorted({row["trait_name"] for row in response.json()})
 
 
 @tool
