@@ -851,6 +851,9 @@ def get_experiment_trait_stats_tool(experiment_id: int, trait_name: str) -> dict
     }
 
 
+_TRAIT_CHIPS_LIMIT = 20
+
+
 @tool
 def list_traits_tool() -> dict:
     """
@@ -872,9 +875,15 @@ def list_traits_tool() -> dict:
         raise Exception(f"Failed to list traits: {response.text}")
 
     traits = response.json()
+    names = [t["name"] for t in traits]
+    followup_actions = [
+        {"label": name, "prompt": f"Show me stats for {name}"}
+        for name in names[:_TRAIT_CHIPS_LIMIT]
+    ]
     return {
         "count": len(traits),
-        "traits": [t["name"] for t in traits],
+        "traits": names,
+        "followup_actions": followup_actions,
         "hint": "Use these trait names with analytics tools like get_trait_growth_stats_tool or get_experiment_trait_stats_tool"
     }
 
