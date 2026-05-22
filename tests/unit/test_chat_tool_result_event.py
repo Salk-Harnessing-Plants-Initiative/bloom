@@ -101,3 +101,37 @@ def test_handles_toolmessage_wrapper_with_json_string_content():
     assert line is not None
     parsed = json.loads(line.removeprefix("data: ").strip())
     assert parsed["result"]["suggestions"] == ["primary_length"]
+
+
+def test_emits_event_for_followup_actions_payload():
+    output = {
+        "traits": [{"id": 1, "name": "primary_length"}],
+        "followup_actions": [
+            {"label": "primary_length", "prompt": "Show me stats for primary_length"},
+        ],
+    }
+    line = _tool_result_event("list_traits_tool", output)
+    assert line is not None
+    parsed = json.loads(line.removeprefix("data: ").strip())
+    assert parsed["type"] == "tool_result"
+    assert parsed["tool"] == "list_traits_tool"
+    assert len(parsed["result"]["followup_actions"]) == 1
+    assert parsed["result"]["followup_actions"][0]["label"] == "primary_length"
+
+
+def test_emits_event_for_combined_followup_and_suggestions_payload():
+    """Both shapes coexist in one payload — chip rendering surfaces both."""
+    output = {
+        "error": "trait not found",
+        "trait_name": "primary_lenght",
+        "suggestions": ["primary_length"],
+        "sample_traits": None,
+        "followup_actions": [
+            {"label": "primary_length", "prompt": "Show me stats for primary_length"},
+        ],
+    }
+    line = _tool_result_event("compare_trait_between_experiments_tool", output)
+    assert line is not None
+    parsed = json.loads(line.removeprefix("data: ").strip())
+    assert parsed["result"]["suggestions"] == ["primary_length"]
+    assert len(parsed["result"]["followup_actions"]) == 1

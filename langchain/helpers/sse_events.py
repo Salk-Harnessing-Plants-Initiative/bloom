@@ -6,10 +6,15 @@ from __future__ import annotations
 import json
 
 
+_TRIGGER_KEYS = ("suggestions", "sample_traits", "followup_actions")
+
+
 def tool_result_event(tool_name: str, output) -> str | None:
     """Build a `tool_result` SSE line if the tool's output is a structured
-    payload the UI should render (suggestions or sample_traits). Returns None
-    for every other output shape so the caller can skip emission.
+    payload the UI should render. Triggers on any of: `suggestions` (typo
+    fuzzy-match), `sample_traits` (no-match alphabetical sample), or
+    `followup_actions` (universal action chips for listing tools, HITL).
+    Returns None for every other output shape so the caller can skip emission.
     """
     payload = getattr(output, "content", output)
     if isinstance(payload, str):
@@ -19,6 +24,6 @@ def tool_result_event(tool_name: str, output) -> str | None:
             return None
     if not isinstance(payload, dict):
         return None
-    if "suggestions" not in payload and "sample_traits" not in payload:
+    if not any(key in payload for key in _TRIGGER_KEYS):
         return None
     return f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'result': payload})}\n\n"
