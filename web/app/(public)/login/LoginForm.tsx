@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import styles from "./login.module.css";
@@ -156,9 +157,9 @@ export default function LoginForm() {
           Keep me signed in
         </label>
         {!isSignUp && (
-          <a className={styles.forgot} href="mailto:dbutler@salk.edu?subject=Bloom%20password%20reset">
+          <Link className={styles.forgot} href="/forgot-password">
             Forgot password?
-          </a>
+          </Link>
         )}
       </div>
 
