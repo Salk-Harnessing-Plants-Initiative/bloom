@@ -113,8 +113,17 @@ def compare_trait_between_experiments_tool(
     }
 
 
+_EXPERIMENT_CHIPS_LIMIT = 20
+
+_BASELINE_EXPERIMENT_ACTIONS = [
+    {"label": "List the traits", "prompt": "List the available traits"},
+    {"label": "Show trait statistics", "prompt": "Show me statistics for a trait"},
+    {"label": "Compare across waves", "prompt": "Compare a trait across waves"},
+]
+
+
 @tool
-def list_experiments_tool(limit: int = 50) -> list:
+def list_experiments_tool(limit: int = 50) -> dict:
     """List all cylinder phenotyping experiments with species info."""
     response = httpx.get(
         f"{REST_URL}/cyl_experiments",
@@ -126,7 +135,18 @@ def list_experiments_tool(limit: int = 50) -> list:
     )
     if response.status_code != 200:
         raise Exception(f"Failed to list experiments: {response.text}")
-    return response.json()
+
+    experiments = response.json()
+    experiment_chips = [
+        {"label": exp["name"], "prompt": f"Show waves for {exp['name']}"}
+        for exp in experiments[:_EXPERIMENT_CHIPS_LIMIT]
+        if exp.get("name")
+    ]
+    return {
+        "count": len(experiments),
+        "experiments": experiments,
+        "followup_actions": experiment_chips + _BASELINE_EXPERIMENT_ACTIONS,
+    }
 
 
 @tool
