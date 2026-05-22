@@ -799,7 +799,7 @@ def get_experiment_trait_stats_tool(experiment_id: int, trait_name: str) -> dict
         if latest_value is not None:
             plant_latest.append({
                 "qr_code": plant["qr_code"],
-                "accession": plant.get("accessions", {}).get("name"),
+                "accession": (plant.get("accessions") or {}).get("name"),
                 "latest_value": latest_value,
                 "age_days": latest_age
             })
@@ -900,4 +900,5 @@ cyl_tools = [
     get_trait_growth_stats_tool,
     compare_waves_trait_tool,
     get_experiment_trait_stats_tool,
+    compare_trait_between_experiments_tool,
 ]
