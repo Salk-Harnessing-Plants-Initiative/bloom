@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage
 import deps
 from agent import AVAILABLE_MODELS
 from schemas import ChatRequest, ChatResponse
-from sse_events import tool_result_event
+from helpers.sse_events import tool_result_event
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

@@ -11,7 +11,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "langchain"))
 
-from trait_name_resolver import _resolve_trait_name 
+from helpers.trait_name_resolver import _resolve_trait_name
 
 def test_exact_match_returns_matched_true():
     result = _resolve_trait_name(

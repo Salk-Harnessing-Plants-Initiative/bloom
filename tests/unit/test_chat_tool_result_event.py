@@ -13,7 +13,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "langchain"))
 
-from sse_events import tool_result_event as _tool_result_event  # noqa: E402
+from helpers.sse_events import tool_result_event as _tool_result_event  # noqa: E402
 
 
 def test_emits_event_for_suggestions_payload():

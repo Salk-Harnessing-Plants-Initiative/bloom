@@ -5,7 +5,7 @@ from typing import Optional
 import httpx
 from langchain_core.tools import tool
 from .base import REST_URL, get_headers
-from trait_name_resolver import _resolve_trait_name 
+from helpers.trait_name_resolver import _resolve_trait_name
 
 
 def _distinct_trait_names_for_experiments(experiment_ids: list[int]) -> list[str]:
