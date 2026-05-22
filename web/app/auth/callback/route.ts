@@ -23,7 +23,15 @@ export async function GET(request: Request) {
 
   console.log(`requestUrl.origin ${requestUrl.origin}`);
 
+  const host =
+    request.headers.get("x-forwarded-host") ||
+    request.headers.get("host") ||
+    requestUrl.host;
+  const proto =
+    request.headers.get("x-forwarded-proto") || requestUrl.protocol.replace(":", "");
+  const origin = `${proto}://${host}`;
+
   const nextParam = requestUrl.searchParams.get("next");
   const nextPath = nextParam && nextParam.startsWith("/") ? nextParam : "/";
-  return NextResponse.redirect(new URL(nextPath, requestUrl.origin));
+  return NextResponse.redirect(new URL(nextPath, origin));
 }
