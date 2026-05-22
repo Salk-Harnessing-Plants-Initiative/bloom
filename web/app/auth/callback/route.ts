@@ -23,6 +23,7 @@ export async function GET(request: Request) {
 
   console.log(`requestUrl.origin ${requestUrl.origin}`);
 
-  // URL to redirect to after sign in process completes
-  return NextResponse.redirect(requestUrl.origin);
+  const nextParam = requestUrl.searchParams.get("next");
+  const nextPath = nextParam && nextParam.startsWith("/") ? nextParam : "/";
+  return NextResponse.redirect(new URL(nextPath, requestUrl.origin));
 }
