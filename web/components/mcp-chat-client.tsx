@@ -7,6 +7,13 @@ type Message = { from: "user" | "bot"; text: string };
 type Provider = "local";
 type ToolSet = "all" | "scrna" | "cyl" | "generic" | "";
 
+type SuggestionPayload = {
+  tool: string;
+  trait_name: string;
+  suggestions: string[];
+  sample_traits: string[] | null;
+};
+
 interface MCPTool {
   name: string;
   description: string;
@@ -155,6 +162,8 @@ export default function MCPChat() {
 
   // MCP Tools collapsible
   const [mcpToolsCollapsed, setMcpToolsCollapsed] = useState(true);
+  const [pendingSuggestions, setPendingSuggestions] = useState<SuggestionPayload | null>(null);
+  const [lastUserPrompt, setLastUserPrompt] = useState<string>("");
 
   // Available models — fetched from backend
   const [AVAILABLE_MODELS, setAvailableModels] = useState<Record<string, string[]>>(AVAILABLE_MODELS_DEFAULT);
@@ -344,9 +353,22 @@ export default function MCPChat() {
   function sendPrompt() {
     if (!prompt.trim()) return;
     const text = prompt.trim();
+    setLastUserPrompt(text);
+    setPendingSuggestions(null);
     setMessages((m) => [...m, { from: "user", text }]);
     setPrompt("");
     startRequest(text);
+  }
+
+  function handleSuggestionClick(suggestion: string) {
+    if (!pendingSuggestions || !lastUserPrompt) return;
+    const traitToReplace = pendingSuggestions.trait_name;
+    const escaped = traitToReplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const substituted = lastUserPrompt.replace(new RegExp(escaped, "i"), suggestion);
+    setLastUserPrompt(substituted);
+    setPendingSuggestions(null);
+    setMessages((m) => [...m, { from: "user", text: substituted }]);
+    startRequest(substituted);
   }
 
   function startRequest(text: string) {
@@ -400,7 +422,16 @@ export default function MCPChat() {
 
           for (const line of lines) {
             if (!line.startsWith("data: ")) continue;
-            let event: { type?: string; content?: string };
+            let event: {
+              type?: string;
+              content?: string;
+              tool?: string;
+              result?: {
+                trait_name?: string;
+                suggestions?: string[];
+                sample_traits?: string[] | null;
+              };
+            };
             try {
               event = JSON.parse(line.slice(6));
             } catch {
@@ -415,6 +446,18 @@ export default function MCPChat() {
               setStreamStatus(`Using ${event.content}...`);
             } else if (event.type === "tool_done") {
               setStreamStatus("Thinking...");
+            } else if (event.type === "tool_result" && event.result) {
+              const result = event.result;
+              const hasSuggestions = Array.isArray(result.suggestions);
+              const hasSample = Array.isArray(result.sample_traits);
+              if (hasSuggestions || hasSample) {
+                setPendingSuggestions({
+                  tool: event.tool ?? "",
+                  trait_name: typeof result.trait_name === "string" ? result.trait_name : "",
+                  suggestions: hasSuggestions ? (result.suggestions as string[]) : [],
+                  sample_traits: hasSample ? (result.sample_traits as string[]) : null,
+                });
+              }
             } else if (event.type === "token" && event.content) {
               accumulatedText += event.content;
               setMessages((msgs) => {
@@ -1032,6 +1075,39 @@ export default function MCPChat() {
                 </div>
               </div>
             ))}
+            {pendingSuggestions && (
+              <div style={{ marginBottom: 20, marginLeft: 26 }}>
+                <div style={{ fontSize: 13, color: "#64748b", marginBottom: 8 }}>
+                  {pendingSuggestions.suggestions.length > 0
+                    ? `Did you mean…`
+                    : `Available traits include…`}
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {(pendingSuggestions.suggestions.length > 0
+                    ? pendingSuggestions.suggestions
+                    : pendingSuggestions.sample_traits ?? []
+                  ).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => handleSuggestionClick(s)}
+                      disabled={streaming}
+                      style={{
+                        border: "1px solid #0ea5a4",
+                        background: streaming ? "#f1f5f9" : "white",
+                        color: streaming ? "#94a3b8" : "#0ea5a4",
+                        padding: "6px 14px",
+                        borderRadius: 16,
+                        fontSize: 13,
+                        cursor: streaming ? "not-allowed" : "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {streaming && (
               <div
                 style={{
