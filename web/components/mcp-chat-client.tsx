@@ -14,6 +14,9 @@ type SuggestionPayload = {
   sample_traits: string[] | null;
 };
 
+type FollowupAction = { label: string; prompt: string };
+type FollowupPayload = { tool: string; actions: FollowupAction[] };
+
 interface MCPTool {
   name: string;
   description: string;
@@ -163,6 +166,7 @@ export default function MCPChat() {
   // MCP Tools collapsible
   const [mcpToolsCollapsed, setMcpToolsCollapsed] = useState(true);
   const [pendingSuggestions, setPendingSuggestions] = useState<SuggestionPayload | null>(null);
+  const [pendingFollowups, setPendingFollowups] = useState<FollowupPayload | null>(null);
   const [lastUserPrompt, setLastUserPrompt] = useState<string>("");
 
   // Available models — fetched from backend
@@ -355,9 +359,18 @@ export default function MCPChat() {
     const text = prompt.trim();
     setLastUserPrompt(text);
     setPendingSuggestions(null);
+    setPendingFollowups(null);
     setMessages((m) => [...m, { from: "user", text }]);
     setPrompt("");
     startRequest(text);
+  }
+
+  function handleFollowupClick(promptText: string) {
+    setLastUserPrompt(promptText);
+    setPendingFollowups(null);
+    setPendingSuggestions(null);
+    setMessages((m) => [...m, { from: "user", text: promptText }]);
+    startRequest(promptText);
   }
 
   function handleSuggestionClick(suggestion: string) {
@@ -430,6 +443,7 @@ export default function MCPChat() {
                 trait_name?: string;
                 suggestions?: string[];
                 sample_traits?: string[] | null;
+                followup_actions?: FollowupAction[];
               };
             };
             try {
@@ -456,6 +470,15 @@ export default function MCPChat() {
                   trait_name: typeof result.trait_name === "string" ? result.trait_name : "",
                   suggestions: hasSuggestions ? (result.suggestions as string[]) : [],
                   sample_traits: hasSample ? (result.sample_traits as string[]) : null,
+                });
+              }
+              if (
+                Array.isArray(result.followup_actions) &&
+                result.followup_actions.length > 0
+              ) {
+                setPendingFollowups({
+                  tool: event.tool ?? "",
+                  actions: result.followup_actions as FollowupAction[],
                 });
               }
             } else if (event.type === "token" && event.content) {
@@ -1103,6 +1126,35 @@ export default function MCPChat() {
                       }}
                     >
                       {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {pendingFollowups && (
+              <div style={{ marginBottom: 20, marginLeft: 26 }}>
+                <div style={{ fontSize: 13, color: "#64748b", marginBottom: 8 }}>
+                  Pick one to explore:
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {pendingFollowups.actions.map((a) => (
+                    <button
+                      key={a.label}
+                      onClick={() => handleFollowupClick(a.prompt)}
+                      disabled={streaming}
+                      style={{
+                        border: "1px solid #0ea5a4",
+                        background: streaming ? "#f1f5f9" : "white",
+                        color: streaming ? "#94a3b8" : "#0ea5a4",
+                        padding: "8px 16px",
+                        borderRadius: 8,
+                        fontSize: 13,
+                        fontWeight: 500,
+                        cursor: streaming ? "not-allowed" : "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      {a.label}
                     </button>
                   ))}
                 </div>
