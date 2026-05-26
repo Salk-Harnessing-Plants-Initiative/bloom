@@ -148,10 +148,10 @@ async def chat_stream(
         tool         - tool call started (content = tool name)
         tool_done    - tool call completed (content = tool name)
         tool_result  - structured tool output that the UI needs to render
-                       (e.g., trait-name suggestions chips). Emitted only when a
-                       tool returns a dict containing `suggestions` or
-                       `sample_traits` keys; success-shape outputs are NOT
-                       emitted here.
+                       (e.g., trait-name suggestions or action chips). Emitted
+                       when a tool returns a dict containing `suggestions`,
+                       `sample_traits`, or `followup_actions` keys; only UI-
+                       consumed keys are forwarded.
 
     The HTTP status is always 200; mid-stream failures are delivered as an
     `error` event because headers have already been flushed by the time the
