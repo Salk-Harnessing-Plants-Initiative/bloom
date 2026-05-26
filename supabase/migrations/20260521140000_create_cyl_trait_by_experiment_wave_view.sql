@@ -19,7 +19,7 @@ JOIN public.cyl_scans       s  ON t.scan_id = s.id
 JOIN public.cyl_plants      p  ON s.plant_id = p.id
 JOIN public.cyl_waves       w  ON p.wave_id = w.id
 JOIN public.cyl_experiments e  ON w.experiment_id = e.id
-WHERE e.deleted = FALSE
+WHERE e.deleted_at IS NULL
 GROUP BY e.id, e.name, w.id, w.number, ct.name;
 
 GRANT SELECT ON public.cyl_trait_by_experiment_wave
