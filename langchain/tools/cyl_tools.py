@@ -1,10 +1,13 @@
 """
 Cylinder phenotyping tools for querying experiments, plants, scans, and traits.
 """
+import statistics
 from typing import Optional
 import httpx
 from langchain_core.tools import tool
 from .base import REST_URL, get_headers
+from .cyl_viz_tools import _accession_boxplot, _accession_ranked_profile
+from helpers.plot_renderer import render_and_save
 from helpers.trait_name_resolver import _resolve_trait_name
 
 
@@ -908,6 +911,219 @@ def list_traits_tool() -> dict:
     }
 
 
+_ACCESSION_BOXPLOT_N_THRESHOLD = 10
+
+
+@tool
+def compare_accessions_in_wave_tool(
+    trait_name: str,
+    wave_id: int,
+    plant_age_days: Optional[int] = None,
+) -> dict:
+    """Compare a trait across all accessions within ONE wave.
+
+    Single-wave scope is deliberate: within a wave, all plants share the
+    same planting date and growing conditions, so accession-to-accession
+    differences reflect genotype rather than wave-level confounds.
+
+    AGE HANDLING (the key knob): within a wave, plants are typically scanned
+    at multiple timepoints (e.g. days 7, 14, 21, 28, 35). Older plants are
+    bigger, so mixing all ages in one accession's stats would confound
+    genotype with age. Two modes:
+
+      - `plant_age_days` UNSET (default): "latest scan per plant" — for each
+        plant the tool uses ONLY the scan with the highest plant_age_days.
+        Each plant contributes one value. Best for: final-readout comparisons.
+
+      - `plant_age_days` SET: only scans at that exact age contribute.
+        Best for: comparing accessions at a specific developmental stage.
+
+    If the user's intent is ambiguous, ASK them: "do you want the comparison
+    at a specific plant age (e.g. day 21), or summarized across each plant's
+    final scan?" Then pass `plant_age_days` accordingly.
+
+    For each accession with at least one trait value under the chosen mode,
+    returns descriptive stats (n, mean, std, median, min, max) ranked by
+    median desc. Renders a chart:
+      - n_accessions <= 10  → side-by-side boxplot (one box per accession)
+      - n_accessions  > 10  → ranked profile (dot + Q1-to-Q3 error bar per
+        accession; top-3 and bottom-3 inline-labeled)
+
+    For large panels (n > 10) a `summary` block is also returned with the
+    median-of-medians, range, top-3 and bottom-3 accession names.
+
+    Args:
+        trait_name: The trait to compare. Typos return a suggestions payload.
+        wave_id: The wave to scope the comparison to.
+        plant_age_days: Optional. If set, only scans at this exact age
+            contribute. If None (default), uses the latest scan per plant.
+
+    Returns:
+        Success: {trait_name, scope, n_accessions, rankings, plot_url,
+                  plot_layout, [summary if n>10]}
+        Trait miss: {error, trait_name, suggestions, sample_traits}
+        No data: {trait_name, scope, n_accessions: 0, rankings: [], note}
+
+    Reporting guidance for the LLM: when narrating rankings, format the
+    result as a markdown table; bold (**…**) the rank-1 and rank-N rows;
+    italicize (_…_) any caveats. Always describe the rendered chart AND
+    state which scan_mode was used so users see the assumption.
+    """
+    # 1. Get distinct trait names actually measured in scope (for fuzzy match candidates)
+    candidates_response = httpx.get(
+        f"{REST_URL}/cyl_trait_by_experiment_wave",
+        headers=get_headers(),
+        params={"wave_id": f"eq.{wave_id}", "select": "trait_name"},
+    )
+    if candidates_response.status_code != 200:
+        raise Exception(f"Failed to fetch trait candidates: {candidates_response.text}")
+    candidates = sorted({row["trait_name"] for row in candidates_response.json()})
+
+    # 2. Resolve trait name (exact match → continue; otherwise → suggestion payload)
+    resolved = _resolve_trait_name(trait_name, candidates)
+    if not resolved["matched"]:
+        return {
+            "error": "trait not found",
+            "trait_name": trait_name,
+            "suggestions": resolved["suggestions"],
+            "sample_traits": resolved["sample_traits"],
+        }
+    canonical_name = resolved["name"]
+
+    # 3. Resolve trait_id from canonical name
+    trait_response = httpx.get(
+        f"{REST_URL}/cyl_traits",
+        headers=get_headers(),
+        params={"name": f"eq.{canonical_name}", "select": "id"},
+    )
+    if trait_response.status_code != 200:
+        raise Exception(f"Failed to fetch trait id: {trait_response.text}")
+    trait_rows = trait_response.json()
+    if not trait_rows:
+        return {
+            "trait_name": canonical_name,
+            "scope": {"wave_id": wave_id},
+            "n_accessions": 0,
+            "rankings": [],
+            "note": "trait resolved against view but no row in cyl_traits registry",
+        }
+    trait_id = trait_rows[0]["id"]
+
+    # 4. Fetch raw trait values per plant, scoped to the wave
+    plants_response = httpx.get(
+        f"{REST_URL}/cyl_plants",
+        headers=get_headers(),
+        params={
+            "wave_id": f"eq.{wave_id}",
+            "select": "id,accessions(name),cyl_scans(plant_age_days,cyl_scan_traits(value,trait_id))",
+        },
+    )
+    if plants_response.status_code != 200:
+        raise Exception(f"Failed to fetch trait values: {plants_response.text}")
+    plants = plants_response.json()
+
+    # 5. Group values by accession, honoring the age-handling mode
+    scan_mode = "specific_age" if plant_age_days is not None else "latest_per_plant"
+    scope = {"wave_id": wave_id, "scan_mode": scan_mode, "plant_age_days": plant_age_days}
+
+    values_by_accession: dict[str, list[float]] = {}
+    for plant in plants:
+        accession_name = (plant.get("accessions") or {}).get("name")
+        if not accession_name:
+            continue
+        scans = plant.get("cyl_scans") or []
+        if not scans:
+            continue
+
+        if plant_age_days is not None:
+            # Specific-age mode: keep only scans at this exact age
+            matching_scans = [s for s in scans if s.get("plant_age_days") == plant_age_days]
+        else:
+            # Latest-per-plant mode: keep only the scan with the highest age.
+            # Scans without a plant_age_days value are skipped (we can't rank them).
+            aged_scans = [s for s in scans if s.get("plant_age_days") is not None]
+            if not aged_scans:
+                continue
+            latest_age = max(s["plant_age_days"] for s in aged_scans)
+            matching_scans = [s for s in aged_scans if s["plant_age_days"] == latest_age]
+
+        for scan in matching_scans:
+            for trait_record in scan.get("cyl_scan_traits") or []:
+                if (
+                    trait_record.get("trait_id") == trait_id
+                    and trait_record.get("value") is not None
+                ):
+                    values_by_accession.setdefault(accession_name, []).append(
+                        float(trait_record["value"])
+                    )
+
+    # 6. Empty-result branch — no chart rendered
+    if not values_by_accession:
+        note_suffix = (
+            f" at plant_age_days={plant_age_days}"
+            if plant_age_days is not None else
+            " (latest scan per plant)"
+        )
+        return {
+            "trait_name": canonical_name,
+            "scope": scope,
+            "n_accessions": 0,
+            "rankings": [],
+            "note": f"no scans for this trait in the requested wave{note_suffix}",
+        }
+
+    # 7. Compute per-accession stats
+    rankings: list[dict] = []
+    for accession_name, values in values_by_accession.items():
+        rankings.append({
+            "accession_name": accession_name,
+            "n": len(values),
+            "mean": round(statistics.mean(values), 2),
+            "std": round(statistics.stdev(values), 2) if len(values) > 1 else 0.0,
+            "median": round(statistics.median(values), 2),
+            "min": round(min(values), 2),
+            "max": round(max(values), 2),
+        })
+
+    # 8. Sort by median desc + assign rank
+    rankings.sort(key=lambda r: r["median"], reverse=True)
+    for i, r in enumerate(rankings, start=1):
+        r["rank"] = i
+
+    n_accessions = len(rankings)
+
+    # 9. Render chart — pick layout by N
+    if n_accessions <= _ACCESSION_BOXPLOT_N_THRESHOLD:
+        fig = _accession_boxplot(rankings, values_by_accession, canonical_name)
+        plot_layout = "boxplot"
+    else:
+        fig = _accession_ranked_profile(rankings, values_by_accession, canonical_name)
+        plot_layout = "ranked_profile"
+
+    plot_url = render_and_save(fig, prefix="accession_rank", namespace="cyl_supabase")
+
+    result: dict = {
+        "trait_name": canonical_name,
+        "scope": scope,
+        "n_accessions": n_accessions,
+        "rankings": rankings,
+        "plot_url": plot_url,
+        "plot_layout": plot_layout,
+    }
+
+    # 10. Summary block for large panels (N > 10)
+    if n_accessions > _ACCESSION_BOXPLOT_N_THRESHOLD:
+        medians = [r["median"] for r in rankings]
+        result["summary"] = {
+            "median_of_accession_medians": round(statistics.median(medians), 2),
+            "range_of_medians": [round(min(medians), 2), round(max(medians), 2)],
+            "top_3": [r["accession_name"] for r in rankings[:3]],
+            "bottom_3": [r["accession_name"] for r in rankings[-3:]],
+        }
+
+    return result
+
+
 # Export all cylinder phenotyping tools
 cyl_tools = [
     list_experiments_tool,
@@ -930,4 +1146,5 @@ cyl_tools = [
     compare_waves_trait_tool,
     get_experiment_trait_stats_tool,
     compare_trait_between_experiments_tool,
+    compare_accessions_in_wave_tool,
 ]
