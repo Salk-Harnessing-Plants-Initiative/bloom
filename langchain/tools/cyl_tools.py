@@ -5,10 +5,125 @@ from typing import Optional
 import httpx
 from langchain_core.tools import tool
 from .base import REST_URL, get_headers
+from helpers.trait_name_resolver import _resolve_trait_name
+
+
+def _distinct_trait_names_for_experiments(experiment_ids: list[int]) -> list[str]:
+    """Return deduplicated trait names present in cyl_scan_traits for the
+    requested experiments, via the cyl_trait_by_experiment_wave view.
+
+    Used by tools that accept a trait_name argument to build the candidate
+    set for fuzzy resolution via _resolve_trait_name.
+    """
+    if not experiment_ids:
+        return []
+    ids_csv = ",".join(str(i) for i in experiment_ids)
+    response = httpx.get(
+        f"{REST_URL}/cyl_trait_by_experiment_wave",
+        headers=get_headers(),
+        params={
+            "experiment_id": f"in.({ids_csv})",
+            "select": "trait_name",
+        },
+    )
+    if response.status_code != 200:
+        raise Exception(f"Failed to fetch trait names: {response.text}")
+    return sorted({row["trait_name"] for row in response.json()})
 
 
 @tool
-def list_experiments_tool(limit: int = 50) -> list:
+def compare_trait_between_experiments_tool(
+    experiment_a_id: int,
+    experiment_b_id: int,
+    trait_name: str,
+) -> dict:
+    """Compare a trait's aggregate stats between exactly two experiments.
+
+    Returns wave-level breakdowns (count, mean, std, min, max) for the named
+    trait in both experiments. Use this when the user asks how a trait
+    differs across two experiments.
+
+    Workflow:
+      1. Use list_experiments_tool first to discover experiment IDs
+      2. Pass the two IDs and the trait name here
+
+    NOT for:
+      - Single-experiment trait stats — use get_experiment_trait_stats_tool
+      - 3+ experiment comparisons — this tool is two-experiment only.
+        Tell the user that a wider comparison isn't supported yet rather
+        than chaining pairwise calls (which would be statistically misleading).
+
+    If the trait name doesn't match anything in the requested experiments,
+    the tool returns a suggestions payload instead of running the query.
+    Surface the suggestions to the user and retry with their selection.
+
+    Returns:
+        Success: {"rows": [...wave-level stats...], "experiment_a_name", ...}
+        Trait miss: {"error": "trait not found", "trait_name", "suggestions", "sample_traits"}
+        No data: {"rows": [], "note": "..."}
+    """
+    if experiment_a_id == experiment_b_id:
+        raise ValueError(
+            "compare_trait_between_experiments_tool requires two distinct experiment IDs. "
+            "For single-experiment trait stats, use get_experiment_trait_stats_tool."
+        )
+
+    candidates = _distinct_trait_names_for_experiments([experiment_a_id, experiment_b_id])
+    resolved = _resolve_trait_name(trait_name, candidates)
+    if not resolved["matched"]:
+        return {
+            "error": "trait not found",
+            "trait_name": trait_name,
+            "suggestions": resolved["suggestions"],
+            "sample_traits": resolved["sample_traits"],
+        }
+
+    ids_csv = f"{experiment_a_id},{experiment_b_id}"
+    response = httpx.get(
+        f"{REST_URL}/cyl_trait_by_experiment_wave",
+        headers=get_headers(),
+        params={
+            "experiment_id": f"in.({ids_csv})",
+            "trait_name": f"eq.{trait_name}",
+            "select": "experiment_id,experiment_name,wave_id,wave_number,trait_name,n,mean,std,min_value,max_value",
+            "order": "experiment_id.asc,wave_number.asc",
+        },
+    )
+    if response.status_code != 200:
+        raise Exception(f"Failed to compare trait: {response.text}")
+    rows = response.json()
+
+    if not rows:
+        return {
+            "rows": [],
+            "trait_name": trait_name,
+            "note": "no matching scans for this trait in either experiment",
+        }
+
+    exp_a_name = next((r["experiment_name"] for r in rows if r["experiment_id"] == experiment_a_id), None)
+    exp_b_name = next((r["experiment_name"] for r in rows if r["experiment_id"] == experiment_b_id), None)
+
+    return {
+        "rows": rows,
+        "trait_name": trait_name,
+        "experiment_a_id": experiment_a_id,
+        "experiment_a_name": exp_a_name,
+        "experiment_b_id": experiment_b_id,
+        "experiment_b_name": exp_b_name,
+    }
+
+
+_EXPERIMENT_CHIPS_LIMIT = 20
+
+_BASELINE_EXPERIMENT_ACTIONS = [
+    {"label": "List the traits", "prompt": "List the available traits"},
+    {"label": "Show trait statistics", "prompt": "Show me statistics for a trait"},
+    {"label": "Compare across waves", "prompt": "Compare a trait across waves"},
+]
+
+
+@tool
+def list_experiments_tool(limit: int = 50) -> dict:
     """List all cylinder phenotyping experiments with species info."""
     response = httpx.get(
         f"{REST_URL}/cyl_experiments",
@@ -20,7 +135,18 @@ def list_experiments_tool(limit: int = 50) -> list:
     )
     if response.status_code != 200:
         raise Exception(f"Failed to list experiments: {response.text}")
-    return response.json()
+
+    experiments = response.json()
+    experiment_chips = [
+        {"label": exp["name"], "prompt": f"Show waves for {exp['name']}"}
+        for exp in experiments[:_EXPERIMENT_CHIPS_LIMIT]
+        if exp.get("name")
+    ]
+    return {
+        "count": len(experiments),
+        "experiments": experiments,
+        "followup_actions": experiment_chips + _BASELINE_EXPERIMENT_ACTIONS,
+    }
 
 
 @tool
@@ -693,7 +819,7 @@ def get_experiment_trait_stats_tool(experiment_id: int, trait_name: str) -> dict
         if latest_value is not None:
             plant_latest.append({
                 "qr_code": plant["qr_code"],
-                "accession": plant.get("accessions", {}).get("name"),
+                "accession": (plant.get("accessions") or {}).get("name"),
                 "latest_value": latest_value,
                 "age_days": latest_age
             })
@@ -745,6 +871,9 @@ def get_experiment_trait_stats_tool(experiment_id: int, trait_name: str) -> dict
     }
 
 
+_TRAIT_CHIPS_LIMIT = 20
+
+
 @tool
 def list_traits_tool() -> dict:
     """
@@ -766,9 +895,15 @@ def list_traits_tool() -> dict:
         raise Exception(f"Failed to list traits: {response.text}")
 
     traits = response.json()
+    names = [t["name"] for t in traits]
+    followup_actions = [
+        {"label": name, "prompt": f"Show me stats for {name}"}
+        for name in names[:_TRAIT_CHIPS_LIMIT]
+    ]
     return {
         "count": len(traits),
-        "traits": [t["name"] for t in traits],
+        "traits": names,
+        "followup_actions": followup_actions,
         "hint": "Use these trait names with analytics tools like get_trait_growth_stats_tool or get_experiment_trait_stats_tool"
     }
 
@@ -794,4 +929,5 @@ cyl_tools = [
     get_trait_growth_stats_tool,
     compare_waves_trait_tool,
     get_experiment_trait_stats_tool,
+    compare_trait_between_experiments_tool,
 ]

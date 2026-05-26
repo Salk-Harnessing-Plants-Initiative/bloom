@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage
 import deps
 from agent import AVAILABLE_MODELS
 from schemas import ChatRequest, ChatResponse
+from helpers.sse_events import tool_result_event
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -140,12 +141,17 @@ async def chat_stream(
     """Stream a chat response over Server-Sent Events.
 
     Emits the same vocabulary the frontend already consumes:
-        status     - lifecycle hint ("Thinking...")
-        tool       - tool call started (content = tool name)
-        tool_done  - tool call completed (content = tool name)
-        token      - incremental LLM output chunk (content = token text)
-        done       - stream completed (tools_used = list of tool names)
-        error      - terminal error (content = error message)
+        done         - stream completed (tools_used = list of tool names)
+        error        - terminal error (content = error message)
+        status       - lifecycle hint ("Thinking...")
+        token        - incremental LLM output chunk (content = token text)
+        tool         - tool call started (content = tool name)
+        tool_done    - tool call completed (content = tool name)
+        tool_result  - structured tool output that the UI needs to render
+                       (e.g., trait-name suggestions or action chips). Emitted
+                       when a tool returns a dict containing `suggestions`,
+                       `sample_traits`, or `followup_actions` keys; only UI-
+                       consumed keys are forwarded.
 
     The HTTP status is always 200; mid-stream failures are delivered as an
     `error` event because headers have already been flushed by the time the
@@ -181,6 +187,11 @@ async def chat_stream(
                 elif kind == "on_tool_end":
                     tool_name = event.get("name", "")
                     yield f"data: {json.dumps({'type': 'tool_done', 'content': tool_name})}\n\n"
+                    result_line = tool_result_event(
+                        tool_name, event.get("data", {}).get("output")
+                    )
+                    if result_line:
+                        yield result_line
 
                 elif kind == "on_chat_model_stream":
                     if "router_internal" in (event.get("tags") or []):
