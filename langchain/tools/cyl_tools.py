@@ -6,7 +6,7 @@ from typing import Optional
 import httpx
 from langchain_core.tools import tool
 from .base import REST_URL, get_headers
-from .cyl_viz_tools import _accession_boxplot, _accession_ranked_profile
+from .cyl_viz_tools import _accession_boxplot, _accession_ranked_profile, _wave_boxplot
 from helpers.plot_renderer import render_and_save
 from helpers.trait_name_resolver import _resolve_trait_name
 
@@ -1124,6 +1124,275 @@ def compare_accessions_in_wave_tool(
     return result
 
 
+@tool
+def compare_waves_for_accession_tool(
+    trait_name: str,
+    accession_name: str,
+    experiment_id: int,
+    plant_age_days: Optional[int] = None,
+) -> dict:
+    """Within ONE accession, compare a trait's distribution across the waves
+    of one experiment.
+
+    Reveals wave-to-wave consistency (or wave effects) for this accession —
+    e.g. "is indi-12 stable across waves of alfalfa-2024, or does wave 3
+    look different?"
+
+    REQUIRES the accession to span every wave of the experiment. Consistency
+    only makes sense when the comparison is apples-to-apples. If the
+    accession is missing from any wave, the tool returns an error pointing
+    the caller to `compare_accessions_in_wave_tool` for per-wave analysis.
+
+    Age mode (same convention as compare_accessions_in_wave_tool):
+      - `plant_age_days` UNSET (default): latest scan per plant.
+      - `plant_age_days` SET: only scans at that exact age contribute.
+
+    Each `per_wave` entry also reports its scan-age context
+    (`plant_age_days_distinct`, `_min`, `_max`) so the LLM can flag waves
+    that mix ages (which would muddy the wave-to-wave comparison).
+
+    Returns:
+        Success: {trait_name, accession_name, experiment_id, n_waves,
+                  per_wave, consistency, scope, plot_url, plot_layout}
+        Coverage miss: {error, experiment_waves, accession_present_in_waves,
+                  missing_waves, note}
+        Accession not found: {error, accession_name, experiment_id,
+                  available_accessions_sample}
+        Trait miss: {error, trait_name, suggestions, sample_traits}
+    """
+    # 1. Fetch experiment waves
+    waves_response = httpx.get(
+        f"{REST_URL}/cyl_waves",
+        headers=get_headers(),
+        params={
+            "experiment_id": f"eq.{experiment_id}",
+            "select": "id,number,name",
+            "order": "number.asc",
+        },
+    )
+    if waves_response.status_code != 200:
+        raise Exception(f"Failed to fetch experiment waves: {waves_response.text}")
+    experiment_waves = waves_response.json()
+    if not experiment_waves:
+        return {
+            "error": "experiment has no waves",
+            "experiment_id": experiment_id,
+        }
+    experiment_wave_ids = sorted(w["id"] for w in experiment_waves)
+    wave_meta = {w["id"]: w for w in experiment_waves}
+
+    # 2. Get trait name candidates from view (scoped to this experiment)
+    candidates_response = httpx.get(
+        f"{REST_URL}/cyl_trait_by_experiment_wave",
+        headers=get_headers(),
+        params={"experiment_id": f"eq.{experiment_id}", "select": "trait_name"},
+    )
+    if candidates_response.status_code != 200:
+        raise Exception(f"Failed to fetch trait candidates: {candidates_response.text}")
+    candidates = sorted({row["trait_name"] for row in candidates_response.json()})
+
+    resolved = _resolve_trait_name(trait_name, candidates)
+    if not resolved["matched"]:
+        return {
+            "error": "trait not found",
+            "trait_name": trait_name,
+            "suggestions": resolved["suggestions"],
+            "sample_traits": resolved["sample_traits"],
+        }
+    canonical_name = resolved["name"]
+
+    # 3. Resolve trait_id
+    trait_response = httpx.get(
+        f"{REST_URL}/cyl_traits",
+        headers=get_headers(),
+        params={"name": f"eq.{canonical_name}", "select": "id"},
+    )
+    if trait_response.status_code != 200:
+        raise Exception(f"Failed to fetch trait id: {trait_response.text}")
+    trait_rows = trait_response.json()
+    if not trait_rows:
+        return {
+            "error": "trait resolved against view but no row in cyl_traits registry",
+            "trait_name": canonical_name,
+        }
+    trait_id = trait_rows[0]["id"]
+
+    # 4. Resolve accession_id
+    accession_response = httpx.get(
+        f"{REST_URL}/accessions",
+        headers=get_headers(),
+        params={"name": f"eq.{accession_name}", "select": "id"},
+    )
+    if accession_response.status_code != 200:
+        raise Exception(f"Failed to resolve accession: {accession_response.text}")
+    accession_rows = accession_response.json()
+    if not accession_rows:
+        # Surface a sample of accessions in this experiment so the LLM can hint
+        sample_resp = httpx.get(
+            f"{REST_URL}/cyl_plants",
+            headers=get_headers(),
+            params={
+                "wave_id": f"in.({','.join(str(w) for w in experiment_wave_ids)})",
+                "select": "accessions(name)",
+                "limit": 100,
+            },
+        )
+        sample = []
+        if sample_resp.status_code == 200:
+            sample = sorted({
+                (r.get("accessions") or {}).get("name")
+                for r in sample_resp.json()
+                if r.get("accessions")
+            })[:10]
+        return {
+            "error": "accession not found in experiment",
+            "accession_name": accession_name,
+            "experiment_id": experiment_id,
+            "available_accessions_sample": sample,
+        }
+    accession_id = accession_rows[0]["id"]
+
+    # 5. Fetch plants of this accession in this experiment's waves
+    ids_csv = ",".join(str(w) for w in experiment_wave_ids)
+    plants_response = httpx.get(
+        f"{REST_URL}/cyl_plants",
+        headers=get_headers(),
+        params={
+            "accession_id": f"eq.{accession_id}",
+            "wave_id": f"in.({ids_csv})",
+            "select": "id,wave_id,cyl_scans(plant_age_days,cyl_scan_traits(value,trait_id))",
+        },
+    )
+    if plants_response.status_code != 200:
+        raise Exception(f"Failed to fetch plants: {plants_response.text}")
+    plants = plants_response.json()
+
+    # 6. Coverage check — accession must appear in EVERY wave of the experiment
+    accession_present_in_waves = sorted({p["wave_id"] for p in plants if p.get("wave_id")})
+    missing_waves = [w for w in experiment_wave_ids if w not in accession_present_in_waves]
+    if missing_waves:
+        return {
+            "error": "accession does not span all waves of the experiment",
+            "accession_name": accession_name,
+            "experiment_id": experiment_id,
+            "experiment_waves": experiment_wave_ids,
+            "accession_present_in_waves": accession_present_in_waves,
+            "missing_waves": missing_waves,
+            "note": (
+                "Consistency analysis requires the accession to appear in every wave. "
+                "Use compare_accessions_in_wave_tool to analyze each wave separately, "
+                "or pick an accession with full coverage."
+            ),
+        }
+
+    # 7. Group values by wave, honoring age mode
+    scan_mode = "specific_age" if plant_age_days is not None else "latest_per_plant"
+    values_by_wave: dict[int, list[float]] = {}
+    ages_by_wave: dict[int, set[int]] = {}
+    for plant in plants:
+        wave_id = plant.get("wave_id")
+        if wave_id is None:
+            continue
+        scans = plant.get("cyl_scans") or []
+        if not scans:
+            continue
+
+        if plant_age_days is not None:
+            matching_scans = [s for s in scans if s.get("plant_age_days") == plant_age_days]
+        else:
+            aged_scans = [s for s in scans if s.get("plant_age_days") is not None]
+            if not aged_scans:
+                continue
+            latest_age = max(s["plant_age_days"] for s in aged_scans)
+            matching_scans = [s for s in aged_scans if s["plant_age_days"] == latest_age]
+
+        for scan in matching_scans:
+            for trait_record in scan.get("cyl_scan_traits") or []:
+                if (
+                    trait_record.get("trait_id") == trait_id
+                    and trait_record.get("value") is not None
+                ):
+                    values_by_wave.setdefault(wave_id, []).append(
+                        float(trait_record["value"])
+                    )
+                    age = scan.get("plant_age_days")
+                    if age is not None:
+                        ages_by_wave.setdefault(wave_id, set()).add(age)
+
+    scope = {
+        "experiment_id": experiment_id,
+        "scan_mode": scan_mode,
+        "plant_age_days": plant_age_days,
+    }
+
+    if not values_by_wave:
+        return {
+            "trait_name": canonical_name,
+            "accession_name": accession_name,
+            "experiment_id": experiment_id,
+            "n_waves": 0,
+            "per_wave": [],
+            "scope": scope,
+            "note": "accession spans all waves but has no trait values matching the requested age mode",
+        }
+
+    # 8. Compute per-wave stats + age context
+    per_wave: list[dict] = []
+    for wave_id, values in values_by_wave.items():
+        meta = wave_meta.get(wave_id, {})
+        distinct_ages = sorted(ages_by_wave.get(wave_id, set()))
+        per_wave.append({
+            "wave_id": wave_id,
+            "wave_number": meta.get("number"),
+            "wave_name": meta.get("name"),
+            "n": len(values),
+            "mean": round(statistics.mean(values), 2),
+            "std": round(statistics.stdev(values), 2) if len(values) > 1 else 0.0,
+            "median": round(statistics.median(values), 2),
+            "min": round(min(values), 2),
+            "max": round(max(values), 2),
+            "plant_age_days_distinct": distinct_ages,
+            "plant_age_days_min": distinct_ages[0] if distinct_ages else None,
+            "plant_age_days_max": distinct_ages[-1] if distinct_ages else None,
+        })
+    per_wave.sort(key=lambda w: w["wave_number"] if w["wave_number"] is not None else 0)
+
+    # 9. Consistency block
+    wave_medians = [w["median"] for w in per_wave]
+    if len(wave_medians) >= 2:
+        median_of_medians = round(statistics.median(wave_medians), 2)
+        mean_of_medians = statistics.mean(wave_medians)
+        std_of_medians = statistics.stdev(wave_medians)
+        cv = round(std_of_medians / mean_of_medians, 4) if mean_of_medians != 0 else None
+        range_of_medians = [round(min(wave_medians), 2), round(max(wave_medians), 2)]
+    else:
+        median_of_medians = wave_medians[0]
+        cv = None
+        range_of_medians = [wave_medians[0], wave_medians[0]]
+
+    consistency = {
+        "median_across_waves": median_of_medians,
+        "cv_of_wave_medians": cv,
+        "range_of_medians": range_of_medians,
+    }
+
+    # 10. Render chart
+    fig = _wave_boxplot(per_wave, values_by_wave, canonical_name, accession_name)
+    plot_url = render_and_save(fig, prefix="wave_for_accession", namespace="cyl_supabase")
+
+    return {
+        "trait_name": canonical_name,
+        "accession_name": accession_name,
+        "experiment_id": experiment_id,
+        "n_waves": len(per_wave),
+        "per_wave": per_wave,
+        "consistency": consistency,
+        "scope": scope,
+        "plot_url": plot_url,
+        "plot_layout": "boxplot",
+    }
+
+
 # Export all cylinder phenotyping tools
 cyl_tools = [
     list_experiments_tool,
@@ -1147,4 +1416,5 @@ cyl_tools = [
     get_experiment_trait_stats_tool,
     compare_trait_between_experiments_tool,
     compare_accessions_in_wave_tool,
+    compare_waves_for_accession_tool,
 ]

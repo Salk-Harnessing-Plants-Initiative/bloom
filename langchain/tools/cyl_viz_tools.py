@@ -43,6 +43,33 @@ def _accession_boxplot(
     return fig
 
 
+def _wave_boxplot(
+    per_wave: list[dict],
+    values_by_wave: dict[int, list[float]],
+    trait_name: str,
+    accession_name: str,
+) -> Figure:
+    """One box per wave, ordered chronologically by wave_number (NOT by median).
+
+    Chronological order is what reveals wave-to-wave consistency or temporal
+    drift. Sorting by median would hide the time story.
+    """
+    ordered_waves = sorted(per_wave, key=lambda w: w["wave_number"])
+    labels = [f"W{w['wave_number']}\n({w['wave_name']})" for w in ordered_waves]
+    data = [values_by_wave[w["wave_id"]] for w in ordered_waves]
+
+    fig = Figure(figsize=(max(8.0, len(ordered_waves) * 1.4), 5.0))
+    ax = fig.add_subplot(111)
+
+    ax.boxplot(data, tick_labels=labels, showfliers=True)
+    ax.set_xlabel("Wave (chronological)")
+    ax.set_ylabel(trait_name)
+    ax.set_title(f"{trait_name} for {accession_name} across waves")
+    ax.tick_params(axis="x", labelsize=9)
+    fig.tight_layout()
+    return fig
+
+
 def _accession_ranked_profile(
     rankings: list[dict],
     values_by_accession: dict[str, list[float]],

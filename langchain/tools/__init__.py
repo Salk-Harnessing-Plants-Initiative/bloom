@@ -50,6 +50,7 @@ from .cyl_tools import (
     get_plant_scan_history_tool,
     compare_trait_between_experiments_tool,
     compare_accessions_in_wave_tool,
+    compare_waves_for_accession_tool,
 )
 
 from .context_tools import (
@@ -100,6 +101,7 @@ __all__ = [
     "get_plant_scan_history_tool",
     "compare_trait_between_experiments_tool",
     "compare_accessions_in_wave_tool",
+    "compare_waves_for_accession_tool",
     # Context tools
     "context_tools",
     "get_agent_context",
