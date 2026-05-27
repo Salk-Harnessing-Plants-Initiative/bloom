@@ -127,7 +127,16 @@ _BASELINE_EXPERIMENT_ACTIONS = [
 
 @tool
 def list_experiments_tool(limit: int = 50) -> dict:
-    """List all cylinder phenotyping experiments with species info."""
+    """List all cylinder phenotyping experiments with species info.
+
+    Each experiment dict also includes `trait_measurement_count` (total
+    scan-trait rows summed across all waves of that experiment) and
+    `distinct_traits_count` (number of distinct trait names measured).
+    LLM guidance: when the user wants trait analysis, prefer experiments
+    with `trait_measurement_count > 0`. For experiments with zero
+    measurements, narrate that no trait data has been computed yet rather
+    than calling an analysis tool against them.
+    """
     response = httpx.get(
         f"{REST_URL}/cyl_experiments",
         headers=get_headers(),
@@ -138,8 +147,33 @@ def list_experiments_tool(limit: int = 50) -> dict:
     )
     if response.status_code != 200:
         raise Exception(f"Failed to list experiments: {response.text}")
-
     experiments = response.json()
+
+    # Fetch aggregate counts per experiment from the view in one call.
+    # PostgREST can't GROUP BY directly, so we pull rows and aggregate in Python.
+    counts_response = httpx.get(
+        f"{REST_URL}/cyl_trait_by_experiment_wave",
+        headers=get_headers(),
+        params={"select": "experiment_id,trait_name,n"},
+    )
+    counts_by_exp: dict[int, dict] = {}
+    if counts_response.status_code == 200:
+        for row in counts_response.json():
+            exp_id = row.get("experiment_id")
+            if exp_id is None:
+                continue
+            bucket = counts_by_exp.setdefault(
+                exp_id, {"total_n": 0, "traits": set()}
+            )
+            bucket["total_n"] += row.get("n") or 0
+            if row.get("trait_name"):
+                bucket["traits"].add(row["trait_name"])
+
+    for exp in experiments:
+        bucket = counts_by_exp.get(exp.get("id"))
+        exp["trait_measurement_count"] = bucket["total_n"] if bucket else 0
+        exp["distinct_traits_count"] = len(bucket["traits"]) if bucket else 0
+
     experiment_chips = [
         {"label": exp["name"], "prompt": f"Show waves for {exp['name']}"}
         for exp in experiments[:_EXPERIMENT_CHIPS_LIMIT]
@@ -878,36 +912,90 @@ _TRAIT_CHIPS_LIMIT = 20
 
 
 @tool
-def list_traits_tool() -> dict:
+def list_traits_tool(
+    experiment_id: Optional[int] = None,
+    wave_ids: Optional[list[int]] = None,
+) -> dict:
     """
-    List all available phenotype traits that can be measured.
-    Use this to discover what traits exist before querying data.
+    List available phenotype traits.
+
+    Default (no params): returns the global trait registry from `cyl_traits`.
+    With `experiment_id` or `wave_ids` set: returns ONLY trait names actually
+    measured in that scope (read from `cyl_trait_by_experiment_wave`). This is
+    what callers should use when the user is exploring a specific experiment
+    or wave — the chips then surface exactly what the analysis tools can
+    compute against.
+
+    When called with a scope, the `followup_actions` list also includes a
+    "Type a different trait" chip at the end, giving the user a discoverable
+    path back to the global list. Alongside this chip, ALWAYS narrate to the
+    user that they can type any other trait name in the chat input directly.
+
+    Args:
+        experiment_id: Optional. Filter traits to those measured in this
+            experiment. Mutually exclusive with wave_ids.
+        wave_ids: Optional. Filter traits to those measured in any of these
+            waves. Mutually exclusive with experiment_id.
 
     Returns:
-        List of trait names available in the database.
+        {count, traits, followup_actions, hint, scope}
     """
-    response = httpx.get(
-        f"{REST_URL}/cyl_traits",
-        headers=get_headers(),
-        params={
-            "select": "id,name",
-            "order": "name.asc"
-        }
-    )
-    if response.status_code != 200:
-        raise Exception(f"Failed to list traits: {response.text}")
+    if experiment_id is not None and wave_ids is not None:
+        raise ValueError(
+            "list_traits_tool: experiment_id and wave_ids are mutually "
+            "exclusive. Pass one or neither, not both."
+        )
 
-    traits = response.json()
-    names = [t["name"] for t in traits]
-    followup_actions = [
+    scoped = experiment_id is not None or wave_ids is not None
+
+    if scoped:
+        # Pull distinct trait names from the view, filtered to scope
+        params: dict[str, str] = {"select": "trait_name"}
+        if experiment_id is not None:
+            params["experiment_id"] = f"eq.{experiment_id}"
+        else:
+            ids_csv = ",".join(str(w) for w in wave_ids or [])
+            params["wave_id"] = f"in.({ids_csv})"
+        view_response = httpx.get(
+            f"{REST_URL}/cyl_trait_by_experiment_wave",
+            headers=get_headers(),
+            params=params,
+        )
+        if view_response.status_code != 200:
+            raise Exception(f"Failed to list scoped traits: {view_response.text}")
+        names = sorted({row["trait_name"] for row in view_response.json() if row.get("trait_name")})
+    else:
+        # Global trait registry — current default behavior
+        registry_response = httpx.get(
+            f"{REST_URL}/cyl_traits",
+            headers=get_headers(),
+            params={"select": "id,name", "order": "name.asc"},
+        )
+        if registry_response.status_code != 200:
+            raise Exception(f"Failed to list traits: {registry_response.text}")
+        names = [t["name"] for t in registry_response.json()]
+
+    followup_actions: list[dict] = [
         {"label": name, "prompt": f"Show me stats for {name}"}
         for name in names[:_TRAIT_CHIPS_LIMIT]
     ]
+    if scoped:
+        # Soft-other chip — discoverability nudge back to global list
+        followup_actions.append(
+            {"label": "Type a different trait", "prompt": "Show me all available traits"}
+        )
+
     return {
-        "count": len(traits),
+        "count": len(names),
         "traits": names,
         "followup_actions": followup_actions,
-        "hint": "Use these trait names with analytics tools like get_trait_growth_stats_tool or get_experiment_trait_stats_tool"
+        "scope": {"experiment_id": experiment_id, "wave_ids": wave_ids},
+        "hint": (
+            "These are the traits measured in scope. Click a chip to drill in, "
+            "or type a different trait name in the chat."
+            if scoped else
+            "Global trait registry. Pass experiment_id or wave_ids to scope the list to actually-measured traits."
+        ),
     }
 
 
