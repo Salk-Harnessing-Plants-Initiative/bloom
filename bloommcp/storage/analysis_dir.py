@@ -1,7 +1,8 @@
 """Per-experiment, per-tool-class directory abstraction."""
 import hashlib
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from .manifest import read_manifest
 from .schema import Manifest, VersionEntry
@@ -60,3 +61,18 @@ class AnalysisDir:
                 h.update(chunk)
         self._cached_input_sha256 = h.hexdigest()
         return self._cached_input_sha256
+
+    @contextmanager
+    def with_snapshot(self) -> Iterator[Optional[Manifest]]:
+        """Pin the manifest at entry; sibling commits during the context don't change the view.
+
+        Used by parallel-recipe orchestrators so all fan-out branches resolve
+        the same source version even if a sibling commits a new version
+        mid-recipe. Yields the live Manifest at entry (or None if no manifest
+        exists yet); the yielded value is the caller's local snapshot.
+        """
+        snapshot = self.read_manifest()
+        try:
+            yield snapshot
+        finally:
+            pass  # snapshot is a local Pydantic instance — nothing to release
