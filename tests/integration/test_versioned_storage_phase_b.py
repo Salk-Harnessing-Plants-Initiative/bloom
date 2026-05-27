@@ -178,46 +178,6 @@ def test_with_snapshot_pins_manifest_against_concurrent_commit(tmp_path):
     assert ad.read_manifest().latest == "v2"
 
 
-# ─── Integration: refactored qc_tools.clean_experiment_data ────────────────────
-
-
-def test_clean_experiment_data_writes_versioned(tmp_path, monkeypatch):
-    pytest.importorskip("pandas")
-    import pandas as pd
-
-    traits_dir = tmp_path / "traits"
-    output_dir = tmp_path / "output"
-    traits_dir.mkdir()
-    output_dir.mkdir()
-
-    # Make a small experiment file
-    df = pd.DataFrame(
-        {
-            "scan_id": [f"S{i}" for i in range(20)],
-            "genotype": ["A"] * 10 + ["B"] * 10,
-            "trait_a": list(range(20)),
-            "trait_b": [float(i) for i in range(20)],
-        }
-    )
-    df.to_csv(traits_dir / "bar.csv", index=False)
-
-    import source.experiment_utils as eu
-    monkeypatch.setattr(eu, "TRAITS_DIR", traits_dir)
-    monkeypatch.setattr(eu, "OUTPUT_DIR", output_dir)
-
-    import tools.qc_tools as qc
-    monkeypatch.setattr(qc, "OUTPUT_DIR", output_dir)
-
-    result = qc.clean_experiment_data("bar.csv")
-    assert "v1" in result or "version" in result.lower()
-
-    qc_dir = output_dir / "qc_bar"
-    manifest = read_manifest(qc_dir)
-    assert manifest is not None
-    assert len(manifest.versions) == 1
-    assert manifest.versions[0].tool == "clean_experiment_data"
-
-
 def test_detect_outliers_pca_writes_versioned(tmp_path, monkeypatch):
     pytest.importorskip("pandas")
     pytest.importorskip("sklearn")

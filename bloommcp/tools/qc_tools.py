@@ -1,19 +1,14 @@
-"""
-MCP Tool Wrappers for SLEAP Data QC & Cleanup.
+"""MCP discovery tools — list experiments, load summary, inspect data quality.
 
-Wraps functions from source/data_cleanup.py. Uses source/experiment_utils.py for
-dynamic experiment discovery and column auto-detection — no hardcoded
-experiment names. Any CSV in BLOOM_TRAITS_DIR is discoverable.
+The QC cleanup pipeline itself now lives in `tools/workflows/qc.py` as
+`run_qc_workflow`. The three tools here are read-only discovery helpers
+that the agent always loads (see `ALWAYS_INCLUDE_MCP_TOOLS`).
 """
-
-import json
-from pathlib import Path
 
 from source import data_cleanup as cleanup
 from source.experiment_utils import (
     list_experiments,
     load_experiment_data as _load_data,
-    detect_columns,
     TRAITS_DIR,
     OUTPUT_DIR,
 )
@@ -56,56 +51,7 @@ def list_available_experiments() -> str:
 
 
 # ============================================================================
-# Tool 2: Inspect experiment columns
-# ============================================================================
-
-def inspect_experiment_columns(filename: str) -> str:
-    """Inspect the columns of an experiment CSV and show auto-detected classification.
-
-    Shows which columns were detected as traits (numeric) vs metadata,
-    and which special columns (genotype, replicate, sample ID) were found.
-
-    Args:
-        filename: CSV filename from list_available_experiments
-    """
-    import pandas as pd
-
-    csv_path = TRAITS_DIR / filename
-    if not csv_path.exists():
-        experiments = list_experiments()
-        avail = ", ".join(e["filename"] for e in experiments)
-        return f"File '{filename}' not found. Available: {avail}"
-
-    df = pd.read_csv(csv_path, nrows=50)
-    config = detect_columns(df)
-
-    lines = [
-        f"Column Classification: {filename}",
-        f"  Total columns: {len(df.columns)}",
-        f"  Trait columns (numeric): {len(config['trait_cols'])}",
-        f"  Metadata columns: {len(config['metadata_cols'])}",
-        f"\n  Auto-detected special columns:",
-        f"    Genotype: {config['genotype_col'] or 'NOT FOUND'}",
-        f"    Replicate: {config['replicate_col'] or 'NOT FOUND'}",
-        f"    Sample ID: {config['sample_id_col'] or 'NOT FOUND'}",
-        f"\n  Metadata columns ({len(config['metadata_cols'])}):",
-    ]
-
-    for col in config["metadata_cols"]:
-        lines.append(f"    - {col}")
-
-    lines.append(f"\n  First 10 trait columns:")
-    for col in config["trait_cols"][:10]:
-        lines.append(f"    - {col}")
-
-    if len(config["trait_cols"]) > 10:
-        lines.append(f"    ... and {len(config['trait_cols']) - 10} more")
-
-    return "\n".join(lines)
-
-
-# ============================================================================
-# Tool 3: Load experiment data and show summary
+# Tool 2: Load experiment data and show summary
 # ============================================================================
 
 def load_experiment_data(filename: str) -> str:
@@ -164,7 +110,7 @@ def load_experiment_data(filename: str) -> str:
 
 
 # ============================================================================
-# Tool 4: Inspect data quality (NaN samples, zero-inflated traits)
+# Tool 3: Inspect data quality (NaN samples, zero-inflated traits)
 # ============================================================================
 
 def inspect_data_quality(filename: str) -> str:
@@ -248,158 +194,9 @@ def inspect_data_quality(filename: str) -> str:
     total_issues = len(zero_traits) + len(nan_heavy_traits) + len(low_sample_traits)
     lines.append(f"\nSummary: {total_issues} trait-level issues, {n_nan_samples} sample-level issues")
     if total_issues > 0 or n_nan_samples > 0:
-        lines.append("Recommendation: Run clean_experiment_data to apply cleanup filters")
+        lines.append("Recommendation: Run run_qc_workflow to apply cleanup filters")
     else:
         lines.append("Data looks clean — no major issues detected")
-
-    return "\n".join(lines)
-
-
-# ============================================================================
-# Tool 5: Clean experiment data (apply all filters, save cleaned CSV)
-# ============================================================================
-
-def clean_experiment_data(
-    filename: str,
-    max_zeros_per_trait: float = 0.5,
-    max_nans_per_trait: float = 0.3,
-    max_nans_per_sample: float = 0.2,
-    min_samples_per_trait: int = 10,
-    user_label: str | None = None,
-) -> str:
-    """Apply data cleanup filters to a SLEAP experiment and save cleaned CSV.
-
-    Runs four cleanup steps in order:
-    1. Remove traits with too many zeros (zero-inflated)
-    2. Remove traits with too many NaN values
-    3. Remove samples with too many NaN values
-    4. Remove traits with insufficient valid samples
-
-    Saves the cleaned CSV and a JSON log into a versioned subdirectory of
-    BLOOM_OUTPUT_DIR/qc_<stem>/. Re-running creates a new v<N>_*/ rather
-    than overwriting the prior result.
-
-    Args:
-        filename: CSV filename from list_available_experiments
-        max_zeros_per_trait: Max fraction of zeros per trait before removal (0-1, default 0.5)
-        max_nans_per_trait: Max fraction of NaN per trait before removal (0-1, default 0.3)
-        max_nans_per_sample: Max fraction of NaN per sample before removal (0-1, default 0.2)
-        min_samples_per_trait: Min valid samples per trait (default 10)
-        user_label: Optional sluggified label tagged onto the version directory
-    """
-    df, trait_cols, config, source = _load_data(filename)
-    if df is None:
-        return source
-
-    stem = Path(filename).stem
-    original_samples = len(df)
-    original_traits = len(trait_cols)
-
-    df_clean, cleanup_log = cleanup.apply_data_cleanup_filters(
-        df, trait_cols,
-        max_zeros_per_trait=max_zeros_per_trait,
-        max_nans_per_trait=max_nans_per_trait,
-        max_nans_per_sample=max_nans_per_sample,
-        min_samples_per_trait=min_samples_per_trait,
-    )
-
-    from source.data_utils import convert_to_json_serializable
-    from storage import AnalysisWriter
-
-    writer = AnalysisWriter(
-        OUTPUT_DIR,
-        filename,
-        "qc",
-        source_csv=TRAITS_DIR / filename if (TRAITS_DIR / filename).exists() else None,
-    )
-    version_dir = writer.create_version(
-        tool_name="clean_experiment_data",
-        params={
-            "max_zeros_per_trait": max_zeros_per_trait,
-            "max_nans_per_trait": max_nans_per_trait,
-            "max_nans_per_sample": max_nans_per_sample,
-            "min_samples_per_trait": min_samples_per_trait,
-        },
-        user_label=user_label,
-    )
-
-    cleaned_csv_path = version_dir / "_cleaned.csv"
-    df_clean.to_csv(cleaned_csv_path, index=False)
-    log_path = version_dir / "cleanup_log.json"
-    with open(log_path, "w") as f:
-        json.dump(convert_to_json_serializable(cleanup_log), f, indent=2)
-
-    entry = writer.commit({
-        "_cleaned.csv": f"{version_dir.name}/_cleaned.csv",
-        "cleanup_log.json": f"{version_dir.name}/cleanup_log.json",
-    })
-
-    final_samples = cleanup_log["final_samples"]
-    final_traits = cleanup_log["final_traits"]
-
-    lines = [
-        f"Data Cleanup Results: {filename} (version: {entry.id})",
-        f"  Samples: {original_samples} -> {final_samples} "
-        f"({final_samples / original_samples * 100:.1f}% retained)",
-        f"  Traits: {original_traits} -> {final_traits} "
-        f"({final_traits / original_traits * 100:.1f}% retained)",
-        f"\nCleanup steps:",
-    ]
-
-    for step in cleanup_log["cleanup_steps"]:
-        step_name = step["step"]
-        if "traits_removed" in step:
-            lines.append(f"  {step_name}: {step['traits_removed']} traits removed "
-                         f"({step['remaining_traits']} remaining)")
-        elif "samples_removed" in step:
-            lines.append(f"  {step_name}: {step['samples_removed']} samples removed "
-                         f"({step['remaining_samples']} remaining)")
-
-    removed_traits = cleanup_log.get("removed_traits", [])
-    if removed_traits:
-        lines.append(f"\nRemoved traits ({len(removed_traits)}):")
-        for rt in removed_traits[:15]:
-            reason = rt.get("reason", "unknown")
-            lines.append(f"  - {rt['trait']}: {reason}")
-        if len(removed_traits) > 15:
-            lines.append(f"  ... and {len(removed_traits) - 15} more")
-
-    lines.append(f"\nVersion: {entry.id}")
-    lines.append(f"  Cleaned CSV: {cleaned_csv_path}")
-    lines.append(f"  Cleanup log: {log_path}")
-
-    return "\n".join(lines)
-
-
-# ============================================================================
-# Tool 6: List trait columns in an experiment
-# ============================================================================
-
-def list_trait_columns(filename: str) -> str:
-    """List all numeric trait columns available in a SLEAP experiment dataset.
-
-    Shows the trait column names that would be used for analysis,
-    excluding metadata columns.
-
-    Args:
-        filename: CSV filename from list_available_experiments
-    """
-    df, trait_cols, config, source = _load_data(filename)
-    if df is None:
-        return source
-
-    lines = [
-        f"Trait columns for {filename} ({len(trait_cols)} traits, source: {source}):",
-    ]
-
-    for i, col in enumerate(trait_cols, 1):
-        valid = df[col].notna().sum()
-        lines.append(f"  {i:3d}. {col} ({valid} valid samples)")
-
-    metadata_cols = config["metadata_cols"]
-    lines.append(f"\nMetadata columns excluded ({len(metadata_cols)}):")
-    for col in metadata_cols:
-        lines.append(f"  - {col}")
 
     return "\n".join(lines)
 
@@ -409,10 +206,7 @@ def list_trait_columns(filename: str) -> str:
 # ============================================================================
 
 def register(mcp):
-    """Register all QC tools with the MCP server."""
+    """Register the 3 always-on discovery tools with the MCP server."""
     mcp.tool()(list_available_experiments)
-    mcp.tool()(inspect_experiment_columns)
     mcp.tool()(load_experiment_data)
     mcp.tool()(inspect_data_quality)
-    mcp.tool()(clean_experiment_data)
-    mcp.tool()(list_trait_columns)
