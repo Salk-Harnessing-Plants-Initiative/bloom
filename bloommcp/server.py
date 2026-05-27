@@ -30,10 +30,6 @@ from starlette.responses import PlainTextResponse
 
 from tools import (
     qc_tools,
-    stats_tools,
-    dimred_tools,
-    clustering_tools,
-    outlier_tools,
     viz_tools,
     correlation_tools,
     storage_tools,
@@ -88,12 +84,6 @@ clustering_workflow.register(mcp)
 # Direct tools (granular)
 correlation_tools.register(mcp)
 viz_tools.register(mcp)
-
-# Empty shells (kept until matching workflows are added)
-stats_tools.register(mcp)
-dimred_tools.register(mcp)
-clustering_tools.register(mcp)
-outlier_tools.register(mcp)
 
 # --- Health Endpoint ---
 # GET for Docker healthchecks. Bypasses MCP's SSE/JSON-RPC
