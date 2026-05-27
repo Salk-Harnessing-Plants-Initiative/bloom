@@ -19,6 +19,10 @@ test = [
     # required by tests/unit/test_ci_workflow_uv_conventions.py — parses
     # .github/workflows/*.{yml,yaml} via yaml.safe_load to enforce uv conventions.
     "pyyaml>=6",
+    # imported at module-level in langchain/helpers/plot_renderer.py and
+    # langchain/tools/cyl_viz_tools.py, both transitively pulled in when
+    # tests import from langchain.tools.cyl_tools.
+    "matplotlib>=3.8",
 ]
 
 [tool.pytest.ini_options]
