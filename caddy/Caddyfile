@@ -2,10 +2,12 @@
 # Bloom v2 Caddyfile
 #
 # Routes:
-#   {DOMAIN_MAIN}        → bloom-web (frontend)
-#   {DOMAIN_MAIN}/api/*  → kong (Supabase API gateway, /api prefix stripped)
-#   {DOMAIN_STUDIO}      → studio (Supabase Studio)
-#   {DOMAIN_MINIO}       → minio console
+#   {DOMAIN_MAIN}              → bloom-web (frontend)
+#   {DOMAIN_MAIN}/api/*        → kong (Supabase API gateway, /api prefix stripped)
+#   {DOMAIN_MAIN}/langchain/*  → langchain-agent (FastAPI, prefix preserved)
+#   {DOMAIN_MAIN}/bloommcp/*   → bloommcp (MCP server, /bloommcp prefix stripped)
+#   {DOMAIN_STUDIO}            → studio (Supabase Studio)
+#   {DOMAIN_MINIO}             → minio console
 #
 # TLS is controlled by two env vars:
 #
@@ -42,6 +44,15 @@
 	# flush_interval -1 forwards SSE chunks immediately without buffering.
 	handle /langchain/* {
 		reverse_proxy langchain-agent:5002 {
+			flush_interval -1
+		}
+	}
+
+	# Bloommcp MCP server — strip /bloommcp prefix, proxy to FastMCP on 8811.
+	# Auth is enforced by bloommcp itself (Bearer token via BLOOMMCP_API_KEY)
+	# so Caddy doesn't need to do auth here. Salk-network-internal only.
+	handle_path /bloommcp/* {
+		reverse_proxy bloommcp:8811 {
 			flush_interval -1
 		}
 	}
