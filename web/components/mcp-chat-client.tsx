@@ -262,6 +262,7 @@ export default function MCPChat() {
           "list_available_experiments",
           "load_experiment_data",
           "inspect_data_quality",
+          "list_existing_analyses",
         ]);
         setAvailableMcpTools((data.tools || []).filter((t: MCPTool) => !HIDDEN_TOOLS.has(t.name)));
       } catch {
