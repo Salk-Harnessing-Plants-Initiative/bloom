@@ -1,7 +1,10 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
+import styles from "./mcp-chat-client.module.css";
 
 type Message = { from: "user" | "bot"; text: string };
 type Provider = "local";
@@ -1092,12 +1095,13 @@ export default function MCPChat() {
                   {m.from === "user" ? "You" : "Bloom"}
                 </div>
                 <div
+                  className={m.from === "bot" ? styles.botBubble : undefined}
                   style={{
                     background: m.from === "user" ? "#0ea5a4" : "white",
                     color: m.from === "user" ? "white" : "#1e293b",
                     padding: "14px 18px",
                     borderRadius: m.from === "user" ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
-                    whiteSpace: "pre-wrap",
+                    whiteSpace: m.from === "user" ? "pre-wrap" : "normal",
                     fontSize: 14,
                     lineHeight: 1.6,
                     boxShadow:
@@ -1107,7 +1111,11 @@ export default function MCPChat() {
                     marginLeft: m.from === "user" ? "auto" : 0,
                   }}
                 >
-                  {m.text}
+                  {m.from === "bot" ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+                  ) : (
+                    m.text
+                  )}
                 </div>
               </div>
             ))}

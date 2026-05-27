@@ -1,0 +1,95 @@
+/* Markdown styling for bot messages.
+ * Constrains react-markdown's default sizes so headers/tables/code don't
+ * blow out the chat bubble layout. Scope is .botBubble so user messages and
+ * other markdown elsewhere on the page are unaffected.
+ */
+
+.botBubble :global(p) {
+  margin: 0 0 8px 0;
+}
+.botBubble :global(p:last-child) {
+  margin-bottom: 0;
+}
+
+.botBubble :global(h1),
+.botBubble :global(h2),
+.botBubble :global(h3),
+.botBubble :global(h4),
+.botBubble :global(h5),
+.botBubble :global(h6) {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 12px 0 6px 0;
+  line-height: 1.3;
+}
+.botBubble :global(h1) {
+  font-size: 1.15rem;
+}
+.botBubble :global(h2) {
+  font-size: 1.05rem;
+}
+
+.botBubble :global(strong) {
+  font-weight: 600;
+}
+.botBubble :global(em) {
+  font-style: italic;
+}
+
+.botBubble :global(table) {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  margin: 8px 0;
+}
+.botBubble :global(th),
+.botBubble :global(td) {
+  padding: 4px 8px;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: left;
+}
+.botBubble :global(th) {
+  background: #f8fafc;
+  font-weight: 600;
+}
+
+.botBubble :global(code) {
+  background: #f1f5f9;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 0.85em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.botBubble :global(pre) {
+  background: #f1f5f9;
+  padding: 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  margin: 8px 0;
+}
+.botBubble :global(pre code) {
+  background: transparent;
+  padding: 0;
+}
+
+.botBubble :global(ul),
+.botBubble :global(ol) {
+  margin: 4px 0 8px 0;
+  padding-left: 22px;
+}
+.botBubble :global(li) {
+  margin: 2px 0;
+}
+
+.botBubble :global(a) {
+  color: #0ea5a4;
+  text-decoration: underline;
+}
+
+.botBubble :global(blockquote) {
+  border-left: 3px solid #cbd5e1;
+  margin: 8px 0;
+  padding: 2px 12px;
+  color: #475569;
+}

@@ -964,10 +964,17 @@ def compare_accessions_in_wave_tool(
         Trait miss: {error, trait_name, suggestions, sample_traits}
         No data: {trait_name, scope, n_accessions: 0, rankings: [], note}
 
-    Reporting guidance for the LLM: when narrating rankings, format the
-    result as a markdown table; bold (**…**) the rank-1 and rank-N rows;
-    italicize (_…_) any caveats. Always describe the rendered chart AND
-    state which scan_mode was used so users see the assumption.
+    Reporting guidance for the LLM (chat renders bot messages as markdown):
+      - Format `rankings` as a markdown table with columns: rank, accession,
+        n, mean, std, median, min, max
+      - Bold (**…**) the rank-1 row and the rank-N row so the leaders and
+        laggards are visible at a glance
+      - Italicize (_…_) any caveats — e.g. small `n`, ties, or the scan_mode
+        assumption ("computed from each plant's latest scan")
+      - Always describe the rendered chart in one sentence so users who
+        can't see images get the same signal
+      - State which scan_mode was used ("latest scan per plant" or "at age
+        N days") so users see the assumption
     """
     # 1. Get distinct trait names actually measured in scope (for fuzzy match candidates)
     candidates_response = httpx.get(
@@ -1159,6 +1166,18 @@ def compare_waves_for_accession_tool(
         Accession not found: {error, accession_name, experiment_id,
                   available_accessions_sample}
         Trait miss: {error, trait_name, suggestions, sample_traits}
+
+    Reporting guidance for the LLM (chat renders bot messages as markdown):
+      - Format `per_wave` as a markdown table with columns: wave, n, mean,
+        std, median, min, max, age range (use the
+        `plant_age_days_min/max` fields)
+      - Italicize (_…_) a caveat sentence for any wave where
+        `plant_age_days_min != plant_age_days_max` — that wave mixes ages and
+        the box is harder to interpret
+      - Bold (**…**) the `consistency.cv_of_wave_medians` value and translate
+        it: CV < 0.1 = highly consistent; 0.1–0.3 = moderate; > 0.3 =
+        wave-dependent. State which scan_mode produced the numbers
+      - Describe the rendered chart in one sentence
     """
     # 1. Fetch experiment waves
     waves_response = httpx.get(
