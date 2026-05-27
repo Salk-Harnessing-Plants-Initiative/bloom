@@ -55,10 +55,9 @@ CONTEXT_CYL = """## Cylinder Phenotyping Data (Supabase/PostgREST)
 - list_scans_tool / get_scan_tool: Plant scan data
 - get_scan_traits_tool: Measured traits for a scan
 - get_plant_scan_history_tool: Full scan history for a plant
-- get_plant_growth_timeline_tool: Chronological growth data
-- get_trait_growth_stats_tool: Growth statistics for a trait
-- compare_waves_trait_tool: Compare trait across waves
-- get_experiment_trait_stats_tool: Experiment-wide trait statistics
+- get_plant_growth_timeline_tool: Chronological raw scan data for one plant
+- compare_accessions_in_wave_tool: Rank accessions by a trait within one wave (returns table + chart)
+- compare_waves_for_accession_tool: One accession's trait distribution across all waves of an experiment (returns table + chart)
 
 ### UI Links
 - Greenhouse: {frontend_url}/app/greenhouse
@@ -88,10 +87,22 @@ CONTEXT_MCP = """## CSV Experiment Files (MCP Tools)
 Files like cylinder_alfalfa_gwas_wave2, turface_rice_treatment_exp1 are CSV files
 on the filesystem — NOT database tables. Never use query_database for these.
 
-### Tools
+### Discovery (always available)
 - list_available_experiments: List CSV experiment files
-- load_experiment_data: Load a CSV experiment file
+- load_experiment_data: Show summary of a CSV experiment
 - inspect_data_quality: Check data quality of an experiment
+- list_existing_analyses: List prior analysis runs for an experiment
+
+### Workflow tools (each runs a full analysis pipeline and saves a versioned output dir)
+- run_qc_workflow: Apply data cleanup filters; saves cleaned CSV + log
+- run_outlier_workflow: Detect (and optionally remove) outliers via mahalanobis / isolation_forest / pca / consensus
+- run_descriptive_stats_workflow: Per-trait n / mean / std / median / quartiles / min / max
+- run_dimensionality_reduction_workflow: PCA or UMAP projection + chart
+- run_clustering_workflow: k-means / GMM / hierarchical clustering + chart
+
+### Direct tools (granular, available for ad-hoc use)
+- correlation_tools: 8 cross-experiment correlation tools
+- viz_tools: 7 plotting tools (histograms, boxplots, heatmaps, dendrograms)
 """
 
 # Map tool_set → relevant context sections

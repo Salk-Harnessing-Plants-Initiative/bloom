@@ -20,7 +20,7 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "langchain"))
 
-from db_url import REQUIRED_VARS, compose_postgres_url  # noqa: E402
+from helpers.db_url import REQUIRED_VARS, compose_postgres_url  # noqa: E402
 
 
 def _set_valid_env(monkeypatch):
