@@ -48,7 +48,6 @@ from .cyl_tools import (
     list_scanners_tool,
     list_phenotypers_tool,
     get_plant_scan_history_tool,
-    compare_trait_between_experiments_tool,
     compare_accessions_in_wave_tool,
     compare_waves_for_accession_tool,
 )
@@ -99,7 +98,6 @@ __all__ = [
     "list_scanners_tool",
     "list_phenotypers_tool",
     "get_plant_scan_history_tool",
-    "compare_trait_between_experiments_tool",
     "compare_accessions_in_wave_tool",
     "compare_waves_for_accession_tool",
     # Context tools

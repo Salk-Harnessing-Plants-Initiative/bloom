@@ -23,11 +23,11 @@ def test_emits_event_for_suggestions_payload():
         "suggestions": ["primary_length", "total_length"],
         "sample_traits": None,
     }
-    line = _tool_result_event("compare_trait_between_experiments_tool", output)
+    line = _tool_result_event("compare_accessions_in_wave_tool", output)
     assert line is not None
     parsed = json.loads(line.removeprefix("data: ").strip())
     assert parsed["type"] == "tool_result"
-    assert parsed["tool"] == "compare_trait_between_experiments_tool"
+    assert parsed["tool"] == "compare_accessions_in_wave_tool"
     assert parsed["result"]["suggestions"] == ["primary_length", "total_length"]
 
 
@@ -38,7 +38,7 @@ def test_emits_event_for_sample_traits_only_payload():
         "suggestions": [],
         "sample_traits": ["leaf_count", "primary_length"],
     }
-    line = _tool_result_event("compare_trait_between_experiments_tool", output)
+    line = _tool_result_event("compare_accessions_in_wave_tool", output)
     assert line is not None
     parsed = json.loads(line.removeprefix("data: ").strip())
     assert parsed["result"]["sample_traits"] == ["leaf_count", "primary_length"]
@@ -50,7 +50,7 @@ def test_skips_event_for_success_rows_payload():
         "trait_name": "primary_length",
         "experiment_a_name": "alfalfa-2024",
     }
-    assert _tool_result_event("compare_trait_between_experiments_tool", output) is None
+    assert _tool_result_event("compare_accessions_in_wave_tool", output) is None
 
 
 def test_skips_event_for_string_output():
@@ -76,7 +76,7 @@ def test_handles_toolmessage_wrapper_with_dict_content():
     output = FakeToolMessage(
         content={"suggestions": ["primary_length"], "sample_traits": None}
     )
-    line = _tool_result_event("compare_trait_between_experiments_tool", output)
+    line = _tool_result_event("compare_accessions_in_wave_tool", output)
     assert line is not None
 
 
@@ -88,7 +88,7 @@ def test_handles_toolmessage_wrapper_with_json_string_content():
     output = FakeToolMessage(
         content=json.dumps({"suggestions": ["primary_length"], "sample_traits": None})
     )
-    line = _tool_result_event("compare_trait_between_experiments_tool", output)
+    line = _tool_result_event("compare_accessions_in_wave_tool", output)
     assert line is not None
     parsed = json.loads(line.removeprefix("data: ").strip())
     assert parsed["result"]["suggestions"] == ["primary_length"]
@@ -121,7 +121,7 @@ def test_emits_event_for_combined_followup_and_suggestions_payload():
             {"label": "primary_length", "prompt": "Show me stats for primary_length"},
         ],
     }
-    line = _tool_result_event("compare_trait_between_experiments_tool", output)
+    line = _tool_result_event("compare_accessions_in_wave_tool", output)
     assert line is not None
     parsed = json.loads(line.removeprefix("data: ").strip())
     assert parsed["result"]["suggestions"] == ["primary_length"]
