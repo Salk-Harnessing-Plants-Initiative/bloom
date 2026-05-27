@@ -8,7 +8,6 @@ from .manifest import (
     validate_schema,
     write_manifest_atomic,
 )
-from .migration import migrate_legacy_dirs
 from .schema import (
     CURRENT_SCHEMA_VERSION,
     CodeVersions,
@@ -19,9 +18,23 @@ from .schema import (
 from .versioning import next_version_id, slugify, version_dir_name
 from .writer import AnalysisWriter
 
+CANONICAL_TOOL_CLASSES: tuple[str, ...] = (
+    "qc",
+    "stats",
+    "dimred",
+    "clustering",
+    "outlier",
+    "viz",
+    "correlation",
+    "heritability",
+    "growth_curve",
+    "group_comparison",
+)
+
 __all__ = [
     "AnalysisDir",
     "AnalysisWriter",
+    "CANONICAL_TOOL_CLASSES",
     "CURRENT_SCHEMA_VERSION",
     "CodeVersions",
     "ExperimentBlock",
@@ -30,7 +43,6 @@ __all__ = [
     "ManifestSchemaError",
     "VersionEntry",
     "get_code_versions",
-    "migrate_legacy_dirs",
     "next_version_id",
     "read_manifest",
     "slugify",

@@ -20,8 +20,6 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from source.experiment_utils import OUTPUT_DIR
-from storage import migrate_legacy_dirs
 from tools import (
     qc_tools,
     stats_tools,
@@ -34,16 +32,6 @@ from tools import (
 )
 
 logger = logging.getLogger(__name__)
-
-# One-time migration: convert any pre-existing un-versioned analysis dirs into
-# v0_legacy form so list_existing_analyses can enumerate them and downstream
-# loaders can resolve them through the manifest.
-try:
-    _migrated = migrate_legacy_dirs(OUTPUT_DIR)
-    if _migrated:
-        logger.info("Migrated %d legacy analysis dirs to versioned format", _migrated)
-except Exception as exc:  # noqa: BLE001 - migration must never crash startup
-    logger.warning("Migration helper raised on startup, continuing: %s", exc)
 
 # --- Authentication ---
 

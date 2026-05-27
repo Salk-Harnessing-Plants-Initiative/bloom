@@ -29,7 +29,6 @@ from storage import (  # noqa: E402
     AnalysisDir,
     AnalysisWriter,
     Manifest,
-    migrate_legacy_dirs,
     read_manifest,
 )
 
@@ -177,116 +176,6 @@ def test_with_snapshot_pins_manifest_against_concurrent_commit(tmp_path):
 
     # After the context exits, AnalysisDir reflects live state
     assert ad.read_manifest().latest == "v2"
-
-
-# ─── migrate_legacy_dirs — un-versioned → v0_legacy ───────────────────────────
-
-
-def test_migration_creates_v0_legacy_from_loose_files(tmp_path):
-    qc_dir = tmp_path / "qc_foo"
-    qc_dir.mkdir()
-    (qc_dir / "foo_cleaned.csv").write_text("col_a\n1\n")
-    (qc_dir / "cleanup_log.json").write_text('{"step": "cleaned"}')
-
-    migrated = migrate_legacy_dirs(tmp_path)
-
-    assert migrated == 1
-    legacy = qc_dir / "v0_legacy"
-    assert legacy.exists()
-    assert (legacy / "foo_cleaned.csv").exists()
-    assert (legacy / "cleanup_log.json").exists()
-    assert (qc_dir / ".migrated").exists()
-
-    manifest = read_manifest(qc_dir)
-    assert manifest is not None
-    assert len(manifest.versions) == 1
-    entry = manifest.versions[0]
-    assert entry.id == "v0_legacy"
-    assert entry.tool == "unknown"
-    assert entry.code_versions.bloommcp == "unknown"
-    assert "foo_cleaned.csv" in entry.outputs
-    assert manifest.latest == "v0_legacy"
-
-
-def test_migration_is_idempotent(tmp_path):
-    qc_dir = tmp_path / "qc_foo"
-    qc_dir.mkdir()
-    (qc_dir / "foo_cleaned.csv").write_text("col_a\n1\n")
-
-    first = migrate_legacy_dirs(tmp_path)
-    second = migrate_legacy_dirs(tmp_path)
-
-    assert first == 1
-    assert second == 0
-    legacy = qc_dir / "v0_legacy"
-    assert (legacy / "foo_cleaned.csv").exists()
-
-
-def test_migration_renames_outliers_plural_to_outlier_singular(tmp_path):
-    """Existing outliers_<stem>/ (plural) directories migrate to
-    outlier_<stem>/v0_legacy/ (singular) to match TOOL_CLASSES naming."""
-    legacy = tmp_path / "outliers_foo"
-    legacy.mkdir()
-    (legacy / "mahalanobis_outliers.json").write_text("{}")
-
-    migrated = migrate_legacy_dirs(tmp_path)
-    assert migrated == 1
-
-    assert not legacy.exists()  # plural dir is gone
-    new = tmp_path / "outlier_foo"
-    assert new.exists()
-    assert (new / "v0_legacy" / "mahalanobis_outliers.json").exists()
-    assert read_manifest(new).latest == "v0_legacy"
-
-
-def test_migration_skips_already_versioned_dirs(tmp_path):
-    """A directory that already has a manifest.json should not be touched."""
-    qc_dir = tmp_path / "qc_foo"
-    v1 = qc_dir / "v1_2026-04-20"
-    v1.mkdir(parents=True)
-    (v1 / "_cleaned.csv").write_text("col_a\n1\n")
-    # Pre-write a valid manifest so migration sees it
-    csv = tmp_path / "foo.csv"
-    csv.write_bytes(b"col_a\n1\n")
-    seed = AnalysisWriter(tmp_path, "foo.csv", "qc", source_csv=csv)
-    # Use the same v1_dir for the actual commit so paths match
-    actual_v1 = seed.create_version("clean_experiment_data", {})
-    (actual_v1 / "_cleaned.csv").write_text("col_a\n1\n")
-    seed.commit({"_cleaned.csv": f"{actual_v1.name}/_cleaned.csv"})
-
-    migrated = migrate_legacy_dirs(tmp_path)
-    # qc_foo already has a manifest — skipped
-    assert migrated == 0
-
-
-def test_migration_continues_on_per_dir_error(tmp_path, monkeypatch):
-    """If migrating one dir fails, others still get migrated."""
-    good = tmp_path / "qc_good"
-    good.mkdir()
-    (good / "good_cleaned.csv").write_text("col_a\n1\n")
-
-    bad = tmp_path / "qc_bad"
-    bad.mkdir()
-    (bad / "bad_cleaned.csv").write_text("col_a\n1\n")
-
-    # Force the migration helper to raise on qc_bad
-    import storage.migration as mig
-    real_fn = mig._migrate_one
-    call_count = {"n": 0}
-
-    def fake_migrate(dir_path: Path, *args, **kwargs):
-        call_count["n"] += 1
-        if dir_path.name == "qc_bad":
-            raise OSError("simulated permission error")
-        return real_fn(dir_path, *args, **kwargs)
-
-    monkeypatch.setattr(mig, "_migrate_one", fake_migrate)
-
-    migrated = migrate_legacy_dirs(tmp_path)
-    assert migrated == 1  # good migrated, bad failed
-    assert (good / "v0_legacy" / "good_cleaned.csv").exists()
-    assert (bad / "bad_cleaned.csv").exists()  # untouched, still loose
-    assert not (bad / ".migrated").exists()
 
 
 # ─── Integration: refactored qc_tools.clean_experiment_data ────────────────────
