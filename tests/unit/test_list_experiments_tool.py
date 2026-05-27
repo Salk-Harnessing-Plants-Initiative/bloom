@@ -102,3 +102,45 @@ def test_skips_experiments_with_missing_name(mock_get):
     labels = [chip["label"] for chip in result["followup_actions"]]
     assert "alfalfa-2024" in labels
     assert len(result["followup_actions"]) == 1 + 3
+
+
+@patch("tools.cyl_tools.httpx.get")
+def test_includes_trait_measurement_count_and_distinct_traits_count(mock_get):
+    """Each experiment dict gains trait_measurement_count + distinct_traits_count
+    computed from the cyl_trait_by_experiment_wave view."""
+
+    def _side_effect(url, **kwargs):
+        if url.endswith("/cyl_experiments"):
+            return _mock_response([
+                _make_experiment(1, "alfalfa-2024"),
+                _make_experiment(2, "alfalfa-2025"),
+                _make_experiment(3, "alfalfa-2026"),
+            ])
+        if url.endswith("/cyl_trait_by_experiment_wave"):
+            return MagicMock(
+                status_code=200,
+                json=lambda: [
+                    # exp 1: 240 total scan-trait rows across 12 distinct trait names
+                    *[
+                        {"experiment_id": 1, "trait_name": f"trait_{i}", "n": 20}
+                        for i in range(12)
+                    ],
+                    # exp 2: 0 rows (no measurements yet) — absent from view
+                    # exp 3: 5 measurements across 1 trait
+                    {"experiment_id": 3, "trait_name": "primary_length", "n": 5},
+                ],
+            )
+        raise AssertionError(f"unexpected URL: {url}")
+
+    mock_get.side_effect = _side_effect
+
+    result = list_experiments_tool.invoke({})
+
+    by_id = {exp["id"]: exp for exp in result["experiments"]}
+    assert by_id[1]["trait_measurement_count"] == 240
+    assert by_id[1]["distinct_traits_count"] == 12
+    # Exp 2 has no rows in the view → both fields default to 0
+    assert by_id[2]["trait_measurement_count"] == 0
+    assert by_id[2]["distinct_traits_count"] == 0
+    assert by_id[3]["trait_measurement_count"] == 5
+    assert by_id[3]["distinct_traits_count"] == 1

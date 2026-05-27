@@ -55,10 +55,9 @@ CONTEXT_CYL = """## Cylinder Phenotyping Data (Supabase/PostgREST)
 - list_scans_tool / get_scan_tool: Plant scan data
 - get_scan_traits_tool: Measured traits for a scan
 - get_plant_scan_history_tool: Full scan history for a plant
-- get_plant_growth_timeline_tool: Chronological growth data
-- get_trait_growth_stats_tool: Growth statistics for a trait
-- compare_waves_trait_tool: Compare trait across waves
-- get_experiment_trait_stats_tool: Experiment-wide trait statistics
+- get_plant_growth_timeline_tool: Chronological raw scan data for one plant
+- compare_accessions_in_wave_tool: Rank accessions by a trait within one wave (returns table + chart)
+- compare_waves_for_accession_tool: One accession's trait distribution across all waves of an experiment (returns table + chart)
 
 ### UI Links
 - Greenhouse: {frontend_url}/app/greenhouse

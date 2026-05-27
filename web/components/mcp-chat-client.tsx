@@ -1,7 +1,10 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
+import styles from "./mcp-chat-client.module.css";
 
 type Message = { from: "user" | "bot"; text: string };
 type Provider = "local";
@@ -16,6 +19,7 @@ type SuggestionPayload = {
 
 type FollowupAction = { label: string; prompt: string };
 type FollowupPayload = { tool: string; actions: FollowupAction[] };
+type ImagePayload = { tool: string; url: string; layout: string };
 
 interface MCPTool {
   name: string;
@@ -167,6 +171,7 @@ export default function MCPChat() {
   const [mcpToolsCollapsed, setMcpToolsCollapsed] = useState(true);
   const [pendingSuggestions, setPendingSuggestions] = useState<SuggestionPayload | null>(null);
   const [pendingFollowups, setPendingFollowups] = useState<FollowupPayload | null>(null);
+  const [pendingImage, setPendingImage] = useState<ImagePayload | null>(null);
   const [lastUserPrompt, setLastUserPrompt] = useState<string>("");
 
   // Available models — fetched from backend
@@ -360,6 +365,7 @@ export default function MCPChat() {
     setLastUserPrompt(text);
     setPendingSuggestions(null);
     setPendingFollowups(null);
+    setPendingImage(null);
     setMessages((m) => [...m, { from: "user", text }]);
     setPrompt("");
     startRequest(text);
@@ -369,6 +375,7 @@ export default function MCPChat() {
     setLastUserPrompt(promptText);
     setPendingFollowups(null);
     setPendingSuggestions(null);
+    setPendingImage(null);
     setMessages((m) => [...m, { from: "user", text: promptText }]);
     startRequest(promptText);
   }
@@ -444,6 +451,8 @@ export default function MCPChat() {
                 suggestions?: string[];
                 sample_traits?: string[] | null;
                 followup_actions?: FollowupAction[];
+                plot_url?: string;
+                plot_layout?: string;
               };
             };
             try {
@@ -479,6 +488,13 @@ export default function MCPChat() {
                 setPendingFollowups({
                   tool: event.tool ?? "",
                   actions: result.followup_actions as FollowupAction[],
+                });
+              }
+              if (typeof result.plot_url === "string" && result.plot_url) {
+                setPendingImage({
+                  tool: event.tool ?? "",
+                  url: result.plot_url,
+                  layout: result.plot_layout ?? "boxplot",
                 });
               }
             } else if (event.type === "token" && event.content) {
@@ -1079,12 +1095,13 @@ export default function MCPChat() {
                   {m.from === "user" ? "You" : "Bloom"}
                 </div>
                 <div
+                  className={m.from === "bot" ? styles.botBubble : undefined}
                   style={{
                     background: m.from === "user" ? "#0ea5a4" : "white",
                     color: m.from === "user" ? "white" : "#1e293b",
                     padding: "14px 18px",
                     borderRadius: m.from === "user" ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
-                    whiteSpace: "pre-wrap",
+                    whiteSpace: m.from === "user" ? "pre-wrap" : "normal",
                     fontSize: 14,
                     lineHeight: 1.6,
                     boxShadow:
@@ -1094,10 +1111,31 @@ export default function MCPChat() {
                     marginLeft: m.from === "user" ? "auto" : 0,
                   }}
                 >
-                  {m.text}
+                  {m.from === "bot" ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+                  ) : (
+                    m.text
+                  )}
                 </div>
               </div>
             ))}
+            {pendingImage && (
+              <div style={{ marginBottom: 20, marginLeft: 26 }}>
+                <img
+                  src={pendingImage.url}
+                  alt={`Chart from ${pendingImage.tool}`}
+                  style={{
+                    maxWidth: 600,
+                    width: "100%",
+                    height: "auto",
+                    borderRadius: 8,
+                    border: "1px solid #e2e8f0",
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
+                    display: "block",
+                  }}
+                />
+              </div>
+            )}
             {pendingSuggestions && (
               <div style={{ marginBottom: 20, marginLeft: 26 }}>
                 <div style={{ fontSize: 13, color: "#64748b", marginBottom: 8 }}>

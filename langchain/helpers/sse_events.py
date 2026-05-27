@@ -6,17 +6,18 @@ from __future__ import annotations
 import json
 
 
-_TRIGGER_KEYS = ("suggestions", "sample_traits", "followup_actions")
-_UI_KEYS = _TRIGGER_KEYS + ("trait_name",)
+_TRIGGER_KEYS = ("suggestions", "sample_traits", "followup_actions", "plot_url")
+_UI_KEYS = _TRIGGER_KEYS + ("trait_name", "plot_layout")
 
 
 def tool_result_event(tool_name: str, output) -> str | None:
     """Build a `tool_result` SSE line if the tool's output is a structured
     payload the UI should render. Triggers on any of: `suggestions` (typo
-    fuzzy-match), `sample_traits` (no-match alphabetical sample), or
-    `followup_actions` (universal action chips for listing tools, HITL).
+    fuzzy-match), `sample_traits` (no-match alphabetical sample),
+    `followup_actions` (universal action chips for listing tools, HITL), or
+    `plot_url` (inline chart from a viz-emitting tool).
     Forwards only UI-consumed keys so bulky tool payloads (traits / experiments
-    lists) don't duplicate over the wire.
+    lists, full rankings tables) don't duplicate over the wire.
     Returns None for every other output shape so the caller can skip emission.
     """
     payload = getattr(output, "content", output)
