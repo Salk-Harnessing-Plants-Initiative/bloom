@@ -27,8 +27,7 @@ CANONICAL_TOOL_CLASSES: tuple[str, ...] = (
     "viz",
     "correlation",
     "heritability",
-    "growth_curve",
-    "group_comparison",
+    "anova",
 )
 
 __all__ = [

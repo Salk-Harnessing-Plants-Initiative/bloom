@@ -148,14 +148,14 @@ def test_canonical_tool_classes_includes_originals():
         assert original in CANONICAL_TOOL_CLASSES, f"missing original tool class {original!r}"
 
 
-def test_canonical_tool_classes_includes_three_new_workflows():
-    """Phase 1 adds the three new workflow tool classes."""
-    for new_class in ("heritability", "growth_curve", "group_comparison"):
+def test_canonical_tool_classes_includes_two_new_workflows():
+    """Two workflow tool classes added on top of the original seven."""
+    for new_class in ("heritability", "anova"):
         assert new_class in CANONICAL_TOOL_CLASSES, f"missing new tool class {new_class!r}"
 
 
-def test_canonical_tool_classes_count_is_ten():
-    assert len(CANONICAL_TOOL_CLASSES) == 10
+def test_canonical_tool_classes_count_is_nine():
+    assert len(CANONICAL_TOOL_CLASSES) == 9
 
 
 def test_canonical_tool_classes_has_no_duplicates():
