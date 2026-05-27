@@ -53,15 +53,6 @@ def test_skips_event_for_success_rows_payload():
     assert _tool_result_event("compare_trait_between_experiments_tool", output) is None
 
 
-def test_skips_event_for_plot_url_payload():
-    output = {
-        "plot_url": "http://localhost/plots/cyl_supabase_dist_abc.png",
-        "n": 200,
-        "trait_name": "primary_length",
-    }
-    assert _tool_result_event("plot_trait_distribution_supabase_tool", output) is None
-
-
 def test_skips_event_for_string_output():
     assert _tool_result_event("list_experiments_tool", "[{\"id\": 1}]") is None
 
@@ -135,3 +126,43 @@ def test_emits_event_for_combined_followup_and_suggestions_payload():
     parsed = json.loads(line.removeprefix("data: ").strip())
     assert parsed["result"]["suggestions"] == ["primary_length"]
     assert len(parsed["result"]["followup_actions"]) == 1
+
+
+def test_emits_event_for_plot_url_only_payload():
+    """plot_url alone (no chips, no suggestions) is a valid trigger."""
+    output = {
+        "plot_url": "http://localhost:5002/plots/cyl_supabase_accession_rank_abcd1234.png",
+        "plot_layout": "boxplot",
+    }
+    line = _tool_result_event("compare_accessions_in_wave_tool", output)
+    assert line is not None
+    parsed = json.loads(line.removeprefix("data: ").strip())
+    assert parsed["type"] == "tool_result"
+    assert parsed["tool"] == "compare_accessions_in_wave_tool"
+    assert parsed["result"]["plot_url"].endswith(".png")
+    assert parsed["result"]["plot_layout"] == "boxplot"
+
+
+def test_plot_url_payload_strips_bulky_keys():
+    """Bulky non-UI keys (rankings table, scope, summary) must NOT make it
+    over the wire — only plot_url + plot_layout (+ trait_name) are forwarded."""
+    output = {
+        "rankings": [
+            {"rank": i, "accession_name": f"indi-{i}", "n": 20, "mean": i,
+             "std": 1, "median": i, "min": 0, "max": 100}
+            for i in range(50)
+        ],
+        "scope": {"wave_id": 12, "scan_mode": "latest_per_plant"},
+        "summary": {"median_of_accession_medians": 25.0, "top_3": ["a", "b", "c"]},
+        "trait_name": "primary_length",
+        "n_accessions": 50,
+        "plot_url": "http://localhost:5002/plots/cyl_supabase_x.png",
+        "plot_layout": "ranked_profile",
+    }
+    line = _tool_result_event("compare_accessions_in_wave_tool", output)
+    assert line is not None
+    parsed = json.loads(line.removeprefix("data: ").strip())
+    assert set(parsed["result"].keys()) == {"trait_name", "plot_url", "plot_layout"}
+    assert "rankings" not in parsed["result"]
+    assert "scope" not in parsed["result"]
+    assert "summary" not in parsed["result"]
