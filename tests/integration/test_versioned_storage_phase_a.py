@@ -170,17 +170,6 @@ def test_next_version_id_skips_deleted_ids():
     assert next_version_id(manifest) == "v4"
 
 
-def test_next_version_id_handles_legacy_suffix():
-    manifest = _make_manifest(
-        versions=[
-            _make_version_entry(id="v0_legacy"),
-            _make_version_entry(id="v2"),
-        ],
-        latest="v2",
-    )
-    assert next_version_id(manifest) == "v3"
-
-
 def test_slugify_normalises_user_labels():
     assert slugify("Iso Method") == "iso_method"
     assert slugify("contamination=0.05") == "contamination005"

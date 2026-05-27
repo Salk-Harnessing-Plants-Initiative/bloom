@@ -3,14 +3,22 @@ Bloom MCP Server - Exposes SLEAP analysis tools via Model Context Protocol.
 
 Transport: streamable-http on port 8811
 
-Tool modules (39 tools total):
-  - qc_tools:          6 tools  (experiment discovery, data quality, cleanup)
-  - stats_tools:       5 tools  (descriptive stats, ANOVA, heritability)
-  - dimred_tools:      4 tools  (PCA analysis, feature contributions, plots)
-  - clustering_tools:  4 tools  (K-Means, GMM, hierarchical, quality metrics)
-  - outlier_tools:     5 tools  (Mahalanobis, Isolation Forest, PCA, consensus)
-  - viz_tools:         7 tools  (histograms, boxplots, heatmaps, dendrograms)
-  - correlation_tools: 8 tools  (cross-experiment correlations, power analysis)
+Workflow tools (one MCP call runs the full analysis):
+  - run_qc_workflow
+  - run_outlier_workflow
+  - run_descriptive_stats_workflow
+  - run_dimensionality_reduction_workflow
+  - run_clustering_workflow
+
+Discovery tools (always-on):
+  - list_available_experiments
+  - load_experiment_data
+  - inspect_data_quality
+  - list_existing_analyses
+
+Direct tools (granular, available for ad-hoc use):
+  - correlation_tools: 8 cross-experiment correlation tools
+  - viz_tools:         7 plotting tools
 """
 import hmac
 import logging
@@ -20,30 +28,21 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from source.experiment_utils import OUTPUT_DIR
-from storage import migrate_legacy_dirs
 from tools import (
     qc_tools,
-    stats_tools,
-    dimred_tools,
-    clustering_tools,
-    outlier_tools,
     viz_tools,
     correlation_tools,
     storage_tools,
 )
+from tools.workflows import (
+    clustering as clustering_workflow,
+    dimred as dimred_workflow,
+    outlier as outlier_workflow,
+    qc as qc_workflow,
+    stats as stats_workflow,
+)
 
 logger = logging.getLogger(__name__)
-
-# One-time migration: convert any pre-existing un-versioned analysis dirs into
-# v0_legacy form so list_existing_analyses can enumerate them and downstream
-# loaders can resolve them through the manifest.
-try:
-    _migrated = migrate_legacy_dirs(OUTPUT_DIR)
-    if _migrated:
-        logger.info("Migrated %d legacy analysis dirs to versioned format", _migrated)
-except Exception as exc:  # noqa: BLE001 - migration must never crash startup
-    logger.warning("Migration helper raised on startup, continuing: %s", exc)
 
 # --- Authentication ---
 
@@ -71,14 +70,20 @@ mcp = FastMCP("bloom-tools", auth=auth_provider)
 
 # --- Register All Tool Modules ---
 
+# Discovery tools (always-on)
 qc_tools.register(mcp)
-stats_tools.register(mcp)
-dimred_tools.register(mcp)
-clustering_tools.register(mcp)
-outlier_tools.register(mcp)
-viz_tools.register(mcp)
-correlation_tools.register(mcp)
 storage_tools.register(mcp)
+
+# Workflow tools
+qc_workflow.register(mcp)
+outlier_workflow.register(mcp)
+stats_workflow.register(mcp)
+dimred_workflow.register(mcp)
+clustering_workflow.register(mcp)
+
+# Direct tools (granular)
+correlation_tools.register(mcp)
+viz_tools.register(mcp)
 
 # --- Health Endpoint ---
 # GET for Docker healthchecks. Bypasses MCP's SSE/JSON-RPC
