@@ -69,3 +69,17 @@ CVE-2026-7210
 # use libssh2 / SSH at runtime; transitive Debian base package. No fix
 # available upstream. Reassess on next SHA bump.
 CVE-2026-7598
+
+# perl-base 5.40.1-6 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
+# Archive::Tar symlink extraction. The agent does not extract tar archives
+# at runtime; perl-base is a transitive Debian base package only, no
+# application code path invokes it. No fix available upstream.
+# Reassess on next python:3.11-slim SHA bump.
+CVE-2026-42496
+
+# perl-base 5.40.1-6 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
+# Heap buffer overflow when Perl compiles certain regex patterns. The agent
+# does not execute Perl at runtime; perl-base is a transitive Debian base
+# package included by python:3.11-slim. No fix available upstream.
+# Reassess on next python:3.11-slim SHA bump.
+CVE-2026-8376

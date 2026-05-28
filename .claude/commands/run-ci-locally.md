@@ -18,7 +18,7 @@ The `pr-checks.yml` workflow runs these jobs:
 | `build-and-audit` | npm audit, TypeScript check, Next.js build | `npm ci && npm audit && cd web && npx tsc --noEmit && npm run build` |
 | `python-audit` | Python CVE scanning | See [Python Audit](#python-audit-30s) section below |
 | `docker-build` | Build Docker images + Trivy scan | `docker compose -f docker-compose.prod.yml build` |
-| `compose-health-check` | Full stack integration tests | `make prod-up && uv run --with pytest pytest tests/integration/` |
+| `compose-health-check` | Full stack integration tests | `make prod-up && uv run --extra test pytest tests/integration/` |
 
 ## Quick Check (~1 min)
 
@@ -35,9 +35,9 @@ cd web && npx tsc --noEmit && npm run build
 Matches the `python-audit` job:
 
 ```bash
-cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 ```
 
 ## Docker Build (~5-10 min)
@@ -68,7 +68,7 @@ make prod-up
 docker compose -f docker-compose.prod.yml ps
 
 # Run integration tests
-uv run --with pytest pytest tests/integration/ -v --tb=short
+uv run --extra test pytest tests/integration/ -v --tb=short
 
 # Teardown
 make prod-down
@@ -108,9 +108,9 @@ npm audit --audit-level=critical
 cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Phase 2: python-audit
-cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
 # Phase 3: docker-build
 docker compose -f docker-compose.prod.yml build
@@ -118,7 +118,7 @@ docker compose -f docker-compose.prod.yml build
 # Phase 4: integration tests (prod stack, matching CI)
 make prod-up
 docker compose -f docker-compose.prod.yml ps  # verify all healthy
-uv run --with pytest pytest tests/integration/ -v --tb=short
+uv run --extra test pytest tests/integration/ -v --tb=short
 make prod-down
 ```
 
@@ -174,7 +174,7 @@ docker compose -f docker-compose.prod.yml logs langchain-agent --tail=50
 docker compose -f docker-compose.prod.yml logs db-prod --tail=50
 
 # Run specific test
-uv run --with pytest pytest tests/integration/test_smoke.py -v --tb=long
+uv run --extra test pytest tests/integration/test_smoke.py -v --tb=long
 ```
 
 ## When to Run

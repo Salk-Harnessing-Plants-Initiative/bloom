@@ -17,7 +17,7 @@ You are a scientific programmer working on a plant phenotyping web platform (Nex
 
 **Steps**
 
-1. **Ensure feature branch**: Check if you are on a feature branch (not `main`). If on `main`, STOP. Do not proceed to Step 2. Ask the user for a branch name, create and check out the branch, and confirm with `git branch --show-current` before continuing.
+1. **Ensure feature branch**: Check if you are on a feature branch (not `main` or `staging`). If on `main` or `staging`, STOP. Do not proceed to Step 2. Ask the user for a branch name, then run `git fetch origin staging && git checkout -b <branch-name> origin/staging` so the new branch starts from the integration branch's tip (not whatever local `main`/`staging` happens to be at). Confirm with `git branch --show-current` before continuing. Why: this repo is staging-first — feature PRs target `staging`, and starting a branch from a stale local `main` would silently lose every commit between `main` and `staging`.
 
 2. **Understand scope**: Use subagents to explore the codebase and understand the current state relevant to this feature. Investigate existing code, specs, and related capabilities before proposing anything.
 

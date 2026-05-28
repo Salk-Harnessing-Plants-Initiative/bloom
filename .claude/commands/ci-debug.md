@@ -11,14 +11,14 @@ Guide for debugging CI failures in Bloom (Next.js + FastAPI/LangGraph + FastMCP 
 
 ## CI Pipeline Overview
 
-### PR Checks (`pr-checks.yml`) — runs on PRs to `main`
+### PR Checks (`pr-checks.yml`) — runs on PRs to `main` and `staging`
 
 | Job | Purpose | Key Commands |
 |---|---|---|
 | `build-and-audit` | npm CVE audit, TypeScript check, Next.js build | `npm ci`, `npm audit --audit-level=critical`, `npx tsc --noEmit`, `npm run build` |
-| `python-audit` | Python CVE scanning | `uv export --frozen --no-hashes` piped to `uvx pip-audit` per service |
+| `python-audit` | Python CVE scanning | `uv export --frozen --no-hashes` piped to `uvx pip-audit@2.10.0` per service (pinned per the `python-dependency-management` spec) |
 | `docker-build` | Build + Trivy scan Docker images | Build `bloom-web`, `langchain-agent`, `bloommcp`; Trivy CRITICAL gate |
-| `compose-health-check` | Full stack integration tests | Start prod compose, wait 180s for health, `uv run --with pytest pytest tests/integration/` |
+| `compose-health-check` | Full stack integration tests | Start prod compose, wait 180s for health, `uv run --extra test pytest tests/integration/` |
 | `extract-pinned-images` | Extract pinned images for matrix scan | Grep `image:` from compose |
 | `scan-pinned-images` | CVE scan each pinned image (matrix) | Trivy per-image |
 | `pinned-images-summary` | Aggregate CVE report | Post combined table as PR comment |
@@ -97,9 +97,9 @@ cd web && npx tsc --noEmit && npm run build
 **Debug locally:**
 
 ```bash
-cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 ```
 
 **Common failures:**
@@ -143,7 +143,7 @@ trivy image bloom-web:latest --severity CRITICAL,HIGH
 2. Generates `.env.ci` from GitHub secrets
 3. Starts the full prod compose stack
 4. Waits up to 180 seconds for all services to report healthy
-5. Runs `uv run --with pytest pytest tests/integration/ -v --tb=short`
+5. Runs `uv run --extra test pytest tests/integration/ -v --tb=short`
 6. Tears down with `docker compose down -v`
 
 **Debug locally:**
@@ -162,7 +162,7 @@ docker compose -f docker-compose.prod.yml logs bloommcp
 docker compose -f docker-compose.prod.yml logs db-prod
 
 # Run integration tests
-uv run --with pytest pytest tests/integration/ -v --tb=short
+uv run --extra test pytest tests/integration/ -v --tb=short
 
 # Teardown
 make prod-down
@@ -274,9 +274,9 @@ export CI=true
 npm ci && npm audit --audit-level=critical && cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Phase 2: python-audit
-cd langchain && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
-cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit -r /dev/stdin
+cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
 # Phase 3: docker-build
 docker compose -f docker-compose.prod.yml build
@@ -285,7 +285,7 @@ docker compose -f docker-compose.prod.yml build
 make prod-up
 # Wait for services...
 docker compose -f docker-compose.prod.yml ps
-uv run --with pytest pytest tests/integration/ -v --tb=short
+uv run --extra test pytest tests/integration/ -v --tb=short
 make prod-down
 ```
 

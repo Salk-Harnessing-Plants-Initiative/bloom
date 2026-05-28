@@ -944,7 +944,7 @@ docker compose -f docker-compose.dev.yml logs -f web
 - Edit files in `langchain/`
 - FastAPI auto-reloads on file changes (debug mode)
 - Install new dependencies: `cd langchain && uv add <package>`
-- Run tests: `uv run --with pytest pytest tests/integration/ -v --tb=short`
+- Run tests: `uv run --extra test pytest tests/integration/ -v --tb=short`
 
 **FastMCP server (Python, `bloommcp/`):**
 
@@ -1025,7 +1025,7 @@ docker compose -f docker-compose.dev.yml up -d langchain-agent
 \```bash
 
 # Python integration tests
-uv run --with pytest pytest tests/integration/ -v --tb=short
+uv run --extra test pytest tests/integration/ -v --tb=short
 
 # TypeScript linting and type-check
 npm run lint
@@ -1141,10 +1141,15 @@ docker compose -f docker-compose.dev.yml restart web
 
 ### Branch Strategy
 
-- `main`: Production-ready code
-- `feature/*`: New features
-- `fix/*`: Bug fixes
-- `docs/*`: Documentation updates
+This repo is staging-first: feature work merges into `staging`, and `staging` is periodically promoted to `main` via consolidation rollup PRs.
+
+- `staging`: Integration branch — every feature/fix/docs PR targets this by default. Branch protection requires one non-author approval.
+- `main`: Consolidation/release branch — receives `staging → main` rollup PRs. Releases are tagged here. Branch protection requires one non-author approval.
+- `feature/*`: New features (PR → `staging`)
+- `fix/*`: Bug fixes (PR → `staging`)
+- `docs/*`: Documentation updates (PR → `staging`)
+
+Create new branches from `origin/staging` (`git fetch origin staging && git checkout -b <name> origin/staging`) so the branch starts from the integration tip, not whatever local `main`/`staging` happens to be.
 
 ### Commit Messages
 
