@@ -388,30 +388,15 @@ jobs:
           timeout 180 bash -c 'until docker compose -f docker-compose.prod.yml --env-file .env.ci ps db-prod --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
           echo "Database is healthy!"
 
-      - name: Start remaining services
-        run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build
-
-      - name: Wait for services to be healthy
-        run: |
-          echo "Waiting for services to become healthy..."
-          TIMEOUT=180
-          ELAPSED=0
-          while [ $ELAPSED -lt $TIMEOUT ]; do
-            UNHEALTHY=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r '.[] | select(.Health == "unhealthy" or .Health == "starting") | .Name' 2>/dev/null | wc -l)
-            EXITED=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r '.[] | select(.State == "exited" and .ExitCode != 0) | .Name' 2>/dev/null | wc -l)
-            if [ "$UNHEALTHY" -eq 0 ] && [ "$EXITED" -eq 0 ]; then
-              echo "All services healthy!"
-              docker compose -f docker-compose.prod.yml --env-file .env.ci ps
-              exit 0
-            fi
-            echo "Waiting... (${ELAPSED}s / ${TIMEOUT}s) — ${UNHEALTHY} unhealthy, ${EXITED} failed"
-            sleep 5
-            ELAPSED=$((ELAPSED + 5))
-          done
-          echo "::error::Services did not become healthy within ${TIMEOUT}s"
-          docker compose -f docker-compose.prod.yml --env-file .env.ci ps
-          docker compose -f docker-compose.prod.yml --env-file .env.ci logs --tail=50
-          exit 1
+      # Start only the storage service first so it can create the storage.*
+      # schema (storage.buckets, storage.objects, etc.) that our migrations
+      # need. Holding back realtime + kong + auth + web prevents them from
+      # doing pg_publication / storage.objects introspection concurrently with
+      # `supabase db push`'s AccessExclusiveLocks — which caused intermittent
+      # deadlocks in CI (SQLSTATE 40P01) on otherwise-unchanged migrations
+      # like 20230711213534's `DROP POLICY ... ON cyl_scans`.
+      - name: Start storage service (for storage.* schema)
+        run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build storage
 
       - name: Wait for storage schema
         env:
@@ -434,6 +419,9 @@ jobs:
       # Apply migrations via Supabase CLI — same code path as the prod and staging deploys.
       # Creates `supabase_migrations.schema_migrations` on first run, skips already-applied
       # migrations, wraps each in a transaction, takes an advisory lock.
+      #
+      # Runs BEFORE kong/realtime/auth/web come up so migrations don't fight
+      # those services' background queries for locks.
       - name: Apply database migrations
         run: |
           # Extract only the Postgres connection vars we need. Avoids
@@ -459,6 +447,33 @@ jobs:
             echo "::error title=Migration failed (CI)::See 'Migration status on failure' step and the Migration summary at top of run for applied vs pending state."
             exit 1
           }
+
+      # Bring up everything else (kong, realtime, auth, web, langchain, etc.).
+      # db-prod and storage are already running; `up -d` is idempotent for them.
+      - name: Start remaining services
+        run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build
+
+      - name: Wait for services to be healthy
+        run: |
+          echo "Waiting for services to become healthy..."
+          TIMEOUT=180
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            UNHEALTHY=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r '.[] | select(.Health == "unhealthy" or .Health == "starting") | .Name' 2>/dev/null | wc -l)
+            EXITED=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r '.[] | select(.State == "exited" and .ExitCode != 0) | .Name' 2>/dev/null | wc -l)
+            if [ "$UNHEALTHY" -eq 0 ] && [ "$EXITED" -eq 0 ]; then
+              echo "All services healthy!"
+              docker compose -f docker-compose.prod.yml --env-file .env.ci ps
+              exit 0
+            fi
+            echo "Waiting... (${ELAPSED}s / ${TIMEOUT}s) — ${UNHEALTHY} unhealthy, ${EXITED} failed"
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          echo "::error::Services did not become healthy within ${TIMEOUT}s"
+          docker compose -f docker-compose.prod.yml --env-file .env.ci ps
+          docker compose -f docker-compose.prod.yml --env-file .env.ci logs --tail=50
+          exit 1
 
       # Layer B — runs only on failure. Prints applied-vs-pending state so an
       # on-call engineer can see which migration broke without digging through
