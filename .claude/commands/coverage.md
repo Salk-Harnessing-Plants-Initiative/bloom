@@ -22,7 +22,7 @@ Bloom currently has **integration tests only** — no frontend unit tests exist 
 
 ```bash
 # Run integration tests (requires Docker stack running)
-uv run --with pytest pytest tests/integration/ -v --tb=short
+uv run --extra test pytest tests/integration/ -v --tb=short
 
 # Run with coverage report
 uv run --with pytest-cov pytest tests/integration/ --cov --cov-report=term-missing -v
@@ -34,10 +34,10 @@ uv run --with pytest-cov pytest tests/integration/ --cov --cov-report=term-missi
 uv run --with pytest-cov pytest tests/integration/ --cov --cov-fail-under=70 -v
 
 # Run a specific test file
-uv run --with pytest pytest tests/integration/test_api_endpoints.py -v --tb=short
+uv run --extra test pytest tests/integration/test_api_endpoints.py -v --tb=short
 
 # Run a specific test
-uv run --with pytest pytest tests/integration/test_api_endpoints.py::test_health_check -v
+uv run --extra test pytest tests/integration/test_api_endpoints.py::test_health_check -v
 ```
 
 ## Prerequisites
@@ -52,7 +52,7 @@ make prod-up
 docker compose -f docker-compose.prod.yml ps
 
 # Run tests
-uv run --with pytest pytest tests/integration/ -v --tb=short
+uv run --extra test pytest tests/integration/ -v --tb=short
 
 # Stop the stack when done
 make prod-down
@@ -85,7 +85,7 @@ In CI (`compose-health-check` job):
 1. Docker images are built by the `docker-build` job
 2. Full prod compose stack starts with `.env.ci`
 3. Waits up to 180 seconds for all services to be healthy
-4. Runs `uv run --with pytest pytest tests/integration/ -v --tb=short`
+4. Runs `uv run --extra test pytest tests/integration/ -v --tb=short`
 5. Stack is torn down with `docker compose down -v`
 
 ## Adding New Tests

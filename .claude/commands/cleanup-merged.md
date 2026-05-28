@@ -26,20 +26,24 @@ gh pr list --state merged --author @me
 
 **Important**: Verify the PR status shows "Merged" before proceeding.
 
-## 2. Switch to Main and Pull
+## 2. Switch to the Integration Branch and Pull
+
+This repo is staging-first: feature PRs merge into `staging`, and `staging` is periodically promoted to `main`. Default to `staging` here. Use `main` only when cleaning up a consolidation rollup PR (e.g. a `staging → main` promotion) — `gh pr view <number> --json baseRefName` will tell you which.
 
 ```bash
-# Switch to main branch
-git checkout main
+# Switch to the branch the PR was merged into
+git checkout staging   # or `main` for staging → main consolidation rollups
 
-# Pull latest changes
+# Pull latest changes — STOP and resolve if this fails
+# (diverged history, network, lock file, etc.). Don't proceed to `git branch -d`
+# against a stale base — verify the merge is visible locally first.
 git pull
 
 # Verify you're up to date
 git status
 ```
 
-Confirm you're on the latest main branch before deleting feature branches.
+Confirm you're on the latest integration branch before deleting feature branches.
 
 ## 3. Delete Feature Branch
 
@@ -89,7 +93,7 @@ git branch -a | grep <branch-name> || echo "✅ Branch deleted"
 # Verify OpenSpec archived (if applicable)
 openspec list | grep <change-name> || echo "✅ OpenSpec archived"
 
-# Verify main is clean
+# Verify integration branch is clean
 git status
 ```
 
@@ -98,7 +102,7 @@ git status
 After cleanup, verify:
 
 - ✅ PR confirmed merged
-- ✅ Main branch updated (`git pull`)
+- ✅ Integration branch updated (`git pull` on `staging`, or `main` for consolidation rollups)
 - ✅ Feature branch deleted locally (`git branch -d`)
 - ✅ Remote tracking cleaned up (`git remote prune origin`)
 - ✅ OpenSpec change archived (if applicable)
@@ -109,11 +113,11 @@ After cleanup, verify:
 ### Scenario 1: Simple Bug Fix (No OpenSpec)
 
 ```bash
-# 1. Verify merge
-gh pr view <number>
+# 1. Verify merge (note the baseRefName — usually staging)
+gh pr view <number> --json baseRefName,state
 
-# 2. Switch to main and pull
-git checkout main
+# 2. Switch to the integration branch the PR merged into and pull
+git checkout staging   # or `main` for staging → main consolidation rollups
 git pull
 
 # 3. Delete branch
@@ -128,11 +132,11 @@ git remote prune origin
 ### Scenario 2: Feature with OpenSpec Documentation
 
 ```bash
-# 1. Verify merge
-gh pr view <number>
+# 1. Verify merge (note the baseRefName — usually staging)
+gh pr view <number> --json baseRefName,state
 
-# 2. Switch to main and pull
-git checkout main
+# 2. Switch to the integration branch the PR merged into and pull
+git checkout staging   # or `main` for staging → main consolidation rollups
 git pull
 
 # 3. Delete branch
@@ -172,8 +176,9 @@ git branch -d feature/my-feature
 If you're absolutely sure the branch should be deleted even though it's not merged:
 
 ```bash
-# Check what commits would be lost
-git log main..feature/branch-name
+# Check what commits would be lost (compare against the branch the PR targeted —
+# usually staging; use main only for staging → main consolidation rollups)
+git log staging..feature/branch-name
 
 # If you're sure, force delete
 git branch -D feature/branch-name
@@ -205,8 +210,9 @@ gh pr view <number>
 git fetch origin
 git pull
 
-# Solution 3: Check what would be lost
-git log main..my-feature
+# Solution 3: Check what would be lost (compare against the PR's target branch —
+# usually staging; use main only for staging → main consolidation rollups)
+git log staging..my-feature
 
 # Solution 4: Force delete if you're sure
 git branch -D my-feature
