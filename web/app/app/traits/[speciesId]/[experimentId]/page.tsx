@@ -18,7 +18,7 @@ export default async function Experiment({
   const [user, experiment, traitNames] = await Promise.all([
     getUser(),
     getExperimentWithSpecies(experimentIdNum),
-    getTraitNames(),
+    getTraitNamesForExperiment(experimentIdNum),
   ]);
 
   const mixpanel = process.env.MIXPANEL_TOKEN
@@ -111,15 +111,27 @@ async function getExperimentWithSpecies(experimentId: number) {
   return data;
 }
 
-async function getTraitNames(): Promise<string[]> {
+/**
+ * Trait names that actually have at least one measurement for this
+ * experiment, sourced from the `cyl_trait_by_experiment_wave` view
+ * (one row per experiment × wave × trait). De-duplicated across waves
+ * because Supabase doesn't expose DISTINCT directly.
+ */
+async function getTraitNamesForExperiment(
+  experimentId: number,
+): Promise<string[]> {
   const supabase = await createServerSupabaseClient();
   const { data } = await supabase
-    .from("cyl_scan_trait_names")
-    .select("name")
-    .order("name");
+    .from("cyl_trait_by_experiment_wave")
+    .select("trait_name")
+    .eq("experiment_id", experimentId)
+    .order("trait_name");
 
   if (!data) return [];
-  return (data as { name: string | null }[])
-    .map((row) => row.name)
-    .filter((name): name is string => Boolean(name));
+
+  const names = (data as { trait_name: string | null }[])
+    .map((row) => row.trait_name)
+    .filter((n): n is string => Boolean(n));
+
+  return [...new Set(names)];
 }
