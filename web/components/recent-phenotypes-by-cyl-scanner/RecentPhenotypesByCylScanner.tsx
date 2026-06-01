@@ -1,43 +1,30 @@
 /**
- * Top-level component for the home-page "Recent phenotypes by cylinder
- * scanner" widget.
+ * Top-level server component for the home-page "Recent phenotypes by
+ * cylinder scanner" widget.
  *
- * Server component — fetches the data once on the request, then renders a
- * top-level section heading with one ScannerSection per scanner that has
- * scans on record. Phase 4 wraps the section list in a client component that
- * re-fetches on Realtime INSERT events for cyl_scans.
- *
- * Empty state: still renders the heading so the page communicates "this is
- * where new scans will appear once a cylinder scanner uploads its first
- * session."
+ * Fetches the initial section list server-side for fast first paint, then
+ * hands off to the client wrapper which subscribes to Realtime INSERT
+ * events on cyl_scans and re-fetches the view when new scans land.
  */
 
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getRecentPhenotypesByCylScanner } from "@/lib/queries/recent-phenotypes-by-cyl-scanner";
-import { ScannerSection } from "./ScannerSection";
+import { RecentPhenotypesByCylScannerLive } from "./RecentPhenotypesByCylScannerLive";
+import { LiveIndicator } from "./LiveIndicator";
 
 export async function RecentPhenotypesByCylScanner() {
   const supabase = await createServerSupabaseClient();
-  const sections = await getRecentPhenotypesByCylScanner(supabase);
+  const initialSections = await getRecentPhenotypesByCylScanner(supabase);
 
   return (
     <section className="py-8" aria-label="Recent phenotypes by cylinder scanner">
-      <h2 className="text-2xl font-serif italic text-green-800 mb-5">
-        Recent phenotypes by cylinder scanner
-      </h2>
-
-      {sections.length === 0 ? (
-        <p className="text-sm text-stone-500">
-          No phenotypes yet — once a cylinder scanner uploads its first session,
-          it will appear here.
-        </p>
-      ) : (
-        <div className="space-y-6">
-          {sections.map((section) => (
-            <ScannerSection key={section.scanner_id} section={section} />
-          ))}
-        </div>
-      )}
+      <div className="mb-5 flex items-center gap-3">
+        <h2 className="text-2xl font-serif italic text-green-800">
+          Recent phenotypes by cylinder scanner
+        </h2>
+        <LiveIndicator />
+      </div>
+      <RecentPhenotypesByCylScannerLive initialSections={initialSections} />
     </section>
   );
 }
