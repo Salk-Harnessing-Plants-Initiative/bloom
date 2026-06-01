@@ -51,10 +51,8 @@ services:
       STUDIO_PORT: ${STUDIO_PORT}
       MINIO_CONSOLE_PORT: ${MINIO_CONSOLE_PORT}
       CADDY_HTTP_PORT: ${CADDY_HTTP_PORT}
-      CADDY_TLS_DIRECTIVE: ${CADDY_TLS_DIRECTIVE}
-      # Required for ACME DNS-01 via the cloudflare DNS provider plugin
-      # (CADDY_TLS_DIRECTIVE=tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }).
-      # Both prod and staging use DNS-01 against the same CNAME delegation.
+      # Required for ACME DNS-01 — consumed by the cloudflare DNS provider
+      # plugin baked into the Caddy image (see caddy/Dockerfile + Caddyfile).
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
