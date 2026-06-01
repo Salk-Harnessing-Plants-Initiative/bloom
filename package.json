@@ -6,6 +6,9 @@
     "web",
     "packages/*"
   ],
+  "overrides": {
+    "esbuild": "0.28.0"
+  },
   "dependencies": {
     "@salk-hpi/bloom-fs": "^0.1.0",
     "dotenv": "^17.2.3",
