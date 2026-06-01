@@ -350,7 +350,13 @@ jobs:
           echo "CADDY_HTTP_LISTEN_PORT=80" >> .env.ci
           echo "CADDY_HTTPS_LISTEN_PORT=443" >> .env.ci
           echo "CADDY_HTTP_PORT=:80" >> .env.ci
-          echo "CADDY_TLS_DIRECTIVE=" >> .env.ci
+          # Caddy CI mode binds only :80, so this cert subject list never
+          # triggers an actual ACME issuance; it just needs to parse cleanly.
+          echo "CADDY_CERT_SUBJECTS=localhost, *.localhost" >> .env.ci
+          # 40-char placeholder satisfies the caddy-dns/cloudflare plugin's
+          # token-format check at startup. No real Cloudflare API call is ever
+          # made in CI because port 443 isn't bound.
+          echo "CLOUDFLARE_API_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >> .env.ci
           echo "KONG_PORT=8000" >> .env.ci
           echo "BLOOM_WEB_PORT=3000" >> .env.ci
           echo "STUDIO_PORT=3000" >> .env.ci

@@ -51,6 +51,9 @@ services:
       STUDIO_PORT: ${STUDIO_PORT}
       MINIO_CONSOLE_PORT: ${MINIO_CONSOLE_PORT}
       CADDY_HTTP_PORT: ${CADDY_HTTP_PORT}
+      # Cert subject list — env-driven because prod needs the apex AND wildcard
+      # while staging needs only the wildcard.
+      CADDY_CERT_SUBJECTS: ${CADDY_CERT_SUBJECTS}
       # Required for ACME DNS-01 — consumed by the cloudflare DNS provider
       # plugin baked into the Caddy image (see caddy/Dockerfile + Caddyfile).
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}

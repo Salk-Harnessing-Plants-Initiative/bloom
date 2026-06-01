@@ -11,13 +11,20 @@
 #
 # TLS strategy:
 #
-#   All three hostnames are consolidated into ONE site block with subjects
-#     {DOMAIN_MAIN}, *.bloom-dev.salk.edu
-#   so Caddy issues a single wildcard SAN cert covering apex + wildcard.
-#   The wildcard challenge for *.bloom-dev.salk.edu lands at
-#   _acme-challenge.bloom-dev.salk.edu, which Salk DNS delegates via CNAME
-#   to _acme-challenge.bloom-acme.talmolab.org (Cloudflare zone we control).
-#   One Salk CNAME covers prod and staging both.
+#   All hostnames served by this stack are consolidated into ONE site block
+#   whose subjects are driven by the CADDY_CERT_SUBJECTS env var:
+#     prod:    `bloom-dev.salk.edu, *.bloom-dev.salk.edu`   (apex needed —
+#                                                           wildcards do not
+#                                                           match the parent)
+#     staging: `*.bloom-dev.salk.edu`                       (all 3 staging
+#                                                           hostnames are
+#                                                           wildcard-covered)
+#
+#   Both prod and staging issue their cert via the same single Salk-DNS CNAME
+#   (_acme-challenge.bloom-dev.salk.edu -> _acme-challenge.bloom-acme.talmolab.org)
+#   because the apex challenge and the wildcard challenge BOTH land at
+#   _acme-challenge.bloom-dev.salk.edu (wildcards challenge at the parent name
+#   per the ACME spec).
 #
 #   Per-hostname routing is done inside the block via `@matcher host X` +
 #   `handle @matcher`, preserving the previous per-host route logic.
@@ -34,7 +41,7 @@
 #                         PROD_/STAGING_CLOUDFLARE_API_TOKEN secrets.
 # =============================================================================
 
-{$DOMAIN_MAIN}{$CADDY_HTTP_PORT}, *.bloom-dev.salk.edu{$CADDY_HTTP_PORT} {
+{$CADDY_CERT_SUBJECTS}{$CADDY_HTTP_PORT} {
 	# One wildcard SAN cert covering apex + *.bloom-dev.salk.edu via ACME
 	# DNS-01 against Cloudflare's API. CI mode (CADDY_HTTP_PORT=:80) binds
 	# only 80, so this directive is parsed but never triggers issuance.
