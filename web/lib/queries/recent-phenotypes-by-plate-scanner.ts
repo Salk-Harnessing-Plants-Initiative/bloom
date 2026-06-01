@@ -37,7 +37,7 @@ export interface PlateScanRow {
   plate_id: string | null;
   phenotyper_first_name: string | null;
   phenotyper_last_name: string | null;
-  latest_upload_on_this_scanner_at: string; // ISO timestamp
+  latest_upload_on_this_scanner_at: string | null; // ISO timestamp; null if no underlying gravi_image has uploaded_at
   rank_on_scanner: number;
 }
 

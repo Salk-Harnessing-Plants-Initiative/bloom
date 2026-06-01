@@ -12,17 +12,17 @@
  * empty string if the input isn't a valid date.
  */
 export function formatRelative(
-  iso: string | Date,
+  iso: string | Date | null | undefined,
   now: Date = new Date(),
   locale: string | undefined = undefined,
 ): string {
+  if (iso == null) return "";
   const date = typeof iso === "string" ? new Date(iso) : iso;
   if (Number.isNaN(date.getTime())) return "";
 
   const diffSeconds = (date.getTime() - now.getTime()) / 1000;
   const rtf = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
 
-  // Pick the largest unit that gives a non-trivial number.
   const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
     ["year", 60 * 60 * 24 * 365],
     ["month", 60 * 60 * 24 * 30],
@@ -46,9 +46,10 @@ export function formatRelative(
  * empty string if the input isn't a valid date.
  */
 export function formatAbsolute(
-  iso: string | Date,
+  iso: string | Date | null | undefined,
   locale: string | undefined = undefined,
 ): string {
+  if (iso == null) return "";
   const date = typeof iso === "string" ? new Date(iso) : iso;
   if (Number.isNaN(date.getTime())) return "";
 
@@ -63,7 +64,7 @@ export function formatAbsolute(
  * line. Skips the bullet if either half is empty.
  */
 export function formatRelativeAndAbsolute(
-  iso: string | Date,
+  iso: string | Date | null | undefined,
   now: Date = new Date(),
   locale: string | undefined = undefined,
 ): string {
