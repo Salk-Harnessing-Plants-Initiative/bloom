@@ -1,7 +1,11 @@
 /**
- * Query helper for the "Recent experiments by cylinder scanner" home-page
+ * Query helper for the "Recent phenotypes by cylinder scanner" home-page
  * widget. Reads from the `recent_experiments_by_cyl_scanner` Postgres view
  * (defined in `supabase/migrations/20260528120100_*.sql`).
+ *
+ * (View name still says "experiments" — kept stable because the migration is
+ * already committed. UI-facing copy uses "phenotypes" for parallelism with the
+ * plate-scanner widget.)
  *
  * The view already does the major joins:
  *   - Joins cyl_scans → cyl_plants → cyl_waves → cyl_experiments → species
@@ -22,7 +26,7 @@ import type { Database } from "@/lib/database.types";
  * One row from `recent_experiments_by_cyl_scanner` — represents one
  * (scanner, experiment, wave) tuple ranked in the top 2 for its scanner.
  */
-export interface RecentExperimentRow {
+export interface CylScanRow {
   scanner_id: number;
   scanner_name: string | null;
   experiment_id: number;
@@ -40,17 +44,17 @@ export interface RecentExperimentRow {
 }
 
 /**
- * One scanner's section of the home-page widget — the scanner header plus
- * up to 2 cards (one per (experiment, wave) pair).
+ * One scanner's section of the cyl widget — the scanner header plus up to 2
+ * cards (one per (experiment, wave) pair).
  */
-export interface ScannerSection {
+export interface CylScannerSection {
   scanner_id: number;
   scanner_name: string;
-  cards: RecentExperimentRow[];
+  cards: CylScanRow[];
 }
 
 /**
- * Fetch the recent experiments grouped per cylinder scanner.
+ * Fetch the recent phenotypes grouped per cylinder scanner.
  *
  * Returns one entry per scanner that has at least one row in the view. Empty
  * array if no scanner has any scans visible to the calling role (RLS may
@@ -60,9 +64,9 @@ export interface ScannerSection {
  * useful because the home page initially server-renders and then
  * client-side Realtime events trigger re-fetches.
  */
-export async function getRecentExperimentsByCylScanner(
+export async function getRecentPhenotypesByCylScanner(
   supabase: SupabaseClient<Database>,
-): Promise<ScannerSection[]> {
+): Promise<CylScannerSection[]> {
   // The view name isn't in the generated Database types yet (regenerate via
   // `supabase gen types typescript --local` to drop this cast).
   const { data, error } = await (supabase as unknown as SupabaseClient<unknown>)
@@ -73,16 +77,16 @@ export async function getRecentExperimentsByCylScanner(
 
   if (error) {
     throw new Error(
-      `Failed to fetch recent experiments by cyl scanner: ${error.message}`,
+      `Failed to fetch recent phenotypes by cyl scanner: ${error.message}`,
     );
   }
 
-  const rows = (data ?? []) as RecentExperimentRow[];
+  const rows = (data ?? []) as CylScanRow[];
 
   // Group consecutive rows by scanner_id. The view orders by scanner_name
   // then rank_on_scanner so all of one scanner's rows arrive together —
   // a single linear pass is enough.
-  const sections: ScannerSection[] = [];
+  const sections: CylScannerSection[] = [];
   for (const row of rows) {
     if (!row.scanner_name) continue;
 

@@ -1,5 +1,5 @@
 /**
- * Unit tests for getRecentPhenotypesByCylScanner.
+ * Unit tests for getRecentPhenotypesByPlateScanner.
  *
  * These tests exercise the helper's grouping + error-handling logic against
  * a mocked Supabase client. The view's SQL is verified manually against a
@@ -11,19 +11,14 @@ import { describe, it, expect, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
 import {
-  getRecentPhenotypesByCylScanner,
-  type CylScanRow,
-} from "@/lib/queries/recent-phenotypes-by-cyl-scanner";
+  getRecentPhenotypesByPlateScanner,
+  type PlateScanRow,
+} from "@/lib/queries/recent-phenotypes-by-plate-scanner";
 
 // ─── Test helpers ────────────────────────────────────────────────────────────
 
-/**
- * Build a mock Supabase client that returns the given rows (or error) when
- * `from(...).select(...).order(...).order(...)` is called. The query builder
- * is itself thenable so `await chain` resolves to `{ data, error }`.
- */
 function makeMockSupabase(
-  rows: CylScanRow[] | null,
+  rows: PlateScanRow[] | null,
   error: { message: string } | null = null,
 ): SupabaseClient<Database> {
   const result = Promise.resolve({ data: rows, error });
@@ -34,7 +29,6 @@ function makeMockSupabase(
     then: result.then.bind(result),
     catch: result.catch.bind(result),
   };
-  // Make every chain method return the same builder so any chain length works.
   builder.select.mockReturnValue(builder);
   builder.order.mockReturnValue(builder);
 
@@ -43,25 +37,20 @@ function makeMockSupabase(
   } as unknown as SupabaseClient<Database>;
 }
 
-/**
- * Build a minimal row with sensible defaults; overrides patch individual
- * fields per test.
- */
-function makeRow(overrides: Partial<CylScanRow> = {}): CylScanRow {
+function makeRow(overrides: Partial<PlateScanRow> = {}): PlateScanRow {
   return {
     scanner_id: 1,
-    scanner_name: "Cyl-01",
+    scanner_name: "gravi-scanner-01",
     experiment_id: 100,
-    experiment_name: "Arabidopsis Clock Mutants",
-    species_id: 7,
+    experiment_name: "Root gravitropism",
+    species_id: 1,
     species_common_name: "Arabidopsis",
-    wave_id: 200,
-    wave_number: 3,
-    wave_name: null,
-    plant_age_days: 14,
-    phenotyper_first_name: "Alice",
-    phenotyper_last_name: "Smith",
-    latest_upload_on_this_scanner_at: "2026-05-28T08:04:00Z",
+    wave_number: 1,
+    scan_mode: "single",
+    plate_id: "PLATE-A1",
+    phenotyper_first_name: "Sarah",
+    phenotyper_last_name: "Lee",
+    latest_upload_on_this_scanner_at: "2026-05-29T13:45:00Z",
     rank_on_scanner: 1,
     ...overrides,
   };
@@ -69,16 +58,16 @@ function makeRow(overrides: Partial<CylScanRow> = {}): CylScanRow {
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-describe("getRecentPhenotypesByCylScanner", () => {
+describe("getRecentPhenotypesByPlateScanner", () => {
   it("returns an empty array when the view returns no rows", async () => {
     const supabase = makeMockSupabase([]);
-    const result = await getRecentPhenotypesByCylScanner(supabase);
+    const result = await getRecentPhenotypesByPlateScanner(supabase);
     expect(result).toEqual([]);
   });
 
   it("returns an empty array when the view returns null data", async () => {
     const supabase = makeMockSupabase(null);
-    const result = await getRecentPhenotypesByCylScanner(supabase);
+    const result = await getRecentPhenotypesByPlateScanner(supabase);
     expect(result).toEqual([]);
   });
 
@@ -86,24 +75,24 @@ describe("getRecentPhenotypesByCylScanner", () => {
     const rows = [
       makeRow({
         scanner_id: 1,
-        scanner_name: "Cyl-01",
+        scanner_name: "gravi-scanner-01",
         experiment_id: 100,
         rank_on_scanner: 1,
       }),
       makeRow({
         scanner_id: 1,
-        scanner_name: "Cyl-01",
+        scanner_name: "gravi-scanner-01",
         experiment_id: 101,
         rank_on_scanner: 2,
       }),
     ];
 
-    const result = await getRecentPhenotypesByCylScanner(makeMockSupabase(rows));
+    const result = await getRecentPhenotypesByPlateScanner(makeMockSupabase(rows));
 
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({
       scanner_id: 1,
-      scanner_name: "Cyl-01",
+      scanner_name: "gravi-scanner-01",
     });
     expect(result[0].cards).toHaveLength(2);
     expect(result[0].cards[0].experiment_id).toBe(100);
@@ -112,13 +101,13 @@ describe("getRecentPhenotypesByCylScanner", () => {
 
   it("creates a separate section per scanner_id", async () => {
     const rows = [
-      makeRow({ scanner_id: 1, scanner_name: "Cyl-01", experiment_id: 100 }),
-      makeRow({ scanner_id: 2, scanner_name: "Cyl-02", experiment_id: 200 }),
-      makeRow({ scanner_id: 2, scanner_name: "Cyl-02", experiment_id: 201 }),
-      makeRow({ scanner_id: 3, scanner_name: "Cyl-03", experiment_id: 300 }),
+      makeRow({ scanner_id: 1, scanner_name: "gravi-01", experiment_id: 100 }),
+      makeRow({ scanner_id: 2, scanner_name: "gravi-02", experiment_id: 200 }),
+      makeRow({ scanner_id: 2, scanner_name: "gravi-02", experiment_id: 201 }),
+      makeRow({ scanner_id: 3, scanner_name: "gravi-03", experiment_id: 300 }),
     ];
 
-    const result = await getRecentPhenotypesByCylScanner(makeMockSupabase(rows));
+    const result = await getRecentPhenotypesByPlateScanner(makeMockSupabase(rows));
 
     expect(result).toHaveLength(3);
     expect(result.map((s) => s.scanner_id)).toEqual([1, 2, 3]);
@@ -128,41 +117,34 @@ describe("getRecentPhenotypesByCylScanner", () => {
   });
 
   it("preserves the row order within each scanner section", async () => {
-    // The view orders rows by rank_on_scanner asc; the helper should pass
-    // that ordering through to each scanner's cards array.
     const rows = [
       makeRow({
         scanner_id: 1,
-        scanner_name: "Cyl-01",
-        experiment_id: 100,
+        scanner_name: "gravi-01",
         rank_on_scanner: 1,
-        latest_upload_on_this_scanner_at: "2026-05-28T10:00:00Z",
+        latest_upload_on_this_scanner_at: "2026-05-29T13:45:00Z",
       }),
       makeRow({
         scanner_id: 1,
-        scanner_name: "Cyl-01",
-        experiment_id: 101,
+        scanner_name: "gravi-01",
         rank_on_scanner: 2,
-        latest_upload_on_this_scanner_at: "2026-05-28T09:00:00Z",
+        latest_upload_on_this_scanner_at: "2026-05-28T08:15:00Z",
       }),
     ];
 
-    const result = await getRecentPhenotypesByCylScanner(makeMockSupabase(rows));
+    const result = await getRecentPhenotypesByPlateScanner(makeMockSupabase(rows));
 
     expect(result[0].cards[0].rank_on_scanner).toBe(1);
     expect(result[0].cards[1].rank_on_scanner).toBe(2);
-    expect(result[0].cards[0].latest_upload_on_this_scanner_at).toBe(
-      "2026-05-28T10:00:00Z",
-    );
   });
 
   it("skips rows with null scanner_name", async () => {
     const rows = [
       makeRow({ scanner_id: 1, scanner_name: null }),
-      makeRow({ scanner_id: 2, scanner_name: "Cyl-02" }),
+      makeRow({ scanner_id: 2, scanner_name: "gravi-02" }),
     ];
 
-    const result = await getRecentPhenotypesByCylScanner(makeMockSupabase(rows));
+    const result = await getRecentPhenotypesByPlateScanner(makeMockSupabase(rows));
 
     expect(result).toHaveLength(1);
     expect(result[0].scanner_id).toBe(2);
@@ -173,16 +155,36 @@ describe("getRecentPhenotypesByCylScanner", () => {
       message: "relation does not exist",
     });
 
-    await expect(getRecentPhenotypesByCylScanner(supabase)).rejects.toThrow(
-      /Failed to fetch recent phenotypes by cyl scanner.*relation does not exist/,
+    await expect(getRecentPhenotypesByPlateScanner(supabase)).rejects.toThrow(
+      /Failed to fetch recent phenotypes by plate scanner.*relation does not exist/,
     );
   });
 
-  it("queries the recent_experiments_by_cyl_scanner view", async () => {
+  it("queries the recent_phenotypes_by_plate_scanner view", async () => {
     const supabase = makeMockSupabase([]);
-    await getRecentPhenotypesByCylScanner(supabase);
+    await getRecentPhenotypesByPlateScanner(supabase);
     expect(supabase.from).toHaveBeenCalledWith(
-      "recent_experiments_by_cyl_scanner",
+      "recent_phenotypes_by_plate_scanner",
     );
+  });
+
+  it("preserves gravi-specific fields (scan_mode, plate_id, wave_number)", async () => {
+    const rows = [
+      makeRow({
+        scanner_id: 1,
+        scanner_name: "gravi-01",
+        scan_mode: "continuous",
+        plate_id: "PLATE-X9",
+        wave_number: 3,
+      }),
+    ];
+
+    const result = await getRecentPhenotypesByPlateScanner(makeMockSupabase(rows));
+
+    expect(result[0].cards[0]).toMatchObject({
+      scan_mode: "continuous",
+      plate_id: "PLATE-X9",
+      wave_number: 3,
+    });
   });
 });

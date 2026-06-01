@@ -12,8 +12,14 @@ import tsconfigPaths from "vite-tsconfig-paths";
  * - include defaults to colocated `*.test.ts` / `*.test.tsx` files under
  *   lib/, components/, app/. E2E tests in e2e/ stay with Playwright.
  */
+// tsconfigPaths()'s vite Plugin return type doesn't exactly match the slot
+// expected by defineConfig() across vite/vitest version pairings — the cast
+// is only a TS-stub fix; runtime is correct (tests run + pass).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const plugins = [tsconfigPaths()] as any;
+
 export default defineConfig({
-  plugins: [tsconfigPaths()],
+  plugins,
   test: {
     environment: "node",
     include: [
