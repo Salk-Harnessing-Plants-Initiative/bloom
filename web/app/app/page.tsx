@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import Mixpanel from "mixpanel";
 import { getUser } from "@/lib/supabase/server";
 import { HomeHero } from "@/components/home-hero";
+import { RecentPhenotypesByCylScanner } from "@/components/recent-phenotypes-by-cyl-scanner/RecentPhenotypesByCylScanner";
+import { RecentPhenotypesByPlateScanner } from "@/components/recent-phenotypes-by-plate-scanner/RecentPhenotypesByPlateScanner";
 import { fetchSpeciesCount } from "@/app/app/home-lib/species-montage";
 
 function deriveFirstName(
@@ -59,6 +61,8 @@ export default async function HomePage() {
   return (
     <div className="max-w-6xl mx-auto pb-16">
       <HomeHero firstName={firstName} speciesCount={speciesCount} />
+      <RecentPhenotypesByCylScanner />
+      <RecentPhenotypesByPlateScanner />
     </div>
   );
 }
