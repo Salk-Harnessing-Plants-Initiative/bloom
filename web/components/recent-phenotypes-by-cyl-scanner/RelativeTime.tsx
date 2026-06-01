@@ -19,7 +19,7 @@ import { useEffect, useState } from "react";
 import { formatRelativeAndAbsolute } from "./format-times";
 
 interface RelativeTimeProps {
-  iso: string;
+  iso: string | null | undefined;
 }
 
 export function RelativeTime({ iso }: RelativeTimeProps) {

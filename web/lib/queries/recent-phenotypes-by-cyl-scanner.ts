@@ -39,7 +39,7 @@ export interface CylScanRow {
   plant_age_days: number | null;
   phenotyper_first_name: string | null;
   phenotyper_last_name: string | null;
-  latest_upload_on_this_scanner_at: string; // ISO timestamp
+  latest_upload_on_this_scanner_at: string | null; // ISO timestamp; null if no underlying scan has uploaded_at set
   rank_on_scanner: number;
 }
 
