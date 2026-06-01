@@ -52,9 +52,9 @@ services:
       MINIO_CONSOLE_PORT: ${MINIO_CONSOLE_PORT}
       CADDY_HTTP_PORT: ${CADDY_HTTP_PORT}
       CADDY_TLS_DIRECTIVE: ${CADDY_TLS_DIRECTIVE}
-      # Only consumed when CADDY_TLS_DIRECTIVE selects the cloudflare DNS-01
-      # path (i.e. `tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }`).
-      # Empty when running with `tls internal` or an external real cert.
+      # Required for ACME DNS-01 via the cloudflare DNS provider plugin
+      # (CADDY_TLS_DIRECTIVE=tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }).
+      # Both prod and staging use DNS-01 against the same CNAME delegation.
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro

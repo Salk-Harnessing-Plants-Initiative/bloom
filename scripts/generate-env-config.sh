@@ -29,7 +29,7 @@ elif [ "$ENV" = "staging" ]; then
   # Staging uses `staging-` prefix on each subdomain so users and logs can
   # tell environments apart at a glance. Non-standard ports so prod + staging
   # can coexist on the same server.
-  DOMAIN_MAIN="staging-bloom-dev.salk.edu"
+  DOMAIN_MAIN="staging.bloom-dev.salk.edu"
   DOMAIN_STUDIO="staging-studio.bloom-dev.salk.edu"
   DOMAIN_MINIO="staging-minio.bloom-dev.salk.edu"
   CADDY_HTTP_LISTEN_PORT="8080"
