@@ -65,20 +65,37 @@ export default function PlantScan({
   const [loading, setLoading] = useState<boolean>(true);
   const [imageIsLoaded, setImageIsLoaded] = useState<boolean>(false);
 
+  // Guard for scans with no attached cyl_images (e.g. demo / seed data,
+  // or a real scan whose images haven't been uploaded yet). Without this,
+  // scan.cyl_images[0].object_path threw "Cannot read properties of
+  // undefined (reading 'object_path')".
+  const firstImagePath = scan?.cyl_images?.[0]?.object_path ?? null;
+
   useEffect(() => {
-    const path = scan.cyl_images[0].object_path;
-    if (path === null) {
+    if (firstImagePath === null) {
       setLoading(false);
       return;
     }
-    getImageUrl(path, thumb, height || defaultHeight).then((url) => {
+    getImageUrl(firstImagePath, thumb, height || defaultHeight).then((url) => {
       setObjectUrl(url);
       setLoading(false);
     });
     getVideoUrl(scan).then((url) => {
       setVideoUrl(url);
     });
-  }, [scan]);
+  }, [scan, firstImagePath]);
+
+  // The scan record carries no cyl_images row, OR the row carries no
+  // object_path. Either way the client can't resolve a signed URL, so we
+  // surface that to the user honestly rather than pretending the image
+  // doesn't exist (it might exist upstream — we just can't fetch it).
+  if (!loading && firstImagePath === null) {
+    return (
+      <div className="rounded-lg border-2 border-dashed border-stone-300 bg-stone-50 px-4 py-6 text-sm text-stone-500 italic">
+        Unable to retrieve scan image.
+      </div>
+    );
+  }
 
   return (
     <div className="group">

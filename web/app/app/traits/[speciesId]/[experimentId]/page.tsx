@@ -1,324 +1,150 @@
-"use client";
-
-import { use, useState, useEffect } from "react";
 import Link from "next/link";
-import { createClientSupabaseClient } from "@/lib/supabase/client";
-import ScanTraitBoxplot from "@/components/scan-trait-boxplot";
-
-import { Database } from "@/lib/database.types";
-import { CylExperimentPlus, TraitData } from "@/lib/custom.types";
+import {
+  createServerSupabaseClient,
+  getUser,
+} from "@/lib/supabase/server";
+import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
+import TraitExplorer from "./TraitExplorer";
 
-export default function Experiment({
+export default async function Experiment({
   params,
 }: {
-  params: Promise<{ experimentId: number }>;
+  params: Promise<{ speciesId: string; experimentId: string }>;
 }) {
-  const { experimentId } = use(params);
-  const defaultTraitName = "primary_length_mean";
+  const { speciesId, experimentId } = await params;
+  const experimentIdNum = Number(experimentId);
 
-  const [loginStatusReady, setLoginStatusReady] = useState(false);
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [experiment, setExperiment] = useState<CylExperimentPlus | null>(null);
-  const [plantAge, setPlantAge] = useState<number>(0);
-  const [plantAges, setPlantAges] = useState<number[]>([]);
-  const [traitData, setTraitData] = useState<TraitData | null>(null);
-  const [traitNames, setTraitNames] = useState<string[]>([]);
-  const [selectedTraitName, setSelectedTraitName] =
-    useState<string>(defaultTraitName);
-  const [waves, setWaves] = useState<
-    { waveNumber: number; earliestDate: Date; latestDate: Date }[]
-  >([]);
-  const [waveNumber, setWaveNumber] = useState<number>(0);
+  const [user, experiment, traitNames] = await Promise.all([
+    getUser(),
+    getExperimentWithSpecies(experimentIdNum),
+    getTraitNamesForExperiment(experimentIdNum),
+  ]);
 
-  // useEffect(() => {
-  //   console.log("re-rendering Experiment");
-  //   console.log("experiment = ", experiment);
-  //   console.log("traitData = ", traitData);
-  //   console.log("plantAge = ", plantAge);
-  //   console.log("plantAges = ", plantAges);
-  //   console.log("traitNames = ", traitNames);
-  //   console.log("selectedTraitName = ", selectedTraitName);
-  // });
-
-  // get experiment data
-  useEffect(() => {
-    const get = async () => {
-      const data = await getExperiment(experimentId);
-      setExperiment(data);
-    };
-    get();
-  }, [experimentId]);
-
-  // get trait names
-  useEffect(() => {
-    const get = async () => {
-      const traitNames = await getTraitNames();
-      setTraitNames(traitNames);
-    };
-    get();
-  }, [experiment]);
-
-  // get trait data
-  useEffect(() => {
-    const getExperiment = async () => {
-      setTraitData(null);
-      const data = await getTraitData(experimentId, selectedTraitName);
-      setTraitData(data);
-      // set plant ages
-      const plantAgeDays = (data ?? []).map((row) => row.plant_age_days);
-      const plantAgeDaysUnique = [...new Set(plantAgeDays)].sort(
-        (a, b) => a - b
-      );
-      setPlantAge(Math.max(...plantAgeDaysUnique));
-      setPlantAges(plantAgeDaysUnique);
-      // set waves
-      const waves_ = data?.map((row) => row.wave_number) ?? [];
-      const wavesUnique = [...new Set(waves_)].sort((a, b) => a - b);
-      const rowsByWave = wavesUnique.map((wave) =>
-        data?.filter((row) => row.wave_number === wave)
-      );
-      const waveStartEndDates = rowsByWave.map((rows, i) => {
-        const waveNumber = wavesUnique[i];
-        const dates =
-          rows?.map((row) => new Date(row.date_scanned).getTime()) ?? [];
-        const earliestDate = new Date(Math.min(...dates));
-        const latestDate = new Date(Math.max(...dates));
-        return {
-          waveNumber,
-          earliestDate,
-          latestDate,
-        };
-      });
-      setWaveNumber(Math.max(...wavesUnique));
-      setWaves(waveStartEndDates);
-    };
-    getExperiment();
-  }, [experimentId, selectedTraitName]);
+  const mixpanel = process.env.MIXPANEL_TOKEN
+    ? Mixpanel.init(process.env.MIXPANEL_TOKEN)
+    : null;
+  mixpanel?.track("Page view", {
+    distinct_id: user?.email,
+    url: `/app/traits/${speciesId}/${experimentId}`,
+  });
 
   const experimentName = capitalizeFirstLetter(
-    experiment?.name.replaceAll("-", " ") ?? ""
+    experiment?.name?.replaceAll("-", " ") ?? "",
   );
   const speciesName = experiment?.species?.common_name ?? "";
 
-  return (
-    <div className="">
-      <div className="text-xl mb-8 select-none">
-        <span className="text-stone-400">
-          <span className="hover:underline">
-            <Link href="/app/traits">All species</Link>
-          </span>
-          &nbsp;▸&nbsp;
-          <span className="hover:underline capitalize">
-            <Link href={`/app/traits/${experiment?.species?.id}`}>
-              {speciesName}
-            </Link>
-          </span>
-          &nbsp;▸&nbsp;
-        </span>
-        <span className="">{experimentName}</span>
-      </div>
+  if (!experiment) {
+    return (
       <div>
-        {experiment?.people && <ScientistBadge person={experiment.people} />}
+        <Breadcrumbs
+          speciesId={speciesId}
+          speciesName={speciesName}
+          experimentName={experimentName}
+        />
+        <div className="text-neutral-500 italic">Experiment not found.</div>
       </div>
-      <div className="">
-        <div className="mt-4 flex flex-col">
-          <div className="flex flex-col w-96 mb-4">
-            <table>
-              <tbody>
-                {/* Dropdown to select trait name */}
-                <tr>
-                  <td className="text-sm pr-2">Trait</td>
-                  <td>
-                    <select
-                      className="block w-full rounded-md border-gray-300 shadow-sm focus:border-neutral-300 focus:ring focus:ring-neutral-200 focus:ring-opacity-50"
-                      value={selectedTraitName}
-                      onChange={(e) => setSelectedTraitName(e.target.value)}
-                    >
-                      {traitNames.map((traitName) => (
-                        <option key={traitName} value={traitName}>
-                          {traitName}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                </tr>
-                {/* Dropdown to select wave */}
-                <tr>
-                  <td className="text-sm pr-2">Wave</td>
-                  <td>
-                    <select
-                      className="block w-full rounded-md border-gray-300 shadow-sm focus:border-neutral-300 focus:ring focus:ring-neutral-200 focus:ring-opacity-50"
-                      value={waveNumber}
-                      onChange={(e) => setWaveNumber(parseInt(e.target.value))}
-                    >
-                      {waves.map((wave) => (
-                        <option key={wave.waveNumber} value={wave.waveNumber}>
-                          {wave.waveNumber} (
-                          {wave.earliestDate.toLocaleDateString()} -{" "}
-                          {wave.latestDate.toLocaleDateString()})
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                </tr>
-                {/* Dropdown to select plant age */}
-                <tr>
-                  <td className="text-sm pr-2">Age</td>
-                  <td>
-                    <select
-                      className="block w-full rounded-md border-gray-300 shadow-sm focus:border-neutral-300 focus:ring focus:ring-neutral-200 focus:ring-opacity-50"
-                      value={plantAge}
-                      onChange={(e) => setPlantAge(parseInt(e.target.value))}
-                    >
-                      {plantAges.map((i) => (
-                        <option key={i} value={i}>
-                          {i} days
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          {traitData ? (
-            <ScanTraitBoxplot
-              // traitData={traitData}
-              traitData={traitData.filter(
-                (row) =>
-                  row.plant_age_days === plantAge &&
-                  row.wave_number === waveNumber
-              )}
-              traitMax={traitData.reduce(
-                (max, row) =>
-                  isNaN(row.trait_value) ? max : Math.max(max, row.trait_value),
-                0
-              )}
-            />
-          ) : (
-            <div>Data loading...</div>
-          )}
+    );
+  }
+
+  return (
+    <div>
+      <Breadcrumbs
+        speciesId={speciesId}
+        speciesName={speciesName}
+        experimentName={experimentName}
+      />
+
+      {experiment.people && <ScientistBadge person={experiment.people} />}
+
+      {traitNames.length === 0 ? (
+        <div className="mt-6 rounded-md border border-dashed border-stone-300 bg-stone-50 p-6 text-sm text-stone-500">
+          No trait measurements are available yet for this experiment.
         </div>
-      </div>
+      ) : (
+        <TraitExplorer
+          experimentId={experimentIdNum}
+          traitNames={traitNames}
+        />
+      )}
     </div>
   );
 }
 
-function capitalizeFirstLetter(string: String) {
+function Breadcrumbs({
+  speciesId,
+  speciesName,
+  experimentName,
+}: {
+  speciesId: string;
+  speciesName: string;
+  experimentName: string;
+}) {
+  return (
+    <div className="text-xl mb-8 select-none">
+      <span className="text-stone-400">
+        <span className="hover:underline">
+          <Link href="/app/traits">All species</Link>
+        </span>
+        &nbsp;▸&nbsp;
+        <span className="hover:underline capitalize">
+          <Link href={`/app/traits/${speciesId}`}>{speciesName}</Link>
+        </span>
+        &nbsp;▸&nbsp;
+      </span>
+      <span>{experimentName}</span>
+    </div>
+  );
+}
+
+function capitalizeFirstLetter(string: string): string {
   return string.charAt(0).toUpperCase() + string.slice(1);
 }
 
-async function getExperiment(experimentId: number) {
-  const supabase = createClientSupabaseClient();
-
+async function getExperimentWithSpecies(experimentId: number) {
+  const supabase = await createServerSupabaseClient();
   const { data } = await supabase
     .from("cyl_experiments")
-    .select(
-      "*, cyl_waves(*, cyl_plants(*, accessions(*), cyl_scans(*))), species(*), people(*)"
-    )
+    .select("*, species(*), people(*)")
     .eq("id", experimentId)
     .single();
-
   return data;
 }
 
-async function getTraitNames(): Promise<string[]> {
-  const supabase = createClientSupabaseClient();
-
-  const { data } = await supabase
-    .from("cyl_scan_trait_names")
-    .select("name");
+/**
+ * Trait names that actually have at least one measurement for this
+ * experiment, sourced from the `cyl_trait_by_experiment_wave` view
+ * (one row per experiment × wave × trait). De-duplicated across waves
+ * because Supabase doesn't expose DISTINCT directly.
+ */
+async function getTraitNamesForExperiment(
+  experimentId: number,
+): Promise<string[]> {
+  const supabase = await createServerSupabaseClient();
+  const { data } = await (supabase as unknown as {
+    from: (table: string) => {
+      select: (cols: string) => {
+        eq: (
+          col: string,
+          val: unknown,
+        ) => {
+          order: (
+            col: string,
+          ) => Promise<{ data: { trait_name: string | null }[] | null }>;
+        };
+      };
+    };
+  })
+    .from("cyl_trait_by_experiment_wave")
+    .select("trait_name")
+    .eq("experiment_id", experimentId)
+    .order("trait_name");
 
   if (!data) return [];
 
-  return (data as { name: string | null }[]).map((row) => row.name || "");
-}
+  const names = data
+    .map((row) => row.trait_name)
+    .filter((n): n is string => Boolean(n));
 
-async function getTraitData(
-  experimentId: number,
-  traitName: string
-): Promise<TraitData> {
-  const supabase = createClientSupabaseClient();
-
-  let { data, error } = await supabase.rpc("get_scan_traits", {
-    experiment_id_: experimentId,
-    trait_name_: traitName,
-  } as any);
-
-  if (error) console.error(error);
-
-  return (data ?? []) as TraitData;
-}
-
-function getPlantCount(experiment: any) {
-  let plantCount = 0;
-  experiment.cyl_waves.forEach((wave: any) => {
-    plantCount += wave.cyl_plants.length;
-  });
-  return `${plantCount} plants`;
-}
-
-function getLineCount(experiment: any) {
-  // empty array of strings
-  let lineNames: string[] = [];
-  experiment.cyl_waves.forEach((wave: any) => {
-    wave.cyl_plants.forEach((plant: any) => {
-      lineNames.push(plant.accession_name);
-    });
-  });
-  const lineCount = new Set(lineNames).size;
-  return `${lineCount} lines`;
-}
-
-function countStrings(strings: string[]) {
-  const count: { [key: string]: number } = {};
-  strings.forEach((s) => {
-    count[s] = (count[s] || 0) + 1;
-  });
-  return count;
-}
-
-type Wave = {
-  experiment_id: number | null;
-  id: number;
-  name: string | null;
-  number: number | null;
-  cyl_plants: {
-    created_at: string;
-    germ_day: number | null;
-    germ_day_color: string | null;
-    id: number;
-    line_name: string | null;
-    qr_code: string | null;
-    wave_id: number | null;
-    accessions: {}[];
-  }[];
-};
-
-function getAccessions(experiment: any) {
-  // empty array of strings
-  let lineNames: string[] = [];
-  experiment.cyl_waves.forEach((wave: Wave) => {
-    wave.cyl_plants.forEach((plant: any) => {
-      lineNames.push(plant.accessions.name);
-    });
-  });
-  const plantCountObj = countStrings(lineNames);
-  const plantCountArray = Object.entries(plantCountObj);
-  // sort by name
-  const plantCountArraySorted = plantCountArray.sort((a, b) => {
-    if (a[0] < b[0]) {
-      return -1;
-    }
-    if (a[0] > b[0]) {
-      return 1;
-    }
-    return 0;
-  });
-  const plantNameCountsArray = plantCountArraySorted.map(([name, count]) => ({
-    name,
-    count,
-  }));
-  return plantNameCountsArray;
+  return [...new Set(names)];
 }
