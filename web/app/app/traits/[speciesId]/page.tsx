@@ -86,6 +86,10 @@ export default async function Species({
             slack_channel_url: string | null | undefined;
             people: { email: string | null; id: number; name: string | null } | null;
             description: string | null;
+            cyl_waves: {
+              id: number;
+              cyl_plants: { id: number; accessions: { name: string | null } | null }[];
+            }[];
           }) => (
             <div className="table-row" key={experiment.id}>
               <div className="table-cell text-lg align-middle p-4">
@@ -166,9 +170,17 @@ function capitalizeFirstLetter(string: string): string {
   return string.charAt(0).toUpperCase() + string.slice(1);
 }
 
-function getPlantCount(experiment: {
-  cyl_waves?: { cyl_plants?: unknown[] }[];
-}): string {
+interface ExperimentForCount {
+  cyl_waves?:
+    | {
+        cyl_plants?:
+          | { accessions?: { name?: string | null } | null }[]
+          | null;
+      }[]
+    | null;
+}
+
+function getPlantCount(experiment: ExperimentForCount): string {
   if (!experiment?.cyl_waves || !Array.isArray(experiment.cyl_waves)) {
     return "0 replicates";
   }
@@ -182,9 +194,7 @@ function getPlantCount(experiment: {
   return `${plantCount} replicates`;
 }
 
-function getAccessionCount(experiment: {
-  cyl_waves?: { cyl_plants?: { accessions?: { name?: string } }[] }[];
-}): string {
+function getAccessionCount(experiment: ExperimentForCount): string {
   if (!experiment?.cyl_waves || !Array.isArray(experiment.cyl_waves)) {
     return "0 accessions";
   }

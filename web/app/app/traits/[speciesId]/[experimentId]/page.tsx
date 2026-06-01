@@ -121,7 +121,20 @@ async function getTraitNamesForExperiment(
   experimentId: number,
 ): Promise<string[]> {
   const supabase = await createServerSupabaseClient();
-  const { data } = await supabase
+  const { data } = await (supabase as unknown as {
+    from: (table: string) => {
+      select: (cols: string) => {
+        eq: (
+          col: string,
+          val: unknown,
+        ) => {
+          order: (
+            col: string,
+          ) => Promise<{ data: { trait_name: string | null }[] | null }>;
+        };
+      };
+    };
+  })
     .from("cyl_trait_by_experiment_wave")
     .select("trait_name")
     .eq("experiment_id", experimentId)
@@ -129,7 +142,7 @@ async function getTraitNamesForExperiment(
 
   if (!data) return [];
 
-  const names = (data as { trait_name: string | null }[])
+  const names = data
     .map((row) => row.trait_name)
     .filter((n): n is string => Boolean(n));
 
