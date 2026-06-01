@@ -123,6 +123,7 @@ jobs:
           LANGCHAIN_API_KEY=${{ secrets.PROD_LANGCHAIN_API_KEY }}
           MINIO_DATA_PATH=${{ secrets.PROD_MINIO_DATA_PATH }}
           BLOOM_AGENT_KEY=${{ secrets.PROD_BLOOM_AGENT_KEY }}
+          CLOUDFLARE_API_TOKEN=${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           # _EOF_MARKER_
           SECRETS
 
@@ -554,6 +555,7 @@ jobs:
           LANGCHAIN_API_KEY=${{ secrets.STAGING_LANGCHAIN_API_KEY }}
           MINIO_DATA_PATH=${{ secrets.STAGING_MINIO_DATA_PATH }}
           BLOOM_AGENT_KEY=${{ secrets.STAGING_BLOOM_AGENT_KEY }}
+          CLOUDFLARE_API_TOKEN=${{ secrets.STAGING_CLOUDFLARE_API_TOKEN }}
           # _EOF_MARKER_
           SECRETS
 

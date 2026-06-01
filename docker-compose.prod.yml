@@ -23,7 +23,15 @@ services:
   # Caddy (Reverse Proxy)
   # -------------------
   caddy:
-    image: caddy:2.11.2-alpine
+    # Built from caddy/Dockerfile with the caddy-dns/cloudflare plugin
+    # baked in — required for ACME DNS-01 challenges via CNAME delegation
+    # to bloom-acme.talmolab.org. Build args make version bumps a one-line
+    # change. See caddy/Dockerfile for full rationale.
+    build:
+      context: ./caddy
+      args:
+        CADDY_VERSION: "2.11.3"
+        CLOUDFLARE_PLUGIN_REF: "v0.2.4"
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -44,6 +52,10 @@ services:
       MINIO_CONSOLE_PORT: ${MINIO_CONSOLE_PORT}
       CADDY_HTTP_PORT: ${CADDY_HTTP_PORT}
       CADDY_TLS_DIRECTIVE: ${CADDY_TLS_DIRECTIVE}
+      # Only consumed when CADDY_TLS_DIRECTIVE selects the cloudflare DNS-01
+      # path (i.e. `tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }`).
+      # Empty when running with `tls internal` or an external real cert.
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/certs:/etc/caddy/certs:ro
