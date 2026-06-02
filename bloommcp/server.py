@@ -45,8 +45,32 @@ from tools.workflows import (
 logger = logging.getLogger(__name__)
 
 # --- Authentication ---
+#
+# Server refuses to start when BLOOMMCP_API_KEY is unset, unless the caller
+# explicitly opts out via BLOOMMCP_ALLOW_NO_AUTH=1. The opt-out exists so
+# local dev workflows (where MCP traffic stays on the docker network) can
+# run without a key; staging/prod must always set a real key. Closes the
+# silent-auth-disable gap flagged in #29.
 
 API_KEY = os.getenv("BLOOMMCP_API_KEY")
+ALLOW_NO_AUTH = os.getenv("BLOOMMCP_ALLOW_NO_AUTH", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+if not API_KEY:
+    if not ALLOW_NO_AUTH:
+        raise RuntimeError(
+            "BLOOMMCP_API_KEY is not set. The server refuses to start "
+            "without authentication. Set BLOOMMCP_API_KEY to a strong "
+            "secret, or — for local development only — opt out explicitly "
+            "with BLOOMMCP_ALLOW_NO_AUTH=1."
+        )
+    logger.warning(
+        "BLOOMMCP_ALLOW_NO_AUTH is set — server running without "
+        "authentication. DO NOT use this in staging or production."
+    )
 
 auth_provider = None
 if API_KEY:
@@ -98,5 +122,9 @@ if __name__ == "__main__":
     if API_KEY:
         print("Bloom MCP Server starting with API key authentication")
     else:
-        print("Bloom MCP Server starting without authentication (dev mode)")
+        print(
+            "Bloom MCP Server starting WITHOUT authentication "
+            "(BLOOMMCP_ALLOW_NO_AUTH=1). Local dev only — never use in "
+            "staging or production."
+        )
     mcp.run(transport="streamable-http", host="0.0.0.0", port=8811)
