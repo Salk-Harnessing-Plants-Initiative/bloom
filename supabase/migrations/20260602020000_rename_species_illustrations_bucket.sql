@@ -11,7 +11,6 @@
 -- while data migration is ongoing. A follow-up migration can drop the
 -- legacy row once any existing objects have been moved.
 --
--- See issue #260.
 
 INSERT INTO storage.buckets (id, name)
   VALUES ('species-illustrations', 'species-illustrations')
