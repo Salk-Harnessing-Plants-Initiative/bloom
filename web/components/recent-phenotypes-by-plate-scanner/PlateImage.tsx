@@ -9,19 +9,55 @@ interface PlateImageProps {
   className?: string;
 }
 
+// Plate-scanner objects live under the storage-api backend bucket at
+//   bloom-storage/storage-single-tenant/graviscan-images/<gravi_images.object_path>
+// so the front-end reads directly from `bloom-storage` and prepends the
+// tenant + logical-bucket prefix to the object_path from postgres
+// (which already starts with `gravi-images/<filename>.tif`).
+//
+// Scanner uploads are TIFF; browsers can't render TIFF natively, so both
+// views go through the image transformer (imgproxy + libvips) with
+// `format: "jpg"` to re-encode on the fly. `format` accepts jpg/png/webp
+// on self-hosted even though supabase-js's type only declares "origin";
+// cast around the incomplete type.
+
+const BACKEND_BUCKET = "bloom-storage";
+const STORAGE_PREFIX = "storage-single-tenant/graviscan-images";
+
+function backendPath(objectPath: string): string {
+  return `${STORAGE_PREFIX}/${objectPath}`;
+}
+
+type TransformOpts = {
+  width?: number;
+  height?: number;
+  quality?: number;
+  format?: "origin" | "jpg" | "png" | "webp";
+};
+
 async function getThumbUrl(path: string): Promise<string> {
   const supabase = createClientSupabaseClient();
   const { data } = await supabase.storage
-    .from("graviscan-images")
-    .createSignedUrl(path, 3600, { transform: { width: 480, quality: 80 } });
+    .from(BACKEND_BUCKET)
+    .createSignedUrl(backendPath(path), 3600, {
+      transform: { width: 480, quality: 80, format: "jpg" } as TransformOpts as {
+        width: number;
+        quality: number;
+      },
+    });
   return data?.signedUrl ?? "";
 }
 
 async function getFullUrl(path: string): Promise<string> {
   const supabase = createClientSupabaseClient();
   const { data } = await supabase.storage
-    .from("graviscan-images")
-    .createSignedUrl(path, 3600);
+    .from(BACKEND_BUCKET)
+    .createSignedUrl(backendPath(path), 3600, {
+      transform: { width: 2400, quality: 85, format: "jpg" } as TransformOpts as {
+        width: number;
+        quality: number;
+      },
+    });
   return data?.signedUrl ?? "";
 }
 
