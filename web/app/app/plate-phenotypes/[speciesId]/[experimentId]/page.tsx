@@ -30,7 +30,7 @@ interface ScanRow {
   plate_index: string | null;
   wave_number: number | null;
   capture_date: string;
-  gravi_images: { object_path: string }[];
+  gravi_images: { object_path: string } | null;
   gravi_scan_metadata_accession: MetadataAccession | null;
 }
 
@@ -125,7 +125,7 @@ export default async function PlateExperiment({
             >
               <div className="flex gap-5">
                 <PlateImage
-                  path={plate.latestScan.gravi_images?.[0]?.object_path ?? null}
+                  path={plate.latestScan.gravi_images?.object_path ?? null}
                   alt={plate.plate_id}
                   className="w-[160px] h-[160px] shrink-0"
                 />
