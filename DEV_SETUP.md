@@ -397,9 +397,9 @@ On stack startup, these buckets are created automatically:
 
 **Private Buckets:**
 - images
-- species_illustrations
+- species-illustrations
 - tus-files
-- video
+- videos
 - scrna
 
 **Public Buckets:**

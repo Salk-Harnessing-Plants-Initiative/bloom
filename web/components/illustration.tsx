@@ -13,7 +13,7 @@ async function getObjectUrl(storagePath: string): Promise<string | null> {
   const supabase = await createServerSupabaseClient()
   const { data, error } = await supabase
     .storage
-    .from('species_illustrations')
+    .from('species-illustrations')
     .createSignedUrl(storagePath, 120, { transform: { width: 192 } })
   if (error) {
     console.log('Illustration error:', error)
