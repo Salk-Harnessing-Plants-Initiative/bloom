@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import Illustration from "@/components/illustration";
 import {
@@ -31,8 +32,8 @@ export default async function AllPlateSpecies() {
         All species
       </div>
       <p className="mb-8 max-w-2xl text-sm text-stone-500">
-        Plate (gravitropism) phenotyping experiments organised by species.
-        Drilldown into individual experiments is coming soon.
+        Plate (gravitropism) phenotyping experiments organised by species. Pick
+        a species to browse its experiments.
       </p>
 
       <ul className="divide-y divide-stone-200 border-y border-stone-200">
@@ -46,39 +47,44 @@ export default async function AllPlateSpecies() {
             .filter(Boolean)
             .join(" · ");
           return (
-            <li
-              key={species.id}
-              className="flex items-center gap-6 py-6 px-4 -mx-4"
-            >
-              <div className="shrink-0 w-16 h-16 flex items-center justify-center">
-                <Illustration
-                  path={species.illustration_path}
-                  commonName={species.common_name}
-                />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-baseline gap-3 flex-wrap">
-                  <span className="text-xl capitalize text-lime-700">
-                    {species.common_name}
-                  </span>
-                  <span className="text-sm italic text-stone-500">
-                    <span className="capitalize">{species.genus}</span>{" "}
-                    <span className="lowercase">{species.species}</span>
-                  </span>
+            <li key={species.id}>
+              <Link
+                href={`/app/plate-phenotypes/${species.id}`}
+                className="group flex items-center gap-6 py-6 hover:bg-stone-50 transition-colors px-4 -mx-4 rounded-sm"
+              >
+                <div className="shrink-0 w-16 h-16 flex items-center justify-center">
+                  <Illustration
+                    path={species.illustration_path}
+                    commonName={species.common_name}
+                  />
                 </div>
-                {preview ? (
-                  <div className="mt-1 truncate text-sm text-stone-500">
-                    {preview}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-3 flex-wrap">
+                    <span className="text-xl capitalize text-lime-700 group-hover:underline underline-offset-4">
+                      {species.common_name}
+                    </span>
+                    <span className="text-sm italic text-stone-500">
+                      <span className="capitalize">{species.genus}</span>{" "}
+                      <span className="lowercase">{species.species}</span>
+                    </span>
                   </div>
-                ) : (
-                  <div className="mt-1 text-sm italic text-stone-400">
-                    No experiments yet
-                  </div>
-                )}
-              </div>
-              <div className="shrink-0 text-sm text-stone-500 tabular-nums">
-                {n} experiment{suffix}
-              </div>
+                  {preview ? (
+                    <div className="mt-1 truncate text-sm text-stone-500">
+                      {preview}
+                    </div>
+                  ) : (
+                    <div className="mt-1 text-sm italic text-stone-400">
+                      No experiments yet
+                    </div>
+                  )}
+                </div>
+                <div className="shrink-0 text-sm text-stone-500 tabular-nums">
+                  {n} experiment{suffix}
+                </div>
+                <div className="shrink-0 text-stone-300 group-hover:text-lime-700 text-lg">
+                  →
+                </div>
+              </Link>
             </li>
           );
         })}

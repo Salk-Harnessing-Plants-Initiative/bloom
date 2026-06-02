@@ -30,6 +30,11 @@ function phenotyperLabel(row: PlateScanRow): string | null {
 export function PlateScanCard({ row }: PlateScanCardProps) {
   const phenotyper = phenotyperLabel(row);
 
+  const href =
+    row.species_id !== null
+      ? `/app/plate-phenotypes/${row.species_id}`
+      : "/app/plate-phenotypes";
+
   const metadata = waveLabel(row);
 
   const people = [
@@ -41,7 +46,7 @@ export function PlateScanCard({ row }: PlateScanCardProps) {
 
   return (
     <Link
-      href="/app/plate-phenotypes"
+      href={href}
       className="group flex flex-col rounded-lg border border-stone-200 border-l-4 border-l-lime-500/40 bg-white p-3 transition hover:-translate-y-0.5 hover:border-lime-700 hover:border-l-lime-700 hover:shadow-md"
     >
       <h4 className="text-sm font-semibold text-stone-900 leading-snug line-clamp-1">
