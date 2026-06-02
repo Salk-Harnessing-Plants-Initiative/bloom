@@ -191,6 +191,70 @@ VALUES
 ON CONFLICT (scan_id) DO UPDATE
   SET object_path = EXCLUDED.object_path;
 
+-- ----------------------------------------------------------------------------
+-- 9. PLATE-A1 time series — 12 cycles spanning ~3h to exercise the per-plate
+--    time-series page's default window (last 2h, max 6 frames) and "show all"
+--    toggle. Spaced 15 min apart, all tied to session 9101 / phenotyper 9001.
+-- ----------------------------------------------------------------------------
+INSERT INTO gravi_scans
+  (id, experiment_id, phenotyper_id, scanner_id, session_id, plate_id,
+   cycle_number, capture_date, grid_mode, plate_index, resolution, format,
+   wave_number, metadata_id, uploaded_at)
+VALUES
+  (8701, 9101, 9001, 9101, 9101, 'PLATE-A1',  1, '2026-05-29 11:00:00+00', '3x3', 'A1', 1200, 'jpeg', 1, 8301, '2026-05-29 11:01:00+00'),
+  (8702, 9101, 9001, 9101, 9101, 'PLATE-A1',  2, '2026-05-29 11:15:00+00', '3x3', 'A1', 1200, 'jpeg', 1, 8301, '2026-05-29 11:16:00+00'),
+  (8703, 9101, 9001, 9101, 9101, 'PLATE-A1',  3, '2026-05-29 11:30:00+00', '3x3', 'A1', 1200, 'jpeg', 1, 8301, '2026-05-29 11:31:00+00'),
+  (8704, 9101, 9001, 9101, 9101, 'PLATE-A1',  4, '2026-05-29 11:45:00+00', '3x3', 'A1', 1200, 'jpeg', 1, 8301, '2026-05-29 11:46:00+00'),
+  (8705, 9101, 9001, 9101, 9101, 'PLATE-A1',  5, '2026-05-29 12:00:00+00', '3x3', 'A1', 1200, 'jpeg', 1, 8301, '2026-05-29 12:01:00+00'),
+  (8706, 9101, 9001, 9101, 9101, 'PLATE-A1',  6, '2026-05-29 12:15:00+00', '3x3', 'A1', 1200, 'jpeg', 1, 8301, '2026-05-29 12:16:00+00'),
+  (8707, 9101, 9001, 9101, 9101, 'PLATE-A1',  7, '2026-05-29 12:30:00+00', '3x3', 'A1', 1200, 'jpeg', 1, 8301, '2026-05-29 12:31:00+00'),
+  (8708, 9101, 9001, 9101, 9101, 'PLATE-A1',  8, '2026-05-29 12:45:00+00', '3x3', 'A1', 1200, 'jpeg', 1, 8301, '2026-05-29 12:46:00+00'),
+  (8709, 9101, 9001, 9101, 9101, 'PLATE-A1',  9, '2026-05-29 13:00:00+00', '3x3', 'A1', 1200, 'jpeg', 1, 8301, '2026-05-29 13:01:00+00'),
+  (8710, 9101, 9001, 9101, 9101, 'PLATE-A1', 10, '2026-05-29 13:15:00+00', '3x3', 'A1', 1200, 'jpeg', 1, 8301, '2026-05-29 13:16:00+00'),
+  (8711, 9101, 9001, 9101, 9101, 'PLATE-A1', 11, '2026-05-29 13:31:00+00', '3x3', 'A1', 1200, 'jpeg', 1, 8301, '2026-05-29 13:32:00+00'),
+  (8712, 9101, 9001, 9101, 9101, 'PLATE-A1', 12, '2026-05-29 13:45:00+00', '3x3', 'A1', 1200, 'jpeg', 1, 8301, '2026-05-29 13:46:00+00')
+ON CONFLICT (id) DO UPDATE
+  SET cycle_number = EXCLUDED.cycle_number,
+      capture_date = EXCLUDED.capture_date,
+      metadata_id  = EXCLUDED.metadata_id,
+      uploaded_at  = EXCLUDED.uploaded_at;
+
+INSERT INTO gravi_images (id, scan_id, object_path)
+VALUES
+  (8701, 8701, 'demo/plate-a1-cycle01.jpg'),
+  (8702, 8702, 'demo/plate-a1-cycle02.jpg'),
+  (8703, 8703, 'demo/plate-a1-cycle03.jpg'),
+  (8704, 8704, 'demo/plate-a1-cycle04.jpg'),
+  (8705, 8705, 'demo/plate-a1-cycle05.jpg'),
+  (8706, 8706, 'demo/plate-a1-cycle06.jpg'),
+  (8707, 8707, 'demo/plate-a1-cycle07.jpg'),
+  (8708, 8708, 'demo/plate-a1-cycle08.jpg'),
+  (8709, 8709, 'demo/plate-a1-cycle09.jpg'),
+  (8710, 8710, 'demo/plate-a1-cycle10.jpg'),
+  (8711, 8711, 'demo/plate-a1-cycle11.jpg'),
+  (8712, 8712, 'demo/plate-a1-cycle12.jpg')
+ON CONFLICT (scan_id) DO UPDATE
+  SET object_path = EXCLUDED.object_path;
+
+-- ----------------------------------------------------------------------------
+-- 10. gravi_plate_videos  (canonical time-lapse video per plate)
+--     The bucket file does NOT exist on dev — the video viewer will show its
+--     "no time-lapse video available" placeholder. Wired so the table lookup
+--     path is exercised end-to-end.
+-- ----------------------------------------------------------------------------
+INSERT INTO gravi_plate_videos
+  (id, experiment_id, plate_id, session_id, object_path,
+   duration_seconds, frame_count, file_size_bytes, generated_at)
+VALUES
+  (8801, 9101, 'PLATE-A1', 9101, '9101/PLATE-A1.mp4',
+     180, 13, 12345678, '2026-05-29 14:00:00+00')
+ON CONFLICT (experiment_id, plate_id, COALESCE(session_id, -1)) DO UPDATE
+  SET object_path     = EXCLUDED.object_path,
+      duration_seconds = EXCLUDED.duration_seconds,
+      frame_count     = EXCLUDED.frame_count,
+      file_size_bytes = EXCLUDED.file_size_bytes,
+      generated_at    = EXCLUDED.generated_at;
+
 COMMIT;
 
 -- ----------------------------------------------------------------------------
