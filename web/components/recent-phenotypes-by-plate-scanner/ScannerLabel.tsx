@@ -10,7 +10,7 @@ interface ScannerLabelProps {
 
 export function ScannerLabel({ name }: ScannerLabelProps) {
   return (
-    <div className="flex flex-row items-center gap-2 sm:flex-col sm:items-start sm:gap-1.5 sm:pt-1">
+    <div className="flex flex-row items-center gap-2">
       <PlateGlyph />
       <span className="text-xs font-semibold uppercase tracking-wide text-stone-700 sm:text-sm">
         {name}
