@@ -556,6 +556,30 @@ reads removed; migration-lint and no-skipped-tests both green.
 - [ ] 9.4 **(process)** file or update a tracking comment on issue #56
       listing each pinned image's tag+digest. Add `security` and
       `infrastructure` labels to #56 since it currently has none.
+- [ ] 9.5 **Forward-compat note (caddy):** at the time of writing this
+      proposal, there is an in-flight branch
+      [`chore/caddy-acme-dns-cloudflare`](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/tree/chore/caddy-acme-dns-cloudflare)
+      that adds `caddy/Dockerfile` (custom caddy build with the
+      Cloudflare DNS plugin for ACME DNS-01). **If that branch merges
+      into `staging` before PR-3 lands**, the caddy entry MUST move
+      from this §9.2 third-party-pin list to the §7/§8 custom-services
+      flow:
+  - Add a 4th `docker/build-push-action` step to `build-images`
+    (§7.2) with `context: ./caddy` and `file: ./caddy/Dockerfile`.
+  - Update `docker-compose.prod.yml` (§8.2) to use
+    `image: ghcr.io/${IMAGE_NAMESPACE}/caddy:${IMAGE_TAG:-staging}`
+    instead of the third-party `caddy:2.11.2-alpine` tag.
+  - Add a `build:` block for caddy in `docker-compose.ci.yml` (§8.5).
+  - Update `test_compose_ghcr_refs.py` (§8.1) and
+    `test_compose_thirdparty_pinned.py` (§9.1) to expect caddy in the
+    custom-services bucket, not the third-party bucket.
+  - **Do NOT** add `BLOOM_IMAGE_SHA` to caddy's env block — caddy
+    doesn't write analyses, so the SHA-traceability plumbing (§8.2)
+    stays scoped to bloom-web/langchain-agent/bloommcp.
+  - File the §12.10 caddy migration tracking issue when this happens.
+
+  If that branch is still in flight when PR-3 lands, leave caddy in the
+  third-party-pin list and file §12.10 anyway as a forward note.
 
 ### 10. Staging deploy pulls + rollback uses prior SHA (or aborts)
 
@@ -805,6 +829,23 @@ reads removed; migration-lint and no-skipped-tests both green.
       change's three fences. Tracks future regressions/related vectors
       (storage URL, MCP URL, GitLab OAuth callbacks). Labels:
       `data-integrity`, `tracking`.
+- [ ] 12.10 **(process)** File a new GitHub issue titled
+      "Migrate caddy from third-party image to GHCR custom build" if
+      branch [`chore/caddy-acme-dns-cloudflare`](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/tree/chore/caddy-acme-dns-cloudflare)
+      (or any successor that introduces `caddy/Dockerfile`) lands on
+      `staging` before or after PR-3 merges. Issue body MUST enumerate
+      the §9.5 forward-compat checklist:
+  - Add caddy to the `build-images` matrix (§7.2 shape).
+  - Flip `docker-compose.prod.yml` caddy entry from third-party
+    `image: caddy:2.11.2-alpine@sha256:...` to
+    `image: ghcr.io/${IMAGE_NAMESPACE}/caddy:${IMAGE_TAG:-staging}`.
+  - Add caddy `build:` block to `docker-compose.ci.yml`.
+  - Update `test_compose_ghcr_refs.py` + `test_compose_thirdparty_pinned.py`
+    to expect caddy in the custom-services bucket.
+  - Caddy does NOT need `BLOOM_IMAGE_SHA` (no analysis outputs).
+  Labels: `infrastructure`, `cicd`, `tracking`. If the branch has
+  already merged when PR-3 lands, this issue is closed as part of
+  PR-3 (§9.5 forward-compat work absorbs it inline).
 - [ ] 12.8 **(process)** Run `openspec validate --all --strict` and
       confirm cross-change validation still passes after the archive.
       *(Issue #107 label cleanup was moved to PR-1 §0.5 so reviewers
