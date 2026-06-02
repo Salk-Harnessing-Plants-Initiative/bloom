@@ -82,21 +82,114 @@ INSERT INTO gravi_scans
    wave_number, uploaded_at)
 VALUES
   -- Experiment 9101 — 4 distinct plates across 2 sessions
-  (8201, 9101, 9001, 9101,8101, 'PLATE-A2', 9101,'2026-05-30 09:05:00+00',
-     '3x3', 'A2', 1200, 'jpeg', 9101,'2026-05-30 09:06:00+00'),
-  (8202, 9101, 9001, 9101,8101, 'PLATE-A3', 9101,'2026-05-30 09:10:00+00',
-     '3x3', 'A3', 1200, 'jpeg', 9101,'2026-05-30 09:11:00+00'),
-  (8203, 9101, 9002, 9101,8102, 'PLATE-A4', 9101,'2026-05-31 14:05:00+00',
+  (8201, 9101, 9001, 9101, 8101, 'PLATE-A2', 1, '2026-05-30 09:05:00+00',
+     '3x3', 'A2', 1200, 'jpeg', 1, '2026-05-30 09:06:00+00'),
+  (8202, 9101, 9001, 9101, 8101, 'PLATE-A3', 1, '2026-05-30 09:10:00+00',
+     '3x3', 'A3', 1200, 'jpeg', 1, '2026-05-30 09:11:00+00'),
+  (8203, 9101, 9002, 9101, 8102, 'PLATE-A4', 1, '2026-05-31 14:05:00+00',
      '3x3', 'A4', 1200, 'jpeg', 2, '2026-05-31 14:06:00+00'),
   -- Experiment 9102 — 2 more distinct plates
-  (8204, 9102, 9002, 9101,8103, 'PLATE-B2', 9101,'2026-05-29 10:05:00+00',
-     '3x3', 'B2', 1200, 'jpeg', 9101,'2026-05-29 10:06:00+00'),
-  (8205, 9102, 9002, 9101,8103, 'PLATE-B3', 9101,'2026-05-29 10:10:00+00',
-     '3x3', 'B3', 1200, 'jpeg', 9101,'2026-05-29 10:11:00+00')
+  (8204, 9102, 9002, 9101, 8103, 'PLATE-B2', 1, '2026-05-29 10:05:00+00',
+     '3x3', 'B2', 1200, 'jpeg', 1, '2026-05-29 10:06:00+00'),
+  (8205, 9102, 9002, 9101, 8103, 'PLATE-B3', 1, '2026-05-29 10:10:00+00',
+     '3x3', 'B3', 1200, 'jpeg', 1, '2026-05-29 10:11:00+00')
 ON CONFLICT (id) DO UPDATE
-  SET session_id   = EXCLUDED.session_id,
+  SET cycle_number = EXCLUDED.cycle_number,
+      wave_number  = EXCLUDED.wave_number,
+      session_id   = EXCLUDED.session_id,
       plate_id     = EXCLUDED.plate_id,
       uploaded_at  = EXCLUDED.uploaded_at;
+
+-- ----------------------------------------------------------------------------
+-- 5. gravi_scan_metadata_accession  (one row per plate × experiment × wave)
+-- ----------------------------------------------------------------------------
+INSERT INTO gravi_scan_metadata_accession
+  (id, accession_id, plate_id, accession_name, wave_number, custom_note)
+VALUES
+  (8301, 9001, 'PLATE-A1', 'indi-1', 1, NULL),
+  (8302, 9001, 'PLATE-A2', 'indi-1', 1, NULL),
+  (8303, 9001, 'PLATE-A3', 'indi-1', 1, NULL),
+  (8304, 9001, 'PLATE-A4', 'indi-1', 2, NULL),
+  (8311, 9002, 'PLATE-B1', 'indi-2', 1, NULL),
+  (8312, 9002, 'PLATE-B2', 'indi-2', 1, NULL),
+  (8313, 9002, 'PLATE-B3', 'indi-2', 1, NULL)
+ON CONFLICT (id) DO UPDATE
+  SET accession_name = EXCLUDED.accession_name,
+      wave_number    = EXCLUDED.wave_number;
+
+-- Point each gravi_scan at its plate-level metadata row
+UPDATE gravi_scans SET metadata_id = 8301 WHERE id = 9101;
+UPDATE gravi_scans SET metadata_id = 8302 WHERE id = 8201;
+UPDATE gravi_scans SET metadata_id = 8303 WHERE id = 8202;
+UPDATE gravi_scans SET metadata_id = 8304 WHERE id = 8203;
+UPDATE gravi_scans SET metadata_id = 8311 WHERE id = 9102;
+UPDATE gravi_scans SET metadata_id = 8312 WHERE id = 8204;
+UPDATE gravi_scans SET metadata_id = 8313 WHERE id = 8205;
+
+-- ----------------------------------------------------------------------------
+-- 6. gravi_scan_metadata_sections  (sections within a plate)
+--    Wipe + reinsert so re-runs survive section_id reshuffles. Cascades to
+--    gravi_scan_metadata_section_plants via FK ON DELETE CASCADE.
+-- ----------------------------------------------------------------------------
+DELETE FROM gravi_scan_metadata_sections
+  WHERE metadata_id IN (8301, 8302, 8303, 8304, 8311, 8312, 8313);
+
+INSERT INTO gravi_scan_metadata_sections
+  (id, metadata_id, plate_section_id, medium)
+VALUES
+  (8401, 8301, 'top',          'MS 0.5x'),
+  (8402, 8301, 'upper-middle', 'MS 0.5x'),
+  (8403, 8301, 'lower-middle', 'MS 0.5x'),
+  (8410, 8301, 'bottom',       'MS 0.5x'),
+  (8404, 8302, 'top',    'MS 0.5x'),
+  (8405, 8302, 'bottom', 'MS 0.5x'),
+  (8406, 8303, 'top',    'MS 0.5x'),
+  (8407, 8303, 'bottom', 'MS 0.5x'),
+  (8408, 8304, 'top',    'MS + IAA'),
+  (8409, 8304, 'bottom', 'MS + IAA'),
+  (8411, 8311, 'top',    'MS 1x'),
+  (8412, 8311, 'bottom', 'MS 1x'),
+  (8413, 8312, 'top',    'MS 1x'),
+  (8414, 8312, 'bottom', 'MS 1x'),
+  (8415, 8313, 'top',    'MS 1x')
+ON CONFLICT (metadata_id, plate_section_id) DO NOTHING;
+
+-- ----------------------------------------------------------------------------
+-- 7. gravi_scan_metadata_section_plants  (plant_qr per section)
+-- ----------------------------------------------------------------------------
+INSERT INTO gravi_scan_metadata_section_plants (id, section_id, plant_qr)
+VALUES
+  (8501, 8401, 'QR-A1-T1'),
+  (8502, 8401, 'QR-A1-T2'),
+  (8503, 8402, 'QR-A1-UM1'),
+  (8512, 8403, 'QR-A1-LM1'),
+  (8504, 8410, 'QR-A1-B1'),
+  (8505, 8410, 'QR-A1-B2'),
+  (8506, 8404, 'QR-A2-T1'),
+  (8507, 8405, 'QR-A2-B1'),
+  (8508, 8406, 'QR-A3-T1'),
+  (8509, 8407, 'QR-A3-B1'),
+  (8510, 8408, 'QR-A4-T1'),
+  (8511, 8409, 'QR-A4-B1'),
+  (8520, 8411, 'QR-B1-T1'),
+  (8521, 8412, 'QR-B1-B1'),
+  (8522, 8413, 'QR-B2-T1'),
+  (8523, 8414, 'QR-B2-B1'),
+  (8524, 8415, 'QR-B3-T1')
+ON CONFLICT (section_id, plant_qr) DO NOTHING;
+
+-- ----------------------------------------------------------------------------
+-- 8. gravi_images  (object_path under bucket "graviscan-images")
+-- ----------------------------------------------------------------------------
+INSERT INTO gravi_images (id, scan_id, object_path)
+VALUES
+  (8601, 8201, 'demo/plate-a2-cycle1.jpg'),
+  (8602, 8202, 'demo/plate-a3-cycle1.jpg'),
+  (8603, 8203, 'demo/plate-a4-cycle1.jpg'),
+  (8604, 8204, 'demo/plate-b2-cycle1.jpg'),
+  (8605, 8205, 'demo/plate-b3-cycle1.jpg')
+ON CONFLICT (scan_id) DO UPDATE
+  SET object_path = EXCLUDED.object_path;
 
 COMMIT;
 
