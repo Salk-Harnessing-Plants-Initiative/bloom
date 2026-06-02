@@ -9,11 +9,26 @@ interface PlateImageProps {
   className?: string;
 }
 
+// Scanner uploads are TIFF (lossless archive). Browsers can't render TIFF
+// natively, so both views go through Supabase's image transformer (which
+// shells out to imgproxy / libvips in this stack) to land on a JPEG.
+type TransformOpts = {
+  width?: number;
+  height?: number;
+  quality?: number;
+  format?: "origin" | "jpg" | "png" | "webp";
+};
+
 async function getThumbUrl(path: string): Promise<string> {
   const supabase = createClientSupabaseClient();
   const { data } = await supabase.storage
     .from("graviscan-images")
-    .createSignedUrl(path, 3600, { transform: { width: 480, quality: 80 } });
+    .createSignedUrl(path, 3600, {
+      transform: { width: 480, quality: 80, format: "jpg" } as TransformOpts as {
+        width: number;
+        quality: number;
+      },
+    });
   return data?.signedUrl ?? "";
 }
 
@@ -21,7 +36,12 @@ async function getFullUrl(path: string): Promise<string> {
   const supabase = createClientSupabaseClient();
   const { data } = await supabase.storage
     .from("graviscan-images")
-    .createSignedUrl(path, 3600);
+    .createSignedUrl(path, 3600, {
+      transform: { width: 2400, quality: 85, format: "jpg" } as TransformOpts as {
+        width: number;
+        quality: number;
+      },
+    });
   return data?.signedUrl ?? "";
 }
 
