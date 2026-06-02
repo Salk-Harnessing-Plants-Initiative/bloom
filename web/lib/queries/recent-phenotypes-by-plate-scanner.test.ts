@@ -50,6 +50,7 @@ function makeRow(overrides: Partial<PlateScanRow> = {}): PlateScanRow {
     plate_id: "PLATE-A1",
     phenotyper_first_name: "Sarah",
     phenotyper_last_name: "Lee",
+    scientist_name: null,
     latest_upload_on_this_scanner_at: "2026-05-29T13:45:00Z",
     rank_on_scanner: 1,
     ...overrides,

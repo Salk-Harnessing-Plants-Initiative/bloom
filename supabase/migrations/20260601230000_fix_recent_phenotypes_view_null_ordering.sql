@@ -1,15 +1,19 @@
--- Fix NULL-ordering bug in both home-page widget views.
+-- Fix NULL-ordering bug + surface scientist name on both home-page widget views.
 --
--- The original views ordered by uploaded_at DESC, which in Postgres defaults
--- to NULLS FIRST. Result: any (scanner, wave) pair containing a row with
--- NULL uploaded_at had that NULL row win DISTINCT ON; any scanner whose
--- per-pair latest was NULL beat scanners with real timestamps in the
--- ROW_NUMBER ranking. Cards rendered without a date even though the same
--- scanner had plenty of real timestamps in other waves.
+-- NULL ordering: the original views ordered by uploaded_at DESC, which in
+-- Postgres defaults to NULLS FIRST. Result: any (scanner, wave) pair
+-- containing a row with NULL uploaded_at had that NULL row win DISTINCT ON;
+-- any scanner whose per-pair latest was NULL beat scanners with real
+-- timestamps in the ROW_NUMBER ranking. Cards rendered without a date even
+-- though the same scanner had plenty of real timestamps in other waves.
+-- Both views now use NULLS LAST in both ordering clauses.
 --
--- This migration recreates both views with NULLS LAST so real timestamps
--- always win over NULLs in both the per-pair pick and the per-scanner rank.
--- View column shapes are unchanged — TypeScript callers don't need updates.
+-- Scientist column: the original views included phenotyper_first_name /
+-- phenotyper_last_name but not the lead scientist. cyl side joins through
+-- cyl_scans.scientist_id; gravi side joins through gravi_experiments.scientist_id
+-- (both reference cyl_scientists.id by convention even though there's no FK
+-- constraint). The TS row types and card components are updated to render
+-- the new scientist_name column inline with the existing metadata line.
 
 DROP VIEW IF EXISTS recent_experiments_by_cyl_scanner;
 
@@ -28,13 +32,15 @@ WITH latest_per_pair AS (
     s.plant_age_days,
     ph.first_name  AS phenotyper_first_name,
     ph.last_name   AS phenotyper_last_name,
+    csci.scientist_name AS scientist_name,
     s.uploaded_at  AS latest_upload_at
   FROM cyl_scans s
   JOIN cyl_plants      pl ON pl.id = s.plant_id
   JOIN cyl_waves       w  ON w.id  = pl.wave_id
   JOIN cyl_experiments e  ON e.id  = w.experiment_id
-  LEFT JOIN species    sp ON sp.id = e.species_id
-  LEFT JOIN phenotypers ph ON ph.id = s.phenotyper_id
+  LEFT JOIN species         sp   ON sp.id   = e.species_id
+  LEFT JOIN phenotypers     ph   ON ph.id   = s.phenotyper_id
+  LEFT JOIN cyl_scientists  csci ON csci.id = s.scientist_id
   WHERE e.deleted_at IS NULL
   ORDER BY s.scanner_id, w.id, s.uploaded_at DESC NULLS LAST
 ),
@@ -60,6 +66,7 @@ SELECT
   r.plant_age_days,
   r.phenotyper_first_name,
   r.phenotyper_last_name,
+  r.scientist_name,
   r.latest_upload_at AS latest_upload_on_this_scanner_at,
   r.rank_on_scanner
 FROM ranked r
@@ -135,13 +142,15 @@ SELECT
   r.plate_id,
   ph.first_name AS phenotyper_first_name,
   ph.last_name  AS phenotyper_last_name,
+  csci.scientist_name AS scientist_name,
   r.latest_upload_at AS latest_upload_on_this_scanner_at,
   r.rank_on_scanner
 FROM ranked r
-JOIN gravi_scanners      sc ON sc.id = r.scanner_id
-JOIN gravi_experiments   e  ON e.id  = r.experiment_id
-LEFT JOIN species        sp ON sp.id = e.species_id
-LEFT JOIN phenotypers    ph ON ph.id = r.phenotyper_id
+JOIN gravi_scanners      sc   ON sc.id   = r.scanner_id
+JOIN gravi_experiments   e    ON e.id    = r.experiment_id
+LEFT JOIN species        sp   ON sp.id   = e.species_id
+LEFT JOIN phenotypers    ph   ON ph.id   = r.phenotyper_id
+LEFT JOIN cyl_scientists csci ON csci.id = e.scientist_id
 WHERE r.rank_on_scanner <= 2
 ORDER BY sc.name, r.rank_on_scanner;
 

@@ -43,11 +43,16 @@ export function CylScanCard({ row }: CylScanCardProps) {
   const wave = waveLabel(row);
   const phenotyper = phenotyperLabel(row);
 
-  // Wave • Plant age • Phenotyper, all in one line; skip whichever is null.
   const metadata = [
     wave,
     row.plant_age_days !== null ? `Plant age ${row.plant_age_days}d` : null,
-    phenotyper,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const people = [
+    phenotyper ? `Phenotyped by ${phenotyper}` : null,
+    row.scientist_name ? `Led by ${row.scientist_name}` : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -61,6 +66,9 @@ export function CylScanCard({ row }: CylScanCardProps) {
         {row.experiment_name}
       </h4>
       <p className="mt-1 text-xs text-stone-600">{metadata}</p>
+      {people && (
+        <p className="mt-0.5 text-xs text-stone-500">{people}</p>
+      )}
       <div className="mt-2 flex items-center justify-between">
         <RelativeTime iso={row.latest_upload_on_this_scanner_at} />
         <span className="inline-flex items-center gap-1 rounded-md border border-stone-300 px-2 py-0.5 text-xs font-medium text-stone-700 transition group-hover:border-lime-700 group-hover:bg-lime-50 group-hover:text-lime-800">

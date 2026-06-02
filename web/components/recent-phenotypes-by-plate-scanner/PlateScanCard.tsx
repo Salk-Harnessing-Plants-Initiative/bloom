@@ -36,7 +36,14 @@ function phenotyperLabel(row: PlateScanRow): string | null {
 export function PlateScanCard({ row }: PlateScanCardProps) {
   const phenotyper = phenotyperLabel(row);
 
-  const metadata = [waveLabel(row), phenotyper].filter(Boolean).join(" · ");
+  const metadata = waveLabel(row);
+
+  const people = [
+    phenotyper ? `Phenotyped by ${phenotyper}` : null,
+    row.scientist_name ? `Led by ${row.scientist_name}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <div className="flex flex-col rounded-lg border border-stone-200 border-l-4 border-l-lime-500/40 bg-white p-3 transition hover:border-lime-700 hover:border-l-lime-700 hover:shadow-md">
@@ -44,6 +51,7 @@ export function PlateScanCard({ row }: PlateScanCardProps) {
         {row.experiment_name}
       </h4>
       <p className="mt-1 text-xs text-stone-600">{metadata}</p>
+      {people && <p className="mt-0.5 text-xs text-stone-500">{people}</p>}
       <div className="mt-2">
         <RelativeTime iso={row.latest_upload_on_this_scanner_at} />
       </div>
