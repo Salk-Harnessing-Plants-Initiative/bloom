@@ -54,7 +54,7 @@ export function Navigation({ sections }: { sections: NavSection[] }) {
                       ].join(' ')}
                       aria-hidden
                     />
-                    <span>{item.name}</span>
+                    <span className="whitespace-pre-line leading-tight">{item.name}</span>
                   </Link>
                 </li>
               )
