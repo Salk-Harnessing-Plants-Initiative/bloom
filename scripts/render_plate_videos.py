@@ -5,6 +5,7 @@
 #   "psycopg[binary]>=3.2",
 #   "httpx>=0.27",
 #   "python-dotenv>=1.0",
+#   "imageio-ffmpeg>=0.5",
 # ]
 # ///
 """
@@ -18,8 +19,10 @@ per-plate detail page can render it.
 
 REQUIREMENTS
 ------------
-- ffmpeg on PATH (`brew install ffmpeg` / `apt-get install ffmpeg`)
-- uv (or run with `python -m` and install the deps from the script header)
+- ffmpeg: either on PATH, or the bundled binary that ships with the
+  `imageio-ffmpeg` pip package (the script falls back to that automatically,
+  so no admin install is required).
+- uv (or run with `python -m` and install the deps from the script header).
 
 USAGE
 -----
@@ -262,11 +265,27 @@ def upload_video(
 # ─── Encoding ────────────────────────────────────────────────────────────────
 
 
+def _ffmpeg_binary() -> str:
+    """System ffmpeg if on PATH, otherwise the static binary bundled with imageio-ffmpeg."""
+    sys_ffmpeg = shutil.which("ffmpeg")
+    if sys_ffmpeg:
+        return sys_ffmpeg
+    try:
+        import imageio_ffmpeg
+    except ImportError as e:
+        raise RuntimeError(
+            "ffmpeg not on PATH and imageio-ffmpeg not installed. "
+            "Install one: `apt-get install ffmpeg` OR `pip install imageio-ffmpeg`."
+        ) from e
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
 def encode_mp4(frames_dir: Path, out_path: Path, framerate: int) -> None:
     """Run ffmpeg to glob all frames in frames_dir into a web-friendly MP4."""
+    ffmpeg = _ffmpeg_binary()
     # frames are named frame_NNNN.<ext>; glob input keeps ffmpeg flexible on extension
     cmd = [
-        "ffmpeg",
+        ffmpeg,
         "-y",
         "-framerate",
         str(framerate),
@@ -293,23 +312,11 @@ def encode_mp4(frames_dir: Path, out_path: Path, framerate: int) -> None:
         )
 
 
-def probe_duration_seconds(path: Path) -> int:
-    """Use ffprobe to read duration in seconds (rounded)."""
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(path),
-    ]
-    out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
-    try:
-        return int(round(float(out)))
-    except ValueError:
+def estimate_duration_seconds(frame_count: int, framerate: int) -> int:
+    """Duration is just frames / fps — no need to ffprobe."""
+    if framerate <= 0:
         return 0
+    return max(1, round(frame_count / framerate))
 
 
 # ─── Orchestration ───────────────────────────────────────────────────────────
@@ -385,7 +392,9 @@ def render_one(
             plate_id=job.plate_id,
             session_id=job.session_id,
             object_path=target_path,
-            duration_seconds=probe_duration_seconds(out_path),
+            duration_seconds=estimate_duration_seconds(
+                len(job.frame_paths), cfg.framerate
+            ),
             frame_count=len(job.frame_paths),
             file_size_bytes=out_path.stat().st_size,
         )
@@ -422,8 +431,12 @@ def main(argv: list[str]) -> int:
     if args.env_file.exists():
         load_dotenv(args.env_file)
 
-    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
-        logger.error("ffmpeg/ffprobe not on PATH — install ffmpeg first")
+    # Pre-flight ffmpeg lookup so we fail fast with a clear message.
+    try:
+        ffmpeg = _ffmpeg_binary()
+        logger.debug("using ffmpeg: %s", ffmpeg)
+    except RuntimeError as e:
+        logger.error("%s", e)
         return 2
 
     cfg = Config.from_env(framerate=args.framerate)
