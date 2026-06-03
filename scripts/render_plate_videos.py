@@ -283,6 +283,9 @@ def encode_mp4(frames_dir: Path, out_path: Path, framerate: int) -> None:
     ext = frames[0].suffix or ".bin"
     input_pattern = str(frames_dir / f"frame_%04d{ext}")
 
+    # Preserve source aspect — plate scanner TIFFs are tall (≈5:7 portrait
+    # for the staging dataset). The only required transform is rounding
+    # both dimensions to even numbers, which libx264 + yuv420p need.
     cmd = [
         ffmpeg,
         "-y",
@@ -296,7 +299,6 @@ def encode_mp4(frames_dir: Path, out_path: Path, framerate: int) -> None:
         "yuv420p",
         "-movflags",
         "+faststart",
-        # libx264 needs even dimensions; scale to nearest-even width keeping aspect
         "-vf",
         "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         str(out_path),
