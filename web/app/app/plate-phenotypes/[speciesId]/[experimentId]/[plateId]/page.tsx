@@ -130,9 +130,9 @@ export default async function PlateDetail({
 
       <div className="mb-8">
         <h2 className="mb-2 text-sm uppercase tracking-widest text-stone-500">
-          Growth time-lapse
+          Time points
         </h2>
-        <PlateVideo objectPath={video?.object_path ?? null} />
+        <PlateTimeSeries points={timePoints} />
       </div>
 
       {sections.length > 0 && (
@@ -171,9 +171,9 @@ export default async function PlateDetail({
 
       <div className="mb-8">
         <h2 className="mb-2 text-sm uppercase tracking-widest text-stone-500">
-          Time points
+          Growth time-lapse
         </h2>
-        <PlateTimeSeries points={timePoints} />
+        <PlateVideo objectPath={video?.object_path ?? null} />
       </div>
     </div>
   );
