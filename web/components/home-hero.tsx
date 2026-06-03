@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { numberToWord } from "@/app/app/home-lib/number-to-word";
+import type { DatabaseCounts } from "@/app/app/home-lib/database-counts";
 
 interface Props {
   firstName: string | null;
   speciesCount: number;
+  dbCounts: DatabaseCounts;
 }
 
 const HERO_PLANTS = [
@@ -26,8 +28,9 @@ const MONTAGE_SLOTS = [
   "top-80 left-56 h-28 w-28",
 ];
 
-export function HomeHero({ firstName, speciesCount }: Props) {
+export function HomeHero({ firstName, speciesCount, dbCounts }: Props) {
   const word = numberToWord(speciesCount);
+  const fmt = new Intl.NumberFormat("en-US");
 
   return (
     <section className="relative grid grid-cols-[1.05fr_1fr] gap-8 py-12">
@@ -38,7 +41,7 @@ export function HomeHero({ firstName, speciesCount }: Props) {
         </div>
 
         <h1 className="font-serif italic text-stone-900 leading-[1.05] text-[clamp(40px,5vw,64px)] mb-5">
-          <span className="text-lime-700">{word}</span> plants,{" "}
+          <span className="text-lime-700">{word}</span> plant species,{" "}
           <span>studied so far.</span>
         </h1>
 
@@ -47,6 +50,21 @@ export function HomeHero({ firstName, speciesCount }: Props) {
           — phenotyping scans, single-cell expression atlases, gene
           candidates, and eight years of field work, all in one place.
         </p>
+
+        <dl className="mb-8 grid grid-cols-3 gap-4 max-w-md">
+          <Stat
+            value={fmt.format(dbCounts.scrnaDatasets)}
+            label="single-cell datasets"
+          />
+          <Stat
+            value={fmt.format(dbCounts.cylExperiments)}
+            label="cylinder experiments"
+          />
+          <Stat
+            value={fmt.format(dbCounts.plateExperiments)}
+            label="plate experiments"
+          />
+        </dl>
 
         <div className="flex flex-wrap gap-3">
           <Link
@@ -98,5 +116,18 @@ export function HomeHero({ firstName, speciesCount }: Props) {
         }
       `}</style>
     </section>
+  );
+}
+
+function Stat({ value, label }: { value: string; label: string }) {
+  return (
+    <div>
+      <dt className="text-2xl font-semibold tabular-nums text-stone-900">
+        {value}
+      </dt>
+      <dd className="mt-0.5 text-xs uppercase tracking-widest text-stone-500">
+        {label}
+      </dd>
+    </div>
   );
 }
