@@ -9,41 +9,26 @@ interface PlateImageProps {
   className?: string;
 }
 
-// Plate-scanner objects live under the storage-api backend bucket at
-//   bloom-storage/storage-single-tenant/graviscan-images/<gravi_images.object_path>
-// so the front-end reads directly from `bloom-storage` and prepends the
-// tenant + logical-bucket prefix to the object_path from postgres
-// (which already starts with `gravi-images/<filename>.tif`).
+// Plate-scanner objects live in the `graviscan-images` logical bucket;
+// `gravi_images.object_path` already stores the path inside that bucket
+// (e.g. `gravi-images/<filename>.tif`). Storage-api handles the tenant +
+// backend-bucket translation internally — the front-end only owns the
+// logical bucket name.
 //
-// Scanner uploads are TIFF; browsers can't render TIFF natively, so both
-// views go through the image transformer (imgproxy + libvips) with
-// `format: "jpg"` to re-encode on the fly. `format` accepts jpg/png/webp
-// on self-hosted even though supabase-js's type only declares "origin";
-// cast around the incomplete type.
+// Scanner uploads are TIFF; the browser can't decode TIFF natively. We
+// rely on the transform layer (imgproxy / libvips) auto-converting to a
+// web-renderable format based on the Accept header. The `format` field
+// on the transform options is restricted by the staging storage-api
+// version, so we leave it off and let the transformer pick.
 
-const BACKEND_BUCKET = "bloom-storage";
-const STORAGE_PREFIX = "storage-single-tenant/graviscan-images";
-
-function backendPath(objectPath: string): string {
-  return `${STORAGE_PREFIX}/${objectPath}`;
-}
-
-type TransformOpts = {
-  width?: number;
-  height?: number;
-  quality?: number;
-  format?: "origin" | "jpg" | "png" | "webp";
-};
+const STORAGE_BUCKET = "graviscan-images";
 
 async function getThumbUrl(path: string): Promise<string> {
   const supabase = createClientSupabaseClient();
   const { data } = await supabase.storage
-    .from(BACKEND_BUCKET)
-    .createSignedUrl(backendPath(path), 3600, {
-      transform: { width: 480, quality: 80, format: "jpg" } as TransformOpts as {
-        width: number;
-        quality: number;
-      },
+    .from(STORAGE_BUCKET)
+    .createSignedUrl(path, 3600, {
+      transform: { width: 480, quality: 80 },
     });
   return data?.signedUrl ?? "";
 }
@@ -51,12 +36,9 @@ async function getThumbUrl(path: string): Promise<string> {
 async function getFullUrl(path: string): Promise<string> {
   const supabase = createClientSupabaseClient();
   const { data } = await supabase.storage
-    .from(BACKEND_BUCKET)
-    .createSignedUrl(backendPath(path), 3600, {
-      transform: { width: 2400, quality: 85, format: "jpg" } as TransformOpts as {
-        width: number;
-        quality: number;
-      },
+    .from(STORAGE_BUCKET)
+    .createSignedUrl(path, 3600, {
+      transform: { width: 2400, quality: 85 },
     });
   return data?.signedUrl ?? "";
 }
