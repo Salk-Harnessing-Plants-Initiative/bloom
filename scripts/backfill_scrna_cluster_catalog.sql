@@ -55,7 +55,34 @@ BEGIN
   RAISE NOTICE 'pre: scrna_cluster_stats rows                  = %', stats_rows;
 END $$;
 
--- ─── 1) Split composite cluster_id → (cluster_id, replicate) ─────────────────
+-- ─── 1) Seed scrna_clusters FIRST so the FK on scrna_cells is satisfied ─────
+-- The FK scrna_cells_cluster_fkey on (dataset_id, cluster_id) is checked
+-- against the NEW row value when we update cells in step 2, so the
+-- catalog must contain the cleaned cluster_ids before any UPDATE runs.
+-- We compute the cleaned values via SPLIT_PART inside the SELECT —
+-- scrna_cells is not modified here. Ordinals 0..N-1 per dataset,
+-- lex-sorted, name = cluster_id (edit later in Studio for biology).
+WITH inserted AS (
+  INSERT INTO public.scrna_clusters (dataset_id, cluster_id, ordinal, name)
+  SELECT
+    dataset_id,
+    cluster_id_clean,
+    (ROW_NUMBER() OVER (PARTITION BY dataset_id ORDER BY cluster_id_clean) - 1)::smallint,
+    cluster_id_clean
+  FROM (
+    SELECT DISTINCT
+      dataset_id,
+      SPLIT_PART(cluster_id, '.', 1) AS cluster_id_clean
+    FROM public.scrna_cells
+    WHERE cluster_id IS NOT NULL
+  ) distinct_clusters
+  ON CONFLICT (dataset_id, cluster_id) DO NOTHING
+  RETURNING 1
+)
+SELECT COUNT(*) AS cluster_inserts FROM inserted \gset
+\echo 'seed: scrna_clusters rows inserted =' :cluster_inserts
+
+-- ─── 2) Split composite cluster_id → (cluster_id, replicate) ─────────────────
 -- Source values look like "Cluster1.Gmax_root_no_primary_tip_1wk_2023_rep2".
 --   cluster_id ← the part before the first dot ("Cluster1")
 --   replicate  ← just the trailing replicate token ("rep2"), captured by
@@ -63,7 +90,7 @@ END $$;
 --                replicate is set to NULL.
 -- Postgres SET expressions evaluate against the OLD row, so both the
 -- regex and SPLIT_PART see the un-split cluster_id even though it's
--- also being updated.
+-- also being updated. FK targets were seeded in step 1.
 WITH split AS (
   UPDATE public.scrna_cells
   SET
@@ -75,25 +102,6 @@ WITH split AS (
 )
 SELECT COUNT(*) AS split_count FROM split \gset
 \echo 'split: rows updated =' :split_count
-
--- ─── 2) Seed scrna_clusters (ordinals 0..N-1 per dataset, lex-sorted) ────────
-WITH inserted AS (
-  INSERT INTO public.scrna_clusters (dataset_id, cluster_id, ordinal, name)
-  SELECT
-    dataset_id,
-    cluster_id,
-    (ROW_NUMBER() OVER (PARTITION BY dataset_id ORDER BY cluster_id) - 1)::smallint,
-    cluster_id
-  FROM (
-    SELECT DISTINCT dataset_id, cluster_id
-    FROM public.scrna_cells
-    WHERE cluster_id IS NOT NULL
-  ) distinct_clusters
-  ON CONFLICT (dataset_id, cluster_id) DO NOTHING
-  RETURNING 1
-)
-SELECT COUNT(*) AS cluster_inserts FROM inserted \gset
-\echo 'seed: scrna_clusters rows inserted =' :cluster_inserts
 
 -- ─── 3) Seed scrna_cluster_stats (cell_count, pct, centroid_x/y) ─────────────
 WITH inserted AS (
