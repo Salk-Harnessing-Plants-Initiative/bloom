@@ -7,8 +7,22 @@ export type TranslationProject = Database['public']['Tables']['translation_proje
 
 export type RNADataset = Database['public']['Tables']['scrna_datasets']['Row']
 
+export interface GraviExperiment {
+  id: number
+  name: string
+  species_id: number | null
+  scientist_id: number | null
+  accession_id: number | null
+  system_name: string | null
+  created_at: string
+}
+
 export type SpeciesWithExperiments = Species & {
   cyl_experiments: CylExperiment[]
+}
+
+export type SpeciesWithGraviExperiments = Species & {
+  gravi_experiments: GraviExperiment[]
 }
 
 export type SpeciesWithRNADatasets = Species & {

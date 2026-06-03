@@ -18,7 +18,8 @@ const navSections = [
   {
     heading: "Data",
     items: [
-      { name: "Phenotypes", href: "/app/phenotypes" },
+      { name: "Cylinder\nPhenotypes", href: "/app/phenotypes" },
+      { name: "Plates\nPhenotypes", href: "/app/plate-phenotypes" },
       { name: "Traits", href: "/app/traits" },
       { name: "Genes", href: "/app/genes" },
       { name: "Expression", href: "/app/expression" },

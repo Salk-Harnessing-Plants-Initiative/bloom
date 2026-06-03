@@ -1,6 +1,6 @@
 /**
- * Left-rail label for a scanner section: a small cylinder icon stacked
- * above the scanner name. Used inside <ScannerSection>.
+ * Left-rail label for a scanner section: a small cylinder icon next to
+ * the scanner name on a single row.
  */
 
 interface ScannerLabelProps {
@@ -9,7 +9,7 @@ interface ScannerLabelProps {
 
 export function ScannerLabel({ name }: ScannerLabelProps) {
   return (
-    <div className="flex flex-row items-center gap-2 sm:flex-col sm:items-start sm:gap-1.5 sm:pt-1">
+    <div className="flex flex-row items-center gap-2">
       <CylinderGlyph />
       <span className="text-xs font-semibold uppercase tracking-wide text-stone-700 sm:text-sm">
         {name}

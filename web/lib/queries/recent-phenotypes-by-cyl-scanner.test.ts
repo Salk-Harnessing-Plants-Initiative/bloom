@@ -61,6 +61,7 @@ function makeRow(overrides: Partial<CylScanRow> = {}): CylScanRow {
     plant_age_days: 14,
     phenotyper_first_name: "Alice",
     phenotyper_last_name: "Smith",
+    scientist_name: null,
     latest_upload_on_this_scanner_at: "2026-05-28T08:04:00Z",
     rank_on_scanner: 1,
     ...overrides,

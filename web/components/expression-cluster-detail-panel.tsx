@@ -48,8 +48,9 @@ export function ExpressionClusterDetailPanel({
 
   const name = clusterName ?? clusterId;
   const markers = stats?.markers ?? null;
+  // pct is stored as a percentage (0..100) per the column name; render directly.
   const pctHuman =
-    stats?.pct != null ? (stats.pct * 100).toFixed(1) : "—";
+    stats?.pct != null ? stats.pct.toFixed(1) : "—";
   const cellsHuman =
     stats?.cell_count != null
       ? new Intl.NumberFormat("en-US").format(stats.cell_count)

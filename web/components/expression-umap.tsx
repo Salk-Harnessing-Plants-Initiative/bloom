@@ -165,17 +165,17 @@ export function ExpressionUmap({
   const [zoom, setZoom] = useState(1);
   const [translate, setTranslate] = useState<[number, number]>([0, 0]);
 
-  // Refs the RAF tick reads each frame, kept in sync with React state
-  // by the mirror effect below. Lets the render loop skip effect deps.
   const zoomRef = useRef(zoom);
   const translateRef = useRef(translate);
   const expressionArrRef = useRef(expressionArr);
   const expressionRangeRef = useRef(expressionRange);
+  const dirtyRef = useRef(true);
   useEffect(() => {
     zoomRef.current = zoom;
     translateRef.current = translate;
     expressionArrRef.current = expressionArr;
     expressionRangeRef.current = expressionRange;
+    dirtyRef.current = true;
   });
 
   // -------- data load ---------------------------------------------------------
@@ -380,6 +380,35 @@ export function ExpressionUmap({
     drawClustersRef.current = drawClusters;
     drawExpressionRef.current = drawExpression;
 
+    // Size the canvas's backing store to its CSS box × devicePixelRatio
+    // so points render crisp on retina/4K. ResizeObserver re-syncs on any
+    // container size change (sidebar collapse, window resize, etc.).
+    const resizeToParent = () => {
+      const parent = canvas.parentElement;
+      if (!parent) return;
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = parent.clientWidth;
+      const cssH = height;
+      // Bail out if nothing changed — avoids a redraw on every observer tick.
+      if (
+        canvas.width === Math.floor(cssW * dpr) &&
+        canvas.height === Math.floor(cssH * dpr)
+      ) {
+        return;
+      }
+      canvas.style.width = `${cssW}px`;
+      canvas.style.height = `${cssH}px`;
+      canvas.width = Math.floor(cssW * dpr);
+      canvas.height = Math.floor(cssH * dpr);
+      dirtyRef.current = true;
+    };
+    resizeToParent();
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(resizeToParent) : null;
+    if (resizeObserver && canvas.parentElement) {
+      resizeObserver.observe(canvas.parentElement);
+    }
+
     // Mid-session WebGL context loss — surface the fallback panel.
     const handleContextLost = (e: Event) => {
       e.preventDefault();
@@ -391,21 +420,27 @@ export function ExpressionUmap({
 
     let rafId = 0;
     const tick = () => {
-      regl.poll();
-      regl.clear({ color: [0.05, 0.05, 0.08, 1], depth: 1 });
-      const expArr = expressionArrRef.current;
-      const expRange = expressionRangeRef.current;
-      const z = zoomRef.current;
-      const t = translateRef.current;
-      if (expArr && expRange) {
-        drawExpression({
-          zoom: z,
-          translate: t,
-          expMin: expRange.min,
-          expMax: expRange.max,
-        });
-      } else {
-        drawClusters({ zoom: z, translate: t });
+      // Lazy RAF: draw only when something changed. Idle UMAPs cost ~0
+      // GPU/CPU between frames; interactions flip dirty and the next
+      // frame draws.
+      if (dirtyRef.current) {
+        regl.poll();
+        regl.clear({ color: [0.05, 0.05, 0.08, 1], depth: 1 });
+        const expArr = expressionArrRef.current;
+        const expRange = expressionRangeRef.current;
+        const z = zoomRef.current;
+        const t = translateRef.current;
+        if (expArr && expRange) {
+          drawExpression({
+            zoom: z,
+            translate: t,
+            expMin: expRange.min,
+            expMax: expRange.max,
+          });
+        } else {
+          drawClusters({ zoom: z, translate: t });
+        }
+        dirtyRef.current = false;
       }
       rafId = requestAnimationFrame(tick);
     };
@@ -413,6 +448,7 @@ export function ExpressionUmap({
 
     return () => {
       cancelAnimationFrame(rafId);
+      resizeObserver?.disconnect();
       canvas.removeEventListener("webglcontextlost", handleContextLost);
       positionBuffer.destroy();
       colorBuffer.destroy();
@@ -442,6 +478,7 @@ export function ExpressionUmap({
     // will populate it with the latest visibility on the next render.
     if (visibility.length !== cellCountRef.current) return;
     buf.subdata(visibility);
+    dirtyRef.current = true;
   }, [visibility]);
 
   // -------- expression update (in-place subdata) ------------------------------
@@ -451,6 +488,7 @@ export function ExpressionUmap({
     const arr = expressionArr ?? new Float32Array(cellCountRef.current);
     if (arr.length !== cellCountRef.current) return;
     buf.subdata(arr);
+    dirtyRef.current = true;
   }, [expressionArr]);
 
   // -------- zoom / pan handlers ----------------------------------------------
@@ -556,11 +594,11 @@ export function ExpressionUmap({
   }
 
   return (
+    // Canvas dimensions are set imperatively in the init effect against
+    // parent.clientWidth × devicePixelRatio. We don't set width/height here.
     <canvas
       ref={canvasRef}
       data-testid="expression-umap-canvas"
-      width={1200}
-      height={height}
       onWheel={handleWheel}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
