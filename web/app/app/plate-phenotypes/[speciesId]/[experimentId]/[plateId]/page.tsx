@@ -34,7 +34,7 @@ interface ScanRow {
   id: number;
   cycle_number: number | null;
   capture_date: string;
-  gravi_images: { object_path: string }[];
+  gravi_images: { object_path: string } | null;
 }
 
 interface ExperimentRow {
@@ -92,7 +92,7 @@ export default async function PlateDetail({
     scan_id: s.id,
     capture_date: s.capture_date,
     cycle_number: s.cycle_number,
-    object_path: s.gravi_images?.[0]?.object_path ?? null,
+    object_path: s.gravi_images?.object_path ?? null,
   }));
 
   return (
