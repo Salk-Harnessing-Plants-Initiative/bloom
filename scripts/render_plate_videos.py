@@ -266,24 +266,30 @@ def upload_video(
 
 
 def encode_mp4(frames_dir: Path, out_path: Path, framerate: int) -> None:
-    """Run ffmpeg to glob all frames in frames_dir into a web-friendly MP4.
+    """Run ffmpeg to encode all frames in frames_dir into a web-friendly MP4.
 
-    Uses the static ffmpeg binary bundled with the imageio-ffmpeg pip package,
-    so no system install (and no admin) is required.
+    Uses the static ffmpeg binary bundled with imageio-ffmpeg (no admin
+    install required). Inputs are passed as a printf-style sequence
+    (`frame_%04d.<ext>`) — the imageio-ffmpeg build doesn't support
+    `-pattern_type glob`.
     """
     import imageio_ffmpeg
 
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-    # frames are named frame_NNNN.<ext>; glob input keeps ffmpeg flexible on extension
+
+    frames = sorted(frames_dir.iterdir())
+    if not frames:
+        raise RuntimeError("encode_mp4: no frames found in {frames_dir}")
+    ext = frames[0].suffix or ".bin"
+    input_pattern = str(frames_dir / f"frame_%04d{ext}")
+
     cmd = [
         ffmpeg,
         "-y",
         "-framerate",
         str(framerate),
-        "-pattern_type",
-        "glob",
         "-i",
-        str(frames_dir / "frame_*"),
+        input_pattern,
         "-c:v",
         "libx264",
         "-pix_fmt",
