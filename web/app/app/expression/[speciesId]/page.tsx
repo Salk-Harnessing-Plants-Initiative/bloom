@@ -29,7 +29,10 @@ export default async function Species({
 
   if (!species) return <div>Species not found.</div>;
 
-  const datasets = species.scrna_datasets ?? [];
+  // NULL_DATASET is a placeholder sentinel — hide from the UI.
+  const datasets = (species.scrna_datasets ?? []).filter(
+    (d) => d.name !== "NULL_DATASET",
+  );
 
   return (
     <div>
