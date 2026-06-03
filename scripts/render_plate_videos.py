@@ -265,24 +265,15 @@ def upload_video(
 # ─── Encoding ────────────────────────────────────────────────────────────────
 
 
-def _ffmpeg_binary() -> str:
-    """System ffmpeg if on PATH, otherwise the static binary bundled with imageio-ffmpeg."""
-    sys_ffmpeg = shutil.which("ffmpeg")
-    if sys_ffmpeg:
-        return sys_ffmpeg
-    try:
-        import imageio_ffmpeg
-    except ImportError as e:
-        raise RuntimeError(
-            "ffmpeg not on PATH and imageio-ffmpeg not installed. "
-            "Install one: `apt-get install ffmpeg` OR `pip install imageio-ffmpeg`."
-        ) from e
-    return imageio_ffmpeg.get_ffmpeg_exe()
-
-
 def encode_mp4(frames_dir: Path, out_path: Path, framerate: int) -> None:
-    """Run ffmpeg to glob all frames in frames_dir into a web-friendly MP4."""
-    ffmpeg = _ffmpeg_binary()
+    """Run ffmpeg to glob all frames in frames_dir into a web-friendly MP4.
+
+    Uses the static ffmpeg binary bundled with the imageio-ffmpeg pip package,
+    so no system install (and no admin) is required.
+    """
+    import imageio_ffmpeg
+
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     # frames are named frame_NNNN.<ext>; glob input keeps ffmpeg flexible on extension
     cmd = [
         ffmpeg,
@@ -431,12 +422,11 @@ def main(argv: list[str]) -> int:
     if args.env_file.exists():
         load_dotenv(args.env_file)
 
-    # Pre-flight ffmpeg lookup so we fail fast with a clear message.
+    # Pre-flight: confirm the bundled ffmpeg is available.
     try:
-        ffmpeg = _ffmpeg_binary()
-        logger.debug("using ffmpeg: %s", ffmpeg)
-    except RuntimeError as e:
-        logger.error("%s", e)
+        import imageio_ffmpeg  # noqa: F401
+    except ImportError:
+        logger.error("imageio-ffmpeg not installed (`pip install imageio-ffmpeg`)")
         return 2
 
     cfg = Config.from_env(framerate=args.framerate)
