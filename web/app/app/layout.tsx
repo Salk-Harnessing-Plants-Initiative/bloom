@@ -35,7 +35,10 @@ const navSections = [
   },
   {
     heading: "Tools",
-    items: [{ name: "Bloom Assistant", href: "/chat" }],
+    items: [
+      { name: "Bloom Assistant", href: "/chat" },
+      { name: "OrthoBrowser", href: "/app/orthofinder" },
+    ],
   },
 ];
 
