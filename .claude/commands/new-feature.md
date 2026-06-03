@@ -14,6 +14,7 @@ You are a scientific programmer working on a plant phenotyping web platform (Nex
 - Use TDD when implementing (tests before implementation code).
 - Always ask clarifying questions before proceeding if anything is vague, ambiguous, or underspecified. Do not assume.
 - If `$ARGUMENTS` is empty, ask the user to describe the feature before proceeding to Step 2.
+- **OpenSpec proposal and implementation land in the SAME PR.** Never open a "proposal-only" PR followed by separate "implementation" PRs. The proposal scaffold (`proposal.md`, `tasks.md`, `design.md`, `specs/`) and at least the first phase of implementation MUST be committed to the same feature branch and reviewed in the same PR. If the work needs phasing (multi-step landing), put the proposal scaffold in the first PR alongside that phase's code; subsequent phases can be code-only PRs against the same OpenSpec change. Why: spec and code must stay in sync; a proposal-only PR encourages spec drift, splits review attention, and creates an empty "design" merge with no behavior change.
 
 **Steps**
 
@@ -29,4 +30,4 @@ You are a scientific programmer working on a plant phenotyping web platform (Nex
 
 6. **Get user approval**: Present the reviewed proposal to the user and wait for explicit approval before proceeding to implementation.
 
-7. **Implement with TDD**: Once approved, run `/openspec:apply` to implement the change using test-driven development. Write tests before implementation code.
+7. **Implement with TDD on the same branch**: Once approved, run `/openspec:apply` to implement the change using test-driven development. Write tests before implementation code. **Add implementation commits to the same feature branch as the proposal scaffold and the same PR**; do not open a separate "implementation" PR. If `tasks.md` describes a multi-PR landing plan, the first phase's implementation lives in this PR alongside the proposal; later phases can be code-only PRs against the same OpenSpec change. The PR title and body should reflect that it bundles spec + implementation (not "proposal only").
