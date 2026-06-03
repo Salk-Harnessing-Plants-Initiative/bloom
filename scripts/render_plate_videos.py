@@ -89,9 +89,10 @@ class Config:
     source_bucket: str = "graviscan-images"
     target_bucket: str = "graviscan-videos"
     framerate: int = 4
+    max_width: int = 720
 
     @classmethod
-    def from_env(cls, framerate: int) -> "Config":
+    def from_env(cls, framerate: int, max_width: int) -> "Config":
         missing = [
             k
             for k in ("SUPABASE_URL", "SERVICE_ROLE_KEY", "POSTGRES_DSN")
@@ -107,6 +108,7 @@ class Config:
             service_role_key=os.environ["SERVICE_ROLE_KEY"],
             postgres_dsn=os.environ["POSTGRES_DSN"],
             framerate=framerate,
+            max_width=max_width,
         )
 
 
@@ -265,7 +267,9 @@ def upload_video(
 # ─── Encoding ────────────────────────────────────────────────────────────────
 
 
-def encode_mp4(frames_dir: Path, out_path: Path, framerate: int) -> None:
+def encode_mp4(
+    frames_dir: Path, out_path: Path, framerate: int, max_width: int
+) -> None:
     """Run ffmpeg to encode all frames in frames_dir into a web-friendly MP4.
 
     Uses the static ffmpeg binary bundled with imageio-ffmpeg (no admin
@@ -283,9 +287,11 @@ def encode_mp4(frames_dir: Path, out_path: Path, framerate: int) -> None:
     ext = frames[0].suffix or ".bin"
     input_pattern = str(frames_dir / f"frame_%04d{ext}")
 
-    # Preserve source aspect — plate scanner TIFFs are tall (≈5:7 portrait
-    # for the staging dataset). The only required transform is rounding
-    # both dimensions to even numbers, which libx264 + yuv420p need.
+    # Preserve source aspect (plate scanner TIFFs are ≈5:7 portrait) but
+    # cap the long edge so the resulting MP4 is web-sized — TIFFs are
+    # 4960x6850 native, way too big for an in-page preview. Cap width at
+    # max_width and let height float (-2 rounds to even, which libx264
+    # + yuv420p require).
     cmd = [
         ffmpeg,
         "-y",
@@ -300,7 +306,7 @@ def encode_mp4(frames_dir: Path, out_path: Path, framerate: int) -> None:
         "-movflags",
         "+faststart",
         "-vf",
-        "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        f"scale='min({max_width},iw)':-2",
         str(out_path),
     ]
     logger.debug("ffmpeg: %s", " ".join(cmd))
@@ -367,7 +373,7 @@ def render_one(
             cfg.framerate,
             out_path.name,
         )
-        encode_mp4(frames_dir, out_path, cfg.framerate)
+        encode_mp4(frames_dir, out_path, cfg.framerate, cfg.max_width)
 
         # 3. Upload
         logger.info(
@@ -407,6 +413,12 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--plate", type=str, default=None, help="optional plate_id filter")
     ap.add_argument("--framerate", type=int, default=4, help="output fps (default 4)")
     ap.add_argument(
+        "--max-width",
+        type=int,
+        default=720,
+        help="cap output width in px; height scales to preserve aspect (default 720)",
+    )
+    ap.add_argument(
         "--force", action="store_true", help="re-render even if row already matches"
     )
     ap.add_argument(
@@ -437,7 +449,7 @@ def main(argv: list[str]) -> int:
         logger.error("imageio-ffmpeg not installed (`pip install imageio-ffmpeg`)")
         return 2
 
-    cfg = Config.from_env(framerate=args.framerate)
+    cfg = Config.from_env(framerate=args.framerate, max_width=args.max_width)
 
     failures: list[str] = []
     with psycopg.connect(cfg.postgres_dsn) as conn, storage_client(cfg) as client:
