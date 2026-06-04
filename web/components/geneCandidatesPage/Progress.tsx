@@ -56,6 +56,10 @@ type GeneRow = {
 export default function Progress({ candidate, candidates_list, currentGeneCandidate, isOpen, handleOpen, handleExperimentLogsClose, handleCandidateChange }: { candidate: GeneRow, candidates_list: GeneRow[], currentGeneCandidate: GeneRow | null, isOpen: boolean, handleOpen: () => void, handleExperimentLogsClose: () => void, handleCandidateChange: (geneId: string) => void }) {
     const [progressLogs, setProgressLogs] = useState<GeneTypes.Logs[]>([]);
     const [filteredLogs, setFilteredLogs] = useState<GeneTypes.Logs[]>([]);
+    // Preview data for this row's candidate — independent of which candidate
+    // is currently selected in the modal. Latest message + total count.
+    const [previewLatest, setPreviewLatest] = useState<GeneTypes.Logs | null>(null);
+    const [previewCount, setPreviewCount] = useState<number>(0);
     const [newUpdate, setNewUpdate] = useState("");
     const supabase = createClientSupabaseClient() as unknown as SupabaseClient<Database>;
     const bottomRef = useRef<HTMLDivElement>(null);
@@ -111,6 +115,35 @@ export default function Progress({ candidate, candidates_list, currentGeneCandid
 
         fetchMessages();
     }, [currentGeneCandidate, isOpen]);
+
+    // Preview fetch — runs once on mount and any time this row's candidate
+    // changes. Independent of the modal-open flow so the table cell always
+    // shows current data.
+    useEffect(() => {
+        if (!candidate?.gene) return;
+        let cancelled = false;
+        (async () => {
+            const [latestRes, countRes] = await Promise.all([
+                supabase
+                    .from("experiment_progress_logs")
+                    .select("*")
+                    .eq("gene", candidate.gene)
+                    .order("timestamp", { ascending: false })
+                    .limit(1),
+                supabase
+                    .from("experiment_progress_logs")
+                    .select("*", { count: "exact", head: true })
+                    .eq("gene", candidate.gene),
+            ]);
+            if (cancelled) return;
+            const latest = (latestRes.data?.[0] ?? null) as GeneTypes.Logs | null;
+            setPreviewLatest(latest);
+            setPreviewCount(countRes.count ?? 0);
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [candidate?.gene]);
 
     const fetchUser = async (): Promise<string> => {
         try {
@@ -234,12 +267,11 @@ export default function Progress({ candidate, candidates_list, currentGeneCandid
 
     return (
         <div className="container">
-            <div
-                className="hover-target cursor-default bg-white rounded-md border border-gray-300 text-sm p-1 hover:border-blue-500"
+            <ProgressPreview
+                latest={previewLatest}
+                total={previewCount}
                 onClick={handleOpen}
-            >
-                Progress
-            </div>
+            />
 
             <Modal open={isOpen} onClose={handleClose}>
                 <Box
@@ -705,4 +737,90 @@ export default function Progress({ candidate, candidates_list, currentGeneCandid
             </div>
         </div>
     );
+}
+
+/**
+ * Mini-thread card shown in each table row. Renders the latest progress log
+ * (user, relative time, truncated message) and the total count, clickable to
+ * open the full chat modal. Falls back to an empty-state CTA when there are
+ * no logs yet.
+ */
+function ProgressPreview({
+    latest,
+    total,
+    onClick,
+}: {
+    latest: GeneTypes.Logs | null;
+    total: number;
+    onClick: () => void;
+}) {
+    if (!latest) {
+        return (
+            <button
+                type="button"
+                onClick={onClick}
+                className="w-72 rounded-md border border-stone-200 bg-white px-3 py-2 text-left text-xs text-stone-500 italic shadow-sm transition-shadow hover:border-lime-300 hover:shadow-md hover:shadow-lime-300/40"
+            >
+                💬 No updates yet · click to add the first
+            </button>
+        );
+    }
+
+    const senderLabel = shortenSender(latest.user_email ?? "Unknown");
+    const when = relativeTime(
+        typeof latest.timestamp === "string"
+            ? latest.timestamp
+            : latest.timestamp.toISOString(),
+    );
+    const extra = total > 1 ? total - 1 : 0;
+
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            className="w-72 rounded-md border border-stone-200 bg-white px-3 py-2 text-left shadow-sm transition-shadow hover:border-lime-300 hover:shadow-md hover:shadow-lime-300/40"
+        >
+            <div className="flex items-baseline gap-2">
+                <span className="text-xs font-semibold text-stone-800 truncate">
+                    {senderLabel}
+                </span>
+                <span className="text-[10px] text-stone-500 ml-auto whitespace-nowrap">
+                    {when}
+                </span>
+            </div>
+            <div className="mt-1 text-xs text-stone-600 line-clamp-2">
+                {latest.message || <span className="italic">(empty message)</span>}
+            </div>
+            {extra > 0 && (
+                <div className="mt-1.5 text-[10px] uppercase tracking-widest text-lime-700">
+                    +{extra} more message{extra === 1 ? "" : "s"}
+                </div>
+            )}
+        </button>
+    );
+}
+
+/** "you@bloom.salk.edu" → "you" — keeps the cell readable. */
+function shortenSender(email: string): string {
+    const at = email.indexOf("@");
+    if (at <= 0) return email;
+    return email.slice(0, at);
+}
+
+/** Cheap relative time: "2h ago", "3d ago", "May 28". */
+function relativeTime(iso: string): string {
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return "";
+    const deltaMs = Date.now() - t;
+    const min = Math.floor(deltaMs / 60_000);
+    if (min < 1) return "just now";
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    const day = Math.floor(hr / 24);
+    if (day < 7) return `${day}d ago`;
+    return new Date(t).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+    });
 }
