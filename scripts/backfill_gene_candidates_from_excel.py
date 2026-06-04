@@ -83,6 +83,18 @@ JUN_2025_TS = datetime(2025, 6, 15, tzinfo=timezone.utc).isoformat()
 # distinct from the real progress note timestamps.
 SUBCAT_TS = datetime(2024, 12, 1, tzinfo=timezone.utc).isoformat()
 
+# The gene_candidates_status_check constraint only allows these five values.
+# The Excel uses a different vocabulary; map each free-form Excel status to
+# the closest constraint-valid value. Unknown values fall back to
+# 'suspected' (the lowest-confidence bucket — "we noticed this gene but
+# haven't confirmed anything") and a warning is logged.
+STATUS_MAP = {
+    "Approved by TC": "in-translation",
+    "Deprioritized": "stopped",
+    "In progress": "under-investigation",
+}
+FALLBACK_STATUS = "suspected"
+
 
 def normalize(v) -> str | None:
     """Excel cells come back as int/float/str/None — coerce to a trimmed str
@@ -167,7 +179,32 @@ def main(argv: list[str]) -> int:
                     n_rows_no_gene += 1
                     continue
 
+                # ─── genes row first (FK target for gene_candidates.gene) ───
+                # The genes table is the FK referent. Insert a minimal row
+                # (just gene_id) so the candidate FK validates; richer fields
+                # like reference_id / symbol can be filled in later by ingest.
+                cur.execute(
+                    """
+                    INSERT INTO public.genes (gene_id)
+                    VALUES (%s)
+                    ON CONFLICT (gene_id) DO NOTHING
+                    """,
+                    (gene,),
+                )
+
                 # ─── gene_candidates upsert ──────────────────────────────────
+                status_raw = normalize(status)
+                if status_raw is None:
+                    status_db = FALLBACK_STATUS
+                elif status_raw in STATUS_MAP:
+                    status_db = STATUS_MAP[status_raw]
+                else:
+                    logging.warning(
+                        "unknown status %r on gene %s; using %s",
+                        status_raw, gene, FALLBACK_STATUS,
+                    )
+                    status_db = FALLBACK_STATUS
+
                 cur.execute(
                     """
                     INSERT INTO public.gene_candidates (gene, category, status)
@@ -177,7 +214,7 @@ def main(argv: list[str]) -> int:
                     (
                         gene,
                         normalize(category),
-                        normalize(status) or "Unknown",
+                        status_db,
                     ),
                 )
                 if cur.rowcount > 0:
