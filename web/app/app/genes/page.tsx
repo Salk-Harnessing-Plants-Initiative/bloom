@@ -809,7 +809,7 @@ export default function Genes() {
   const [searchQuery, setSearchQuery] = useState("");
   const handleOpen = () => setModalBox(true);
   const handleClose = () => setModalBox(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(true);
   const [newCandidateAdded, setNewCandidateAdded] = useState(false);
   const [currentStatus, setCurrentStatus] = useState<boolean>(false);
   const [selectedGene, setSelectedGene] = useState<string | null>(null)

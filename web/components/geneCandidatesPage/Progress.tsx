@@ -110,7 +110,7 @@ export default function Progress({ candidate, candidates_list, currentGeneCandid
         if(!isOpen) return;
 
         fetchMessages();
-    }, [currentGeneCandidate]);
+    }, [currentGeneCandidate, isOpen]);
 
     const fetchUser = async (): Promise<string> => {
         try {
@@ -154,8 +154,7 @@ export default function Progress({ candidate, candidates_list, currentGeneCandid
             const finalFileName = `${baseFileName}_${uniqueSuffix}${fileExtension}`;
 
             const { data, error } = await supabase.storage
-                //.from('experiment-log-images')
-                .from('images-expriment-logs')
+                .from('experiment-log-images')
                 .upload(`exp-progress-logs/${finalFileName}`, file);
 
             if (error) {
@@ -164,8 +163,7 @@ export default function Progress({ candidate, candidates_list, currentGeneCandid
             }
 
             const { data: publicUrlData } = supabase.storage
-                //.from('experiment-log-images')
-                .from('images-expriment-logs')
+                .from('experiment-log-images')
                 .getPublicUrl(`exp-progress-logs/${finalFileName}`);
             uploadedImageUrls.push(publicUrlData.publicUrl);
         }
