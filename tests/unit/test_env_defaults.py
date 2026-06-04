@@ -42,7 +42,7 @@ SENSITIVE_INVENTORY = {
     "OPENAI_API_KEY",
     "LANGCHAIN_API_KEY",
     "BLOOM_AGENT_KEY",
-    # Infrastructure-topology paths — also secret-bucket
+    "CLOUDFLARE_API_TOKEN",
     "DEPLOY_PATH",
     "MINIO_DATA_PATH",
 }
