@@ -6,6 +6,8 @@ export interface DatabaseCounts {
   scrnaDatasets: number;
   cylExperiments: number;
   plateExperiments: number;
+  traits: number;
+  geneCandidates: number;
 }
 
 /**
@@ -15,13 +17,27 @@ export interface DatabaseCounts {
 export async function fetchDatabaseCounts(): Promise<DatabaseCounts> {
   const supabase = await createServerSupabaseClient();
 
-  const [scrnaDatasets, cylExperiments, plateExperiments] = await Promise.all([
+  const [
+    scrnaDatasets,
+    cylExperiments,
+    plateExperiments,
+    traits,
+    geneCandidates,
+  ] = await Promise.all([
     countScrnaDatasets(supabase),
     countCylExperiments(supabase),
     countPlateExperiments(supabase),
+    countTraits(supabase),
+    countGeneCandidates(supabase),
   ]);
 
-  return { scrnaDatasets, cylExperiments, plateExperiments };
+  return {
+    scrnaDatasets,
+    cylExperiments,
+    plateExperiments,
+    traits,
+    geneCandidates,
+  };
 }
 
 async function countScrnaDatasets(
@@ -53,5 +69,28 @@ async function countPlateExperiments(
   const { count } = await (supabase as unknown as SupabaseClient<unknown>)
     .from("gravi_experiments")
     .select("*", { count: "exact", head: true });
+  return count ?? 0;
+}
+
+/** Sum of distinct trait definitions in the cyl and plate catalogues. */
+async function countTraits(
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+): Promise<number> {
+  const [cyl, plate] = await Promise.all([
+    supabase.from("cyl_traits").select("*", { count: "exact", head: true }),
+    supabase
+      .from("plate_plant_traits_list")
+      .select("*", { count: "exact", head: true }),
+  ]);
+  return (cyl.count ?? 0) + (plate.count ?? 0);
+}
+
+async function countGeneCandidates(
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+): Promise<number> {
+  const { count } = await supabase
+    .from("gene_candidates")
+    .select("*", { count: "exact", head: true })
+    .is("deleted_at", null);
   return count ?? 0;
 }
