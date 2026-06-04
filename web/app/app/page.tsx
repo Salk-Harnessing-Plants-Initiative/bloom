@@ -5,6 +5,7 @@ import { HomeHero } from "@/components/home-hero";
 import { RecentPhenotypesByCylScanner } from "@/components/recent-phenotypes-by-cyl-scanner/RecentPhenotypesByCylScanner";
 import { RecentPhenotypesByPlateScanner } from "@/components/recent-phenotypes-by-plate-scanner/RecentPhenotypesByPlateScanner";
 import { fetchSpeciesCount } from "@/app/app/home-lib/species-montage";
+import { fetchDatabaseCounts } from "@/app/app/home-lib/database-counts";
 
 function deriveFirstName(
   user: {
@@ -54,13 +55,20 @@ export default async function HomePage() {
     url: "/app",
   });
 
-  const speciesCount = await fetchSpeciesCount();
+  const [speciesCount, dbCounts] = await Promise.all([
+    fetchSpeciesCount(),
+    fetchDatabaseCounts(),
+  ]);
 
   const firstName = deriveFirstName(user);
 
   return (
     <div className="max-w-6xl mx-auto pb-16">
-      <HomeHero firstName={firstName} speciesCount={speciesCount} />
+      <HomeHero
+        firstName={firstName}
+        speciesCount={speciesCount}
+        dbCounts={dbCounts}
+      />
       <RecentPhenotypesByCylScanner />
       <RecentPhenotypesByPlateScanner />
     </div>

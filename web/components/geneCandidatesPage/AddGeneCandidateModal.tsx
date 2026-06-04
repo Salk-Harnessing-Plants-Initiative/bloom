@@ -507,13 +507,16 @@ export default function AddGeneCandidateModal({ modal_state, closeModal, setNewC
                 sx={{
                   mt: 3,
                   color: "white",
-                  backgroundColor: "#1976d2 !important",
+                  backgroundColor: "#65a30d !important",
+                  boxShadow: "0 0 12px rgba(132, 204, 22, 0.45)",
                   "&:hover": {
-                    backgroundColor: "#1565c0 !important",
+                    backgroundColor: "#4d7c0f !important",
+                    boxShadow: "0 0 18px rgba(132, 204, 22, 0.7)",
                   },
                   "&.Mui-disabled": {
-                    backgroundColor: "e0e0e0# !important",
+                    backgroundColor: "#e0e0e0 !important",
                     color: "#9e9e9e",
+                    boxShadow: "none",
                   },
                 }}
               >
