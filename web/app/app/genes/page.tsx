@@ -949,12 +949,13 @@ export default function Genes() {
 
           {/* Button 2 */}
           <Tooltip title="Mark a gene as a candidate for study" placement="left" arrow>
-            <ListItem 
+            <ListItem
               component="button"
-              sx={{ justifyContent: drawerOpen ? "initial" : "center", px: 2 }}>
+              sx={{ justifyContent: drawerOpen ? "initial" : "center", px: 2 }}
+              onClick={handleGeneCandidateModalOpen}
+            >
               <ListItemIcon
                 sx={{ minWidth: 0, mr: drawerOpen ? 2 : "auto", justifyContent: "center" }}
-                onClick={handleGeneCandidateModalOpen}
               >
                 <LabelIcon />
               </ListItemIcon>
@@ -966,7 +967,6 @@ export default function Genes() {
                     fontWeight: 500,
                     color: "text.primary",
                   }}
-                  onClick={handleGeneCandidateModalOpen}
                 />
               )}
             </ListItem>
@@ -974,12 +974,13 @@ export default function Genes() {
 
           {/* Button 3 */}
           <Tooltip title="Look up all genes using standard names" placement="left" arrow>
-            <ListItem 
+            <ListItem
               component="button"
-              sx={{ justifyContent: drawerOpen ? "initial" : "center", px: 2 }}>
+              sx={{ justifyContent: drawerOpen ? "initial" : "center", px: 2 }}
+              onClick={handleGeneLookupModalOpen}
+            >
               <ListItemIcon
                 sx={{ minWidth: 0, mr: drawerOpen ? 2 : "auto", justifyContent: "center" }}
-                onClick={handleGeneLookupModalOpen}
               >
                 <SearchIcon />
               </ListItemIcon>
@@ -991,7 +992,6 @@ export default function Genes() {
                     fontWeight: 500,
                     color: "text.primary",
                   }}
-                  onClick={handleGeneLookupModalOpen}
                 />
               )}
             </ListItem>
@@ -999,10 +999,13 @@ export default function Genes() {
 
           {/* Button 4 */}
           <Tooltip title="Track updates for any gene candidate" placement="left" arrow>
-            <ListItem component="button" sx={{ justifyContent: drawerOpen ? "initial" : "center", px: 2 }}>
+            <ListItem
+              component="button"
+              sx={{ justifyContent: drawerOpen ? "initial" : "center", px: 2 }}
+              onClick={() => handleExperimentLogsOpen(geneCandidates?.[0].gene || "null")}
+            >
               <ListItemIcon
                 sx={{ minWidth: 0, mr: drawerOpen ? 2 : "auto", justifyContent: "center" }}
-                onClick={() => handleExperimentLogsOpen(geneCandidates?.[0].gene || "null")}
               >
                 <LibraryBooksIcon />
               </ListItemIcon>
@@ -1014,7 +1017,6 @@ export default function Genes() {
                     fontWeight: 500,
                     color: "text.primary",
                   }}
-                  onClick={() => handleExperimentLogsOpen(geneCandidates?.[0].gene || "null")}
                 />
               )}
             </ListItem>
