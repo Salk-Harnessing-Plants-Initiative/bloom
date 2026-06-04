@@ -304,14 +304,16 @@ def test_validator_accepts_real_defaults_plus_fake_secrets(
 
     The existing negative-path tests use a mini compose fixture — they can't
     catch the case where a committed default ships an empty value that the
-    validator then rejects (the original CADDY_HTTP_PORT= regression). This
-    test assembles the file the way deploy.yml does — defaults installed,
+    validator then rejects (the original CADDY_HTTP_PORT= regression, now
+    historical: CADDY_HTTP_PORT was retired when the Caddyfile site address
+    was replaced by the scheme-prefixed CADDY_SITE_ADDRESSES). This test
+    assembles the file the way deploy.yml does — defaults installed,
     plausible secrets appended, EOF marker — and asserts the validator
     accepts it.
     """
     compose_text = COMPOSE_FILE.read_text()
     referenced = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*)\}", compose_text))
-    FILTERED = {"COMPOSE_PROJECT_NAME", "NEXT_PUBLIC_SUPABASE_COOKIE_NAME", "CADDY_HTTP_PORT"}
+    FILTERED = {"COMPOSE_PROJECT_NAME", "NEXT_PUBLIC_SUPABASE_COOKIE_NAME"}
     required = referenced - FILTERED
 
     defaults_text = defaults_path.read_text()

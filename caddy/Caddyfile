@@ -12,13 +12,18 @@
 # TLS strategy:
 #
 #   All hostnames served by this stack are consolidated into ONE site block
-#   whose subjects are driven by the CADDY_CERT_SUBJECTS env var:
-#     prod:    `bloom-dev.salk.edu, *.bloom-dev.salk.edu`   (apex needed —
-#                                                           wildcards do not
-#                                                           match the parent)
-#     staging: `*.bloom-dev.salk.edu`                       (all 3 staging
-#                                                           hostnames are
-#                                                           wildcard-covered)
+#   whose listen addresses are driven by the CADDY_SITE_ADDRESSES env var.
+#   Each comma-separated entry is fully formed with an explicit scheme so
+#   Caddy parses it independently — this avoids the "comma + port-suffix"
+#   pitfall where `host_a, host_b:port` would attach :port only to host_b
+#   and leave host_a defaulting to :443 with automatic HTTPS.
+#
+#     prod:    `https://bloom-dev.salk.edu, https://*.bloom-dev.salk.edu`
+#              (apex needed — wildcards do not match the parent)
+#     staging: `https://*.bloom-dev.salk.edu`
+#              (all 3 staging hostnames are wildcard-covered)
+#     CI:      `http://localhost`
+#              (forces HTTP-only — no TLS, no ACME, no Let's Encrypt call)
 #
 #   Both prod and staging issue their cert via the same single Salk-DNS CNAME
 #   (_acme-challenge.bloom-dev.salk.edu -> _acme-challenge.bloom-acme.talmolab.org)
@@ -31,20 +36,23 @@
 #
 # Env vars:
 #
-#   CADDY_HTTP_PORT       site-header suffix on the listen address
-#     prod/staging:       empty   → Caddy auto-binds 80 + 443 (DNS-01 cert)
-#     CI / local HTTP:    `:80`   → Caddy binds only 80, no TLS / no ACME
+#   CADDY_SITE_ADDRESSES  comma-separated, scheme-prefixed (http:// or
+#                         https://) site addresses. The tls block below only
+#                         takes effect for https:// addresses.
 #
 #   CLOUDFLARE_API_TOKEN  consumed by the cloudflare DNS provider plugin
 #                         (caddy-dns/cloudflare) baked into the Caddy image
-#                         via caddy/Dockerfile. Populated at deploy time from
-#                         PROD_/STAGING_CLOUDFLARE_API_TOKEN secrets.
+#                         via caddy/Dockerfile. The token requires the
+#                         `Zone:DNS:Edit` permission on the Cloudflare zone
+#                         containing `bloom-acme.talmolab.org`. Populated at
+#                         deploy time from PROD_/STAGING_CLOUDFLARE_API_TOKEN
+#                         secrets.
 # =============================================================================
 
-{$CADDY_CERT_SUBJECTS}{$CADDY_HTTP_PORT} {
+{$CADDY_SITE_ADDRESSES} {
 	# One wildcard SAN cert covering apex + *.bloom-dev.salk.edu via ACME
-	# DNS-01 against Cloudflare's API. CI mode (CADDY_HTTP_PORT=:80) binds
-	# only 80, so this directive is parsed but never triggers issuance.
+	# DNS-01 against Cloudflare's API. For http://-scheme addresses (CI mode)
+	# the tls block is parsed but inert — Caddy does not request a cert.
 	tls {
 		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
 	}
