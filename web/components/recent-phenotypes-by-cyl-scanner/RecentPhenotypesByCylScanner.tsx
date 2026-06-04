@@ -17,10 +17,10 @@ export async function RecentPhenotypesByCylScanner() {
   const initialSections = await getRecentPhenotypesByCylScanner(supabase);
 
   return (
-    <section className="py-8" aria-label="Recent phenotypes by cylinder scanner">
+    <section className="py-8" aria-label="Recent scans by cylinder scanner">
       <div className="mb-5 flex items-center gap-3">
         <h2 className="text-2xl font-serif italic text-green-800">
-          Recent phenotypes by cylinder scanner
+          Recent Scans by cylinder scanner
         </h2>
         <LiveIndicator />
       </div>

@@ -809,7 +809,7 @@ export default function Genes() {
   const [searchQuery, setSearchQuery] = useState("");
   const handleOpen = () => setModalBox(true);
   const handleClose = () => setModalBox(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(true);
   const [newCandidateAdded, setNewCandidateAdded] = useState(false);
   const [currentStatus, setCurrentStatus] = useState<boolean>(false);
   const [selectedGene, setSelectedGene] = useState<string | null>(null)
@@ -1047,10 +1047,10 @@ export default function Genes() {
                   <div
                     key={status}
                     className={
-                      "flex flex-col items-center mr-4 text-sm p-2 rounded-md border cursor-pointer hover:border-gray-300 " +
+                      "flex flex-col items-center mr-4 text-sm p-2 rounded-md border cursor-pointer transition-shadow shadow-md shadow-lime-300/30 hover:shadow-lg hover:shadow-lime-300/55 hover:border-lime-200 " +
                       (selectedStatus === status
-                        ? "bg-white border-gray-300"
-                        : "border-stone-100")
+                        ? "bg-white border-lime-300 shadow-lg shadow-lime-300/55"
+                        : "border-stone-200 bg-white")
                     }
                     onClick={() => {
                       if (selectedStatus === status) setSelectedStatus(null);
