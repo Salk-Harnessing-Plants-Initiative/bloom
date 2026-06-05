@@ -16,7 +16,7 @@ async function getObjectUrl(storagePath: string): Promise<string | null> {
     .from('species-illustrations')
     .createSignedUrl(storagePath, 120, { transform: { width: 192 } })
   if (error) {
-    console.log('Illustration error:', error)
+    console.error('Illustration error:', error)
     return null
   }
   return toPublicStorageUrl(data?.signedUrl)
