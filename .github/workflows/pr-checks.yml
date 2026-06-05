@@ -604,7 +604,13 @@ jobs:
           echo "=== kong logs ==="
           docker compose $COMPOSE_FILES --env-file .env.ci logs kong --tail=50
           echo "=== caddy logs ==="
-          docker compose $COMPOSE_FILES --env-file .env.ci logs caddy --tail=50
+          docker compose $COMPOSE_FILES --env-file .env.ci logs caddy --tail=100
+          echo "=== bloom-web logs ==="
+          docker compose $COMPOSE_FILES --env-file .env.ci logs bloom-web --tail=200
+          echo "=== langchain-agent logs ==="
+          docker compose $COMPOSE_FILES --env-file .env.ci logs langchain-agent --tail=50
+          echo "=== bloommcp logs ==="
+          docker compose $COMPOSE_FILES --env-file .env.ci logs bloommcp --tail=50
 
       # Playwright e2e exercises the runtime-config refactor end-to-end
       # (web/e2e/runtime-config.spec.ts ships in PR-3). Runs against the
