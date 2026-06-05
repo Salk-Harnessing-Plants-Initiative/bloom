@@ -11,8 +11,13 @@
  *      fallback at web/middleware.ts:9 isn't broken.
  *   2. `parseHostsAllowed()` — the format parser for the
  *      `SUPABASE_URL_HOSTS_ALLOWED` env var. MUST throw a named
- *      `MalformedHostsAllowedError` for the documented misshapes (missing
- *      `=`, empty hostnames, trailing commas, duplicate-key conflicts).
+ *      `MalformedHostsAllowedError` only for structural misshapes
+ *      (missing `=`, empty hostnames, leading/trailing commas, empty
+ *      pairs between commas). **Duplicate internal-host keys are
+ *      ALWAYS additive** — repeated pairs accumulate into the host's
+ *      value-Set so multi-domain deployments can declare multiple
+ *      allowed public hosts under one internal host. See
+ *      design.md Decision 13.
  *
  * `process.env` mutations between tests are isolated by `vitest.setup.ts`.
  */

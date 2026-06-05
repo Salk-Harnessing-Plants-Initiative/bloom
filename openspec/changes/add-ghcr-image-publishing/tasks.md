@@ -44,8 +44,14 @@ All test invocations below follow that pattern (`cd web && npm run test:unit`).
   Run `uv run --extra test pytest tests/unit/test_pr_checks_workflow_shape.py -v`
   and observe red.
 - [ ] 0.2 **Impl (green):** edit `.github/workflows/pr-checks.yml`:
-  - Drop lines 150-152 (`--build-arg NEXT_PUBLIC_SUPABASE_URL`,
-    `_ANON_KEY`, `_COOKIE_NAME`).
+  - **Do NOT drop the `--build-arg NEXT_PUBLIC_*` lines yet.** They MUST
+    stay in the `docker-build` job until PR-3 §6 simultaneously removes
+    the matching `ARG NEXT_PUBLIC_*` declarations from
+    `web/Dockerfile.bloom-web.prod:9-17`. Removing them in PR-1 breaks
+    `next build`'s `/test/page` prerender because `@supabase/ssr`
+    instantiates at module load and needs the values baked at build time.
+    *(Earlier drafts of this proposal mistakenly scheduled the drop for
+    PR-1; that was a sequencing bug, caught when CI on PR #268 failed.)*
   - Hoist `COMPOSE_FILES: "-f docker-compose.prod.yml -f docker-compose.ci.yml"`
     to a job-level env block on `compose-health-check`.
   - Rewrite every `docker compose -f docker-compose.prod.yml ...` command in
@@ -55,7 +61,10 @@ All test invocations below follow that pattern (`cd web && npm run test:unit`).
     the existing health-validation steps), exporting
     `TEST_BASE_URL=http://localhost` and running
     `cd web && npm run test:e2e`. Add the Playwright browser cache to
-    `actions/cache@v4` for speed.
+    `actions/cache@v4` for speed. **Pin Node 20 via
+    `actions/setup-node@v4` BEFORE the npm/Playwright steps** so the
+    runner-default Node version can't drift CI behavior (matches the
+    `web-unit-tests` job's pin; flagged by Copilot review).
   - Add a new `web-unit-tests` job:
     ```yaml
     web-unit-tests:
@@ -434,6 +443,14 @@ reads removed; migration-lint and no-skipped-tests both green.
 - [ ] 6.3 **Impl (green):** delete the `NEXT_PUBLIC_*` keys from the
       `bloom-web.build.args` block in `docker-compose.prod.yml:70-74` and
       the same keys from the overlay if present.
+- [ ] 6.3a **Impl (green):** delete the three
+      `--build-arg NEXT_PUBLIC_*` flags from
+      `.github/workflows/pr-checks.yml`'s `Build bloom-web image` step
+      (deferred from §0.2 because removing them before §6.2 drops the
+      matching `ARG` lines causes `next build` to fail on the
+      `/test/page` prerender). Then update
+      `tests/unit/test_pr_checks_workflow_shape.py` to add an invariant
+      that asserts these flags are absent.
 - [ ] 6.4 **Manual smoke check** *(manual — flagged in proposal.md scope;
       spec scenario "Same image serves different config in different
       environments" is verified by §11.7's Playwright e2e, not by this

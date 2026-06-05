@@ -27,18 +27,34 @@ export type AnonKeyFixtureClaims = {
 };
 
 /**
- * Base64url-encode a string (RFC 4648 §5): standard base64, then
- * substitute `+` → `-`, `/` → `_`, and strip padding `=` characters.
+ * Base64url-encode a string (RFC 4648 §5): UTF-8 encode the input bytes,
+ * standard base64, then substitute `+` → `-`, `/` → `_`, and strip
+ * padding `=` characters.
+ *
+ * UTF-8 first because `btoa` only accepts Latin-1 (codepoints 0-255); a
+ * naive `btoa(input)` throws on any character > U+00FF (multi-byte
+ * unicode, CJK ideographs, emoji, combining marks, etc.). Real-world
+ * JWTs MUST be UTF-8 safe because the JSON spec mandates it and
+ * Supabase claim values can carry arbitrary unicode (e.g. operator
+ * names in the `sub` claim).
  *
  * Self-hosted Supabase JWTs use this encoding for both header and
  * payload, so fixtures must too — otherwise the decoder under test
  * never exercises the `-`/`_` substitution path.
  */
 function base64UrlEncode(input: string): string {
-  const b64 =
-    typeof btoa === "function"
-      ? btoa(input)
-      : Buffer.from(input, "binary").toString("base64");
+  const bytes = new TextEncoder().encode(input);
+  let b64: string;
+  if (typeof Buffer !== "undefined") {
+    // Node / Next.js nodejs runtime — Buffer is the fast path.
+    b64 = Buffer.from(bytes).toString("base64");
+  } else {
+    // Browser fallback. String.fromCharCode(...bytes) can blow the call
+    // stack for large payloads (>~100KB); fixtures are tiny so this is fine.
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    b64 = btoa(binary);
+  }
   return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 

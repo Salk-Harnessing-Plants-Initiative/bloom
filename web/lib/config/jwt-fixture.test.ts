@@ -74,4 +74,43 @@ describe("makeAnonKey + decodeAnonKeyProject round-trip", () => {
       ref: "bloomdev",
     });
   });
+
+  // ─── UTF-8 safety (Copilot review #1 + #2 on PR #268) ─────────────────────
+  // JWTs are defined to carry UTF-8 JSON; `atob`/`btoa` only handle Latin-1.
+  // These tests would have caught the original bug where `makeAnonKey` threw
+  // InvalidCharacterError on non-ASCII input and `decodeAnonKeyProject`
+  // silently corrupted multi-byte characters.
+
+  it("round-trips an iss claim containing multi-byte UTF-8 characters", () => {
+    const iss = "https://bloöm-dev.salk.edu/café";
+    const jwt = makeAnonKey({ iss });
+    expect(decodeAnonKeyProject(jwt).iss).toBe(iss);
+  });
+
+  it("round-trips a ref claim with non-ASCII unicode", () => {
+    const ref = "bloomdev-中文-🌱";
+    const jwt = makeAnonKey({ ref });
+    expect(decodeAnonKeyProject(jwt).ref).toBe(ref);
+  });
+
+  it("round-trips an extra claim with combining marks and emoji", () => {
+    // Validates the encode/decode path doesn't drop or corrupt characters
+    // that span multiple bytes (or even multiple code points after NFC).
+    const sub = "ユーザー́-👨‍🔬"; // combining acute accent + ZWJ sequence
+    const iss = "https://bloom-dev.salk.edu";
+    const jwt = makeAnonKey({ iss, ref: "bloomdev", sub });
+    const claims = decodeAnonKeyProject(jwt);
+    expect(claims.iss).toBe(iss);
+    // The fixture preserves all claims in the payload; decode only surfaces
+    // iss/ref by spec. Manually decode payload to verify sub survived too.
+    const payload = jwt.split(".")[1];
+    // Replicate the base64url decode that decodeAnonKeyProject does
+    // (using Buffer here for the test, not the production code path).
+    const padded = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padding =
+      padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
+    const json = Buffer.from(padded + padding, "base64").toString("utf-8");
+    const parsed = JSON.parse(json) as { sub?: string };
+    expect(parsed.sub).toBe(sub);
+  });
 });

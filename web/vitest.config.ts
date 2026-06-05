@@ -15,14 +15,20 @@ import tsconfigPaths from "vite-tsconfig-paths";
  * - include defaults to colocated `*.test.ts` / `*.test.tsx` files under
  *   lib/, components/, app/, and the workspace root (instrumentation.test.ts).
  *   E2E tests in e2e/ stay with Playwright.
- * - setupFiles wires the per-test `process.env` snapshot/restore helper so
+ * - setupFiles wires the per-TEST `process.env` snapshot/restore helper so
  *   the runtime-config tests can mutate env vars without leaking across
- *   files. Required because vitest's pool: 'forks' isolates workers but
- *   not individual files within a worker.
- * - pool: 'forks' — per-file process isolation. Existing colocated tests
- *   (lib/queries/*.test.ts, components/.../format-times.test.ts) don't
- *   mutate process.env, so the switch is safe and the new openspec tests
- *   need the isolation. See openspec/changes/add-ghcr-image-publishing
+ *   each other within a worker. Required because vitest's `pool: 'forks'`
+ *   isolates workers (each worker is a child process), but does NOT
+ *   isolate individual test files OR tests within a worker — multiple
+ *   files routed to the same worker run sequentially and share state.
+ *   The setup file's beforeEach/afterEach therefore handles per-test
+ *   isolation; `pool: 'forks'` handles per-worker (cross-file) isolation.
+ * - pool: 'forks' — per-worker process isolation via child processes
+ *   (not the default `threads` pool which shares state via worker_threads).
+ *   Existing colocated tests (lib/queries/*.test.ts,
+ *   components/.../format-times.test.ts) don't mutate process.env, so
+ *   the switch is safe and the new openspec tests need the cross-file
+ *   isolation. See openspec/changes/add-ghcr-image-publishing
  *   tasks.md §1.2.
  * - exclude adds lib/**\/__fixtures__/** so helper modules like
  *   lib/config/__fixtures__/jwt.ts aren't auto-discovered as tests.

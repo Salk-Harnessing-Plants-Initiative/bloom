@@ -114,10 +114,21 @@ export function decodeAnonKeyProject(anonKey: string): AnonKeyClaims {
   // base64url → base64 substitution + padding to length % 4 === 0.
   const padded = payload.replace(/-/g, "+").replace(/_/g, "/");
   const padding = padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
-  const decoded =
-    typeof atob === "function"
-      ? atob(padded + padding)
-      : Buffer.from(padded + padding, "base64").toString("binary");
+  // JWTs are defined to carry UTF-8 JSON. Decode bytes → UTF-8 string,
+  // NOT to binary (Latin-1). The naive `atob(...).toString('binary')`
+  // path silently corrupts multi-byte unicode in claim values
+  // (CJK ideographs, emoji, combining marks). Prefer Buffer when
+  // available (Next.js nodejs runtime, all our tests); fall back to
+  // atob + TextDecoder for client/Edge contexts that hypothetically
+  // import this helper.
+  let decoded: string;
+  if (typeof Buffer !== "undefined") {
+    decoded = Buffer.from(padded + padding, "base64").toString("utf-8");
+  } else {
+    const binary = atob(padded + padding);
+    const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    decoded = new TextDecoder("utf-8").decode(bytes);
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(decoded);

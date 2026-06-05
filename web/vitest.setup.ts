@@ -9,11 +9,15 @@
  * mutations leak between tests within the same worker process — flaky
  * tests, especially the "all env vars unset → undefined" cases.
  *
- * Why per-process AND per-test isolation:
- *   - vitest.config.ts sets `pool: 'forks'` which gives us a fresh process
- *     per test FILE (so env state can't leak across files).
- *   - This `beforeEach` snapshot adds per-TEST isolation within a file so
- *     ordering doesn't matter.
+ * Why per-worker AND per-test isolation:
+ *   - vitest.config.ts sets `pool: 'forks'` which puts each WORKER in its
+ *     own child process. Vitest distributes test files across workers, so
+ *     a single worker may run multiple files sequentially — within a
+ *     worker, file-level state (including process.env mutations) leaks.
+ *     `pool: 'forks'` only stops leaks between workers, not within one.
+ *   - This `beforeEach` snapshot adds per-TEST isolation within a worker
+ *     so ordering doesn't matter — every test starts with the same
+ *     `process.env` snapshot and any mutation is rolled back afterEach.
  *
  * Restore semantics: any key that exists now but did not exist in the
  * snapshot is deleted; any key in the snapshot is restored to its original

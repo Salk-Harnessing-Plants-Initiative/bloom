@@ -180,7 +180,9 @@ Hosts include port. Example values:
 - Contains a pair missing `=` (e.g. `kong:8000`): error message names the offending pair.
 - Contains a pair with empty internal or public hostname (e.g. `=bloom-dev.salk.edu` or `kong:8000=`).
 - Contains trailing or leading commas (e.g. `,kong:8000=bloom-dev.salk.edu` or `kong:8000=bloom-dev.salk.edu,`).
-- Contains a duplicate internal-host key with conflicting (rather than additive) values.
+- Contains an empty pair between commas (e.g. `kong:8000=bloom-dev.salk.edu,,other:9000=other.example`).
+
+Note: duplicate internal-host keys are NOT malformed. Repeated pairs like `kong:8000=A,kong:8000=B` are intentionally additive — both A and B accumulate into the host's value-Set so multi-domain deployments can declare multiple allowed public hosts under one internal host. The Set naturally de-duplicates exact-duplicate pairs.
 A blank value is permitted ONLY when `NODE_ENV !== 'production'` (per the dev-mode early-exit); production boot fails on blank.
 
 **Tests:** `tests/unit/test_supabase_url_hosts_allowed_format.py` asserts the format is parseable and the staging/prod defaults are well-formed. Vitest tests in `web/lib/config/validate-on-boot.test.ts` exercise the algorithm including the dev-mode early-exit AND the malformed-input cases above.

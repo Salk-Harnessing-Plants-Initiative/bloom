@@ -165,10 +165,11 @@ A React hook `usePublicConfig()` MUST be the entry point for `'use client'` comp
 
 #### Scenario: Malformed SUPABASE_URL_HOSTS_ALLOWED throws named error
 
-- **GIVEN** `NODE_ENV=production` and `SUPABASE_URL_HOSTS_ALLOWED` is set to a malformed value (missing `=`, trailing comma, empty hostname on either side, or duplicate-key with conflicting values)
+- **GIVEN** `NODE_ENV=production` and `SUPABASE_URL_HOSTS_ALLOWED` is set to a structurally malformed value (missing `=`, leading or trailing comma, empty pair between commas, empty hostname on either side)
 - **WHEN** `parseHostsAllowed()` is invoked
-- **THEN** it throws a `MalformedHostsAllowedError` whose message names the specific cause (e.g. `pair "kong:8000" missing '='`, `trailing comma`, `empty public host`, `duplicate internal host "kong:8000" with conflicting values`)
+- **THEN** it throws a `MalformedHostsAllowedError` whose message names the specific cause (e.g. `pair "kong:8000" missing '='`, `trailing comma`, `empty public host`, `empty pair between commas`)
 - **AND** the error fails boot via `validateOnBoot()` before any request is served
+- **AND** duplicate internal-host keys are NOT a malformed case — repeated pairs are additive and accumulate into the host's value-Set per design.md Decision 13 (multi-domain deployments)
 
 #### Scenario: Public URL not in allow-list returns 503
 

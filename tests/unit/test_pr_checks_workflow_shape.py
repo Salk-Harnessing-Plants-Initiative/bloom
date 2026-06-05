@@ -6,27 +6,36 @@ openspec/changes/add-ghcr-image-publishing/specs/image-publishing/spec.md
 
 Five invariants on .github/workflows/pr-checks.yml:
 
-1. The ``docker-build`` job MUST NOT contain any ``--build-arg NEXT_PUBLIC_*``
-   lines (after the runtime-config refactor, those args become silent no-ops
-   on the Dockerfile that no longer declares them).
-2. The ``compose-health-check`` job MUST declare a job-level
+1. The ``compose-health-check`` job MUST declare a job-level
    ``env.COMPOSE_FILES`` value equal to
    ``-f docker-compose.prod.yml -f docker-compose.ci.yml`` so every compose
    command in the job applies both files via a single ``$COMPOSE_FILES``
    variable (prevents drift across the 6+ compose commands in that job).
-3. Every ``docker compose`` invocation inside ``compose-health-check`` MUST
+2. Every ``docker compose`` invocation inside ``compose-health-check`` MUST
    use ``$COMPOSE_FILES`` (not hard-coded ``-f docker-compose.prod.yml``).
-4. A new ``web-unit-tests`` job MUST exist that runs on ``ubuntu-latest``,
+3. A new ``web-unit-tests`` job MUST exist that runs on ``ubuntu-latest``,
    executes ``cd web && npm run test:unit`` after ``npm ci``, and has no
    ``needs:`` block (runs in parallel with other jobs).
-5. A Playwright step MUST exist in ``compose-health-check`` that runs
+4. A Playwright step MUST exist in ``compose-health-check`` that runs
    ``cd web && npm run test:e2e`` after the stack is verified healthy.
+5. The ``compose-health-check`` job MUST pin Node.js via
+   ``actions/setup-node@v4`` with ``node-version: '20'`` BEFORE the
+   Playwright/npm steps so CI is deterministic across runner-default
+   changes (Copilot review finding on PR #268).
 
 Plus one assertion on the repo root:
 6. ``docker-compose.ci.yml`` MUST exist and declare ``build:`` blocks for
    ``bloom-web``, ``langchain-agent``, and ``bloommcp`` so PR CI can keep
    building locally even after ``docker-compose.prod.yml`` flips its custom
    services to ``image: ghcr.io/...`` in PR-3.
+
+The "no ``--build-arg NEXT_PUBLIC_*`` in docker-build" invariant has been
+DEFERRED to PR-3 §6 (which removes the matching ``ARG`` lines from
+``web/Dockerfile.bloom-web.prod`` so the build args become true no-ops).
+Removing the flags here while the Dockerfile still bakes
+``NEXT_PUBLIC_*`` breaks ``next build``'s ``/test/page`` prerender
+because ``@supabase/ssr`` instantiates at module load and needs the
+values present at build time.
 """
 
 from __future__ import annotations
@@ -69,20 +78,14 @@ def _iter_run_lines(job: dict) -> list[str]:
     return out
 
 
-def test_docker_build_job_has_no_next_public_build_args() -> None:
-    """Invariant 1: no ``--build-arg NEXT_PUBLIC_*`` in docker-build."""
-    workflow = _load_workflow()
-    docker_build = workflow["jobs"]["docker-build"]
-    offenders = [
-        line
-        for line in _iter_run_lines(docker_build)
-        if "--build-arg" in line and "NEXT_PUBLIC_" in line
-    ]
-    assert not offenders, (
-        "docker-build job still passes --build-arg NEXT_PUBLIC_*; "
-        "after the runtime-config refactor these become silent no-ops "
-        f"and must be removed.\nOffenders:\n  " + "\n  ".join(offenders)
-    )
+# The "no --build-arg NEXT_PUBLIC_*" assertion is intentionally deferred
+# to PR-3 §6. Until then web/Dockerfile.bloom-web.prod still declares
+# `ARG NEXT_PUBLIC_*` and `next build` needs the values at build time
+# (the `/test/page` prerender instantiates @supabase/ssr at module load).
+# PR-3 §6 will simultaneously: (a) drop the ARG lines from the
+# Dockerfile, (b) drop the --build-arg flags from pr-checks.yml, and
+# (c) add tests/unit/test_dockerfile_no_next_public_args.py to fence
+# both. See the module docstring above for the rationale.
 
 
 def test_compose_health_check_declares_compose_files_env() -> None:
@@ -144,7 +147,7 @@ def test_web_unit_tests_job_exists_with_correct_shape() -> None:
 
 
 def test_compose_health_check_runs_playwright_e2e() -> None:
-    """Invariant 5: Playwright step exists in compose-health-check."""
+    """Invariant 4: Playwright step exists in compose-health-check."""
     workflow = _load_workflow()
     job = workflow["jobs"]["compose-health-check"]
     run_lines = _iter_run_lines(job)
@@ -155,6 +158,59 @@ def test_compose_health_check_runs_playwright_e2e() -> None:
         "compose-health-check must run 'cd web && npm run test:e2e' after "
         "the stack is healthy; this exercises the runtime-config refactor "
         "end-to-end (e.g. web/e2e/runtime-config.spec.ts in PR-3)."
+    )
+
+
+def test_compose_health_check_pins_node_20_before_npm_steps() -> None:
+    """Invariant 5: actions/setup-node@v4 with Node 20 precedes npm/Playwright.
+
+    Copilot review on PR #268 flagged that compose-health-check runs
+    ``npm ci`` and Playwright without pinning a Node version, unlike the
+    parallel web-unit-tests job that explicitly uses Node 20. Without a
+    pin the runner's default Node is used, which can change between
+    runner releases and produce non-deterministic CI behavior.
+    """
+    workflow = _load_workflow()
+    job = workflow["jobs"]["compose-health-check"]
+    steps = job.get("steps") or []
+    setup_node_idx: int | None = None
+    first_npm_idx: int | None = None
+    for idx, step in enumerate(steps):
+        uses = step.get("uses") or ""
+        if uses.startswith("actions/setup-node@"):
+            # Tolerate v4 (current) or any newer major; the spec only
+            # requires the action to be present and pin Node 20.
+            assert uses.startswith("actions/setup-node@v"), (
+                f"compose-health-check uses {uses!r} for setup-node — "
+                "must reference a pinned major version (e.g. v4)"
+            )
+            with_block = step.get("with") or {}
+            node_version = with_block.get("node-version")
+            assert node_version in (20, "20", "20.x"), (
+                f"compose-health-check setup-node pins node-version={node_version!r}; "
+                "must be '20' to match the web-unit-tests job and the "
+                "runtime image (web/Dockerfile.bloom-web.prod uses node:20)."
+            )
+            setup_node_idx = idx
+        run = step.get("run") or ""
+        if first_npm_idx is None and (
+            "npm ci" in str(run)
+            or "npm run test:e2e" in str(run)
+            or "npx playwright" in str(run)
+        ):
+            first_npm_idx = idx
+    assert setup_node_idx is not None, (
+        "compose-health-check must include an 'actions/setup-node@v4' step "
+        "pinning Node 20 before any npm/Playwright step."
+    )
+    assert first_npm_idx is not None, (
+        "compose-health-check appears to have no npm/Playwright step at all "
+        "— inconsistent with Invariant 4 above"
+    )
+    assert setup_node_idx < first_npm_idx, (
+        f"actions/setup-node@v4 is at step {setup_node_idx} but the first "
+        f"npm/Playwright step is at {first_npm_idx}; the Node pin must "
+        "come BEFORE any step that needs Node."
     )
 
 
