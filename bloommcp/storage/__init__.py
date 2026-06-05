@@ -6,7 +6,7 @@ from .manifest import (
     ManifestSchemaError,
     read_manifest,
     validate_schema,
-    write_manifest_atomic,
+    write_manifest,
 )
 from .schema import (
     CURRENT_SCHEMA_VERSION,
@@ -47,5 +47,5 @@ __all__ = [
     "slugify",
     "validate_schema",
     "version_dir_name",
-    "write_manifest_atomic",
+    "write_manifest",
 ]

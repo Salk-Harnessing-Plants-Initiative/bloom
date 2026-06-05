@@ -15,5 +15,5 @@ def get_code_versions() -> CodeVersions:
     """Return installed versions of packages whose provenance is captured per run."""
     return CodeVersions(
         bloommcp=_version_or_unknown("bloommcp"),
-        sleap_roots_analyze=_version_or_unknown("sleap-roots-analyze"),
+        supabase=_version_or_unknown("supabase"),
     )
