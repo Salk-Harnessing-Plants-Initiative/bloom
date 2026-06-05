@@ -216,9 +216,9 @@ describe("/api/config — anon-key project-match fence", () => {
   });
 });
 
-// ─── Missing required envs ──────────────────────────────────────────────────
+// ─── Missing required envs (production mode only) ──────────────────────────
 
-describe("/api/config — missing required envs", () => {
+describe("/api/config — missing required envs (production)", () => {
   it("returns 503 when SUPABASE_URL is unset (server-internal)", async () => {
     setHappyPathEnv();
     delete process.env.SUPABASE_URL;
@@ -235,5 +235,63 @@ describe("/api/config — missing required envs", () => {
     expect(response.status).toBe(503);
     const body = await jsonBody(response);
     expect(body.error).toMatch(/SUPABASE_URL_HOSTS_ALLOWED/);
+  });
+});
+
+// ─── Dev-mode early-return (Copilot review #2 on PR #268) ──────────────────
+// Mirrors validateOnBoot()'s dev-mode early-exit (Decision 13). In any
+// non-production NODE_ENV the route MUST skip the URL and anon-key fences
+// and return the configured values verbatim (or {} if everything is unset).
+// Without this, PR-2's `usePublicConfig()` hook breaks local dev the moment
+// client components start hitting /api/config in a typical dev setup that
+// doesn't bother setting SUPABASE_URL_HOSTS_ALLOWED.
+
+describe("/api/config — dev-mode early-return", () => {
+  function setDevModeEnv(): void {
+    process.env.NODE_ENV = "development";
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "http://localhost:54321";
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "dev-anon-key-not-a-real-jwt";
+    process.env.NEXT_PUBLIC_SUPABASE_COOKIE_NAME = "sb-localhost-auth-token";
+    process.env.NEXT_PUBLIC_MCP_URL = "http://localhost:5002";
+    // Deliberately leave SUPABASE_URL and SUPABASE_URL_HOSTS_ALLOWED unset
+    // — mirrors the typical local dev pattern where SUPABASE_URL is only
+    // set in containerized environments.
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_URL_HOSTS_ALLOWED;
+  }
+
+  it("returns 200 in dev mode even when SUPABASE_URL is unset", async () => {
+    setDevModeEnv();
+    const response = await call();
+    expect(response.status).toBe(200);
+    const body = await jsonBody(response);
+    expect(body.supabaseUrl).toBe("http://localhost:54321");
+  });
+
+  it("returns 200 in dev mode even when SUPABASE_URL_HOSTS_ALLOWED is unset", async () => {
+    setDevModeEnv();
+    const response = await call();
+    expect(response.status).toBe(200);
+  });
+
+  it("returns 200 in dev mode even when anon key is not a valid JWT", async () => {
+    setDevModeEnv();
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "definitely-not-a-jwt";
+    const response = await call();
+    expect(response.status).toBe(200);
+  });
+
+  it("returns 200 in dev mode for NODE_ENV='test'", async () => {
+    setDevModeEnv();
+    process.env.NODE_ENV = "test";
+    const response = await call();
+    expect(response.status).toBe(200);
+  });
+
+  it("returns 200 in dev mode for undefined NODE_ENV", async () => {
+    setDevModeEnv();
+    delete process.env.NODE_ENV;
+    const response = await call();
+    expect(response.status).toBe(200);
   });
 });

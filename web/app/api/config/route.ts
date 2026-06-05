@@ -74,6 +74,27 @@ function publicConfigToBody(config: PublicConfig): Record<string, unknown> {
 
 export function GET(_request: Request): Response {
   const config = getPublicConfig();
+
+  // ─── Dev-mode early-return (mirrors validateOnBoot's Decision 13 exit) ───
+  // In any non-production NODE_ENV the route MUST skip the URL and
+  // anon-key fences and return whatever's configured. This preserves the
+  // historic local-dev fallback at web/middleware.ts:9 — where
+  // SUPABASE_URL may be unset and code falls back to
+  // NEXT_PUBLIC_SUPABASE_URL — and prevents PR-2's `usePublicConfig()`
+  // hook from breaking local dev the moment client components start
+  // hitting /api/config (typical dev setups don't set
+  // SUPABASE_URL_HOSTS_ALLOWED, and the dev anon key may not have an
+  // iss/ref that matches a public URL).
+  //
+  // RLS remains the security boundary; this route handler's fences are
+  // operator-misconfiguration sanity checks, not authentication.
+  if (process.env.NODE_ENV !== "production") {
+    return new Response(JSON.stringify(publicConfigToBody(config)), {
+      status: 200,
+      headers: RESPONSE_HEADERS,
+    });
+  }
+
   if (!config.supabaseUrl) {
     return fenceFailure(
       "Missing NEXT_PUBLIC_SUPABASE_URL — public Supabase URL is required",

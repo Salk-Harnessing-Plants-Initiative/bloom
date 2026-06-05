@@ -142,7 +142,7 @@ A React hook `usePublicConfig()` MUST be the entry point for `'use client'` comp
 
 ### Requirement: Cross-Environment Configuration Fence — URL Hostname Mapping
 
-`bloom-web` MUST validate at runtime that the public Supabase URL hostname is the declared public counterpart of the server-side `SUPABASE_URL` hostname, using an explicit `SUPABASE_URL_HOSTS_ALLOWED` mapping. The mapping MUST be present in production environments; absence MUST fail container boot in production. Local development MUST NOT be broken by the fence — when `NODE_ENV !== 'production'`, the validator MUST return without throwing.
+`bloom-web` MUST validate at runtime that the public Supabase URL hostname is the declared public counterpart of the server-side `SUPABASE_URL` hostname, using an explicit `SUPABASE_URL_HOSTS_ALLOWED` mapping. The mapping MUST be present in production environments; absence MUST fail container boot in production. Local development MUST NOT be broken by the fence — when `NODE_ENV !== 'production'`, both the boot validator AND the `/api/config` route handler MUST return without enforcing the fence so dev setups that don't set `SUPABASE_URL` or `SUPABASE_URL_HOSTS_ALLOWED` keep working.
 
 #### Scenario: SUPABASE_URL_HOSTS_ALLOWED parses as host-pair list
 
@@ -173,47 +173,61 @@ A React hook `usePublicConfig()` MUST be the entry point for `'use client'` comp
 
 #### Scenario: Public URL not in allow-list returns 503
 
-- **GIVEN** `SUPABASE_URL=http://kong:8000`, `SUPABASE_URL_HOSTS_ALLOWED="kong:8000=bloom-dev.salk.edu"`, and `NEXT_PUBLIC_SUPABASE_URL=https://wrong-host.example`
+- **GIVEN** `NODE_ENV=production`, `SUPABASE_URL=http://kong:8000`, `SUPABASE_URL_HOSTS_ALLOWED="kong:8000=bloom-dev.salk.edu"`, and `NEXT_PUBLIC_SUPABASE_URL=https://wrong-host.example`
 - **WHEN** a client issues `GET /api/config`
 - **THEN** the response status is 503
 - **AND** the response body names "URL host not in SUPABASE_URL_HOSTS_ALLOWED" as the cause
 
 #### Scenario: Public URL in allow-list returns 200
 
-- **GIVEN** `SUPABASE_URL=http://kong:8000`, `SUPABASE_URL_HOSTS_ALLOWED="kong:8000=bloom-dev.salk.edu"`, and `NEXT_PUBLIC_SUPABASE_URL=https://bloom-dev.salk.edu/api`
+- **GIVEN** `NODE_ENV=production`, `SUPABASE_URL=http://kong:8000`, `SUPABASE_URL_HOSTS_ALLOWED="kong:8000=bloom-dev.salk.edu"`, and `NEXT_PUBLIC_SUPABASE_URL=https://bloom-dev.salk.edu/api`
 - **WHEN** a client issues `GET /api/config`
 - **THEN** the response status is 200
 
+#### Scenario: Dev-mode skips the fence at /api/config
+
+- **GIVEN** `NODE_ENV !== 'production'` (e.g. `development`, `test`, or unset) and `SUPABASE_URL_HOSTS_ALLOWED` is unset
+- **WHEN** a client issues `GET /api/config`
+- **THEN** the response status is 200 with the configured `PublicConfig` JSON
+- **AND** the route handler does NOT enforce the URL hostname fence, mirroring `validateOnBoot()`'s dev-mode early-exit
+
 ### Requirement: Cross-Environment Configuration Fence — Anon-Key Project Match
 
-`bloom-web` MUST validate at request time that the `NEXT_PUBLIC_SUPABASE_ANON_KEY` JWT's project identifier (`ref` claim, falling back to `iss` hostname) matches the configured `NEXT_PUBLIC_SUPABASE_URL`, so a URL-correct-but-key-swapped misconfiguration is caught. JWT decoding MUST handle base64url characters (`-` and `_`) and missing padding.
+`bloom-web` MUST validate at request time that the `NEXT_PUBLIC_SUPABASE_ANON_KEY` JWT's project identifier (`ref` claim, falling back to `iss` hostname) matches the configured `NEXT_PUBLIC_SUPABASE_URL`, so a URL-correct-but-key-swapped misconfiguration is caught. JWT decoding MUST handle base64url characters (`-` and `_`) and missing padding. The fence MUST be enforced only when `NODE_ENV === 'production'`; non-production NODE_ENV mirrors the dev-mode skip from the URL hostname fence above.
 
 #### Scenario: Matching key and URL returns 200
 
-- **GIVEN** the anon key JWT has `iss=https://bloom-dev.salk.edu` and `NEXT_PUBLIC_SUPABASE_URL=https://bloom-dev.salk.edu/api`
+- **GIVEN** `NODE_ENV=production` and the anon key JWT has `iss=https://bloom-dev.salk.edu` and `NEXT_PUBLIC_SUPABASE_URL=https://bloom-dev.salk.edu/api`
 - **WHEN** a client issues `GET /api/config`
 - **THEN** the response status is 200
 
 #### Scenario: Mismatched key project returns 503
 
-- **GIVEN** the anon key JWT has `iss=https://prod-bloom.salk.edu` and `NEXT_PUBLIC_SUPABASE_URL=https://staging-bloom-dev.salk.edu:8443/api`
+- **GIVEN** `NODE_ENV=production` and the anon key JWT has `iss=https://prod-bloom.salk.edu` and `NEXT_PUBLIC_SUPABASE_URL=https://staging-bloom-dev.salk.edu:8443/api`
 - **WHEN** a client issues `GET /api/config`
 - **THEN** the response status is 503
 - **AND** the response body names "anon-key project does not match URL" as the cause
 
 #### Scenario: Malformed anon-key JWT returns 503
 
-- **GIVEN** `NEXT_PUBLIC_SUPABASE_ANON_KEY="not-a-jwt"`
+- **GIVEN** `NODE_ENV=production` and `NEXT_PUBLIC_SUPABASE_ANON_KEY="not-a-jwt"`
 - **WHEN** a client issues `GET /api/config`
 - **THEN** the response status is 503
 - **AND** the response body names "anon-key is not a valid JWT" as the cause
 
 #### Scenario: base64url-encoded JWT is decoded correctly
 
-- **GIVEN** an anon key JWT whose middle (payload) segment contains `-` and `_` characters (base64url encoding) and uses unpadded length
+- **GIVEN** an anon key JWT whose middle (payload) segment contains `-` and `_` characters (base64url encoding) and uses unpadded length, plus the JSON payload may contain multi-byte UTF-8 characters (CJK ideographs, emoji, combining marks)
 - **WHEN** the route handler decodes the JWT
-- **THEN** the `-` characters are interpreted as `+`, `_` as `/`, and missing `=` padding is added before `atob`
+- **THEN** the `-` characters are interpreted as `+`, `_` as `/`, missing `=` padding is added, and the resulting bytes are decoded as UTF-8 (not Latin-1/binary)
 - **AND** the parsed `iss`/`ref` claim matches the expected value
+
+#### Scenario: Dev-mode skips the anon-key fence at /api/config
+
+- **GIVEN** `NODE_ENV !== 'production'` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` is a non-JWT placeholder (e.g. a local supabase dev key)
+- **WHEN** a client issues `GET /api/config`
+- **THEN** the response status is 200
+- **AND** the route handler does NOT enforce the anon-key project-match fence
 
 ### Requirement: Cross-Environment Configuration Fence — Cookie Name Divergence
 
