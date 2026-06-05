@@ -34,7 +34,9 @@ cannot accidentally cross prefixes or escape the bucket.
 from __future__ import annotations
 
 import io
+import json
 import os
+from pathlib import Path
 
 import pandas as pd
 import supabase
@@ -138,3 +140,93 @@ def write_output_csv(name: str, df: pd.DataFrame) -> str:
         file_options={"content-type": "text/csv", "upsert": "true"},
     )
     return f"{BUCKET}/{key}"
+
+
+# ─── Generic storage helpers ──────────────────────────────────────────────────
+#
+# These six helpers are the storage primitives AnalysisWriter uses to store
+# the versioned-output catalog. They take an object `key` that
+# includes any prefix structure (e.g. `bloommcp_output/qc_my_exp/v1_.../_cleaned.csv`)
+
+
+_CONTENT_TYPES = {
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+
+
+def _guess_content_type(path: Path) -> str:
+    """Map common extensions to content types."""
+    return _CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+
+def get_storage_client():
+    """Return a fresh Supabase storage client with access to `bloommcp-data`.
+    """
+    return supabase.create_client(SUPABASE_URL, BLOOM_AGENT_KEY).storage.from_(BUCKET)
+
+
+def list_prefix(prefix: str) -> list[str]:
+    """List basenames of objects directly under `prefix` in `bloommcp-data`.
+        Lists file inside the folder.
+        list_prefix("") is shows at the root"
+        list_prefix("bloommcp_output/") shows file under the prefix folder
+    """
+    client = get_storage_client()
+    items = client.list(prefix)
+    return [item["name"] for item in items]
+
+
+def read_json(key: str) -> dict:
+    """Download `key` from `bloommcp-data` and parse as JSON.
+
+    Raises a Supabase storage exception if the key does not exist;
+    callers that treat absence as a normal state should check with
+    `list_prefix()` first (this is what `AnalysisDir.read_manifest`
+    does).
+    """
+    client = get_storage_client()
+    payload = client.download(key)
+    return json.loads(payload.decode("utf-8"))
+
+
+def write_json(key: str, payload: dict) -> None:
+    """Save `payload` as a JSON file at `key`. Overwrites if it exists."""
+    body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    client = get_storage_client()
+    client.upload(
+        path=key,
+        file=body,
+        file_options={"content-type": "application/json", "upsert": "true"},
+    )
+
+
+def upload_file(key: str, local_path: Path) -> None:
+    """Upload bytes from `local_path` to `key` in `bloommcp-data`.
+
+    Content-type is inferred from the file extension; CSV, JSON, and PNG
+    are the cases AnalysisWriter writes today. Unknown extensions fall
+    back to `application/octet-stream`. Same upsert semantics as
+    `write_json`.
+    """
+    client = get_storage_client()
+    body = local_path.read_bytes()
+    client.upload(
+        path=key,
+        file=body,
+        file_options={"content-type": _guess_content_type(local_path), "upsert": "true"},
+    )
+
+
+def download_file(key: str, local_path: Path) -> None:
+    """Download `key` from `bloommcp-data` into `local_path`.
+
+    Creates parent directories if needed. Raises on missing key.
+    """
+    client = get_storage_client()
+    payload = client.download(key)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(payload)

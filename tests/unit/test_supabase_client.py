@@ -155,3 +155,128 @@ def test_import_fails_when_bloom_agent_key_missing(monkeypatch):
         importlib.reload(supabase_client)
     monkeypatch.setenv("BLOOM_AGENT_KEY", "fake-agent-jwt")
     importlib.reload(supabase_client)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Storage helpers (Task 2.1 of migrate-bloommcp-storage-to-supabase)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_get_storage_client_returns_bucket_bound_handle(supabase_mock, monkeypatch):
+    """`get_storage_client()` pre-binds to the `bloommcp-data` bucket."""
+    captured: dict[str, str] = {}
+
+    def fake_create_client(url, key):
+        c = MagicMock()
+
+        def from_(bucket):
+            captured["bucket"] = bucket
+            return supabase_mock
+
+        c.storage.from_ = from_
+        return c
+
+    monkeypatch.setattr(supabase_client.supabase, "create_client", fake_create_client)
+
+    handle = supabase_client.get_storage_client()
+    assert handle is supabase_mock
+    assert captured["bucket"] == "bloommcp-data"
+
+
+# ─── list_prefix ────────────────────────────────────────────────────────────
+
+def test_list_prefix_returns_basenames(supabase_mock):
+    supabase_mock.list.return_value = [
+        {"name": "v1_2026-06-05_initial", "id": "a"},
+        {"name": "v2_2026-06-05_rerun", "id": "b"},
+        {"name": "manifest.json", "id": "c"},
+    ]
+    names = supabase_client.list_prefix("bloommcp_output/qc_my_exp/")
+    assert names == ["v1_2026-06-05_initial", "v2_2026-06-05_rerun", "manifest.json"]
+    supabase_mock.list.assert_called_once_with("bloommcp_output/qc_my_exp/")
+
+
+def test_list_prefix_returns_empty_when_no_objects(supabase_mock):
+    """Absence is a normal state (e.g. AnalysisDir on a fresh experiment)."""
+    supabase_mock.list.return_value = []
+    assert supabase_client.list_prefix("bloommcp_output/qc_unknown/") == []
+
+
+# ─── read_json / write_json ─────────────────────────────────────────────────
+
+def test_read_json_parses_downloaded_bytes(supabase_mock):
+    supabase_mock.download.return_value = b'{"manifest_schema_version": 1, "versions": []}'
+    payload = supabase_client.read_json("bloommcp_output/qc_my_exp/manifest.json")
+    assert payload == {"manifest_schema_version": 1, "versions": []}
+    supabase_mock.download.assert_called_once_with("bloommcp_output/qc_my_exp/manifest.json")
+
+
+def test_write_json_uploads_canonical_bytes_with_upsert(supabase_mock):
+    """sort_keys + indent=2 means two semantically equal manifests serialize
+    to the same bytes — important for sha256 stability."""
+    payload = {"b": 2, "a": 1, "nested": {"y": True, "x": False}}
+    supabase_client.write_json("bloommcp_output/qc_my_exp/manifest.json", payload)
+
+    supabase_mock.upload.assert_called_once()
+    kwargs = supabase_mock.upload.call_args.kwargs
+    assert kwargs["path"] == "bloommcp_output/qc_my_exp/manifest.json"
+    assert kwargs["file_options"]["upsert"] == "true"
+    assert kwargs["file_options"]["content-type"] == "application/json"
+
+    # Bytes are sort_keys=True + indent=2 — deterministic.
+    body = kwargs["file"]
+    import json as _json
+    assert _json.loads(body) == payload
+    assert body == _json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+
+
+# ─── upload_file / download_file ────────────────────────────────────────────
+
+def test_upload_file_reads_bytes_and_calls_upload(supabase_mock, tmp_path):
+    local = tmp_path / "v1_2026-06-05" / "_cleaned.csv"
+    local.parent.mkdir(parents=True)
+    local.write_bytes(b"col_a,col_b\n1,2\n")
+
+    supabase_client.upload_file(
+        "bloommcp_output/qc_my_exp/v1_2026-06-05/_cleaned.csv", local
+    )
+
+    supabase_mock.upload.assert_called_once()
+    kwargs = supabase_mock.upload.call_args.kwargs
+    assert kwargs["path"] == "bloommcp_output/qc_my_exp/v1_2026-06-05/_cleaned.csv"
+    assert kwargs["file"] == b"col_a,col_b\n1,2\n"
+    assert kwargs["file_options"]["content-type"] == "text/csv"
+    assert kwargs["file_options"]["upsert"] == "true"
+
+
+@pytest.mark.parametrize(
+    "suffix,expected_ct",
+    [
+        (".csv", "text/csv"),
+        (".json", "application/json"),
+        (".png", "image/png"),
+        (".jpeg", "image/jpeg"),
+        (".bin", "application/octet-stream"),
+        ("", "application/octet-stream"),
+    ],
+)
+def test_upload_file_infers_content_type_from_extension(
+    supabase_mock, tmp_path, suffix, expected_ct
+):
+    local = tmp_path / f"out{suffix}"
+    local.write_bytes(b"x")
+    supabase_client.upload_file(f"bloommcp_output/x/v1/out{suffix}", local)
+    kwargs = supabase_mock.upload.call_args.kwargs
+    assert kwargs["file_options"]["content-type"] == expected_ct
+
+
+def test_download_file_writes_to_local_path_creating_parents(supabase_mock, tmp_path):
+    supabase_mock.download.return_value = b'{"hello": "world"}'
+    local = tmp_path / "nested" / "deeper" / "file.json"
+    assert not local.parent.exists()
+
+    supabase_client.download_file("bloommcp_output/x/v1/file.json", local)
+
+    assert local.read_bytes() == b'{"hello": "world"}'
+    assert local.parent.is_dir()
+    supabase_mock.download.assert_called_once_with("bloommcp_output/x/v1/file.json")
