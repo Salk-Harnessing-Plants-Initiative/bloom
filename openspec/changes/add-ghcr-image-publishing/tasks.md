@@ -710,10 +710,20 @@ reads removed; migration-lint and no-skipped-tests both green.
     invalidates every currently-active staging session on first deploy
     after PR-3**; documented in §11.5 PROD_SETUP edit and the PR-3
     description.
-  - Add `SUPABASE_URL_HOSTS_ALLOWED="kong:8000=staging-bloom-dev.salk.edu:8443"`
-    to `.env.staging.defaults`.
-  - Add `SUPABASE_URL_HOSTS_ALLOWED="kong:8000=bloom-dev.salk.edu"` to
-    `.env.prod.defaults`.
+  - ~~Add `SUPABASE_URL_HOSTS_ALLOWED` to `.env.staging.defaults` and
+    `.env.prod.defaults`.~~ **MOVED TO PR-1** along with the matching
+    `SUPABASE_URL_HOSTS_ALLOWED: ${SUPABASE_URL_HOSTS_ALLOWED}` entry
+    in `docker-compose.prod.yml`'s `bloom-web.environment:` block.
+    Both files now declare:
+    - prod: `SUPABASE_URL_HOSTS_ALLOWED=kong:8000=bloom-dev.salk.edu`
+    - staging: `SUPABASE_URL_HOSTS_ALLOWED=kong:8000=staging-bloom-dev.salk.edu:8443`
+    Reason: `web/instrumentation.ts` ships in PR-1 §3 and runs
+    `validateOnBoot()` at every production boot. Without the var
+    present in the container env, every prod/staging container would
+    crash on startup with "Missing required env:
+    SUPABASE_URL_HOSTS_ALLOWED" — incl. PR CI's compose-health-check
+    stack. PR-3 §11 still owns the cookie-name divergence and the
+    `test_env_cross_check.py` regression guard.
 - [ ] 11.3 **Test (red):**
       `tests/unit/test_supabase_url_hosts_allowed_format.py` asserts
       that for both defaults files:
