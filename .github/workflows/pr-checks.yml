@@ -355,6 +355,14 @@ jobs:
           echo "SITE_URL=http://localhost" >> .env.ci
           echo "NEXT_PUBLIC_SUPABASE_URL=http://kong:8000" >> .env.ci
           echo "SUPABASE_URL=http://kong:8000" >> .env.ci
+          # Required by bloom-web's validateOnBoot() in production mode
+          # (web/instrumentation.ts → web/lib/config/validate-on-boot.ts).
+          # NODE_ENV=production is baked into the Dockerfile, so the
+          # validator fires in CI even though we're not actually deploying.
+          # CI uses the same host for internal+public so the allow-list is
+          # the loopback mapping kong:8000=kong:8000. See
+          # openspec/changes/add-ghcr-image-publishing/design.md Decision 13.
+          echo "SUPABASE_URL_HOSTS_ALLOWED=kong:8000=kong:8000" >> .env.ci
           echo "SUPABASE_COOKIE_NAME=sb-ci-auth-token" >> .env.ci
           echo "NEXT_PUBLIC_APP_URL=http://localhost" >> .env.ci
           echo "SUPABASE_PUBLIC_URL=http://localhost/api" >> .env.ci
