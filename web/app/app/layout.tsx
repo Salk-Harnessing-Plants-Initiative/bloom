@@ -19,23 +19,26 @@ const navSections = [
     heading: "Data",
     items: [
       { name: "Cylinder\nPhenotypes", href: "/app/phenotypes" },
-      { name: "Plates\nPhenotypes", href: "/app/plate-phenotypes" },
+      { name: "Plate\nPhenotypes", href: "/app/plate-phenotypes" },
       { name: "Traits", href: "/app/traits" },
       { name: "Genes", href: "/app/genes" },
       { name: "Expression", href: "/app/expression" },
     ],
   },
   {
-    heading: "Research",
+    heading: "Tools",
+    items: [
+      { name: "Bloom Assistant", href: "/chat" },
+      { name: "OrthoBrowser", href: "/app/orthofinder" },
+    ],
+  },
+  {
+    heading: "Resources",
     items: [
       { name: "Timeline", href: "/app/timeline" },
       { name: "Translation", href: "/app/translation" },
       { name: "Software", href: "/app/software" },
     ],
-  },
-  {
-    heading: "Tools",
-    items: [{ name: "Bloom Assistant", href: "/chat" }],
   },
 ];
 

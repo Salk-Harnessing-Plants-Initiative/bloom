@@ -34,7 +34,7 @@ interface ScanRow {
   id: number;
   cycle_number: number | null;
   capture_date: string;
-  gravi_images: { object_path: string }[];
+  gravi_images: { object_path: string } | null;
 }
 
 interface ExperimentRow {
@@ -92,7 +92,7 @@ export default async function PlateDetail({
     scan_id: s.id,
     capture_date: s.capture_date,
     cycle_number: s.cycle_number,
-    object_path: s.gravi_images?.[0]?.object_path ?? null,
+    object_path: s.gravi_images?.object_path ?? null,
   }));
 
   return (
@@ -130,9 +130,9 @@ export default async function PlateDetail({
 
       <div className="mb-8">
         <h2 className="mb-2 text-sm uppercase tracking-widest text-stone-500">
-          Growth time-lapse
+          Time points
         </h2>
-        <PlateVideo objectPath={video?.object_path ?? null} />
+        <PlateTimeSeries points={timePoints} />
       </div>
 
       {sections.length > 0 && (
@@ -171,9 +171,9 @@ export default async function PlateDetail({
 
       <div className="mb-8">
         <h2 className="mb-2 text-sm uppercase tracking-widest text-stone-500">
-          Time points
+          Growth time-lapse
         </h2>
-        <PlateTimeSeries points={timePoints} />
+        <PlateVideo objectPath={video?.object_path ?? null} />
       </div>
     </div>
   );

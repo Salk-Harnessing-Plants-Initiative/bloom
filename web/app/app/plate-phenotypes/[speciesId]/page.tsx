@@ -88,7 +88,10 @@ export default async function PlateSpecies({
           const duration = formatDuration(
             latest?.actual_duration_seconds ?? latest?.duration_seconds ?? null,
           );
-          const cycles = latest?.total_cycles ?? null;
+          // Per-plate timepoint count derived from gravi_scans, matching the
+          // experiment detail page (total_cycles from the session config can
+          // disagree with the recorded scan count by ±1).
+          const timepoints = perPlateTimepointCount(experiment.gravi_scans);
           const sessionCount = experiment.gravi_scan_sessions?.length ?? 0;
           const plateCount = uniquePlateCount(experiment.gravi_scans);
           const phenotypers = uniquePhenotyperNames(
@@ -96,10 +99,10 @@ export default async function PlateSpecies({
           );
 
           const timeSeries =
-            cycles !== null && duration
-              ? `${cycles} time point${cycles === 1 ? "" : "s"} collected over ${duration}`
-              : cycles !== null
-                ? `${cycles} time point${cycles === 1 ? "" : "s"}`
+            timepoints > 0 && duration
+              ? `${timepoints} time point${timepoints === 1 ? "" : "s"} collected over ${duration}`
+              : timepoints > 0
+                ? `${timepoints} time point${timepoints === 1 ? "" : "s"}`
                 : duration
                   ? `Collected over ${duration}`
                   : null;
@@ -241,6 +244,18 @@ function uniquePlateCount(scans: ScanRow[] | null | undefined): number {
     if (s.plate_id) set.add(s.plate_id);
   }
   return set.size;
+}
+
+function perPlateTimepointCount(
+  scans: ScanRow[] | null | undefined,
+): number {
+  if (!scans || scans.length === 0) return 0;
+  const counts = new Map<string, number>();
+  for (const s of scans) {
+    if (!s.plate_id) continue;
+    counts.set(s.plate_id, (counts.get(s.plate_id) ?? 0) + 1);
+  }
+  return counts.size === 0 ? 0 : Math.max(...counts.values());
 }
 
 function uniquePhenotyperNames(

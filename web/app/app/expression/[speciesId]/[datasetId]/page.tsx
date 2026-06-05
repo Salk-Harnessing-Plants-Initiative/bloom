@@ -29,7 +29,9 @@ export default async function Dataset({
     url: `/app/expression/${speciesId}/${datasetId}`,
   });
 
-  if (!dataset) {
+  // NULL_DATASET rows are placeholders without real expression data —
+  // treat as not-found rather than rendering an empty cockpit.
+  if (!dataset || dataset.name === "NULL_DATASET") {
     return (
       <div className="max-w-5xl mx-auto">
         <div className="text-sm mb-6 select-none">

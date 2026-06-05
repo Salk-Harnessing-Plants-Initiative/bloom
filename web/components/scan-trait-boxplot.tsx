@@ -105,11 +105,6 @@ export default function ScanTraitBoxplot({
     const mean = n > 0 ? values.reduce((s, v) => s + v, 0) / n : 0;
     const median =
       n === 0 ? 0 : n % 2 ? values[(n - 1) / 2] : (values[n / 2 - 1] + values[n / 2]) / 2;
-    const variance =
-      n > 1
-        ? values.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1)
-        : 0;
-    const std = Math.sqrt(variance);
     const wavesRepresented = new Set(rows.map((r) => r.wave_number)).size;
     const min = values[0] ?? 0;
     const max = values[n - 1] ?? 0;
@@ -120,7 +115,6 @@ export default function ScanTraitBoxplot({
       n,
       mean,
       median,
-      std,
       min,
       max,
       wavesRepresented,
@@ -294,7 +288,6 @@ export default function ScanTraitBoxplot({
 
                 <div className="flex-shrink-0 w-36 text-stone-600 tabular-nums">
                   mean {s.mean.toFixed(1)}
-                  {s.n > 1 ? ` ± ${s.std.toFixed(2)}` : ""}
                 </div>
 
                 <div className="flex-1 min-w-[140px]">

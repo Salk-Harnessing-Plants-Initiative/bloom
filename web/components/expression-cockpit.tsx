@@ -3,13 +3,15 @@
 import { useState, type ReactNode } from "react";
 
 import { ExpressionView } from "@/components/expression-view";
-import ExpressionGeneLevel from "@/components/expression-genelevel";
-import DifferentialExpressionAnalysis from "@/components/expression-differential-analysis";
-import ExpressionCorrelation from "@/components/expression-correlation-page";
-import ExpressonDownloadFiles from "@/components/expression-download-files";
+// Tabs disabled until the new schema is plumbed through — re-enable by
+// uncommenting the imports, the Tab union, the buttons, and the bodies.
+// import ExpressionGeneLevel from "@/components/expression-genelevel";
+// import DifferentialExpressionAnalysis from "@/components/expression-differential-analysis";
+// import ExpressionCorrelation from "@/components/expression-correlation-page";
+// import ExpressonDownloadFiles from "@/components/expression-download-files";
 import { ExpressionThemeProvider } from "@/components/expression-theme-provider";
 
-type Tab = "umap" | "gene" | "correlation" | "de" | "download";
+type Tab = "umap"; // | "gene" | "correlation" | "de" | "download";
 
 export interface ExpressionCockpitProps {
   datasetId: number;
@@ -31,6 +33,7 @@ export function ExpressionCockpit({
         <TabBtn active={tab === "umap"} onClick={() => setTab("umap")}>
           UMAP
         </TabBtn>
+        {/*
         <TabBtn active={tab === "gene"} onClick={() => setTab("gene")}>
           Gene explorer
         </TabBtn>
@@ -46,6 +49,7 @@ export function ExpressionCockpit({
         <TabBtn active={tab === "download"} onClick={() => setTab("download")}>
           Download
         </TabBtn>
+        */}
       </div>
 
       {/* Tab body */}
@@ -53,6 +57,7 @@ export function ExpressionCockpit({
         {tab === "umap" && (
           <ExpressionView datasetId={datasetId} datasetName={datasetName} />
         )}
+        {/*
         {tab === "gene" && <ExpressionGeneLevel file_id={datasetId} />}
         {tab === "correlation" && <ExpressionCorrelation file_id={datasetId} />}
         {tab === "de" && (
@@ -64,6 +69,7 @@ export function ExpressionCockpit({
             file_name={datasetName}
           />
         )}
+        */}
       </div>
     </div>
     </ExpressionThemeProvider>

@@ -9,19 +9,37 @@ interface PlateImageProps {
   className?: string;
 }
 
+// Plate-scanner objects live in the `graviscan-images` logical bucket;
+// `gravi_images.object_path` already stores the path inside that bucket
+// (e.g. `gravi-images/<filename>.tif`). Storage-api handles the tenant +
+// backend-bucket translation internally — the front-end only owns the
+// logical bucket name.
+//
+// Scanner uploads are TIFF; the browser can't decode TIFF natively. We
+// rely on the transform layer (imgproxy / libvips) auto-converting to a
+// web-renderable format based on the Accept header. The `format` field
+// on the transform options is restricted by the staging storage-api
+// version, so we leave it off and let the transformer pick.
+
+const STORAGE_BUCKET = "graviscan-images";
+
 async function getThumbUrl(path: string): Promise<string> {
   const supabase = createClientSupabaseClient();
   const { data } = await supabase.storage
-    .from("graviscan-images")
-    .createSignedUrl(path, 3600, { transform: { width: 480, quality: 80 } });
+    .from(STORAGE_BUCKET)
+    .createSignedUrl(path, 3600, {
+      transform: { width: 480, quality: 80 },
+    });
   return data?.signedUrl ?? "";
 }
 
 async function getFullUrl(path: string): Promise<string> {
   const supabase = createClientSupabaseClient();
   const { data } = await supabase.storage
-    .from("graviscan-images")
-    .createSignedUrl(path, 3600);
+    .from(STORAGE_BUCKET)
+    .createSignedUrl(path, 3600, {
+      transform: { width: 2400, quality: 85 },
+    });
   return data?.signedUrl ?? "";
 }
 

@@ -5,7 +5,8 @@ import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 
 import { ExpressionUmap } from "@/components/expression-umap";
-import { ExpressionGeneSearch } from "@/components/expression-gene-search";
+// Gene search disabled — see the JSX comment below.
+// import { ExpressionGeneSearch } from "@/components/expression-gene-search";
 import { ExpressionColorbar } from "@/components/expression-colorbar";
 import { ExpressionClusterSidebar } from "@/components/expression-cluster-sidebar";
 import { ExpressionClusterDetailPanel } from "@/components/expression-cluster-detail-panel";
@@ -148,10 +149,10 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
         onHideAll={handleHideAll}
       />
 
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <Box sx={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
         {/* dataset header */}
         {meta && (
-          <Box sx={{ display: "flex", gap: 2, alignItems: "baseline" }}>
+          <Box sx={{ display: "flex", gap: 2, alignItems: "baseline", minWidth: 0, flexWrap: "wrap" }}>
             <Typography variant="h6" sx={{ fontFamily: "monospace" }}>
               {meta.dataset.name}
             </Typography>
@@ -165,32 +166,24 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           </Box>
         )}
 
-        {/* gene search */}
-        <Box sx={{ display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" }}>
-          <Box sx={{ maxWidth: 360, flex: 1 }}>
-            <ExpressionGeneSearch
-              datasetId={datasetId}
-              value={geneName}
-              onChange={setGeneName}
-              disabled={!meta}
-            />
-          </Box>
-          {(() => {
-            const clusters = meta?.clusters ?? [];
-            if (clusters.length === 0) return null;
-            const soloCount = clusters.length - hidden.size;
-            if (soloCount === 1) return null;
-            return (
-              <span
-                className="ml-auto inline-flex items-center gap-2 rounded-full border border-lime-200 bg-lime-50/70 px-3 py-1 text-xs text-lime-800"
-                role="status"
-              >
-                <span className="inline-block h-1.5 w-1.5 rounded-full bg-lime-500 shadow-[0_0_4px_rgba(132,204,22,0.8)]" />
-                Click a cluster for details
-              </span>
-            );
-          })()}
-        </Box>
+        {/* Gene search disabled — re-enable by uncommenting the Box below
+            and restoring ExpressionGeneSearch + colorbar wiring. The
+            geneName state is kept so UMAP/colorbar code paths stay typed. */}
+        {(() => {
+          const clusters = meta?.clusters ?? [];
+          if (clusters.length === 0) return null;
+          const soloCount = clusters.length - hidden.size;
+          if (soloCount === 1) return null;
+          return (
+            <span
+              className="inline-flex items-center gap-2 self-start rounded-full border border-lime-200 bg-lime-50/70 px-3 py-1 text-xs text-lime-800"
+              role="status"
+            >
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-lime-500 shadow-[0_0_4px_rgba(132,204,22,0.8)]" />
+              Click a cluster for details
+            </span>
+          );
+        })()}
 
         {/* orphan-cell warning */}
         {meta && meta.orphanCount > 0 && (

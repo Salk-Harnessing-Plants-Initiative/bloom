@@ -72,13 +72,16 @@ export default function AddNewScientist({
             disabled={!newScientistName || !newScientistEmail}
             sx={{
               color: 'white',
-              backgroundColor: '#1976d2 !important',
+              backgroundColor: '#65a30d !important',
+              boxShadow: '0 0 12px rgba(132, 204, 22, 0.45)',
               '&:hover': {
-                backgroundColor: '#1565c0',
+                backgroundColor: '#4d7c0f !important',
+                boxShadow: '0 0 18px rgba(132, 204, 22, 0.7)',
               },
               '&.Mui-disabled': {
                 backgroundColor: '#b0bec5',
                 color: '#eeeeee',
+                boxShadow: 'none',
               },
             }}
           >
