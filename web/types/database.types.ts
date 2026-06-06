@@ -664,14 +664,20 @@ export interface Database {
       cyl_trait_sources: {
         Row: {
           id: number
+          idempotency_key: string | null
+          metadata: Json | null
           name: string
         }
         Insert: {
           id?: number
+          idempotency_key?: string | null
+          metadata?: Json | null
           name: string
         }
         Update: {
           id?: number
+          idempotency_key?: string | null
+          metadata?: Json | null
           name?: string
         }
         Relationships: []
