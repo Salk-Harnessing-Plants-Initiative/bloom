@@ -412,7 +412,10 @@ services:
     networks:
       - supanet
     ports:
-      - "${POSTGRES_EXTERNAL_PORT}:5432"
+      # Host-exposed Postgres port. Canonical name POSTGRES_HOST_PORT (matches
+      # CI, conftest, and docker-compose.prod.yml). Override to e.g. 5433 when
+      # host 5432 is shadowed by another Postgres (e.g. a WSL relay).
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     healthcheck:
       test:
         [
