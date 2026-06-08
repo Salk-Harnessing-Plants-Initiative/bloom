@@ -3,8 +3,12 @@ name: bloom_v2_dev
 services:
   
   bloom-web:
+    # web/.env is optional: every var bloom-web needs is already supplied via
+    # `environment`/`args` below from the root .env.dev. A fresh clone has no
+    # web/.env, so mark it not-required (Compose v2) instead of failing to start.
     env_file:
-        - ./web/.env 
+      - path: ./web/.env
+        required: false
     build:
       context: .
       dockerfile: ./web/Dockerfile.bloom-web.dev

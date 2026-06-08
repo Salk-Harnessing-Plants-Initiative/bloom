@@ -21,6 +21,22 @@ platforms SHALL be macOS, Linux, and Windows via WSL2.
   bind-mount the Postgres data directory exactly as before (no switch to a named
   volume), so macOS, Linux, and CI behavior is unchanged
 
+### Requirement: Fresh-Clone Stack Startup
+
+`make dev-up` SHALL succeed on a fresh clone that has run `make init`, without the
+developer having to hand-create any file that `make init` does not generate. Any
+`env_file` a dev service references that is not committed and not produced by
+`make init` (e.g. `web/.env`) SHALL be marked optional (`required: false`) so a
+missing file does not abort `docker compose up` (issue #123).
+
+#### Scenario: dev-up works without a web/.env
+
+- **WHEN** a developer runs `make dev-up` on a fresh clone after `make init`, with
+  no `web/.env` present
+- **THEN** Compose does not error on the missing `web/.env` — the `bloom-web`
+  `env_file` entry is marked `required: false`, and the variables it needs are
+  supplied via the service's `environment`/`args` from the root `.env.dev`
+
 ### Requirement: LF Line Endings for Container Init Scripts
 
 The repository SHALL enforce LF line endings, via `.gitattributes`, for the

@@ -211,6 +211,22 @@ addresses #118.
 - [x] 10.5 Resolve `design.md` open questions with verified outcomes; mark tasks
       complete only after evidence is captured.
 
+## 11. Fresh-clone dev-up — optional web/.env (#123) (TDD)
+
+Discovered during the §10 local run: `make dev-up` on a fresh clone failed with
+`env file ./web/.env not found` because Compose v2 aborts on a missing
+`env_file`. Every var `bloom-web` needs is already supplied via `environment`/
+`args`, so the file is redundant.
+
+- [x] 11.1 RED: add `tests/unit/test_compose_dev_env_files.py` asserting the
+      `bloom-web` `env_file` entry for `./web/.env` uses the long form with
+      `required: false`. Run against the bare `- ./web/.env` form; confirm it
+      fails (entry is a string, not a `{path, required: false}` dict).
+- [x] 11.2 GREEN: change `docker-compose.dev.yml` `bloom-web.env_file` to
+      `- path: ./web/.env` / `required: false`. Run; test passes.
+- [x] 11.3 Verify: a fresh clone (`make init` then `make dev-up`) no longer aborts
+      on the missing `web/.env`.
+
 ## Verification notes (honest record of what was proven, and how)
 
 - **Unit tests (all green):** the 8 new test files (53 tests) all pass —
