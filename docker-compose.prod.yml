@@ -23,7 +23,13 @@ services:
   # Caddy (Reverse Proxy)
   # -------------------
   caddy:
-    image: caddy:2.11.2-alpine
+    # Built from caddy/Dockerfile with the caddy-dns/cloudflare plugin baked
+    # in — required for ACME DNS-01 challenges via CNAME delegation to
+    # bloom-acme.talmolab.org. Version + plugin SHA pins live in the
+    # Dockerfile (digest-pinned FROM lines + commit-pinned plugin), not here.
+    # See caddy/Dockerfile for the bump procedure.
+    build:
+      context: ./caddy
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -42,10 +48,22 @@ services:
       BLOOM_WEB_PORT: ${BLOOM_WEB_PORT}
       STUDIO_PORT: ${STUDIO_PORT}
       MINIO_CONSOLE_PORT: ${MINIO_CONSOLE_PORT}
-      CADDY_HTTP_PORT: ${CADDY_HTTP_PORT}
-      CADDY_TLS_DIRECTIVE: ${CADDY_TLS_DIRECTIVE}
+      # Caddy site addresses — comma-separated, scheme-prefixed. Prod needs
+      # apex + wildcard, staging needs only the wildcard, CI uses
+      # http://localhost so no ACME is attempted. See caddy/Caddyfile for
+      # the parsing-safety rationale.
+      CADDY_SITE_ADDRESSES: ${CADDY_SITE_ADDRESSES}
+      # Required for ACME DNS-01 — consumed by the cloudflare DNS provider
+      # plugin baked into the Caddy image (see caddy/Dockerfile + Caddyfile).
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Break-glass path: if ACME issuance fails catastrophically, drop
+      # cert.pem + key.pem into ./caddy/certs/ on the host and add a
+      # `tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem` line to
+      # the Caddyfile (overrides the `tls { dns cloudflare ... }` block).
+      # Empty in normal operation; LE certs live in the caddy-data volume
+      # at /data/caddy/certificates/.
       - ./caddy/certs:/etc/caddy/certs:ro
       - caddy-data:/data
       - caddy-config:/config
