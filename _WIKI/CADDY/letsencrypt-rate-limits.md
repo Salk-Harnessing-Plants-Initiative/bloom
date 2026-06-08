@@ -2,6 +2,8 @@
 
 How Let's Encrypt's rate limits affect bloom, what we actually use, and the safeguards in place to keep a misconfigured deploy from burning through the budget. Update this page if Let's Encrypt changes their limits or if our deploy shape changes.
 
+> Numbers on this page were verified against the official Let's Encrypt rate-limit documentation (https://letsencrypt.org/docs/rate-limits/, last updated 2025-06-12). If you bump a limit or change our deploy shape, re-verify against that page.
+
 ## The four limits that matter to bloom
 
 Let's Encrypt publishes a few rate limits. These are the ones that actually touch our deploy:
@@ -9,9 +11,10 @@ Let's Encrypt publishes a few rate limits. These are the ones that actually touc
 | Limit | Number | Counts what |
 | --- | --- | --- |
 | **Certificates per Registered Domain** | 50 per rolling 7 days | All certs issued under `salk.edu` (the eTLD+1) — shared across every Salk subdomain anyone in the org uses LE for |
-| **Duplicate Certificates** | 5 per rolling 7 days | Certs with the exact same SAN list (same hostnames in the same order) |
-| **Failed Validations** | 5 per account per hostname per hour | Bad DNS, wrong token, ACME challenge failures |
+| **Duplicate Certificates** | 5 per rolling 7 days | Certs with the exact same set of identifiers (same SAN list) |
+| **Failed Validations** | 5 per account per identifier per hour | Bad DNS, wrong token, ACME challenge failures — temporary cliff, clears after the hour |
 | **New Orders** | 300 per account per 3 hours | New cert requests (lots of headroom; we never approach this) |
+| **Consecutive Authorization Failures** | 1,152 per identifier (cumulative) | Long-running misconfiguration — if you ever pass this, issuance for that hostname is paused until manually unpaused by LE staff |
 
 The big one is the **50 per week per registered domain**. "Registered domain" means `salk.edu`, not `bloom-dev.salk.edu` — so the budget is shared with every Salk team using Let's Encrypt for any subdomain.
 
@@ -39,9 +42,12 @@ A long-lived bloom deployment uses something like **4 cert requests per year per
 
 ## Where you'd actually hit a limit
 
-In practice, the only realistic risk is **Failed Validations: 5 per account per hostname per hour**. If Caddy is misconfigured and retries the same broken challenge 5 times in an hour, that hostname is locked for an hour and you have to wait.
+In practice, the realistic risks are:
 
-The Layer 1/2/3 safeguards in `.github/workflows/deploy.yml` exist specifically to prevent this:
+- **Failed Validations: 5 per account per identifier per hour** — short-term cliff. If Caddy retries the same broken challenge 5 times in an hour, that hostname is locked for an hour. Clears automatically.
+- **Consecutive Authorization Failures: 1,152 per identifier (cumulative)** — long-term cliff. If a misconfiguration is left unattended (e.g. crash-loop overnight against a stale token), the cumulative counter eventually trips and LE pauses issuance for that hostname until manually unpaused. The bigger problem of the two — manual unpause requires opening a support ticket with LE staff.
+
+The Layer 1/2/3 safeguards in `.github/workflows/deploy.yml` exist specifically to prevent both — by failing the deploy fast and stopping the Caddy container on any failure, the cumulative counter never has time to climb:
 
 | Layer | What it catches | Effect on rate limits |
 | --- | --- | --- |
