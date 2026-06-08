@@ -17,18 +17,17 @@ Public surface (exactly three functions):
                                        `bloommcp_input/{name}` in the
                                        `bloommcp-data` bucket.
 
-    write_output_csv(name, df)       → uploads `df` as CSV to object
-                                       `bloommcp_output/{name}` in the
-                                       `bloommcp-data` bucket.
-                                       Uses the Storage API's `upsert: true`, 
-                                       which routes through the
-                                       `agent_update_bloommcp_data`
-                                       RLS policy on overwrite. Returns
-                                       the storage path.
+For tool outputs, use `AnalysisWriter` instead — it routes through the
+versioned `bloommcp_output/<tool_class>_<stem>/v<N>_<date>_<slug>/`
+prefix and updates `manifest.json`. The generic storage helpers below
+(`upload_file`, `write_json`, etc.) take a fully-qualified `key` and are
+called by `AnalysisWriter.commit()`; they are not meant for direct use
+by tools.
 
-`name` is always a basename (no slashes). The helper prepends the
-prefix. Passing a key that contains `/` raises ValueError so a tool
-cannot accidentally cross prefixes or escape the bucket.
+`name` for `read_input_csv` is always a basename (no slashes). The
+helper prepends the input prefix. Passing a key that contains `/` raises
+ValueError so a tool cannot accidentally cross prefixes or escape the
+bucket.
 """
 
 from __future__ import annotations
@@ -43,7 +42,6 @@ import supabase
 
 BUCKET = "bloommcp-data"
 INPUT_PREFIX = "bloommcp_input/"
-OUTPUT_PREFIX = "bloommcp_output/"
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 BLOOM_AGENT_KEY = os.environ.get("BLOOM_AGENT_KEY")
 # checks for keys
@@ -108,38 +106,6 @@ def read_input_csv(name: str) -> pd.DataFrame:
     client = get_postgrest_client()
     payload = client.storage.from_(BUCKET).download(f"{INPUT_PREFIX}{name}")
     return pd.read_csv(io.BytesIO(payload))
-
-
-def write_output_csv(name: str, df: pd.DataFrame) -> str:
-    """Upload `df` as CSV to `bloommcp_output/{name}` in `bloommcp-data`.
-
-    Uses `upsert: true` so a re-run of the same job overwrites the prior
-    output through the `agent_update_bloommcp_data` RLS policy. Without
-    upsert, the second write would fail RLS because bloom_agent lacks a
-    DELETE policy on the bucket.
-
-    Args:
-        name: basename of the CSV (e.g. `qc_run_001.csv`). Must not
-            contain a slash.
-        df: pandas DataFrame to serialize. Written without the index
-            column.
-
-    Returns:
-        Storage path of the written object, including bucket prefix.
-
-    Raises:
-        ValueError: if `name` is empty or contains a slash.
-    """
-    _validate_name(name)
-    key = f"{OUTPUT_PREFIX}{name}"
-    csv_bytes = df.to_csv(index=False).encode("utf-8")
-    client = get_postgrest_client()
-    client.storage.from_(BUCKET).upload(
-        path=key,
-        file=csv_bytes,
-        file_options={"content-type": "text/csv", "upsert": "true"},
-    )
-    return f"{BUCKET}/{key}"
 
 
 # ─── Generic storage helpers ──────────────────────────────────────────────────

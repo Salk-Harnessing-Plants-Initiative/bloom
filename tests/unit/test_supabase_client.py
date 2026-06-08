@@ -71,22 +71,6 @@ def test_read_input_csv_uses_input_prefix(supabase_mock):
     supabase_mock.download.assert_called_once_with("bloommcp_input/accessions.csv")
 
 
-def test_write_output_csv_uses_output_prefix_and_upsert(supabase_mock):
-    df = pd.DataFrame({"col_a": [1, 2], "col_b": [3, 4]})
-    path = supabase_client.write_output_csv("qc_run_001.csv", df)
-    assert path == "bloommcp-data/bloommcp_output/qc_run_001.csv"
-
-    # One upload call, to the right key, with upsert=true.
-    supabase_mock.upload.assert_called_once()
-    kwargs = supabase_mock.upload.call_args.kwargs
-    assert kwargs["path"] == "bloommcp_output/qc_run_001.csv"
-    assert kwargs["file_options"]["upsert"] == "true"
-    assert kwargs["file_options"]["content-type"] == "text/csv"
-    # CSV body matches the DataFrame, without index.
-    parsed = pd.read_csv(io.BytesIO(kwargs["file"]))
-    pd.testing.assert_frame_equal(parsed, df)
-
-
 # ─────────────────────── basename validation ────────────────────────
 
 @pytest.mark.parametrize(
@@ -98,17 +82,6 @@ def test_read_input_csv_rejects_non_basename(bad_name, supabase_mock):
         supabase_client.read_input_csv(bad_name)
     # No network call when validation rejects.
     supabase_mock.download.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "bad_name",
-    ["nested/file.csv", "/leading.csv", "trailing/", ""],
-)
-def test_write_output_csv_rejects_non_basename(bad_name, supabase_mock):
-    df = pd.DataFrame({"x": [1]})
-    with pytest.raises(ValueError):
-        supabase_client.write_output_csv(bad_name, df)
-    supabase_mock.upload.assert_not_called()
 
 
 # ─────────────────────── client construction ────────────────────────
