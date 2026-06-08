@@ -36,7 +36,7 @@ class ExperimentBlock(_StrictModel):
 
 
 class VersionEntry(_StrictModel):
-    """Every time a tool runs and commits a file, a new versio of result is noted on the manifest file.
+    """Every time a tool runs and commits a file, a new version of result is noted on the manifest file.
     'id' is "v<N>" for the Nth run on this experiment.
     """
     id: str
@@ -47,6 +47,7 @@ class VersionEntry(_StrictModel):
     code_versions: CodeVersions
     outputs: dict[str, str]
     user_label: Optional[str] = None
+    version_dir: str = ""
 
 
 class Manifest(_StrictModel):

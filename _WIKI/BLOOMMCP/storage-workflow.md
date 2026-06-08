@@ -13,20 +13,16 @@ side).
 
 ## Why this exists
 
-A bloommcp workflow tool (say, `run_qc_workflow`) takes a CSV of plant
-traits, does something to it (QC, stats, PCA, clustering), and produces
+A bloommcp workflow tool (say, `run_qc_workflow`) takes a CSV of plant traits, does something to it (QC, stats, PCA, clustering), and produces
 output files. We want three things from those outputs:
 
-1. **Persistence** — they outlive the container, so the agent can refer
-   to "the QC run we did yesterday."
-2. **Versioning** — every re-run gets its own `v<N>` folder. We never
-   overwrite a previous run.
-3. **Provenance** — for each run we record the tool, its params, the
-   input file's SHA-256, and the bloommcp version that produced it.
+1. **Persistence** - they outlive the container, so the agent can refer to "the QC run we did yesterday."
+2. **Versioning** - every re-run gets its own `v<N>` folder. We never overwrite a previous run.
+3. **Provenance** - for each run we record the tool, its params, the input file's SHA-256, and the bloommcp version that produced it.
 
-All three live in Supabase Storage, in the `bloommcp-data` bucket. The
-storage layer is the thin Python wrapper that makes writing those three
-things feel like writing to a local folder.
+All three live in Supabase Storage, in the `bloommcp-data` bucket. 
+
+The storage layer is the thin Python wrapper that makes writing those three things feel like writing to a local folder.
 
 ## The big picture
 
@@ -51,16 +47,16 @@ Two rules to internalise:
 
 - **Inputs are flat.** A raw CSV
   `bloommcp_input/<filename>`. No subfolders, no versions.
-- **Outputs are nested by `(tool_class, experiment_stem)`.** All QC runs
-  on `plant_traits.csv` live in `bloommcp_output/qc_plant_traits/`. All
-  stats runs on the same file live in
-  `bloommcp_output/stats_plant_traits/`. They never mix.
+- **Outputs are nested by `(tool_class, experiment_stem)`.**
+- All QC runs on `plant_traits.csv` live in `bloommcp_output/qc_plant_traits/`. All
+  stats runs on the same file live in `bloommcp_output/stats_plant_traits/`.
+- They never mix.
 
 `tool_class` is one of the strings in `CANONICAL_TOOL_CLASSES` in
-[`storage/__init__.py`](../../bloommcp/storage/__init__.py): `qc`,
-`stats`, `dimred`, `clustering`, `outlier`, `viz`, `correlation`,
-`heritability`, `anova`. The experiment stem is
-`Path(filename).stem` — `plant_traits.csv` → `plant_traits`.
+[`storage/__init__.py`](../../bloommcp/storage/__init__.py): `qc`, `stats`, `dimred`, `clustering`, `outlier`, `viz`, `correlation`,
+`heritability`, `anova`. 
+
+The experiment stem is `Path(filename).stem` — `plant_traits.csv` → `plant_traits`.
 
 ## Inside one analysis folder
 
@@ -69,9 +65,8 @@ Every `bloommcp_output/<tool_class>_<stem>/` folder has the same shape:
 - One `manifest.json` at the top — the cumulative catalog of every run
   that has ever happened for this `(tool_class, experiment)` pair.
 - One subfolder per run, named `v<N>_<YYYY-MM-DD>[_<slug>]/` (see
-  `version_dir_name()` in
-  [`versioning.py`](../../bloommcp/storage/versioning.py)). The optional
-  slug is a 32-char-max lowercase `_`-separated version of the
+  `version_dir_name()` in [`versioning.py`](../../bloommcp/storage/versioning.py)).
+- The optional slug is a 32-char-max lowercase `_`-separated version of the
   `user_label`.
 - Inside each subfolder, whatever output files that run produced.
   `_cleaned.csv` is the convention for QC; other tool classes write
@@ -85,41 +80,37 @@ manifest, finds the max `N`, returns `v<max+1>`.
 
 ## The four schema models
 
-`manifest.json` is a strict Pydantic-validated document. The models live
-in [`schema.py`](../../bloommcp/storage/schema.py) and all inherit from
-`_StrictModel`, which sets `extra="forbid"`. That means if a writer
-accidentally adds a field that isn't in the schema, `model_validate`
+`manifest.json` is a strict Pydantic-validated document. 
+
+The models live in [`schema.py`](../../bloommcp/storage/schema.py) and all inherit from `_StrictModel`, which sets `extra="forbid"`.
+
+That means if a writer accidentally adds a field that isn't in the schema, `model_validate`
 raises a `ValidationError` instead of silently writing garbage.
 
-**`Manifest`** is the whole JSON file. It has four fields:
-`manifest_schema_version` (currently `2`, the constant
-`CURRENT_SCHEMA_VERSION`), `experiment` (an `ExperimentBlock`),
-`versions` (a list of `VersionEntry`), and `latest` (the `id` of the
-most recent version, or `None` if there are no runs yet).
+**`Manifest`** is the whole JSON file. It has four fields: `manifest_schema_version` (currently `2`, the constant `CURRENT_SCHEMA_VERSION`), `experiment` (an `ExperimentBlock`), `versions` (a list of `VersionEntry`), and `latest` (the `id` of the most recent version, or `None` if there are no runs yet).
 
-**`ExperimentBlock`** identifies *which* experiment this manifest
-catalogs. It has `filename` (e.g. `plant_traits.csv`), `source_path`
-(the absolute path on the bloommcp container's bind mount where the raw
-CSV was read from), and `input_sha256` (a stream-hashed digest of the
-source CSV, so we can detect if the input ever changed under us).
+**`ExperimentBlock`** identifies *which* experiment this manifest catalogs.It has `filename` (e.g. `plant_traits.csv`), `source_path` and `input_sha256` (a stream-hashed digest of the source CSV, so we can detect if the input ever changed under us).
 
-**`VersionEntry`** is one analysis run. Fields: `id` (`v1`, `v2`, ...),
-`created_at` (UTC ISO-8601 ending in `Z`, seconds precision), `tool`
-(the tool name string, e.g. `"run_qc_workflow"`), `params` (a free-form
-dict of whatever the tool was called with), `based_on_version`
-(currently always `"raw"` — see Known gotchas), `code_versions` (a
-`CodeVersions`), `outputs` (a dict mapping a stable short name like
-`"cleaned"` to a relative path like `"_cleaned.csv"`), and `user_label`
-(optional human-readable string the LLM passed in).
+**`VersionEntry`** is one analysis run — one entry per tool call,
+appended to `Manifest.versions`.
+
+| Field | What it stores |
+|---|---|
+| `id` | `"v1"`, `"v2"`, … — the run's identifier |
+| `created_at` | UTC timestamp, ISO-8601 ending in `Z` |
+| `tool` | The tool function name (e.g. `"run_qc_workflow"`) |
+| `params` | Dict of whatever args the tool was called with |
+| `based_on_version` | Lineage pointer (hardcoded `"raw"` today) |
+| `code_versions` | A `CodeVersions` block — package versions at write time |
+| `outputs` | Dict mapping a short name (`"cleaned"`) to a path relative to the version dir (`"_cleaned.csv"`) |
+| `user_label` | Optional human-readable tag the LLM passed in |
+| `version_dir` | The on-disk folder name for this run (e.g. `"v3_2026-06-07_my_label"`) |
 
 **`CodeVersions`** captures the installed package versions at write
 time, so months later you can tell which release of the code produced a
-given output. Today it has exactly two fields: `bloommcp` and `supabase`
-(defaulting to `"unknown"` if the package isn't installed).
-`sleap_roots_analyze` was dropped from this model because it is
-vendored, not pip-installed, and `importlib.metadata.version()` always
-returned `"unknown"` for it — recording a constant string is not
-provenance.
+given output. 
+
+Today it has exactly two fields: `bloommcp` and `supabase` (defaulting to `"unknown"` if the package isn't installed).
 
 Concrete example of a `manifest.json` after one run:
 
@@ -140,7 +131,8 @@ Concrete example of a `manifest.json` after one run:
       "based_on_version": "raw",
       "code_versions": {"bloommcp": "0.1.0", "supabase": "2.31.0"},
       "outputs": {"cleaned": "_cleaned.csv"},
-      "user_label": "initial_run"
+      "user_label": "initial_run",
+      "version_dir": "v1_2026-06-07_initial_run"
     }
   ],
   "latest": "v1"
@@ -149,41 +141,14 @@ Concrete example of a `manifest.json` after one run:
 
 ## The write flow
 
-Every workflow tool follows the same five-step recipe. The canonical
-entry point is
-[`build_writer`](../../bloommcp/tools/workflows/_helpers.py), which is
-the *only* place workflow tools should construct an `AnalysisWriter`.
+> **Adding a new workflow tool?** Use the guide in [writing-a-new-tool.md](./writing-a-new-tool.md). 
+>
+> This section documents what happens *under the hood* during a commit.
 
-```python
-from pathlib import Path
-from tools.workflows._helpers import build_writer
+Every workflow tool goes through the same machinery:
 
-def run_qc_workflow(experiment_filename: str, threshold: float, user_label: str | None = None):
-    # 1. Build the writer for this (experiment, tool_class) pair.
-    source_csv = Path("/app/data/SLEAP_OUT_CSV") / experiment_filename
-    writer = build_writer(
-        experiment_filename=experiment_filename,
-        tool_class="qc",
-        source_csv=source_csv,
-    )
-
-    # 2. Allocate a new version. Returns a local tmp directory you can write into.
-    staging_dir = writer.create_version(
-        tool_name="run_qc_workflow",
-        params={"threshold": threshold},
-        user_label=user_label,
-    )
-
-    # 3. Write your outputs into the staging dir as if it were a normal folder.
-    cleaned_df = do_qc(source_csv, threshold)
-    cleaned_df.to_csv(staging_dir / "_cleaned.csv", index=False)
-
-    # 4. Commit. The dict maps a stable short name -> path relative to staging_dir.
-    entry = writer.commit({"cleaned": "_cleaned.csv"})
-
-    # 5. Return something the LLM can use to reference this run.
-    return {"version_id": entry.id, "user_label": entry.user_label}
-```
+[`build_writer`](../../bloommcp/tools/workflows/_helpers.py) constructs an `AnalysisWriter`, the tool calls `create_version()` to get a tmp
+staging directory, writes outputs into it, then calls `commit({...})` to upload and register.
 
 What `commit()` does, step by step (see
 [`writer.py`](../../bloommcp/storage/writer.py)):
@@ -336,3 +301,11 @@ over otherwise.
 | Manifest path           | `<analysis_dir>/manifest.json`                                    | `manifest.py`                                                 |
 | `tool_class` registry | `CANONICAL_TOOL_CLASSES` in `storage/__init__.py`               | `__init__.py`                                                 |
 | Upsert flag             | the literal**string** `"true"`, not the bool `True`       | required by the Supabase SDK's `file_options`                 |
+
+## Where to look next
+
+- **Writing a new tool that uses this layer?** Follow the recipe in
+  [writing-a-new-tool.md](./writing-a-new-tool.md). This doc is the
+  reference; that doc is the action.
+- The role + RLS policies that gate writes to `bloommcp-data` live in
+  [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md).

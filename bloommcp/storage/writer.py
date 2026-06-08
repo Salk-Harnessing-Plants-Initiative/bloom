@@ -105,6 +105,7 @@ class AnalysisWriter:
             code_versions=get_code_versions(),
             outputs=dict(outputs),
             user_label=self._pending_user_label,
+            version_dir=self._pending_version_dir_name,
         )
 
         existing = self.analysis_dir.read_manifest()
