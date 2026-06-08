@@ -42,6 +42,8 @@ REQUIRED_BASE_ROLES = [
     "supabase_admin",
     "supabase_auth_admin",
     "supabase_storage_admin",
+    "pgbouncer",
+    "supabase_functions_admin",
 ]
 # Application roles created by migrations (bloom_role_rls_policies etc.).
 REQUIRED_APP_ROLES = ["bloom_admin", "bloom_user", "bloom_writer", "bloom_agent"]
