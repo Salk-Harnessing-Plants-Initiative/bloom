@@ -23,15 +23,13 @@ services:
   # Caddy (Reverse Proxy)
   # -------------------
   caddy:
-    # Built from caddy/Dockerfile with the caddy-dns/cloudflare plugin
-    # baked in — required for ACME DNS-01 challenges via CNAME delegation
-    # to bloom-acme.talmolab.org. Build args make version bumps a one-line
-    # change. See caddy/Dockerfile for full rationale.
+    # Built from caddy/Dockerfile with the caddy-dns/cloudflare plugin baked
+    # in — required for ACME DNS-01 challenges via CNAME delegation to
+    # bloom-acme.talmolab.org. Version + plugin SHA pins live in the
+    # Dockerfile (digest-pinned FROM lines + commit-pinned plugin), not here.
+    # See caddy/Dockerfile for the bump procedure.
     build:
       context: ./caddy
-      args:
-        CADDY_VERSION: "2.11.3"
-        CLOUDFLARE_PLUGIN_REF: "v0.2.4"
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

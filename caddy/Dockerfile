@@ -18,30 +18,36 @@
 # Why a custom Dockerfile (not a community image like caddybuilds/caddy-cloudflare):
 #   Caddy terminates TLS for the entire stack. We prefer to trust only the
 #   upstream Caddy project for that surface — official base image + only the
-#   well-maintained caddy-dns/cloudflare plugin, pinned to known versions.
+#   well-maintained caddy-dns/cloudflare plugin, pinned to known digests.
 #
-# Version pinning rationale:
-#   CADDY_VERSION           2.11.3   — latest stable as of 2026-05; patches
-#                                      CVE-2026-30851 (forward_auth privesc,
-#                                      fixed in 2.11.2) and CVE-2026-27589
-#                                      (admin API CSRF, fixed in 2.11.1).
-#   CLOUDFLARE_PLUGIN_REF   v0.2.4   — latest stable of caddy-dns/cloudflare
-#                                      (2026-03), tested against Caddy 2.11.x.
+# Version + digest pinning rationale:
+#   caddy 2.11.3       latest stable as of 2026-05; patches CVE-2026-30851
+#                      (forward_auth privesc, fixed in 2.11.2) and
+#                      CVE-2026-27589 (admin API CSRF, fixed in 2.11.1).
+#   cloudflare plugin  fd0213c5482b3dd2a1f14fbce832fcff8e1ac4f8 is the commit
+#                      tagged v0.2.4 (2026-03), tested against Caddy 2.11.x.
+#                      We pin to the commit SHA, not the tag — git tags are
+#                      moveable; a SHA is not.
+#
+#   The FROM lines use @sha256:... digests, not the floating version tag, so
+#   a rebuild months from now reproduces the exact same image even if the
+#   upstream tag is re-pushed. To bump:
+#     1. caddy base images:
+#          curl -sL "https://hub.docker.com/v2/repositories/library/caddy/tags/<NEW_TAG>" \
+#            | python3 -c "import json,sys;print(json.load(sys.stdin)['digest'])"
+#     2. cloudflare plugin:
+#          git ls-remote --tags https://github.com/caddy-dns/cloudflare.git refs/tags/<NEW_TAG>
 # =============================================================================
-
-ARG CADDY_VERSION=2.11.3
-ARG CLOUDFLARE_PLUGIN_REF=v0.2.4
 
 # -----------------------------------------------------------------------------
 # Stage 1 — build a Caddy binary with the Cloudflare DNS plugin compiled in.
 #
-# The official caddy:${CADDY_VERSION}-builder-alpine image already ships
-# xcaddy paired with the matching Caddy version, so we don't pin xcaddy here.
+# The official caddy:2.11.3-builder-alpine image already ships xcaddy paired
+# with the matching Caddy version, so we don't pin xcaddy separately.
 # -----------------------------------------------------------------------------
-FROM caddy:${CADDY_VERSION}-builder-alpine AS builder
-ARG CLOUDFLARE_PLUGIN_REF
+FROM caddy:2.11.3-builder-alpine@sha256:3eae6b351ecdb05da6d16e341261a457692d344a435764c5ece7a60cf03a23f3 AS builder
 RUN xcaddy build \
-    --with github.com/caddy-dns/cloudflare@${CLOUDFLARE_PLUGIN_REF}
+    --with github.com/caddy-dns/cloudflare@fd0213c5482b3dd2a1f14fbce832fcff8e1ac4f8
 
 # -----------------------------------------------------------------------------
 # Stage 2 — runtime image.
@@ -49,5 +55,5 @@ RUN xcaddy build \
 # Same slim Alpine base as the stock caddy image; we just swap in our binary.
 # Image size delta vs. stock: ~5 MB (the linked-in Cloudflare API client).
 # -----------------------------------------------------------------------------
-FROM caddy:${CADDY_VERSION}-alpine
+FROM caddy:2.11.3-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
