@@ -1,0 +1,212 @@
+# Tasks — fix-local-dev-setup
+
+TDD is mandatory: for each implementation item, write the test first, run it, and
+confirm it fails for the right reason (RED) before writing implementation code
+(GREEN), then refactor. "Verify" items require captured command output, not
+assertion. Keep each numbered section's RED+GREEN in a single commit so
+`git bisect` stays green. Issue references: closes #124, advances #104,
+addresses #118.
+
+## 1. Supersede the prior change
+
+- [ ] 1.1 Confirm `automate-environment-setup` is unimplemented (0/43); record in
+      `proposal.md` that this change supersedes it (done).
+- [ ] 1.2 Remove `openspec/changes/automate-environment-setup/`.
+- [ ] 1.3 Verify: run `openspec list` and capture output proving
+      `automate-environment-setup` no longer appears and `fix-local-dev-setup`
+      does.
+
+## 2. CRLF fix — `.gitattributes` (closes #124) (TDD)
+
+- [ ] 2.1 RED: add `tests/unit/test_init_script_line_endings.py` asserting the
+      **committed blob** of every file under `volumes/db/` (both `*.sh` and `*.sql`)
+      contains no `\r` byte — read via `git cat-file -p HEAD:<path>` / `git show`,
+      NOT the working tree (a worktree read is CRLF on a Windows checkout and LF on
+      Linux CI regardless of the fix, making it a platform-detector, not a
+      regression test). Run; confirm it fails — the committed blobs are CRLF for
+      both `.sql` (no rule) AND `.sh` (the `*.sh eol=lf` rule was never
+      renormalized, so e.g. `_supabase.sh` still has CR bytes in HEAD).
+- [ ] 2.2 GREEN: add `*.sql text eol=lf` and an explicit `volumes/db/** text
+      eol=lf` to the existing `.gitattributes`; run `git add --renormalize .` to
+      rewrite the affected tracked blobs to LF (this fixes the `.sh` files too).
+- [ ] 2.3 Verify: re-run 2.1 (passes) and `git diff --stat` to show only
+      line-ending churn on `volumes/db/*`; capture output.
+
+## 3. Committed env template + `.gitignore` (TDD)
+
+- [ ] 3.1 RED: add `tests/unit/test_env_dev_example.py` asserting (a)
+      `.env.dev.example` exists; (b) it contains every variable `db-dev` requires
+      from `docker-compose.dev.yml`, **reusing the proven `${VAR:-default}`
+      extraction regex from `tests/unit/test_env_defaults.py`** (do not invent a
+      new one) plus a justified exclude-set for vars with safe compose defaults;
+      (c) no value looks like a real secret (placeholders only); (d) it uses
+      `POSTGRES_HOST_PORT`; (e) the committed file is LF-only. Run; confirm failure
+      (file absent).
+- [ ] 3.2 GREEN: create `.env.dev.example` with every required variable, a comment
+      per variable, and placeholder values only.
+- [ ] 3.3 RED: extend the test to assert `.gitignore` ignores `.env.dev` and
+      `.env.dev.backup` and does NOT ignore `.env.dev.example`. Run; confirm
+      failure (blanket `.env*` currently ignores the example).
+- [ ] 3.4 GREEN: add `!.env.dev.example` and `!**/.env.dev.example` after the
+      `.env*`/`**/.env.*` lines in `.gitignore`; confirm `.env.dev.backup` stays
+      ignored; remove duplicate entries.
+- [ ] 3.5 Verify: `git status` and `git check-ignore .env.dev .env.dev.backup
+      .env.dev.example`; capture output. Confirm `.env.dev.example` is NOT pulled
+      into the prod/staging env-parity check (`scripts/verify_env_parity.py` /
+      `tests/unit/test_verify_env_parity.py`) so the dev template can't drift the
+      parity gate; if it would be, scope it out explicitly.
+
+## 4. Credential generator `scripts/init_dev.py` + `make init` (#104) (TDD)
+
+- [ ] 4.1 GREEN (deps): append `pyjwt` and `python-dotenv` to
+      `[project.optional-dependencies].test` in `pyproject.toml` (which already
+      carries `pandas`/`supabase` from current staging). `pyjwt` is needed at
+      unit-test collection time to verify minted JWTs; already used by
+      `scripts/generateJWT_key.py`. Run `tests/unit/` collection; confirm import
+      works. Regenerate the root `uv.lock` (`uv lock`) so the committed lock
+      matches the new `test` extra (CI runs `--extra test` without `--frozen`, so
+      it won't fail, but the lock must not silently drift).
+- [ ] 4.2 RED: add `tests/unit/test_init_dev.py` asserting the generator (invoked
+      via `uv run --with pyjwt,python-dotenv`): produces `.env.dev` from the
+      template; `ANON_KEY`/`SERVICE_ROLE_KEY`/`BLOOM_AGENT_KEY` are JWTs that
+      verify against the generated `JWT_SECRET` and carry
+      `role:anon`/`role:service_role`/`role:bloom_agent`; `DB_ENC_KEY` is exactly
+      16 bytes; `VAULT_ENC_KEY` 32; `SECRET_KEY_BASE` ≥64; `SUPAVISOR_ENC_KEY` 64
+      hex; `JWT_SECRET` ≥32; no placeholders remain. Run; confirm failure (script
+      absent).
+- [ ] 4.3 RED: idempotency/boundary tests — second run without `--force` refuses
+      (non-zero exit, message); `--force` backs up the existing `.env.dev` then
+      regenerates, and when a previous `.env.dev.backup` already exists it writes a
+      timestamped backup (`.env.dev.backup.<timestamp>`) so no prior credentials
+      are lost; malformed/missing template errors clearly; CRLF in the template is
+      tolerated; the script prints no secret values to stdout. Run; confirm
+      failure.
+- [ ] 4.4 GREEN: implement `scripts/init_dev.py`, reusing the verified key-size
+      logic from `scripts/generate-secrets.sh` and the JWT-minting pattern from
+      `scripts/generateJWT_key.py`/`generate_KEYS`. Add the `make init` target.
+- [ ] 4.5 GREEN: fix/retire `scripts/generate_KEYS` (the non-runnable stub #104
+      calls out) — either delete it or replace its body with a pointer to
+      `make init`.
+- [ ] 4.6 Verify: run `make init` in a clean temp dir; capture output and the
+      resulting `.env.dev` KEY NAMES only (never values).
+
+## 5. Unify host Postgres port (TDD)
+
+- [ ] 5.1 RED: add `tests/unit/test_port_var_consistency.py` asserting no
+      `POSTGRES_EXTERNAL_PORT` remains in `.env.dev.example`,
+      `docker-compose.dev.yml`, or docs; that `POSTGRES_HOST_PORT` is used in all
+      of them and in `conftest.py`; and that the `migrate-local` recipe's
+      `--db-url` references `POSTGRES_HOST_PORT` (not a hardcoded `5432`). Run;
+      confirm failure.
+- [ ] 5.2 GREEN: rename `POSTGRES_EXTERNAL_PORT` → `POSTGRES_HOST_PORT` in
+      `.env.dev.example` and `docker-compose.dev.yml` (port mapping only — no
+      data-mount change); update local `.env.dev`.
+- [ ] 5.3 Verify: `make dev-up` starts `db-dev` with the renamed var on a
+      supported platform; capture `docker ps` showing the published port.
+
+## 6. Fix `make migrate-local` (port + password + --debug) (TDD)
+
+- [ ] 6.1 RED: add `tests/unit/test_makefile_migrate_local.py` asserting the
+      `migrate-local` recipe builds its `--db-url` from `POSTGRES_HOST_PORT`,
+      `POSTGRES_PASSWORD`, `POSTGRES_USER`, `POSTGRES_DB` (no hardcoded `5432`,
+      no hardcoded `supabase_admin`/`postgres` fallback that masks the generated
+      password) and passes `--debug`. Add a **behavioral** assertion: run
+      `make -n migrate-local` with `POSTGRES_HOST_PORT=5433` in the environment and
+      assert the printed command contains `:5433` and not `:5432` (guards the
+      wrong-Postgres footgun in the documented override). Run; confirm failure.
+- [ ] 6.2 GREEN: rewrite the `migrate-local` recipe to source `.env.dev` and build
+      the URL from those vars with `--debug`, mirroring CI's pattern
+      (`pr-checks.yml`).
+- [ ] 6.3 Verify: run `make migrate-local` against a healthy `db-dev` created by
+      `make init`; capture output showing all migrations applied.
+
+## 7. Wire integration tests to local dev (TDD)
+
+- [ ] 7.1 RED: add `tests/unit/test_conftest_env_loading.py` asserting
+      `conftest.py`'s loader includes `.env.dev` as a source AFTER
+      `.env.prod`/`.env.ci` (precedence preserved: with both `.env.ci` and
+      `.env.dev` present, `.env.ci` wins). Run; confirm failure.
+- [ ] 7.2 GREEN: update `tests/integration/conftest.py` to also load `.env.dev`
+      when present, after the existing sources.
+- [ ] 7.3 GREEN: add a `make test-integration` target wrapping
+      `uv run --extra test pytest tests/integration/`.
+- [ ] 7.4 Verify: with the stack up and `.env.dev` present, run
+      `make test-integration`; capture output showing `pg_conn` tests execute
+      (not skipped).
+
+## 8. Health check + clean-init verification (#104) (TDD)
+
+- [ ] 8.1 RED: add `tests/integration/test_local_dev_bootstrap.py` asserting
+      base roles (`postgres`, `anon`, `authenticated`, `service_role`,
+      `authenticator`, `supabase_admin`, `supabase_auth_admin`,
+      `supabase_storage_admin`) and application roles (`bloom_admin`,
+      `bloom_user`, `bloom_writer`, `bloom_agent`, created by migrations); `auth`
+      schema + `auth.uid()` (with a **bounded poll — up to 60s at 2s intervals via
+      the `pg_conn` fixture**, matching CI's `storage.buckets` poll, since CI does
+      not explicitly wait for `auth.uid()`); `storage` schema + `storage.buckets`;
+      and migration completeness via **set comparison, reusing the helper logic in
+      `tests/integration/test_migrations.py::test_all_migrations_recorded`** (every
+      `*.sql` file recorded, none missing/unexpected — NOT a count). Frame it as an
+      acceptance/guard test (it passes on a correct init). Run against the current
+      (not-yet-correct) local stack; confirm it fails for the right reason.
+- [ ] 8.2 RED: add a test for the partial-migration case (spec scenario "Partial
+      migration run is reported as failure") — seed `schema_migrations` with a
+      strict subset of the migration files and assert `check_health.py` exits
+      non-zero (set comparison flags the missing entries). Run; confirm failure.
+- [ ] 8.3 GREEN: implement `scripts/check_health.py` + `make check` (every service
+      with a Compose healthcheck reports `healthy` and none exited non-zero + the
+      base/application role + schema assertions above + migration completeness via
+      the set-comparison check).
+- [ ] 8.4 GREEN: add `make verify-dev` (clean reset → `dev-up` → `migrate-local`
+      → `make check`).
+- [ ] 8.5 Verify: run `make verify-dev` on a supported platform (Linux/macOS or
+      WSL2) and capture passing output.
+
+## 9. Documentation (DEV_SETUP.md, PROD_SETUP.md, README.md, Makefile help, commands)
+
+- [ ] 9.1 RED: add `tests/unit/test_dev_setup_doc.py` asserting every
+      `make <target>` referenced in `DEV_SETUP.md`, `PROD_SETUP.md`, and
+      `README.md`, AND advertised in `make help`, resolves to an actual rule
+      definition (`^target:`/`.PHONY`), not help text — so the
+      `apply-migrations`/`drop-tables` references (in both DEV_SETUP and
+      PROD_SETUP) fail the test. Run; confirm failure.
+- [ ] 9.2 GREEN: fix the `Makefile` `help` text (remove `drop-tables`, add new
+      targets) and rewrite `DEV_SETUP.md` to: remove phantom targets; document the
+      canonical path (`make init` → `make dev-up` → `make migrate-local` →
+      `make load-test-data` → `make test-integration` → `make check`/
+      `make verify-dev`); list the env keys incl. `BLOOM_AGENT_KEY` (not just
+      `ANON_KEY`/`SERVICE_ROLE_KEY`); add a WSL2 section (clone into the Linux FS,
+      not `/mnt/c`; `make` prerequisite per #118; `supabase` CLI install + pinned
+      `SUPABASE_VERSION`); document the `POSTGRES_HOST_PORT` override; link to
+      `_WIKI/SUPABASE/README.md` for roles/RLS (no duplication) and add the
+      CRLF/#124 note to that wiki's Known Issues.
+- [ ] 9.3 GREEN: fix `PROD_SETUP.md` (`apply-migrations` → `migrate-local`); in
+      `README.md` drop the hardcoded `localhost:5432` and the duplicated command
+      list (point to `DEV_SETUP.md` for DRY); correct the hardcoded
+      `localhost:5432`/`PGPASSWORD=postgres` and removed-`_migrations`-table
+      references in `.claude/commands/validate-env.md` and
+      `.claude/commands/database-migration.md`.
+- [ ] 9.4 Verify: run the doc test; capture passing output.
+
+## 10. Full end-to-end verification (verification-before-completion)
+
+- [ ] 10.1 Tear down any existing local stack and remove the local cluster
+      (`volumes/db/data`) so the init is genuinely clean.
+- [ ] 10.2 On a supported environment (WSL2 on this Windows machine with the repo
+      on the Linux FS, or Linux/macOS): `make init`, `make dev-up`, wait healthy,
+      `make migrate-local`, `make load-test-data`.
+- [ ] 10.3 Run `make verify-dev` and `make test-integration`; capture full output
+      proving: `db-dev` healthy, all required base + `bloom_*` roles present,
+      `auth`/`storage` schemas present, every `supabase/migrations/*.sql` recorded
+      (set comparison, zero missing/unexpected), and a sample integration test
+      passes against representative data.
+- [ ] 10.4 Run the full unit suite (`uv run --extra test pytest tests/unit/`), the
+      lint/format gates (`uv run black --check .`, `uv run ruff check .`, and/or
+      `uv run pre-commit run --all-files`), and
+      `openspec validate fix-local-dev-setup --strict`; capture output. Confirm the
+      new tests do not break CI's `python-audit` (runs `tests/unit/`),
+      `validate-env-defaults`, or `compose-health-check` jobs (precedence test
+      green; `pyjwt`/`python-dotenv` resolve; bootstrap test CI-safe via the
+      bounded poll).
+- [ ] 10.5 Resolve `design.md` open questions with verified outcomes; mark tasks
+      complete only after evidence is captured.
