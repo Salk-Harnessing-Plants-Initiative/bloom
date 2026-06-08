@@ -216,7 +216,7 @@ new-migration:
 ## environment. Host port is resolved at parse time (env > .env.dev > 5432) so
 ## it is visible in `make -n`; the password/user/db are sourced at runtime so
 ## secrets never appear in `make -n` output.
-POSTGRES_HOST_PORT ?= $(shell sed -n 's/^POSTGRES_HOST_PORT=//p' .env.dev 2>/dev/null | head -n1)
+POSTGRES_HOST_PORT ?= $(shell sed -n 's/^POSTGRES_HOST_PORT=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r')
 ifeq ($(strip $(POSTGRES_HOST_PORT)),)
 POSTGRES_HOST_PORT := 5432
 endif
@@ -233,9 +233,9 @@ migrate-local:
 		exit 1; \
 	fi
 	@set -e; \
-	PG_USER=$$(sed -n 's/^POSTGRES_USER=//p' .env.dev 2>/dev/null | head -n1); PG_USER=$${PG_USER:-supabase_admin}; \
-	PG_PASSWORD=$$(sed -n 's/^POSTGRES_PASSWORD=//p' .env.dev 2>/dev/null | head -n1); \
-	PG_DB=$$(sed -n 's/^POSTGRES_DB=//p' .env.dev 2>/dev/null | head -n1); PG_DB=$${PG_DB:-postgres}; \
+	PG_USER=$$(sed -n 's/^POSTGRES_USER=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); PG_USER=$${PG_USER:-supabase_admin}; \
+	PG_PASSWORD=$$(sed -n 's/^POSTGRES_PASSWORD=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
+	PG_DB=$$(sed -n 's/^POSTGRES_DB=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); PG_DB=$${PG_DB:-postgres}; \
 	supabase db push \
 		--db-url "postgresql://$${PG_USER}:$${PG_PASSWORD}@127.0.0.1:$(POSTGRES_HOST_PORT)/$${PG_DB}?sslmode=disable" \
 		--debug \
