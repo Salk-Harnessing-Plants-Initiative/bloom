@@ -73,6 +73,11 @@ Only needed for specific features / conflicts:
   ```
   The stack, `make migrate-local`, and the integration tests all honour it.
 
+> **Re-running `make init FORCE=1`:** moves your existing `.env.dev` to
+> `.env.dev.backup` before writing a fresh one. Anything you added manually
+> (the keys above) won't appear in the new file — `grep` the backup if you
+> need to copy values back.
+
 ---
 
 ## MinIO Storage Setup
