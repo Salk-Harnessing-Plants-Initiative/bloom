@@ -167,7 +167,7 @@ reset-storage:
 	
 	@echo "Waiting for database to be ready..."
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
-		if docker exec db-dev pg_isready -U supabase_admin -h localhost >/dev/null 2>&1; then \
+		if docker compose -f docker-compose.dev.yml exec -T db-dev pg_isready -U supabase_admin -h localhost >/dev/null 2>&1; then \
 			echo "Database is ready"; \
 			break; \
 		fi; \
@@ -176,7 +176,7 @@ reset-storage:
 	done
 	
 	@echo "Truncating all tables to remove seed data..."
-	@docker exec db-dev psql -U supabase_admin -d postgres -c "\
+	@docker compose -f docker-compose.dev.yml exec -T db-dev psql -U supabase_admin -d postgres -c "\
 		DO \$$\$$ \
 		DECLARE \
 			r RECORD; \
@@ -276,7 +276,7 @@ verify-dev: check-uv
 	$(MAKE) dev-up
 	@echo "Waiting for db-dev to accept connections..."
 	@for i in $$(seq 1 60); do \
-		if docker exec db-dev pg_isready -U supabase_admin -h localhost >/dev/null 2>&1; then \
+		if docker compose -f docker-compose.dev.yml exec -T db-dev pg_isready -U supabase_admin -h localhost >/dev/null 2>&1; then \
 			echo "db-dev ready"; break; \
 		fi; \
 		sleep 2; \
