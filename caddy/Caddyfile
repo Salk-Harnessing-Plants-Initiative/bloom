@@ -53,8 +53,11 @@
 	# One wildcard SAN cert covering apex + *.bloom-dev.salk.edu via ACME
 	# DNS-01 against Cloudflare's API. For http://-scheme addresses (CI mode)
 	# the tls block is parsed but inert — Caddy does not request a cert.
+	#
+	# `dns_challenge_override_domain` is what makes the CNAME delegation work.
 	tls {
 		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+		dns_challenge_override_domain bloom-acme.talmolab.org
 	}
 
 	# -------------------

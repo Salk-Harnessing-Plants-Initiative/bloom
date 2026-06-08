@@ -42,6 +42,8 @@ When Let's Encrypt does the DNS-01 lookup at `_acme-challenge.bloom-dev.salk.edu
 
 Both the apex (`bloom-dev.salk.edu`) and the wildcard (`*.bloom-dev.salk.edu`) ACME challenges land at the same name (`_acme-challenge.bloom-dev.salk.edu`), so **one** Salk CNAME covers both prod and staging.
 
+> **`dns_challenge_override_domain` is required for CNAME delegation to work.** Without it, the `caddy-dns/cloudflare` plugin walks up from the challenged name (`_acme-challenge.bloom-dev.salk.edu`), can't find `salk.edu` in our Cloudflare account, and fails with `expected 1 zone, got 0 for salk.edu.` The override tells Caddy to write the TXT at `bloom-acme.talmolab.org` directly (the zone we actually control), bypassing the plugin's zone-lookup walk. See the `tls { ... dns_challenge_override_domain bloom-acme.talmolab.org }` directive in [caddy/Caddyfile](../../caddy/Caddyfile).
+
 ## Site addresses
 
 The Caddyfile site block opens with `{$CADDY_SITE_ADDRESSES}`, which expands per-environment to a comma-separated, scheme-prefixed list:
