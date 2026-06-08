@@ -21,10 +21,17 @@
 #   well-maintained caddy-dns/cloudflare plugin, pinned to known digests.
 #
 # Version + digest pinning rationale:
-#   caddy 2.11.3       latest stable patch release as of 2026-05. For the
-#                      specific security fixes included in this and earlier
-#                      2.11.x releases, see the upstream CHANGELOG:
-#                      https://github.com/caddyserver/caddy/blob/master/CHANGELOG.md
+#   caddy 2.11.3       latest stable patch release as of 2026-05. Notable
+#                      security fixes inherited from earlier 2.11.x:
+#                        - CVE-2026-30851 (forward_auth copy_headers fails
+#                          to strip client-supplied identity headers,
+#                          allowing privilege escalation; fixed in 2.11.2)
+#                          https://nvd.nist.gov/vuln/detail/CVE-2026-30851
+#                        - CVE-2026-27589 (admin API CSRF via cross-origin
+#                          POST /load to localhost:2019; fixed in 2.11.1)
+#                          https://nvd.nist.gov/vuln/detail/CVE-2026-27589
+#                      Full upstream CHANGELOG:
+#                        https://github.com/caddyserver/caddy/blob/master/CHANGELOG.md
 #   cloudflare plugin  fd0213c5482b3dd2a1f14fbce832fcff8e1ac4f8 is the commit
 #                      tagged v0.2.4 (2026-03), tested against Caddy 2.11.x.
 #                      We pin to the commit SHA, not the tag — git tags are
