@@ -12,8 +12,14 @@
 *.cfg text eol=lf
 *.ini text eol=lf
 *.sh text eol=lf
+*.sql text eol=lf
 *.gitignore text eol=lf
 *.gitattributes text eol=lf
+
+# Container init scripts under volumes/db/ are bind-mounted into the Linux
+# db-dev container; a CRLF shebang breaks them with "bad interpreter" and the
+# database is left half-initialised (issue #124). Force LF for everything there.
+volumes/db/** text eol=lf
 
 # Jupyter notebooks
 *.ipynb text eol=lf
