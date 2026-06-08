@@ -41,6 +41,27 @@ DEFAULT_OUTPUT = REPO_ROOT / ".env.dev"
 PLACEHOLDER = "CHANGEME"
 _JWT_EXP_SECONDS = 5 * 365 * 24 * 3600  # 5 years
 
+# The names of every value `generate_secrets` produces. Kept as a constant
+# (not derived from the secrets dict) so the post-run summary can print the key
+# names without a secret-valued expression flowing into `print` — see
+# generate_secrets, which asserts the two stay in sync.
+GENERATED_KEY_NAMES = (
+    "ANON_KEY",
+    "BLOOMMCP_API_KEY",
+    "BLOOM_AGENT_KEY",
+    "DASHBOARD_PASSWORD",
+    "DB_ENC_KEY",
+    "JWT_SECRET",
+    "LANGCHAIN_POSTGRES_URL",
+    "MINIO_ROOT_PASSWORD",
+    "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+    "POSTGRES_PASSWORD",
+    "SECRET_KEY_BASE",
+    "SERVICE_ROLE_KEY",
+    "SUPAVISOR_ENC_KEY",
+    "VAULT_ENC_KEY",
+)
+
 # JWT role claim per generated key.
 _JWT_ROLES = {
     "ANON_KEY": "anon",
@@ -94,6 +115,7 @@ def generate_secrets(now: int | None = None) -> dict[str, str]:
     values["LANGCHAIN_POSTGRES_URL"] = (
         f"postgresql://supabase_admin:{values['POSTGRES_PASSWORD']}@db-dev:5432/postgres"
     )
+    assert set(values) == set(GENERATED_KEY_NAMES), "generated keys drifted from GENERATED_KEY_NAMES"
     return values
 
 
@@ -166,8 +188,9 @@ def main(argv: list[str] | None = None) -> int:
     values = generate_secrets(now)
     args.output.write_text(render(template_text, values), encoding="utf-8", newline="\n")
 
-    print(f"Wrote {args.output} with {len(values)} generated local secrets.")
-    print("Generated keys: " + ", ".join(sorted(values)))
+    print(f"Wrote {args.output} with {len(GENERATED_KEY_NAMES)} generated local secrets.")
+    # Names come from the constant, never from the secret-valued dict.
+    print("Generated keys: " + ", ".join(GENERATED_KEY_NAMES))
     print(
         "Next: set OPENAI_API_KEY / LANGCHAIN_API_KEY if you need those features, "
         "then `make dev-up`."
