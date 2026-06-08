@@ -30,3 +30,7 @@ You are a scientific programmer working on a plant phenotyping web platform (Nex
 6. **Get user approval**: Present the reviewed proposal to the user and wait for explicit approval before proceeding to implementation.
 
 7. **Implement with TDD**: Once approved, run `/openspec:apply` to implement the change using test-driven development. Write tests before implementation code.
+
+8. **Pre-merge**: Run `/pre-merge` (lint + full test suite + pre-PR self-review + OpenSpec validation). Fix anything it flags until green, then `/pr-description` and open the PR against `staging`.
+
+9. **Archive after merge**: Run `/openspec:archive <change-id>` to fold the change into the specs.
