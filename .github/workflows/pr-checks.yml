@@ -158,6 +158,9 @@ jobs:
       - name: Build bloommcp image
         run: docker build --provenance=false -f bloommcp/Dockerfile -t bloommcp:ci ./bloommcp
 
+      - name: Build caddy image
+        run: docker build --provenance=false -f caddy/Dockerfile -t caddy:ci ./caddy
+
       # Scan built images for CVEs and generate markdown report
       - name: Scan bloom-web image
         uses: aquasecurity/trivy-action@v0.35.0
@@ -189,6 +192,16 @@ jobs:
           output: 'trivy-bloommcp.txt'
           trivyignores: '.trivyignore'
 
+      - name: Scan caddy image
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'caddy:ci'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-caddy.txt'
+          trivyignores: '.trivyignore'
+
       - name: Generate Trivy report
         if: always()
         run: |
@@ -197,7 +210,7 @@ jobs:
             echo ""
             echo "| Image | Critical | High |"
             echo "|-------|----------|------|"
-            for img in bloom-web langchain bloommcp; do
+            for img in bloom-web langchain bloommcp caddy; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
                 crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || echo 0)
@@ -206,7 +219,7 @@ jobs:
               fi
             done
             echo ""
-            for img in bloom-web langchain bloommcp; do
+            for img in bloom-web langchain bloommcp caddy; do
               file="trivy-${img}.txt"
               if [ -f "$file" ] && [ -s "$file" ]; then
                 cves=$(grep -oP 'CVE-\d+-\d+' "$file" | sort -u | tr '\n' ', ' | sed 's/,$//')
@@ -254,6 +267,14 @@ jobs:
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'bloommcp:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+
+      - name: Check caddy for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'caddy:ci'
           severity: 'CRITICAL'
           exit-code: '1'
           trivyignores: '.trivyignore'
@@ -349,8 +370,13 @@ jobs:
           echo "CORS_ORIGINS=http://localhost" >> .env.ci
           echo "CADDY_HTTP_LISTEN_PORT=80" >> .env.ci
           echo "CADDY_HTTPS_LISTEN_PORT=443" >> .env.ci
-          echo "CADDY_HTTP_PORT=:80" >> .env.ci
-          echo "CADDY_TLS_DIRECTIVE=" >> .env.ci
+          # http:// scheme forces HTTP-only — Caddy parses the tls block but
+          # never requests a cert (no automatic HTTPS for http:// addresses).
+          echo "CADDY_SITE_ADDRESSES=http://localhost" >> .env.ci
+          # 40-char placeholder satisfies the caddy-dns/cloudflare plugin's
+          # token-format check at startup. No real Cloudflare API call is ever
+          # made in CI because port 443 isn't bound.
+          echo "CLOUDFLARE_API_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >> .env.ci
           echo "KONG_PORT=8000" >> .env.ci
           echo "BLOOM_WEB_PORT=3000" >> .env.ci
           echo "STUDIO_PORT=3000" >> .env.ci

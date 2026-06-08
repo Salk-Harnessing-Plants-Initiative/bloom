@@ -21,20 +21,20 @@ if [ "$ENV" = "prod" ]; then
   DOMAIN_MINIO="minio.bloom-dev.salk.edu"
   CADDY_HTTP_LISTEN_PORT="80"
   CADDY_HTTPS_LISTEN_PORT="443"
-  CADDY_HTTP_PORT=""
   # Data paths live on /data (40 TB) — root filesystem is only 98 GB.
   MINIO_DATA_PATH="/data/bloom/minio-data"
   DEPLOY_PATH="/data/bloom/production"
 elif [ "$ENV" = "staging" ]; then
-  # Staging uses `staging-` prefix on each subdomain so users and logs can
-  # tell environments apart at a glance. Non-standard ports so prod + staging
-  # can coexist on the same server.
-  DOMAIN_MAIN="staging-bloom-dev.salk.edu"
+  # Staging hostname uses a dot (`staging.bloom-dev.salk.edu`) so it sits as
+  # a direct child of bloom-dev.salk.edu and is covered by the wildcard SAN
+  # cert. The studio./minio. subdomains keep the `staging-` prefix because
+  # they predate the rename. Non-standard ports so prod + staging coexist on
+  # the same server.
+  DOMAIN_MAIN="staging.bloom-dev.salk.edu"
   DOMAIN_STUDIO="staging-studio.bloom-dev.salk.edu"
   DOMAIN_MINIO="staging-minio.bloom-dev.salk.edu"
   CADDY_HTTP_LISTEN_PORT="8080"
   CADDY_HTTPS_LISTEN_PORT="8443"
-  CADDY_HTTP_PORT=""
   MINIO_DATA_PATH="/data/bloom/minio-staging"
   DEPLOY_PATH="/data/bloom/staging"
 else
@@ -73,7 +73,6 @@ echo "${PREFIX}_DOMAIN_MINIO                    | $DOMAIN_MINIO"
 # Caddy
 echo "${PREFIX}_CADDY_HTTP_LISTEN_PORT           | $CADDY_HTTP_LISTEN_PORT"
 echo "${PREFIX}_CADDY_HTTPS_LISTEN_PORT          | $CADDY_HTTPS_LISTEN_PORT"
-echo "${PREFIX}_CADDY_HTTP_PORT                  | $CADDY_HTTP_PORT"
 
 # Database
 echo "${PREFIX}_POSTGRES_DB                      | postgres"
