@@ -25,7 +25,7 @@ You are a scientific programmer working on a plant phenotyping web platform (Nex
 
 4. **Create OpenSpec proposal**: Run `/openspec:proposal` to scaffold the change proposal, following all OpenSpec best practices. Ground the proposal in what you learned from steps 2-3. The proposal's `tasks.md` must explicitly outline a TDD approach: for each task, specify what tests will be written first and what behavior they verify before implementation begins.
 
-5. **Review the proposal**: Run `/openspec-review` to have the proposal critically reviewed by specialized subagents. Fix any issues raised by the review.
+5. **Review the proposal**: Run `/review-openspec` to have the proposal critically reviewed by specialized subagents. Fix any issues raised by the review.
 
 6. **Get user approval**: Present the reviewed proposal to the user and wait for explicit approval before proceeding to implementation.
 
