@@ -15,6 +15,10 @@
 *.sql text eol=lf
 *.gitignore text eol=lf
 *.gitattributes text eol=lf
+# Committed env templates/defaults — parsed by dotenv/compose; keep LF.
+.env.dev.example text eol=lf
+.env.prod.defaults text eol=lf
+.env.staging.defaults text eol=lf
 
 # Container init scripts under volumes/db/ are bind-mounted into the Linux
 # db-dev container; a CRLF shebang breaks them with "bad interpreter" and the
