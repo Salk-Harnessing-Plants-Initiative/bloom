@@ -25,6 +25,8 @@ help:
 	@echo "  make new-migration name=xxx - Create a new migration file"
 	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
 	@echo "  make test-integration - Run integration tests against the local dev stack"
+	@echo "  make check            - Verify local stack: services, roles, schemas, migrations"
+	@echo "  make verify-dev       - Clean reset -> up -> migrate -> check (destructive)"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
 	@echo "  make upload-images    - Upload test images to MinIO storage"
 	@echo "  make create-bucket    - Create a new S3 bucket (BUCKET=name [PUBLIC=true])"
@@ -255,6 +257,30 @@ check-uv:
 .PHONY: test-integration
 test-integration: check-uv
 	@uv run --extra test pytest tests/integration/ -v
+
+## Verify the local dev stack is correct: services healthy, required roles +
+## auth/storage schemas present, every migration applied (issue #104).
+.PHONY: check
+check: check-uv
+	@uv run --extra test python scripts/check_health.py
+
+## One-shot: clean reset -> up -> migrate -> health check. Destructive (wipes the
+## local DB). Use to reproduce a fresh-clone init and prove it end to end.
+.PHONY: verify-dev
+verify-dev: check-uv
+	@echo "Clean reset of the dev stack (this wipes the local DB)..."
+	docker compose -f docker-compose.dev.yml --env-file .env.dev down -v
+	@rm -rf volumes/db/data
+	$(MAKE) dev-up
+	@echo "Waiting for db-dev to accept connections..."
+	@for i in $$(seq 1 60); do \
+		if docker exec db-dev pg_isready -U supabase_admin -h localhost >/dev/null 2>&1; then \
+			echo "db-dev ready"; break; \
+		fi; \
+		sleep 2; \
+	done
+	$(MAKE) migrate-local
+	$(MAKE) check
 
 ## Load test data into development database
 .PHONY: load-test-data
