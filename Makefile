@@ -11,6 +11,7 @@ POSTGRES_DB       ?= postgres
 .PHONY: help
 help:
 	@echo "Usage:"
+	@echo "  make init             - Generate .env.dev from .env.dev.example (FORCE=1 to overwrite)"
 	@echo "  make dev-up           - Run full stack in development mode"
 	@echo "  make dev-down         - Stop development stack"
 	@echo "  make prod-up          - Run full stack in production mode"
@@ -29,6 +30,12 @@ help:
 	@echo "  make list-buckets     - List all S3 buckets"
 	@echo "  make configure-storage - Configure storage backend (MinIO or AWS S3)"
 	@echo "  make gen-types         - Generate database.types.ts from local DB and sync to all packages"
+
+# Generate a local .env.dev from .env.dev.example with fresh secrets.
+# Pass FORCE=1 to overwrite an existing .env.dev (it is backed up first).
+.PHONY: init
+init:
+	@uv run --with pyjwt,python-dotenv python scripts/init_dev.py $(if $(FORCE),--force,)
 
 # Run development stack
 .PHONY: dev-up
