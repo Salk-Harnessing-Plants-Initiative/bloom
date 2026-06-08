@@ -358,9 +358,12 @@ jobs:
             failed=0
             _probe() {
               local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
-              # Retry up to 3 times on connection failure (status 000) — Caddy's
-              # \`tls internal\` generates certs lazily on first handshake; the
-              # first probe after a fresh deploy can race the cert generation.
+              # Retry up to 3 times on connection failure (status 000). Normal
+              # path: Caddy serves a cached Let's Encrypt cert verified by the
+              # earlier Layer 2 step — should respond instantly. Break-glass
+              # path (manual \`tls internal\` in the Caddyfile): certs generate
+              # lazily on the first handshake; the first probe can race the
+              # cert generation, hence the retry loop.
               local status=000
               for _ in 1 2 3; do
                 if [ -n \"\$extra\" ]; then
@@ -845,9 +848,12 @@ jobs:
             failed=0
             _probe() {
               local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
-              # Retry up to 3 times on connection failure (status 000) — Caddy's
-              # \`tls internal\` generates certs lazily on first handshake; the
-              # first probe after a fresh deploy can race the cert generation.
+              # Retry up to 3 times on connection failure (status 000). Normal
+              # path: Caddy serves a cached Let's Encrypt cert verified by the
+              # earlier Layer 2 step — should respond instantly. Break-glass
+              # path (manual \`tls internal\` in the Caddyfile): certs generate
+              # lazily on the first handshake; the first probe can race the
+              # cert generation, hence the retry loop.
               local status=000
               for _ in 1 2 3; do
                 if [ -n \"\$extra\" ]; then

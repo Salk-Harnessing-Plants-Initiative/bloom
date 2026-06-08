@@ -58,6 +58,12 @@ services:
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Break-glass path: if ACME issuance fails catastrophically, drop
+      # cert.pem + key.pem into ./caddy/certs/ on the host and add a
+      # `tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem` line to
+      # the Caddyfile (overrides the `tls { dns cloudflare ... }` block).
+      # Empty in normal operation; LE certs live in the caddy-data volume
+      # at /data/caddy/certificates/.
       - ./caddy/certs:/etc/caddy/certs:ro
       - caddy-data:/data
       - caddy-config:/config
