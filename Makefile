@@ -24,6 +24,7 @@ help:
 	@echo "  make drop-tables      - Drop all tables in public schema"
 	@echo "  make new-migration name=xxx - Create a new migration file"
 	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
+	@echo "  make test-integration - Run integration tests against the local dev stack"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
 	@echo "  make upload-images    - Upload test images to MinIO storage"
 	@echo "  make create-bucket    - Create a new S3 bucket (BUCKET=name [PUBLIC=true])"
@@ -247,6 +248,13 @@ check-uv:
 		echo "Install: https://docs.astral.sh/uv/getting-started/installation/"; \
 		exit 1; \
 	)
+
+## Run the integration test suite locally against the running dev stack.
+## Requires the stack to be up (`make dev-up`) and migrated (`make migrate-local`);
+## conftest reads .env.dev for the DB credentials.
+.PHONY: test-integration
+test-integration: check-uv
+	@uv run --extra test pytest tests/integration/ -v
 
 ## Load test data into development database
 .PHONY: load-test-data
