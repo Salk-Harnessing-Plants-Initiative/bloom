@@ -110,13 +110,13 @@ def run_descriptive_stats_workflow(
     stats_df.to_csv(stats_csv, index=False)
 
     entry = writer.commit({
-        "stats.csv": f"{version_dir.name}/stats.csv",
+        "stats.csv": "stats.csv",
     })
 
     return {
         "version_id": entry.id,
         "version_dir": str(version_dir),
-        "manifest_path": str(writer.analysis_dir.path / "manifest.json"),
+        "manifest_path": f"{writer.analysis_dir.path}manifest.json",
         "summary": {
             "n_traits": len(rows),
             "n_failed": len(failed),
@@ -126,7 +126,7 @@ def run_descriptive_stats_workflow(
             "source": source_label,
         },
         "outputs": {
-            "stats_csv": f"{version_dir.name}/stats.csv",
+            "stats_csv": "stats.csv",
         },
     }
 

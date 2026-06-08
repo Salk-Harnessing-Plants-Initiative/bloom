@@ -27,9 +27,6 @@ bloommcp/
 │   ├── ANALYSIS_OUTPUT/       # versioned output of each workflow tool
 │   └── PLOTS_DIR/             # plots served at /plots by langchain-agent
 ├── source/                    # analysis primitives (port of sleap-roots-analyze)
-│   
-│   
-│   
 │   ├── outlier_visualization.py
 │   ├── pca.py
 │   ├── trait_statistics.py
@@ -109,78 +106,37 @@ traits = client.table("cyl_scan_traits").select("trait_id, value").limit(1000).e
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.
 
+---
+
 ## Coding style for tool calls
 
-Every workflow tool writes using the heper functions fom the AnalysisWriter Class. 
+**Every workflow tool writes its outputs through the `AnalysisWriter`
+class** (from [`bloommcp/storage/writer.py`](../../bloommcp/storage/writer.py)), constructed via the `build_writer` factory in
+[`_helpers.py`](../../bloommcp/tools/workflows/_helpers.py).
 
- `bloommcp/storage/AnalysisWriter` —
-that's the versioned write contract. Each `(experiment, tool_class)`
-pair gets one directory with a `manifest.json` cataloging every run on
-that experiment, plus a subdirectory per version:
+`AnalysisWriter` implements a versioned write contract: each  `(experiment, tool_class)` pair gets one folder in the `bloommcp-data` bucket containing a `manifest.json` that catalogs every run for that
+pair. 
+
+Each tool call appends a new `VersionEntry` to the same manifest and a new `v<N>_<date>_<slug>/` subfolder for its outputs.
 
 ```text
-ANALYSIS_OUTPUT/
-└── qc_my_experiment/
-    ├── manifest.json
+bloommcp-data/bloommcp_output/
+└── qc_my_experiment/                  ← one folder per (tool_class, experiment) pair
+    ├── manifest.json                  ← cumulative catalog
     ├── v1_2026-06-05_initial_run/
     │   └── _cleaned.csv
     └── v2_2026-06-05_relabelled/
         └── _cleaned.csv
 ```
 
-Tool classes are the canonical set in
-`bloommcp.storage.CANONICAL_TOOL_CLASSES`: `qc`, `stats`, `dimred`,
-`clustering`, `outlier`, `viz`, `correlation`, `heritability`, `anova`.
-Pick one when adding a new tool.
+Each tool's outputs land in a folder named after its `tool_class`.
+`tool_class` is one of the 9 canonical classes — `qc`, `stats`,
+`dimred`, `clustering`, `outlier`, `viz`, `correlation`,
+`heritability`, `anova` — registered in
+[`CANONICAL_TOOL_CLASSES`](../../bloommcp/storage/__init__.py).
 
-### The write flow
+For the step-by-step guide to write a new workflow tool, see
+[writing-a-new-tool.md](./writing-a-new-tool.md). 
 
-```python
-from pathlib import Path
-from bloommcp.storage import AnalysisWriter
-
-writer = AnalysisWriter(
-    output_root=Path("/app/data/ANALYSIS_OUTPUT"),
-    experiment_filename="my_experiment.csv",
-    tool_class="qc",
-    source_csv=Path("/app/data/SLEAP_OUT_CSV/my_experiment.csv"),
-)
-
-version_dir = writer.create_version(
-    tool_name="run_qc_workflow",
-    params={"threshold": 0.1},
-    user_label="initial_run",
-)
-
-# write outputs into version_dir
-(version_dir / "_cleaned.csv").write_text(...)
-
-entry = writer.commit({"cleaned": "_cleaned.csv"})
-# entry.id == "v1"
-```
-
-The writer handles four things so the tool doesn't have to:
-
-- **Versioning** — `v<N>` ids increase monotonically and are never
-  reused. Directory name is `v<N>_<YYYY-MM-DD>[_<slug>]`.
-- **Concurrency** — `fcntl.flock` on the experiment dir between
-  `create_version()` and `commit()`. Parallel runs (in-process or
-  cross-process) serialize safely.
-- **Atomicity** — `manifest.json` is written via tempfile + rename, so
-  a crash mid-write leaves the prior manifest intact.
-- **Provenance** — each entry records `code_versions` (bloommcp +
-  sleap-roots-analyze), input CSV sha256, params, and timestamp.
-
-### Rules
-
-1. One `AnalysisWriter` per tool call. It commits exactly once;
-   construct a fresh one for the next run.
-2. Paths in the `outputs` dict are **relative to the version
-   directory**, not absolute. Absolute paths break the manifest.
-3. Don't write into `ANALYSIS_OUTPUT/` outside this pattern —
-   `list_existing_analyses` walks manifests to find prior runs.
-4. Files that need to leave the container (for the agent or downstream
-   tools) go through the `bloommcp-data` Supabase bucket above, not
-   the local tree.
-
-Manifest schema lives in `bloommcp/storage/schema.py`.
+For the underlying schema and the manifest's data model, see
+[storage-workflow.md](./storage-workflow.md).

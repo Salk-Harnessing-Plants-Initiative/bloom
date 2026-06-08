@@ -163,12 +163,12 @@ def run_clustering_workflow(
         },
         user_label=user_label,
     )
-    version_id = version_dir.name.split("_", 1)[0]
+    version_id = writer.version_id
 
     import pandas as pd
     labels_df = pd.DataFrame({"sample_index": range(len(label_array)), "cluster": label_array})
     labels_df.to_csv(version_dir / "cluster_labels.csv", index=False)
-    outputs: dict[str, str] = {"cluster_labels.csv": f"{version_dir.name}/cluster_labels.csv"}
+    outputs: dict[str, str] = {"cluster_labels.csv": "cluster_labels.csv"}
 
     if centers is not None:
         centers_arr = np.asarray(centers)
@@ -178,7 +178,7 @@ def run_clustering_workflow(
         )
         centers_df.insert(0, "cluster", range(centers_arr.shape[0]))
         centers_df.to_csv(version_dir / "cluster_centers.csv", index=False)
-        outputs["cluster_centers.csv"] = f"{version_dir.name}/cluster_centers.csv"
+        outputs["cluster_centers.csv"] = "cluster_centers.csv"
 
     plot_path, plot_url = _plot_path_and_url(stem, version_id, algorithm)
     try:
@@ -205,7 +205,7 @@ def run_clustering_workflow(
     response: dict = {
         "version_id": entry.id,
         "version_dir": str(version_dir),
-        "manifest_path": str(writer.analysis_dir.path / "manifest.json"),
+        "manifest_path": f"{writer.analysis_dir.path}manifest.json",
         "summary": summary,
         "outputs": outputs,
     }

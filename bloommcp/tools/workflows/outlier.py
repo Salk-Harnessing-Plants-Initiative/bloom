@@ -169,7 +169,7 @@ def run_outlier_workflow(
         (version_dir / fname).write_text(
             json.dumps(convert_to_json_serializable(payload), indent=2)
         )
-        outputs[fname] = f"{version_dir.name}/{fname}"
+        outputs[fname] = fname
 
     if remove_outliers and outlier_indices:
         cleaned_df, outlier_df = remove_outliers_from_data(
@@ -179,8 +179,8 @@ def run_outlier_workflow(
         outlier_name = f"{stem}_outlier_samples.csv"
         cleaned_df.to_csv(version_dir / cleaned_name, index=False)
         outlier_df.to_csv(version_dir / outlier_name, index=False)
-        outputs[cleaned_name] = f"{version_dir.name}/{cleaned_name}"
-        outputs[outlier_name] = f"{version_dir.name}/{outlier_name}"
+        outputs[cleaned_name] = cleaned_name
+        outputs[outlier_name] = outlier_name
         summary["n_original_samples"] = len(df)
         summary["n_removed"] = len(outlier_df)
         summary["n_remaining"] = len(cleaned_df)
@@ -190,7 +190,7 @@ def run_outlier_workflow(
     return {
         "version_id": entry.id,
         "version_dir": str(version_dir),
-        "manifest_path": str(writer.analysis_dir.path / "manifest.json"),
+        "manifest_path": f"{writer.analysis_dir.path}manifest.json",
         "summary": summary,
         "outputs": outputs,
     }

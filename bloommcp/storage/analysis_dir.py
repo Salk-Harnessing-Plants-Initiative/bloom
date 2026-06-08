@@ -1,4 +1,4 @@
-"""Per-experiment, per-tool-class directory abstraction."""
+"""Per-experiment, per-tool-class storage prefix abstraction."""
 import hashlib
 from contextlib import contextmanager
 from pathlib import Path
@@ -11,24 +11,38 @@ _HASH_CHUNK_BYTES = 1024 * 1024
 
 
 class AnalysisDir:
-    """Wraps <output_root>/<tool_class>_<stem>/ and its manifest."""
+    """Wraps the storage prefix `<output_prefix>/<tool_class>_<stem>/` and its manifest catalog.
+
+    `output_prefix` is the logical prefix inside the `bloommcp-data` bucket
+    (typically `bloommcp_output`). For migration ergonomics it also accepts
+    a `Path` — the value is normalised to a slash-trimmed string before use,
+    so existing callers that still pass `BLOOM_OUTPUT_DIR` keep working
+    until they are updated.
+    """
 
     def __init__(
         self,
-        output_root: Path,
+        output_root,
         experiment_filename: str,
         tool_class: str,
     ) -> None:
-        self.output_root = Path(output_root)
+        self.output_root = str(output_root).rstrip("/")
         self.experiment_filename = experiment_filename
         self.tool_class = tool_class
         self.stem = Path(experiment_filename).stem
-        self.path = self.output_root / f"{tool_class}_{self.stem}"
+        self.path = f"{self.output_root}/{tool_class}_{self.stem}/"
         self._cached_input_sha256: Optional[str] = None
 
+    def key(self, rel: str) -> str:
+        """Compose a full object key from a path relative to this analysis dir.
+
+        Example: `dir.key("v1_2026-06-05/_cleaned.csv")` →
+        `bloommcp_output/qc_my_exp/v1_2026-06-05/_cleaned.csv`.
+        """
+        return f"{self.path}{rel.lstrip('/')}"
+
     def read_manifest(self) -> Optional[Manifest]:
-        if not self.path.exists():
-            return None
+        """Return the manifest at `<path>/manifest.json`, or None if absent."""
         return read_manifest(self.path)
 
     def list_versions(self) -> list[VersionEntry]:
@@ -39,7 +53,7 @@ class AnalysisDir:
         return sorted(manifest.versions, key=lambda v: v.created_at)
 
     def get_version(self, version_id: str) -> Optional[VersionEntry]:
-        """Resolve a version by id, or "latest" via the manifest's latest pointer."""
+        """Resolve a version by id, or `latest` via the manifest's latest pointer."""
         manifest = self.read_manifest()
         if manifest is None:
             return None
@@ -52,7 +66,11 @@ class AnalysisDir:
         return None
 
     def input_sha256(self, source_csv: Path) -> str:
-        """Stream-hash the source CSV; cached on the instance after first call."""
+        """Stream-hash the source CSV; cached on the instance after first call.
+
+        Source CSVs are local (bind-mounted via SLEAP_OUT_CSV); the migration
+        only moves analysis outputs to Supabase Storage, not raw inputs.
+        """
         if self._cached_input_sha256 is not None:
             return self._cached_input_sha256
         h = hashlib.sha256()
@@ -64,15 +82,9 @@ class AnalysisDir:
 
     @contextmanager
     def with_snapshot(self) -> Iterator[Optional[Manifest]]:
-        """Pin the manifest at entry; sibling commits during the context don't change the view.
-
-        Used by parallel-recipe orchestrators so all fan-out branches resolve
-        the same source version even if a sibling commits a new version
-        mid-recipe. Yields the live Manifest at entry (or None if no manifest
-        exists yet); the yielded value is the caller's local snapshot.
-        """
+        """Pin the manifest at entry; callers in the context see this snapshot."""
         snapshot = self.read_manifest()
         try:
             yield snapshot
         finally:
-            pass  # snapshot is a local Pydantic instance — nothing to release
+            pass
