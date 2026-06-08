@@ -21,7 +21,6 @@ help:
 	@echo "  make dev-logs         - Tail development logs"
 	@echo "  make staging-logs     - Tail staging logs"
 	@echo "  make reset-storage    - Reset dev DB and storage (destructive)"
-	@echo "  make drop-tables      - Drop all tables in public schema"
 	@echo "  make new-migration name=xxx - Create a new migration file"
 	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
 	@echo "  make test-integration - Run integration tests against the local dev stack"
@@ -31,7 +30,7 @@ help:
 	@echo "  make upload-images    - Upload test images to MinIO storage"
 	@echo "  make create-bucket    - Create a new S3 bucket (BUCKET=name [PUBLIC=true])"
 	@echo "  make list-buckets     - List all S3 buckets"
-	@echo "  make configure-storage - Configure storage backend (MinIO or AWS S3)"
+	@echo "  make configure-storage-dev - Configure storage backend (MinIO or AWS S3)"
 	@echo "  make gen-types         - Generate database.types.ts from local DB and sync to all packages"
 
 # Generate a local .env.dev from .env.dev.example with fresh secrets.
@@ -117,9 +116,12 @@ staging-down:
 	@echo "Staging containers stopped."
 
 # View logs for all services
-.PHONY: dev-logs
+.PHONY: logs dev-logs
 logs:
 	docker compose -f docker-compose.dev.yml logs -f
+
+# Alias so `make dev-logs` works alongside prod-logs / staging-logs.
+dev-logs: logs
 
 .PHONY: prod-logs
 prod-logs:

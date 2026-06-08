@@ -142,7 +142,9 @@ docker exec db-prod pg_isready -U supabase_admin
 
 ### Apply Migrations
 
- `apply-migrations`
+```bash
+make migrate-local
+```
 
 You should see tables like: `species`, `phenotypers`, `cyl_experiments`, `cyl_scans`, `cyl_images`, etc.
 
