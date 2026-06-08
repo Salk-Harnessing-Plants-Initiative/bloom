@@ -142,11 +142,9 @@ docker exec db-prod pg_isready -U supabase_admin
 
 ### Apply Migrations
 
-```bash
-make migrate-local
-```
+Migrations are applied automatically by the deploy workflow when you merge to `main` — see `.github/workflows/deploy.yml`. Do not run `supabase db push` manually against production; the deploy workflow is the only sanctioned path.
 
-You should see tables like: `species`, `phenotypers`, `cyl_experiments`, `cyl_scans`, `cyl_images`, etc.
+Once the deploy workflow has run, you should see tables like: `species`, `phenotypers`, `cyl_experiments`, `cyl_scans`, `cyl_images`, etc.
 
 ---
 
