@@ -80,6 +80,8 @@ Caddy v2 runs an internal scheduler that wakes every ~10 minutes and checks ever
 - The Salk CNAME stays in place.
 - The container stays alive — if it's stopped for >60 continuous days the renewal window closes.
 
+For the Let's Encrypt rate-limit budget bloom operates against (and how the deploy safeguards keep a misconfigured rollout from burning through it), see [letsencrypt-rate-limits.md](./letsencrypt-rate-limits.md).
+
 ## Required secrets and DNS
 
 These three must be in place before either environment can issue a cert:
