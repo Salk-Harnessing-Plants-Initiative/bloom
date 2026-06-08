@@ -50,6 +50,13 @@ class AnalysisWriter:
         self._pending_params: Optional[dict] = None
         self._pending_user_label: Optional[str] = None
 
+    @property
+    def version_id(self) -> Optional[str]:
+        """The currently-pending version id (e.g. `"v3"`), or None if
+        `create_version()` hasn't been called yet. Use this when a tool
+        needs the slug before `commit()` (e.g. for plot filenames)."""
+        return self._pending_version_id
+
     def create_version(
         self,
         tool_name: str,
