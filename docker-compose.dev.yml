@@ -79,7 +79,11 @@ services:
       - "${BLOOMMCP_PORT}:8811"
     environment:
       SUPABASE_URL: http://kong:8000
-      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      # bloommcp authenticates to PostgREST + Storage as bloom_agent — same
+      # JWT langchain-agent uses. SERVICE_ROLE_KEY is deliberately NOT passed
+      # in so a future code path can't silently bypass the
+      # agent_insert_bloommcp_data / agent_update_bloommcp_data policies.
+      BLOOM_AGENT_KEY: ${BLOOM_AGENT_KEY}
       BLOOM_TRAITS_DIR: /app/data/SLEAP_OUT_CSV
       BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR

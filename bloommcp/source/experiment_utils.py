@@ -173,14 +173,27 @@ def _resolve_versioned_cleaned(
 ) -> tuple[Optional[Path], Optional[str], Optional[str]]:
     """Resolve a versioned cleaned CSV via the QC manifest.
 
-    Returns (path, source_label, error). On success, error is None and path
-    points at an existing _cleaned.csv. On miss with version="latest", returns
-    (None, None, None) so the caller falls back. On explicit version="v<N>"
-    miss, returns (None, None, error_string).
-    """
-    from storage import AnalysisDir, ManifestSchemaError
+    The manifest lives in the bloommcp-data bucket at
+    `bloommcp_output/qc_<stem>/manifest.json`; the cleaned CSV is
+    downloaded to a tmp Path so callers can `pd.read_csv(path)` unchanged.
+    Caller is responsible for the tmp file's lifetime (OS tmp cleanup
+    handles it on process exit).
 
-    analysis_dir = AnalysisDir(o_dir, f"{stem}.csv", "qc")
+    `o_dir` is accepted for signature compatibility with the pre-migration
+    caller but is ignored — the storage prefix is fixed at
+    `bloommcp_output`.
+
+    Returns (path, source_label, error). On success, error is None and
+    path points at the downloaded tmp CSV. On miss with version="latest",
+    returns (None, None, None) so the caller falls back. On explicit
+    version="v<N>" miss, returns (None, None, error_string).
+    """
+    import tempfile
+
+    from storage import AnalysisDir, ManifestSchemaError
+    from source.supabase_client import download_file, list_prefix
+
+    analysis_dir = AnalysisDir("bloommcp_output", f"{stem}.csv", "qc")
     try:
         entry = analysis_dir.get_version(version)
     except ManifestSchemaError as e:
@@ -202,12 +215,40 @@ def _resolve_versioned_cleaned(
             f"Version {entry.id} has no cleaned CSV output."
         )
 
-    path = analysis_dir.path / rel
-    if not path.exists():
-        return None, None, (
-            f"Manifest references {rel} for version {entry.id} but the file is missing."
+    if entry.version_dir:
+        version_dir = entry.version_dir
+    else:
+        try:
+            siblings = list_prefix(analysis_dir.path)
+        except Exception as e:
+            return None, None, (
+                f"Could not list {analysis_dir.path}: {e}"
+            )
+        version_dir = next(
+            (n for n in siblings if n.startswith(f"{entry.id}_")), None
         )
-    return path, f"{entry.id}_cleaned", None
+        if version_dir is None:
+            if version == "latest":
+                return None, None, None
+            return None, None, (
+                f"Manifest references version {entry.id} but its directory was "
+                f"not found under {analysis_dir.path}."
+            )
+
+    key = analysis_dir.key(f"{version_dir}/{rel}")
+    suffix = Path(rel).suffix or ".csv"
+    tmp = Path(tempfile.NamedTemporaryFile(delete=False, suffix=suffix).name)
+    try:
+        download_file(key, tmp)
+    except Exception as e:
+        tmp.unlink(missing_ok=True)
+        if version == "latest":
+            return None, None, None
+        return None, None, (
+            f"Manifest references {rel} for version {entry.id} but the "
+            f"download from storage failed: {e}"
+        )
+    return tmp, f"{entry.id}_cleaned", None
 
 
 def load_experiment_data(

@@ -187,11 +187,6 @@ services:
       context: ./bloommcp
       dockerfile: Dockerfile
     read_only: true
-    # /tmp tmpfs: mode 1777 matches standard Linux perms (sticky, world-writable)
-    # so numba/cpython can create their cache subdirs unconditionally. size=100m
-    # is defensive — numba cache is ~KB, but an explicit cap prevents any noisy
-    # neighbor on /tmp from starving the cache. Used by NUMBA_CACHE_DIR +
-    # PYTHONPYCACHEPREFIX below.
     tmpfs:
       - /tmp:mode=1777,size=100m
     security_opt:
@@ -202,7 +197,10 @@ services:
       - "8811"
     environment:
       SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      # bloommcp authenticates to PostgREST + Storage as bloom_agent (the same
+      # JWT langchain-agent uses). SERVICE_ROLE_KEY is deliberately NOT passed
+      # in — bloommcp's storage access is gated by the bloom_agent RLS policies, and granting service_role would let a future code path silently bypass them.
+      BLOOM_AGENT_KEY: ${BLOOM_AGENT_KEY}
       BLOOM_TRAITS_DIR: /app/data/SLEAP_OUT_CSV
       BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR

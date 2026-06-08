@@ -23,6 +23,10 @@ test = [
     # langchain/tools/cyl_viz_tools.py, both transitively pulled in when
     # tests import from langchain.tools.cyl_tools.
     "matplotlib>=3.8",
+    # required by tests/unit/test_supabase_client.py — the bloommcp helper
+    # under test imports both at module level.
+    "pandas>=2.0",
+    "supabase>=2.0",
 ]
 
 [tool.pytest.ini_options]
