@@ -11,3 +11,13 @@ EnvironmentFile=__ENV_FILE__
 ExecStart=/usr/bin/python3 __DEPLOY_DIR__/scheduled-jobs/cert-monitor/monitor.py --env __ENV_NAME__
 StandardOutput=journal
 StandardError=journal
+
+# Hardening (defense-in-depth). Each verified against the monitor's actual
+# runtime needs — see commit message and PR for the per-directive analysis.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/bloom-cert-monitor
+ProtectHome=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
