@@ -69,7 +69,7 @@ Step by step, the installer:
 2. **Creates a folder for the monitor's memory.**
    * That folder (`/var/lib/bloom-cert-monitor/`) holds one small file per environment recording what the monitor saw last week, so next week's run can tell whether the cert got renewed since last time.
 3. **Generates the timer's setup files and writes them only if they're different from what's already there.**
-   * The repo ships two templates under `scripts/systemd/` with placeholders like `__ENV_FILE__` and `__DEPLOY_DIR__`.
+   * The repo ships two templates under `scheduled-jobs/cert-monitor/` with placeholders like `__ENV_FILE__`, `__DEPLOY_DIR__`, and `__ENV_NAME__`.
    * The installer fills those in (with the staging or prod paths) and saves the result to the standard system location for scheduled jobs (`/etc/systemd/system/`).
    * If the rendered content matches what's already on disk, nothing gets written, so a re-run is a complete no-op when nothing's changed.
 4. **If anything got rewritten in step 3, tells the system to refresh its scheduled-job config.**

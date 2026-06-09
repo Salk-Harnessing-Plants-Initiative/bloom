@@ -1,7 +1,7 @@
-"""Helpers for check_cert_renewal.py — parsing, classification, email.
+"""Helpers for monitor.py — parsing, classification, email.
 
-Pure functions wherever possible so the test file can exercise them
-against the fixture .jsonl files in check_cert_renewal_test_fixtures/.
+Pure functions wherever possible so monitor_test.py can exercise them
+against the fixture .jsonl files in test_fixtures/.
 """
 
 from __future__ import annotations
