@@ -114,16 +114,21 @@ def _process_env(
     events = parse_events(read_caddy_logs(caddy_env))
 
     new_state = MonitorState(last_run_utc=now.isoformat(), last_not_before=dict(state.last_not_before))
-    for subject_dir in subjects:
-        cert = read_cert(caddy_env, subject_dir)
-        identifier = subject_to_identifier(cert.subject)
-        states = classify(caddy_env.label, cert, events, state, now, expiry_alert_days)
-        for note in build_notifications(caddy_env.label, cert, events, states, notify_on_success):
-            send_email(note, sender, recipients, smtp_host)
-            logger.info("env %s: sent %s notification for %s", caddy_env.label, note.kind, identifier)
-        new_state.last_not_before[identifier] = cert.not_before.isoformat()
-
-    save_state(state_path, new_state)
+    try:
+        for subject_dir in subjects:
+            cert = read_cert(caddy_env, subject_dir)
+            identifier = subject_to_identifier(cert.subject)
+            states = classify(caddy_env.label, cert, events, state, now, expiry_alert_days)
+            # Record the observation in state BEFORE attempting to send. If
+            # SMTP raises and propagates out, the finally block still saves
+            # what we observed — so next week we don't re-emit on the same
+            # renewal/failure transition.
+            new_state.last_not_before[identifier] = cert.not_before.isoformat()
+            for note in build_notifications(caddy_env.label, cert, events, states, notify_on_success):
+                send_email(note, sender, recipients, smtp_host)
+                logger.info("env %s: sent %s notification for %s", caddy_env.label, note.kind, identifier)
+    finally:
+        save_state(state_path, new_state)
 
 
 if __name__ == "__main__":

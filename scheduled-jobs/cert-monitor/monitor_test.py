@@ -383,3 +383,85 @@ def test_env_filter_omitted_means_both_envs():
 
     both = list(CADDY_ENVS)
     assert {e.label for e in both} == {"staging", "prod"}
+
+
+# ---------- B2 fix: state persists even when SMTP fails ----------
+
+def test_state_saved_when_smtp_fails_during_process_env(tmp_path):
+    """B2 fix: when SMTP raises during a notification send, _process_env's
+    try/finally must still write state. Otherwise next week we re-classify
+    the same renewal as new and re-emit the same notification."""
+    import monitor
+
+    # Pre-existing state with OLD notBefore — represents last week's snapshot
+    state_path = tmp_path / "prod.json"
+    save_state(state_path, MonitorState(
+        last_run_utc="2026-06-02T09:00:00+00:00",
+        last_not_before={"bloom-dev.salk.edu": "2026-04-01T00:00:00+00:00"},
+    ))
+
+    fresh_cert = CertInfo(
+        subject="CN = bloom-dev.salk.edu",
+        issuer="CN = YE1",
+        not_before=datetime(2026, 6, 9, tzinfo=timezone.utc),  # newer → "renewed" fires
+        not_after=datetime(2026, 9, 7, tzinfo=timezone.utc),
+    )
+
+    with patch.object(monitor, "list_cert_subjects", return_value=["bloom-dev.salk.edu"]), \
+         patch.object(monitor, "read_caddy_logs", return_value=""), \
+         patch.object(monitor, "read_cert", return_value=fresh_cert), \
+         patch.object(monitor, "send_email", side_effect=smtplib.SMTPException("relay rejected")):
+        with pytest.raises(smtplib.SMTPException):
+            monitor._process_env(
+                caddy_env=monitor.CADDY_ENVS[1],  # prod
+                now=datetime(2026, 6, 9, 9, 0, tzinfo=timezone.utc),
+                state_dir=tmp_path,
+                expiry_alert_days=14,
+                notify_on_success=True,
+                sender="from@x",
+                recipients=["to@y"],
+                smtp_host="smtp.host",
+            )
+
+    # Critical assertion: state file MUST contain the new notBefore even though
+    # the SMTP send raised. Otherwise next week's run re-fires "renewed".
+    saved = load_state(state_path)
+    assert saved.last_not_before["bloom-dev.salk.edu"] == fresh_cert.not_before.isoformat()
+    assert saved.last_run_utc == "2026-06-09T09:00:00+00:00"
+
+
+def test_state_saved_on_clean_run_through_process_env(tmp_path):
+    """Sanity check: when nothing raises, _process_env writes the new state at
+    the end (covers the non-exceptional path)."""
+    import monitor
+
+    state_path = tmp_path / "staging.json"
+    save_state(state_path, MonitorState(
+        last_run_utc="2026-06-02T09:00:00+00:00",
+        last_not_before={"*.bloom-dev.salk.edu": "2026-04-01T00:00:00+00:00"},
+    ))
+
+    fresh_cert = CertInfo(
+        subject="CN = *.bloom-dev.salk.edu",
+        issuer="CN = YE2",
+        not_before=datetime(2026, 6, 9, tzinfo=timezone.utc),
+        not_after=datetime(2026, 9, 7, tzinfo=timezone.utc),
+    )
+
+    with patch.object(monitor, "list_cert_subjects", return_value=["wildcard_.bloom-dev.salk.edu"]), \
+         patch.object(monitor, "read_caddy_logs", return_value=""), \
+         patch.object(monitor, "read_cert", return_value=fresh_cert), \
+         patch.object(monitor, "send_email"):  # no-op; SMTP succeeds
+        monitor._process_env(
+            caddy_env=monitor.CADDY_ENVS[0],  # staging
+            now=datetime(2026, 6, 9, 9, 0, tzinfo=timezone.utc),
+            state_dir=tmp_path,
+            expiry_alert_days=14,
+            notify_on_success=True,
+            sender="from@x",
+            recipients=["to@y"],
+            smtp_host="smtp.host",
+        )
+
+    saved = load_state(state_path)
+    assert saved.last_not_before["*.bloom-dev.salk.edu"] == fresh_cert.not_before.isoformat()
