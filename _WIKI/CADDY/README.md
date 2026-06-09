@@ -1,6 +1,12 @@
 # Caddy
 
-This page covers how Caddy is set up. Caddy is the web server that sits in front of bloom. It takes every incoming HTTPS request and forwards it to the right backend container. This page covers how Caddy is set up, how it gets real HTTPS certificates, how those certificates survive a redeploy, and what happens when they need to be renewed. Update this page whenever you change the Caddyfile, the Dockerfile, how certs are issued, or the per-environment hostnames.
+This page covers how Caddy is set up.
+
+Caddy is the web server that sits in front of bloom. It takes every incoming HTTPS request and forwards it to the right backend container.
+
+This page covers how Caddy is set up, how it gets real HTTPS certificates via Lets Encrrypt, how those certificates survive a redeploy, and what happens when they need to be renewed.
+
+Update this page whenever you change the Caddyfile, the Dockerfile, how certs are issued, or the per-environment hostnames.
 
 ## Stack shape
 
@@ -14,35 +20,48 @@ One `caddy` container per environment(staging and prod), built from a project-ow
 | Per-env site addresses + token | `CADDY_SITE_ADDRESSES` + `CLOUDFLARE_API_TOKEN` in [.env.prod.defaults](../../.env.prod.defaults) and [.env.staging.defaults](../../.env.staging.defaults) |
 | Deploy-time secret injection   | `PROD_/STAGING_CLOUDFLARE_API_TOKEN` heredocs in [.github/workflows/deploy.yml](../../.github/workflows/deploy.yml)                                       |
 
-### Why a custom Dockerfile
-
-Caddy is a Go binary — its modules are statically linked at build time, not loaded at runtime. 
-
-The stock `caddy:*-alpine` image ships only standard modules; adding `tls { dns cloudflare ... }` to the Caddyfile against the stock image fails at startup with `unknown DNS provider module: cloudflare`.
-
-The custom Dockerfile uses the official `caddy:${VERSION}-builder-alpine` image to `xcaddy build` a binary with `caddy-dns/cloudflare@v0.2.4` baked in, then copies that binary into the slim `caddy:${VERSION}-alpine` runtime image.
-
 ## TLS strategy
 
-Real Let's Encrypt certs acquired via **ACME DNS-01** with **CNAME delegation** to `bloom-acme.talmolab.org`. One wildcard SAN cert covers every bloom hostname per environment.
+Our stack uses real Let's Encrypt SSL certs on staging and prod.
 
-### Why DNS-01 instead of HTTP-01
+Let's Encrypt is free and trusted by every browser, but they only hand out certs after you prove you control the domain. That proof is called an  **ACME challenge** . There are two common forms:
 
-`bloom-dev.salk.edu` sits behind Salk's firewall. Let's Encrypt cannot reach port 80 from the public internet, so HTTP-01 cannot complete. DNS-01 sidesteps the network entirely ,the proof of ownership is a TXT record under the challenged name, not an HTTP request.
+* **HTTP-01** — put a file at a specific URL on your server
+* **DNS-01** — put a TXT record at a specific name in DNS
 
-### Why CNAME delegation
+We use DNS-01. Here's why HTTP-01 doesn't work for us.
 
-Caddy needs API credentials to write the TXT record. Salk IT does not delegate Salk DNS write access to application containers. Instead we own a separate Cloudflare zone (`bloom-acme.talmolab.org`) and Salk publishes one CNAME pointing the challenge name at our zone:
+### Why HTTP-01 doesn't work
+
+HTTP-01 makes Let's Encrypt fetch `http://bloom-dev.salk.edu/.well-known/acme-challenge/<token>`. That requires Let's Encrypt's servers to reach our server on port 80 from the public internet.
+
+`bloom-dev.salk.edu` sits behind Salk's firewall. Port 80 is blocked from outside. Let's Encrypt can't reach the file → challenge fails → no cert. Dead on arrival.
+
+### Why DNS-01 works (with one catch)
+
+DNS-01 instead asks: "put a TXT record at `_acme-challenge.bloom-dev.salk.edu`." Let's Encrypt then looks up the TXT through normal DNS — no need to reach our server directly. Firewalls don't matter.
+
+The catch: someone has to actually create that TXT record. That means write access to the `salk.edu` DNS zone — which Salk IT does not hand out to application containers.
+
+### Why we use CNAME delegation
+
+Since we can't write to Salk's DNS, we go around it. We own a separate Cloudflare zone, `bloom-acme.talmolab.org`. Salk IT publishes one permanent CNAME:
 
 ```text
 _acme-challenge.bloom-dev.salk.edu  CNAME  _acme-challenge.bloom-acme.talmolab.org
 ```
 
-When Let's Encrypt does the DNS-01 lookup at `_acme-challenge.bloom-dev.salk.edu`, it follows the CNAME and reads the TXT from `_acme-challenge.bloom-acme.talmolab.org` — which Caddy writes to via the Cloudflare API.
+This says "any lookup for `_acme-challenge.bloom-dev.salk.edu` should go look at `_acme-challenge.bloom-acme.talmolab.org` instead."
 
-Both the apex (`bloom-dev.salk.edu`) and the wildcard (`*.bloom-dev.salk.edu`) ACME challenges land at the same name (`_acme-challenge.bloom-dev.salk.edu`), so **one** Salk CNAME covers both prod and staging.
+### Why a custom Dockerfile
 
-> **`dns_challenge_override_domain` is required for CNAME delegation to work.** Without it, the `caddy-dns/cloudflare` plugin walks up from the challenged name (`_acme-challenge.bloom-dev.salk.edu`), can't find `salk.edu` in our Cloudflare account, and fails with `expected 1 zone, got 0 for salk.edu.` The override tells Caddy to write the TXT at `bloom-acme.talmolab.org` directly (the zone we actually control), bypassing the plugin's zone-lookup walk. See the `tls { ... dns_challenge_override_domain bloom-acme.talmolab.org }` directive in [caddy/Caddyfile](../../caddy/Caddyfile).
+Caddy is a Go binary — its modules are statically linked at build time, not loaded at runtime.
+
+The default Caddy Docker image only knows about its built-in modules — it doesn't ship with any external DNS providers.
+
+To use Cloudflare for TLS, we have to build our own Caddy binary with the Cloudflare
+
+module compiled in — that's what `caddy/Dockerfile` does.
 
 ## Site addresses
 
@@ -64,7 +83,11 @@ volumes:
   - caddy-config:/config
 ```
 
-`caddy-data` is a named Docker volume. It survives `docker compose down`, `docker compose up`, and full container recreation — **only `docker volume rm` or `docker compose down -v` wipes it.** Caddy stores the issued cert, the private key, the ACME account, and the renewal state inside `/data/caddy/certificates/...`.
+`caddy-data` is a named Docker volume.
+
+It survives `docker compose down`, `docker compose up`, and full container recreation — **only `docker volume rm` or `docker compose down -v` wipes it.**
+
+Caddy stores the issued cert, the private key, the ACME account, and the renewal state inside `/data/caddy/certificates/...`.
 
 On every redeploy Caddy boots, reads `/data`, finds the existing `*.bloom-dev.salk.edu` cert, checks the expiry, and:
 
@@ -75,6 +98,20 @@ On every redeploy Caddy boots, reads `/data`, finds the existing `*.bloom-dev.sa
 ## Automatic renewal
 
 Caddy v2 runs an internal scheduler that wakes every ~10 minutes and checks every cert's expiry. 30 days before expiry it starts attempting renewal — same DNS-01 + Cloudflare flow it used for issuance, no restart, no human action, hot-reloads the new cert into the running listeners.
+
+### Renewal failure notifications
+
+**Currently: there is no automated notification when a renewal fails.** A silently failing renewal would only be discovered when the cert expires (90 days after issuance) and browsers start showing TLS errors to users.
+
+Historical context: Let's Encrypt used to email warnings to the ACME account's contact address ~20 days before any cert expiring without a successful renewal. That service [ended on June 4, 2025](https://letsencrypt.org/2025/06/26/expiration-notification-service-has-ended) — LE no longer sends per-cert expiration warnings, citing cost, privacy, and the assumption that subscribers have working renewal automation. So setting an `email` directive in the Caddyfile no longer triggers any actionable notification for us.
+
+Until we build something better, the only signals are:
+
+- The cert visibly expires in browsers (worst possible UX)
+- A human SSHs in and tails `docker compose logs caddy` looking for `cert_failed` / `challenge failed` entries
+- A CT-log monitoring service (e.g. `crt.sh` watch) notices when a new cert ISN'T issued at the expected ~60-day cadence
+
+Filling this gap is tracked in a follow-up issue — see the project's open issues for "cert renewal monitoring" / "notifications" for current status.
 
 ### What you need to verify externally (outside Caddy)
 
@@ -101,4 +138,6 @@ The token is consumed at runtime by the `caddy-dns/cloudflare` plugin via the `C
 | prod    | `bloom-dev.salk.edu`         | `studio.bloom-dev.salk.edu`         | `minio.bloom-dev.salk.edu`         |
 | staging | `staging.bloom-dev.salk.edu` | `staging-studio.bloom-dev.salk.edu` | `staging-minio.bloom-dev.salk.edu` |
 
-All staging hostnames sit under `bloom-dev.salk.edu` so the wildcard `*.bloom-dev.salk.edu` covers them. The staging `DOMAIN_MAIN` was previously `staging-bloom-dev.salk.edu` (sibling of `bloom-dev`, not under it) — the dot-rename was specifically to bring it under the wildcard.
+All staging hostnames sit under `bloom-dev.salk.edu` so the wildcard `*.bloom-dev.salk.edu` covers them. The staging `DOMAIN_MAIN` was previously `staging-bloom-dev.salk.edu` (sibling of `bloom-dev.salk.edu`, not under it) — PR #254 renamed it to `staging.bloom-dev.salk.edu` specifically to bring it under the wildcard.
+
+> **DNS note:** browser access to `staging.bloom-dev.salk.edu` requires the name to resolve. Salk's wildcard A record for `*.bloom-dev.salk.edu` covers it from inside the Salk network (or on Salk VPN). From outside, you'll need a temporary `/etc/hosts` entry pointing the hostname at bloom-dev's IP, or an explicit Salk DNS record.
