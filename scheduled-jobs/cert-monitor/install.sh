@@ -115,8 +115,25 @@ echo "Install verified — ${UNIT_BASE}.timer is scheduled."
 
 if [[ "$TEST_SEND" -eq 1 ]]; then
     echo "Sending preflight email for env=${ENV_NAME}..."
-    set -a; source "$ENV_FILE"; set +a
-    sudo -u bloom-deploy /usr/bin/python3 \
+    # Pass ONLY the CERT_MONITOR_* env vars to the preflight subprocess.
+    # `set -a; source $ENV_FILE` would expose other env credentails
+    # Instead, extract just the CERT_MONITOR_* lines from
+    # the env file and pass them as explicit assignments under `env -i`
+    # — the python subprocess starts with a clean env containing only
+    # what the monitor actually consumes.
+    CERT_MONITOR_VARS=()
+    while IFS= read -r line; do
+        CERT_MONITOR_VARS+=("$line")
+    done < <(grep -E '^CERT_MONITOR_[A-Z_]+=' "$ENV_FILE")
+    if [[ "${#CERT_MONITOR_VARS[@]}" -eq 0 ]]; then
+        echo "ERROR: no CERT_MONITOR_* vars found in $ENV_FILE" >&2
+        exit 1
+    fi
+    sudo -u bloom-deploy env -i \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        HOME=/home/bloom-deploy \
+        "${CERT_MONITOR_VARS[@]}" \
+        /usr/bin/python3 \
         "${DEPLOY_DIR}/scheduled-jobs/cert-monitor/monitor.py" \
         --env "${ENV_NAME}" --force-notification preflight
     echo "Preflight email dispatched. Check recipient inboxes."
