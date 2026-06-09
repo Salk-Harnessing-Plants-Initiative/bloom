@@ -66,6 +66,20 @@ def test_recipe_sources_env_dev():
     )
 
 
+def test_recipe_waits_for_storage_schema_before_push():
+    """storage-api provisions storage.buckets (incl. the `public` column) at
+    runtime; bucket migrations INSERT into it. migrate-local must wait for that
+    before `supabase db push`, or running it right after `make dev-up` races
+    storage-api and fails with SQLSTATE 42703."""
+    recipe = _migrate_local_recipe()
+    assert "supabase db push" in recipe
+    pre_push = recipe[: recipe.index("supabase db push")]
+    assert "storage" in pre_push and "buckets" in pre_push, (
+        "migrate-local must poll for the storage schema (storage.buckets) before "
+        "pushing migrations"
+    )
+
+
 def test_init_target_has_check_uv_preflight():
     """`make init` runs `uv run ...`; it must declare the check-uv prerequisite so
     a missing uv gives the actionable install hint other targets provide."""

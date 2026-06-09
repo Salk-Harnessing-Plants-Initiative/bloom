@@ -192,6 +192,14 @@ local Postgres, mirroring CI.
 - **THEN** it passes `--debug` to `supabase db push` so `sslmode=disable` is not
   silently ignored (supabase-cli #4839)
 
+#### Scenario: Waits for the storage schema before pushing
+
+- **WHEN** `make migrate-local` is run right after `make dev-up`, before
+  `storage-api` has provisioned `storage.buckets`
+- **THEN** it bounded-waits for the `storage.buckets` table (incl. the columns
+  bucket migrations insert into) to exist before `supabase db push`, so migrations
+  that touch `storage.buckets` do not race storage-api and fail (SQLSTATE 42703)
+
 ### Requirement: Local Integration Test Execution
 
 The integration test configuration SHALL load `.env.dev` when present, after the
@@ -272,6 +280,16 @@ database-substrate assertions and SHALL be safe to run in CI.
   migrations remain pending)
 - **THEN** the health check fails rather than reporting success on a merely
   non-empty tracking table
+
+#### Scenario: Tolerates a still-settling stack
+
+- **WHEN** `make check` is run right after `make dev-up`, while required services
+  (e.g. `bloommcp`, `realtime`) are still in `starting` because their healthchecks
+  have not run yet
+- **THEN** the check bounded-waits for those services to leave `starting` before
+  judging, rather than failing immediately — a required service that is still
+  `starting`/`unhealthy` after the wait is a failure; an optional service stays a
+  warning
 
 #### Scenario: One-shot reset-and-verify target
 

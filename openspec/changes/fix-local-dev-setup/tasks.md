@@ -244,6 +244,24 @@ tolerates missing LLM keys and CI runners have no 5432 shadow.
       with log dumps on failure and `down -v` cleanup.
 - [ ] 12.3 Verify: the job passes on CI (the live validation of the dev path).
 
+## 13. Make the documented dev flow race-tolerant (TDD)
+
+The dev-stack smoke job exposed two races a developer hits running the flow fast.
+Move the robustness into the commands so humans get it too (and the smoke job can
+run the bare make targets).
+
+- [x] 13.1 RED: `test_makefile_migrate_local.py` asserts the recipe waits for the
+      storage schema (`storage.buckets`) before `supabase db push`.
+- [x] 13.2 GREEN: `migrate-local` bounded-polls (via `docker compose exec db-dev
+      psql`) for `storage.buckets.public` before pushing.
+- [x] 13.3 RED: `test_check_health.py` asserts `_services_still_settling` treats a
+      required `starting` service as not-ready and an optional one as ready.
+- [x] 13.4 GREEN: `check_services_healthy` bounded-polls until required services
+      leave `starting`, then classifies.
+- [x] 13.5 GREEN: simplify the `dev-stack-smoke` job to the bare `make init` →
+      `dev-up` → `migrate-local` → `check` (drop the CI-only wait steps).
+- [ ] 13.6 Verify: dev-stack-smoke passes CI with the bare targets.
+
 - **Unit tests (all green):** the 8 new test files (53 tests) all pass —
   `test_init_script_line_endings` (asserts `git check-attr eol == lf`, the
   declarative checkout rule — the blobs were already LF, so the real fix is the

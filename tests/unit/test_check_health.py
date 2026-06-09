@@ -82,6 +82,29 @@ def test_bloommcp_is_required_not_optional():
     assert any("bloommcp" in p for p in problems)
 
 
+def test_starting_required_service_is_settling():
+    """A required service still in `starting` means 'keep waiting', not 'fail'."""
+    rows = [
+        {"Service": "bloommcp", "Health": "starting", "State": "running"},
+        {"Service": "db-dev", "Health": "healthy", "State": "running"},
+    ]
+    assert check_health._services_still_settling(rows) == ["bloommcp"]
+
+
+def test_optional_starting_service_is_not_settling():
+    """An optional service (langchain-agent) starting must not hold up the check."""
+    rows = [{"Service": "langchain-agent", "Health": "starting", "State": "running"}]
+    assert check_health._services_still_settling(rows) == []
+
+
+def test_all_healthy_means_settled():
+    rows = [
+        {"Service": "db-dev", "Health": "healthy", "State": "running"},
+        {"Service": "bloommcp", "Health": "healthy", "State": "running"},
+    ]
+    assert check_health._services_still_settling(rows) == []
+
+
 def test_parse_env_ignores_comments_and_blanks():
     text = "# comment\n\nPOSTGRES_USER=supabase_admin\nPOSTGRES_HOST_PORT=5433\n"
     env = check_health.parse_env(text)

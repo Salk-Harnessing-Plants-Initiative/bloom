@@ -211,9 +211,25 @@ def _classify_service_rows(rows: list[dict]) -> tuple[list[str], list[str]]:
     return problems, warnings
 
 
-def check_services_healthy() -> tuple[list[str], list[str]]:
-    """Return (problems, warnings) for compose service health. Optional LLM
-    services that are down are warnings, not problems."""
+def _services_still_settling(rows: list[dict]) -> list[str]:
+    """Required (non-optional) services whose healthcheck is still 'starting'.
+
+    Healthchecks first fire ~30s after start (e.g. bloommcp/realtime), so a
+    `make check` run right after `make dev-up` can catch them mid-`starting`.
+    Treat that as 'keep waiting', not a failure.
+    """
+    out = []
+    for svc in rows:
+        name = svc.get("Service") or svc.get("Name", "?")
+        if name in OPTIONAL_SERVICES:
+            continue
+        if (svc.get("Health") or "").lower() == "starting":
+            out.append(name)
+    return out
+
+
+def _compose_ps_rows() -> tuple[list[dict] | None, list[str]]:
+    """Query `docker compose ps`. Return (rows, problems); rows is None on error."""
     try:
         out = subprocess.run(
             [
@@ -223,20 +239,32 @@ def check_services_healthy() -> tuple[list[str], list[str]]:
             cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return [f"could not query docker compose: {exc}"], []
+        return None, [f"could not query docker compose: {exc}"]
     if out.returncode != 0:
-        return [f"`docker compose ps` failed: {out.stderr.strip()[:200]}"], []
-
+        return None, [f"`docker compose ps` failed: {out.stderr.strip()[:200]}"]
     raw = out.stdout.strip()
     if not raw:
-        return ["no compose services are running (did you `make dev-up`?)"], []
+        return None, ["no compose services are running (did you `make dev-up`?)"]
     # Newer compose prints one JSON object per line; older prints a JSON array.
     if raw.startswith("["):
-        rows = json.loads(raw)
-    else:
-        rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        return json.loads(raw), []
+    return [json.loads(line) for line in raw.splitlines() if line.strip()], []
 
-    return _classify_service_rows(rows)
+
+def check_services_healthy(
+    timeout: float = 90.0, interval: float = 3.0
+) -> tuple[list[str], list[str]]:
+    """Return (problems, warnings) for compose service health, after bounded-
+    waiting for required services to leave 'starting'. Optional LLM services that
+    are down are warnings, not problems."""
+    deadline = time.monotonic() + timeout
+    while True:
+        rows, errors = _compose_ps_rows()
+        if rows is None:
+            return errors, []
+        if not _services_still_settling(rows) or time.monotonic() >= deadline:
+            return _classify_service_rows(rows)
+        time.sleep(interval)
 
 
 # --------------------------------------------------------------------------- #
