@@ -491,7 +491,11 @@ def test_caddy_unreachable_notification_includes_last_known_state():
     assert "Caddy container unreachable" in note.subject_suffix
     assert docker_error in note.body
     assert "2026-06-08T09:00:00+00:00" in note.body  # last successful observation timestamp
-    assert "bloom-dev.salk.edu" in note.body  # cert subject we last knew about
+    # Body lists both cert identifiers in the format `<id> — notBefore=<ts>`.
+    # Match the full line including the separator to avoid a false-positive
+    # CodeQL "incomplete URL substring sanitization" flag.
+    assert "bloom-dev.salk.edu — notBefore=2026-06-09" in note.body
+    assert "*.bloom-dev.salk.edu — notBefore=2026-06-09" in note.body
     assert "docker logs --tail=100" in note.body  # diagnostic runbook in the body
 
 
