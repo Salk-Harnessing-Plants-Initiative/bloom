@@ -54,10 +54,17 @@
 	# DNS-01 against Cloudflare's API. For http://-scheme addresses (CI mode)
 	# the tls block is parsed but inert — Caddy does not request a cert.
 	#
-	# `dns_challenge_override_domain` is what makes the CNAME delegation work.
+	# `dns_challenge_override_domain` makes CNAME delegation work. It takes
+	# the LITERAL FQDN where the TXT will be written — not a parent domain
+	# that gets `_acme-challenge.` prepended. (The directive's documentation
+	# is ambiguous on this; certmagic at runtime treats the value as the
+	# exact target name.) So the value MUST include the `_acme-challenge.`
+	# prefix so it matches the Salk CNAME target. Confirmed in Caddy 2.11.3
+	# with caddy-dns/cloudflare v0.2.4 — see the dns_manager debug log
+	# `"creating DNS record","dns_name":"<value>"` to verify after a deploy.
 	tls {
 		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
-		dns_challenge_override_domain bloom-acme.talmolab.org
+		dns_challenge_override_domain _acme-challenge.bloom-acme.talmolab.org
 	}
 
 	# -------------------
