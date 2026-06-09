@@ -640,6 +640,8 @@ jobs:
           docker compose -f docker-compose.dev.yml --env-file .env.dev ps
           echo "=== db-dev logs ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs db-dev --tail=100
+          echo "=== storage logs ==="
+          docker compose -f docker-compose.dev.yml --env-file .env.dev logs storage --tail=80
           echo "=== bloommcp logs ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs bloommcp --tail=50
           echo "=== langchain-agent logs ==="

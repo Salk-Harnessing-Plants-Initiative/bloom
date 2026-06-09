@@ -237,12 +237,12 @@ migrate-local:
 	PG_PASSWORD=$$(sed -n 's/^POSTGRES_PASSWORD=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
 	PG_DB=$$(sed -n 's/^POSTGRES_DB=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); PG_DB=$${PG_DB:-postgres}; \
 	echo "Waiting for storage schema (storage-api provisions storage.buckets)..."; \
-	for i in $$(seq 1 60); do \
-		if docker compose -f docker-compose.dev.yml exec -T -e PGPASSWORD="$$PG_PASSWORD" db-dev \
+	for i in $$(seq 1 90); do \
+		if docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T -e PGPASSWORD="$$PG_PASSWORD" db-dev \
 			psql -U "$$PG_USER" -d "$$PG_DB" -tAc \
 			"SELECT 1 FROM information_schema.columns WHERE table_schema='storage' AND table_name='buckets' AND column_name='public'" \
-			2>/dev/null | grep -q 1; then break; fi; \
-		if [ $$i -eq 60 ]; then echo "Error: storage.buckets not ready after 120s — is storage-api running? Some migrations INSERT into it."; exit 1; fi; \
+			2>/tmp/migrate_storage_wait.err | grep -q 1; then break; fi; \
+		if [ $$i -eq 90 ]; then echo "Error: storage.buckets not ready after 180s (is storage-api running? some migrations INSERT into it). Last psql stderr:"; tail -5 /tmp/migrate_storage_wait.err 2>/dev/null; exit 1; fi; \
 		sleep 2; \
 	done; \
 	supabase db push \
