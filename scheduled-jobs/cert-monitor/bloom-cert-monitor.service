@@ -1,5 +1,5 @@
 [Unit]
-Description=Bloom cert renewal monitor
+Description=Bloom cert renewal monitor (__ENV_NAME__)
 Documentation=https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/285
 After=docker.service
 Requires=docker.service
@@ -8,6 +8,6 @@ Requires=docker.service
 Type=oneshot
 User=bloom-deploy
 EnvironmentFile=__ENV_FILE__
-ExecStart=/usr/bin/python3 __DEPLOY_DIR__/scheduled-jobs/cert-monitor/monitor.py
+ExecStart=/usr/bin/python3 __DEPLOY_DIR__/scheduled-jobs/cert-monitor/monitor.py --env __ENV_NAME__
 StandardOutput=journal
 StandardError=journal

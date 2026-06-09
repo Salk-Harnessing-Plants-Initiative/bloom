@@ -43,9 +43,15 @@ def _env(name: str, default: str = "") -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--env", choices=["staging", "prod"],
+                        help="Restrict the run to a single environment. Required when invoked "
+                             "from a per-env systemd service. Omit for one-off CLI use that "
+                             "checks both envs.")
     parser.add_argument("--force-notification", choices=["preflight"],
                         help="Send a synthetic notification (used by installer --test-send)")
     args = parser.parse_args(argv)
+
+    envs_to_process = CADDY_ENVS if args.env is None else [e for e in CADDY_ENVS if e.label == args.env]
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -65,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
 
     now = datetime.now(timezone.utc)
     smtp_failure = False
-    for caddy_env in CADDY_ENVS:
+    for caddy_env in envs_to_process:
         try:
             _process_env(caddy_env, now, state_dir, expiry_alert_days, notify_on_success,
                          sender, recipients, smtp_host)

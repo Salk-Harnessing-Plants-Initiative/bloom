@@ -357,3 +357,29 @@ def test_full_flow_against_success_fixture_with_baseline_state():
     # No failure events. No silent_expiry.
     assert states == []
     assert notes == []
+
+
+# ---------- --env CLI flag filter (B1 fix) ----------
+
+def test_env_filter_restricts_to_one_env():
+    """The --env flag (passed by per-env systemd services) restricts iteration
+    to a single CADDY_ENVS entry, so each env's timer only touches its own
+    container."""
+    from monitor import CADDY_ENVS  # local import — module-level import would
+                                    # trigger main()'s argparse against pytest's argv
+
+    staging_only = [e for e in CADDY_ENVS if e.label == "staging"]
+    prod_only = [e for e in CADDY_ENVS if e.label == "prod"]
+
+    assert len(staging_only) == 1
+    assert len(prod_only) == 1
+    assert staging_only[0].container == "bloom_v2_staging-caddy-1"
+    assert prod_only[0].container == "bloom_v2_prod-caddy-1"
+
+
+def test_env_filter_omitted_means_both_envs():
+    """For one-off CLI use (no --env flag), iteration covers both envs."""
+    from monitor import CADDY_ENVS
+
+    both = list(CADDY_ENVS)
+    assert {e.label for e in both} == {"staging", "prod"}

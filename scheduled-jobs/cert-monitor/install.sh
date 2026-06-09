@@ -67,9 +67,12 @@ if [[ ! -d "$STATE_DIR" ]]; then
 fi
 
 # Render the unit files from the templates checked into the repo.
+# Per-env naming so staging + prod can coexist on the same host —
+# `bloom-cert-monitor-staging.{service,timer}` + `bloom-cert-monitor-prod.{service,timer}`.
 TEMPLATE_DIR="${DEPLOY_DIR}/scheduled-jobs/cert-monitor"
-SERVICE_DEST="/etc/systemd/system/bloom-cert-monitor.service"
-TIMER_DEST="/etc/systemd/system/bloom-cert-monitor.timer"
+UNIT_BASE="bloom-cert-monitor-${ENV_NAME}"
+SERVICE_DEST="/etc/systemd/system/${UNIT_BASE}.service"
+TIMER_DEST="/etc/systemd/system/${UNIT_BASE}.timer"
 
 SERVICE_RENDERED=$(mktemp)
 TIMER_RENDERED=$(mktemp)
@@ -77,8 +80,10 @@ trap 'rm -f "$SERVICE_RENDERED" "$TIMER_RENDERED"' EXIT
 
 sed -e "s|__ENV_FILE__|${ENV_FILE}|g" \
     -e "s|__DEPLOY_DIR__|${DEPLOY_DIR}|g" \
+    -e "s|__ENV_NAME__|${ENV_NAME}|g" \
     "${TEMPLATE_DIR}/bloom-cert-monitor.service" > "$SERVICE_RENDERED"
-cp "${TEMPLATE_DIR}/bloom-cert-monitor.timer" "$TIMER_RENDERED"
+sed -e "s|__ENV_NAME__|${ENV_NAME}|g" \
+    "${TEMPLATE_DIR}/bloom-cert-monitor.timer" > "$TIMER_RENDERED"
 
 UNITS_CHANGED=0
 if ! cmp -s "$SERVICE_RENDERED" "$SERVICE_DEST" 2>/dev/null; then
@@ -97,21 +102,22 @@ if [[ "$UNITS_CHANGED" -eq 1 ]]; then
     echo "systemctl daemon-reload done"
 fi
 
-systemctl enable --now bloom-cert-monitor.timer
-echo "Timer enabled and started"
+systemctl enable --now "${UNIT_BASE}.timer"
+echo "Timer ${UNIT_BASE}.timer enabled and started"
 
-# Verify install actually landed.
-if ! systemctl list-timers --all 2>/dev/null | grep -q bloom-cert-monitor; then
-    echo "ERROR: bloom-cert-monitor.timer not listed by systemctl after install" >&2
+# Verify install actually landed — env-specific check so a prior env's install
+# doesn't falsely satisfy this check.
+if ! systemctl list-timers --all 2>/dev/null | grep -q "${UNIT_BASE}"; then
+    echo "ERROR: ${UNIT_BASE}.timer not listed by systemctl after install" >&2
     exit 1
 fi
-echo "Install verified — timer is scheduled."
+echo "Install verified — ${UNIT_BASE}.timer is scheduled."
 
 if [[ "$TEST_SEND" -eq 1 ]]; then
-    echo "Sending preflight email..."
+    echo "Sending preflight email for env=${ENV_NAME}..."
     set -a; source "$ENV_FILE"; set +a
     sudo -u bloom-deploy /usr/bin/python3 \
         "${DEPLOY_DIR}/scheduled-jobs/cert-monitor/monitor.py" \
-        --force-notification preflight
+        --env "${ENV_NAME}" --force-notification preflight
     echo "Preflight email dispatched. Check recipient inboxes."
 fi

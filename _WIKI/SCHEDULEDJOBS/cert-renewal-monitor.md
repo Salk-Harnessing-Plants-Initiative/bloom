@@ -84,33 +84,52 @@ Step by step, the installer:
 6. **Confirms the timer is actually scheduled now**, by listing the system's queued-up jobs and checking that ours appears.
    * If it's missing at this point, the installer aborts loudly rather than silently leaving you with a broken install.
 
-* Verifying it's installed and running
+## Per-env units — you'll see two of each after install
+
+Because both `staging` and `prod` Caddy stacks run on the same bloom-dev host, the installer writes a separate timer + service per environment. After installing both, `systemctl list-timers` shows:
+
+```
+bloom-cert-monitor-staging.timer  →  bloom-cert-monitor-staging.service
+bloom-cert-monitor-prod.timer     →  bloom-cert-monitor-prod.service
+```
+
+Each runs independently against its own Caddy container (`bloom_v2_staging-caddy-1` and `bloom_v2_prod-caddy-1` respectively), reads its own `.env` file, and writes its own state file (`/var/lib/bloom-cert-monitor/<env>.json`). A failure in one does not affect the other.
+
+## Verifying it's installed and running
 
 ```bash
-# Is the timer scheduled?
+# Are both timers scheduled?
 systemctl list-timers | grep bloom-cert-monitor
 
-# Is the timer healthy?
-systemctl status bloom-cert-monitor.timer
+# Are the timers healthy? (run for each env)
+systemctl status bloom-cert-monitor-staging.timer
+systemctl status bloom-cert-monitor-prod.timer
 
-# What did the last run log?
-journalctl -u bloom-cert-monitor.service -n 100 --no-pager
+# What did the last run log? (run for each env)
+journalctl -u bloom-cert-monitor-staging.service -n 100 --no-pager
+journalctl -u bloom-cert-monitor-prod.service -n 100 --no-pager
 
-# Manual one-off invocation (sends a preflight email to confirm SMTP)
+# Manual one-off invocation (sends a preflight email to confirm SMTP for one env)
 sudo -u bloom-deploy /usr/bin/python3 \
     /data/bloom/staging/scheduled-jobs/cert-monitor/monitor.py \
-    --force-notification preflight
+    --env staging --force-notification preflight
 ```
 
 ## Removing
 
+To remove a single env (e.g. staging), substitute `${ENV}` with `staging` or `prod`:
+
 ```bash
-sudo systemctl disable --now bloom-cert-monitor.timer
-sudo rm /etc/systemd/system/bloom-cert-monitor.timer
-sudo rm /etc/systemd/system/bloom-cert-monitor.service
+sudo systemctl disable --now bloom-cert-monitor-${ENV}.timer
+sudo rm /etc/systemd/system/bloom-cert-monitor-${ENV}.timer
+sudo rm /etc/systemd/system/bloom-cert-monitor-${ENV}.service
 sudo systemctl daemon-reload
-# Optional, keeps state for re-install:
-# sudo rm -rf /var/lib/bloom-cert-monitor
+```
+
+The state directory `/var/lib/bloom-cert-monitor/` is shared across envs (one file per env). After removing both envs, optionally:
+
+```bash
+sudo rm -rf /var/lib/bloom-cert-monitor
 ```
 
 Related
