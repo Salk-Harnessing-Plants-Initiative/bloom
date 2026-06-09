@@ -1,7 +1,7 @@
 # =============================================================================
 # Bloom v2 Caddyfile
 #
-# Routes:
+# Routes (all served by ONE wildcard SAN cert — see below):
 #   {DOMAIN_MAIN}              → bloom-web (frontend)
 #   {DOMAIN_MAIN}/api/*        → kong (Supabase API gateway, /api prefix stripped)
 #   {DOMAIN_MAIN}/langchain/*  → langchain-agent (FastAPI, prefix preserved)
@@ -9,107 +9,144 @@
 #   {DOMAIN_STUDIO}            → studio (Supabase Studio)
 #   {DOMAIN_MINIO}             → minio console
 #
-# TLS is controlled by two env vars:
+# TLS strategy:
 #
-#   CADDY_HTTP_PORT       site-header suffix on the listen address
-#     prod/staging:       empty   → Caddy auto-binds 80 + 443
-#     CI / local HTTP:    `:80`   → Caddy binds only 80, no TLS
+#   All hostnames served by this stack are consolidated into ONE site block
+#   whose listen addresses are driven by the CADDY_SITE_ADDRESSES env var.
+#   Each comma-separated entry is fully formed with an explicit scheme so
+#   Caddy parses it independently — this avoids the "comma + port-suffix"
+#   pitfall where `host_a, host_b:port` would attach :port only to host_b
+#   and leave host_a defaulting to :443 with automatic HTTPS.
 #
-#   CADDY_TLS_DIRECTIVE   first directive inside each site block
-#     prod/staging:       `tls internal` (Caddy signs certs with its
-#                         local CA — works on a Salk-network-only host
-#                         where Let's Encrypt HTTP-01 can't reach us)
-#     CI:                 empty   → plain HTTP, no cert generation
+#     prod:    `https://bloom-dev.salk.edu, https://*.bloom-dev.salk.edu`
+#              (apex needed — wildcards do not match the parent)
+#     staging: `https://*.bloom-dev.salk.edu`
+#              (all 3 staging hostnames are wildcard-covered)
+#     CI:      `http://localhost`
+#              (forces HTTP-only — no TLS, no ACME, no Let's Encrypt call)
 #
-# When Salk IT provides a real cert, set CADDY_TLS_DIRECTIVE in .env.prod
-# to one of:
-#   `tls /etc/caddy/certs/<domain>.crt /etc/caddy/certs/<domain>.key`
-# or (ACME DNS-01):
-#   `tls { dns <provider> {env.<TOKEN>} }`
+#   Both prod and staging issue their cert via the same single Salk-DNS CNAME
+#   (_acme-challenge.bloom-dev.salk.edu -> _acme-challenge.bloom-acme.talmolab.org)
+#   because the apex challenge and the wildcard challenge BOTH land at
+#   _acme-challenge.bloom-dev.salk.edu (wildcards challenge at the parent name
+#   per the ACME spec).
+#
+#   Per-hostname routing is done inside the block via `@matcher host X` +
+#   `handle @matcher`, preserving the previous per-host route logic.
+#
+# Env vars:
+#
+#   CADDY_SITE_ADDRESSES  comma-separated, scheme-prefixed (http:// or
+#                         https://) site addresses. The tls block below only
+#                         takes effect for https:// addresses.
+#
+#   CLOUDFLARE_API_TOKEN  consumed by the cloudflare DNS provider plugin
+#                         (caddy-dns/cloudflare) baked into the Caddy image
+#                         via caddy/Dockerfile. The token requires the
+#                         `Zone:DNS:Edit` permission on the Cloudflare zone
+#                         containing `bloom-acme.talmolab.org`. Populated at
+#                         deploy time from PROD_/STAGING_CLOUDFLARE_API_TOKEN
+#                         secrets.
 # =============================================================================
 
-# -------------------
-# Main Application
-# -------------------
-{$DOMAIN_MAIN}{$CADDY_HTTP_PORT} {
-	{$CADDY_TLS_DIRECTIVE}
-
-	# Supabase API — strip /api prefix, proxy to Kong
-	handle_path /api/* {
-		reverse_proxy kong:{$KONG_PORT}
+{$CADDY_SITE_ADDRESSES} {
+	# One wildcard SAN cert covering apex + *.bloom-dev.salk.edu via ACME
+	# DNS-01 against Cloudflare's API. For http://-scheme addresses (CI mode)
+	# the tls block is parsed but inert — Caddy does not request a cert.
+	#
+	# `dns_challenge_override_domain` makes CNAME delegation work. It takes
+	# the LITERAL FQDN where the TXT will be written — not a parent domain
+	# that gets `_acme-challenge.` prepended. (The directive's documentation
+	# is ambiguous on this; certmagic at runtime treats the value as the
+	# exact target name.) So the value MUST include the `_acme-challenge.`
+	# prefix so it matches the Salk CNAME target. Confirmed in Caddy 2.11.3
+	# with caddy-dns/cloudflare v0.2.4 — see the dns_manager debug log
+	# `"creating DNS record","dns_name":"<value>"` to verify after a deploy.
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+		dns_challenge_override_domain _acme-challenge.bloom-acme.talmolab.org
 	}
 
-	# LangChain agent — preserve /langchain prefix (FastAPI routes are
-	# defined as /langchain/chat, /langchain/chat/stream, etc).
-	# flush_interval -1 forwards SSE chunks immediately without buffering.
-	handle /langchain/* {
-		reverse_proxy langchain-agent:5002 {
-			flush_interval -1
+	# -------------------
+	# Main Application — DOMAIN_MAIN
+	# -------------------
+	@main host {$DOMAIN_MAIN}
+	handle @main {
+		# Supabase API — strip /api prefix, proxy to Kong
+		handle_path /api/* {
+			reverse_proxy kong:{$KONG_PORT}
+		}
+
+		# LangChain agent — preserve /langchain prefix (FastAPI routes are
+		# defined as /langchain/chat, /langchain/chat/stream, etc).
+		# flush_interval -1 forwards SSE chunks immediately without buffering.
+		handle /langchain/* {
+			reverse_proxy langchain-agent:5002 {
+				flush_interval -1
+			}
+		}
+
+		# Bloommcp MCP server — strip /bloommcp prefix, proxy to FastMCP on 8811.
+		# Auth is enforced by bloommcp itself (Bearer token via BLOOMMCP_API_KEY)
+		# so Caddy doesn't need to do auth here. Salk-network-internal only.
+		handle_path /bloommcp/* {
+			reverse_proxy bloommcp:8811 {
+				flush_interval -1
+			}
+		}
+
+		# Bloom Frontend
+		handle {
+			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
 		}
 	}
 
-	# Bloommcp MCP server — strip /bloommcp prefix, proxy to FastMCP on 8811.
-	# Auth is enforced by bloommcp itself (Bearer token via BLOOMMCP_API_KEY)
-	# so Caddy doesn't need to do auth here. Salk-network-internal only.
-	handle_path /bloommcp/* {
-		reverse_proxy bloommcp:8811 {
-			flush_interval -1
+	# -------------------
+	# Supabase Studio — DOMAIN_STUDIO
+	# -------------------
+	@studio host {$DOMAIN_STUDIO}
+	handle @studio {
+		# Studio backend routes → Kong
+		handle_path /auth/* {
+			reverse_proxy kong:{$KONG_PORT} {
+				rewrite /auth{uri}
+			}
+		}
+
+		handle_path /rest/* {
+			reverse_proxy kong:{$KONG_PORT} {
+				rewrite /rest{uri}
+			}
+		}
+
+		handle_path /storage/* {
+			reverse_proxy kong:{$KONG_PORT} {
+				rewrite /storage{uri}
+			}
+		}
+
+		handle_path /realtime/* {
+			reverse_proxy kong:{$KONG_PORT} {
+				rewrite /realtime{uri}
+			}
+		}
+
+		# Studio UI
+		handle {
+			reverse_proxy studio:{$STUDIO_PORT}
 		}
 	}
 
-	# Bloom Frontend
-	handle {
-		reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
-	}
-}
-
-# -------------------
-# Supabase Studio
-# -------------------
-{$DOMAIN_STUDIO}{$CADDY_HTTP_PORT} {
-	{$CADDY_TLS_DIRECTIVE}
-
-	# Studio backend routes → Kong
-	handle_path /auth/* {
-		reverse_proxy kong:{$KONG_PORT} {
-			rewrite /auth{uri}
-		}
-	}
-
-	handle_path /rest/* {
-		reverse_proxy kong:{$KONG_PORT} {
-			rewrite /rest{uri}
-		}
-	}
-
-	handle_path /storage/* {
-		reverse_proxy kong:{$KONG_PORT} {
-			rewrite /storage{uri}
-		}
-	}
-
-	handle_path /realtime/* {
-		reverse_proxy kong:{$KONG_PORT} {
-			rewrite /realtime{uri}
-		}
-	}
-
-	# Studio UI
-	handle {
-		reverse_proxy studio:{$STUDIO_PORT}
-	}
-}
-
-# -------------------
-# MinIO Console
-# -------------------
-{$DOMAIN_MINIO}{$CADDY_HTTP_PORT} {
-	{$CADDY_TLS_DIRECTIVE}
-
-	reverse_proxy supabase-minio:{$MINIO_CONSOLE_PORT} {
-		transport http {
-			read_timeout 300s
-			write_timeout 300s
+	# -------------------
+	# MinIO Console — DOMAIN_MINIO
+	# -------------------
+	@minio host {$DOMAIN_MINIO}
+	handle @minio {
+		reverse_proxy supabase-minio:{$MINIO_CONSOLE_PORT} {
+			transport http {
+				read_timeout 300s
+				write_timeout 300s
+			}
 		}
 	}
 }
@@ -119,7 +156,7 @@
 # -------------------
 # Used by Docker healthcheck only. Not exposed externally (port 2021 is
 # not published in docker-compose). Bind to :2021 on a fresh listener
-# so it doesn't collide with the public 80/443 blocks above.
+# so it doesn't collide with the public 80/443 block above.
 :2021 {
 	respond /caddy-health "ok" 200
 }

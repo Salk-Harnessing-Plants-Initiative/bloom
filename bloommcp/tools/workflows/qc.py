@@ -86,8 +86,8 @@ def run_qc_workflow(
         json.dump(convert_to_json_serializable(cleanup_log), f, indent=2)
 
     entry = writer.commit({
-        "_cleaned.csv": f"{version_dir.name}/_cleaned.csv",
-        "cleanup_log.json": f"{version_dir.name}/cleanup_log.json",
+        "_cleaned.csv": "_cleaned.csv",
+        "cleanup_log.json": "cleanup_log.json",
     })
 
     final_samples = cleanup_log["final_samples"]
@@ -101,7 +101,7 @@ def run_qc_workflow(
     return {
         "version_id": entry.id,
         "version_dir": str(version_dir),
-        "manifest_path": str(writer.analysis_dir.path / "manifest.json"),
+        "manifest_path": f"{writer.analysis_dir.path}manifest.json",
         "summary": {
             "n_rows_in": original_samples,
             "n_rows_out": final_samples,
@@ -113,8 +113,8 @@ def run_qc_workflow(
             "source": source_label,
         },
         "outputs": {
-            "cleaned_csv": f"{version_dir.name}/_cleaned.csv",
-            "cleanup_log_json": f"{version_dir.name}/cleanup_log.json",
+            "cleaned_csv": "_cleaned.csv",
+            "cleanup_log_json": "cleanup_log.json",
         },
     }
 
