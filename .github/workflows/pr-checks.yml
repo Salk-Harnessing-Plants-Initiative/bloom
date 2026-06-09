@@ -627,8 +627,38 @@ jobs:
         run: |
           timeout 180 bash -c 'until docker compose -f docker-compose.dev.yml --env-file .env.dev ps db-dev --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 3; echo "  waiting for db-dev..."; done'
 
+      # storage-api provisions storage.buckets (incl. the `public`/`file_size_limit`
+      # columns) at runtime; some migrations INSERT into it. db-dev being healthy
+      # does NOT mean storage is ready — wait for the column before migrating, or
+      # the bucket migrations race storage-api and fail (SQLSTATE 42703).
+      - name: Wait for storage schema ready
+        run: |
+          PGPASSWORD=$(grep '^POSTGRES_PASSWORD=' .env.dev | cut -d= -f2-)
+          for i in $(seq 1 60); do
+            if docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T -e PGPASSWORD="$PGPASSWORD" db-dev \
+                 psql -U supabase_admin -d postgres -tAc \
+                 "SELECT 1 FROM information_schema.columns WHERE table_schema='storage' AND table_name='buckets' AND column_name='public'" \
+                 2>/dev/null | grep -q 1; then
+              echo "storage schema ready"; exit 0
+            fi
+            echo "  waiting for storage schema... ($i)"; sleep 3
+          done
+          echo "storage schema not ready in time"
+          docker compose -f docker-compose.dev.yml --env-file .env.dev logs storage --tail=50
+          exit 1
+
       - name: make migrate-local (apply all migrations)
         run: make migrate-local
+
+      # Let healthchecks settle (bloommcp's interval is 30s) so `make check`
+      # doesn't catch a service still in `starting`.
+      - name: Wait for services to settle
+        run: |
+          for i in $(seq 1 40); do
+            STARTING=$(docker compose -f docker-compose.dev.yml --env-file .env.dev ps --format json | jq -r '.[] | select(.Health == "starting") | .Name' 2>/dev/null | wc -l)
+            if [ "$STARTING" -eq 0 ]; then echo "services settled"; break; fi
+            echo "  $STARTING service(s) still starting... ($i)"; sleep 3
+          done
 
       - name: make check (verify services, roles, schemas, migrations)
         run: make check
