@@ -86,9 +86,28 @@ class MonitorState:
 @dataclass
 class Notification:
     env: str
-    kind: str  # renewed | failed | silent_expiry | partial_success | preflight
+    kind: str  # renewed | failed | silent_expiry | partial_success | caddy_unreachable | preflight
     subject_suffix: str
     body: str
+
+
+def check_container_running(env: CaddyEnv) -> tuple[bool, str | None]:
+    """Returns (True, None) if the Caddy container is reachable via `docker exec`.
+    Otherwise returns (False, error_message) so the caller can build a
+    `caddy_unreachable` notification instead of false-alarming as a renewal failure.
+
+    Catches: container stopped, container missing, docker daemon unreachable, any
+    other reason `docker exec` can't enter the container — anything that means
+    "we can't observe the cert this run."
+    """
+    result = subprocess.run(
+        ["docker", "exec", env.container, "true"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode == 0:
+        return True, None
+    error_msg = result.stderr.strip() or result.stdout.strip() or f"docker exec returned rc={result.returncode}"
+    return False, error_msg
 
 
 def run_subprocess(cmd: list[str]) -> str:
@@ -308,6 +327,45 @@ def _silent_expiry(env: str, cert: CertInfo, events: list[CaddyEvent]) -> Notifi
         planned = datetime.fromtimestamp(planning.selected_time, tz=timezone.utc)
         body += f"Caddy planned to renew at: {planned.isoformat()} (already passed)\n"
     return Notification(env, "silent_expiry", "silent_expiry", body)
+
+
+def build_caddy_unreachable_notification(env: str, prior_state: MonitorState, docker_error: str) -> Notification:
+    """Build a notification used when the monitor cannot reach Caddy at all.
+
+    Carries the last-known cert state from the state file so the admin can see
+    when we last successfully observed the cert, and includes a short diagnostic
+    runbook.
+    """
+    lines = [
+        f"The bloom-cert-monitor weekly run tried to inspect the {env} Caddy",
+        f"container but could not reach it. `docker exec` returned:",
+        "",
+        f"  {docker_error}",
+        "",
+    ]
+    if prior_state.last_run_utc:
+        lines.append(f"Last successful observation: {prior_state.last_run_utc}")
+    if prior_state.last_not_before:
+        lines.append("At that time the certs we knew about were:")
+        for identifier, not_before in sorted(prior_state.last_not_before.items()):
+            lines.append(f"  {identifier} — notBefore={not_before}")
+    else:
+        lines.append("No prior observation in the state file (first-ever run, or state cleared).")
+    lines += [
+        "",
+        "We have no fresh data on whether the cert was renewed since the prior",
+        "observation. The next weekly run will resume normal observation if",
+        "Caddy comes back.",
+        "",
+        "Action: check Caddy's status on bloom-dev. If Caddy was down only for a",
+        "deploy or short restart, this email can be safely ignored. If Caddy is",
+        "unexpectedly down, investigate:",
+        "",
+        f"  docker logs --tail=100 bloom_v2_{env}-caddy-1",
+        "  systemctl status docker",
+        "",
+    ]
+    return Notification(env, "caddy_unreachable", "Caddy container unreachable", "\n".join(lines))
 
 
 def send_email(notification: Notification, sender: str, recipients: list[str], smtp_host: str) -> None:

@@ -17,7 +17,8 @@ from pathlib import Path
 
 from monitor_lib import (
     CaddyEnv, MonitorState, Notification,
-    build_notifications, classify, list_cert_subjects, load_state, parse_events,
+    build_caddy_unreachable_notification, build_notifications, check_container_running,
+    classify, list_cert_subjects, load_state, parse_events,
     read_caddy_logs, read_cert, save_state, send_email, subject_to_identifier,
 )
 
@@ -106,14 +107,30 @@ def _process_env(
 ) -> None:
     state_path = state_dir / f"{caddy_env.label}.json"
     state = load_state(state_path)
+    new_state = MonitorState(last_run_utc=now.isoformat(), last_not_before=dict(state.last_not_before))
+
+    # If Caddy is unreachable (stopped, missing, docker daemon down, etc.) we
+    # can't observe the cert this run. Emit a "caddy_unreachable" notification
+    # instead of false-alarming as a renewal failure — keeps the monitor's
+    # silence unambiguous: no email = healthy, email = something to look at.
+    is_running, docker_error = check_container_running(caddy_env)
+    if not is_running:
+        logger.warning("env %s: Caddy container unreachable: %s", caddy_env.label, docker_error)
+        note = build_caddy_unreachable_notification(caddy_env.label, state, docker_error or "")
+        try:
+            send_email(note, sender, recipients, smtp_host)
+            logger.info("env %s: sent caddy_unreachable notification", caddy_env.label)
+        finally:
+            save_state(state_path, new_state)
+        return
 
     subjects = list_cert_subjects(caddy_env)
     if not subjects:
         logger.info("env %s: no cert dirs found", caddy_env.label)
+        save_state(state_path, new_state)
         return
     events = parse_events(read_caddy_logs(caddy_env))
 
-    new_state = MonitorState(last_run_utc=now.isoformat(), last_not_before=dict(state.last_not_before))
     try:
         for subject_dir in subjects:
             cert = read_cert(caddy_env, subject_dir)

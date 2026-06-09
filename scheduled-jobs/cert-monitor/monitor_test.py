@@ -407,7 +407,8 @@ def test_state_saved_when_smtp_fails_during_process_env(tmp_path):
         not_after=datetime(2026, 9, 7, tzinfo=timezone.utc),
     )
 
-    with patch.object(monitor, "list_cert_subjects", return_value=["bloom-dev.salk.edu"]), \
+    with patch.object(monitor, "check_container_running", return_value=(True, None)), \
+         patch.object(monitor, "list_cert_subjects", return_value=["bloom-dev.salk.edu"]), \
          patch.object(monitor, "read_caddy_logs", return_value=""), \
          patch.object(monitor, "read_cert", return_value=fresh_cert), \
          patch.object(monitor, "send_email", side_effect=smtplib.SMTPException("relay rejected")):
@@ -448,7 +449,8 @@ def test_state_saved_on_clean_run_through_process_env(tmp_path):
         not_after=datetime(2026, 9, 7, tzinfo=timezone.utc),
     )
 
-    with patch.object(monitor, "list_cert_subjects", return_value=["wildcard_.bloom-dev.salk.edu"]), \
+    with patch.object(monitor, "check_container_running", return_value=(True, None)), \
+         patch.object(monitor, "list_cert_subjects", return_value=["wildcard_.bloom-dev.salk.edu"]), \
          patch.object(monitor, "read_caddy_logs", return_value=""), \
          patch.object(monitor, "read_cert", return_value=fresh_cert), \
          patch.object(monitor, "send_email"):  # no-op; SMTP succeeds
@@ -465,3 +467,79 @@ def test_state_saved_on_clean_run_through_process_env(tmp_path):
 
     saved = load_state(state_path)
     assert saved.last_not_before["*.bloom-dev.salk.edu"] == fresh_cert.not_before.isoformat()
+
+
+# ---------- fix: caddy_unreachable notification ----------
+
+def test_caddy_unreachable_notification_includes_last_known_state():
+    """The builder surfaces what we last knew about the certs, so an admin
+    reading the email can see how stale the info is."""
+    from monitor_lib import build_caddy_unreachable_notification
+
+    prior_state = MonitorState(
+        last_run_utc="2026-06-08T09:00:00+00:00",
+        last_not_before={
+            "bloom-dev.salk.edu": "2026-06-09T05:50:18+00:00",
+            "*.bloom-dev.salk.edu": "2026-06-09T05:50:18+00:00",
+        },
+    )
+    docker_error = "Error response from daemon: Container bloom_v2_prod-caddy-1 is not running"
+
+    note = build_caddy_unreachable_notification("prod", prior_state, docker_error)
+
+    assert note.kind == "caddy_unreachable"
+    assert "Caddy container unreachable" in note.subject_suffix
+    assert docker_error in note.body
+    assert "2026-06-08T09:00:00+00:00" in note.body  # last successful observation timestamp
+    assert "bloom-dev.salk.edu" in note.body  # cert subject we last knew about
+    assert "docker logs --tail=100" in note.body  # diagnostic runbook in the body
+
+
+def test_caddy_unreachable_notification_handles_empty_prior_state():
+    """First-ever run with Caddy already down: no prior observations to show."""
+    from monitor_lib import build_caddy_unreachable_notification
+
+    note = build_caddy_unreachable_notification("staging", MonitorState(), "no such container")
+
+    assert note.kind == "caddy_unreachable"
+    assert "No prior observation" in note.body
+
+
+def test_process_env_sends_caddy_unreachable_when_container_down(tmp_path):
+    """The whole _process_env flow: when check_container_running returns False,
+    the monitor sends a caddy_unreachable email, updates state's last_run_utc,
+    leaves last_not_before unchanged, and returns cleanly (no exception)."""
+    import monitor
+
+    state_path = tmp_path / "prod.json"
+    save_state(state_path, MonitorState(
+        last_run_utc="2026-06-08T09:00:00+00:00",
+        last_not_before={"bloom-dev.salk.edu": "2026-06-09T05:50:18+00:00"},
+    ))
+
+    sent_notifications = []
+    with patch.object(monitor, "check_container_running",
+                      return_value=(False, "Container is not running")), \
+         patch.object(monitor, "send_email",
+                      side_effect=lambda n, *a, **k: sent_notifications.append(n)):
+        # Should NOT raise — Caddy being down is not a monitor failure.
+        monitor._process_env(
+            caddy_env=monitor.CADDY_ENVS[1],  # prod
+            now=datetime(2026, 6, 15, 9, 0, tzinfo=timezone.utc),
+            state_dir=tmp_path,
+            expiry_alert_days=14,
+            notify_on_success=True,
+            sender="from@x",
+            recipients=["to@y"],
+            smtp_host="smtp.host",
+        )
+
+    assert len(sent_notifications) == 1
+    assert sent_notifications[0].kind == "caddy_unreachable"
+    assert "Container is not running" in sent_notifications[0].body
+
+    # State: last_run_utc updates (proof the monitor ran), but last_not_before is unchanged
+    # (we had no fresh cert observation — the prior week's data is still all we know).
+    saved = load_state(state_path)
+    assert saved.last_run_utc == "2026-06-15T09:00:00+00:00"
+    assert saved.last_not_before == {"bloom-dev.salk.edu": "2026-06-09T05:50:18+00:00"}
