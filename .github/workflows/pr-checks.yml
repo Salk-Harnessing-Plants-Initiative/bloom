@@ -589,6 +589,66 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.prod.yml --env-file .env.ci down -v
 
+  # Exercise the *documented dev workflow* end to end on docker-compose.dev.yml
+  # (compose-health-check above uses the prod compose). Self-contained: `make
+  # init` generates all local secrets, so no CI_* secrets are needed. langchain-
+  # agent is unhealthy here (no OPENAI_API_KEY) but `make check` treats it as an
+  # optional warning, so a correct core stack still passes.
+  dev-stack-smoke:
+    name: Dev stack smoke (init -> dev-up -> migrate-local -> check)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Setup uv BEFORE compose starts (the dev stack creates a root-owned
+      # volumes/db/data bind mount; setup-uv's lockfile glob would EACCES on it).
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Supabase CLI
+        run: |
+          curl -LO https://github.com/supabase/cli/releases/download/v${SUPABASE_VERSION}/supabase_${SUPABASE_VERSION}_linux_amd64.deb
+          sudo apt install -y ./supabase_${SUPABASE_VERSION}_linux_amd64.deb
+          supabase --version | grep -q "${SUPABASE_VERSION}"
+
+      - name: make init (generate .env.dev with fresh local secrets)
+        run: make init
+
+      - name: make dev-up (build + start the dev stack)
+        run: make dev-up
+
+      - name: Wait for db-dev healthy
+        run: |
+          timeout 180 bash -c 'until docker compose -f docker-compose.dev.yml --env-file .env.dev ps db-dev --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 3; echo "  waiting for db-dev..."; done'
+
+      - name: make migrate-local (apply all migrations)
+        run: make migrate-local
+
+      - name: make check (verify services, roles, schemas, migrations)
+        run: make check
+
+      - name: Debug logs on failure
+        if: failure()
+        run: |
+          echo "=== Container Status ==="
+          docker compose -f docker-compose.dev.yml --env-file .env.dev ps
+          echo "=== db-dev logs ==="
+          docker compose -f docker-compose.dev.yml --env-file .env.dev logs db-dev --tail=100
+          echo "=== bloommcp logs ==="
+          docker compose -f docker-compose.dev.yml --env-file .env.dev logs bloommcp --tail=50
+          echo "=== langchain-agent logs ==="
+          docker compose -f docker-compose.dev.yml --env-file .env.dev logs langchain-agent --tail=50
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker-compose.dev.yml --env-file .env.dev down -v
+
   extract-pinned-images:
     name: Extract Pinned Images
     runs-on: ubuntu-latest

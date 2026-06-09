@@ -227,7 +227,22 @@ Discovered during the §10 local run: `make dev-up` on a fresh clone failed with
 - [x] 11.3 Verify: a fresh clone (`make init` then `make dev-up`) no longer aborts
       on the missing `web/.env`.
 
-## Verification notes (honest record of what was proven, and how)
+## 12. CI dev-stack smoke test (TDD)
+
+CI uses `docker-compose.prod.yml`; the dev workflow (`make init` → `dev-up` →
+`migrate-local` → `check`) is never run live. Now feasible because `make check`
+tolerates missing LLM keys and CI runners have no 5432 shadow.
+
+- [ ] 12.1 RED: add `tests/unit/test_ci_dev_stack_smoke.py` (parsing
+      `.github/workflows/pr-checks.yml` with `yaml`, like
+      `test_ci_workflow_uv_conventions.py`) asserting a job exists whose steps run
+      `make init`, `make dev-up`, `make migrate-local`, and `make check`. Run;
+      confirm it fails (no such job).
+- [ ] 12.2 GREEN: add a `dev-stack-smoke` job to `pr-checks.yml` mirroring
+      `compose-health-check`'s setup (setup-uv, pinned `SUPABASE_VERSION` CLI
+      install, setup-node), running the four make targets against the dev compose,
+      with log dumps on failure and `down -v` cleanup.
+- [ ] 12.3 Verify: the job passes on CI (the live validation of the dev path).
 
 - **Unit tests (all green):** the 8 new test files (53 tests) all pass —
   `test_init_script_line_endings` (asserts `git check-attr eol == lf`, the

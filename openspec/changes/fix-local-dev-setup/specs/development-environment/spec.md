@@ -58,6 +58,29 @@ Postgres/Supabase init scripts bind-mounted into Linux containers (under
   the Supabase roles and schemas are created (the failure mode described in issue
   #124 does not occur)
 
+### Requirement: CI Dev-Stack Smoke Test
+
+CI SHALL exercise the documented local dev workflow end-to-end on
+`docker-compose.dev.yml` — generate credentials (`make init`), bring the stack up
+(`make dev-up`), apply migrations (`make migrate-local`), and verify it
+(`make check`) — so a regression in the dev path (env template, `web/.env`
+optionality, dev port mapping, `migrate-local`, or the health check) fails CI
+rather than a developer. Optional LLM services that need user-supplied keys MUST
+NOT fail the smoke test.
+
+#### Scenario: Dev workflow runs on every PR
+
+- **WHEN** CI runs for a pull request
+- **THEN** a job generates `.env.dev` via `make init`, brings up the dev stack via
+  `make dev-up`, applies every migration via `make migrate-local`, and verifies
+  the stack via `make check`, failing the PR if any step fails
+
+#### Scenario: Optional LLM services don't fail the smoke test
+
+- **WHEN** the smoke job runs without `OPENAI_API_KEY`/`LOCAL_LLM_URL`
+- **THEN** `make check` still passes — `langchain-agent` being unhealthy is a
+  warning, not a failure — because the core dev stack is healthy
+
 ### Requirement: Committed Local Environment Template
 
 The repository SHALL contain a committed `.env.dev.example` template that
