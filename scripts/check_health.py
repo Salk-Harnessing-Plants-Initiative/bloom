@@ -176,8 +176,44 @@ def check_migrations(conn, migrations_dir: Path = MIGRATIONS_DIR) -> list[str]:
 # Service checks (docker compose) — local only.
 # --------------------------------------------------------------------------- #
 
-def check_services_healthy() -> list[str]:
-    """Every service with a healthcheck must be 'healthy'; none exited non-zero."""
+# Services that require user-supplied config to become healthy and are NOT part
+# of the core dev substrate, so an unhealthy one is a warning, not a failure:
+#   - langchain-agent needs LOCAL_LLM_URL / OPENAI_API_KEY (it builds a model at
+#     import; with no LLM configured it can't start).
+OPTIONAL_SERVICES = {"langchain-agent"}
+
+
+def _classify_service_rows(rows: list[dict]) -> tuple[list[str], list[str]]:
+    """Split service-health issues into hard problems vs optional warnings.
+
+    Pure (no docker) so it is unit-testable. A service in OPTIONAL_SERVICES that
+    is unhealthy/exited yields a warning; any other does a problem.
+    """
+    problems: list[str] = []
+    warnings: list[str] = []
+    for svc in rows:
+        name = svc.get("Service") or svc.get("Name", "?")
+        health = (svc.get("Health") or "").lower()
+        state = (svc.get("State") or "").lower()
+        issue = None
+        if health and health not in ("healthy", ""):
+            issue = f"service {name} health={health}"
+        elif state == "exited" and str(svc.get("ExitCode", "0")) not in ("0", "None"):
+            issue = f"service {name} exited (code {svc.get('ExitCode')})"
+        if not issue:
+            continue
+        if name in OPTIONAL_SERVICES:
+            warnings.append(
+                f"{issue} (optional — set LOCAL_LLM_URL / OPENAI_API_KEY to enable it)"
+            )
+        else:
+            problems.append(issue)
+    return problems, warnings
+
+
+def check_services_healthy() -> tuple[list[str], list[str]]:
+    """Return (problems, warnings) for compose service health. Optional LLM
+    services that are down are warnings, not problems."""
     try:
         out = subprocess.run(
             [
@@ -187,30 +223,20 @@ def check_services_healthy() -> list[str]:
             cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return [f"could not query docker compose: {exc}"]
+        return [f"could not query docker compose: {exc}"], []
     if out.returncode != 0:
-        return [f"`docker compose ps` failed: {out.stderr.strip()[:200]}"]
+        return [f"`docker compose ps` failed: {out.stderr.strip()[:200]}"], []
 
-    rows = []
     raw = out.stdout.strip()
     if not raw:
-        return ["no compose services are running (did you `make dev-up`?)"]
+        return ["no compose services are running (did you `make dev-up`?)"], []
     # Newer compose prints one JSON object per line; older prints a JSON array.
     if raw.startswith("["):
         rows = json.loads(raw)
     else:
         rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
 
-    problems = []
-    for svc in rows:
-        name = svc.get("Service") or svc.get("Name", "?")
-        health = (svc.get("Health") or "").lower()
-        state = (svc.get("State") or "").lower()
-        if health and health not in ("healthy", ""):
-            problems.append(f"service {name} health={health}")
-        if state == "exited" and str(svc.get("ExitCode", "0")) not in ("0", "None"):
-            problems.append(f"service {name} exited (code {svc.get('ExitCode')})")
-    return problems
+    return _classify_service_rows(rows)
 
 
 # --------------------------------------------------------------------------- #
@@ -239,15 +265,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     all_problems: list[str] = []
+    all_warnings: list[str] = []
 
     if not args.skip_services:
-        all_problems += [f"[services] {p}" for p in check_services_healthy()]
+        svc_problems, svc_warnings = check_services_healthy()
+        all_problems += [f"[services] {p}" for p in svc_problems]
+        all_warnings += [f"[services] {w}" for w in svc_warnings]
 
     try:
         conn = _connect()
     except Exception as exc:  # noqa: BLE001 — surface any connection failure
         all_problems.append(f"[db] could not connect to Postgres: {exc}")
-        _report(all_problems)
+        _report(all_problems, all_warnings)
         return 1
 
     try:
@@ -259,11 +288,13 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
 
-    _report(all_problems)
+    _report(all_problems, all_warnings)
     return 1 if all_problems else 0
 
 
-def _report(problems: list[str]) -> None:
+def _report(problems: list[str], warnings: list[str] | None = None) -> None:
+    for w in warnings or []:
+        print(f"  ⚠ {w}")
     if problems:
         print("Local dev stack is NOT healthy:")
         for p in problems:
@@ -271,6 +302,8 @@ def _report(problems: list[str]) -> None:
     else:
         print("Local dev stack is healthy: services up, roles + auth/storage "
               "schemas present, all migrations applied.")
+        if warnings:
+            print("(optional services are down — see warnings above)")
 
 
 if __name__ == "__main__":

@@ -65,7 +65,10 @@ mismatched keys. `.env.dev` is git-ignored and never leaves your machine.
 
 Only needed for specific features / conflicts:
 
-- `OPENAI_API_KEY`, `LANGCHAIN_API_KEY` — set these if you need the LLM agent.
+- `OPENAI_API_KEY`, `LANGCHAIN_API_KEY`, `LOCAL_LLM_URL` — set these if you need
+  the LLM agent. Without them, `langchain-agent` won't become healthy (it builds
+  a model at startup); that's expected and `make check` treats it as an optional
+  warning, not a failure. The core stack (incl. `bloommcp`) is unaffected.
 - **Port conflict:** if host port `5432` is already in use (commonly a
   WSL-relayed Postgres from another project), set a free port in `.env.dev`:
   ```bash

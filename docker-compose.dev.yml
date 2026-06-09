@@ -105,7 +105,10 @@ services:
     networks:
       - supanet
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8811/mcp')"]
+      # Probe the unauthenticated /health route (server.py), NOT /mcp — /mcp
+      # requires a Bearer API key and returns 401, which would mark the
+      # (otherwise healthy) container unhealthy.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8811/health')"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -54,6 +54,34 @@ def test_migration_file_versions_reads_real_migrations():
     )
 
 
+def test_optional_llm_service_unhealthy_is_a_warning_not_a_failure():
+    """langchain-agent needs user-supplied LLM config (LOCAL_LLM_URL/OPENAI_API_KEY)
+    to ever be healthy, so a fresh `make dev-up` must NOT report the whole stack
+    unhealthy because of it — it's a warning."""
+    rows = [
+        {"Service": "db-dev", "Health": "healthy", "State": "running"},
+        {"Service": "langchain-agent", "Health": "unhealthy", "State": "running"},
+    ]
+    problems, warnings = check_health._classify_service_rows(rows)
+    assert not problems, f"optional service must not fail the check: {problems}"
+    assert any("langchain-agent" in w for w in warnings)
+
+
+def test_core_service_unhealthy_is_a_failure():
+    rows = [{"Service": "db-dev", "Health": "unhealthy", "State": "running"}]
+    problems, warnings = check_health._classify_service_rows(rows)
+    assert any("db-dev" in p for p in problems)
+    assert not warnings
+
+
+def test_bloommcp_is_required_not_optional():
+    """Once its healthcheck targets /health, bloommcp should be genuinely healthy
+    in dev (it has generated keys), so it stays REQUIRED."""
+    rows = [{"Service": "bloommcp", "Health": "unhealthy", "State": "running"}]
+    problems, warnings = check_health._classify_service_rows(rows)
+    assert any("bloommcp" in p for p in problems)
+
+
 def test_parse_env_ignores_comments_and_blanks():
     text = "# comment\n\nPOSTGRES_USER=supabase_admin\nPOSTGRES_HOST_PORT=5433\n"
     env = check_health.parse_env(text)

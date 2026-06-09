@@ -35,3 +35,19 @@ def test_web_env_file_is_optional():
             "`required: false` so a fresh clone (no web/.env) can `make dev-up` "
             "without Compose erroring on a missing file (issue #123)."
         )
+
+
+def test_bloommcp_healthcheck_uses_unauthenticated_health_endpoint():
+    """bloommcp's /mcp requires a Bearer token (ApiKeyVerifier), so probing it
+    unauthenticated returns 401 and the container is wrongly marked unhealthy.
+    server.py exposes an unauthenticated /health route for exactly this — the
+    healthcheck must target it."""
+    hc = _compose()["services"]["bloommcp"].get("healthcheck", {})
+    test = " ".join(hc.get("test", []))
+    assert "8811/health" in test, (
+        "bloommcp healthcheck must probe the unauthenticated /health endpoint, "
+        f"not the auth-gated /mcp. Current test: {test!r}"
+    )
+    assert "8811/mcp" not in test, (
+        "bloommcp healthcheck must NOT probe /mcp (401 without a token)."
+    )
