@@ -60,10 +60,16 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 
 # State dir for the per-env JSON.
+# Mode 0700 (not 0750): only bloom-deploy can read/write. The systemd service
+# runs as bloom-deploy; nothing else needs access.
 STATE_DIR="/var/lib/bloom-cert-monitor"
 if [[ ! -d "$STATE_DIR" ]]; then
-    install -d -m 0750 -o bloom-deploy -g bloom-deploy "$STATE_DIR"
+    install -d -m 0700 -o bloom-deploy -g bloom-deploy "$STATE_DIR"
     echo "Created $STATE_DIR"
+elif [[ "$(stat -c '%a' "$STATE_DIR")" != "700" ]]; then
+    # Tighten an existing dir from a previous install that used 0750.
+    chmod 0700 "$STATE_DIR"
+    echo "Tightened $STATE_DIR to mode 0700"
 fi
 
 # Render the unit files from the templates checked into the repo.

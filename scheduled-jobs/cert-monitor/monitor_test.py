@@ -401,6 +401,32 @@ def test_send_email_propagates_smtp_failures():
             send_email(note, "from@x", ["to@y"], "smtp.host")
 
 
+# ---------- _send_preflight catches specific exceptions, not all ----------
+
+def test_send_preflight_returns_2_on_smtp_failure():
+    import monitor
+    with patch.object(monitor, "send_email", side_effect=smtplib.SMTPException("relay")):
+        rc = monitor._send_preflight("from@x", ["to@y"], "smtp.host")
+    assert rc == 2
+
+
+def test_send_preflight_returns_2_on_connection_failure():
+    import monitor
+    # OSError covers socket errors, connection refused, DNS failures, etc.
+    with patch.object(monitor, "send_email", side_effect=OSError("connection refused")):
+        rc = monitor._send_preflight("from@x", ["to@y"], "smtp.host")
+    assert rc == 2
+
+
+def test_send_preflight_propagates_programming_errors():
+    """A TypeError (e.g. someone broke the Notification dataclass signature)
+    should crash loudly, not silently return exit 2 like an SMTP failure."""
+    import monitor
+    with patch.object(monitor, "send_email", side_effect=TypeError("bad signature")):
+        with pytest.raises(TypeError):
+            monitor._send_preflight("from@x", ["to@y"], "smtp.host")
+
+
 # ---------- end-to-end smoke against fixtures ----------
 
 def test_full_flow_against_success_fixture_with_baseline_state():

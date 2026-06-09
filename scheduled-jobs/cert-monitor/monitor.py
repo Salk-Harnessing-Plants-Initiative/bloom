@@ -92,9 +92,12 @@ def _send_preflight(sender: str, recipients: list[str], smtp_host: str) -> int:
         body="This is a preflight test email from bloom-cert-monitor.\n"
              "If you received this, SMTP delivery from bloom-dev to Salk's relay is working.\n",
     )
+    # Catch SMTP and OSError specifically — don't blanket-catch Exception, since
+    # that swallows KeyboardInterrupt-style aborts and programming bugs that
+    # should surface loudly.
     try:
         send_email(note, sender, recipients, smtp_host)
-    except Exception as exc:
+    except (smtplib.SMTPException, OSError) as exc:
         logger.error("preflight SMTP send failed: %s", exc)
         return 2
     logger.info("preflight email sent to %s", recipients)
