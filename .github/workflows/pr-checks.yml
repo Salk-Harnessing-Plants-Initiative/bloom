@@ -650,15 +650,19 @@ jobs:
       - name: make migrate-local (apply all migrations)
         run: make migrate-local
 
-      # Let healthchecks settle (bloommcp's interval is 30s) so `make check`
-      # doesn't catch a service still in `starting`.
+      # bloommcp/realtime healthchecks first run ~30s after start, so wait for
+      # them to actually report `healthy` (not merely "not yet starting") before
+      # `make check`, or it catches a transient `starting`.
       - name: Wait for services to settle
         run: |
-          for i in $(seq 1 40); do
-            STARTING=$(docker compose -f docker-compose.dev.yml --env-file .env.dev ps --format json | jq -r '.[] | select(.Health == "starting") | .Name' 2>/dev/null | wc -l)
-            if [ "$STARTING" -eq 0 ]; then echo "services settled"; break; fi
-            echo "  $STARTING service(s) still starting... ($i)"; sleep 3
+          for i in $(seq 1 50); do
+            H=$(docker compose -f docker-compose.dev.yml --env-file .env.dev ps bloommcp --format json | jq -r '.Health' 2>/dev/null)
+            R=$(docker compose -f docker-compose.dev.yml --env-file .env.dev ps realtime --format json | jq -r '.Health' 2>/dev/null)
+            echo "  bloommcp=${H:-?} realtime=${R:-?} ($i)"
+            if [ "$H" = "healthy" ] && [ "$R" = "healthy" ]; then echo "services settled"; break; fi
+            sleep 3
           done
+          docker compose -f docker-compose.dev.yml --env-file .env.dev ps
 
       - name: make check (verify services, roles, schemas, migrations)
         run: make check
