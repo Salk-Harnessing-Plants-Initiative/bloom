@@ -1,0 +1,13 @@
+{"level":"info","ts":1780984218.1042762,"logger":"tls.cache.maintenance","msg":"started background certificate maintenance","cache":"0x36505d109b00"}
+{"level":"info","ts":1780984218.1065063,"logger":"tls.obtain","msg":"acquiring lock","identifier":"*.bloom-dev.salk.edu"}
+{"level":"info","ts":1780984218.1065116,"logger":"tls","msg":"storage cleaning happened too recently; skipping for now","storage":"FileStorage:/data/caddy","instance":"fa99b348-cce9-40a1-a7e6-97b5b006de2c","try_again":1781070618.1065068,"try_again_in":86399.999999583}
+{"level":"info","ts":1780984218.106524,"logger":"tls.obtain","msg":"acquiring lock","identifier":"bloom-dev.salk.edu"}
+{"level":"info","ts":1780984218.106622,"logger":"tls","msg":"finished cleaning storage units"}
+{"level":"info","ts":1780984218.1069183,"logger":"tls.obtain","msg":"lock acquired","identifier":"*.bloom-dev.salk.edu"}
+{"level":"info","ts":1780984218.1069934,"logger":"tls.obtain","msg":"obtaining certificate","identifier":"*.bloom-dev.salk.edu"}
+{"level":"info","ts":1780984218.10707,"logger":"tls.obtain","msg":"lock acquired","identifier":"bloom-dev.salk.edu"}
+{"level":"info","ts":1780984218.1071355,"logger":"tls.obtain","msg":"obtaining certificate","identifier":"bloom-dev.salk.edu"}
+{"level":"info","ts":1780984228.6925883,"logger":"tls.obtain","msg":"certificate obtained successfully","identifier":"*.bloom-dev.salk.edu","issuer":"acme-v02.api.letsencrypt.org-directory"}
+{"level":"info","ts":1780984228.6927636,"logger":"tls.obtain","msg":"releasing lock","identifier":"*.bloom-dev.salk.edu"}
+{"level":"info","ts":1780984228.7305796,"logger":"tls.obtain","msg":"certificate obtained successfully","identifier":"bloom-dev.salk.edu","issuer":"acme-v02.api.letsencrypt.org-directory"}
+{"level":"info","ts":1780984228.7307465,"logger":"tls.obtain","msg":"releasing lock","identifier":"bloom-dev.salk.edu"}

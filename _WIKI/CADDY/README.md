@@ -101,17 +101,9 @@ Caddy v2 runs an internal scheduler that wakes every ~10 minutes and checks ever
 
 ### Renewal failure notifications
 
-**Currently: there is no automated notification when a renewal fails.** A silently failing renewal would only be discovered when the cert expires (90 days after issuance) and browsers start showing TLS errors to users.
+Caddy itself does not notify anyone when a renewal fails. Let's Encrypt [deprecated their expiration-email service on 2025-06-04](https://letsencrypt.org/2025/06/26/expiration-notification-service-has-ended), so setting an `email` directive in the Caddyfile no longer triggers any actionable warning either.
 
-Historical context: Let's Encrypt used to email warnings to the ACME account's contact address ~20 days before any cert expiring without a successful renewal. That service [ended on June 4, 2025](https://letsencrypt.org/2025/06/26/expiration-notification-service-has-ended) — LE no longer sends per-cert expiration warnings, citing cost, privacy, and the assumption that subscribers have working renewal automation. So setting an `email` directive in the Caddyfile no longer triggers any actionable notification for us.
-
-Until we build something better, the only signals are:
-
-- The cert visibly expires in browsers (worst possible UX)
-- A human SSHs in and tails `docker compose logs caddy` looking for `cert_failed` / `challenge failed` entries
-- A CT-log monitoring service (e.g. `crt.sh` watch) notices when a new cert ISN'T issued at the expected ~60-day cadence
-
-Filling this gap is tracked in a follow-up issue — see the project's open issues for "cert renewal monitoring" / "notifications" for current status.
+We close the gap with a separate weekly systemd timer on bloom-dev that observes Caddy's renewal activity and emails the team on success / failure / silent-expiry. **See [`_WIKI/SCHEDULEDJOBS/cert-renewal-monitor.md`](../SCHEDULEDJOBS/cert-renewal-monitor.md) for everything about that job** — what it detects, how to install, how to verify, how to remove.
 
 ### What you need to verify externally (outside Caddy)
 
