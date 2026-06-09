@@ -140,10 +140,17 @@ def render(template_text: str, values: dict[str, str]) -> str:
 
 def _backup_path(output: Path, now: int) -> Path:
     backup = output.parent / (output.name + ".backup")
-    if backup.exists():
-        ts = time.strftime("%Y%m%d%H%M%S", time.localtime(now))
-        backup = output.parent / (output.name + f".backup.{ts}")
-    return backup
+    if not backup.exists():
+        return backup
+    # A prior backup exists — use a timestamp, and a counter if that collides
+    # too (FORCE'd more than once within the same second).
+    ts = time.strftime("%Y%m%d%H%M%S", time.localtime(now))
+    candidate = output.parent / (output.name + f".backup.{ts}")
+    n = 1
+    while candidate.exists():
+        candidate = output.parent / (output.name + f".backup.{ts}.{n}")
+        n += 1
+    return candidate
 
 
 def main(argv: list[str] | None = None) -> int:

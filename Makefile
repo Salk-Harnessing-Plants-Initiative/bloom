@@ -36,7 +36,7 @@ help:
 # Generate a local .env.dev from .env.dev.example with fresh secrets.
 # Pass FORCE=1 to overwrite an existing .env.dev (it is backed up first).
 .PHONY: init
-init:
+init: check-uv
 	@uv run --with pyjwt,python-dotenv python scripts/init_dev.py $(if $(FORCE),--force,)
 
 # Run development stack

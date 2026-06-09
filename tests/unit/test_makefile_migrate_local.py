@@ -10,6 +10,7 @@ local DB (supabase-cli #4839), mirroring CI.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -63,6 +64,15 @@ def test_recipe_sources_env_dev():
     assert ".env.dev" in _migrate_local_recipe(), (
         "migrate-local should source credentials from .env.dev"
     )
+
+
+def test_init_target_has_check_uv_preflight():
+    """`make init` runs `uv run ...`; it must declare the check-uv prerequisite so
+    a missing uv gives the actionable install hint other targets provide."""
+    text = MAKEFILE.read_text(encoding="utf-8")
+    m = re.search(r"^init:[ \t]*(.*)$", text, re.MULTILINE)
+    assert m, "no `init:` target found"
+    assert "check-uv" in m.group(1), "`init` target must depend on `check-uv`"
 
 
 @pytest.mark.skipif(shutil.which("make") is None, reason="make not on PATH")

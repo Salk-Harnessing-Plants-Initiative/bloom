@@ -2,9 +2,13 @@
 
 DEV_SETUP.md and PROD_SETUP.md told developers to run `make apply-migrations` /
 `make drop-tables`, and `make help` advertised `drop-tables` — none of which is a
-defined rule (the real target is `make migrate-local`). This test resolves every
-referenced/advertised target against actual rule DEFINITIONS in the Makefile, not
+defined rule (the real target is `make migrate-local`). This test resolves
+referenced/advertised targets against actual rule DEFINITIONS in the Makefile, not
 help text, so phantom targets fail.
+
+Scope: in prose docs it matches only *hyphenated* `make <a-b>` tokens (so plain
+English like "make sure" isn't a false positive); `make help` lines are a
+controlled string, so any advertised target there is checked.
 """
 from __future__ import annotations
 

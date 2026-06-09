@@ -18,14 +18,14 @@ addresses #118.
 
 ## 2. CRLF fix — `.gitattributes` (closes #124) (TDD)
 
-- [x] 2.1 RED: add `tests/unit/test_init_script_line_endings.py` asserting the
-      **committed blob** of every file under `volumes/db/` (both `*.sh` and `*.sql`)
-      contains no `\r` byte — read via `git cat-file -p HEAD:<path>` / `git show`,
-      NOT the working tree (a worktree read is CRLF on a Windows checkout and LF on
-      Linux CI regardless of the fix, making it a platform-detector, not a
-      regression test). Run; confirm it fails — the committed blobs are CRLF for
-      both `.sql` (no rule) AND `.sh` (the `*.sh eol=lf` rule was never
-      renormalized, so e.g. `_supabase.sh` still has CR bytes in HEAD).
+- [x] 2.1 RED: add `tests/unit/test_init_script_line_endings.py` asserting that
+      every file under `volumes/db/` (both `*.sh` and `*.sql`) resolves to
+      `eol=lf` via `git check-attr eol` — the **declarative checkout rule**, NOT a
+      working-tree/blob byte scan. (The blobs are already stored LF; the real bug
+      is the checkout attribute — a Windows checkout produces CRLF for any file
+      without an explicit `eol=lf`. A byte scan would be a platform-detector: CRLF
+      on a Windows checkout, LF on Linux CI, regardless of the fix.) Run; confirm
+      it fails — `.sql` files report `eol: unspecified` (only `*.sh` had a rule).
 - [x] 2.2 GREEN: add `*.sql text eol=lf` and an explicit `volumes/db/** text
       eol=lf` to the existing `.gitattributes`; run `git add --renormalize .` to
       rewrite the affected tracked blobs to LF (this fixes the `.sh` files too).
