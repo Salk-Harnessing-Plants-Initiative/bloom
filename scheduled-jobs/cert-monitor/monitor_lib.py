@@ -7,14 +7,18 @@ against the fixture .jsonl files in test_fixtures/.
 from __future__ import annotations
 
 import json
+import logging
 import smtplib
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Iterable
+
+logger = logging.getLogger(__name__)
 
 LOG_WINDOW_HOURS = 168  # 7 days
 SILENT_EXPIRY_GRACE_DAYS = 7  # selected_time + this = silent-expiry threshold
@@ -200,12 +204,35 @@ def subject_to_identifier(subject: str) -> str:
 
 
 def load_state(path: Path) -> MonitorState:
+    """Read the state file, or return empty state if absent OR unreadable.
+
+    A corrupt or unreadable state file is moved aside with a
+    `.corrupt-<unix-ts>` suffix and a warning is logged. The monitor then
+    re-baselines (next save_state writes a fresh file). This prevents a
+    one-time file corruption from wedging every future weekly run.
+    """
     if not path.exists():
         return MonitorState()
-    raw = json.loads(path.read_text())
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        corrupt_path = path.parent / f"{path.name}.corrupt-{int(time.time())}"
+        try:
+            path.rename(corrupt_path)
+            logger.warning(
+                "state file %s was unreadable (%s); moved to %s and re-baselining",
+                path, exc, corrupt_path,
+            )
+        except OSError as rename_exc:
+            logger.warning(
+                "state file %s was unreadable (%s) and could not be moved aside (%s); "
+                "re-baselining anyway",
+                path, exc, rename_exc,
+            )
+        return MonitorState()
     return MonitorState(
-        last_run_utc=raw.get("last_run_utc"),
-        last_not_before=raw.get("last_not_before", {}),
+        last_run_utc=data.get("last_run_utc"),
+        last_not_before=data.get("last_not_before", {}),
     )
 
 

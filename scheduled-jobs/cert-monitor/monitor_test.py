@@ -181,6 +181,62 @@ def test_state_save_is_atomic(tmp_path):
     assert raw["last_run_utc"] == "second"
 
 
+# ---------- I1 fix: corrupt state file self-heals ----------
+
+def test_load_state_returns_empty_for_corrupt_json(tmp_path, caplog):
+    """If the state file is corrupt JSON, load_state must return empty state
+    (re-baselining) rather than raising — otherwise every subsequent weekly
+    run crashes until a human manually deletes the file."""
+    path = tmp_path / "prod.json"
+    path.write_text("{not valid json at all")
+
+    with caplog.at_level("WARNING"):
+        state = load_state(path)
+
+    assert state.last_run_utc is None
+    assert state.last_not_before == {}
+    assert any("unreadable" in r.message for r in caplog.records)
+
+
+def test_load_state_moves_corrupt_file_aside(tmp_path):
+    """The corrupt file is preserved with a `.corrupt-<ts>` suffix so an
+    operator can inspect it later. The original path is freed up for a fresh
+    save_state on the next run."""
+    path = tmp_path / "prod.json"
+    path.write_text("garbage")
+
+    load_state(path)
+
+    # Original path should be gone (renamed)
+    assert not path.exists()
+    # Exactly one `.corrupt-*` sibling should exist with the original content
+    corrupt_files = list(tmp_path.glob("prod.json.corrupt-*"))
+    assert len(corrupt_files) == 1
+    assert corrupt_files[0].read_text() == "garbage"
+
+
+def test_load_state_self_heals_then_save_state_writes_fresh_file(tmp_path):
+    """End-to-end: corrupt state on disk → load returns empty → next save
+    writes a fresh file at the original path. No more 'monitor wedged forever'."""
+    path = tmp_path / "prod.json"
+    path.write_text("corrupt")
+
+    # Simulate one full cycle: load (self-heal) → save fresh state
+    initial = load_state(path)
+    assert initial.last_run_utc is None  # self-heal returned empty
+    assert initial.last_not_before == {}
+    save_state(path, MonitorState(
+        last_run_utc="2026-06-15T09:00:00+00:00",
+        last_not_before={"bloom-dev.salk.edu": "2026-06-09T05:50:18+00:00"},
+    ))
+
+    # Original path now has the new, valid state
+    assert path.exists()
+    reloaded = load_state(path)
+    assert reloaded.last_run_utc == "2026-06-15T09:00:00+00:00"
+    assert reloaded.last_not_before == {"bloom-dev.salk.edu": "2026-06-09T05:50:18+00:00"}
+
+
 # ---------- classify state machine ----------
 
 CERT_FRESH = CertInfo(
