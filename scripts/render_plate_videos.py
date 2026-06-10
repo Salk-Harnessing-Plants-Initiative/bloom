@@ -28,7 +28,7 @@ USAGE
 -----
 Set these env vars (or put them in a .env file next to this script):
 
-    SUPABASE_URL=https://staging.bloom-dev.salk.edu:8443/api
+    SUPABASE_URL=https://staging.bloom.salk.edu:8443/api
     SERVICE_ROLE_KEY=<staging service_role JWT>
     POSTGRES_DSN=postgres://supabase_admin:<pass>@host:port/postgres
 

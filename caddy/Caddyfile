@@ -18,18 +18,21 @@
 #   pitfall where `host_a, host_b:port` would attach :port only to host_b
 #   and leave host_a defaulting to :443 with automatic HTTPS.
 #
-#     prod:    `https://bloom-dev.salk.edu, https://*.bloom-dev.salk.edu`
-#              (apex needed — wildcards do not match the parent)
-#     staging: `https://*.bloom-dev.salk.edu`
-#              (all 3 staging hostnames are wildcard-covered)
+#     prod:    `https://bloom.salk.edu, https://*.bloom.salk.edu,
+#               https://bloom-dev.salk.edu, https://*.bloom-dev.salk.edu`
+#              (Phase 1 dual-serve: both new and legacy hostnames; 4-SAN cert.
+#              Phase 2 drops the legacy pair; Phase 3 removes entirely.)
+#     staging: `https://*.bloom.salk.edu, https://*.bloom-dev.salk.edu`
+#              (2 wildcards covering all staging subdomains, both families)
 #     CI:      `http://localhost`
 #              (forces HTTP-only — no TLS, no ACME, no Let's Encrypt call)
 #
-#   Both prod and staging issue their cert via the same single Salk-DNS CNAME
-#   (_acme-challenge.bloom-dev.salk.edu -> _acme-challenge.bloom-acme.talmolab.org)
-#   because the apex challenge and the wildcard challenge BOTH land at
-#   _acme-challenge.bloom-dev.salk.edu (wildcards challenge at the parent name
-#   per the ACME spec).
+#   Both prod and staging issue their certs via two Salk-DNS CNAMEs:
+#     _acme-challenge.bloom.salk.edu     -> _acme-challenge.bloom-acme.talmolab.org
+#     _acme-challenge.bloom-dev.salk.edu -> _acme-challenge.bloom-acme.talmolab.org
+#   Wildcard challenges land at the parent name per the ACME spec, so a
+#   single CNAME per parent (bloom.salk.edu, bloom-dev.salk.edu) covers
+#   both the apex and the wildcard.
 #
 #   Per-hostname routing is done inside the block via `@matcher host X` +
 #   `handle @matcher`, preserving the previous per-host route logic.
@@ -50,9 +53,12 @@
 # =============================================================================
 
 {$CADDY_SITE_ADDRESSES} {
-	# One wildcard SAN cert covering apex + *.bloom-dev.salk.edu via ACME
-	# DNS-01 against Cloudflare's API. For http://-scheme addresses (CI mode)
-	# the tls block is parsed but inert — Caddy does not request a cert.
+	# Multi-SAN cert covering all the subjects listed in CADDY_SITE_ADDRESSES,
+	# issued via ACME DNS-01 against Cloudflare's API. Prod's cert carries 4
+	# SANs during Phase 1 dual-serve (bloom.salk.edu + *.bloom.salk.edu +
+	# bloom-dev.salk.edu + *.bloom-dev.salk.edu); staging's carries 2 SANs.
+	# For http://-scheme addresses (CI mode) the tls block is parsed but
+	# inert — Caddy does not request a cert.
 	#
 	# `dns_challenge_override_domain` makes CNAME delegation work. It takes
 	# the LITERAL FQDN where the TXT will be written — not a parent domain
@@ -68,9 +74,13 @@
 	}
 
 	# -------------------
-	# Main Application — DOMAIN_MAIN
+	# Main Application — DOMAIN_MAIN + legacy hostnames (Phase 1 dual-serve).
+	# Both the new bloom.salk.edu/staging.bloom.salk.edu AND the legacy
+	# bloom-dev.salk.edu/staging.bloom-dev.salk.edu match the same handlers
+	# so automated clients keep working. Phase 2 (follow-up PR) switches
+	# the legacy hostnames to a 308 redirect; Phase 3 drops them entirely.
 	# -------------------
-	@main host {$DOMAIN_MAIN}
+	@main host {$DOMAIN_MAIN} bloom-dev.salk.edu staging.bloom-dev.salk.edu
 	handle @main {
 		# Supabase API — strip /api prefix, proxy to Kong
 		handle_path /api/* {
@@ -104,7 +114,10 @@
 	# -------------------
 	# Supabase Studio — DOMAIN_STUDIO
 	# -------------------
-	@studio host {$DOMAIN_STUDIO}
+	# Phase 1 dual-serve: matches both the new studio.bloom.salk.edu /
+	# staging-studio.bloom.salk.edu AND the legacy studio.bloom-dev.salk.edu /
+	# staging-studio.bloom-dev.salk.edu.
+	@studio host {$DOMAIN_STUDIO} studio.bloom-dev.salk.edu staging-studio.bloom-dev.salk.edu
 	handle @studio {
 		# Studio backend routes → Kong
 		handle_path /auth/* {
@@ -138,9 +151,11 @@
 	}
 
 	# -------------------
-	# MinIO Console — DOMAIN_MINIO
+	# MinIO Console — DOMAIN_MINIO + legacy hostnames (Phase 1 dual-serve).
+	# Matches both new minio.bloom.salk.edu / staging-minio.bloom.salk.edu
+	# AND legacy minio.bloom-dev.salk.edu / staging-minio.bloom-dev.salk.edu.
 	# -------------------
-	@minio host {$DOMAIN_MINIO}
+	@minio host {$DOMAIN_MINIO} minio.bloom-dev.salk.edu staging-minio.bloom-dev.salk.edu
 	handle @minio {
 		reverse_proxy supabase-minio:{$MINIO_CONSOLE_PORT} {
 			transport http {

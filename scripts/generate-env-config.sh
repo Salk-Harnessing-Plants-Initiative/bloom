@@ -13,26 +13,31 @@ ENV="${1:-prod}"
 PREFIX=$(echo "$ENV" | tr '[:lower:]' '[:upper:]')
 
 if [ "$ENV" = "prod" ]; then
-  # Production uses the server's hostname-matching domain (bloom-dev.salk.edu)
-  # since bloom-dev IS the production host. The parent domain already resolves
-  # in Salk DNS; Salk IT only needs to add the studio./minio. subdomains.
-  DOMAIN_MAIN="bloom-dev.salk.edu"
-  DOMAIN_STUDIO="studio.bloom-dev.salk.edu"
-  DOMAIN_MINIO="minio.bloom-dev.salk.edu"
+  # Production uses the permanent bloom.salk.edu hostname. 
+  # During Phase 1
+  # dual-serve the legacy bloom-dev.salk.edu family is ALSO served by Caddy
+  # (see CADDY_SITE_ADDRESSES in .env.prod.defaults and the host matchers
+  # in caddy/Caddyfile). DOMAIN_* below names only the new (canonical)
+  # hostnames since these are what the frontend bakes into its bundle and
+  # what new bookmarks should use.
+  DOMAIN_MAIN="bloom.salk.edu"
+  DOMAIN_STUDIO="studio.bloom.salk.edu"
+  DOMAIN_MINIO="minio.bloom.salk.edu"
   CADDY_HTTP_LISTEN_PORT="80"
   CADDY_HTTPS_LISTEN_PORT="443"
   # Data paths live on /data (40 TB) — root filesystem is only 98 GB.
   MINIO_DATA_PATH="/data/bloom/minio-data"
   DEPLOY_PATH="/data/bloom/production"
 elif [ "$ENV" = "staging" ]; then
-  # Staging hostname uses a dot (`staging.bloom-dev.salk.edu`) so it sits as
-  # a direct child of bloom-dev.salk.edu and is covered by the wildcard SAN
-  # cert. The studio./minio. subdomains keep the `staging-` prefix because
-  # they predate the rename. Non-standard ports so prod + staging coexist on
-  # the same server.
-  DOMAIN_MAIN="staging.bloom-dev.salk.edu"
-  DOMAIN_STUDIO="staging-studio.bloom-dev.salk.edu"
-  DOMAIN_MINIO="staging-minio.bloom-dev.salk.edu"
+  # Staging hostname uses a dot (`staging.bloom.salk.edu`) so it sits as
+  # a direct child of bloom.salk.edu and is covered by the wildcard SAN
+  # cert. The studio./minio. subdomains keep the `staging-` hyphenated
+  # prefix from the bloom-dev era. Non-standard ports so prod + staging
+  # coexist on the same server. Phase 1 dual-serve also covers the
+  # legacy *.bloom-dev.salk.edu family (see .env.staging.defaults).
+  DOMAIN_MAIN="staging.bloom.salk.edu"
+  DOMAIN_STUDIO="staging-studio.bloom.salk.edu"
+  DOMAIN_MINIO="staging-minio.bloom.salk.edu"
   CADDY_HTTP_LISTEN_PORT="8080"
   CADDY_HTTPS_LISTEN_PORT="8443"
   MINIO_DATA_PATH="/data/bloom/minio-staging"
