@@ -27,6 +27,20 @@ _DOC_TARGET_RE = re.compile(r"\bmake\s+([a-z0-9]+(?:-[a-z0-9]+)+)\b")
 # controlled string, so match any token here.
 _HELP_TARGET_RE = re.compile(r'@echo\s+"\s*make\s+([a-zA-Z0-9_-]+)')
 
+COMMAND_DOCS = sorted((REPO_ROOT / ".claude" / "commands").glob("*.md"))
+# Migrations recorded by `supabase db push` live in
+# `supabase_migrations.schema_migrations`; there has never been a top-level
+# `_migrations` table. Match only SQL *usage* (FROM/JOIN/INTO/UPDATE/TABLE
+# `_migrations`) — not prose that mentions the legacy name to say it's retired.
+_LEGACY_MIGRATIONS_RE = re.compile(
+    r"(?i)\b(?:from|join|into|update|table)\s+_migrations\b"
+)
+# A bare `docker exec db-dev` only works if compose sets `container_name` —
+# neither docker-compose.dev.yml nor docker-compose.prod.yml does, so the real
+# container is `<project>-db-dev-1`. Quick-start docs must use the service-aware
+# `docker compose -f <file> exec db-*` so they work on a fresh clone.
+_BARE_DOCKER_EXEC_RE = re.compile(r"docker\s+exec\s+(?:-\S+\s+)*db-(?:dev|prod)\b")
+
 
 def _real_targets() -> set[str]:
     """Target names that have an actual rule definition (`name:` at col 0)."""
@@ -48,6 +62,38 @@ def test_docs_reference_only_real_make_targets():
             if tgt not in real:
                 problems.append(f"{doc.name}: `make {tgt}` has no Makefile rule")
     assert not problems, "phantom make targets referenced in docs:\n" + "\n".join(problems)
+
+
+def test_command_docs_do_not_reference_legacy_migrations_table():
+    """`.claude/commands/*` debug docs must query the real migration-tracking
+    table (`supabase_migrations.schema_migrations`), not a nonexistent
+    `_migrations` table that would error if a developer copy-pasted it."""
+    problems = []
+    for doc in COMMAND_DOCS:
+        for i, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+            if _LEGACY_MIGRATIONS_RE.search(line):
+                problems.append(
+                    f"{doc.name}:{i}: references nonexistent `_migrations` table "
+                    f"(use supabase_migrations.schema_migrations)"
+                )
+    assert not problems, "legacy migration-table refs in command docs:\n" + "\n".join(problems)
+
+
+def test_command_docs_use_compose_aware_exec_not_bare_docker_exec():
+    """`.claude/commands/*` must not tell developers to `docker exec db-dev` — that
+    fails on a fresh clone because compose sets no container_name. Use
+    `docker compose -f <file> exec db-dev` (service-aware) instead."""
+    problems = []
+    for doc in COMMAND_DOCS + DOCS:
+        if not doc.exists():
+            continue
+        for i, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+            if _BARE_DOCKER_EXEC_RE.search(line):
+                problems.append(
+                    f"{doc.name}:{i}: bare `docker exec db-*` fails without "
+                    f"container_name; use `docker compose -f <file> exec db-*`"
+                )
+    assert not problems, "bare docker exec in setup/command docs:\n" + "\n".join(problems)
 
 
 def test_make_help_advertises_only_real_targets():

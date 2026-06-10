@@ -296,3 +296,33 @@ run the bare make targets).
   `test_plot_renderer.py`, `test_verify_env_parity.py` — POSIX file-mode (`0644`
   vs Windows `0666`), cp1252 decode, and bash-validator issues. These files are
   byte-identical to `origin/staging` (empty diff) and pass in CI on Linux.
+
+## 14. Post-review follow-ups (review-pr + Copilot audit, TDD)
+
+- [x] 14.1 RED→GREEN `test_dev_setup_doc.py::test_command_docs_do_not_reference_legacy_migrations_table`
+      — `ci-debug.md` now queries `supabase_migrations.schema_migrations` (the real
+      table), not a nonexistent `_migrations`; the guard regex matches SQL *usage*,
+      not prose naming the retired table.
+- [x] 14.2 RED→GREEN `test_dev_setup_doc.py::test_command_docs_use_compose_aware_exec_not_bare_docker_exec`
+      — neither dev nor prod compose sets `container_name`, so bare
+      `docker exec db-dev` fails on a fresh clone. Converted every bare
+      `docker exec/restart db-*` to `docker compose -f <file> exec/restart db-*`
+      across `ci-debug.md`, `validate-env.md`, `DEV_SETUP.md`, `PROD_SETUP.md` (the
+      test scans command docs + setup docs). Closes the Copilot `docker exec db-dev`
+      comments that landed in `database-migration.md` but missed the other docs.
+- [x] 14.3 RED→GREEN `test_makefile_migrate_local.py::test_verify_dev_rm_is_anchored_to_repo_root`
+      — anchored `verify-dev`'s destructive `rm -rf` to `$(CURDIR)/volumes/db/data`
+      (+ echo) so it can't resolve a bare relative path from another CWD.
+- [x] 14.4 RED→GREEN `test_generate_keys_pointer.py` — dropped the stale
+      `scripts/generate_KEYS` rule from `.gitignore` so the tracked deprecation
+      pointer stays visible in `git status` (asserts the ignore rule, since
+      `git check-ignore` is a false-green on a tracked path).
+- [x] 14.5 Locked the previously-untested branch: `test_check_health.py` now covers
+      `_classify_service_rows` for `State=exited` with non-zero vs zero `ExitCode`
+      (a crashed core service like realtime vs a one-shot like `minio-init`).
+- [x] 14.6 Copilot-comment audit — confirmed the remaining items are already
+      addressed on this branch: `REQUIRED_BASE_ROLES` includes `pgbouncer` +
+      `supabase_functions_admin`; migrate-local strips `\r` in every `.env.dev`
+      extraction; `PROD_SETUP.md` points to the deploy workflow (not
+      `make migrate-local`); `init` depends on `check-uv`; `_backup_path` avoids
+      same-second collisions; tasks.md §2.1 describes `git check-attr` accurately.

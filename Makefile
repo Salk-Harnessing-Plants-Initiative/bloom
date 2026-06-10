@@ -286,7 +286,8 @@ check: check-uv
 verify-dev: check-uv
 	@echo "Clean reset of the dev stack (this wipes the local DB)..."
 	docker compose -f docker-compose.dev.yml --env-file .env.dev down -v
-	@rm -rf volumes/db/data
+	@echo "Wiping the local DB bind-mount ($(CURDIR)/volumes/db/data)..."
+	@rm -rf "$(CURDIR)/volumes/db/data"
 	$(MAKE) dev-up
 	@echo "Waiting for db-dev to accept connections..."
 	@for i in $$(seq 1 60); do \

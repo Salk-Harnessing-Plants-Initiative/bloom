@@ -98,6 +98,19 @@ def test_verify_dev_fails_fast_if_db_never_ready():
     assert "exit 1" in recipe, "verify-dev must fail fast if db-dev never accepts connections"
 
 
+def test_verify_dev_rm_is_anchored_to_repo_root():
+    """verify-dev's destructive bind-mount wipe must be anchored to the repo root
+    ($(CURDIR)), not a bare relative `volumes/db/data` that resolves wrong (and
+    could delete the wrong thing) when `make` is invoked from another CWD."""
+    recipe = _verify_dev_recipe()
+    assert "rm -rf volumes/db/data" not in recipe, (
+        "verify-dev must not `rm -rf` a bare relative volumes/db/data path"
+    )
+    assert "$(CURDIR)/volumes/db/data" in recipe, (
+        "verify-dev should anchor the db-data wipe to $(CURDIR)"
+    )
+
+
 def test_recipe_waits_for_storage_schema_before_push():
     """storage-api provisions storage.buckets (incl. the `public` column) at
     runtime; bucket migrations INSERT into it. migrate-local must wait for that

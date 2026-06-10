@@ -170,7 +170,7 @@ make prod-down
 
 **Common failures:**
 - **Health check timeout:** A service is failing to start. Check logs for the unhealthy container
-- **Database not ready:** `docker exec db-prod pg_isready -U supabase_admin -h localhost`
+- **Database not ready:** `docker compose -f docker-compose.prod.yml exec db-prod pg_isready -U supabase_admin -h localhost`
 - **Integration test failure:** Check test output for specific assertion errors
 - **Port conflicts:** Another process using required ports. Stop conflicting containers
 
@@ -211,20 +211,20 @@ docker build --target builder -f web/Dockerfile.bloom-web.prod .
 
 ```bash
 # Check if DB is running
-docker exec db-dev pg_isready -U supabase_admin -h localhost
+docker compose -f docker-compose.dev.yml exec db-dev pg_isready -U supabase_admin -h localhost
 
 # Apply migrations
 make migrate-local
 
-# Check migration status
-docker exec db-dev psql -U supabase_admin -d postgres -c "SELECT * FROM _migrations ORDER BY applied_at;"
+# Check migration status (Supabase records applied migrations here)
+docker compose -f docker-compose.dev.yml exec db-dev psql -U supabase_admin -d postgres -c "SELECT version, name FROM supabase_migrations.schema_migrations ORDER BY version;"
 ```
 
 ### RLS Policies Blocking
 
 ```bash
-# Connect to database directly
-PGPASSWORD=postgres psql -h localhost -p 5432 -U supabase_admin -d postgres
+# Connect to database directly (in-container; no host port/password needed)
+docker compose -f docker-compose.dev.yml exec db-dev psql -U supabase_admin -d postgres
 
 # List RLS policies
 \dp
@@ -297,7 +297,7 @@ When CI fails:
 - [ ] What's the error message? (`gh run view <id> --log-failed`)
 - [ ] Can you reproduce locally?
 - [ ] Are all Docker services healthy? (`docker compose ps`)
-- [ ] Is the database ready? (`docker exec db-dev pg_isready`)
+- [ ] Is the database ready? (`docker compose -f docker-compose.dev.yml exec db-dev pg_isready`)
 - [ ] Are migrations applied? (`make migrate-local`)
 - [ ] Are environment variables set?
 - [ ] Did a dependency update introduce a CVE? (`npm audit` / `uv export | uvx pip-audit`)

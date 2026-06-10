@@ -82,6 +82,24 @@ def test_bloommcp_is_required_not_optional():
     assert any("bloommcp" in p for p in problems)
 
 
+def test_exited_core_service_with_nonzero_code_is_a_failure():
+    """A crashed core service (e.g. realtime dying ~30s in on a bad DB_ENC_KEY)
+    reports State=exited with a non-zero ExitCode and an EMPTY Health field (a
+    dead container has no healthcheck result). That must still be a problem."""
+    rows = [{"Service": "realtime", "Health": "", "State": "exited", "ExitCode": 1}]
+    problems, warnings = check_health._classify_service_rows(rows)
+    assert any("realtime" in p and "exited" in p for p in problems), problems
+    assert not warnings
+
+
+def test_exited_oneshot_service_with_zero_code_is_not_a_failure():
+    """A one-shot init container (e.g. minio-init) legitimately exits 0 — a
+    completed job, not a failure."""
+    rows = [{"Service": "minio-init", "Health": "", "State": "exited", "ExitCode": 0}]
+    problems, warnings = check_health._classify_service_rows(rows)
+    assert problems == [] and warnings == []
+
+
 def test_starting_required_service_is_settling():
     """A required service still in `starting` means 'keep waiting', not 'fail'."""
     rows = [

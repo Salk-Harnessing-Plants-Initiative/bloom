@@ -136,7 +136,7 @@ make prod-logs
 ### Verify Database Ready
 
 ```bash
-docker exec db-prod pg_isready -U supabase_admin
+docker compose -f docker-compose.prod.yml exec db-prod pg_isready -U supabase_admin
 ```
 
 

@@ -156,7 +156,7 @@ You should see containers for:
 ### Step 1: Verify Database is Ready
 
 ```bash
-docker exec db-dev pg_isready -U supabase_admin
+docker compose -f docker-compose.dev.yml exec db-dev pg_isready -U supabase_admin
 ```
 
 Output should be: `accepting connections`
@@ -183,7 +183,7 @@ This command (Supabase CLI `db push --debug`, reading credentials and
 Check that all tables were created:
 
 ```bash
-docker exec db-dev psql -U supabase_admin -d postgres -c "\dt public.*"
+docker compose -f docker-compose.dev.yml exec db-dev psql -U supabase_admin -d postgres -c "\dt public.*"
 ```
 
 You should see tables like:
@@ -310,13 +310,13 @@ http://localhost:9101
 docker ps | grep db-dev
 
 # Verify connection
-docker exec db-dev pg_isready -U supabase_admin
+docker compose -f docker-compose.dev.yml exec db-dev pg_isready -U supabase_admin
 
 # Check credentials in .env.dev
 cat .env.dev | grep POSTGRES
 
 # Restart database
-docker restart db-dev
+docker compose -f docker-compose.dev.yml restart db-dev
 ```
 
 ### MinIO/Storage Issues
@@ -375,10 +375,10 @@ curl http://localhost:5002/health
 
 ```bash
 # Verify database is ready
-docker exec db-dev pg_isready
+docker compose -f docker-compose.dev.yml exec db-dev pg_isready
 
 # Check for table conflicts
-docker exec db-dev psql -U supabase_admin -d postgres -c "\dt"
+docker compose -f docker-compose.dev.yml exec db-dev psql -U supabase_admin -d postgres -c "\dt"
 
 # Reset and try again
 make reset-storage
