@@ -66,6 +66,38 @@ def test_recipe_sources_env_dev():
     )
 
 
+def test_recipe_preflights_env_dev_and_password():
+    """A missing .env.dev or empty POSTGRES_PASSWORD must fail with a clear
+    message, not masquerade as a 'storage.buckets not ready' timeout."""
+    recipe = _migrate_local_recipe()
+    assert "-f .env.dev" in recipe, "migrate-local should preflight that .env.dev exists"
+    assert "-z" in recipe and "PG_PASSWORD" in recipe, (
+        "migrate-local should fail fast if POSTGRES_PASSWORD is empty"
+    )
+
+
+def _verify_dev_recipe() -> str:
+    lines = MAKEFILE.read_text(encoding="utf-8").splitlines()
+    out, capturing = [], False
+    for line in lines:
+        if line.startswith("verify-dev:"):
+            capturing = True
+            continue
+        if capturing:
+            if line and line[0] not in (" ", "\t"):
+                break
+            out.append(line)
+    return "\n".join(out)
+
+
+def test_verify_dev_fails_fast_if_db_never_ready():
+    """verify-dev's db-dev wait loop must fail (exit 1) on timeout instead of
+    silently continuing into migrate-local/check with a not-ready DB."""
+    recipe = _verify_dev_recipe()
+    assert "pg_isready" in recipe
+    assert "exit 1" in recipe, "verify-dev must fail fast if db-dev never accepts connections"
+
+
 def test_recipe_waits_for_storage_schema_before_push():
     """storage-api provisions storage.buckets (incl. the `public` column) at
     runtime; bucket migrations INSERT into it. migrate-local must wait for that

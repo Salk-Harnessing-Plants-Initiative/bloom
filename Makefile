@@ -232,9 +232,14 @@ migrate-local:
 		echo "Error: Development database not running. Start with 'make dev-up' first."; \
 		exit 1; \
 	fi
+	@if [ ! -f .env.dev ]; then \
+		echo "Error: .env.dev not found. Run 'make init' first."; \
+		exit 1; \
+	fi
 	@set -e; \
 	PG_USER=$$(sed -n 's/^POSTGRES_USER=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); PG_USER=$${PG_USER:-supabase_admin}; \
 	PG_PASSWORD=$$(sed -n 's/^POSTGRES_PASSWORD=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
+	if [ -z "$$PG_PASSWORD" ]; then echo "Error: POSTGRES_PASSWORD is empty in .env.dev — run 'make init'."; exit 1; fi; \
 	PG_DB=$$(sed -n 's/^POSTGRES_DB=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); PG_DB=$${PG_DB:-postgres}; \
 	echo "Waiting for storage schema (storage-api provisions storage.buckets)..."; \
 	for i in $$(seq 1 90); do \
@@ -288,6 +293,7 @@ verify-dev: check-uv
 		if docker compose -f docker-compose.dev.yml exec -T db-dev pg_isready -U supabase_admin -h localhost >/dev/null 2>&1; then \
 			echo "db-dev ready"; break; \
 		fi; \
+		if [ $$i -eq 60 ]; then echo "Error: db-dev did not accept connections after 120s. Check 'make dev-logs'."; exit 1; fi; \
 		sleep 2; \
 	done
 	$(MAKE) migrate-local
