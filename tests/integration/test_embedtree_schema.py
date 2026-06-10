@@ -1,6 +1,6 @@
 """
 Integration tests for the embedtree schema. Covers: pgvector load,
-embedding_models registry seed, proteins/protein_embeddings_esm2 wiring,
+protein_embedding_models registry seed, proteins/protein_embeddings_esm2 wiring,
 knn_search_esm2 cosine ordering, search_genes model-independence, the
 vector(1280) dimension type-check (cross-model guardrail), orthogroups
 + get_orthogroup_info shared_with_query, RLS (anon blocked via REST;
@@ -141,18 +141,18 @@ def test_pgvector_extension_is_installed(pg_conn):
         )
 
 
-def test_embedding_models_seeded_with_esm2(pg_conn):
+def test_protein_embedding_models_seeded_with_esm2(pg_conn):
     """The registry table must contain the seeded ESM-2 row after migration."""
     with pg_conn.cursor() as cur:
         cur.execute(
             "SELECT model_id, dimension, table_suffix, is_active "
-            "FROM public.embedding_models WHERE table_suffix = 'esm2'"
+            "FROM public.protein_embedding_models WHERE table_suffix = 'esm2'"
         )
         row = cur.fetchone()
 
     assert row is not None, (
-        "embedding_models is missing the ESM-2 row — the seed INSERT in the "
-        "embedtree schema migration was dropped"
+        "protein_embedding_models is missing the ESM-2 row — the seed INSERT "
+        "in the embedtree schema migration was dropped"
     )
     model_id, dimension, suffix, is_active = row
     assert model_id == "esm2_t33_650M_UR50D"
@@ -316,7 +316,7 @@ def test_anon_cannot_read_proteins_via_postgrest(api, anon_key, embedtree_seed):
 @pytest.mark.parametrize("table", [
     "proteins",
     "protein_embeddings_esm2",
-    "embedding_models",
+    "protein_embedding_models",
     "rbh_cache_esm2",
     "orthogroups",
 ])
@@ -348,7 +348,7 @@ def test_each_bloom_role_can_select_each_new_table(pg_conn, embedtree_seed, role
 # ---------------------------------------------------------------------------
 
 EXPECTED_POLICIES = {
-    "embedding_models",
+    "protein_embedding_models",
     "proteins",
     "protein_embeddings_esm2",
     "rbh_cache_esm2",

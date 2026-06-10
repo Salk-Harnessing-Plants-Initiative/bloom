@@ -6,15 +6,27 @@
 -- easy extension to ESM-3 / ProtBERT / etc. tomorrow.
 --
 -- Layout:
---   embedding_models           registry; one row per registered model
+--   protein_embedding_models   registry for protein-embedding models
 --   proteins                   model-independent gene metadata
 --   protein_embeddings_esm2    per-model vector(1280) embeddings (ESM-2)
 --   rbh_cache_esm2             per-model reciprocal best hits cache (ESM-2)
 --   knn_search_esm2(...)       per-model KNN RPC
 --   search_genes(...)          model-independent metadata search RPC
 --
--- Future models add their own migration that:
---   1. INSERTs a row into embedding_models with a new table_suffix
+-- The pattern (registry + per-model tables + cosine-indexed vector(N)
+-- column) is domain-agnostic. Future non-protein embedding domains
+-- (e.g. nucleotide sequences, research-paper text) would add sibling
+-- tables following the same shape (nucleotide_embedding_models +
+-- nucleotides + nucleotide_embeddings_<model>; paper_embedding_models
+-- + papers + paper_embeddings_<model>) — each domain isolated, and the
+-- type system rejects vectors of the wrong dimension at insert time.
+-- That's why the registry is named protein_embedding_models rather
+-- than a generic 'embedding_models', leaving the latter free for a
+-- cross-domain registry if ever needed.
+--
+-- Future PROTEIN models add their own migration that:
+--   1. INSERTs a row into protein_embedding_models with a new
+--      table_suffix
 --   2. CREATEs protein_embeddings_<suffix> / rbh_cache_<suffix>
 --   3. CREATEs knn_search_<suffix>(query_uid, match_count)
 --   4. Applies the same 3-policy bloom_* RLS pattern + grants
@@ -36,8 +48,8 @@ BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- ─── embedding_models registry ────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS public.embedding_models (
+-- ─── protein_embedding_models registry ────────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.protein_embedding_models (
   model_id     text        PRIMARY KEY,
   display_name text        NOT NULL,
   dimension    int         NOT NULL,
@@ -47,10 +59,10 @@ CREATE TABLE IF NOT EXISTS public.embedding_models (
   created_at   timestamptz NOT NULL DEFAULT now()
 );
 
-COMMENT ON TABLE public.embedding_models IS
-  'Registry of protein-embedding models. One row per registered model. table_suffix drives the names of protein_embeddings_<suffix>, rbh_cache_<suffix>, and knn_search_<suffix>.';
+COMMENT ON TABLE public.protein_embedding_models IS
+  'Registry of protein-embedding models. One row per registered model. table_suffix drives the names of protein_embeddings_<suffix>, rbh_cache_<suffix>, and knn_search_<suffix>. Domain-scoped to proteins by design; future non-protein domains get their own sibling registry (e.g. nucleotide_embedding_models, paper_embedding_models).';
 
-INSERT INTO public.embedding_models
+INSERT INTO public.protein_embedding_models
   (model_id,              display_name,           dimension, table_suffix, description)
 VALUES
   ('esm2_t33_650M_UR50D', 'ESM-2 (650M, UR50D)',  1280,      'esm2',
@@ -169,23 +181,23 @@ COMMENT ON FUNCTION public.search_genes(text, int) IS
   'Case-insensitive substring match on proteins.uid or proteins.gene_id. Used by the embedtree UI gene picker autocomplete. Model-independent.';
 
 -- ─── RLS enable ───────────────────────────────────────────────────────────
-ALTER TABLE public.embedding_models        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.protein_embedding_models ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.proteins                ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.protein_embeddings_esm2 ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.rbh_cache_esm2          ENABLE ROW LEVEL SECURITY;
 
 -- ─── RLS policies: admin_all / agent_read / user_read on each table ───────
 
--- embedding_models
-DROP POLICY IF EXISTS admin_all_embedding_models  ON public.embedding_models;
-CREATE POLICY admin_all_embedding_models
-  ON public.embedding_models FOR ALL    TO bloom_admin USING (true) WITH CHECK (true);
-DROP POLICY IF EXISTS agent_read_embedding_models ON public.embedding_models;
-CREATE POLICY agent_read_embedding_models
-  ON public.embedding_models FOR SELECT TO bloom_agent USING (true);
-DROP POLICY IF EXISTS user_read_embedding_models  ON public.embedding_models;
-CREATE POLICY user_read_embedding_models
-  ON public.embedding_models FOR SELECT TO bloom_user  USING (true);
+-- protein_embedding_models
+DROP POLICY IF EXISTS admin_all_protein_embedding_models  ON public.protein_embedding_models;
+CREATE POLICY admin_all_protein_embedding_models
+  ON public.protein_embedding_models FOR ALL    TO bloom_admin USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS agent_read_protein_embedding_models ON public.protein_embedding_models;
+CREATE POLICY agent_read_protein_embedding_models
+  ON public.protein_embedding_models FOR SELECT TO bloom_agent USING (true);
+DROP POLICY IF EXISTS user_read_protein_embedding_models  ON public.protein_embedding_models;
+CREATE POLICY user_read_protein_embedding_models
+  ON public.protein_embedding_models FOR SELECT TO bloom_user  USING (true);
 
 -- proteins
 DROP POLICY IF EXISTS admin_all_proteins  ON public.proteins;
@@ -221,8 +233,8 @@ CREATE POLICY user_read_rbh_cache_esm2
   ON public.rbh_cache_esm2 FOR SELECT TO bloom_user  USING (true);
 
 -- ─── Table-level GRANTs (PostgREST requires both policy AND grant) ────────
-GRANT SELECT ON public.embedding_models        TO bloom_user, bloom_agent;
-GRANT ALL    ON public.embedding_models        TO bloom_admin;
+GRANT SELECT ON public.protein_embedding_models TO bloom_user, bloom_agent;
+GRANT ALL    ON public.protein_embedding_models TO bloom_admin;
 
 GRANT SELECT ON public.proteins                TO bloom_user, bloom_agent;
 GRANT ALL    ON public.proteins                TO bloom_admin;
