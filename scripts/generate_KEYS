@@ -1,5 +1,12 @@
-//ANON KEY GENERATION
-//node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ role:'anon', iss:'supabase', aud:'authenticated' }, 'super-secret-jwt-token-with-at-least-32-characters-long', { algorithm:'HS256', expiresIn:'10y' }))"
-
-//SERVICE ROLE KEY GENERATION
-//node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ role:'service_role', iss:'supabase' }, 'super-secret-jwt-token-with-at-least-32-characters-long', { algorithm:'HS256', expiresIn:'10y' }))"
+# Deprecated. Local development secret + JWT generation is now runnable:
+#
+#   make init
+#   # or directly:
+#   uv run --with pyjwt,python-dotenv python scripts/init_dev.py
+#
+# That writes a complete .env.dev from .env.dev.example, minting ANON_KEY,
+# SERVICE_ROLE_KEY, and BLOOM_AGENT_KEY as JWTs signed by the generated
+# JWT_SECRET. For prod/staging/ci secrets, see scripts/generate-secrets.sh.
+#
+# (This file previously held commented-out `node -e` one-liners that were never
+# runnable — see issue #104.)
