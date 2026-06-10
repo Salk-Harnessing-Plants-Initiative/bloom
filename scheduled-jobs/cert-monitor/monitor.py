@@ -88,9 +88,16 @@ def main(argv: list[str] | None = None) -> int:
 
 def _send_preflight(sender: str, recipients: list[str], smtp_host: str) -> int:
     note = Notification(
-        env="preflight", kind="preflight", subject_suffix="preflight",
-        body="This is a preflight test email from bloom-cert-monitor.\n"
-             "If you received this, SMTP delivery from bloom-dev to Salk's relay is working.\n",
+        env="preflight", kind="preflight",
+        subject_suffix="preflight test — SMTP delivery works",
+        body=(
+            "This is a one-off test email from bloom-cert-monitor (you triggered\n"
+            "it via the installer's --test-send flag).\n\n"
+            "If you got this email, the path from bloom-dev → Salk's mail relay\n"
+            "→ your inbox is working. The weekly scheduled runs will use this\n"
+            "same delivery path.\n\n"
+            "No action needed.\n"
+        ),
     )
     # Catch SMTP and OSError specifically — don't blanket-catch Exception, since
     # that swallows KeyboardInterrupt-style aborts and programming bugs that

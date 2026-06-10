@@ -353,14 +353,17 @@ def test_failed_notification_includes_real_pr_254_error():
 def test_failed_notification_includes_retry_info_when_present():
     events = parse_events(FAILURE_FIXTURE.read_text())
     notes = build_notifications("staging", CERT_FRESH, events, ["failed"], notify_on_success=True)
-    assert "retry-in-progress" in notes[0].body
+    # New format: "Caddy is retrying automatically:" with per-attempt details
+    assert "Caddy is retrying automatically" in notes[0].body
+    assert "attempts so far" in notes[0].body
 
 
 def test_silent_expiry_notification_mentions_selected_time():
     events = parse_events(MAINTENANCE_FIXTURE.read_text())
     notes = build_notifications("staging", CERT_NEAR_EXPIRY, events,
                                 ["silent_expiry"], notify_on_success=True)
-    assert any("Caddy planned to renew" in n.body for n in notes)
+    # New format: "Should have renewed: <date>" line includes the planned date
+    assert any("Should have renewed:" in n.body for n in notes)
 
 
 def test_both_renewed_and_failed_emit_two_notifications():
@@ -370,16 +373,98 @@ def test_both_renewed_and_failed_emit_two_notifications():
     assert {n.kind for n in notes} == {"renewed", "failed"}
 
 
+# ---------- I2 fix: labeled openings + plain-English email bodies ----------
+
+def test_renewed_body_starts_with_success_notice_label():
+    notes = build_notifications("staging", CERT_FRESH, [], ["renewed"], notify_on_success=True)
+    assert notes[0].body.startswith("Success Notice:")
+    # No action needed line at the end so a casual reader can quickly close.
+    assert "No action needed" in notes[0].body
+
+
+def test_failed_body_starts_with_failure_notice_label():
+    events = parse_events(FAILURE_FIXTURE.read_text())
+    notes = build_notifications("prod", CERT_FRESH, events, ["failed"], notify_on_success=True)
+    assert notes[0].body.startswith("Failure Notice:")
+    # Concrete action items, not just diagnostic dump.
+    assert "What to do:" in notes[0].body
+    assert "docker logs --tail=200 bloom_v2_prod-caddy-1" in notes[0].body
+
+
+def test_partial_success_body_names_the_missing_identifier():
+    """B9 / I2 combined: don't just say '1 of 2 expected' — name WHICH
+    cert is missing so the admin knows what to investigate."""
+    # Construct events with ONLY the wildcard succeeding on prod (apex missing)
+    events = [
+        CaddyEvent(ts=1.0, level="info", logger_path="tls.obtain",
+                   msg="certificate obtained successfully",
+                   identifier="*.bloom-dev.salk.edu",
+                   issuer="acme-v02.api.letsencrypt.org-directory"),
+    ]
+    notes = build_notifications("prod", CERT_FRESH, events, ["partial_success"],
+                                notify_on_success=True)
+    assert notes[0].body.startswith("Partial Failure Notice:")
+    # The MISSING identifier (apex) is explicitly named.
+    assert "Not renewed: bloom-dev.salk.edu" in notes[0].body
+    # The renewed one is named too.
+    assert "Renewed:     *.bloom-dev.salk.edu" in notes[0].body
+
+
+def test_silent_expiry_body_starts_with_urgent_notice_label():
+    events = parse_events(MAINTENANCE_FIXTURE.read_text())
+    notes = build_notifications("prod", CERT_NEAR_EXPIRY, events,
+                                ["silent_expiry"], notify_on_success=True)
+    assert notes[0].body.startswith("Urgent Notice:")
+    # The body must give explicit "what to do RIGHT NOW" steps.
+    assert "What to do RIGHT NOW" in notes[0].body
+    assert "force a renewal" in notes[0].body
+
+
+def test_subject_lines_are_action_first_not_jargon():
+    """No '[bloom-cert-monitor] prod silent_expiry' style jargon — subject
+    must say what's happening in plain English so it scans in an inbox."""
+    # Renewed
+    notes = build_notifications("staging", CERT_FRESH, [], ["renewed"], notify_on_success=True)
+    assert "cert renewed" in notes[0].subject_suffix
+    assert "valid until" in notes[0].subject_suffix
+    # Failed
+    events = parse_events(FAILURE_FIXTURE.read_text())
+    notes = build_notifications("prod", CERT_FRESH, events, ["failed"], notify_on_success=True)
+    assert "renewal failed" in notes[0].subject_suffix
+    assert "days" in notes[0].subject_suffix
+    # Silent expiry
+    notes = build_notifications("prod", CERT_NEAR_EXPIRY, [],
+                                ["silent_expiry"], notify_on_success=True)
+    assert "expires in" in notes[0].subject_suffix
+    assert "no renewal seen" in notes[0].subject_suffix
+
+
 # ---------- SMTP send ----------
 
 def test_send_email_uses_correct_subject_prefix():
-    note = Notification(env="prod", kind="renewed", subject_suffix="renewed", body="test")
+    """Env is uppercased for prod/staging so they stand out in inbox lists."""
+    note = Notification(env="prod", kind="renewed",
+                        subject_suffix="cert renewed, valid until 2026-09-07", body="test")
     with patch("monitor_lib.smtplib.SMTP") as smtp_class:
         smtp_instance = MagicMock()
         smtp_class.return_value.__enter__.return_value = smtp_instance
         send_email(note, "from@x", ["to@y"], "smtp.host")
         sent_msg = smtp_instance.send_message.call_args[0][0]
-        assert sent_msg["Subject"] == "[bloom-cert-monitor] prod renewed"
+        assert sent_msg["Subject"] == "[bloom-cert-monitor] PROD: cert renewed, valid until 2026-09-07"
+
+
+def test_send_email_preflight_subject_has_no_env_duplicate():
+    """Preflight notifications skip the env segment in the subject — otherwise
+    we'd render `[bloom-cert-monitor] preflight preflight test...` (the env
+    AND the subject_suffix both being 'preflight'-related)."""
+    note = Notification(env="preflight", kind="preflight",
+                        subject_suffix="preflight test — SMTP delivery works", body="test")
+    with patch("monitor_lib.smtplib.SMTP") as smtp_class:
+        smtp_instance = MagicMock()
+        smtp_class.return_value.__enter__.return_value = smtp_instance
+        send_email(note, "from@x", ["to@y"], "smtp.host")
+        sent_msg = smtp_instance.send_message.call_args[0][0]
+        assert sent_msg["Subject"] == "[bloom-cert-monitor] preflight test — SMTP delivery works"
 
 
 def test_send_email_uses_multiple_recipients_in_one_transaction():
@@ -570,7 +655,8 @@ def test_caddy_unreachable_notification_includes_last_known_state():
     note = build_caddy_unreachable_notification("prod", prior_state, docker_error)
 
     assert note.kind == "caddy_unreachable"
-    assert "Caddy container unreachable" in note.subject_suffix
+    assert "Caddy container is down" in note.subject_suffix
+    assert "Warning Notice:" in note.body  # labeled opening
     assert docker_error in note.body
     assert "2026-06-08T09:00:00+00:00" in note.body  # last successful observation timestamp
     # Body lists both cert identifiers in the format `<id> — notBefore=<ts>`.

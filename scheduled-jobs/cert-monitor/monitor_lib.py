@@ -39,6 +39,14 @@ RETRY_MSG = "will retry"
 # Prod issues apex + wildcard. Staging issues wildcard only.
 EXPECTED_SUCCESS_PER_ENV = {"staging": 1, "prod": 2}
 
+# Concrete identifiers we expect at each env. Used by _partial_success to name
+# which cert is missing (not just the count). Staging's wildcard covers all
+# three staging hostnames; prod issues both apex + wildcard.
+EXPECTED_IDENTIFIERS_PER_ENV = {
+    "staging": ["*.bloom-dev.salk.edu"],
+    "prod": ["bloom-dev.salk.edu", "*.bloom-dev.salk.edu"],
+}
+
 
 @dataclass
 class CaddyEnv:
@@ -307,53 +315,163 @@ def build_notifications(
 
 
 def _renewed(env: str, cert: CertInfo) -> Notification:
+    identifier = subject_to_identifier(cert.subject)
+    not_after_date = cert.not_after.strftime("%Y-%m-%d")
+    not_before_date = cert.not_before.strftime("%Y-%m-%d")
+    # Caddy starts attempting renewal 30 days before expiry.
+    next_renewal_date = (cert.not_after - timedelta(days=30)).strftime("%Y-%m-%d")
     body = (
-        f"Caddy on {env} renewed the cert for {cert.subject}.\n\n"
-        f"  notBefore: {cert.not_before.isoformat()}\n"
-        f"  notAfter:  {cert.not_after.isoformat()}\n"
-        f"  issuer:    {cert.issuer}\n"
+        f"Success Notice: Caddy on {env} renewed the TLS cert this past week.\n\n"
+        f"  Cert:           {identifier}\n"
+        f"  New issuance:   {not_before_date}\n"
+        f"  Valid until:    {not_after_date} (90 days from issuance)\n"
+        f"  Issued by:      {cert.issuer}\n\n"
+        f"The next renewal should happen automatically around {next_renewal_date}\n"
+        f"(30 days before expiry). You will get another email like this one\n"
+        f"when it lands.\n\n"
+        f"No action needed.\n"
     )
-    return Notification(env, "renewed", "renewed", body)
+    subject_suffix = f"cert renewed, valid until {not_after_date}"
+    return Notification(env, "renewed", subject_suffix, body)
 
 
 def _failed(env: str, cert: CertInfo, events: list[CaddyEvent]) -> Notification:
+    identifier = subject_to_identifier(cert.subject)
     failures = [e for e in events if e.is_failure()][-3:]
     retry = next(iter([e for e in events if e.is_retry()][-1:]), None)
     days_left = (cert.not_after - datetime.now(timezone.utc)).days
+    not_after_date = cert.not_after.strftime("%Y-%m-%d")
     lines = [
-        f"Caddy on {env} reported a renewal failure for {cert.subject}.",
-        f"Cert currently serves until: {cert.not_after.isoformat()} ({days_left} days runway)",
+        f"Failure Notice: Caddy on {env} tried to renew the cert this past week and failed.",
         "",
-        "Most recent failure events:",
+        f"  Cert:             {identifier}",
+        f"  Currently valid:  until {not_after_date} ({days_left} days from now)",
+        f"  User impact:      none yet — the old cert is still serving",
+        "",
+        "Why the renewal failed (most recent attempts):",
+        "",
     ]
-    lines += [f"  [{e.logger_path}] {e.msg}: {e.error or '(no error field)'}" for e in failures]
+    for e in failures:
+        lines.append(f"  [{e.logger_path}] {e.msg}")
+        if e.error:
+            lines.append(f"    {e.error}")
+    lines.append("")
     if retry is not None:
-        lines.append(f"\nCaddy retry-in-progress: attempt={retry.attempt} elapsed={retry.elapsed}s")
-    return Notification(env, "failed", "failed", "\n".join(lines) + "\n")
+        lines += [
+            "Caddy is retrying automatically:",
+            f"  - {retry.attempt} attempts so far",
+            f"  - {retry.elapsed:.1f} seconds spent trying",
+            f"  - It will keep trying for up to 30 days",
+            "",
+        ]
+    lines += [
+        "What to do:",
+        "",
+        "1. SSH to bloom-dev and look at the actual Caddy errors:",
+        f"     docker logs --tail=200 bloom_v2_{env}-caddy-1 | grep -i error",
+        "",
+        "2. Common causes:",
+        "     - Cloudflare API token revoked or expired",
+        "     - Salk CNAME for _acme-challenge.bloom-dev.salk.edu removed",
+        "     - Let's Encrypt rate limit hit (rare)",
+        "",
+        "3. If you fix the underlying issue, Caddy will succeed on its next",
+        "   retry (every ~10 minutes). You do not need to restart anything.",
+        "",
+        "If the cert reaches < 14 days without renewing, you will get a",
+        "separate 'cert expires in N days, no renewal seen' urgent alert.",
+        "",
+    ]
+    subject_suffix = f"renewal failed — cert valid {days_left} more days"
+    return Notification(env, "failed", subject_suffix, "\n".join(lines))
 
 
 def _partial_success(env: str, cert: CertInfo, events: list[CaddyEvent]) -> Notification:
     success_ids = sorted({e.identifier for e in events if e.is_success() and e.identifier})
+    expected_ids = EXPECTED_IDENTIFIERS_PER_ENV.get(env, [])
+    missing_ids = sorted(set(expected_ids) - set(success_ids))
     expected = EXPECTED_SUCCESS_PER_ENV.get(env, 1)
-    body = (
-        f"Caddy on {env} obtained only {len(success_ids)} of {expected} expected certs.\n\n"
-        f"Obtained for: {', '.join(success_ids)}\n"
-        f"Currently-served cert subject: {cert.subject}\n"
-    )
-    return Notification(env, "partial_success", "partial_success", body)
+    lines = [
+        f"Partial Failure Notice: Caddy on {env} renewed {len(success_ids)} of {expected} certs this week.",
+        "",
+        f"  Renewed:     {', '.join(success_ids) if success_ids else '(none)'}",
+        f"  Not renewed: {', '.join(missing_ids) if missing_ids else '(unknown — check logs)'}",
+        "",
+        "Both old certs are still valid for users right now — nothing visible",
+        "is broken. But the missing cert needs to figure out why its renewal",
+        "failed before it expires.",
+        "",
+        "What to do:",
+        "",
+        "1. Check the Caddy logs filtered to the missing identifier:",
+    ]
+    for ident in missing_ids:
+        lines.append(f"     docker logs --tail=200 bloom_v2_{env}-caddy-1 | grep -A 5 \"{ident}\"")
+    lines += [
+        "",
+        "2. Most likely cause: Let's Encrypt failed the DNS-01 challenge for",
+        "   the missing cert but succeeded on the other. Could be a Cloudflare",
+        "   API hiccup on just one record.",
+        "",
+        "3. Caddy will retry on its next tick (~10 minutes).",
+        "",
+    ]
+    subject_suffix = f"only {len(success_ids)} of {expected} certs renewed"
+    return Notification(env, "partial_success", subject_suffix, "\n".join(lines))
 
 
 def _silent_expiry(env: str, cert: CertInfo, events: list[CaddyEvent]) -> Notification:
-    planning = latest_planning_for(subject_to_identifier(cert.subject), events)
+    identifier = subject_to_identifier(cert.subject)
+    planning = latest_planning_for(identifier, events)
     days_left = (cert.not_after - datetime.now(timezone.utc)).days
-    body = (
-        f"Caddy on {env} has not obtained a fresh cert for {cert.subject}.\n\n"
-        f"Cert expires: {cert.not_after.isoformat()} ({days_left} days remaining)\n"
-    )
+    not_after_date = cert.not_after.strftime("%Y-%m-%d")
+    lines = [
+        f"Urgent Notice: Caddy on {env} has NOT renewed the cert and it's close to expiry.",
+        "",
+        f"  Cert:        {identifier}",
+        f"  Expires:     {not_after_date} ({days_left} days from now)",
+    ]
     if planning is not None and planning.selected_time is not None:
         planned = datetime.fromtimestamp(planning.selected_time, tz=timezone.utc)
-        body += f"Caddy planned to renew at: {planned.isoformat()} (already passed)\n"
-    return Notification(env, "silent_expiry", "silent_expiry", body)
+        days_overdue = (datetime.now(timezone.utc) - planned).days
+        lines.append(
+            f"  Should have renewed: {planned.strftime('%Y-%m-%d')} "
+            f"({days_overdue} days ago — should have happened)"
+        )
+    lines += [
+        "",
+        "What this means:",
+        "",
+        "The monitor compared today's cert against the one it saw last week —",
+        "same cert. Caddy was supposed to have renewed by now but didn't. We",
+        f"have {days_left} days before browsers start showing TLS errors to users.",
+        "",
+        "Why this might be happening:",
+        "",
+        "  1. Earlier 'renewal failed' alerts that no one acted on (check inbox)",
+        "  2. The Caddy container has been stopped longer than usual",
+        "  3. Something the monitor hasn't seen yet",
+        "",
+        "What to do RIGHT NOW:",
+        "",
+        "1. SSH to bloom-dev and check Caddy:",
+        "     systemctl status docker",
+        "     docker ps | grep caddy",
+        f"     docker logs --tail=300 bloom_v2_{env}-caddy-1 | grep -i error",
+        "",
+        "2. Find the actual obstacle — Cloudflare token, DNS record, container",
+        "   restart, anything that's preventing renewal.",
+        "",
+        "3. If the cert is going to expire in days, you can force a renewal:",
+        f"     docker exec bloom_v2_{env}-caddy-1 caddy reload --config /etc/caddy/Caddyfile",
+        "",
+        "If this email is a false alarm (e.g. you renewed manually and the",
+        "monitor's state file is stale), you can ignore it. The next weekly",
+        "run will re-baseline.",
+        "",
+    ]
+    subject_suffix = f"cert expires in {days_left} days, no renewal seen"
+    return Notification(env, "silent_expiry", subject_suffix, "\n".join(lines))
 
 
 def build_caddy_unreachable_notification(env: str, prior_state: MonitorState, docker_error: str) -> Notification:
@@ -364,8 +482,10 @@ def build_caddy_unreachable_notification(env: str, prior_state: MonitorState, do
     runbook.
     """
     lines = [
-        f"The bloom-cert-monitor weekly run tried to inspect the {env} Caddy",
-        f"container but could not reach it. `docker exec` returned:",
+        f"Warning Notice: Bloom-cert-monitor could not reach the {env} Caddy",
+        "container to check the cert this week.",
+        "",
+        "What docker said when we tried:",
         "",
         f"  {docker_error}",
         "",
@@ -380,26 +500,40 @@ def build_caddy_unreachable_notification(env: str, prior_state: MonitorState, do
         lines.append("No prior observation in the state file (first-ever run, or state cleared).")
     lines += [
         "",
-        "We have no fresh data on whether the cert was renewed since the prior",
+        "We have no fresh data on whether the cert was renewed since that prior",
         "observation. The next weekly run will resume normal observation if",
         "Caddy comes back.",
         "",
-        "Action: check Caddy's status on bloom-dev. If Caddy was down only for a",
-        "deploy or short restart, this email can be safely ignored. If Caddy is",
-        "unexpectedly down, investigate:",
+        "What to do:",
         "",
-        f"  docker logs --tail=100 bloom_v2_{env}-caddy-1",
-        "  systemctl status docker",
+        "  - If Caddy was down only for a deploy or short restart, this email",
+        "    can be safely ignored. Next Sunday's run will catch up.",
+        "  - If Caddy is unexpectedly down, investigate:",
+        "",
+        f"      docker logs --tail=100 bloom_v2_{env}-caddy-1",
+        "      systemctl status docker",
         "",
     ]
-    return Notification(env, "caddy_unreachable", "Caddy container unreachable", "\n".join(lines))
+    return Notification(env, "caddy_unreachable", "Caddy container is down", "\n".join(lines))
+
+
+def _format_subject(notification: Notification) -> str:
+    """Build the email subject line.
+
+    Preflight skips the env segment ("preflight preflight" reads as a
+    duplication bug, not a useful label). Everything else gets the
+    env uppercased so prod/staging are visually distinct in inbox lists.
+    """
+    if notification.env == "preflight":
+        return f"[bloom-cert-monitor] {notification.subject_suffix}"
+    return f"[bloom-cert-monitor] {notification.env.upper()}: {notification.subject_suffix}"
 
 
 def send_email(notification: Notification, sender: str, recipients: list[str], smtp_host: str) -> None:
     msg = EmailMessage()
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
-    msg["Subject"] = f"[bloom-cert-monitor] {notification.env} {notification.subject_suffix}"
+    msg["Subject"] = _format_subject(notification)
     msg.set_content(notification.body)
     with smtplib.SMTP(smtp_host, 25, timeout=30) as smtp:
         smtp.send_message(msg)
