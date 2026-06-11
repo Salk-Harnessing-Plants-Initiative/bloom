@@ -101,6 +101,9 @@ COMMENT ON TABLE public.protein_embeddings_esm2 IS
   'ESM-2 protein embeddings, vector(1280) cosine-indexed. Each row corresponds to a proteins.uid. Postgres rejects vectors of any other dimension at the type-cast boundary — this is the cross-model contamination guardrail.';
 
 -- ─── rbh_cache_esm2 (per-model) ───────────────────────────────────────────
+-- RBH is symmetric: The CHECK below forces a canonical (species_1 < species_2)
+-- ordering at the schema level so the same biological pair can't be stored twice under swapped keys. 
+-- Ingest must `SELECT LEAST(s1,s2), GREATEST(s1,s2)` before writing.
 CREATE TABLE IF NOT EXISTS public.rbh_cache_esm2 (
   species_1     text        NOT NULL,
   species_2     text        NOT NULL,
@@ -108,11 +111,12 @@ CREATE TABLE IF NOT EXISTS public.rbh_cache_esm2 (
   rbh_count     int         NOT NULL,
   mean_distance float       NOT NULL,
   computed_at   timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (species_1, species_2, metric)
+  PRIMARY KEY (species_1, species_2, metric),
+  CONSTRAINT rbh_cache_esm2_species_canonical CHECK (species_1 < species_2)
 );
 
 COMMENT ON TABLE public.rbh_cache_esm2 IS
-  'Precomputed reciprocal best hits within ESM-2 embedding space, per species pair × metric. RBH is meaningful only within one model''s embedding space, so this is per-model.';
+  'Precomputed reciprocal best hits within ESM-2 embedding space, per species pair × metric. species_1 < species_2 is enforced by CHECK so each symmetric pair is stored exactly once. RBH is meaningful only within one model''s embedding space, so this table is per-model.';
 
 -- ─── knn_search_esm2 (per-model RPC) ──────────────────────────────────────
 DROP FUNCTION IF EXISTS public.knn_search_esm2(text, int);
