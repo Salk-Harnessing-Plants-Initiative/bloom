@@ -45,12 +45,15 @@ a *real* field change does fail the guard.
   Supabase `database.types.ts` (generated from the DB by `make gen-types`).
 - **TS drift guard (the oracle):** a Node ESM script `scripts/contract_types.mjs` with `--write`
   (regenerate) and `--check` (regenerate in-memory, EOL-normalize, byte-compare to the committed
-  file, exit 1 + diff on mismatch) modes, plus a **pin-consistency check** that `pin.json.version`
-  and `pin.json.id` agree with the schema's `$id` (exact-string match on the full `$id`; the
-  version segment is parsed with an anchored regex). Wired into the existing `build-and-audit` CI
-  job (Node, no DB). A **Vitest test** (`scripts/contract_types.test.mjs`, also in
-  `build-and-audit`) exercises the guard's negative paths and the `$id`-no-op property (see
-  Testing in design.md / tasks.md).
+  file, exit 1 + diff on mismatch) modes, plus a **pin-consistency / contract-sanity check** that
+  `pin.json.version` and `pin.json.id` agree with the schema's `$id` (exact-string match on the
+  full `$id`; the version segment is parsed with an anchored regex) and that the pinned schema
+  still requires the `Provenance.contract_version` traceability anchor. The script **exports pure
+  functions** (no file I/O or `process.exit` inside them) behind a thin CLI shim, so it is
+  unit-testable. Wired into the existing `build-and-audit` CI job (Node, no DB). A companion
+  `node --test` file (`scripts/contract_types.test.mjs`, also in `build-and-audit`; uses the
+  built-in Node test runner, no new framework) exercises the guard's negative paths and the
+  `$id`-no-op property in both directions (see Testing in design.md / tasks.md).
 - **Determinism guards (new repo config):** a `.prettierignore` excluding `contracts/generated/`
   and `contracts/schema/` (json2ts owns the generated file's format; the vendored schema is a
   faithful copy), and a `.gitattributes` rule `contracts/generated/*.ts text eol=lf` so the guard
@@ -65,9 +68,10 @@ a *real* field change does fail the guard.
     `cyl_trait_sources.metadata` — a tripwire on a contract-side re-home);
   - `Provenance.idempotency_key` (contract type `string`, `default: ""`) maps to
     `cyl_trait_sources.idempotency_key` text with **both** the non-empty CHECK
-    (`cyl_trait_sources_idempotency_key_nonempty`) **and** the UNIQUE constraint
-    (`cyl_trait_sources_idempotency_key_key`) — the UNIQUE is the actual 1-envelope:1-row anchor,
-    not just the empty-string guard.
+    (`cyl_trait_sources_idempotency_key_nonempty`, asserted by `contype = 'c'`) **and** the UNIQUE
+    constraint (`cyl_trait_sources_idempotency_key_key`, asserted by `contype = 'u'` — a name match
+    alone doesn't prove it is a UNIQUE rather than some other constraint) — the UNIQUE is the
+    actual 1-envelope:1-row anchor, not just the empty-string guard.
   A declarative mapping marks the B/C/D mappings (`source_id` FK, blob table, RPC key-equality,
   `scan_key`→`cyl_scans` resolution) **deferred/skipped**, so the check is meaningful now and
   extends as those changes land — never asserting against tables that do not exist yet. The schema
@@ -89,11 +93,11 @@ intentionally out of scope — only `result_envelope` is consumed by Bloom's A2 
   until change A's archive (#300) lands that live spec on `staging`.
 - Affected code:
   - `contracts/` (new: vendored schema, pin manifest, generated types, README)
-  - `scripts/contract_types.mjs` (new drift guard) + `scripts/contract_types.test.mjs` (new
-    Vitest) + root `package.json`/`package-lock.json` (json2ts devDep + `contracts:gen`/
-    `contracts:check` scripts)
+  - `scripts/contract_types.mjs` (new drift guard, pure-function exports + CLI shim) +
+    `scripts/contract_types.test.mjs` (new `node --test`) + root `package.json`/
+    `package-lock.json` (json2ts devDep + `contracts:gen`/`contracts:check` scripts)
   - `.prettierignore` (new) + `.gitattributes` (one new rule)
-  - `.github/workflows/pr-checks.yml` (new drift-guard + vitest steps in `build-and-audit`)
+  - `.github/workflows/pr-checks.yml` (new drift-guard + `node --test` steps in `build-and-audit`)
   - `tests/integration/test_contract_migration_match.py` (new; auto-runs in
     `compose-health-check`)
 - Affected issues: A2 consume-pin **#294** (parent #12, EPIC #9); unblocks/back-fills change A's

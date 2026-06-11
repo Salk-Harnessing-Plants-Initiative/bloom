@@ -75,9 +75,16 @@ independent ways it can break — all must be closed, not asserted away:
 1. **Tool/version drift.** Pin json2ts to **exact `15.0.4`** (not a caret); the whole tree
    (including the prettier json2ts uses) is frozen by `package-lock.json`, so `npm ci` reproduces
    identical output in CI (node 20) and locally (node 22). json2ts `engines.node` is `>=16`, so
-   node 20 is fine. A single module `scripts/contract_types.mjs` drives both `--write` and
-   `--check` via the json2ts **API** (identical `bannerComment` + options), so generate and check
-   run the same invocation — the only way the byte-compare is sound.
+   node 20 is fine. A single module `scripts/contract_types.mjs` **exports pure functions** —
+   `generateTypes(schema) → string`, `checkPinConsistency(pin, schema) → {ok, error}`,
+   `checkDrift({schema, pin, committedTs}) → {ok, diff}`, and a `checkContractSanity(schema)` that
+   asserts the pinned schema still requires the `Provenance.contract_version` anchor — that take
+   inputs as **arguments** (no file reads, no `process.exit` inside them). A thin CLI shim
+   (`if (import.meta.url === pathToFileURL(process.argv[1]).href)`) is the **only** place that
+   reads files and calls `process.exit`. Both `--write` and `--check` go through the same pure
+   `generateTypes` (identical `bannerComment` + options), so generate and check run the same
+   invocation — the only way the byte-compare is sound — and the test suite drives the pure
+   functions directly with in-memory inputs (it never spawns the exiting CLI).
 2. **Formatter conflict.** json2ts formats its output with its **own** bundled prettier style
    (`semi:true, singleQuote:false, printWidth:120, trailingComma:'none', bracketSpacing:false`),
    which disagrees with the repo's `.prettierrc.json`
@@ -100,9 +107,13 @@ independent ways it can break — all must be closed, not asserted away:
 Generated types live in a **consumer-neutral** `contracts/generated/result-envelope.ts` with a
 `DO NOT EDIT` banner. No code imports them yet (B/C/D/G pending); co-locating them in a package
 (e.g. `bloom-js`) now would couple the artifact to that package's build/lint before any consumer
-exists. A task runs `tsc --noEmit` on the generated file so the committed types are guaranteed
-valid, usable TS (the `BlobRef` `anyOf`-over-`properties` shape is reviewed for non-degeneracy at
-generation time, not rubber-stamped).
+exists. At generation time (not as a standing CI step — the bytes are frozen by the drift guard,
+so type-validity only needs re-checking when they change), a task runs
+`npx tsc --noEmit --strict --target ES2020 --moduleResolution bundler --skipLibCheck
+contracts/generated/result-envelope.ts` (exact flags, no throwaway tsconfig file) so the committed
+types are valid, usable TS; the generated `$defs` (`ResultEnvelope`, `Provenance`, `TraitValue`,
+`BlobRef`, plus sub-defs `InputRef`, `ModelRef`, `ResolvedParams`) are eyeballed for non-degeneracy
+— the `BlobRef` `anyOf`-over-`properties` shape is the risk case, reviewed not rubber-stamped.
 
 **`$id`-no-op enforceability (the key mechanism) — and its converse.** json2ts never emits `$id`
 into the generated types. So a re-pin that only re-stamps `$id` regenerates **byte-identical** TS →
@@ -112,8 +123,11 @@ pin-consistency check: the schema `$id`/`pin.json.id` and `pin.json.version`. A 
 (`scripts/contract_types.test.mjs`) proves **both directions** so the property can't silently
 regress: (a) mutate only the `$id` version → regenerated TS is identical; (b) mutate a *real*
 field (flip `idempotency_key`'s type / add a property) → regenerated TS **differs** and the guard
-would fail. It also covers the negative paths the spec promises: pin-mismatch → non-zero; a
-hand-edited committed TS → non-zero. This Vitest test runs in `build-and-audit` (no DB).
+would fail. It also covers the negative paths the spec promises: pin-mismatch → not-ok; an
+unparseable `$id` → not-ok; a hand-edited committed TS → not-ok. The test is a **`node --test`**
+file (`scripts/contract_types.test.mjs`) importing the pure functions — no new test framework,
+no config (vitest is already used under `web/`, but the built-in runner avoids the root-config
+question entirely). It runs in `build-and-audit` (no DB).
 
 ### D3 — Migration-match: pytest DB-introspection, A-subset, declaratively extensible
 
@@ -146,10 +160,21 @@ status, reason}` entries) drives the assertions:
     caught). Asserted as a substring match on the literal `cyl_trait_sources.metadata`.
   - `Provenance.idempotency_key` (contract type `string`, `default: ""`) →
     `cyl_trait_sources.idempotency_key` is `text` **with both** the non-empty CHECK
-    (`cyl_trait_sources_idempotency_key_nonempty`) **and** the UNIQUE constraint
-    (`cyl_trait_sources_idempotency_key_key`). The CHECK guards the `""`-collision; the UNIQUE is
-    the contract-level `1 ResultEnvelope : 1 source row` anchor — dropping it (keeping the CHECK)
+    (`cyl_trait_sources_idempotency_key_nonempty`, asserted via `pg_constraint.contype = 'c'`)
+    **and** the UNIQUE constraint (`cyl_trait_sources_idempotency_key_key`, asserted via
+    `contype = 'u'`). Asserting `contype`, not just the constraint *name*, is deliberate: the
+    `_key`/`_nonempty` suffixes are convention, not enforcement — a name match alone wouldn't
+    prove the UNIQUE is actually a UNIQUE. The CHECK guards the `""`-collision; the UNIQUE is the
+    contract-level `1 ResultEnvelope : 1 source row` anchor — dropping it (keeping the CHECK)
     silently breaks idempotency, so both are active assertions.
+  - **Contract sanity:** `contract_version` is in `$defs.Provenance.required` and typed `string`.
+    `contract_version` is the per-row traceability anchor (which contract an envelope was produced
+    under); the whole row-anchor story rests on the contract *guaranteeing* every envelope carries
+    it. If sub-project #1 ever made it optional, D/G's future validation would have nothing to
+    validate — so this structural tripwire is asserted now (no consumer needed). This assertion
+    lives in the Node guard's `checkContractSanity` (fast lane) and is mirrored as a recorded note
+    here; the *runtime* `provenance.contract_version` == `pin.json.version` validation is the
+    deferred D/G hand-off below.
 - **Deferred (skipped with a reason, not asserted):** B (`source_id` FK on the trait tables),
   C (intermediates/blob table), D (`idempotency_key == metadata->>'idempotency_key'` equality,
   RPC-enforced), `Provenance.contract_version` row-anchor validation (consumer-side, D/G), and
@@ -157,17 +182,20 @@ status, reason}` entries) drives the assertions:
   extension point: each future change flips its row to active. This keeps the check meaningful
   today and **not brittle** against tables/columns/values that do not exist yet.
 
-The test also records (as a documented, non-asserted note) that the remaining `Provenance` fields
-are deliberately carried *inside* the opaque `metadata` jsonb, not promoted to columns — change
-A's intentional boundary — and that `contract_version`/`TraitValue.value` finiteness are
-consumer-side hand-offs to D/G (see proposal Cross-change hand-offs).
+The deferred mapping rows are terse one-liners (`{..., status:"deferred", reason:"#295 source_id
+FK"}`). The narrative hand-offs (remaining `Provenance` fields — including the reproducibility
+anchors `inputs.images_checksum`/`image_ids` and `params.param_hash` — live *inside* the opaque
+`metadata` jsonb, not promoted to columns; `contract_version`/`TraitValue.value` finiteness are
+D/G consumer-side validations) live in `contracts/README.md` and the proposal's Cross-change
+hand-offs, **not** duplicated as prose in the test file — the test carries mechanical deferred
+rows only.
 
 ### D4 — CI wiring
 
 - TS drift guard: a new step in `build-and-audit` → `node scripts/contract_types.mjs --check`
   (after `npm ci`). Pure Node, fast, no DB.
-- Vitest negative-path/`$id`-no-op test: a new step in `build-and-audit` running the single
-  `scripts/contract_types.test.mjs` (e.g. `npx vitest run scripts/contract_types.test.mjs`), no DB.
+- Negative-path/`$id`-no-op test: a new step in `build-and-audit` →
+  `node --test scripts/contract_types.test.mjs` (built-in runner, no config), no DB.
 - Migration-match: no workflow change — placing the test under `tests/integration/` is sufficient
   (`compose-health-check` runs the whole directory).
 
@@ -179,10 +207,15 @@ consumer-side hand-offs to D/G (see proposal Cross-change hand-offs).
 - **json2ts output stability across versions.** A json2ts upgrade could change formatting and
   trip the guard — which is *correct*: an upgrade is a deliberate `--write` + commit, gated by the
   exact pin. The risk is only an *unexpected* bump, which the exact pin + lockfile prevent.
-- **Docstring tripwire brittleness.** Asserting `Provenance.description` contains
-  `cyl_trait_sources.metadata` can fail on a benign reword. → That is the intended behavior: a
-  contract docstring change about the home *should* force a human to re-confirm the mapping; the
-  fix is a one-line update to the expected substring after confirming the home is unchanged.
+- **Docstring tripwire brittleness — mitigated by vendoring.** Asserting `Provenance.description`
+  contains `cyl_trait_sources.metadata` looks like a textbook brittle free-text assertion, but the
+  schema is a **vendored, committed copy**: the assertion runs against the frozen file, so it
+  *cannot* spontaneously fail on an upstream reword. It fires only when *we* re-vendor a changed
+  schema — which is exactly the moment a human should re-confirm the home is still
+  `cyl_trait_sources.metadata` (and update the one-line expected substring as part of that re-pin).
+  So a hard failure is correct, and the "false alarm" mode (red build with no re-pin) cannot occur.
+  This is the only contract-side net for a description-level re-home (json2ts drops descriptions,
+  so the TS guard is blind to it).
 - **Migration-match needs the compose stack.** It only runs in `compose-health-check`. → Acceptable:
   it reuses existing infra and asserts the real applied schema; the cheap TS guard + Vitest run in
   the fast Node job.

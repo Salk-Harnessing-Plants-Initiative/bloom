@@ -37,6 +37,13 @@ no-op (not a contract revision).
   the expected `…/schema/<version>/result_envelope.schema.json` shape
 - **THEN** the check fails with a non-zero exit status rather than silently passing
 
+#### Scenario: Pinned schema retains the contract_version traceability anchor
+
+- **WHEN** the contract-sanity check runs against the pinned schema
+- **THEN** it confirms `contract_version` is a required `string` field of `Provenance`, and fails
+  if a re-pin ever drops it from `required` (the per-row provenance-of-origin anchor must be
+  guaranteed by every envelope)
+
 ### Requirement: Generated TypeScript types match the pinned schema
 
 Bloom SHALL commit TypeScript types generated from the pinned `result_envelope.schema.json`
@@ -97,9 +104,7 @@ intermediates/blob table, RPC-enforced key equality, `contract_version` row-anch
 against database objects that do not yet exist and can be extended as those changes land. Loading
 the contract schema SHALL NOT crash test collection when the schema file is absent.
 
-Note: this requirement is housed in the `contract-pinning` capability as an interim home; its
-natural long-term home is `cyl-trait-writeback`, and relocation is a deliberate future refactor
-pending change A's archive landing that live spec.
+Note: this requirement may relocate to the `cyl-trait-writeback` capability in a future refactor.
 
 #### Scenario: Provenance envelope home is present, correctly typed, and contract-designated
 
@@ -110,9 +115,10 @@ pending change A's archive landing that live spec.
 #### Scenario: Idempotency anchor matches the contract field, default posture, and uniqueness
 
 - **WHEN** the check introspects the applied database
-- **THEN** `cyl_trait_sources.idempotency_key` exists with type `text`, a CHECK constraint that
-  rejects the empty string (matching the contract's `idempotency_key: string` with `default: ""`),
-  and a UNIQUE constraint (the `1 ResultEnvelope : 1 source row` anchor)
+- **THEN** `cyl_trait_sources.idempotency_key` exists with type `text`, a constraint of type CHECK
+  (`contype = 'c'`) that rejects the empty string (matching the contract's `idempotency_key:
+  string` with `default: ""`), and a constraint of type UNIQUE (`contype = 'u'`, the
+  `1 ResultEnvelope : 1 source row` anchor) — verified by constraint *type*, not name alone
 
 #### Scenario: Deferred mappings are skipped, not asserted
 
