@@ -1,7 +1,7 @@
 /**
  * Vector distance metrics for embedtree.
  *
- * Both functions are pure: they read their inputs and return a number.
+ * Both functions read their inputs and return a number.
  * Inputs are never mutated.
  *
  * Cosine distance matches what `knn_search_esm2` uses on the database
@@ -12,15 +12,22 @@
 /**
  * Cosine distance between two equal-length numeric vectors.
  *
- * Returns 1 - cosine_similarity, so:
+ * Returns a number from 0 to 2:
  *   0   identical direction (cos = 1)
- *   1   orthogonal           (cos = 0)
- *   2   exactly opposite     (cos = -1)
+ *   1   perpendicular        (cos = 0)
+ *   2   opposite             (cos = -1)
  *
- * A zero vector has undefined direction; we treat
- * cosineDistance(zero, anything) as 1 (maximally dissimilar) rather
- * than NaN so downstream tree construction does not produce NaN-valued
- * matrices that silently corrupt neighbour-joining output.
+ * Zero-vector handling: a real ESM-2 protein embedding is dense
+ * (every component is a small nonzero float), so we never expect to
+ * see an all-zero vector in production data. 
+ * 
+ * The guard is purely defensive — it catches test fixtures, ingest bugs (operator points
+ * the script at a corrupted .npy file), and pipeline failures
+ * In those cases we return 1 (treat the zero vector as unrelated to anything)
+ * rather than NaN, 
+ * 
+ * so a downstream tree is visibly off rather than
+ * silently corrupted.
  *
  * @throws Error if the vectors differ in length.
  */

@@ -1,19 +1,18 @@
 /**
- * Saitou & Nei (1987) Neighbor-Joining tree construction.
+ * Builds a binary tree from a pairwise distance matrix.
  *
- * Input: a square N x N pairwise distance matrix and N leaf labels.
- * Output: a rooted binary TreeNode where each leaf corresponds to one
- * of the input labels and each internal node has exactly two children.
+ * Input:  an N x N distance matrix + N leaf labels.
+ * Output: a rooted binary tree (every internal node has 2 children).
  *
- * The classic NJ algorithm produces an unrooted tree; we mid-point-root
- * implicitly by treating the final 3-leaf join as the root (the standard
- * "neighbor joining tree" rooted at the last internal node). The exact
- * choice of root affects rendering but not topology.
+ * The classic NJ algorithm doesn't pick a root; we use the last merge
+ * as the root by convention. Which one is the root only affects how
+ * the tree is drawn — the actual relationships between leaves are
+ * the same either way.
  *
- * Pure: never mutates the input matrix or labels.
+ * This function does not modify the input matrix or labels.
  *
- * @throws Error on a non-square matrix, length mismatch with labels,
- *   empty input, or NaN distances.
+ * Throws on a non-square matrix, length mismatch with labels, empty
+ * input, or NaN distances.
  */
 import type { TreeNode } from "./types";
 
