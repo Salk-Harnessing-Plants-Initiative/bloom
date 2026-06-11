@@ -21,7 +21,7 @@ Two facts shape the design:
 2. **Bloom's CI has two relevant homes.** `build-and-audit` (Node; runs `npm ci`; no DB) and
    `compose-health-check` (brings up the prod compose stack, applies migrations, runs
    `pytest tests/integration/` against the live DB via the `pg_conn` fixture). The TS drift guard
-   + its Vitest test belong in the former; the DB migration-match belongs in the latter.
+   + its `node --test` test belong in the former; the DB migration-match belongs in the latter.
 
 ## Goals / Non-Goals
 
@@ -76,15 +76,17 @@ independent ways it can break — all must be closed, not asserted away:
    (including the prettier json2ts uses) is frozen by `package-lock.json`, so `npm ci` reproduces
    identical output in CI (node 20) and locally (node 22). json2ts `engines.node` is `>=16`, so
    node 20 is fine. A single module `scripts/contract_types.mjs` **exports pure functions** —
-   `generateTypes(schema) → string`, `checkPinConsistency(pin, schema) → {ok, error}`,
-   `checkDrift({schema, pin, committedTs}) → {ok, diff}`, and a `checkContractSanity(schema)` that
-   asserts the pinned schema still requires the `Provenance.contract_version` anchor — that take
-   inputs as **arguments** (no file reads, no `process.exit` inside them). A thin CLI shim
+   `async generateTypes(schema) → Promise<string>` (json2ts `compile()` is **async** — it returns
+   a Promise — so this and its callers are async/awaited), `checkPinConsistency(pin, schema) →
+   {ok, error}`, and `async checkDrift({schema, pin, committedTs}) → Promise<{ok, diff}>` — that
+   take inputs as **arguments** (no file reads, no `process.exit` inside them). A thin CLI shim
    (`if (import.meta.url === pathToFileURL(process.argv[1]).href)`) is the **only** place that
-   reads files and calls `process.exit`. Both `--write` and `--check` go through the same pure
-   `generateTypes` (identical `bannerComment` + options), so generate and check run the same
-   invocation — the only way the byte-compare is sound — and the test suite drives the pure
-   functions directly with in-memory inputs (it never spawns the exiting CLI).
+   reads files, `await`s the checks, and calls `process.exit`. Both `--write` and `--check` go
+   through the same pure `generateTypes` (`compile(schema, 'ResultEnvelope', {bannerComment,
+   format})`, identical options), so generate and check run the same invocation — the only way the
+   byte-compare is sound — and the test suite `await`s the pure functions directly with in-memory
+   inputs (it never spawns the exiting CLI). (The contract-side sanity assertion lives in the
+   pytest migration-match, not here — see D3.)
 2. **Formatter conflict.** json2ts formats its output with its **own** bundled prettier style
    (`semi:true, singleQuote:false, printWidth:120, trailingComma:'none', bracketSpacing:false`),
    which disagrees with the repo's `.prettierrc.json`
@@ -119,14 +121,15 @@ types are valid, usable TS; the generated `$defs` (`ResultEnvelope`, `Provenance
 into the generated types. So a re-pin that only re-stamps `$id` regenerates **byte-identical** TS →
 the drift guard passes with a *zero* TS diff, mechanically proving the structural no-op. The
 intended, reviewable diff on a re-pin is exactly two things kept in lockstep by the
-pin-consistency check: the schema `$id`/`pin.json.id` and `pin.json.version`. A Vitest test
-(`scripts/contract_types.test.mjs`) proves **both directions** so the property can't silently
-regress: (a) mutate only the `$id` version → regenerated TS is identical; (b) mutate a *real*
-field (flip `idempotency_key`'s type / add a property) → regenerated TS **differs** and the guard
-would fail. It also covers the negative paths the spec promises: pin-mismatch → not-ok; an
-unparseable `$id` → not-ok; a hand-edited committed TS → not-ok. The test is a **`node --test`**
-file (`scripts/contract_types.test.mjs`) importing the pure functions — no new test framework,
-no config (vitest is already used under `web/`, but the built-in runner avoids the root-config
+pin-consistency check: the schema `$id`/`pin.json.id` and `pin.json.version`. A **`node --test`**
+file (`scripts/contract_types.test.mjs`) importing the pure functions proves **both directions** so
+the property can't silently regress: (a) mutate only the `$id` version → regenerated TS is
+identical; (b) mutate a *real* field (flip `idempotency_key`'s type / add a property) → regenerated
+TS **differs** and the guard would fail. It also covers the negative paths the spec promises:
+pin-mismatch → not-ok; an unparseable `$id` → not-ok; a hand-edited committed TS → `checkDrift`
+not-ok (the *only* exercise of `checkDrift`'s failure branch — the runtime `--check` only ever hits
+its pass branch, since the real committed file always matches). No new test framework, no config
+(vitest is already used under `web/`, but the built-in `node --test` runner avoids the root-config
 question entirely). It runs in `build-and-audit` (no DB).
 
 ### D3 — Migration-match: pytest DB-introspection, A-subset, declaratively extensible
@@ -140,13 +143,16 @@ needed for it.
 
 It is honestly a **regression-lock over already-landed change A**, not a fresh RED→GREEN cycle:
 A's columns already exist, so the assertions are green as soon as the contract schema is vendored.
-The genuine "does the oracle discriminate?" proof is a deliberate task that mutates an expected
-value (or drops a constraint inside the `pg_conn` rollback transaction), confirms the failure
-fires **on the assertion line** (not a file-load error), then reverts.
+The genuine "does the oracle discriminate?" proof is a deliberate task that mutates one expected
+literal (e.g. assert `metadata` is `"json"` instead of `"jsonb"`) — no DB mutation, fully
+repeatable — confirms the failure fires **on that assertion** (not a file-load error), then reverts.
 
-**Collection safety:** the contract schema is loaded **lazily** (inside the test/fixture) or
-guarded with `pytest.skip(allow_module_level=True)` when the file is absent, so a commit where the
-test exists but the schema does not can never crash collection for the whole `tests/integration/`
+**Collection safety:** the module-level `MAPPINGS` list holds **literals only** (no schema-derived
+values), so import never touches the schema file — that is what protects *collection*. A
+`_load_schema()` helper reads the vendored schema **lazily inside each test body** and calls a plain
+`pytest.skip("contract schema not vendored")` when it is absent (the `allow_module_level` flag is
+only valid at module scope and is not used here). So a commit where the test exists but the schema
+does not skips at *execution*, and can never crash collection for the whole `tests/integration/`
 directory.
 
 A **declarative mapping** (a list of `{contract_field, db_table, db_column, db_type, constraint,
@@ -167,14 +173,20 @@ status, reason}` entries) drives the assertions:
     prove the UNIQUE is actually a UNIQUE. The CHECK guards the `""`-collision; the UNIQUE is the
     contract-level `1 ResultEnvelope : 1 source row` anchor — dropping it (keeping the CHECK)
     silently breaks idempotency, so both are active assertions.
-  - **Contract sanity:** `contract_version` is in `$defs.Provenance.required` and typed `string`.
-    `contract_version` is the per-row traceability anchor (which contract an envelope was produced
-    under); the whole row-anchor story rests on the contract *guaranteeing* every envelope carries
-    it. If sub-project #1 ever made it optional, D/G's future validation would have nothing to
-    validate — so this structural tripwire is asserted now (no consumer needed). This assertion
-    lives in the Node guard's `checkContractSanity` (fast lane) and is mirrored as a recorded note
-    here; the *runtime* `provenance.contract_version` == `pin.json.version` validation is the
-    deferred D/G hand-off below.
+  - **Contract sanity (contract-side facts that justify change A's DB choices), asserted here in
+    one home — not duplicated in the Node guard:**
+    - `contract_version` is in `$defs.Provenance.required` and typed `string`. It is the per-row
+      traceability anchor (which contract an envelope was produced under); the row-anchor story
+      rests on the contract *guaranteeing* every envelope carries it. If sub-project #1 ever made
+      it optional, D/G's future validation would have nothing to validate — so this structural
+      tripwire is asserted now (no consumer needed).
+    - `$defs.Provenance.properties.idempotency_key.default` is `""`. This is the *documented basis*
+      for change A's non-empty CHECK (an unset key arrives as `""`, never NULL); if the contract
+      changed the default away from `""`, that CHECK's rationale would silently rot. One-line
+      literal assert, lives with the constraint it justifies.
+    These are contract-side schema facts (no DB), so they live in this migration-match test (one
+    home) rather than also in the Node guard. The *runtime* `provenance.contract_version` ==
+    `pin.json.version` validation is the deferred D/G hand-off below.
 - **Deferred (skipped with a reason, not asserted):** B (`source_id` FK on the trait tables),
   C (intermediates/blob table), D (`idempotency_key == metadata->>'idempotency_key'` equality,
   RPC-enforced), `Provenance.contract_version` row-anchor validation (consumer-side, D/G), and
@@ -217,14 +229,14 @@ rows only.
   This is the only contract-side net for a description-level re-home (json2ts drops descriptions,
   so the TS guard is blind to it).
 - **Migration-match needs the compose stack.** It only runs in `compose-health-check`. → Acceptable:
-  it reuses existing infra and asserts the real applied schema; the cheap TS guard + Vitest run in
-  the fast Node job.
+  it reuses existing infra and asserts the real applied schema; the cheap TS guard + `node --test`
+  run in the fast Node job.
 
 ## Migration Plan
 
 No database migration. Pure additive repo content (vendored schema, manifest, generated types,
-guard script + Vitest, `.prettierignore`, one `.gitattributes` line, CI steps, pytest test) + one
-devDependency. Rollback = revert the change; nothing is applied to any database. Re-pin procedure
+guard script + `node --test` file, `.prettierignore`, one `.gitattributes` line, CI steps, pytest
+test) + one devDependency. Rollback = revert the change; nothing is applied to any database. Re-pin procedure
 (documented in `contracts/README.md`): replace the vendored schema, bump `pin.json.version`/`id`,
 run `npm run contracts:gen`, commit; a `$id`-only diff regenerates identical types and all guards
 pass; any real change produces a TS diff (caught by the guard) and a human reviews it.

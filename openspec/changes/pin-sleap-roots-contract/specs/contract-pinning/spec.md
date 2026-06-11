@@ -37,13 +37,6 @@ no-op (not a contract revision).
   the expected `…/schema/<version>/result_envelope.schema.json` shape
 - **THEN** the check fails with a non-zero exit status rather than silently passing
 
-#### Scenario: Pinned schema retains the contract_version traceability anchor
-
-- **WHEN** the contract-sanity check runs against the pinned schema
-- **THEN** it confirms `contract_version` is a required `string` field of `Provenance`, and fails
-  if a re-pin ever drops it from `required` (the per-row provenance-of-origin anchor must be
-  guaranteed by every envelope)
-
 ### Requirement: Generated TypeScript types match the pinned schema
 
 Bloom SHALL commit TypeScript types generated from the pinned `result_envelope.schema.json`
@@ -97,7 +90,10 @@ that the `Provenance` envelope home is `cyl_trait_sources.metadata` of type `jso
 loaded contract still designates that home (the schema's `Provenance` description names
 `cyl_trait_sources.metadata`); and that `Provenance.idempotency_key` (contract type `string`,
 default `""`) maps to `cyl_trait_sources.idempotency_key` of type `text` guarded by **both** a
-non-empty CHECK constraint and a UNIQUE constraint. The check SHALL be driven by a declarative
+non-empty CHECK constraint and a UNIQUE constraint. The check SHALL also assert the contract-side
+schema facts that justify change A's DB choices: `Provenance.contract_version` is `required` and
+typed `string` (the per-row provenance-of-origin anchor), and `Provenance.idempotency_key.default`
+is `""` (the documented basis for the non-empty CHECK). The check SHALL be driven by a declarative
 mapping in which mappings introduced by later changes (`source_id` foreign keys, the
 intermediates/blob table, RPC-enforced key equality, `contract_version` row-anchor validation, and
 `scan_key` resolution) are marked deferred and explicitly skipped, so the check does not assert
@@ -120,6 +116,13 @@ Note: this requirement may relocate to the `cyl-trait-writeback` capability in a
   string` with `default: ""`), and a constraint of type UNIQUE (`contype = 'u'`, the
   `1 ResultEnvelope : 1 source row` anchor) — verified by constraint *type*, not name alone
 
+#### Scenario: Contract-side anchors that justify the DB schema are present
+
+- **WHEN** the check inspects the loaded contract
+- **THEN** `Provenance.contract_version` is in `required` and typed `string`, and
+  `Provenance.idempotency_key.default` is `""`, and the check fails if a re-pin drops either (the
+  provenance anchor and the empty-string CHECK rationale must stay guaranteed by the contract)
+
 #### Scenario: Deferred mappings are skipped, not asserted
 
 - **WHEN** the check encounters a mapping marked deferred (e.g. a `source_id` foreign key, the
@@ -136,6 +139,7 @@ Note: this requirement may relocate to the `cyl-trait-writeback` capability in a
 
 #### Scenario: Missing contract schema does not crash test collection
 
-- **WHEN** the test module is collected and the vendored contract schema file is absent
-- **THEN** the test is skipped (module-level) rather than raising and failing collection for the
-  whole integration suite
+- **WHEN** the test module is collected and the vendored contract schema file is absent (module-level
+  state references only literals, so collection does not read the schema)
+- **THEN** the affected tests are skipped at execution rather than raising and failing collection for
+  the whole integration suite
