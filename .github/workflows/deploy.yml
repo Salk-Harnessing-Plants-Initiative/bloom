@@ -303,7 +303,7 @@ jobs:
             : \"\${PORT:?missing CADDY_HTTPS_LISTEN_PORT in .env.prod}\"
 
             issuer=
-            for _ in \$(seq 1 36); do
+            for _ in \$(seq 1 24); do
               issuer=\$(echo | openssl s_client -connect 127.0.0.1:\$PORT -servername \"\$DOMAIN_MAIN\" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || true)
               if echo \"\$issuer\" | grep -qi encrypt; then
                 echo \"Real Let's Encrypt cert active: \$issuer\"
@@ -793,7 +793,7 @@ jobs:
             : \"\${PORT:?missing CADDY_HTTPS_LISTEN_PORT in .env.staging}\"
 
             issuer=
-            for _ in \$(seq 1 36); do
+            for _ in \$(seq 1 24); do
               issuer=\$(echo | openssl s_client -connect 127.0.0.1:\$PORT -servername \"\$DOMAIN_MAIN\" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || true)
               if echo \"\$issuer\" | grep -qi encrypt; then
                 echo \"Real Let's Encrypt cert active: \$issuer\"
