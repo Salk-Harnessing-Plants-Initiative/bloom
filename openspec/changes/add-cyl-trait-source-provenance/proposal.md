@@ -12,7 +12,9 @@ anchor, so trait values cannot be traced to the run that produced them and the s
 ingested twice would mint duplicate sources.
 
 This is **change A** (the foundation) of sub-project #2. It only widens the source table;
-the service-role write-back RPC that upserts on this key is a later change.
+the sanctioned, idempotent write-back RPC that upserts on this key is a later change (D). Its
+role model (`SECURITY DEFINER` vs. caller-as-`bloom_writer`) is an open decision for D — see
+design.md.
 
 **Supersedes** the `cyl_trait_sources` schema proposed in issue #13 / `docs/issues/
 issue-4-results-sync.md` (which added `pipeline_run_id UUID REFERENCES cyl_pipeline_runs`

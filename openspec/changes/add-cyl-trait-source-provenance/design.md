@@ -83,6 +83,17 @@ unset key arrives as an empty string, never as SQL `NULL`.
   NULL-escape risk below is the same failure mode as gravi #250 (UNIQUE treats NULLs as
   distinct, so NULL keys do not collide). (#251 was a *client-side* bloom-js upsert fix, a
   different pattern — not the model for D's RPC.)
+- **Open decision for change D — the RPC role model** (raised in #290 review by @blm3886): the
+  repo's existing RPCs (`insert_gravi_*`) are `SECURITY INVOKER` and run as the caller via
+  `bloom_writer` (which holds `INSERT/UPDATE` on all public tables), so logs show *which app*
+  wrote. The roadmap's "service-role" framing implies `SECURITY DEFINER` (the RPC as sole
+  sanctioned writer once E drops the legacy `authenticated` INSERT) — stronger integrity but
+  **no caller attribution**. Three options for D: (a) `SECURITY DEFINER`/service-role (sole
+  writer; loses attribution); (b) `SECURITY INVOKER` as `bloom_writer` (attribution + matches
+  existing RPCs, but not a sole write path, so E's lockdown loses teeth); (c) **hybrid
+  (recommended): `SECURITY DEFINER` + record the caller** (`auth.jwt()` claim / app id /
+  `session_user`) into the source row or an audit column — sole-writer integrity *and*
+  attribution. Decide in D's brainstorming; not an A concern.
 
 ## Migration Plan
 
