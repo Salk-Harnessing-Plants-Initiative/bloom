@@ -50,12 +50,13 @@ QUERY_VEC = _make_vec(1280, {0: 1.0})
 NEAR_VEC  = _make_vec(1280, {0: _NEAR_X, 1: _NEAR_Y})
 FAR_VEC   = _make_vec(1280, {1: 1.0})
 
-# Orthogroup test rows.
+
+TEST_OG_RUN_NAME = "of2_test_run"
 TEST_OG_ROWS = [
-    # (gene_id, species, orthogroup, raw_gene_id)
-    ("AT5GQ",  "arabidopsis", "OG_TEST_0001", "AT5GQ"),
-    ("AT5GN1", "arabidopsis", "OG_TEST_0001", "AT5GN1"),  # same OG as AT5GQ
-    ("OsRN2",  "rice",        "OG_TEST_0002", "OsRN2"),   # different OG
+    # (protein_uid, orthogroup)
+    ("test:Q",  "OG_TEST_0001"),
+    ("test:N1", "OG_TEST_0001"),  # same OG as test:Q
+    ("test:N2", "OG_TEST_0002"),  # different OG
 ]
 
 
@@ -105,23 +106,39 @@ def embedtree_seed(pg_conn):
 
 
 @pytest.fixture
-def orthogroup_seed(pg_conn):
-    """Seed 3 orthogroup rows; clean up after the test."""
+def orthogroup_seed(pg_conn, embedtree_seed):
+    """
+    Seed one OrthoFinder run + 3 orthogroup rows in it, mark the run
+    active; clean up after the test (cascades to orthogroups rows).
+
+    Depends on `embedtree_seed` because orthogroups.protein_uid has a
+    FK to proteins.uid — the protein rows must exist first.
+    """
     with pg_conn.cursor() as cur:
-        for gene_id, species, og, raw_id in TEST_OG_ROWS:
+        cur.execute(
+            "INSERT INTO public.orthogroup_runs (run_name, source, notes, is_active) "
+            "VALUES (%s, %s, %s, true) "
+            "ON CONFLICT (run_name) DO UPDATE SET is_active = true "
+            "RETURNING id",
+            (TEST_OG_RUN_NAME, "test fixture", "embedtree integration tests"),
+        )
+        (run_id,) = cur.fetchone()
+        for protein_uid, og in TEST_OG_ROWS:
             cur.execute(
-                "INSERT INTO public.orthogroups (gene_id, species, orthogroup, raw_gene_id) "
-                "VALUES (%s, %s, %s, %s) "
-                "ON CONFLICT (gene_id, species, orthogroup) DO NOTHING",
-                (gene_id, species, og, raw_id),
+                "INSERT INTO public.orthogroups (run_id, protein_uid, orthogroup) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (run_id, protein_uid, orthogroup) DO NOTHING",
+                (run_id, protein_uid, og),
             )
         pg_conn.commit()
 
-    yield
+    yield run_id
 
+    # Drop the test run; FK ON DELETE CASCADE removes its orthogroups rows.
     with pg_conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM public.orthogroups WHERE orthogroup LIKE 'OG_TEST_%'"
+            "DELETE FROM public.orthogroup_runs WHERE run_name = %s",
+            (TEST_OG_RUN_NAME,),
         )
         pg_conn.commit()
 
@@ -319,25 +336,26 @@ def test_rbh_cache_esm2_rejects_swapped_species_ordering(pg_conn):
 
 def test_get_orthogroup_info_returns_shared_with_query(pg_conn, orthogroup_seed):
     """
-    AT5GQ and AT5GN1 share OG_TEST_0001; OsRN2 is in OG_TEST_0002.
-    get_orthogroup_info('AT5GQ', ARRAY['AT5GN1','OsRN2']) should mark
-    AT5GN1 as shared and OsRN2 as not.
+    test:Q and test:N1 share OG_TEST_0001; test:N2 is in OG_TEST_0002.
+    get_orthogroup_info('test:Q', ARRAY['test:N1','test:N2']) should mark
+    test:N1 as shared and test:N2 as not. Reads the currently-active
+    OrthoFinder run (seeded with is_active=true by `orthogroup_seed`).
     """
     with pg_conn.cursor() as cur:
         cur.execute(
-            "SELECT gene_id, orthogroup, shared_with_query "
+            "SELECT protein_uid, orthogroup, shared_with_query "
             "FROM public.get_orthogroup_info(%s, %s)",
-            ("AT5GQ", ["AT5GN1", "OsRN2"]),
+            ("test:Q", ["test:N1", "test:N2"]),
         )
-        rows = {gid: (og, shared) for gid, og, shared in cur.fetchall()}
+        rows = {uid: (og, shared) for uid, og, shared in cur.fetchall()}
 
-    assert "AT5GN1" in rows, "AT5GN1 missing from get_orthogroup_info result"
-    assert rows["AT5GN1"][1] is True, (
-        "AT5GN1 should be marked shared_with_query (same orthogroup as AT5GQ)"
+    assert "test:N1" in rows, "test:N1 missing from get_orthogroup_info result"
+    assert rows["test:N1"][1] is True, (
+        "test:N1 should be marked shared_with_query (same orthogroup as test:Q)"
     )
-    assert "OsRN2" in rows, "OsRN2 missing from get_orthogroup_info result"
-    assert rows["OsRN2"][1] is False, (
-        "OsRN2 should NOT be marked shared_with_query (different orthogroup)"
+    assert "test:N2" in rows, "test:N2 missing from get_orthogroup_info result"
+    assert rows["test:N2"][1] is False, (
+        "test:N2 should NOT be marked shared_with_query (different orthogroup)"
     )
 
 
@@ -369,6 +387,7 @@ def test_anon_cannot_read_proteins_via_postgrest(api, anon_key, embedtree_seed):
     "protein_embeddings_esm2",
     "protein_embedding_models",
     "rbh_cache_esm2",
+    "orthogroup_runs",
     "orthogroups",
 ])
 def test_each_bloom_role_can_select_each_new_table(pg_conn, embedtree_seed, role, table):
@@ -403,6 +422,7 @@ EXPECTED_POLICIES = {
     "proteins",
     "protein_embeddings_esm2",
     "rbh_cache_esm2",
+    "orthogroup_runs",
     "orthogroups",
 }
 
