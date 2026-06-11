@@ -125,6 +125,8 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Hard cap at 1000 so a caller passing an unbounded match_count can't
+  -- force an unbounded ORDER BY + serialise. UI uses match_count <= 50.
   RETURN QUERY
     SELECT p.uid,
            p.species,
@@ -133,12 +135,12 @@ BEGIN
       FROM public.protein_embeddings_esm2 e
       JOIN public.proteins p USING (uid)
      ORDER BY e.embedding <=> query_vec
-     LIMIT match_count;
+     LIMIT LEAST(match_count, 1000);
 END;
 $$;
 
 COMMENT ON FUNCTION public.knn_search_esm2(text, int) IS
-  'Returns the match_count nearest ESM-2 embeddings to query_uid by cosine similarity, ordered most-similar-first. similarity = 1 - cosine_distance.';
+  'Returns the match_count nearest ESM-2 embeddings to query_uid by cosine similarity, ordered most-similar-first. similarity = 1 - cosine_distance. match_count is hard-capped at 1000.';
 
 -- ─── search_genes (model-independent RPC) ─────────────────────────────────
 DROP FUNCTION IF EXISTS public.search_genes(text, int);
@@ -154,16 +156,22 @@ RETURNS TABLE (
 )
 LANGUAGE sql STABLE
 AS $$
+  -- Empty / whitespace-only / NULL partial_id returns zero rows. Without
+  -- this gate, ILIKE '%%' matches every row and the function becomes a
+  -- dataset-dump endpoint on every empty keystroke from the autocomplete.
+  -- Hard cap at 1000 so a caller can't force an unbounded sort. UI
+  -- autocomplete uses max_results <= 20.
   SELECT uid, species, gene_id
     FROM public.proteins
-   WHERE uid     ILIKE '%' || partial_id || '%'
-      OR gene_id ILIKE '%' || partial_id || '%'
+   WHERE char_length(btrim(partial_id)) >= 1
+     AND ( uid     ILIKE '%' || partial_id || '%'
+        OR gene_id ILIKE '%' || partial_id || '%' )
    ORDER BY uid
-   LIMIT max_results;
+   LIMIT LEAST(max_results, 1000);
 $$;
 
 COMMENT ON FUNCTION public.search_genes(text, int) IS
-  'Case-insensitive substring match on proteins.uid or proteins.gene_id. Used by the embedtree UI gene picker autocomplete. Model-independent.';
+  'Case-insensitive substring match on proteins.uid or proteins.gene_id. Used by the embedtree UI gene picker autocomplete. Model-independent. Empty / whitespace-only / NULL partial_id returns zero rows. max_results is hard-capped at 1000.';
 
 -- ─── RLS enable ───────────────────────────────────────────────────────────
 ALTER TABLE public.protein_embedding_models ENABLE ROW LEVEL SECURITY;

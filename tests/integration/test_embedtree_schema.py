@@ -226,6 +226,26 @@ def test_search_genes_returns_inserted_genes(pg_conn, embedtree_seed):
     assert "test:N2" not in uids
 
 
+@pytest.mark.parametrize("partial_id", ["", "   ", None])
+def test_search_genes_empty_input_returns_zero_rows(pg_conn, embedtree_seed, partial_id):
+    """
+    Empty / whitespace-only / NULL partial_id must return zero rows —
+    without the gate, ILIKE '%%' matches every row and the autocomplete
+    function turns into a dataset-dump endpoint on every empty keystroke.
+    """
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM public.search_genes(%s, 1000)",
+            (partial_id,),
+        )
+        (count,) = cur.fetchone()
+
+    assert count == 0, (
+        f"search_genes({partial_id!r}) returned {count} rows — the empty-input "
+        f"gate is missing; the autocomplete RPC is acting as a full-table dump"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 3. Cross-model isolation: type system rejects wrong-dim vectors
 # ---------------------------------------------------------------------------
