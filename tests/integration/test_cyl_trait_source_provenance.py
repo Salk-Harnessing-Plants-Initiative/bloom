@@ -65,10 +65,12 @@ def test_metadata_round_trips_a_json_object(pg_conn):
 
 
 def test_metadata_accepts_non_object_jsonb(pg_conn):
-    # Opaque jsonb: the column performs no DB-layer shape validation.
+    # Opaque jsonb: the column performs no DB-layer shape validation, so arrays,
+    # scalars, and the jsonb `null` literal are all accepted (distinct from SQL NULL).
     with pg_conn.cursor() as cur:
         cur.execute("INSERT INTO cyl_trait_sources (name, metadata) VALUES ('arr', '[1,2]'::jsonb)")
         cur.execute("INSERT INTO cyl_trait_sources (name, metadata) VALUES ('scalar', '42'::jsonb)")
+        cur.execute("INSERT INTO cyl_trait_sources (name, metadata) VALUES ('jnull', 'null'::jsonb)")
     pg_conn.rollback()
 
 
@@ -95,6 +97,19 @@ def test_empty_string_idempotency_key_rejected(pg_conn):
     with pg_conn.cursor() as cur:
         with pytest.raises(psycopg.errors.CheckViolation):
             cur.execute("INSERT INTO cyl_trait_sources (name, idempotency_key) VALUES ('e', '')")
+    pg_conn.rollback()
+
+
+def test_whitespace_only_idempotency_key_is_accepted(pg_conn):
+    # The CHECK guards the empty string `''` ONLY (length > 0), NOT whitespace —
+    # it rejects, it does not trim/normalize an opaque anchor. A legitimately
+    # computed key is a sha256 digest and can never be whitespace, so blank-but-
+    # nonempty keys are the producer's responsibility (caught producer-side by the
+    # contract + change F's CI match), not a DB invariant. This locks in that intent.
+    with pg_conn.cursor() as cur:
+        cur.execute("INSERT INTO cyl_trait_sources (name, idempotency_key) VALUES ('ws', '   ')")
+        cur.execute("SELECT idempotency_key FROM cyl_trait_sources WHERE name = 'ws'")
+        assert cur.fetchone()[0] == "   "
     pg_conn.rollback()
 
 
