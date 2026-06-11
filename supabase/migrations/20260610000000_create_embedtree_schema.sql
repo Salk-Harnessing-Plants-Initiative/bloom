@@ -9,7 +9,6 @@
 --   protein_embedding_models   registry for protein-embedding models
 --   proteins                   model-independent gene metadata
 --   protein_embeddings_esm2    per-model vector(1280) embeddings (ESM-2)
---   rbh_cache_esm2             per-model reciprocal best hits cache (ESM-2)
 --   knn_search_esm2(...)       per-model KNN RPC
 --   search_genes(...)          model-independent metadata search RPC
 --
@@ -27,7 +26,7 @@
 -- Future PROTEIN models add their own migration that:
 --   1. INSERTs a row into protein_embedding_models with a new
 --      table_suffix
---   2. CREATEs protein_embeddings_<suffix> / rbh_cache_<suffix>
+--   2. CREATEs protein_embeddings_<suffix>
 --   3. CREATEs knn_search_<suffix>(query_uid, match_count)
 --   4. Applies the same 3-policy bloom_* RLS pattern + grants
 --
@@ -60,7 +59,7 @@ CREATE TABLE IF NOT EXISTS public.protein_embedding_models (
 );
 
 COMMENT ON TABLE public.protein_embedding_models IS
-  'Registry of protein-embedding models. One row per registered model. table_suffix drives the names of protein_embeddings_<suffix>, rbh_cache_<suffix>, and knn_search_<suffix>. Domain-scoped to proteins by design; future non-protein domains get their own sibling registry (e.g. nucleotide_embedding_models, paper_embedding_models).';
+  'Registry of protein-embedding models. One row per registered model. table_suffix drives the names of protein_embeddings_<suffix> and knn_search_<suffix>. Domain-scoped to proteins by design; future non-protein domains get their own sibling registry (e.g. nucleotide_embedding_models, paper_embedding_models).';
 
 INSERT INTO public.protein_embedding_models
   (model_id,              display_name,           dimension, table_suffix, description)
@@ -99,24 +98,6 @@ CREATE INDEX IF NOT EXISTS protein_embeddings_esm2_ivfflat_idx
 
 COMMENT ON TABLE public.protein_embeddings_esm2 IS
   'ESM-2 protein embeddings, vector(1280) cosine-indexed. Each row corresponds to a proteins.uid. Postgres rejects vectors of any other dimension at the type-cast boundary — this is the cross-model contamination guardrail.';
-
--- ─── rbh_cache_esm2 (per-model) ───────────────────────────────────────────
--- RBH is symmetric: The CHECK below forces a canonical (species_1 < species_2)
--- ordering at the schema level so the same biological pair can't be stored twice under swapped keys. 
--- Ingest must `SELECT LEAST(s1,s2), GREATEST(s1,s2)` before writing.
-CREATE TABLE IF NOT EXISTS public.rbh_cache_esm2 (
-  species_1     text        NOT NULL,
-  species_2     text        NOT NULL,
-  metric        text        NOT NULL,
-  rbh_count     int         NOT NULL,
-  mean_distance float       NOT NULL,
-  computed_at   timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (species_1, species_2, metric),
-  CONSTRAINT rbh_cache_esm2_species_canonical CHECK (species_1 < species_2)
-);
-
-COMMENT ON TABLE public.rbh_cache_esm2 IS
-  'Precomputed reciprocal best hits within ESM-2 embedding space, per species pair × metric. species_1 < species_2 is enforced by CHECK so each symmetric pair is stored exactly once. RBH is meaningful only within one model''s embedding space, so this table is per-model.';
 
 -- ─── knn_search_esm2 (per-model RPC) ──────────────────────────────────────
 DROP FUNCTION IF EXISTS public.knn_search_esm2(text, int);
@@ -188,7 +169,6 @@ COMMENT ON FUNCTION public.search_genes(text, int) IS
 ALTER TABLE public.protein_embedding_models ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.proteins                ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.protein_embeddings_esm2 ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.rbh_cache_esm2          ENABLE ROW LEVEL SECURITY;
 
 -- ─── RLS policies: admin_all / agent_read / user_read on each table ───────
 
@@ -225,17 +205,6 @@ DROP POLICY IF EXISTS user_read_protein_embeddings_esm2  ON public.protein_embed
 CREATE POLICY user_read_protein_embeddings_esm2
   ON public.protein_embeddings_esm2 FOR SELECT TO bloom_user  USING (true);
 
--- rbh_cache_esm2
-DROP POLICY IF EXISTS admin_all_rbh_cache_esm2  ON public.rbh_cache_esm2;
-CREATE POLICY admin_all_rbh_cache_esm2
-  ON public.rbh_cache_esm2 FOR ALL    TO bloom_admin USING (true) WITH CHECK (true);
-DROP POLICY IF EXISTS agent_read_rbh_cache_esm2 ON public.rbh_cache_esm2;
-CREATE POLICY agent_read_rbh_cache_esm2
-  ON public.rbh_cache_esm2 FOR SELECT TO bloom_agent USING (true);
-DROP POLICY IF EXISTS user_read_rbh_cache_esm2  ON public.rbh_cache_esm2;
-CREATE POLICY user_read_rbh_cache_esm2
-  ON public.rbh_cache_esm2 FOR SELECT TO bloom_user  USING (true);
-
 -- ─── Table-level GRANTs (PostgREST requires both policy AND grant) ────────
 GRANT SELECT ON public.protein_embedding_models TO bloom_user, bloom_agent;
 GRANT ALL    ON public.protein_embedding_models TO bloom_admin;
@@ -245,9 +214,6 @@ GRANT ALL    ON public.proteins                TO bloom_admin;
 
 GRANT SELECT ON public.protein_embeddings_esm2 TO bloom_user, bloom_agent;
 GRANT ALL    ON public.protein_embeddings_esm2 TO bloom_admin;
-
-GRANT SELECT ON public.rbh_cache_esm2          TO bloom_user, bloom_agent;
-GRANT ALL    ON public.rbh_cache_esm2          TO bloom_admin;
 
 -- ─── Function-level GRANTs ────────────────────────────────────────────────
 GRANT EXECUTE ON FUNCTION public.knn_search_esm2(text, int)

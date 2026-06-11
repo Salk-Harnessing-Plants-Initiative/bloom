@@ -280,57 +280,6 @@ def test_protein_embeddings_esm2_rejects_wrong_dimension(pg_conn):
 
 
 # ---------------------------------------------------------------------------
-# 3b. rbh_cache_esm2 species canonical ordering
-# ---------------------------------------------------------------------------
-
-def test_rbh_cache_esm2_rejects_swapped_species_ordering(pg_conn):
-    """
-    The CHECK (species_1 < species_2) constraint enforces canonical ordering
-    on the symmetric RBH pair, so the same biological pair cannot be stored
-    twice under swapped keys. Inserting ('rice','arabidopsis', …) — where
-    'rice' > 'arabidopsis' — must be rejected by Postgres; the canonical
-    ('arabidopsis','rice', …) must be accepted.
-    """
-    import psycopg
-
-    # Reverse-order insert must fail the CHECK.
-    raised = False
-    try:
-        with pg_conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO public.rbh_cache_esm2 "
-                "(species_1, species_2, metric, rbh_count, mean_distance) "
-                "VALUES ('rice', 'arabidopsis', 'cosine', 1, 0.5)"
-            )
-            pg_conn.commit()
-    except psycopg.Error:
-        pg_conn.rollback()
-        raised = True
-
-    assert raised, (
-        "rbh_cache_esm2 accepted a row with species_1='rice' > species_2='arabidopsis' "
-        "— the canonical-ordering CHECK is missing or broken; symmetric RBH "
-        "pairs can be double-stored"
-    )
-
-    # Canonical-order insert succeeds; clean up after.
-    with pg_conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO public.rbh_cache_esm2 "
-            "(species_1, species_2, metric, rbh_count, mean_distance) "
-            "VALUES ('arabidopsis', 'rice', 'cosine', 1, 0.5) "
-            "ON CONFLICT (species_1, species_2, metric) DO NOTHING"
-        )
-        pg_conn.commit()
-        cur.execute(
-            "DELETE FROM public.rbh_cache_esm2 "
-            "WHERE species_1 = 'arabidopsis' AND species_2 = 'rice' "
-            "  AND metric = 'cosine'"
-        )
-        pg_conn.commit()
-
-
-# ---------------------------------------------------------------------------
 # 4. OrthoFinder cross-reference
 # ---------------------------------------------------------------------------
 
@@ -386,7 +335,6 @@ def test_anon_cannot_read_proteins_via_postgrest(api, anon_key, embedtree_seed):
     "proteins",
     "protein_embeddings_esm2",
     "protein_embedding_models",
-    "rbh_cache_esm2",
     "orthogroup_runs",
     "orthogroups",
 ])
@@ -421,7 +369,6 @@ EXPECTED_POLICIES = {
     "protein_embedding_models",
     "proteins",
     "protein_embeddings_esm2",
-    "rbh_cache_esm2",
     "orthogroup_runs",
     "orthogroups",
 }
