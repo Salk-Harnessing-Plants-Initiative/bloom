@@ -28,7 +28,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 RUN npm cache clean --force
-RUN npm install
+RUN npm ci
 COPY web ./web
 COPY packages ./packages
 
