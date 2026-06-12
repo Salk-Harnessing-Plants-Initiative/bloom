@@ -1,0 +1,11 @@
+[Unit]
+Description=Run bloom-cert-monitor-__ENV_NAME__ weekly (Sunday 09:00 server time)
+Documentation=https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/285
+
+[Timer]
+OnCalendar=Sun 09:00
+Persistent=true
+Unit=bloom-cert-monitor-__ENV_NAME__.service
+
+[Install]
+WantedBy=timers.target
