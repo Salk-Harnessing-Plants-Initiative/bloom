@@ -57,8 +57,11 @@ test.describe("Login page", () => {
     await page.goto("/login");
     await page.waitForLoadState("networkidle");
 
-    const logo = page.locator('img[src="/logo.png"]');
-    await expect(logo).toBeVisible();
+    // The login page renders a logo-mark image in the hero. Match by alt
+    // text rather than exact src so a future logo-asset rename does not
+    // silently break this test.
+    const logo = page.getByRole("img", { name: "Bloom" });
+    await expect(logo.first()).toBeVisible();
   });
 
   test("login page has sign up link", async ({ page }) => {
