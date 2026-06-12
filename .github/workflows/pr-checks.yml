@@ -335,7 +335,15 @@ jobs:
           echo "API_EXTERNAL_URL=http://localhost:9999" >> .env.ci
           echo "ADDITIONAL_REDIRECT_URLS=http://localhost" >> .env.ci
           echo "SITE_URL=http://localhost" >> .env.ci
-          echo "NEXT_PUBLIC_SUPABASE_URL=http://kong:8000" >> .env.ci
+          # NEXT_PUBLIC_SUPABASE_URL is baked into the bloom-web JS bundle
+          # at build time and runs in the browser. The browser on the CI
+          # runner cannot resolve "kong" (internal Docker DNS only), so it
+          # must use the host-reachable Caddy URL. Caddy's `handle_path
+          # /api/*` strips the prefix and proxies to kong:8000 internally.
+          echo "NEXT_PUBLIC_SUPABASE_URL=http://localhost/api" >> .env.ci
+          # SUPABASE_URL is the SERVER-SIDE URL used by containers inside
+          # the Docker network (e.g. Next.js SSR fetches), so the internal
+          # kong hostname is correct here.
           echo "SUPABASE_URL=http://kong:8000" >> .env.ci
           echo "SUPABASE_COOKIE_NAME=sb-ci-auth-token" >> .env.ci
           echo "NEXT_PUBLIC_APP_URL=http://localhost" >> .env.ci
