@@ -1,6 +1,9 @@
 # Development Environment Setup & Configuration
 
-This guide covers setting up Bloom for local development
+This guide covers setting up Bloom for local development.
+
+> Once the stack is up, see [`_WIKI/SUPABASE/README.md`](_WIKI/SUPABASE/README.md)
+> for how the Supabase roles, RLS, storage buckets, and JWT flow are wired.
 
 ## Table of Contents
 
@@ -18,57 +21,65 @@ This guide covers setting up Bloom for local development
 
 Before starting, ensure you have:
 
-- Docker and Docker Compose installed
-- Python 3.8 or higher
-- Node.js 18+ and npm
+- **Docker and Docker Compose** (Docker Desktop on macOS/Windows)
+- **`make`** — on Windows it is provided inside WSL2 (see below)
+- **`uv`** — https://docs.astral.sh/uv/getting-started/installation/ (runs the
+  Python helpers; no separate Python install needed)
+- **Node.js 18+ and npm**
+- **Supabase CLI**, pinned to the version CI uses (currently **2.92.1**) so local
+  `migrate-local` behaves identically to CI:
+  - macOS: `brew install supabase/tap/supabase`
+  - Linux/WSL2: download the matching release from
+    https://github.com/supabase/cli/releases
+  - check: `supabase --version`
+
+### Windows: use WSL2
+
+Bloom's stack is Linux containers, and the Postgres init scripts under
+`volumes/db/` must be checked out with LF line endings. **Develop inside WSL2**
+(Ubuntu) with Docker Desktop's WSL integration enabled, and **clone the repo into
+the WSL2 Linux filesystem** (e.g. `~/repos/bloom`) — *not* under `/mnt/c/...`.
+Cloning onto the Windows drive reintroduces filesystem/line-ending problems
+(issue #124). Inside WSL2 every command below is identical to macOS/Linux.
+
 ---
 
 ## ⚙️ Environment Configuration
 
-### Step 1: Get Environment Template
+### Step 1: Generate `.env.dev`
 
-Get the development environment template from:
-**[Notion: Environment Configuration](https://www.notion.so/Plan-2734a67a766780e89373c1e1ec687a4d)**
-
-Copy the `.env.dev` template content and create the file:
+The repo ships a committed, secret-free template at **`.env.dev.example`**.
+Generate a working `.env.dev` from it with fresh local secrets:
 
 ```bash
-# Create .env.dev file
-nano .env.dev
-# Or use your preferred editor
+make init        # writes .env.dev with generated secrets (FORCE=1 to overwrite)
 ```
 
-### Step 2: Configure Environment Variables
+`make init` (via `scripts/init_dev.py`) generates the database password and
+encryption keys at the sizes each service needs, and mints `ANON_KEY`,
+`SERVICE_ROLE_KEY`, and `BLOOM_AGENT_KEY` as JWTs **signed by the generated
+`JWT_SECRET`** — these are not interchangeable random strings; the stack rejects
+mismatched keys. `.env.dev` is git-ignored and never leaves your machine.
 
-Edit `.env.dev` and update the following:
+### Step 2: Optional — user-supplied keys and overrides
 
-**MinIO Storage Path** (REQUIRED):
-```bash
-MINIO_DATA_PATH=/Users/yourusername/minio
-```
-Replace `yourusername` with your actual username or preferred path.
+Only needed for specific features / conflicts:
 
-**Other Values** (can remain as defaults for local dev):
-```bash
-# Database
-POSTGRES_PASSWORD=<your-postgres-password>
-POSTGRES_USER=supabase_admin
+- `OPENAI_API_KEY`, `LANGCHAIN_API_KEY`, `LOCAL_LLM_URL` — set these if you need
+  the LLM agent. Without them, `langchain-agent` won't become healthy (it builds
+  a model at startup); that's expected and `make check` treats it as an optional
+  warning, not a failure. The core stack (incl. `bloommcp`) is unaffected.
+- **Port conflict:** if host port `5432` is already in use (commonly a
+  WSL-relayed Postgres from another project), set a free port in `.env.dev`:
+  ```bash
+  POSTGRES_HOST_PORT=5433
+  ```
+  The stack, `make migrate-local`, and the integration tests all honour it.
 
-# MinIO
-MINIO_ROOT_USER=<your-minio-user>
-MINIO_ROOT_PASSWORD=<your-minio-password>
-
-# JWT Keys (generate using scripts/generateJWT_key.py)
-JWT_SECRET=<your-jwt-secret-at-least-32-characters>
-ANON_KEY=<your-generated-anon-key>
-SERVICE_ROLE_KEY=<your-generated-service-role-key>
-```
-
-### Step 3: Set File Permissions
-
-```bash
-chmod 600 .env.dev
-```
+> **Re-running `make init FORCE=1`:** moves your existing `.env.dev` to
+> `.env.dev.backup` before writing a fresh one. Anything you added manually
+> (the keys above) won't appear in the new file — `grep` the backup if you
+> need to copy values back.
 
 ---
 
@@ -145,7 +156,7 @@ You should see containers for:
 ### Step 1: Verify Database is Ready
 
 ```bash
-docker exec db-dev pg_isready -U supabase_admin
+docker compose -f docker-compose.dev.yml exec db-dev pg_isready -U supabase_admin
 ```
 
 Output should be: `accepting connections`
@@ -155,20 +166,24 @@ Output should be: `accepting connections`
 Apply all database migrations:
 
 ```bash
-make apply-migrations
+make migrate-local
 ```
 
-This command will:
-- Apply all SQL files from `supabase/migrations/` in order
-- Skip tables/policies that already exist
-- Show progress for each migration file
+This command (Supabase CLI `db push --debug`, reading credentials and
+`POSTGRES_HOST_PORT` from `.env.dev`) will:
+- Apply every SQL file from `supabase/migrations/` in order
+- Record applied migrations in `supabase_migrations.schema_migrations`
+- Skip migrations that are already recorded (idempotent)
+
+> Requires the `supabase` CLI on PATH (see Prerequisites). Pin the same version
+> CI uses to avoid behaviour drift.
 
 ### Step 3: Verify Migrations Applied
 
 Check that all tables were created:
 
 ```bash
-docker exec db-dev psql -U supabase_admin -d postgres -c "\dt public.*"
+docker compose -f docker-compose.dev.yml exec db-dev psql -U supabase_admin -d postgres -c "\dt public.*"
 ```
 
 You should see tables like:
@@ -181,15 +196,15 @@ You should see tables like:
 
 ### Reset Database (if needed)
 
-To drop all tables and reapply migrations:
+To reset the local DB/storage and reapply migrations from scratch:
 
 ```bash
-# Drop all tables
-make drop-tables
-
-# Reapply migrations
-make apply-migrations
+# Clean reset -> up -> migrate -> health check, in one shot (destructive)
+make verify-dev
 ```
+
+Or step by step: `make reset-storage` (reset dev DB + storage) then
+`make migrate-local`.
 
 ---
 
@@ -295,13 +310,13 @@ http://localhost:9101
 docker ps | grep db-dev
 
 # Verify connection
-docker exec db-dev pg_isready -U supabase_admin
+docker compose -f docker-compose.dev.yml exec db-dev pg_isready -U supabase_admin
 
 # Check credentials in .env.dev
 cat .env.dev | grep POSTGRES
 
 # Restart database
-docker restart db-dev
+docker compose -f docker-compose.dev.yml restart db-dev
 ```
 
 ### MinIO/Storage Issues
@@ -360,10 +375,10 @@ curl http://localhost:5002/health
 
 ```bash
 # Verify database is ready
-docker exec db-dev pg_isready
+docker compose -f docker-compose.dev.yml exec db-dev pg_isready
 
 # Check for table conflicts
-docker exec db-dev psql -U supabase_admin -d postgres -c "\dt"
+docker compose -f docker-compose.dev.yml exec db-dev psql -U supabase_admin -d postgres -c "\dt"
 
 # Reset and try again
 make reset-storage

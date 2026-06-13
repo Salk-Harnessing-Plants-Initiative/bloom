@@ -27,6 +27,11 @@ test = [
     # under test imports both at module level.
     "pandas>=2.0",
     "supabase>=2.0",
+    # required by scripts/init_dev.py (the local dev credential generator) and
+    # tests/unit/test_init_dev.py, which mints + verifies the ANON/SERVICE/AGENT
+    # JWTs signed with JWT_SECRET.
+    "pyjwt>=2.8",
+    "python-dotenv>=1.0",
 ]
 
 [tool.pytest.ini_options]

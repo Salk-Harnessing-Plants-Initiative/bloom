@@ -44,6 +44,10 @@ yarn-error.log*
 !.env.staging.defaults
 !**/.env.prod.defaults
 !**/.env.staging.defaults
+# Committed local-dev template (NO secrets — `make init` fills it into .env.dev,
+# which stays ignored along with its .env.dev.backup* backups via .env* above)
+!.env.dev.example
+!**/.env.dev.example
 
 # generated secret dumps from scripts/generate-secrets.sh --file
 .secrets-*.txt
@@ -107,7 +111,6 @@ langchain/PLOTS_DIR/
 scripts/compute_de_genes.py
 scripts/compute_de_local.py
 scripts/compute_de.py
-scripts/generate_KEYS
 scripts/dev/
 *.bak
 
