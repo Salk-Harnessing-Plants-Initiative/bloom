@@ -1,0 +1,8 @@
+{
+  "package": "sleap-roots-contracts",
+  "version": "v0.1.0a1",
+  "id": "https://github.com/talmolab/sleap-roots-contracts/schema/v0.1.0a1/result_envelope.schema.json",
+  "source": "https://github.com/talmolab/sleap-roots-contracts/blob/v0.1.0a1/schema/result_envelope.schema.json",
+  "schema": "schema/result_envelope.schema.json",
+  "generated": "generated/result-envelope.ts"
+}

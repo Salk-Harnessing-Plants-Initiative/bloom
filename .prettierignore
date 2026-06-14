@@ -1,0 +1,10 @@
+# Vendored + generated contract artifacts (sleep-roots-contracts pin, change
+# pin-sleap-roots-contract / #294). These are NOT ours to reformat:
+# - contracts/generated/ is emitted by json-schema-to-typescript; its bytes are
+#   guarded byte-for-byte by scripts/contract_types.mjs --check, so repo prettier
+#   must not rewrite it (the two formatters disagree and would fight the guard).
+# - contracts/schema/ is a faithful copy of the published JSON Schema artifact;
+#   reflowing it would make it no longer match upstream.
+# NOTE: this ignore is root-relative — never run prettier from inside contracts/.
+contracts/generated/
+contracts/schema/

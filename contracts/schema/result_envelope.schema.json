@@ -1,0 +1,384 @@
+{
+  "$defs": {
+    "BlobRef": {
+      "anyOf": [
+        {
+          "properties": {
+            "s3_location": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "s3_location"
+          ]
+        },
+        {
+          "properties": {
+            "box_link": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "box_link"
+          ]
+        }
+      ],
+      "description": "Pointer to an intermediate artifact (rows in the #2 intermediates table).",
+      "properties": {
+        "box_link": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Box Link"
+        },
+        "checksum": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checksum"
+        },
+        "file_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File Size"
+        },
+        "kind": {
+          "enum": [
+            "predictions_slp",
+            "labels",
+            "h5",
+            "qc_image"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "s3_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "S3 Location"
+        },
+        "scan_key": {
+          "title": "Scan Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "scan_key"
+      ],
+      "title": "BlobRef",
+      "type": "object"
+    },
+    "InputRef": {
+      "description": "Pins the input data a run consumed, for reproducibility.",
+      "properties": {
+        "image_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Image Ids",
+          "type": "array"
+        },
+        "images_checksum": {
+          "title": "Images Checksum",
+          "type": "string"
+        }
+      },
+      "required": [
+        "image_ids",
+        "images_checksum"
+      ],
+      "title": "InputRef",
+      "type": "object"
+    },
+    "ModelRef": {
+      "description": "Identity of one model used in a run (FK-able to a future Bloom models table).",
+      "properties": {
+        "registry_id": {
+          "title": "Registry Id",
+          "type": "string"
+        },
+        "root_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Root Type"
+        },
+        "sleap_nn_version": {
+          "title": "Sleap Nn Version",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        },
+        "weights_checksum": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weights Checksum"
+        }
+      },
+      "required": [
+        "registry_id",
+        "version",
+        "sleap_nn_version"
+      ],
+      "title": "ModelRef",
+      "type": "object"
+    },
+    "Provenance": {
+      "description": "Run provenance; serializes to cyl_trait_sources.metadata jsonb (sub-project #2).",
+      "properties": {
+        "argo_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Argo Node Id"
+        },
+        "argo_workflow_uid": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Argo Workflow Uid"
+        },
+        "contract_version": {
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "default": "",
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "inputs": {
+          "$ref": "#/$defs/InputRef"
+        },
+        "params": {
+          "$ref": "#/$defs/ResolvedParams"
+        },
+        "pipeline_run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pipeline Run Id"
+        },
+        "predict_code_sha": {
+          "title": "Predict Code Sha",
+          "type": "string"
+        },
+        "predict_container_digest": {
+          "title": "Predict Container Digest",
+          "type": "string"
+        },
+        "predict_models": {
+          "items": {
+            "$ref": "#/$defs/ModelRef"
+          },
+          "title": "Predict Models",
+          "type": "array"
+        },
+        "produced_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Produced At"
+        },
+        "scan_key": {
+          "title": "Scan Key",
+          "type": "string"
+        },
+        "traits_code_sha": {
+          "title": "Traits Code Sha",
+          "type": "string"
+        },
+        "traits_container_digest": {
+          "title": "Traits Container Digest",
+          "type": "string"
+        },
+        "traits_sleap_roots_version": {
+          "title": "Traits Sleap Roots Version",
+          "type": "string"
+        },
+        "worker_request_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Worker Request Id"
+        }
+      },
+      "required": [
+        "contract_version",
+        "scan_key",
+        "inputs",
+        "predict_models",
+        "predict_container_digest",
+        "predict_code_sha",
+        "traits_sleap_roots_version",
+        "traits_container_digest",
+        "traits_code_sha",
+        "params"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    },
+    "ResolvedParams": {
+      "description": "Fully-resolved run params plus their canonical hash.",
+      "properties": {
+        "param_hash": {
+          "default": "",
+          "title": "Param Hash",
+          "type": "string"
+        },
+        "values": {
+          "additionalProperties": true,
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "values"
+      ],
+      "title": "ResolvedParams",
+      "type": "object"
+    },
+    "TraitValue": {
+      "description": "One long-format trait row. NaN/inf normalize to None (-> SQL NULL).",
+      "properties": {
+        "grain": {
+          "default": "scan",
+          "enum": [
+            "scan",
+            "image"
+          ],
+          "title": "Grain",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "scan_key": {
+          "title": "Scan Key",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "name",
+        "scan_key"
+      ],
+      "title": "TraitValue",
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/talmolab/sleap-roots-contracts/schema/v0.1.0a1/result_envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One per-scan result: 1 envelope : 1 source row : 1 scan.",
+  "properties": {
+    "blobs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/BlobRef"
+      },
+      "title": "Blobs",
+      "type": "array"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
+    },
+    "traits": {
+      "items": {
+        "$ref": "#/$defs/TraitValue"
+      },
+      "title": "Traits",
+      "type": "array"
+    }
+  },
+  "required": [
+    "provenance",
+    "traits"
+  ],
+  "title": "ResultEnvelope",
+  "type": "object"
+}

@@ -5,15 +5,15 @@
 
 ## 1. Oracle — TS drift guard + determinism config (write first, RED locally)
 
-- [ ] 1.1 Add `json-schema-to-typescript` pinned **exact `15.0.4`** to root `package.json`
+- [x] 1.1 Add `json-schema-to-typescript` pinned **exact `15.0.4`** to root `package.json`
   `devDependencies`; run `npm install` to update `package-lock.json` (committed).
-- [ ] 1.2 Add npm scripts to root `package.json`: `"contracts:gen": "node scripts/contract_types.mjs --write"`
+- [x] 1.2 Add npm scripts to root `package.json`: `"contracts:gen": "node scripts/contract_types.mjs --write"`
   and `"contracts:check": "node scripts/contract_types.mjs --check"`.
-- [ ] 1.3 Add **determinism config** (prevents the guard from fighting repo tooling):
+- [x] 1.3 Add **determinism config** (prevents the guard from fighting repo tooling):
   - New `.prettierignore` excluding `contracts/generated/` and `contracts/schema/`.
   - Add `contracts/generated/*.ts text eol=lf` to `.gitattributes` (vendored schema already
     covered by the existing `*.json text eol=lf`).
-- [ ] 1.4 Write `scripts/contract_types.mjs` (Node ESM) as **pure functions + a thin CLI shim**.
+- [x] 1.4 Write `scripts/contract_types.mjs` (Node ESM) as **pure functions + a thin CLI shim**.
   json2ts `compile()` is **async** (returns a Promise), so `generateTypes` and `checkDrift` are
   `async`/awaited.
   - Exports (no file I/O, no `process.exit` inside them):
@@ -31,12 +31,12 @@
     `contracts/generated/...`, `await`s the pure functions, prints diffs, and `process.exit`s.
     `--write` writes the generated file; `--check` runs both checks and exits non-zero on any
     failure or missing file.
-- [ ] 1.5 Run `node scripts/contract_types.mjs --check` → **RED** (expected here as a *file-not-found*
+- [x] 1.5 Run `node scripts/contract_types.mjs --check` → **RED** (expected here as a *file-not-found*
   error: no `contracts/` files yet — distinct from the byte-mismatch RED proven in §4); capture it.
 
 ## 2. Migration-match characterization test (regression-lock; write first, RED locally)
 
-- [ ] 2.1 Write `tests/integration/test_contract_migration_match.py`. Structure for collection
+- [x] 2.1 Write `tests/integration/test_contract_migration_match.py`. Structure for collection
   safety: `MAPPINGS` is a module-level list of **literals only** (no schema-derived values) —
   `{contract_field, db_table, db_column, db_type, constraint, contype, status, reason}`. Collection
   safety has two parts: (a) `MAPPINGS` holds **literals only** (no schema-derived values) so import
@@ -46,7 +46,7 @@
   `allow_module_level` (it is only valid at module scope and is not needed here). This skips at
   *execution*; collection is already safe via (a). Reuse `_column_type`/`pg_constraint` patterns +
   the `pg_conn` fixture from `test_cyl_trait_source_provenance.py` (rollback per test).
-- [ ] 2.2 Active assertions (A-subset), each tied back to the lazily-loaded contract:
+- [x] 2.2 Active assertions (A-subset), each tied back to the lazily-loaded contract:
   - `cyl_trait_sources.metadata` is `jsonb` **and** `schema["$defs"]["Provenance"]["description"]`
     contains the literal `cyl_trait_sources.metadata` (contract-side home tripwire).
   - `cyl_trait_sources.idempotency_key` is `text`; contract `Provenance.idempotency_key` is
@@ -58,28 +58,28 @@
     `"contract_version" in schema["$defs"]["Provenance"]["required"]` and it is typed `string`; and
     `schema["$defs"]["Provenance"]["properties"]["idempotency_key"].get("default") == ""` (the basis
     for the non-empty CHECK). These read the lazily-loaded schema only (no DB).
-- [ ] 2.3 Deferred rows (`source_id` FK / blob table / RPC key-equality / `contract_version`
+- [x] 2.3 Deferred rows (`source_id` FK / blob table / RPC key-equality / `contract_version`
   runtime validation / `scan_key` resolution) marked `status="deferred"` and **skipped with a
   one-line reason** (`pytest.skip`), never asserted. Keep these mechanical — the narrative
   hand-offs (opaque-metadata fields incl. `inputs.images_checksum`/`param_hash`; `contract_version`
   + `TraitValue.value` finiteness as D/G validations) live in `contracts/README.md` + the proposal,
   **not** as prose in the test.
-- [ ] 2.4 Run `uv run --extra test pytest tests/integration/test_contract_migration_match.py`
+- [x] 2.4 Run `uv run --extra test pytest tests/integration/test_contract_migration_match.py`
   against local Supabase → **RED** (in-body `pytest.skip` fires — schema not vendored yet; the
   suite does not crash); capture it.
 
 ## 3. Vendor the pinned schema + manifest (GREEN: pin-consistency + test loads)
 
-- [ ] 3.1 Copy `C:\repos\sleap-roots-contracts\schema\result_envelope.schema.json` →
+- [x] 3.1 Copy `C:\repos\sleap-roots-contracts\schema\result_envelope.schema.json` →
   `contracts/schema/result_envelope.schema.json` (LF-normalized; `$id …/v0.1.0a1/…`).
-- [ ] 3.2 Write `contracts/pin.json`: `{ package, version: "v0.1.0a1", id: "<full $id>", source:
+- [x] 3.2 Write `contracts/pin.json`: `{ package, version: "v0.1.0a1", id: "<full $id>", source:
   "<github tag/release url>", schema: "schema/result_envelope.schema.json", generated:
   "generated/result-envelope.ts" }`.
-- [ ] 3.3 Write `contracts/README.md`: the pinned version (+ the #294 a0/v0.1.0 reconciliation),
+- [x] 3.3 Write `contracts/README.md`: the pinned version (+ the #294 a0/v0.1.0 reconciliation),
   the re-pin procedure (`--write` + commit), the `$id`-restamp-is-a-structural-no-op rule, the
   recorded D/G hand-offs (`contract_version` + `TraitValue.value` finiteness validation), and the
   caveat **"never run prettier from inside `contracts/`"** (the `.prettierignore` is root-relative).
-- [ ] 3.4 Re-run the migration-match test → **GREEN** (loads the contract; A's columns already
+- [x] 3.4 Re-run the migration-match test → **GREEN** (loads the contract; A's columns already
   applied locally). Then prove the oracle discriminates with the **canonical deterministic step**:
   temporarily change one expected literal (e.g. assert `metadata` is `"json"` instead of `"jsonb"`),
   run, confirm the failure fires **on that assertion** (note the exact assert message/line), then
@@ -87,19 +87,19 @@
 
 ## 4. Generate + commit the contract TS types (GREEN: drift guard)
 
-- [ ] 4.1 Run `npm run contracts:gen` → writes `contracts/generated/result-envelope.ts`
+- [x] 4.1 Run `npm run contracts:gen` → writes `contracts/generated/result-envelope.ts`
   (all six `$defs`: `ResultEnvelope`/`Provenance`/`TraitValue`/`BlobRef` + `InputRef`/`ModelRef`/
   `ResolvedParams`, `DO NOT EDIT` banner). **Review** all six are sane, non-degenerate shapes
   before committing (the `anyOf`-over-`properties` `BlobRef` is the risk case).
-- [ ] 4.2 Type-check the generated file (exact flags, no throwaway tsconfig):
+- [x] 4.2 Type-check the generated file (exact flags, no throwaway tsconfig):
   `npx tsc --noEmit --strict --target ES2020 --moduleResolution bundler --skipLibCheck
   contracts/generated/result-envelope.ts` → no errors (generation-time gate; the drift guard
   freezes the bytes thereafter).
-- [ ] 4.3 Run `npm run contracts:check` → **GREEN** (byte-identical after EOL-normalize;
+- [x] 4.3 Run `npm run contracts:check` → **GREEN** (byte-identical after EOL-normalize;
   pin-consistency passes). This live run also covers the *positive* paths (each check returns
   `{ok:true}`) against the real vendored schema — the `node --test` file (§4.4) carries only the
   negative/no-op cases, so the spec's "passes/holds" scenarios are covered here, not duplicated.
-- [ ] 4.4 Write `scripts/contract_types.test.mjs` (**`node --test`**, `async` tests importing the
+- [x] 4.4 Write `scripts/contract_types.test.mjs` (**`node --test`**, `async` tests importing the
   pure functions from `contract_types.mjs` — never spawning the exiting CLI; `await` the async ones)
   covering the spec's negative/no-op scenarios, all via the **same `generateTypes`** the guard uses:
   - pin-mismatch (in-memory schema/pin with disagreeing `version`/`id`) → `checkPinConsistency`
@@ -115,25 +115,25 @@
 
 ## 5. CI wiring
 
-- [ ] 5.1 Add two steps to the `build-and-audit` job in `.github/workflows/pr-checks.yml` (after
+- [x] 5.1 Add two steps to the `build-and-audit` job in `.github/workflows/pr-checks.yml` (after
   `npm ci`), clearly named: `node scripts/contract_types.mjs --check` (drift guard +
   pin-consistency) and `node --test scripts/contract_types.test.mjs`
   (negative-path/no-op test). No new vitest config — built-in Node runner.
-- [ ] 5.2 Confirm the migration-match test needs **no** workflow change (it auto-runs in
+- [x] 5.2 Confirm the migration-match test needs **no** workflow change (it auto-runs in
   `compose-health-check`, which globs `tests/integration/`).
 
 ## 6. Verify + pre-merge
 
-- [ ] 6.1 `openspec validate pin-sleap-roots-contract --strict` passes.
-- [ ] 6.2 Format/lint the new files **excluding the prettier-ignored `contracts/generated/` and
+- [x] 6.1 `openspec validate pin-sleap-roots-contract --strict` passes.
+- [x] 6.2 Format/lint the new files **excluding the prettier-ignored `contracts/generated/` and
   `contracts/schema/`** (ruff/black for the pytest test; prettier for `scripts/*.mjs`,
   `pin.json`, READMEs); run `npm run format:check` and confirm the generated/schema files are not
   flagged (i.e. `.prettierignore` is effective) and that `npm run format` does **not** rewrite the
   generated file. Also confirm the pre-commit prettier hook leaves the generated file unchanged.
-- [ ] 6.3 Run the migration-match test + the existing change-A provenance test locally against
+- [x] 6.3 Run the migration-match test + the existing change-A provenance test locally against
   local Supabase to confirm both pass; run `npm run contracts:check` and
   `node --test scripts/contract_types.test.mjs` on the author's (Windows, `core.autocrlf=true`)
   machine to confirm no CRLF/LF flake — this is the worst-case config for the byte guard.
-- [ ] 6.4 Run the relevant pre-merge subset (run-ci-locally / pre-merge skill) and confirm the new
+- [x] 6.4 Run the relevant pre-merge subset (run-ci-locally / pre-merge skill) and confirm the new
   drift-guard + node-test steps pass.
-- [ ] 6.5 Update `tasks.md` checkboxes to reflect reality.
+- [x] 6.5 Update `tasks.md` checkboxes to reflect reality.
