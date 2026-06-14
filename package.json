@@ -49,6 +49,7 @@
     "test": "turbo run test",
     "test:coverage": "turbo run test:coverage",
     "contracts:gen": "node scripts/contract_types.mjs --write",
-    "contracts:check": "node scripts/contract_types.mjs --check"
+    "contracts:check": "node scripts/contract_types.mjs --check",
+    "contracts:test": "node --test scripts/contract_types.test.mjs"
   }
 }

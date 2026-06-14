@@ -29,7 +29,8 @@ from the Supabase `database.types.ts` (generated from the database by `make gen-
   `build-and-audit` job: regenerates the TS from the pinned schema and fails if the committed
   `generated/` types are not byte-identical, and fails if `pin.json` disagrees with the schema
   `$id` (exact `id` + parsed `version`).
-- **Negative-path / `$id`-no-op test** — `node --test scripts/contract_types.test.mjs`, same job.
+- **Negative-path / `$id`-no-op test** — `npm run contracts:test`
+  (`node --test scripts/contract_types.test.mjs`), same job.
 - **Migration-matches-schema** — `tests/integration/test_contract_migration_match.py` (in
   `compose-health-check`): asserts Bloom's applied DB schema agrees with the pinned contract for
   the mappings built today, and the contract-side facts that justify them.
@@ -49,6 +50,8 @@ field change produces a TS diff and fails the drift guard — that is the signal
    excluded from repo prettier — see below).
 2. Update `pin.json` `version` and `id` to the new version.
 3. Run `npm run contracts:gen` to regenerate `generated/result-envelope.ts`; commit it.
+   (`--write` runs the pin-consistency check first and **refuses to write** if `pin.json` and the
+   schema `$id` disagree — so do step 2 before step 3.)
 4. Run `npm run contracts:check` — it passes when `pin.json`, the schema `$id`, and the regenerated
    types all agree. For a `$id`-only bump the types diff is empty; any other diff is a real contract
    change to review.
@@ -73,3 +76,10 @@ built, the consumer (D/G) MUST, at the write boundary:
 
 The reproducibility anchors `inputs.images_checksum` / `image_ids` and `params.param_hash` ride
 inside the opaque `metadata` jsonb and are not promoted to columns by change A.
+
+**Codegen caveat for change C (blob table):** `json-schema-to-typescript` renders `BlobRef` from
+its top-level `anyOf` only (`{ s3_location } | { box_link }`), so the generated `BlobRef` type
+**does not surface** the required `kind`/`scan_key` fields or the `kind` enum
+(`predictions_slp|labels|h5|qc_image`) — they survive only via the `[k: string]: unknown` index
+signature. This is faithful-but-lossy (under-specified, not mis-specified). Change C MUST validate a
+blob against the JSON Schema directly, not trust the generated `BlobRef` for `kind`/`scan_key`.

@@ -124,13 +124,21 @@ def _column_type(cur, table: str, column: str) -> str | None:
     return row[0] if row else None
 
 
-def _constraints(cur, table: str) -> dict[str, str]:
-    """Return {conname: contype} (contype cast to text) for a public table."""
+def _constraint_types_on_column(cur, table: str, column: str) -> set[str]:
+    """Return the set of constraint types (pg_constraint.contype) whose key columns
+    include `column`. Keyed on the column, NOT on constraint names — so a legitimate
+    constraint rename can't false-positive this assertion."""
     cur.execute(
-        "SELECT conname, contype::text FROM pg_constraint WHERE conrelid = %s::regclass",
-        (f"public.{table}",),
+        """
+        SELECT c.contype::text
+          FROM pg_constraint c
+          JOIN pg_attribute a
+            ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+         WHERE c.conrelid = %s::regclass AND a.attname = %s
+        """,
+        (f"public.{table}", column),
     )
-    return {name: contype for name, contype in cur.fetchall()}
+    return {row[0] for row in cur.fetchall()}
 
 
 # --------------------------------------------------------------------------- #
@@ -172,6 +180,7 @@ def test_contract_idempotency_key_default_is_empty_string():
 
 def test_active_mapping_columns_have_expected_types(pg_conn):
     """Declarative sweep: every active mapping naming a column+type holds in the DB."""
+    checked = 0
     with pg_conn.cursor() as cur:
         for m in ACTIVE:
             if m["db_column"] and m["db_type"]:
@@ -180,21 +189,22 @@ def test_active_mapping_columns_have_expected_types(pg_conn):
                     f"{m['contract_field']}: expected {m['db_table']}.{m['db_column']} "
                     f"to be {m['db_type']}, got {actual!r}"
                 )
+                checked += 1
     pg_conn.rollback()
+    # Floor: a future edit that empties ACTIVE (or drops every column) must not let
+    # this test pass vacuously. Change A ships exactly two column-typed active rows.
+    assert checked >= 2, f"expected >= 2 active column mappings checked, got {checked}"
 
 
 def test_idempotency_anchor_constraints_by_type(pg_conn):
-    # Assert by contype, NOT name alone — the _key/_nonempty suffixes are
-    # convention, not enforcement. A UNIQUE is the 1-envelope:1-row anchor; the
-    # CHECK rejects the contract's "" default.
+    # Assert by contype on the COLUMN, NOT by constraint name — the _key/_nonempty
+    # suffixes are convention, not enforcement, and a legitimate rename must not
+    # false-positive. A UNIQUE is the 1-envelope:1-row anchor; the CHECK rejects the
+    # contract's "" default.
     with pg_conn.cursor() as cur:
-        cons = _constraints(cur, "cyl_trait_sources")
-        assert cons.get("cyl_trait_sources_idempotency_key_key") == "u", (
-            "UNIQUE anchor missing"
-        )
-        assert cons.get("cyl_trait_sources_idempotency_key_nonempty") == "c", (
-            "non-empty CHECK missing"
-        )
+        types = _constraint_types_on_column(cur, "cyl_trait_sources", "idempotency_key")
+    assert "u" in types, "UNIQUE anchor on idempotency_key missing"
+    assert "c" in types, "non-empty CHECK on idempotency_key missing"
     pg_conn.rollback()
 
 

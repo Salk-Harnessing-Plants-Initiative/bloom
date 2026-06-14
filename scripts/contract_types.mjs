@@ -35,7 +35,14 @@ const BANNER = [
   ' */',
 ].join('\n')
 
-const JSON2TS_OPTIONS = { bannerComment: BANNER, format: true }
+// `$refOptions.resolve.http: false` hard-fails (rather than fetching) if a future
+// re-pinned schema ever carried a remote http(s) `$ref` — codegen stays offline and
+// deterministic. The current schema uses only intra-document `#/$defs/...` refs.
+const JSON2TS_OPTIONS = {
+  bannerComment: BANNER,
+  format: true,
+  $refOptions: { resolve: { http: false } },
+}
 
 // Anchored on the version-stamped path segment, e.g.
 // https://…/schema/v0.1.0a1/result_envelope.schema.json -> "v0.1.0a1".
@@ -108,7 +115,15 @@ if (isMain()) {
       process.exit(1)
     }
   }
-  const readJson = (p, label) => JSON.parse(readText(p, label))
+  const readJson = (p, label) => {
+    const text = readText(p, label)
+    try {
+      return JSON.parse(text)
+    } catch (err) {
+      console.error(`error: cannot parse ${label} at ${p}: ${err.message}`)
+      process.exit(1)
+    }
+  }
 
   if (mode === '--write') {
     const schema = readJson(schemaPath, 'schema')
