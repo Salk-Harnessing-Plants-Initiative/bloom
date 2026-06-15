@@ -7,6 +7,11 @@ dependencies = [
     "fastmcp>=2.0.0",
     "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
+    # Security floors for transitive FastAPI-stack deps (see issue #311):
+    # pin past upstream CVE fix versions. Open floors per repo convention.
+    "cryptography>=48.0.1",
+    "python-multipart>=0.0.31",
+    "starlette>=1.1.0",
     # Supabase PostgREST + Storage client, used by source/supabase_client.py
     # for CSV exchange via the bloommcp-data bucket.
     "supabase>=2.0.0",
