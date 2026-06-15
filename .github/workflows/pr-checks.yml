@@ -145,6 +145,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build bloom-web image
+        # NEXT_PUBLIC_* build args are still REQUIRED until PR-3 §6 of the
+        # runtime-config refactor (openspec/changes/add-ghcr-image-publishing)
+        # drops the matching ARG lines from web/Dockerfile.bloom-web.prod:9-17.
+        # Until then, `next build` prerenders pages (e.g. /test) that
+        # instantiate @supabase/ssr at module load and would fail without
+        # these values baked in. PR-3 §6 will (a) drop the ARG lines from
+        # the Dockerfile, (b) drop these --build-arg flags here, and
+        # (c) add tests/unit/test_dockerfile_no_next_public_args.py to
+        # fence the absence on both sides.
         run: |
           docker build --provenance=false -f web/Dockerfile.bloom-web.prod \
             --build-arg NEXT_PUBLIC_SUPABASE_URL=http://localhost:8000 \
@@ -292,10 +301,40 @@ jobs:
       - name: Run migration lint
         run: ./scripts/lint_migrations.sh origin/${{ github.base_ref }}
 
+  # Runs the new web/ Vitest suite added by the openspec change
+  # add-ghcr-image-publishing (proposal/tasks/specs already on this branch).
+  # No `needs:` block — runs in parallel with the rest of pr-checks so a
+  # failing unit test doesn't block compose-health-check needlessly.
+  web-unit-tests:
+    name: Web Unit Tests (Vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install workspace deps
+        run: npm ci
+
+      - name: Run Vitest
+        run: cd web && npm run test:unit
+
   compose-health-check:
     name: Docker Compose Health Check
     needs: docker-build
     runs-on: ubuntu-latest
+    env:
+      # Single source of truth for the compose file pair. Hoisted here so
+      # the 6+ docker compose commands below don't drift apart. The CI
+      # overlay (docker-compose.ci.yml) restores `build:` blocks for the
+      # custom services so PR CI can build locally even after PR-3 flips
+      # docker-compose.prod.yml to `image: ghcr.io/...` refs.
+      COMPOSE_FILES: -f docker-compose.prod.yml -f docker-compose.ci.yml
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -345,8 +384,22 @@ jobs:
           # the Docker network (e.g. Next.js SSR fetches), so the internal
           # kong hostname is correct here.
           echo "SUPABASE_URL=http://kong:8000" >> .env.ci
+          # Required by bloom-web's validateOnBoot() in production mode
+          # (web/instrumentation.ts → web/lib/config/validate-on-boot.ts).
+          # NODE_ENV=production is baked into the Dockerfile, so the
+          # validator fires in CI even though we're not actually deploying.
+          # CI uses the same host for internal+public so the allow-list is
+          # the loopback mapping kong:8000=kong:8000. See
+          # openspec/changes/add-ghcr-image-publishing/design.md Decision 13.
+          echo "SUPABASE_URL_HOSTS_ALLOWED=kong:8000=kong:8000" >> .env.ci
           echo "SUPABASE_COOKIE_NAME=sb-ci-auth-token" >> .env.ci
           echo "NEXT_PUBLIC_APP_URL=http://localhost" >> .env.ci
+          # bloom-web bakes NEXT_PUBLIC_MCP_URL as a build arg
+          # (docker-compose.prod.yml). Without it here the CI image builds
+          # with an empty value — CI/prod-shape drift. http://localhost
+          # mirrors the other browser-facing CI URLs (Caddy on the runner
+          # host). Flagged by Copilot review on PR #268.
+          echo "NEXT_PUBLIC_MCP_URL=http://localhost" >> .env.ci
           echo "SUPABASE_PUBLIC_URL=http://localhost/api" >> .env.ci
           echo "POOLER_TENANT_ID=default" >> .env.ci
           echo "POOLER_DEFAULT_POOL_SIZE=5" >> .env.ci
@@ -408,22 +461,22 @@ jobs:
 
       - name: Start MinIO and create buckets
         run: |
-          docker compose -f docker-compose.prod.yml --env-file .env.ci up -d supabase-minio
+          docker compose $COMPOSE_FILES --env-file .env.ci up -d supabase-minio
           echo "Waiting for MinIO to be healthy..."
-          timeout 60 bash -c 'until docker compose -f docker-compose.prod.yml --env-file .env.ci ps supabase-minio --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
+          timeout 60 bash -c 'until docker compose $COMPOSE_FILES --env-file .env.ci ps supabase-minio --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
           echo "MinIO is healthy!"
-          docker compose -f docker-compose.prod.yml --env-file .env.ci run --rm minio-init
+          docker compose $COMPOSE_FILES --env-file .env.ci run --rm minio-init
           echo "Buckets created!"
 
       - name: Start database
         run: |
-          docker compose -f docker-compose.prod.yml --env-file .env.ci up -d db-prod
+          docker compose $COMPOSE_FILES --env-file .env.ci up -d db-prod
           echo "Waiting for database to be healthy..."
-          timeout 180 bash -c 'until docker compose -f docker-compose.prod.yml --env-file .env.ci ps db-prod --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
+          timeout 180 bash -c 'until docker compose $COMPOSE_FILES --env-file .env.ci ps db-prod --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
           echo "Database is healthy!"
 
       - name: Start remaining services
-        run: docker compose -f docker-compose.prod.yml --env-file .env.ci up -d --build
+        run: docker compose $COMPOSE_FILES --env-file .env.ci up -d --build
 
       - name: Wait for services to be healthy
         run: |
@@ -431,11 +484,11 @@ jobs:
           TIMEOUT=180
           ELAPSED=0
           while [ $ELAPSED -lt $TIMEOUT ]; do
-            UNHEALTHY=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r '.[] | select(.Health == "unhealthy" or .Health == "starting") | .Name' 2>/dev/null | wc -l)
-            EXITED=$(docker compose -f docker-compose.prod.yml --env-file .env.ci ps --format json | jq -r '.[] | select(.State == "exited" and .ExitCode != 0) | .Name' 2>/dev/null | wc -l)
+            UNHEALTHY=$(docker compose $COMPOSE_FILES --env-file .env.ci ps --format json | jq -r '.[] | select(.Health == "unhealthy" or .Health == "starting") | .Name' 2>/dev/null | wc -l)
+            EXITED=$(docker compose $COMPOSE_FILES --env-file .env.ci ps --format json | jq -r '.[] | select(.State == "exited" and .ExitCode != 0) | .Name' 2>/dev/null | wc -l)
             if [ "$UNHEALTHY" -eq 0 ] && [ "$EXITED" -eq 0 ]; then
               echo "All services healthy!"
-              docker compose -f docker-compose.prod.yml --env-file .env.ci ps
+              docker compose $COMPOSE_FILES --env-file .env.ci ps
               exit 0
             fi
             echo "Waiting... (${ELAPSED}s / ${TIMEOUT}s) — ${UNHEALTHY} unhealthy, ${EXITED} failed"
@@ -443,8 +496,8 @@ jobs:
             ELAPSED=$((ELAPSED + 5))
           done
           echo "::error::Services did not become healthy within ${TIMEOUT}s"
-          docker compose -f docker-compose.prod.yml --env-file .env.ci ps
-          docker compose -f docker-compose.prod.yml --env-file .env.ci logs --tail=50
+          docker compose $COMPOSE_FILES --env-file .env.ci ps
+          docker compose $COMPOSE_FILES --env-file .env.ci logs --tail=50
           exit 1
 
       - name: Wait for storage schema
@@ -453,7 +506,7 @@ jobs:
         run: |
           echo "Polling for storage schema (storage-api creates storage.buckets table on startup)..."
           for i in $(seq 1 60); do
-            if docker compose -f docker-compose.prod.yml --env-file .env.ci exec -T \
+            if docker compose $COMPOSE_FILES --env-file .env.ci exec -T \
               -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
               psql -U supabase_admin -d postgres -tAc "SELECT 1 FROM information_schema.tables WHERE table_schema='storage' AND table_name='buckets'" 2>/dev/null | grep -q "^1$"; then
               echo "storage.buckets table ready!"
@@ -543,7 +596,7 @@ jobs:
           # (minio/minio image) has no mc CLI, which is why the previous invocation
           # was silently failing as a warning on every run. Override the init
           # entrypoint (create-buckets.sh) so we can drive a write-delete probe.
-          docker compose -f docker-compose.prod.yml --env-file .env.ci run --rm \
+          docker compose $COMPOSE_FILES --env-file .env.ci run --rm \
             --entrypoint sh minio-init -c '
               set -e
               mc alias set local http://supabase-minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
@@ -578,12 +631,27 @@ jobs:
 
       # Playwright E2E tests — run after integration tests against the same
       # live compose stack. Skips gracefully if web/e2e/ is absent.
+      #
+      # Node 20 is pinned explicitly to match the web-unit-tests job and the
+      # runtime image (web/Dockerfile.bloom-web.prod uses node:20). Without
+      # this pin the runner's default Node is used, which can change between
+      # runner releases and produce non-deterministic CI. Flagged by Copilot
+      # review on PR #268.
       - name: Setup Node.js for Playwright
         if: hashFiles('web/e2e/**') != ''
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
+
+      - name: Cache Playwright browsers
+        if: hashFiles('web/e2e/**') != ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json', 'package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
 
       - name: Install npm dependencies (for Playwright)
         if: hashFiles('web/e2e/**') != ''
@@ -612,17 +680,23 @@ jobs:
         if: failure()
         run: |
           echo "=== Container Status ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci ps
+          docker compose $COMPOSE_FILES --env-file .env.ci ps
           echo "=== db-prod logs ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci logs db-prod --tail=100
+          docker compose $COMPOSE_FILES --env-file .env.ci logs db-prod --tail=100
           echo "=== kong logs ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci logs kong --tail=50
+          docker compose $COMPOSE_FILES --env-file .env.ci logs kong --tail=50
           echo "=== caddy logs ==="
-          docker compose -f docker-compose.prod.yml --env-file .env.ci logs caddy --tail=50
+          docker compose $COMPOSE_FILES --env-file .env.ci logs caddy --tail=100
+          echo "=== bloom-web logs ==="
+          docker compose $COMPOSE_FILES --env-file .env.ci logs bloom-web --tail=200
+          echo "=== langchain-agent logs ==="
+          docker compose $COMPOSE_FILES --env-file .env.ci logs langchain-agent --tail=50
+          echo "=== bloommcp logs ==="
+          docker compose $COMPOSE_FILES --env-file .env.ci logs bloommcp --tail=50
 
       - name: Cleanup
         if: always()
-        run: docker compose -f docker-compose.prod.yml --env-file .env.ci down -v
+        run: docker compose $COMPOSE_FILES --env-file .env.ci down -v
 
   # Exercise the *documented dev workflow* end to end on docker-compose.dev.yml
   # (compose-health-check above uses the prod compose). Self-contained: `make
