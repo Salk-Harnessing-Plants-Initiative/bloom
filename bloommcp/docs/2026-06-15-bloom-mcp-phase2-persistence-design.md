@@ -60,6 +60,8 @@ class ResultStore(Protocol):                       # WRITE
 
 `SupabaseReader` and `SupabaseResultStore` are the existing `read_input_csv` / `AnalysisWriter` + `AnalysisDir` code **moved behind the interface, not rewritten**. `FakeReader`/`FakeResultStore` are in-memory, enabling the full test suite with **no live Supabase**.
 
+**Storage stack (why the adapter is engine-agnostic).** The Supabase adapter talks only to the **Supabase Storage API** (logical bucket `bloommcp-data`, authed by the `bloom_agent` JWT). **MinIO is the S3 object store *behind* storage-api** (physical bucket `bloom-storage`, `STORAGE_BACKEND: s3`) — bloommcp never addresses MinIO directly, holds no MinIO endpoint/credentials, and stores only **logical keys** (`bloommcp_output/<tool_class>_<stem>/<v>/<file>`). Consequences carried below: artifact identifiers carry **no MinIO/S3 ETag or versionId**; `resource_link`s are **Supabase Storage URLs** (not MinIO URLs); CAS uses **storage-api** conditional writes, not the raw MinIO SDK. If MinIO were swapped for AWS S3/GCS behind storage-api, none of this design changes.
+
 ## 3. File layout
 
 ```
@@ -80,14 +82,15 @@ One canonical `Provenance` model lives in `contract/provenance.py` and is comput
 |---|---|---|
 | `seed` (random_state) | **yes — critical** | Tiers 3/4 are stochastic (PCA/clustering); reproducible goldens require it. |
 | `agent` / actor | yes | Records `bloom_agent` now; real per-user identity is **deferred** (§8). |
-| `output_sha256` per artifact | **yes** | Cheap; makes runs content-addressed; hardens golden-test integrity. |
+| `output_sha256` per artifact | **yes** | **App-computed** (hash bytes before upload) — *not* the S3/MinIO ETag, which is MD5/multipart-dependent and not reliably surfaced through storage-api. Makes runs content-addressed; hardens golden-test integrity. |
+| logical storage `key` per artifact | **yes** | Store the full Supabase logical key (`bloommcp_output/.../<file>`) per output, not only the relpath — makes each run self-describing/portable/auditable (today the key is reconstructed). No MinIO/physical-bucket id. |
 | existing (`tool`, `params`, `input_sha256`, `code_versions`, lineage, timestamps, `outputs`) | yes | Already present in v2; retained. |
 
 Provenance computed once (`contract`), persisted once (manifest v3).
 
 ## 5. Tool contract, errors, return shape
 
-`@as_mcp_tool` validates Pydantic I/O, maps exceptions to a structured `BloomMCPError` (`code` + `message` + `remedy`, never raw), seeds RNGs from `params.seed`, stamps `Provenance`, and registers with FastMCP. Tools return **small structured results inline + `resource_link`s** to stored artifacts — never inline base64 CSVs/plots. Annotations: writing granular tools `readOnlyHint: false`; `list_existing_analyses`/read tools `readOnlyHint: true`.
+`@as_mcp_tool` validates Pydantic I/O, maps exceptions to a structured `BloomMCPError` (`code` + `message` + `remedy`, never raw), seeds RNGs from `params.seed`, stamps `Provenance`, and registers with FastMCP. Tools return **small structured results inline + `resource_link`s** to stored artifacts — never inline base64 CSVs/plots. The links are **Supabase Storage URLs minted by the `ResultStore` adapter** (signed or public-bucket URL via storage-api, keyed off the logical key) — **not** MinIO/physical-bucket URLs; the adapter owns URL minting so tools stay storage-agnostic. Annotations: writing granular tools `readOnlyHint: false`; `list_existing_analyses`/read tools `readOnlyHint: true`.
 
 ## 6. Data flow (a granular call)
 
@@ -101,7 +104,7 @@ Five patterns per tool, all runnable against `FakeReader` + `FakeResultStore` (n
 
 - **DB-direct trait reads** — the 2026-06-04 data-access design (source-aware Bloom RPCs, canonical rename, one-source-per-frame) becomes a **future `ExperimentReader` adapter**. *Trigger:* integration sub-project #2 (Bloom schema ⇄ contracts) + the Benfica RPC/auth conversation.
 - **Orchestrator-owned / per-user-identity writes + real RLS** — the single shared `bloom_agent` write identity makes row-level security decorative today (authz lives in the app, no per-user attribution). The clean **end-state** is a **future `ResultStore` adapter** where the orchestrator owns the write and threads real user identity. *Trigger:* per-user attribution / least-privilege becomes a requirement. The port makes this a one-adapter swap.
-- **Manifest compare-and-swap** — `AnalysisWriter` has no CAS/`flock` (its own docstring documents the single-writer assumption); concurrent `v<N>` writers can clobber. *Currently safe* (one container, one process). *Trigger:* bloom-mcp scales past a single instance → add conditional-write (`If-Match`/`If-None-Match`) inside the adapter.
+- **Manifest compare-and-swap** — `AnalysisWriter` has no CAS/`flock` (its own docstring documents the single-writer assumption); concurrent `v<N>` writers can clobber. *Currently safe* (one container, one process). *Trigger:* bloom-mcp scales past a single instance → add conditional-write inside the adapter **via the Supabase Storage API's conditional-upload support** (storage-api in front of MinIO) — not the raw MinIO/S3 SDK, which bloommcp never touches.
 
 ## 9. Research grounding (so deferrals are conscious; sources)
 
