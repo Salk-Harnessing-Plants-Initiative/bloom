@@ -3,6 +3,7 @@ title: bloom-mcp Phase 2 — thin delegating MCP server (re-brainstorm)
 date: 2026-06-15
 status: draft — pending user + Benfica review
 supersedes: §2–§9 of 2026-05-11-metcalf-2026-evelyn-bloom-mcp-design.md (re-brainstormed in the new state)
+amended-by: 2026-06-15-bloom-mcp-phase2-persistence-design.md (§4 data_access + §5/§6 persistence — the deployed prototype reads from AND writes versioned outputs to Supabase Storage; this doc's "storage-agnostic / CSV-backed / versioned-writer-in-data_access" framing is corrected there to two ports — ExperimentReader read + ResultStore write — over the deployed Supabase adapter)
 repos: salk-bloom (bloommcp subproject), sleap-roots-analyze, sleap-roots-contracts
 ---
 
@@ -41,23 +42,28 @@ The **agent-facing surface is small, flat, and fast** — granular analysis func
 
 ## 4. Components (`src/bloom_mcp/`, flat layout)
 
+> **Persistence corrected — see `2026-06-15-bloom-mcp-phase2-persistence-design.md`.** The deployed prototype already reads from *and* writes versioned outputs to Supabase Storage as `bloom_agent`. So the IO layer is **two ports** (read + write) over the deployed Supabase adapter — not a single "storage-agnostic data_access" with a CSV-backed writer. The layout + bullets below reflect that.
+
 ```
 src/bloom_mcp/
-  contract/        # @as_mcp_tool, Provenance, BloomMCPError
-  data_access/     # reusable, storage-agnostic Bloom access
+  contract/        # @as_mcp_tool, Provenance (unified with the manifest), BloomMCPError
+  data_access/     # ExperimentReader port + SupabaseReader adapter + FakeReader  (READ)
+  result_store/    # ResultStore port + SupabaseResultStore (wraps AnalysisWriter) + FakeResultStore  (WRITE)
+  storage/         # relocated Supabase primitives (supabase_client, manifest, versioning, schema)
   tools/           # hand-written fast tools (flat — no v1/, no generated/manual)
   server.py        # FastMCP, auth, /health (unchanged transport/auth)
   cli.py
 ```
 
-- **`contract/`** — `@as_mcp_tool` wrapper that, on every call, validates Pydantic I/O, maps exceptions to a structured `BloomMCPError` (code + message + remedy), and stamps a `Provenance` block. **Provenance is auto-derived** (`package_version`, `source_version` = the `sleap-roots-analyze` it delegated to, `inputs_hash`, timestamps, seed) — **no hand-maintained per-tool version** (bookkeeping nobody sustains).
-- **`data_access/`** — the reusable, **storage-agnostic** layer: `load_experiment(name)`, `list_experiments()`, artifact/plot path+URL helpers, the versioned writer. **CSV-backed now** (relocated from `source/experiment_utils.py`); the **DB-backed implementation** (the separate `2026-06-04-bloom-mcp-data-access-design.md`, read traits via the shared Bloom RPC + canonical rename in the adapter) is **gated on integration sub-project #2** and drops in behind the same interface later. Tools depend on the interface, not the storage.
-- **`tools/`** — flat module of fast, hand-written tools, each delegating to one analyze function and returning its typed result. (No `v1/` namespace, no `generated/manual` split — those anticipate deferred work; see §8.)
+- **`contract/`** — `@as_mcp_tool` wrapper that, on every call, validates Pydantic I/O, maps exceptions to a structured `BloomMCPError` (code + message + remedy), and stamps a `Provenance` block. **Provenance is the canonical record, computed once and persisted into the manifest `VersionEntry`** (schema v2→v3 additive: `seed`, `agent`, `output_sha256` on top of the existing `tool`/`params`/`input_sha256`/`code_versions`/lineage) — one provenance path, not two; **no hand-maintained per-tool version**.
+- **`data_access/`** (READ) — `ExperimentReader` port (`load_experiment(name)`, `list_experiments()`); the **current adapter `SupabaseReader`** reads `bloommcp_input/` CSVs from Supabase Storage + tables via PostgREST as `bloom_agent` (relocated from `source/experiment_utils.py` / `read_input_csv`). The **DB-direct adapter** (the separate `2026-06-04-bloom-mcp-data-access-design.md`: source-aware Bloom RPCs + canonical rename) is **gated on integration sub-project #2** and drops in behind the same port later.
+- **`result_store/`** (WRITE) — `ResultStore` port (`create_run`/`commit`/`list_runs`/`get_run`); the **current adapter `SupabaseResultStore`** wraps the deployed `AnalysisWriter`/`AnalysisDir` (versioned `bloommcp_output/<tool_class>_<stem>/v<N>/` + `manifest.json`). The **orchestrator-owned / per-user-identity adapter** (real RLS) is deferred-with-trigger. Tools depend on the port, never on `supabase`.
+- **`tools/`** — flat module of fast, hand-written tools, each delegating to one analyze function, **persisting a versioned run via `ResultStore`**, and returning small structured results inline + `resource_link`s. (No `v1/` namespace, no `generated/manual` split — those anticipate deferred work; see §8.)
 - **`server.py`** — unchanged transport (streamable-http :8811), Bearer auth, `/health`; registers the tools.
 
 ## 5. Data flow
 
-`agent → MCP tool → data_access.load_experiment(name) → DataFrame → sra.<fn>(df, …) → typed result → @as_mcp_tool wraps (Provenance + BloomMCPError) → structured JSON → agent.` Artifacts (CSVs/plots) are written via `data_access`'s versioned writer; their URLs are returned in the structured result.
+`agent → MCP tool → ExperimentReader.load_experiment(name) → DataFrame → sra.<fn>(df, …) → typed result → ResultStore.create_run(provenance) → write artifacts to staging → commit() → StoredRun(version, links) → @as_mcp_tool wraps (Provenance + BloomMCPError) → small structured result inline + resource_links → agent.` Artifacts (CSVs/plots) are persisted as a versioned run via the `ResultStore` write port; only handles/links cross the wire, never inline blobs.
 
 ## 6. Versioning & provenance (the three levers)
 
@@ -68,6 +74,8 @@ MCP has **no per-tool version field** — tools are identified by **name**. "Too
 3. **Drift-guard enforcement ("api-diff") — at first publish with adopters.** Snapshot the emitted tool JSON Schemas and fail a PR on incompatible change without a major bump — the *same* mechanism `sleap-roots-contracts` already uses for its schemas. **Deferred** to the publish milestone.
 
 (`_v2` tool-name versioning is **explicitly rejected** — dominated by package SemVer for the non-concurrent case and by the URL namespace for the concurrent case.)
+
+**Provenance** (distinct from API versioning) is **unified with the deployed manifest** rather than a parallel block: the canonical `Provenance` (computed in `contract/`) is persisted into the manifest `VersionEntry`, bumped **schema v2→v3 additive** to add `seed` / `agent` / `output_sha256`. See `2026-06-15-bloom-mcp-phase2-persistence-design.md` §4.
 
 ## 7. Testing
 
@@ -91,11 +99,11 @@ Five patterns per tool: **schema round-trip** (Pydantic ↔ JSON), **provenance 
 
 Each tier = one OpenSpec change + PR, TDD. (Repo already has root-level `openspec/` + `.claude/commands` — Tier 0 is **not** "openspec init".)
 
-0. **Tooling baseline** — restructure `bloommcp/source/` + `tools/` → `src/bloom_mcp/`; pin `sleap-roots-analyze` (result-types release) + `sleap-roots-contracts[pandas]>=0.1.0a1`; decide bloommcp's own `openspec/` scope (mirroring `web/openspec`) vs the root.
-1. **Contract layer** (`contract/`): `@as_mcp_tool`, `Provenance` (auto), `BloomMCPError`.
-2. **Reusable data-access layer** (`data_access/`): storage-agnostic interface, CSV impl.
-3. **First granular tool** — **ADD** `pca_analysis` → `PCAResult`, register in `server.py`, full 5 patterns; **leave** `source/pca.py` + `dimred_workflow` in place (retirement deferred).
-4. **Second granular tool** — **ADD** `clustering` → `KMeans`/`GMMResult` (polymorphic result), register in `server.py`; **leave** `source/clustering.py` + `clustering_workflow` in place (retirement deferred).
+0. **Tooling baseline** — restructure `bloommcp/source/` + `tools/` + **`storage/` + `supabase_client.py`** → `src/bloom_mcp/`; introduce `sleap-roots-analyze>=0.1.0a2` + `sleap-roots-contracts[pandas]>=0.1.0a1`; add the test stack + #120 fixtures; decide bloommcp's own `openspec/` scope (mirroring `web/openspec`) vs the root.
+1. **Contract layer** (`contract/`): `@as_mcp_tool`, `Provenance` **unified with the manifest `VersionEntry` (schema v2→v3 additive: seed/agent/output_sha256)**, `BloomMCPError`.
+2. **Persistence layer** — `data_access/` (`ExperimentReader` read port + `SupabaseReader` adapter + `FakeReader`) **and** `result_store/` (`ResultStore` write port + `SupabaseResultStore` wrapping the deployed `AnalysisWriter` + `FakeResultStore`); repoint the existing workflows to the ports. (Was "data-access CSV impl" — corrected per the persistence design.)
+3. **First granular tool** — **ADD** `pca_analysis` → `PCAResult`, **persisting a versioned run via `ResultStore`** + returning `resource_link`s, register in `server.py`, full 5 patterns; **leave** `source/pca.py` + `dimred_workflow` in place (retirement deferred).
+4. **Second granular tool** — **ADD** `clustering` → `KMeans`/`GMMResult` (polymorphic result), **persist via `ResultStore`**, register in `server.py`; **leave** `source/clustering.py` + `clustering_workflow` in place (retirement deferred).
 
 ## 11. Open items
 
