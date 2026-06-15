@@ -4,7 +4,7 @@ Enforces requirements from
 openspec/changes/add-ghcr-image-publishing/specs/image-publishing/spec.md
 ("PR CI Stack Builds Locally Via Overlay") and tasks.md §0.1.
 
-Five invariants on .github/workflows/pr-checks.yml:
+Seven invariants total. Five are on .github/workflows/pr-checks.yml:
 
 1. The ``compose-health-check`` job MUST declare a job-level
    ``env.COMPOSE_FILES`` value equal to

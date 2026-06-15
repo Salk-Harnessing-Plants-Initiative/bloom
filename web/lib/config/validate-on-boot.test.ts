@@ -102,6 +102,17 @@ describe("parseHostsAllowed", () => {
       new Set(["bloom-dev.salk.edu", "other.example"]),
     );
   });
+
+  it("normalizes host case to lower-case so it matches URL(...).host", () => {
+    // DNS hostnames are case-insensitive, and the WHATWG URL parser always
+    // lower-cases `URL(...).host`. Storing the allow-list verbatim would make
+    // an operator's `Kong:8000=Bloom.salk.edu` fail to match the lower-cased
+    // runtime host — a confusing spurious 503 where the two hosts look
+    // identical except for case. Normalize both sides on parse.
+    const map = parseHostsAllowed("Kong:8000=Bloom.SALK.edu");
+    expect(map.get("kong:8000")).toEqual(new Set(["bloom.salk.edu"]));
+    expect(map.has("Kong:8000")).toBe(false);
+  });
 });
 
 // ─── validateOnBoot ─────────────────────────────────────────────────────────

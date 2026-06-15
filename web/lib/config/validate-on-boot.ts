@@ -56,8 +56,11 @@ export class MalformedHostsAllowedError extends Error {
  * One internal host MAY map to multiple public hosts (multi-domain
  * deployment) — they are accumulated into the host's value-Set.
  *
- * Hosts include port. No URL parsing happens here; the strings are
- * compared verbatim against `URL(...).host` at validation time.
+ * Hosts include port. No URL parsing happens here. Hostnames are
+ * case-insensitive (DNS) and the WHATWG URL parser always lower-cases
+ * `URL(...).host`, so both sides of each pair are lower-cased on parse —
+ * an operator's `Kong:8000=Bloom.salk.edu` still matches the lower-cased
+ * runtime host instead of throwing a confusing "not in allow-list" 503.
  *
  * @throws MalformedHostsAllowedError on missing `=`, empty hostnames,
  *   leading/trailing commas, or whitespace-only segments.
@@ -82,8 +85,10 @@ export function parseHostsAllowed(raw: string): Map<string, Set<string>> {
     if (eqIdx === -1) {
       throw new MalformedHostsAllowedError(`pair "${pair}" missing '='`);
     }
-    const internal = pair.slice(0, eqIdx).trim();
-    const publicHost = pair.slice(eqIdx + 1).trim();
+    // Lower-case both sides: DNS hosts are case-insensitive and
+    // URL(...).host is always lower-cased, so the allow-list must match.
+    const internal = pair.slice(0, eqIdx).trim().toLowerCase();
+    const publicHost = pair.slice(eqIdx + 1).trim().toLowerCase();
     if (internal === "") {
       throw new MalformedHostsAllowedError(`pair "${pair}" has empty internal host`);
     }

@@ -693,37 +693,40 @@ reads removed; migration-lint and no-skipped-tests both green.
 
 ### 11. Cross-environment fence + env-defaults + PROD_SETUP
 
-- [ ] 11.1 **Test (red):** `tests/unit/test_env_cross_check.py` asserts:
+- [x] 11.1 **Test (red):** `tests/unit/test_env_cross_check.py` asserts:
+  *(**Landed in PR-1** alongside the cookie rename in §11.2 — keeps the
+  spec scenario and its env files self-consistent within this PR.)*
   - `.env.staging.defaults` and `.env.prod.defaults` declare distinct
     `NEXT_PUBLIC_SUPABASE_URL` values. *(Already true today; fences
     regression.)*
   - The same files declare distinct `SUPABASE_COOKIE_NAME` values.
-    *(NOT true today; §11.2 fixes it.)*
-  - Both files declare `SUPABASE_URL_HOSTS_ALLOWED` matching the format
-    in [design.md Decision 13](design.md).
-  - The expected `SUPABASE_URL` (server-internal) appears as a key in
-    `SUPABASE_URL_HOSTS_ALLOWED` and the corresponding
-    `NEXT_PUBLIC_SUPABASE_URL`'s host appears in the value set.
-- [ ] 11.2 **Impl (green):**
-  - Update `.env.staging.defaults`: change `SUPABASE_COOKIE_NAME` from
-    `sb-bloom-auth-token` to `sb-bloom-staging-auth-token`. **This
-    invalidates every currently-active staging session on first deploy
-    after PR-3**; documented in §11.5 PROD_SETUP edit and the PR-3
-    description.
+  - Staging declares `sb-bloom-staging-auth-token`; prod retains
+    `sb-bloom-auth-token`.
+  - *(The `SUPABASE_URL_HOSTS_ALLOWED` format + host-membership checks
+    live in the separate `test_supabase_url_hosts_allowed_format.py`,
+    §11.3 — still PR-3.)*
+- [x] 11.2 **Impl (green):**
+  - **DONE in PR-1.** Update `.env.staging.defaults`: change
+    `SUPABASE_COOKIE_NAME` from `sb-bloom-auth-token` to
+    `sb-bloom-staging-auth-token`. **This invalidates every
+    currently-active staging session on first deploy after PR-1**;
+    documented in §11.5 PROD_SETUP edit and the PR description.
   - ~~Add `SUPABASE_URL_HOSTS_ALLOWED` to `.env.staging.defaults` and
     `.env.prod.defaults`.~~ **MOVED TO PR-1** along with the matching
     `SUPABASE_URL_HOSTS_ALLOWED: ${SUPABASE_URL_HOSTS_ALLOWED}` entry
     in `docker-compose.prod.yml`'s `bloom-web.environment:` block.
-    Both files now declare:
-    - prod: `SUPABASE_URL_HOSTS_ALLOWED=kong:8000=bloom-dev.salk.edu`
-    - staging: `SUPABASE_URL_HOSTS_ALLOWED=kong:8000=staging-bloom-dev.salk.edu:8443`
+    Both files now declare (post-`bloom.salk.edu` migration):
+    - prod: `SUPABASE_URL_HOSTS_ALLOWED=kong:8000=bloom.salk.edu`
+    - staging: `SUPABASE_URL_HOSTS_ALLOWED=kong:8000=staging.bloom.salk.edu:8443`
     Reason: `web/instrumentation.ts` ships in PR-1 §3 and runs
     `validateOnBoot()` at every production boot. Without the var
     present in the container env, every prod/staging container would
     crash on startup with "Missing required env:
     SUPABASE_URL_HOSTS_ALLOWED" — incl. PR CI's compose-health-check
-    stack. PR-3 §11 still owns the cookie-name divergence and the
-    `test_env_cross_check.py` regression guard.
+    stack. The cookie-name divergence and `test_env_cross_check.py`
+    regression guard now also land in PR-1 (above); PR-3 §11 retains
+    only the `SUPABASE_URL_HOSTS_ALLOWED` format test (§11.3) and the
+    PROD_SETUP doc edit (§11.5).
 - [ ] 11.3 **Test (red):**
       `tests/unit/test_supabase_url_hosts_allowed_format.py` asserts
       that for both defaults files:
