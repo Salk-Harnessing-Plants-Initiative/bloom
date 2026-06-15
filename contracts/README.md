@@ -7,6 +7,24 @@ The contract itself is owned by
 the consumer and only **pins** a version, codegens TypeScript from it, and checks its DB schema
 against it in CI.
 
+## Terminology & roadmap
+
+References here (and in this change's proposal/design) to **sub-projects** (`#1` the contract
+library, `#2` the Bloom write-back) and to **#2's changes** (`A`, `B`, `C`, `D`, `E`,
+`consume-pin`, `read-path`, `CLI`, `backfill`) come from the integration roadmap. This change is
+**consume-pin** (#294), historically lettered **F**.
+
+- **Roadmap** — the canonical change list, GitHub issues, and status (see its "A2 change
+  breakdown" table):
+  <https://github.com/talmolab/sleap-roots-pipeline/blob/main/docs/bloom-integration/roadmap.md>
+- **Contract design doc** — the rationale and the original `A–H` decomposition (§10 lists the
+  changes; §6 the cross-language drift guard; §7 the deferred models seam):
+  <https://github.com/talmolab/sleap-roots-contracts/blob/main/docs/01-contract-library-design.md>
+
+Where the two differ, the **roadmap is the more current source** (it renamed `F`→`consume-pin`,
+sequenced it first, and added `read-path` #298); the design doc uses the `A–H` letters
+(`F`=consume-pin, `G`=ingest CLI, `H`=backfill).
+
 ## What's here
 
 | Path                                 | What                                                                                                         | Authority                                                 |
