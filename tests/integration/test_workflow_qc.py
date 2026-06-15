@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp"
+_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp" / "src"
 if str(_BLOOMMCP_DIR) not in sys.path:
     sys.path.insert(0, str(_BLOOMMCP_DIR))
 
@@ -31,7 +31,7 @@ os.environ.setdefault("BLOOM_OUTPUT_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_URL", "http://test.invalid")
 
-from storage import read_manifest  # noqa: E402
+from bloom_mcp.storage import read_manifest  # noqa: E402
 
 
 def _seed_experiment(traits_dir: Path, name: str = "bar.csv") -> Path:
@@ -57,11 +57,11 @@ def _setup_dirs(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
     output_dir.mkdir()
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(output_dir))
 
-    import source.experiment_utils as eu
+    import bloom_mcp.experiment_utils as eu
     monkeypatch.setattr(eu, "TRAITS_DIR", traits_dir)
     monkeypatch.setattr(eu, "OUTPUT_DIR", output_dir)
 
-    import tools.qc_tools as qc
+    import bloom_mcp.tools.qc_tools as qc
     monkeypatch.setattr(qc, "OUTPUT_DIR", output_dir)
 
     return traits_dir, output_dir
@@ -72,7 +72,7 @@ def test_run_qc_workflow_returns_workflow_response_shape(tmp_path, monkeypatch):
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.qc import run_qc_workflow
+    from bloom_mcp.tools.workflows.qc import run_qc_workflow
 
     result = run_qc_workflow("bar.csv")
 
@@ -94,7 +94,7 @@ def test_run_qc_workflow_writes_versioned_dir_and_manifest(tmp_path, monkeypatch
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.qc import run_qc_workflow
+    from bloom_mcp.tools.workflows.qc import run_qc_workflow
 
     run_qc_workflow("bar.csv")
 
@@ -112,7 +112,7 @@ def test_run_qc_workflow_second_run_creates_v2(tmp_path, monkeypatch):
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.qc import run_qc_workflow
+    from bloom_mcp.tools.workflows.qc import run_qc_workflow
 
     r1 = run_qc_workflow("bar.csv")
     r2 = run_qc_workflow("bar.csv", max_nans_per_trait=0.1)
@@ -132,7 +132,7 @@ def test_run_qc_workflow_user_label_appended_to_version_dir(tmp_path, monkeypatc
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.qc import run_qc_workflow
+    from bloom_mcp.tools.workflows.qc import run_qc_workflow
 
     result = run_qc_workflow("bar.csv", user_label="strict_cleanup")
     assert "strict_cleanup" in Path(result["version_dir"]).name
@@ -142,7 +142,7 @@ def test_run_qc_workflow_missing_file_returns_error(tmp_path, monkeypatch):
     pytest.importorskip("pandas")
     _setup_dirs(tmp_path, monkeypatch)
 
-    from tools.workflows.qc import run_qc_workflow
+    from bloom_mcp.tools.workflows.qc import run_qc_workflow
 
     result = run_qc_workflow("does_not_exist.csv")
     assert "error" in result
@@ -155,7 +155,7 @@ def test_run_qc_workflow_cleanup_log_written_to_disk(tmp_path, monkeypatch):
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.qc import run_qc_workflow
+    from bloom_mcp.tools.workflows.qc import run_qc_workflow
 
     result = run_qc_workflow("bar.csv")
     log_path = Path(result["version_dir"]) / "cleanup_log.json"
