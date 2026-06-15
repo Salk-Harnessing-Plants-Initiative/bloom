@@ -84,6 +84,7 @@ One canonical `Provenance` model lives in `contract/provenance.py` and is comput
 | `agent` / actor | yes | Records `bloom_agent` now; real per-user identity is **deferred** (§8). |
 | `output_sha256` per artifact | **yes** | **App-computed** (hash bytes before upload) — *not* the S3/MinIO ETag, which is MD5/multipart-dependent and not reliably surfaced through storage-api. Makes runs content-addressed; hardens golden-test integrity. |
 | logical storage `key` per artifact | **yes** | Store the full Supabase logical key (`bloommcp_output/.../<file>`) per output, not only the relpath — makes each run self-describing/portable/auditable (today the key is reconstructed). No MinIO/physical-bucket id. |
+| `code_versions` extended | **yes** | v2's `code_versions` (`storage/code_versions.py`) records `bloommcp` + `supabase`; v3 also records **`sleap-roots-analyze` + `sleap-roots-contracts`** versions — this makes the `source_version` explicit in the existing schema. (**Benfica's suggestion on PR #310.**) |
 | existing (`tool`, `params`, `input_sha256`, `code_versions`, lineage, timestamps, `outputs`) | yes | Already present in v2; retained. |
 
 Provenance computed once (`contract`), persisted once (manifest v3).
@@ -114,5 +115,5 @@ Five patterns per tool, all runnable against `FakeReader` + `FakeResultStore` (n
 
 ## 10. Open items
 
-- Send Benfica the note: building on his `storage/AnalysisWriter` (not removing it); isolating it behind a `ResultStore` port; the read-only/per-user-identity end-state is deferred-with-trigger, not this slice. Confirm the manifest v3 additive bump is fine.
+- ✅ **Benfica reviewed + approved on PR #310 (2026-06-15).** Confirmed: (1) the legacy `run_X_workflow` tools + `source/*` can be **removed once Stage 1 (Tiers 0–4) lands** — so retirement is no longer indefinitely deferred, it's *after Stage 1*; (2) extend `code_versions` to include `sleap-roots-analyze` + `sleap-roots-contracts` versions (folded into the v3 schema above). No objection raised to the v3 additive bump.
 - Reconcile downstream artifacts to this design: Phase 2 design (§4/§6), data-access design (header → deferred read adapter), roadmap (`bloommcp/docs/roadmap.md` / PR #310), issues #305 (add `storage/` relocation) / #306 (Provenance↔manifest) / #307 (two ports, Supabase-backed not CSV) + Tier 2 reframed as the persistence layer, and the Notion Epic Phase 2 section.

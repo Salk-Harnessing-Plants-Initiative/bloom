@@ -13,7 +13,7 @@ Re-brainstorm of Phase 2 ("harden the `bloommcp` prototype into a thin, validate
 
 ## 1. Goal & scope
 
-**Goal:** evolve `bloommcp` into a thin MCP server that **delegates all analysis to `sleap-roots-analyze`** (eventually retiring the vendored `source/` copies — **deferred to post-slice, pending Benfica**; the slice **adds** granular tools alongside the existing workflow tools), with a uniform tool contract (provenance + structured errors) and a real test stack — proven via a **depth vertical slice**, not breadth.
+**Goal:** evolve `bloommcp` into a thin MCP server that **delegates all analysis to `sleap-roots-analyze`** (eventually retiring the vendored `source/` copies — **deferred to after Stage 1 / Tiers 0–4; Benfica confirmed on PR #310**; the slice **adds** granular tools alongside the existing workflow tools), with a uniform tool contract (provenance + structured errors) and a real test stack — proven via a **depth vertical slice**, not breadth.
 
 **In scope (the slice):** the contract layer; a reusable, storage-agnostic data-access layer; 1–2 **fast granular** tools delegating to analyze's typed results; the 5 test patterns; validation on Claude Desktop.
 
@@ -24,7 +24,7 @@ Re-brainstorm of Phase 2 ("harden the `bloommcp` prototype into a thin, validate
 From `salk-bloom/langchain/`:
 - The agent connects via `MultiServerMCPClient(...).get_tools()` — **dynamic discovery** (MCP `tools/list`). It does **not** hardcode tool names or parse fixed output shapes; the LLM picks by name+description and reads results as text/JSON. So renaming tools / switching string→structured output does **not** break discovery — the agent re-discovers registered tools on startup.
 - Hard constraints to preserve: server key `bloom-tools`, **streamable-http** transport, URL via `BLOOM_MCP_URL`, **Bearer `BLOOMMCP_API_KEY`** auth. (Auth kept stable.)
-- The agent runs **Qwen3.5-9B on a DGX Spark** (262K context) — a small model: tool-use is fragile and **tool-count-sensitive** (selection/distraction, not context). **The agent is not live right now**, which relaxes migration risk. Even so, the slice **adds** granular tools *alongside* the existing workflow tools; retiring the bespoke `run_X_workflow` tools + `source/*` is **deferred pending Benfica** (deleting `source/*` now would break the booting server, whose workflow tools module-level-import it).
+- The agent runs **Qwen3.5-9B on a DGX Spark** (262K context) — a small model: tool-use is fragile and **tool-count-sensitive** (selection/distraction, not context). **The agent is not live right now**, which relaxes migration risk. Even so, the slice **adds** granular tools *alongside* the existing workflow tools; retiring the bespoke `run_X_workflow` tools + `source/*` is **deferred to after Stage 1 (Tiers 0–4) — Benfica confirmed on PR #310** (deleting `source/*` now would break the booting server, whose workflow tools module-level-import it).
 
 ## 3. Architecture
 
@@ -36,7 +36,7 @@ tool = data_access(resolve experiment + Bloom IO)
      + delegate → sleap-roots-analyze (fast function → typed result)
 ```
 
-The **agent-facing surface is small, flat, and fast** — granular analysis functions on loaded data (seconds), which is robust for *both* Qwen3.5-9B (small surface) and Claude (precision). `sleap-roots-analyze` already owns the real DAG pipelines (`QCPipeline`/`VizPipeline`/`CrossPlatformPipeline`); bloom-mcp must **not** re-implement orchestration (the prototype's bespoke `run_X_workflow` tools did, over the vendored `source/`). Those bespoke workflows are **left in place for the slice** and retired later (post-Benfica, when warranted) — replaced by exposing analyze's real pipelines, not re-orchestration. (Deleting `source/*` now would break the booting server, which module-level-imports them.)
+The **agent-facing surface is small, flat, and fast** — granular analysis functions on loaded data (seconds), which is robust for *both* Qwen3.5-9B (small surface) and Claude (precision). `sleap-roots-analyze` already owns the real DAG pipelines (`QCPipeline`/`VizPipeline`/`CrossPlatformPipeline`); bloom-mcp must **not** re-implement orchestration (the prototype's bespoke `run_X_workflow` tools did, over the vendored `source/`). Those bespoke workflows are **left in place for the slice** and retired later (**after Stage 1 / Tiers 0–4 — Benfica confirmed on PR #310**) — replaced by exposing analyze's real pipelines, not re-orchestration. (Deleting `source/*` now would break the booting server, which module-level-imports them.)
 
 **Granularity decision:** granular function tools are the foundation (composable, precise, 1:1 with the typed results, generator-friendly). Benfica's prototype consolidated into coarse `run_X_workflow` tools because a weak local LLM (Qwen-9B) does better with fewer, coarser tools — a **real but weak-model-bounded** finding (see §9). It's honored as good default hygiene (small surface) and via the future `find_tools`/coarse-subset path, not by permanently coarsening the surface around the weakest model.
 
