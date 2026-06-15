@@ -60,6 +60,9 @@ export default function Progress({ candidate, candidates_list, currentGeneCandid
     // is currently selected in the modal. Latest message + total count.
     const [previewLatest, setPreviewLatest] = useState<GeneTypes.Logs | null>(null);
     const [previewCount, setPreviewCount] = useState<number>(0);
+    // Hover-preview: full thread of logs for this row's candidate. Fetched
+    // lazily on first hover so we don't fire one query per row on page load.
+    const [hoverLogs, setHoverLogs] = useState<GeneTypes.Logs[] | null>(null);
     const [newUpdate, setNewUpdate] = useState("");
     const supabase = createClientSupabaseClient() as unknown as SupabaseClient<Database>;
     const bottomRef = useRef<HTMLDivElement>(null);
@@ -242,6 +245,22 @@ export default function Progress({ candidate, candidates_list, currentGeneCandid
         setShowLinkInput(true);
     }
 
+    // Lazy-load the full thread for the hover popover. First hover triggers
+    // one query; cached for the rest of this component's lifetime.
+    const fetchHoverLogs = async () => {
+        if (hoverLogs !== null || !candidate?.gene) return;
+        const { data, error } = await supabase
+            .from("experiment_progress_logs")
+            .select("*")
+            .eq("gene", candidate.gene)
+            .order("timestamp", { ascending: false });
+        if (error) {
+            setHoverLogs([]);
+            return;
+        }
+        setHoverLogs(data ?? []);
+    };
+
     const fetchMessages = async () => {
         if (!currentGeneCandidate) return;
 
@@ -267,11 +286,35 @@ export default function Progress({ candidate, candidates_list, currentGeneCandid
 
     return (
         <div className="container">
-            <ProgressPreview
-                latest={previewLatest}
-                total={previewCount}
-                onClick={handleOpen}
-            />
+            <Tooltip
+                title={renderHoverThread(hoverLogs, handleOpen)}
+                onOpen={fetchHoverLogs}
+                enterDelay={400}
+                enterNextDelay={400}
+                leaveDelay={200}
+                arrow
+                placement="bottom-start"
+                componentsProps={{
+                    tooltip: {
+                        sx: {
+                            bgcolor: "white",
+                            color: "#1f2937",
+                            boxShadow: 4,
+                            maxWidth: "none",
+                            p: 0,
+                            "& .MuiTooltip-arrow": { color: "white" },
+                        },
+                    },
+                }}
+            >
+                <Box component="span">
+                    <ProgressPreview
+                        latest={previewLatest}
+                        total={previewCount}
+                        onClick={handleOpen}
+                    />
+                </Box>
+            </Tooltip>
 
             <Modal open={isOpen} onClose={handleClose}>
                 <Box
@@ -717,24 +760,6 @@ export default function Progress({ candidate, candidates_list, currentGeneCandid
                     </Box>
                 </Box>
             </Modal>
-
-            <div
-                className="reveal-on-hover text-sm bg-white border border-gray-600 p-2 rounded-md w-96 ml-1 shadow z-10 max-h-40 overflow-auto cursor-pointer"
-                onClick={handleOpen}
-            >
-                <span className="italic">Click to view</span>
-
-                {/* {progressLogs && progressLogs.length > 0 ? (
-            progressLogs.map((log, index) => (
-              <div key={index} className="mb-2">
-                <div className="font-medium text-gray-800">{log.user}</div>
-                <div className="text-gray-600 truncate">{log.message}</div>
-              </div>
-            ))
-          ) : (
-            <span className="italic"> No Logs.</span>
-          )} */}
-            </div>
         </div>
     );
 }
@@ -823,4 +848,133 @@ function relativeTime(iso: string): string {
         month: "short",
         day: "numeric",
     });
+}
+
+/** Tooltip content: full chat thread for the hovered row.
+ *  null = not loaded yet, [] = no messages, list = render. */
+function renderHoverThread(
+    logs: GeneTypes.Logs[] | null,
+    onAddClick: () => void,
+) {
+    const addButton = (
+        <Box
+            sx={{
+                borderTop: logs && logs.length > 0 ? "1px solid #e5e7eb" : "none",
+                px: 1.5,
+                py: 1,
+                display: "flex",
+                justifyContent: "flex-end",
+            }}
+        >
+            <Button
+                size="small"
+                onClick={onAddClick}
+                sx={{
+                    textTransform: "none",
+                    fontSize: 11,
+                    color: "#4d7c0f",
+                    "&:hover": { backgroundColor: "rgba(132, 204, 22, 0.08)" },
+                }}
+            >
+                + Add new updates
+            </Button>
+        </Box>
+    );
+
+    if (logs === null) {
+        return (
+            <>
+                <Box sx={{ p: 1.5, fontSize: 12, color: "text.secondary" }}>
+                    Loading…
+                </Box>
+                {addButton}
+            </>
+        );
+    }
+    if (logs.length === 0) {
+        return (
+            <>
+                <Box sx={{ p: 1.5, fontSize: 12, color: "text.secondary" }}>
+                    No updates yet.
+                </Box>
+                {addButton}
+            </>
+        );
+    }
+    return (
+        <>
+            <Box
+                sx={{
+                    p: 1.5,
+                    maxWidth: 420,
+                    maxHeight: 360,
+                    overflowY: "auto",
+                }}
+            >
+                {logs.map((log, i) => {
+                const ts =
+                    typeof log.timestamp === "string"
+                        ? log.timestamp
+                        : log.timestamp.toISOString();
+                return (
+                    <Box
+                        key={i}
+                        sx={{
+                            mb: i < logs.length - 1 ? 1.25 : 0,
+                            pb: i < logs.length - 1 ? 1.25 : 0,
+                            borderBottom:
+                                i < logs.length - 1
+                                    ? "1px solid #e5e7eb"
+                                    : "none",
+                        }}
+                    >
+                        <Box
+                            sx={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "baseline",
+                                mb: 0.5,
+                                gap: 1,
+                            }}
+                        >
+                            <Typography
+                                sx={{
+                                    fontSize: 11,
+                                    fontWeight: 600,
+                                    color: "#374151",
+                                }}
+                            >
+                                {shortenSender(log.user_email ?? "Unknown")}
+                            </Typography>
+                            <Typography
+                                sx={{
+                                    fontSize: 10,
+                                    color: "#6b7280",
+                                    whiteSpace: "nowrap",
+                                }}
+                            >
+                                {relativeTime(ts)}
+                            </Typography>
+                        </Box>
+                        <Typography
+                            sx={{
+                                fontSize: 12,
+                                color: "#1f2937",
+                                whiteSpace: "pre-line",
+                                lineHeight: 1.4,
+                            }}
+                        >
+                            {log.message || (
+                                <Box component="span" sx={{ fontStyle: "italic" }}>
+                                    (empty message)
+                                </Box>
+                            )}
+                        </Typography>
+                    </Box>
+                );
+            })}
+            </Box>
+            {addButton}
+        </>
+    );
 }
