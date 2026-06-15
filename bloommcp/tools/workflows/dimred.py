@@ -143,7 +143,7 @@ def run_dimensionality_reduction_workflow(
         },
         user_label=user_label,
     )
-    version_id = version_dir.name.split("_", 1)[0]
+    version_id = writer.version_id
 
     outputs: dict[str, str] = {}
     summary: dict = {"method": method, "source": source_label, "n_samples": len(df)}
@@ -173,11 +173,11 @@ def run_dimensionality_reduction_workflow(
         })
 
         outputs.update({
-            "pca_loadings.csv": f"{version_dir.name}/pca_loadings.csv",
-            "pca_variance_explained.csv": f"{version_dir.name}/pca_variance_explained.csv",
-            "pca_transformed_data.csv": f"{version_dir.name}/pca_transformed_data.csv",
-            "trait_variance_contrib.csv": f"{version_dir.name}/trait_variance_contrib.csv",
-            "feature_metrics.csv": f"{version_dir.name}/feature_metrics.csv",
+            "pca_loadings.csv": "pca_loadings.csv",
+            "pca_variance_explained.csv": "pca_variance_explained.csv",
+            "pca_transformed_data.csv": "pca_transformed_data.csv",
+            "trait_variance_contrib.csv": "trait_variance_contrib.csv",
+            "feature_metrics.csv": "feature_metrics.csv",
         })
 
         plot_path, plot_url = _plot_path_and_url(stem, version_id, "pca", "scree")
@@ -207,7 +207,7 @@ def run_dimensionality_reduction_workflow(
         emb_df = pd.DataFrame(embedding, columns=["UMAP1", "UMAP2"])
         emb_csv = version_dir / "umap_embedding.csv"
         emb_df.to_csv(emb_csv, index=False)
-        outputs["umap_embedding.csv"] = f"{version_dir.name}/umap_embedding.csv"
+        outputs["umap_embedding.csv"] = "umap_embedding.csv"
 
         plot_path, plot_url = _plot_path_and_url(stem, version_id, "umap", "scatter")
         _render_umap_scatter(embedding, stem, plot_path)
@@ -218,7 +218,7 @@ def run_dimensionality_reduction_workflow(
     return {
         "version_id": entry.id,
         "version_dir": str(version_dir),
-        "manifest_path": str(writer.analysis_dir.path / "manifest.json"),
+        "manifest_path": f"{writer.analysis_dir.path}manifest.json",
         "summary": summary,
         "outputs": outputs,
         "plot_url": plot_url,

@@ -11,6 +11,7 @@ POSTGRES_DB       ?= postgres
 .PHONY: help
 help:
 	@echo "Usage:"
+	@echo "  make init             - Generate .env.dev from .env.dev.example (FORCE=1 to overwrite)"
 	@echo "  make dev-up           - Run full stack in development mode"
 	@echo "  make dev-down         - Stop development stack"
 	@echo "  make prod-up          - Run full stack in production mode"
@@ -20,15 +21,23 @@ help:
 	@echo "  make dev-logs         - Tail development logs"
 	@echo "  make staging-logs     - Tail staging logs"
 	@echo "  make reset-storage    - Reset dev DB and storage (destructive)"
-	@echo "  make drop-tables      - Drop all tables in public schema"
 	@echo "  make new-migration name=xxx - Create a new migration file"
 	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
+	@echo "  make test-integration - Run integration tests against the local dev stack"
+	@echo "  make check            - Verify local stack: services, roles, schemas, migrations"
+	@echo "  make verify-dev       - Clean reset -> up -> migrate -> check (destructive)"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
 	@echo "  make upload-images    - Upload test images to MinIO storage"
 	@echo "  make create-bucket    - Create a new S3 bucket (BUCKET=name [PUBLIC=true])"
 	@echo "  make list-buckets     - List all S3 buckets"
-	@echo "  make configure-storage - Configure storage backend (MinIO or AWS S3)"
+	@echo "  make configure-storage-dev - Configure storage backend (MinIO or AWS S3)"
 	@echo "  make gen-types         - Generate database.types.ts from local DB and sync to all packages"
+
+# Generate a local .env.dev from .env.dev.example with fresh secrets.
+# Pass FORCE=1 to overwrite an existing .env.dev (it is backed up first).
+.PHONY: init
+init: check-uv
+	@uv run --with pyjwt,python-dotenv python scripts/init_dev.py $(if $(FORCE),--force,)
 
 # Run development stack
 .PHONY: dev-up
@@ -107,9 +116,12 @@ staging-down:
 	@echo "Staging containers stopped."
 
 # View logs for all services
-.PHONY: dev-logs
+.PHONY: logs dev-logs
 logs:
 	docker compose -f docker-compose.dev.yml logs -f
+
+# Alias so `make dev-logs` works alongside prod-logs / staging-logs.
+dev-logs: logs
 
 .PHONY: prod-logs
 prod-logs:
@@ -155,7 +167,7 @@ reset-storage:
 	
 	@echo "Waiting for database to be ready..."
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
-		if docker exec db-dev pg_isready -U supabase_admin -h localhost >/dev/null 2>&1; then \
+		if docker compose -f docker-compose.dev.yml exec -T db-dev pg_isready -U supabase_admin -h localhost >/dev/null 2>&1; then \
 			echo "Database is ready"; \
 			break; \
 		fi; \
@@ -164,7 +176,7 @@ reset-storage:
 	done
 	
 	@echo "Truncating all tables to remove seed data..."
-	@docker exec db-dev psql -U supabase_admin -d postgres -c "\
+	@docker compose -f docker-compose.dev.yml exec -T db-dev psql -U supabase_admin -d postgres -c "\
 		DO \$$\$$ \
 		DECLARE \
 			r RECORD; \
@@ -197,6 +209,18 @@ new-migration:
 ## Tracking lives in `supabase_migrations.schema_migrations` (CLI-managed) —
 ## the old `public._migrations` table used by the removed apply-migrations-local
 ## rule is no longer read or written.
+##
+## Connection params come from .env.dev so the generated password and the
+## configured POSTGRES_HOST_PORT are honoured. To dodge a host 5432 conflict
+## (e.g. a WSL-relayed Postgres) set POSTGRES_HOST_PORT=5433 in .env.dev or the
+## environment. Host port is resolved at parse time (env > .env.dev > 5432) so
+## it is visible in `make -n`; the password/user/db are sourced at runtime so
+## secrets never appear in `make -n` output.
+POSTGRES_HOST_PORT ?= $(shell sed -n 's/^POSTGRES_HOST_PORT=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r')
+ifeq ($(strip $(POSTGRES_HOST_PORT)),)
+POSTGRES_HOST_PORT := 5432
+endif
+
 .PHONY: migrate-local
 migrate-local:
 	@command -v supabase >/dev/null 2>&1 || ( \
@@ -208,8 +232,27 @@ migrate-local:
 		echo "Error: Development database not running. Start with 'make dev-up' first."; \
 		exit 1; \
 	fi
-	@supabase db push \
-		--db-url "postgresql://supabase_admin:$${POSTGRES_PASSWORD:-postgres}@127.0.0.1:5432/postgres?sslmode=disable" \
+	@if [ ! -f .env.dev ]; then \
+		echo "Error: .env.dev not found. Run 'make init' first."; \
+		exit 1; \
+	fi
+	@set -e; \
+	PG_USER=$$(sed -n 's/^POSTGRES_USER=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); PG_USER=$${PG_USER:-supabase_admin}; \
+	PG_PASSWORD=$$(sed -n 's/^POSTGRES_PASSWORD=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
+	if [ -z "$$PG_PASSWORD" ]; then echo "Error: POSTGRES_PASSWORD is empty in .env.dev — run 'make init'."; exit 1; fi; \
+	PG_DB=$$(sed -n 's/^POSTGRES_DB=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); PG_DB=$${PG_DB:-postgres}; \
+	echo "Waiting for storage schema (storage-api provisions storage.buckets)..."; \
+	for i in $$(seq 1 90); do \
+		if docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T -e PGPASSWORD="$$PG_PASSWORD" db-dev \
+			psql -U "$$PG_USER" -d "$$PG_DB" -tAc \
+			"SELECT 1 FROM information_schema.columns WHERE table_schema='storage' AND table_name='buckets' AND column_name='public'" \
+			2>/tmp/migrate_storage_wait.err | grep -q 1; then break; fi; \
+		if [ $$i -eq 90 ]; then echo "Error: storage.buckets not ready after 180s (is storage-api running? some migrations INSERT into it). Last psql stderr:"; tail -5 /tmp/migrate_storage_wait.err 2>/dev/null; exit 1; fi; \
+		sleep 2; \
+	done; \
+	supabase db push \
+		--db-url "postgresql://$${PG_USER}:$${PG_PASSWORD}@127.0.0.1:$(POSTGRES_HOST_PORT)/$${PG_DB}?sslmode=disable" \
+		--debug \
 		--yes
 
 # Preflight helper: fail fast with an actionable message if `uv` is not on PATH.
@@ -223,6 +266,39 @@ check-uv:
 		echo "Install: https://docs.astral.sh/uv/getting-started/installation/"; \
 		exit 1; \
 	)
+
+## Run the integration test suite locally against the running dev stack.
+## Requires the stack to be up (`make dev-up`) and migrated (`make migrate-local`);
+## conftest reads .env.dev for the DB credentials.
+.PHONY: test-integration
+test-integration: check-uv
+	@uv run --extra test pytest tests/integration/ -v
+
+## Verify the local dev stack is correct: services healthy, required roles +
+## auth/storage schemas present, every migration applied (issue #104).
+.PHONY: check
+check: check-uv
+	@uv run --extra test python scripts/check_health.py
+
+## One-shot: clean reset -> up -> migrate -> health check. Destructive (wipes the
+## local DB). Use to reproduce a fresh-clone init and prove it end to end.
+.PHONY: verify-dev
+verify-dev: check-uv
+	@echo "Clean reset of the dev stack (this wipes the local DB)..."
+	docker compose -f docker-compose.dev.yml --env-file .env.dev down -v
+	@echo "Wiping the local DB bind-mount ($(CURDIR)/volumes/db/data)..."
+	@rm -rf "$(CURDIR)/volumes/db/data"
+	$(MAKE) dev-up
+	@echo "Waiting for db-dev to accept connections..."
+	@for i in $$(seq 1 60); do \
+		if docker compose -f docker-compose.dev.yml exec -T db-dev pg_isready -U supabase_admin -h localhost >/dev/null 2>&1; then \
+			echo "db-dev ready"; break; \
+		fi; \
+		if [ $$i -eq 60 ]; then echo "Error: db-dev did not accept connections after 120s. Check 'make dev-logs'."; exit 1; fi; \
+		sleep 2; \
+	done
+	$(MAKE) migrate-local
+	$(MAKE) check
 
 ## Load test data into development database
 .PHONY: load-test-data

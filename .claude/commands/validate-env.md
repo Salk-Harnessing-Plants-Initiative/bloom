@@ -51,7 +51,7 @@ Key services: `bloom-web`, `langchain-agent`, `bloommcp`, `db-dev`, `supabase-mi
 ## Check 4: Database
 
 ```bash
-docker exec db-dev pg_isready -U supabase_admin -h localhost
+docker compose -f docker-compose.dev.yml exec db-dev pg_isready -U supabase_admin -h localhost
 make migrate-local
 make gen-types
 ```

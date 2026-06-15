@@ -17,10 +17,10 @@ export async function RecentPhenotypesByPlateScanner() {
   const initialSections = await getRecentPhenotypesByPlateScanner(supabase);
 
   return (
-    <section className="py-8" aria-label="Recent phenotypes by plate scanner">
+    <section className="py-8" aria-label="Recent scans by plate scanner">
       <div className="mb-5 flex items-center gap-3">
         <h2 className="text-2xl font-serif italic text-green-800">
-          Recent phenotypes by plate scanner
+          Recent Scans by plate scanner
         </h2>
         <LiveIndicator />
       </div>

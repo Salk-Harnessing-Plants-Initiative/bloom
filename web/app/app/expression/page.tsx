@@ -38,7 +38,11 @@ export default async function AllSpecies() {
 
       <ul className="divide-y divide-stone-200 border-y border-stone-200">
         {speciesList.map((species) => {
-          const datasets = species.scrna_datasets ?? [];
+          // NULL_DATASET is a sentinel for placeholder rows with no real
+          // expression data attached yet — hide them from the UI.
+          const datasets = (species.scrna_datasets ?? []).filter(
+            (d) => d.name !== "NULL_DATASET",
+          );
           const n = datasets.length;
           const suffix = n === 1 ? "" : "s";
           const preview = datasets
@@ -101,8 +105,11 @@ async function getSpeciesList(): Promise<SpeciesWithRNADatasets[]> {
     .select("*, scrna_datasets(id, name)")
     .is("deleted_at", null);
 
+  const countReal = (s: SpeciesWithRNADatasets) =>
+    (s.scrna_datasets ?? []).filter((d) => d.name !== "NULL_DATASET").length;
+
   (data as SpeciesWithRNADatasets[] | undefined)?.sort((a, b) => {
-    const diff = (b.scrna_datasets?.length ?? 0) - (a.scrna_datasets?.length ?? 0);
+    const diff = countReal(b) - countReal(a);
     if (diff !== 0) return diff;
     return (a.common_name ?? "").localeCompare(b.common_name ?? "");
   });

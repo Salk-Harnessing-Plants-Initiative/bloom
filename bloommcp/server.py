@@ -28,6 +28,11 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
+# Imported for its import-time side effect: validates SUPABASE_URL and
+# BLOOM_AGENT_KEY are present so a misconfigured deploy fails fast at
+# container start instead of on the first tool that needs Supabase.
+import source.supabase_client  # noqa: F401
+
 from tools import (
     qc_tools,
     viz_tools,

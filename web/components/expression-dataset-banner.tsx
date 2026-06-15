@@ -32,6 +32,7 @@ async function fetchBannerData(datasetId: number) {
       .eq("species_id", dataset.species_id)
       .is("deleted_at", null)
       .neq("id", datasetId)
+      .neq("name", "NULL_DATASET")
       .order("name"),
     supabase
       .from("scrna_cells")

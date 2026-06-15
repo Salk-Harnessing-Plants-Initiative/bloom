@@ -30,7 +30,7 @@ interface ScanRow {
   plate_index: string | null;
   wave_number: number | null;
   capture_date: string;
-  gravi_images: { object_path: string }[];
+  gravi_images: { object_path: string } | null;
   gravi_scan_metadata_accession: MetadataAccession | null;
 }
 
@@ -80,7 +80,12 @@ export default async function PlateExperiment({
   }
 
   const plates = groupByPlate(experiment.gravi_scans ?? []);
-  const totalTimepoints = experiment.gravi_scans?.length ?? 0;
+  // Per-plate timepoint count. Plates in the same experiment typically share
+  // a cadence, so showing the max is honest ("up to N"); falls back to 0 when
+  // there are no scans.
+  const perPlateTimepoints = plates.length
+    ? Math.max(...plates.map((p) => p.scans.length))
+    : 0;
 
   return (
     <div>
@@ -107,8 +112,8 @@ export default async function PlateExperiment({
         </div>
         <div className="mt-2 text-lg font-medium text-stone-700">
           {plates.length} plate{plates.length === 1 ? "" : "s"} ·{" "}
-          {totalTimepoints} time point{totalTimepoints === 1 ? "" : "s"} across
-          all plates
+          {perPlateTimepoints} time point
+          {perPlateTimepoints === 1 ? "" : "s"}
         </div>
       </div>
 
@@ -125,7 +130,7 @@ export default async function PlateExperiment({
             >
               <div className="flex gap-5">
                 <PlateImage
-                  path={plate.latestScan.gravi_images?.[0]?.object_path ?? null}
+                  path={plate.latestScan.gravi_images?.object_path ?? null}
                   alt={plate.plate_id}
                   className="w-[160px] h-[160px] shrink-0"
                 />
@@ -284,8 +289,20 @@ function groupByPlate(scans: ScanRow[]): PlateGroup[] {
     });
   }
 
-  groups.sort((a, b) => a.plate_id.localeCompare(b.plate_id));
+  // Natural sort: extract the trailing integer so Plate_2 < Plate_10.
+  // Lex tiebreak keeps order stable when plate_ids share the same suffix.
+  groups.sort((a, b) => {
+    const an = plateSortKey(a.plate_id);
+    const bn = plateSortKey(b.plate_id);
+    if (an !== bn) return an - bn;
+    return a.plate_id.localeCompare(b.plate_id);
+  });
   return groups;
+}
+
+function plateSortKey(plate_id: string): number {
+  const match = plate_id.match(/(\d+)$/);
+  return match ? parseInt(match[1], 10) : Number.POSITIVE_INFINITY;
 }
 
 async function getExperiment(
