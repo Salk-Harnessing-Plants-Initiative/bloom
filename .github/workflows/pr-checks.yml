@@ -394,6 +394,12 @@ jobs:
           echo "SUPABASE_URL_HOSTS_ALLOWED=kong:8000=kong:8000" >> .env.ci
           echo "SUPABASE_COOKIE_NAME=sb-ci-auth-token" >> .env.ci
           echo "NEXT_PUBLIC_APP_URL=http://localhost" >> .env.ci
+          # bloom-web bakes NEXT_PUBLIC_MCP_URL as a build arg
+          # (docker-compose.prod.yml). Without it here the CI image builds
+          # with an empty value — CI/prod-shape drift. http://localhost
+          # mirrors the other browser-facing CI URLs (Caddy on the runner
+          # host). Flagged by Copilot review on PR #268.
+          echo "NEXT_PUBLIC_MCP_URL=http://localhost" >> .env.ci
           echo "SUPABASE_PUBLIC_URL=http://localhost/api" >> .env.ci
           echo "POOLER_TENANT_ID=default" >> .env.ci
           echo "POOLER_DEFAULT_POOL_SIZE=5" >> .env.ci
@@ -625,12 +631,27 @@ jobs:
 
       # Playwright E2E tests — run after integration tests against the same
       # live compose stack. Skips gracefully if web/e2e/ is absent.
+      #
+      # Node 20 is pinned explicitly to match the web-unit-tests job and the
+      # runtime image (web/Dockerfile.bloom-web.prod uses node:20). Without
+      # this pin the runner's default Node is used, which can change between
+      # runner releases and produce non-deterministic CI. Flagged by Copilot
+      # review on PR #268.
       - name: Setup Node.js for Playwright
         if: hashFiles('web/e2e/**') != ''
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
+
+      - name: Cache Playwright browsers
+        if: hashFiles('web/e2e/**') != ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json', 'package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
 
       - name: Install npm dependencies (for Playwright)
         if: hashFiles('web/e2e/**') != ''
@@ -672,45 +693,6 @@ jobs:
           docker compose $COMPOSE_FILES --env-file .env.ci logs langchain-agent --tail=50
           echo "=== bloommcp logs ==="
           docker compose $COMPOSE_FILES --env-file .env.ci logs bloommcp --tail=50
-
-      # Playwright e2e exercises the runtime-config refactor end-to-end
-      # (web/e2e/runtime-config.spec.ts ships in PR-3). Runs against the
-      # up-stack via TEST_BASE_URL=http://localhost. Browsers cached by
-      # actions/cache. Spec files added in this PR are pure-additive — the
-      # existing Playwright suite is untouched.
-      #
-      # Node 20 is pinned explicitly to match the web-unit-tests job and
-      # the runtime image (web/Dockerfile.bloom-web.prod uses node:20).
-      # Without this pin the runner's default Node is used, which can
-      # change between runner releases and produce non-deterministic CI.
-      # Flagged by Copilot review on PR #268.
-      - name: Setup Node.js
-        if: success()
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Cache Playwright browsers
-        if: success()
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json', 'package-lock.json') }}
-          restore-keys: |
-            playwright-${{ runner.os }}-
-
-      - name: Install web workspace + Playwright browsers
-        if: success()
-        run: |
-          npm ci
-          cd web && npx playwright install --with-deps chromium
-
-      - name: Run Playwright e2e against compose stack
-        if: success()
-        env:
-          TEST_BASE_URL: http://localhost
-        run: cd web && npm run test:e2e
 
       - name: Cleanup
         if: always()

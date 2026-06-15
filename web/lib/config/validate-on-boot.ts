@@ -37,6 +37,8 @@
  * Owned by openspec/changes/add-ghcr-image-publishing tasks.md §2.3 / §2.4.
  */
 
+import { getPublicConfig } from "@/lib/config/public-config";
+
 /** Thrown when `SUPABASE_URL_HOSTS_ALLOWED` is structurally malformed. */
 export class MalformedHostsAllowedError extends Error {
   constructor(message: string) {
@@ -120,7 +122,12 @@ export function validateOnBoot(): void {
   if (process.env.NODE_ENV !== "production") {
     return;
   }
-  const publicUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  // Obtain the public URL via getPublicConfig() rather than reading
+  // process.env.NEXT_PUBLIC_SUPABASE_URL directly, keeping every
+  // NEXT_PUBLIC_* access centralized in public-config.ts (the future
+  // "No Direct NEXT_PUBLIC Reads" invariant lands in PR-2 §4). Behavior is
+  // identical — getPublicConfig() reads process.env at call time.
+  const publicUrl = getPublicConfig().supabaseUrl;
   if (!publicUrl) {
     throw new Error(
       "Missing required env: NEXT_PUBLIC_SUPABASE_URL. Production builds " +

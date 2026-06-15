@@ -29,6 +29,14 @@ Plus one assertion on the repo root:
    building locally even after ``docker-compose.prod.yml`` flips its custom
    services to ``image: ghcr.io/...`` in PR-3.
 
+And a CI/prod build-arg parity assertion:
+7. The ``Generate .env.ci`` step MUST set every env var referenced by a
+   ``NEXT_PUBLIC_*`` build arg of the ``bloom-web`` service in
+   ``docker-compose.prod.yml``. Any referenced var the generator omits gets
+   substituted as empty when compose-health-check builds the image, baking an
+   empty ``NEXT_PUBLIC_*`` into the JS bundle — silent CI/prod-shape drift.
+   Copilot review on PR #268 flagged ``NEXT_PUBLIC_MCP_URL`` specifically.
+
 The "no ``--build-arg NEXT_PUBLIC_*`` in docker-build" invariant has been
 DEFERRED to PR-3 §6 (which removes the matching ``ARG`` lines from
 ``web/Dockerfile.bloom-web.prod`` so the build args become true no-ops).
@@ -89,7 +97,7 @@ def _iter_run_lines(job: dict) -> list[str]:
 
 
 def test_compose_health_check_declares_compose_files_env() -> None:
-    """Invariant 2: job-level env.COMPOSE_FILES is set correctly."""
+    """Invariant 1: job-level env.COMPOSE_FILES is set correctly."""
     workflow = _load_workflow()
     job = workflow["jobs"]["compose-health-check"]
     env_block = job.get("env") or {}
@@ -102,7 +110,7 @@ def test_compose_health_check_declares_compose_files_env() -> None:
 
 
 def test_every_docker_compose_command_uses_compose_files_var() -> None:
-    """Invariant 3: no compose command hard-codes -f docker-compose.prod.yml."""
+    """Invariant 2: no compose command hard-codes -f docker-compose.prod.yml."""
     workflow = _load_workflow()
     job = workflow["jobs"]["compose-health-check"]
     offenders = []
@@ -120,7 +128,7 @@ def test_every_docker_compose_command_uses_compose_files_var() -> None:
 
 
 def test_web_unit_tests_job_exists_with_correct_shape() -> None:
-    """Invariant 4: web-unit-tests job runs Vitest in parallel."""
+    """Invariant 3: web-unit-tests job runs Vitest in parallel."""
     workflow = _load_workflow()
     jobs = workflow["jobs"]
     assert "web-unit-tests" in jobs, (
@@ -211,6 +219,53 @@ def test_compose_health_check_pins_node_20_before_npm_steps() -> None:
         f"actions/setup-node@v4 is at step {setup_node_idx} but the first "
         f"npm/Playwright step is at {first_npm_idx}; the Node pin must "
         "come BEFORE any step that needs Node."
+    )
+
+
+def test_env_ci_sets_bloom_web_next_public_build_arg_vars() -> None:
+    """Invariant 7: .env.ci generator sets every env var a bloom-web
+    NEXT_PUBLIC_* build arg references.
+
+    docker-compose.prod.yml bakes NEXT_PUBLIC_* into the bloom-web image via
+    build args whose values are ``${ENV_VAR}`` references. compose-health-check
+    builds that image with ``--env-file .env.ci``; any referenced var the
+    generator omits substitutes to empty, silently shipping an empty
+    NEXT_PUBLIC_* in the bundle. Copilot review on PR #268 caught
+    NEXT_PUBLIC_MCP_URL missing from the generator.
+    """
+    prod = yaml.safe_load(
+        (REPO_ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    )
+    build = prod["services"]["bloom-web"].get("build") or {}
+    build_args = build.get("args") or {}
+    # Collect the ${ENV_VAR} referenced by each NEXT_PUBLIC_* build arg value.
+    referenced_vars: set[str] = set()
+    for arg_name, arg_value in build_args.items():
+        if not arg_name.startswith("NEXT_PUBLIC_"):
+            continue
+        for match in re.finditer(r"\$\{([A-Z_][A-Z0-9_]*)\}", str(arg_value)):
+            referenced_vars.add(match.group(1))
+    assert referenced_vars, (
+        "expected bloom-web to declare NEXT_PUBLIC_* build args in "
+        "docker-compose.prod.yml; found none — has the build shape changed?"
+    )
+    # Collect env vars the generator writes into .env.ci.
+    workflow = _load_workflow()
+    job = workflow["jobs"]["compose-health-check"]
+    echoed: set[str] = set()
+    for line in _iter_run_lines(job):
+        if ">> .env.ci" not in line:
+            continue
+        match = re.search(r'echo\s+"([A-Z_][A-Z0-9_]*)=', line)
+        if match:
+            echoed.add(match.group(1))
+    missing = sorted(referenced_vars - echoed)
+    assert not missing, (
+        "the 'Generate .env.ci from secrets' step does not set "
+        f"{missing}, but docker-compose.prod.yml references them for "
+        "bloom-web's NEXT_PUBLIC_* build args. The CI build would bake "
+        "empty values — CI/prod-shape drift. Add an `echo \"VAR=...\" "
+        ">> .env.ci` line for each."
     )
 
 
