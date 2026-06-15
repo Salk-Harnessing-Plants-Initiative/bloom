@@ -42,22 +42,41 @@ import supabase
 
 BUCKET = "bloommcp-data"
 INPUT_PREFIX = "bloommcp_input/"
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-BLOOM_AGENT_KEY = os.environ.get("BLOOM_AGENT_KEY")
-# checks for keys
-if not SUPABASE_URL:
-    raise RuntimeError(
-        "SUPABASE_URL is required for bloommcp.source.supabase_client. "
-        "Set it in the bloommcp service env block of docker-compose.prod.yml."
-    )
-if not BLOOM_AGENT_KEY:
-    raise RuntimeError(
-        "BLOOM_AGENT_KEY is required for bloommcp.source.supabase_client. "
-        "It is the JWT signed with role=bloom_agent that bloommcp uses to "
-        "call PostgREST and Supabase Storage. Set it in the bloommcp service "
-        "env block of docker-compose.prod.yml (already injected from the "
-        "PROD_/STAGING_BLOOM_AGENT_KEY GitHub Actions secret at deploy time)."
-    )
+
+
+def _require_env() -> tuple[str, str]:
+    """Read and validate the Supabase env, returning ``(url, key)``.
+
+    Validation is deferred to call time (not import) so that ``import
+    bloom_mcp`` and the fakes-based unit tests run with no Supabase. Every
+    client accessor calls this, and a misconfigured deploy raises a clear
+    error naming exactly the missing variable(s).
+    """
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("BLOOM_AGENT_KEY")
+    missing = [
+        name
+        for name, val in (("SUPABASE_URL", url), ("BLOOM_AGENT_KEY", key))
+        if not val
+    ]
+    if missing:
+        raise RuntimeError(
+            f"{' and '.join(missing)} required for bloom_mcp.supabase_client but "
+            "unset. Set them in the bloommcp service env block of "
+            "docker-compose.prod.yml (injected from the PROD_/STAGING_* GitHub "
+            "Actions secrets at deploy time)."
+        )
+    return url, key
+
+
+def validate_env() -> None:
+    """Raise ``RuntimeError`` if the Supabase env is incomplete.
+
+    Called explicitly at server startup so a misconfigured deploy fails fast
+    at boot instead of relying on an import-time side effect; reused by every
+    accessor below for lazy per-call validation.
+    """
+    _require_env()
 
 
 def _validate_name(name: str) -> None:
@@ -85,7 +104,8 @@ def get_postgrest_client() -> supabase.Client:
     A new client is constructed per call so the JWT does not live as
     module-level state and rotation requires no in-process reload.
     """
-    return supabase.create_client(SUPABASE_URL, BLOOM_AGENT_KEY)
+    url, key = _require_env()
+    return supabase.create_client(url, key)
 
 
 def read_input_csv(name: str) -> pd.DataFrame:
@@ -130,16 +150,16 @@ def _guess_content_type(path: Path) -> str:
 
 
 def get_storage_client():
-    """Return a fresh Supabase storage client with access to `bloommcp-data`.
-    """
-    return supabase.create_client(SUPABASE_URL, BLOOM_AGENT_KEY).storage.from_(BUCKET)
+    """Return a fresh Supabase storage client with access to `bloommcp-data`."""
+    url, key = _require_env()
+    return supabase.create_client(url, key).storage.from_(BUCKET)
 
 
 def list_prefix(prefix: str) -> list[str]:
     """List basenames of objects directly under `prefix` in `bloommcp-data`.
-        Lists file inside the folder.
-        list_prefix("") is shows at the root"
-        list_prefix("bloommcp_output/") shows file under the prefix folder
+    Lists file inside the folder.
+    list_prefix("") is shows at the root"
+    list_prefix("bloommcp_output/") shows file under the prefix folder
     """
     client = get_storage_client()
     items = client.list(prefix)
@@ -183,7 +203,10 @@ def upload_file(key: str, local_path: Path) -> None:
     client.upload(
         path=key,
         file=body,
-        file_options={"content-type": _guess_content_type(local_path), "upsert": "true"},
+        file_options={
+            "content-type": _guess_content_type(local_path),
+            "upsert": "true",
+        },
     )
 
 

@@ -7,13 +7,14 @@ writer races a `create_version` → `commit` pair, both may allocate the
 same `v<N>` and the second commit silently clobbers the first's manifest
 entry. Don't run two bloommcp instances against the same Supabase project.
 """
+
 import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from source.supabase_client import upload_file
+from bloom_mcp.supabase_client import upload_file
 
 from .analysis_dir import AnalysisDir
 from .code_versions import get_code_versions

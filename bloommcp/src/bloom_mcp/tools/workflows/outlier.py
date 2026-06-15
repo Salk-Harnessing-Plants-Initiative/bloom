@@ -8,18 +8,19 @@ into one workflow with a `method` parameter and a `remove_outliers` flag.
 Each call writes a single versioned directory `outlier_<stem>/v<N>_<date>/`
 via AnalysisWriter. See `method` parameter docs for the 5 dispatch modes.
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Optional
 
-from source.data_utils import convert_to_json_serializable
-from source.experiment_utils import (
+from bloom_mcp.data_utils import convert_to_json_serializable
+from bloom_mcp.experiment_utils import (
     TRAITS_DIR,
     load_experiment_data as _load_data,
 )
-from source.outlier_detection import (
+from bloom_mcp.outlier_detection import (
     combine_outlier_methods,
     detect_outliers_isolation_forest as _detect_isolation,
     detect_outliers_mahalanobis as _detect_mahalanobis,
@@ -32,7 +33,13 @@ from ._helpers import build_writer
 _TOOL_NAME = "run_outlier_workflow"
 _TOOL_CLASS = "outlier"
 
-VALID_METHODS = ("mahalanobis", "isolation_forest", "pca", "consensus", "all_then_consensus")
+VALID_METHODS = (
+    "mahalanobis",
+    "isolation_forest",
+    "pca",
+    "consensus",
+    "all_then_consensus",
+)
 
 
 def run_outlier_workflow(
@@ -132,7 +139,9 @@ def run_outlier_workflow(
         summary["consensus_threshold"] = consensus_threshold
         per_detector_counts = {
             "mahalanobis": mahal.get("n_outliers", 0) if "error" not in mahal else None,
-            "isolation_forest": iso.get("n_outliers", 0) if "error" not in iso else None,
+            "isolation_forest": (
+                iso.get("n_outliers", 0) if "error" not in iso else None
+            ),
             "pca": pca_res.get("n_outliers", 0) if "error" not in pca_res else None,
         }
         summary["per_detector"] = per_detector_counts
@@ -173,7 +182,10 @@ def run_outlier_workflow(
 
     if remove_outliers and outlier_indices:
         cleaned_df, outlier_df = remove_outliers_from_data(
-            df, outlier_indices, keep_metadata=True, return_outliers=True,
+            df,
+            outlier_indices,
+            keep_metadata=True,
+            return_outliers=True,
         )
         cleaned_name = f"{stem}_cleaned.csv"
         outlier_name = f"{stem}_outlier_samples.csv"

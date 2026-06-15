@@ -1,9 +1,10 @@
 """MCP tool: list every prior analysis on file for an experiment."""
+
 import json
 import time
 
-import source.experiment_utils as _eu
-from storage import AnalysisDir, ManifestSchemaError
+import bloom_mcp.experiment_utils as _eu
+from bloom_mcp.storage import AnalysisDir, ManifestSchemaError
 
 TOOL_CLASSES = (
     "qc",
@@ -79,9 +80,7 @@ def list_existing_analyses(experiment_filename: str) -> str:
         "analyses": by_tool_class,
     }
     if not by_tool_class:
-        response["message"] = (
-            f"No prior analyses found for '{experiment_filename}'."
-        )
+        response["message"] = f"No prior analyses found for '{experiment_filename}'."
     if errors:
         response["errors"] = errors
 

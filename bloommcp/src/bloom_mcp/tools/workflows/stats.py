@@ -9,12 +9,13 @@ ANOVA, heritability, and heritability-diagnostic logic from the original
 `stats_tools.py` move to dedicated workflows (heritability + group-comparison)
 in later phases — this workflow is descriptive stats only.
 """
+
 from __future__ import annotations
 
 from typing import Optional
 
-from source import trait_statistics as _stats_module
-from source.experiment_utils import (
+from bloom_mcp import trait_statistics as _stats_module
+from bloom_mcp.experiment_utils import (
     TRAITS_DIR,
     load_experiment_data as _load_data,
 )
@@ -76,22 +77,25 @@ def run_descriptive_stats_workflow(
         if "error" in r:
             failed.append(trait)
             continue
-        rows.append({
-            "trait": trait,
-            "n": r.get("count"),
-            "mean": r.get("mean"),
-            "std": r.get("std"),
-            "median": r.get("median"),
-            "q25": r.get("q25"),
-            "q75": r.get("q75"),
-            "min": r.get("min"),
-            "max": r.get("max"),
-            "cv": r.get("cv"),
-            "skewness": r.get("skewness"),
-            "kurtosis": r.get("kurtosis"),
-        })
+        rows.append(
+            {
+                "trait": trait,
+                "n": r.get("count"),
+                "mean": r.get("mean"),
+                "std": r.get("std"),
+                "median": r.get("median"),
+                "q25": r.get("q25"),
+                "q75": r.get("q75"),
+                "min": r.get("min"),
+                "max": r.get("max"),
+                "cv": r.get("cv"),
+                "skewness": r.get("skewness"),
+                "kurtosis": r.get("kurtosis"),
+            }
+        )
 
     import pandas as pd
+
     stats_df = pd.DataFrame(rows)
 
     src_csv = TRAITS_DIR / filename
@@ -109,9 +113,11 @@ def run_descriptive_stats_workflow(
     stats_csv = version_dir / "stats.csv"
     stats_df.to_csv(stats_csv, index=False)
 
-    entry = writer.commit({
-        "stats.csv": "stats.csv",
-    })
+    entry = writer.commit(
+        {
+            "stats.csv": "stats.csv",
+        }
+    )
 
     return {
         "version_id": entry.id,

@@ -11,7 +11,7 @@ This module provides basic static visualization functions including:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -1493,7 +1493,7 @@ def create_pca_scree_plot(
         legend_elements.insert(
             1,
             Patch(
-                facecolor="lightblue", alpha=0.7, label=f"Remaining PCs (low variance)"
+                facecolor="lightblue", alpha=0.7, label="Remaining PCs (low variance)"
             ),
         )
 
@@ -1503,7 +1503,7 @@ def create_pca_scree_plot(
     n_features = pca_results.get(
         "n_features", len(pca_results.get("feature_names", []))
     )
-    title = f"PCA Scree Plot"
+    title = "PCA Scree Plot"
     if n_features:
         title += f" (Total features: {n_features})"
     plt.title(title, fontsize=14, pad=20)
@@ -2184,7 +2184,7 @@ def create_pca_biplot(
     # Set axis labels and title
     ax.set_xlabel(f"PC{pc_x} ({explained_var[pc_x - 1] * 100:.1f}% variance)")
     ax.set_ylabel(f"PC{pc_y} ({explained_var[pc_y - 1] * 100:.1f}% variance)")
-    ax.set_title(f"PCA Biplot", fontsize=14)
+    ax.set_title("PCA Biplot", fontsize=14)
 
     # Add grid
     ax.grid(True, alpha=0.3)
@@ -2730,7 +2730,7 @@ def create_pc_genotype_boxplots(
 
     # Main title
     fig.suptitle(
-        f"PC Score Distributions by Genotype "
+        "PC Score Distributions by Genotype "
         + f"(Using {n_components} PCs explaining {pca_results['cumulative_variance_ratio'][n_components - 1]:.1%} variance)",
         fontsize=title_fontsize,
     )
@@ -3391,7 +3391,7 @@ def create_genotype_image_grid(
                 spine.set_edgecolor("gray")
                 spine.set_linewidth(0.5)
 
-        except Exception as e:
+        except Exception:
             # Handle image loading errors
             ax.text(
                 0.5,

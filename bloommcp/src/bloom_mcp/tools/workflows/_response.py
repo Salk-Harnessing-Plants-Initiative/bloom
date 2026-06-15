@@ -10,6 +10,7 @@ The shape is intentionally MCP-client-agnostic: the bloom chat UI extracts
 Claude Desktop receives the same JSON and lets the LLM verbalize it. No
 client-specific fields.
 """
+
 from __future__ import annotations
 
 from typing import Any, TypedDict

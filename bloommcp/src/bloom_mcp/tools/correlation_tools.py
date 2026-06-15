@@ -7,14 +7,19 @@ source/experiment_utils.py for dynamic experiment discovery.
 
 import pandas as pd
 
-from source import cross_experiment_correlations as corr
+from bloom_mcp import cross_experiment_correlations as corr
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-from source.experiment_utils import TRAITS_DIR, PLOTS_DIR, PLOTS_URL as PLOTS_URL_BASE
+from bloom_mcp.experiment_utils import (
+    TRAITS_DIR,
+    PLOTS_DIR,
+    PLOTS_URL as PLOTS_URL_BASE,
+)
 
 # Experiment file mapping
 EXPERIMENTS = {
@@ -52,6 +57,7 @@ def _save_plot(fig, name: str) -> str:
 # Tool 1: List available experiments
 # ============================================================================
 
+
 def list_experiments() -> str:
     """List available experiments and their trait data files.
 
@@ -83,6 +89,7 @@ def list_experiments() -> str:
 # ============================================================================
 # Tool 2: Run cross-experiment correlation analysis
 # ============================================================================
+
 
 def run_cross_experiment_correlations(
     experiment_1: str = "cylinder",
@@ -171,6 +178,7 @@ def run_cross_experiment_correlations(
 # Tool 3: Scatter plot for a specific trait pair
 # ============================================================================
 
+
 def plot_trait_correlation(
     exp1_trait: str,
     exp2_trait: str,
@@ -215,8 +223,10 @@ def plot_trait_correlation(
     exp2_means = corr.calculate_genotype_means(exp2_df, exp2_traits)
 
     fig = corr.create_joint_plot(
-        exp1_means, exp2_means,
-        exp1_trait, exp2_trait,
+        exp1_means,
+        exp2_means,
+        exp1_trait,
+        exp2_trait,
         exp1_name=experiment_1,
         exp2_name=experiment_2,
     )
@@ -242,6 +252,7 @@ def plot_trait_correlation(
 # ============================================================================
 # Tool 4: Heatmap of all trait correlations
 # ============================================================================
+
 
 def plot_correlation_heatmap(
     experiment_1: str = "cylinder",
@@ -288,6 +299,7 @@ def plot_correlation_heatmap(
 # Tool 5: Compare genotypes for a trait pair (boxplots)
 # ============================================================================
 
+
 def plot_genotype_boxplots(
     exp1_trait: str,
     exp2_trait: str,
@@ -318,8 +330,12 @@ def plot_genotype_boxplots(
     )
 
     fig = corr.create_genotype_boxplots(
-        exp1_df, exp2_df, exp1_trait, exp2_trait,
-        exp1_name=experiment_1, exp2_name=experiment_2,
+        exp1_df,
+        exp2_df,
+        exp1_trait,
+        exp2_trait,
+        exp1_name=experiment_1,
+        exp2_name=experiment_2,
     )
 
     plot_url = _save_plot(fig, f"boxplot_{exp1_trait}_vs_{exp2_trait}")
@@ -329,6 +345,7 @@ def plot_genotype_boxplots(
 # ============================================================================
 # Tool 6: Statistical power analysis
 # ============================================================================
+
 
 def check_correlation_power(
     experiment_1: str = "cylinder",
@@ -365,16 +382,22 @@ def check_correlation_power(
         f"  Shared genotypes: {n}",
         f"  Min detectable r (80% power): {mdr_80:.3f}",
         f"  Min detectable r (90% power): {mdr_90:.3f}",
-        f"\nInterpretation:",
+        "\nInterpretation:",
     ]
 
     if mdr_80 > 0.7:
-        lines.append(f"  Low power - can only detect very strong correlations (r>{mdr_80:.2f})")
-        lines.append(f"  Consider adding more genotypes to improve sensitivity.")
+        lines.append(
+            f"  Low power - can only detect very strong correlations (r>{mdr_80:.2f})"
+        )
+        lines.append("  Consider adding more genotypes to improve sensitivity.")
     elif mdr_80 > 0.4:
-        lines.append(f"  Moderate power - can detect moderate-to-strong correlations (r>{mdr_80:.2f})")
+        lines.append(
+            f"  Moderate power - can detect moderate-to-strong correlations (r>{mdr_80:.2f})"
+        )
     else:
-        lines.append(f"  Good power - can detect moderate correlations (r>{mdr_80:.2f})")
+        lines.append(
+            f"  Good power - can detect moderate correlations (r>{mdr_80:.2f})"
+        )
 
     exp1_traits = _get_trait_cols(exp1_df)
     exp2_traits = _get_trait_cols(exp2_df)
@@ -386,7 +409,7 @@ def check_correlation_power(
     )
 
     if len(corr_df) > 0:
-        lines.append(f"\nAchieved power for top 5 correlations:")
+        lines.append("\nAchieved power for top 5 correlations:")
         for _, row in corr_df.head(5).iterrows():
             pwr = corr.achieved_power(row["correlation"], n)
             ci_lo, ci_hi = corr.calculate_correlation_ci(row["correlation"], n)
@@ -402,6 +425,7 @@ def check_correlation_power(
 # ============================================================================
 # Tool 7: Reduce redundant traits
 # ============================================================================
+
 
 def find_redundant_traits(
     experiment: str = "cylinder",
@@ -439,7 +463,7 @@ def find_redundant_traits(
         f"  Clusters (|r| >= {correlation_threshold}): {len(clusters)}",
         f"  Representative traits: {len(representatives)}",
         f"  Traits eliminated: {len(trait_cols) - len(representatives)}",
-        f"\nClusters:",
+        "\nClusters:",
     ]
 
     for cluster_id in sorted(clusters.keys()):
@@ -463,6 +487,7 @@ def find_redundant_traits(
 # ============================================================================
 # Tool 8: Compare same trait across experiments
 # ============================================================================
+
 
 def compare_trait_across_experiments(
     trait_name: str,
@@ -504,8 +529,12 @@ def compare_trait_across_experiments(
     if not stats["valid"]:
         return f"Insufficient data to correlate '{trait_name}' across experiments."
 
-    exp1_means_df = exp1_df.groupby("genotype")[trait_name].agg(["mean", "std", "count"])
-    exp2_means_df = exp2_df.groupby("genotype")[trait_name].agg(["mean", "std", "count"])
+    exp1_means_df = exp1_df.groupby("genotype")[trait_name].agg(
+        ["mean", "std", "count"]
+    )
+    exp2_means_df = exp2_df.groupby("genotype")[trait_name].agg(
+        ["mean", "std", "count"]
+    )
 
     lines = [
         f"Cross-Experiment Comparison: {trait_name}",
@@ -522,18 +551,26 @@ def compare_trait_across_experiments(
 
     r = abs(stats["spearman_r"])
     if r > 0.7:
-        lines.append(f"\n  Strong cross-experiment consistency - genotype rankings preserved")
+        lines.append(
+            "\n  Strong cross-experiment consistency - genotype rankings preserved"
+        )
     elif r > 0.4:
-        lines.append(f"\n  Moderate consistency - some genotype reranking across environments")
+        lines.append(
+            "\n  Moderate consistency - some genotype reranking across environments"
+        )
     else:
-        lines.append(f"\n  Weak consistency - trait highly environment-dependent")
+        lines.append("\n  Weak consistency - trait highly environment-dependent")
 
     exp1_m = corr.calculate_genotype_means(exp1_df, [trait_name])
     exp2_m = corr.calculate_genotype_means(exp2_df, [trait_name])
 
     fig = corr.create_joint_plot(
-        exp1_m, exp2_m, trait_name, trait_name,
-        exp1_name=experiment_1, exp2_name=experiment_2,
+        exp1_m,
+        exp2_m,
+        trait_name,
+        trait_name,
+        exp1_name=experiment_1,
+        exp2_name=experiment_2,
         correlation=stats["spearman_r"],
         p_value=stats["spearman_p"],
         n_genotypes=stats["n_genotypes"],
@@ -549,6 +586,7 @@ def compare_trait_across_experiments(
 # ============================================================================
 # Registration
 # ============================================================================
+
 
 def register(mcp):
     """Register all cross-experiment correlation tools with the MCP server."""

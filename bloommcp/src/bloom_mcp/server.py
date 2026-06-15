@@ -20,6 +20,7 @@ Direct tools (granular, available for ad-hoc use):
   - correlation_tools: 8 cross-experiment correlation tools
   - viz_tools:         7 plotting tools
 """
+
 import hmac
 import logging
 import os
@@ -28,18 +29,19 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-# Imported for its import-time side effect: validates SUPABASE_URL and
-# BLOOM_AGENT_KEY are present so a misconfigured deploy fails fast at
-# container start instead of on the first tool that needs Supabase.
-import source.supabase_client  # noqa: F401
+# Env validation is lazy (see supabase_client.validate_env): importing this
+# module no longer requires Supabase, so `import bloom_mcp` and the unit tests
+# run with no env. main() calls validate_env() at startup to preserve the
+# fail-fast-at-boot behavior for a misconfigured deploy.
+from bloom_mcp.supabase_client import validate_env
 
-from tools import (
+from bloom_mcp.tools import (
     qc_tools,
     viz_tools,
     correlation_tools,
     storage_tools,
 )
-from tools.workflows import (
+from bloom_mcp.tools.workflows import (
     clustering as clustering_workflow,
     dimred as dimred_workflow,
     outlier as outlier_workflow,
@@ -90,6 +92,7 @@ clustering_workflow.register(mcp)
 correlation_tools.register(mcp)
 viz_tools.register(mcp)
 
+
 # --- Health Endpoint ---
 # GET for Docker healthchecks. Bypasses MCP's SSE/JSON-RPC
 # protocol so probes don't need an API key, custom Accept header, or POST body.
@@ -97,11 +100,24 @@ viz_tools.register(mcp)
 async def health(_: Request) -> PlainTextResponse:
     return PlainTextResponse("ok")
 
+
 # --- Entry Point ---
 
-if __name__ == "__main__":
+
+def main() -> None:
+    """Validate the Supabase env, then start the MCP server.
+
+    ``validate_env()`` runs before ``mcp.run()`` binds the port so a
+    misconfigured deploy fails fast at container boot — preserving the
+    fail-fast that used to come from importing ``supabase_client``.
+    """
+    validate_env()
     if API_KEY:
         print("Bloom MCP Server starting with API key authentication")
     else:
         print("Bloom MCP Server starting without authentication (dev mode)")
     mcp.run(transport="streamable-http", host="0.0.0.0", port=8811)
+
+
+if __name__ == "__main__":
+    main()

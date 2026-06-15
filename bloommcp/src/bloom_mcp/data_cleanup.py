@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
-from .data_utils import convert_to_json_serializable, create_run_directory
+from .data_utils import convert_to_json_serializable
 
 # Set up module logger
 logger = logging.getLogger(__name__)

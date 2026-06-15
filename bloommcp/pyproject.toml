@@ -1,18 +1,32 @@
 [project]
 name = "bloommcp"
 version = "0.1.0"
-description = "Bloom MCP server with access to the bloom database"
+description = "Bloom MCP server exposing SLEAP root-trait analysis tools over the Model Context Protocol"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "BSD-2-Clause"
+authors = [{ name = "Salk Harnessing Plants Initiative" }]
+keywords = ["mcp", "sleap", "plant-phenotyping", "root-traits", "bloom"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "fastmcp>=2.0.0",
     "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
-    # Supabase PostgREST + Storage client, used by source/supabase_client.py
+    # Supabase PostgREST + Storage client, used by bloom_mcp.supabase_client
     # for CSV exchange via the bloommcp-data bucket.
     "supabase>=2.0.0",
-    # Data & analysis
+    # Phase-2 foundation: the public root-trait analysis library (source of the
+    # cross-tier oracle's perform_* functions) and the contracts schemas.
+    "sleap-roots-analyze>=0.1.0a2",
+    "sleap-roots-contracts[pandas]>=0.1.0a1",
+    # Data & analysis. numpy floor is >=2.3.2 because sleap-roots-analyze
+    # requires numpy 2.x; the remaining libs are still imported directly by the
+    # (not-yet-delegated) analysis modules under bloom_mcp/.
     "pandas>=2.0.0",
-    "numpy>=1.24.0",
+    "numpy>=2.3.2",
     "scipy>=1.10.0",
     "scikit-learn>=1.3.0",
     "statsmodels>=0.14.0",
@@ -22,3 +36,45 @@ dependencies = [
     # Dimensionality reduction
     "umap-learn>=0.5.0",
 ]
+
+[project.scripts]
+bloom-mcp = "bloom_mcp.server:main"
+
+# Test stack lives in the `test` extra (not a dev dependency-group) so CI invokes
+# it as `uv run --extra test pytest` — the repo-wide convention enforced by
+# tests/unit/test_ci_workflow_uv_conventions.py and matching langchain /
+# video-worker. The extra is opt-in, so `uv sync --no-dev` keeps it out of the
+# prod image.
+[project.optional-dependencies]
+test = [
+    "pytest>=8.3",
+    "hypothesis>=6.0",
+    "syrupy>=4.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "bloom_mcp"
+module-root = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff.lint.per-file-ignores]
+# Pre-existing lint debt in the vendored analysis modules (former source/*) and
+# their tool wrappers, carried over verbatim by the Tier 0 package move. These
+# modules are slated for deletion once the analysis is delegated to
+# sleap-roots-analyze (a later tier); suppressed here rather than fixed to keep
+# the move behavior-preserving and reviewable. (The genuine bug — undefined
+# `Any` — was fixed by adding the import.)
+"src/bloom_mcp/cluster_visualization.py" = ["F841"]
+"src/bloom_mcp/clustering.py" = ["F841"]
+"src/bloom_mcp/data_cleanup.py" = ["F811"]
+"src/bloom_mcp/outlier_detection.py" = ["F841"]
+"src/bloom_mcp/outlier_visualization.py" = ["F841"]
+"src/bloom_mcp/visualization.py" = ["E402", "F841"]
+"src/bloom_mcp/tools/correlation_tools.py" = ["F841"]

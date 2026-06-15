@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 from scipy.cluster.hierarchy import fcluster, linkage
-from pathlib import Path
 
 
 def load_and_align_experiments(
@@ -98,23 +97,29 @@ def calculate_cross_experiment_correlations(
             if len(shared) < min_samples:
                 continue
             r, p = sp_stats.pearsonr(x.loc[shared], y.loc[shared])
-            results.append({
-                "exp1_trait": t1,
-                "exp2_trait": t2,
-                "correlation": r,
-                "p_value": p,
-                "n_samples": len(shared),
-                "significant": p < 0.05,
-                "highly_significant": p < 0.01,
-            })
+            results.append(
+                {
+                    "exp1_trait": t1,
+                    "exp2_trait": t2,
+                    "correlation": r,
+                    "p_value": p,
+                    "n_samples": len(shared),
+                    "significant": p < 0.05,
+                    "highly_significant": p < 0.01,
+                }
+            )
 
     df = pd.DataFrame(results)
     if len(df) > 0:
-        df = df.sort_values("correlation", key=abs, ascending=False).reset_index(drop=True)
+        df = df.sort_values("correlation", key=abs, ascending=False).reset_index(
+            drop=True
+        )
     return df
 
 
-def identify_significant_correlations(corr_df, p_threshold=0.05, r_threshold=0.3, use_fdr=True):
+def identify_significant_correlations(
+    corr_df, p_threshold=0.05, r_threshold=0.3, use_fdr=True
+):
     """Filter correlations to significant ones, optionally with FDR correction.
 
     Args:
@@ -133,6 +138,7 @@ def identify_significant_correlations(corr_df, p_threshold=0.05, r_threshold=0.3
 
     if use_fdr:
         from scipy.stats import false_discovery_control
+
         try:
             rejected = false_discovery_control(df["p_value"].values, alpha=p_threshold)
             df["fdr_significant"] = rejected
@@ -145,13 +151,15 @@ def identify_significant_correlations(corr_df, p_threshold=0.05, r_threshold=0.3
             fdr_sig = np.zeros(n, dtype=bool)
             for i in range(n - 1, -1, -1):
                 if p_sorted[i] <= threshold[i]:
-                    fdr_sig[sorted_idx[:i + 1]] = True
+                    fdr_sig[sorted_idx[: i + 1]] = True
                     break
             df["fdr_significant"] = fdr_sig
 
         df = df[df["fdr_significant"] & (df["correlation"].abs() >= r_threshold)]
     else:
-        df = df[(df["p_value"] < p_threshold) & (df["correlation"].abs() >= r_threshold)]
+        df = df[
+            (df["p_value"] < p_threshold) & (df["correlation"].abs() >= r_threshold)
+        ]
 
     return df.reset_index(drop=True)
 
@@ -171,15 +179,27 @@ def summarize_correlation_results(corr_df, exp1_name="exp1", exp2_name="exp2"):
         "exp1_name": exp1_name,
         "exp2_name": exp2_name,
         "total_correlations": len(corr_df),
-        "significant_correlations": int(corr_df["significant"].sum()) if len(corr_df) > 0 else 0,
-        "highly_significant_correlations": int(corr_df["highly_significant"].sum()) if len(corr_df) > 0 else 0,
-        "mean_abs_correlation": float(corr_df["correlation"].abs().mean()) if len(corr_df) > 0 else 0,
-        "max_correlation": float(corr_df["correlation"].max()) if len(corr_df) > 0 else 0,
-        "min_correlation": float(corr_df["correlation"].min()) if len(corr_df) > 0 else 0,
+        "significant_correlations": (
+            int(corr_df["significant"].sum()) if len(corr_df) > 0 else 0
+        ),
+        "highly_significant_correlations": (
+            int(corr_df["highly_significant"].sum()) if len(corr_df) > 0 else 0
+        ),
+        "mean_abs_correlation": (
+            float(corr_df["correlation"].abs().mean()) if len(corr_df) > 0 else 0
+        ),
+        "max_correlation": (
+            float(corr_df["correlation"].max()) if len(corr_df) > 0 else 0
+        ),
+        "min_correlation": (
+            float(corr_df["correlation"].min()) if len(corr_df) > 0 else 0
+        ),
     }
 
 
-def calculate_per_trait_correlations(exp1_df, exp2_df, trait1, trait2, genotype_col="genotype"):
+def calculate_per_trait_correlations(
+    exp1_df, exp2_df, trait1, trait2, genotype_col="genotype"
+):
     """Calculate Pearson and Spearman correlations for a specific trait pair.
 
     Args:
@@ -223,6 +243,7 @@ def calculate_per_trait_correlations(exp1_df, exp2_df, trait1, trait2, genotype_
 # Plotting functions
 # ============================================================================
 
+
 def create_correlation_summary_plot(corr_df):
     """Create a summary plot of all cross-experiment correlations.
 
@@ -237,7 +258,9 @@ def create_correlation_summary_plot(corr_df):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     # Distribution of correlations
-    axes[0].hist(corr_df["correlation"], bins=30, edgecolor="black", alpha=0.7, color="#4C78A8")
+    axes[0].hist(
+        corr_df["correlation"], bins=30, edgecolor="black", alpha=0.7, color="#4C78A8"
+    )
     axes[0].axvline(0, color="red", linestyle="--", alpha=0.5)
     axes[0].set_xlabel("Pearson r")
     axes[0].set_ylabel("Count")
@@ -247,7 +270,9 @@ def create_correlation_summary_plot(corr_df):
     neg_log_p = -np.log10(corr_df["p_value"].clip(lower=1e-300))
     colors = ["#E45756" if s else "#72B7B2" for s in corr_df["significant"]]
     axes[1].scatter(corr_df["correlation"], neg_log_p, c=colors, alpha=0.5, s=20)
-    axes[1].axhline(-np.log10(0.05), color="gray", linestyle="--", alpha=0.5, label="p=0.05")
+    axes[1].axhline(
+        -np.log10(0.05), color="gray", linestyle="--", alpha=0.5, label="p=0.05"
+    )
     axes[1].set_xlabel("Pearson r")
     axes[1].set_ylabel("-log10(p-value)")
     axes[1].set_title("Volcano Plot")
@@ -258,8 +283,7 @@ def create_correlation_summary_plot(corr_df):
 
 
 def create_joint_plot(
-    exp1_means, exp2_means, trait1, trait2,
-    exp1_name="exp1", exp2_name="exp2", **kwargs
+    exp1_means, exp2_means, trait1, trait2, exp1_name="exp1", exp2_name="exp2", **kwargs
 ):
     """Create a scatter plot with regression line for a trait pair.
 
@@ -291,8 +315,13 @@ def create_joint_plot(
     if len(x) >= 3:
         slope, intercept, r, p, se = sp_stats.linregress(x, y)
         x_line = np.linspace(x.min(), x.max(), 100)
-        ax.plot(x_line, slope * x_line + intercept, "r--", alpha=0.7,
-                label=f"r={r:.3f}, p={p:.2e}")
+        ax.plot(
+            x_line,
+            slope * x_line + intercept,
+            "r--",
+            alpha=0.7,
+            label=f"r={r:.3f}, p={p:.2e}",
+        )
         ax.legend()
 
     ax.set_xlabel(f"{exp1_name}: {trait1}")
@@ -301,8 +330,14 @@ def create_joint_plot(
 
     # Label points with genotype names
     for geno in shared:
-        ax.annotate(geno, (x[geno], y[geno]), fontsize=7, alpha=0.6,
-                    xytext=(3, 3), textcoords="offset points")
+        ax.annotate(
+            geno,
+            (x[geno], y[geno]),
+            fontsize=7,
+            alpha=0.6,
+            xytext=(3, 3),
+            textcoords="offset points",
+        )
 
     fig.tight_layout()
     return fig
@@ -321,13 +356,19 @@ def create_cross_experiment_heatmap(corr_df, top_n_traits=15):
     import matplotlib.pyplot as plt
 
     # Get top traits from each experiment
-    top_exp1 = corr_df.groupby("exp1_trait")["correlation"].apply(
-        lambda x: x.abs().max()
-    ).nlargest(top_n_traits).index.tolist()
+    top_exp1 = (
+        corr_df.groupby("exp1_trait")["correlation"]
+        .apply(lambda x: x.abs().max())
+        .nlargest(top_n_traits)
+        .index.tolist()
+    )
 
-    top_exp2 = corr_df.groupby("exp2_trait")["correlation"].apply(
-        lambda x: x.abs().max()
-    ).nlargest(top_n_traits).index.tolist()
+    top_exp2 = (
+        corr_df.groupby("exp2_trait")["correlation"]
+        .apply(lambda x: x.abs().max())
+        .nlargest(top_n_traits)
+        .index.tolist()
+    )
 
     # Filter and pivot
     subset = corr_df[
@@ -351,8 +392,12 @@ def create_cross_experiment_heatmap(corr_df, top_n_traits=15):
 
 
 def create_genotype_boxplots(
-    exp1_df, exp2_df, trait1, trait2,
-    exp1_name="exp1", exp2_name="exp2",
+    exp1_df,
+    exp2_df,
+    trait1,
+    trait2,
+    exp1_name="exp1",
+    exp2_name="exp2",
 ):
     """Create side-by-side boxplots showing trait distributions per genotype.
 
@@ -399,6 +444,7 @@ def create_genotype_boxplots(
 # ============================================================================
 # Power analysis functions
 # ============================================================================
+
 
 def minimum_detectable_correlation(n, alpha=0.05, power=0.80):
     """Calculate the minimum detectable correlation given sample size.
@@ -475,6 +521,7 @@ def calculate_correlation_ci(r, n, alpha=0.05):
 # Trait clustering functions
 # ============================================================================
 
+
 def cluster_correlated_traits(trait_means_df, threshold=0.8):
     """Cluster traits based on correlation, grouping redundant traits.
 
@@ -494,6 +541,7 @@ def cluster_correlated_traits(trait_means_df, threshold=0.8):
 
     # Convert to condensed form
     from scipy.spatial.distance import squareform
+
     condensed = squareform(distance.values)
 
     # Hierarchical clustering

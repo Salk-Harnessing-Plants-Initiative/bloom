@@ -15,20 +15,21 @@ AnalysisWriter (one `cluster_labels.csv` + optional `cluster_centers.csv`)
 plus a 2D PCA-projected scatter colored by cluster, served from
 BLOOM_PLOTS_URL.
 """
+
 from __future__ import annotations
 
 import uuid
 from pathlib import Path
 from typing import Optional
 
-from source.clustering import (
+from bloom_mcp.clustering import (
     calculate_cluster_quality_metrics,
     cut_dendrogram,
     perform_gmm_clustering,
     perform_hierarchical_clustering,
     perform_kmeans_clustering,
 )
-from source.experiment_utils import (
+from bloom_mcp.experiment_utils import (
     PLOTS_DIR,
     PLOTS_URL,
     TRAITS_DIR,
@@ -49,9 +50,12 @@ def _plot_path_and_url(stem: str, version_id: str, algorithm: str) -> tuple[Path
     return PLOTS_DIR / filename, f"{base_url}/{filename}"
 
 
-def _render_cluster_scatter(data, labels, stem: str, algorithm: str, k: int, out_path: Path) -> None:
+def _render_cluster_scatter(
+    data, labels, stem: str, algorithm: str, k: int, out_path: Path
+) -> None:
     """Render a 2D scatter of samples colored by cluster. PCA-projects if traits > 2."""
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
@@ -59,6 +63,7 @@ def _render_cluster_scatter(data, labels, stem: str, algorithm: str, k: int, out
     arr = np.asarray(data)
     if arr.ndim == 2 and arr.shape[1] > 2:
         from sklearn.decomposition import PCA
+
         proj = PCA(n_components=2).fit_transform(arr)
         x_label, y_label = "PC1", "PC2"
     else:
@@ -66,7 +71,9 @@ def _render_cluster_scatter(data, labels, stem: str, algorithm: str, k: int, out
         x_label, y_label = "x", "y"
 
     fig, ax = plt.subplots(figsize=(8, 8))
-    scatter = ax.scatter(proj[:, 0], proj[:, 1], c=labels, cmap="tab10", s=20, alpha=0.8)
+    scatter = ax.scatter(
+        proj[:, 0], proj[:, 1], c=labels, cmap="tab10", s=20, alpha=0.8
+    )
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     ax.set_title(f"{algorithm.upper()} clusters (k={k}): {stem}")
@@ -101,7 +108,9 @@ def run_clustering_workflow(
         `plot_url`, `plot_layout`. On error returns `{"error": <message>}`.
     """
     if algorithm not in VALID_ALGORITHMS:
-        return {"error": f"Unknown algorithm '{algorithm}'. Valid: {', '.join(VALID_ALGORITHMS)}"}
+        return {
+            "error": f"Unknown algorithm '{algorithm}'. Valid: {', '.join(VALID_ALGORITHMS)}"
+        }
 
     if k is not None and k < 2:
         return {"error": "k must be >= 2"}
@@ -116,7 +125,10 @@ def run_clustering_workflow(
     try:
         if algorithm == "kmeans":
             result = perform_kmeans_clustering(
-                data=data, n_clusters=k, max_clusters=max_k, standardize=True,
+                data=data,
+                n_clusters=k,
+                max_clusters=max_k,
+                standardize=True,
             )
             labels = result["cluster_labels"]
             k_used = result["n_clusters"]
@@ -124,15 +136,24 @@ def run_clustering_workflow(
 
         elif algorithm == "gmm":
             result = perform_gmm_clustering(
-                data=data, n_components=k, max_components=max_k, standardize=True,
+                data=data,
+                n_components=k,
+                max_components=max_k,
+                standardize=True,
             )
             labels = result["cluster_labels"]
-            k_used = result["n_clusters"] if "n_clusters" in result else result.get("n_components")
+            k_used = (
+                result["n_clusters"]
+                if "n_clusters" in result
+                else result.get("n_components")
+            )
             centers = result.get("cluster_centers")
 
         else:  # hierarchical
             tree_result = perform_hierarchical_clustering(
-                data=data, method=linkage_method, standardize=True,
+                data=data,
+                method=linkage_method,
+                standardize=True,
             )
             k_cut = k if k is not None else 3
             cut_result = cut_dendrogram(tree_result, n_clusters=k_cut)
@@ -143,6 +164,7 @@ def run_clustering_workflow(
         return {"error": f"{algorithm} clustering failed: {exc}"}
 
     import numpy as np
+
     label_array = np.asarray(labels)
     quality = calculate_cluster_quality_metrics(np.asarray(data), label_array)
 
@@ -166,7 +188,10 @@ def run_clustering_workflow(
     version_id = writer.version_id
 
     import pandas as pd
-    labels_df = pd.DataFrame({"sample_index": range(len(label_array)), "cluster": label_array})
+
+    labels_df = pd.DataFrame(
+        {"sample_index": range(len(label_array)), "cluster": label_array}
+    )
     labels_df.to_csv(version_dir / "cluster_labels.csv", index=False)
     outputs: dict[str, str] = {"cluster_labels.csv": "cluster_labels.csv"}
 
@@ -174,7 +199,10 @@ def run_clustering_workflow(
         centers_arr = np.asarray(centers)
         centers_df = pd.DataFrame(
             centers_arr,
-            columns=[f"feature_{i}" if i >= len(trait_cols) else trait_cols[i] for i in range(centers_arr.shape[1])],
+            columns=[
+                f"feature_{i}" if i >= len(trait_cols) else trait_cols[i]
+                for i in range(centers_arr.shape[1])
+            ],
         )
         centers_df.insert(0, "cluster", range(centers_arr.shape[0]))
         centers_df.to_csv(version_dir / "cluster_centers.csv", index=False)
@@ -188,7 +216,9 @@ def run_clustering_workflow(
         plot_url = None
         plot_layout = None
 
-    cluster_sizes = {int(c): int((label_array == c).sum()) for c in sorted(set(label_array.tolist()))}
+    cluster_sizes = {
+        int(c): int((label_array == c).sum()) for c in sorted(set(label_array.tolist()))
+    }
 
     summary: dict = {
         "algorithm": algorithm,

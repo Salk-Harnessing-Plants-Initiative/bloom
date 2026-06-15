@@ -1,4 +1,5 @@
 """Read installed package versions for manifest provenance."""
+
 from importlib.metadata import PackageNotFoundError, version
 
 from .schema import CodeVersions

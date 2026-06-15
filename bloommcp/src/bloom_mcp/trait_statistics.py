@@ -5,13 +5,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import warnings
-import statsmodels.api as sm
 import statsmodels.formula.api as smf
 
-from statsmodels.regression.mixed_linear_model import MixedLM
 from scipy import stats
 from scipy.stats import f_oneway
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Any, Dict, List, Tuple, Optional, Union
 
 # Import for optional filtering
 from .data_cleanup import remove_low_heritability_traits

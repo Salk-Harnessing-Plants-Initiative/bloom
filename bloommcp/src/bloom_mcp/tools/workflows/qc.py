@@ -1,12 +1,13 @@
 """run_qc_workflow — apply data-cleanup filters and save a versioned cleaned CSV."""
+
 from __future__ import annotations
 
 import json
 from typing import Optional
 
-from source import data_cleanup as cleanup
-from source.data_utils import convert_to_json_serializable
-from source.experiment_utils import (
+from bloom_mcp import data_cleanup as cleanup
+from bloom_mcp.data_utils import convert_to_json_serializable
+from bloom_mcp.experiment_utils import (
     TRAITS_DIR,
     load_experiment_data as _load_data,
 )
@@ -55,7 +56,8 @@ def run_qc_workflow(
     original_traits = len(trait_cols)
 
     df_clean, cleanup_log = cleanup.apply_data_cleanup_filters(
-        df, trait_cols,
+        df,
+        trait_cols,
         max_zeros_per_trait=max_zeros_per_trait,
         max_nans_per_trait=max_nans_per_trait,
         max_nans_per_sample=max_nans_per_sample,
@@ -85,10 +87,12 @@ def run_qc_workflow(
     with open(log_path, "w") as f:
         json.dump(convert_to_json_serializable(cleanup_log), f, indent=2)
 
-    entry = writer.commit({
-        "_cleaned.csv": "_cleaned.csv",
-        "cleanup_log.json": "cleanup_log.json",
-    })
+    entry = writer.commit(
+        {
+            "_cleaned.csv": "_cleaned.csv",
+            "cleanup_log.json": "cleanup_log.json",
+        }
+    )
 
     final_samples = cleanup_log["final_samples"]
     final_traits = cleanup_log["final_traits"]

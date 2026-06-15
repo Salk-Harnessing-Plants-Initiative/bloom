@@ -13,20 +13,21 @@ implementation in bloommcp or Elizabeth's repo.
 Each call writes one versioned `dimred_<stem>/v<N>_<date>/` via AnalysisWriter
 (5 CSVs for PCA, 1 CSV for UMAP) plus a chart PNG served from BLOOM_PLOTS_URL.
 """
+
 from __future__ import annotations
 
 import uuid
 from pathlib import Path
 from typing import Optional
 
-from source.experiment_utils import (
+from bloom_mcp.experiment_utils import (
     PLOTS_DIR,
     PLOTS_URL,
     TRAITS_DIR,
     load_experiment_data as _load_data,
 )
-from source.pca import run_pca_and_export_artifacts
-from source.umap_embedding import UMAP_AVAILABLE, perform_umap_analysis
+from bloom_mcp.pca import run_pca_and_export_artifacts
+from bloom_mcp.umap_embedding import UMAP_AVAILABLE, perform_umap_analysis
 
 from ._helpers import build_writer
 
@@ -35,16 +36,23 @@ _TOOL_CLASS = "dimred"
 VALID_METHODS = ("pca", "umap")
 
 
-def _plot_path_and_url(stem: str, version_id: str, method: str, suffix: str) -> tuple[Path, str]:
+def _plot_path_and_url(
+    stem: str, version_id: str, method: str, suffix: str
+) -> tuple[Path, str]:
     """Build a unique plot path under PLOTS_DIR + the public URL for it."""
-    filename = f"dimred_{stem}_{version_id}_{method}_{suffix}_{uuid.uuid4().hex[:8]}.png"
+    filename = (
+        f"dimred_{stem}_{version_id}_{method}_{suffix}_{uuid.uuid4().hex[:8]}.png"
+    )
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     base_url = (PLOTS_URL or "").rstrip("/")
     return PLOTS_DIR / filename, f"{base_url}/{filename}"
 
 
-def _render_pca_scree(evr: list[float], cvr: list[float], stem: str, threshold: float, out_path: Path) -> None:
+def _render_pca_scree(
+    evr: list[float], cvr: list[float], stem: str, threshold: float, out_path: Path
+) -> None:
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -58,7 +66,13 @@ def _render_pca_scree(evr: list[float], cvr: list[float], stem: str, threshold: 
     ax2 = ax1.twinx()
     ax2.plot(x, [v * 100 for v in cvr], "ro-", markersize=4, label="Cumulative")
     ax2.set_ylabel("Cumulative Variance (%)")
-    ax2.axhline(y=threshold * 100, color="gray", linestyle="--", alpha=0.5, label=f"{threshold*100:.0f}% threshold")
+    ax2.axhline(
+        y=threshold * 100,
+        color="gray",
+        linestyle="--",
+        alpha=0.5,
+        label=f"{threshold*100:.0f}% threshold",
+    )
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
@@ -69,6 +83,7 @@ def _render_pca_scree(evr: list[float], cvr: list[float], stem: str, threshold: 
 
 def _render_umap_scatter(embedding, stem: str, out_path: Path) -> None:
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -111,7 +126,9 @@ def run_dimensionality_reduction_workflow(
         `{"error": <message>}` with no version created.
     """
     if method not in VALID_METHODS:
-        return {"error": f"Unknown method '{method}'. Valid: {', '.join(VALID_METHODS)}"}
+        return {
+            "error": f"Unknown method '{method}'. Valid: {', '.join(VALID_METHODS)}"
+        }
 
     if method == "umap" and not UMAP_AVAILABLE:
         return {
@@ -151,7 +168,8 @@ def run_dimensionality_reduction_workflow(
     if method == "pca":
         try:
             pca_out = run_pca_and_export_artifacts(
-                df, trait_cols,
+                df,
+                trait_cols,
                 analysis_dir=version_dir,
                 n_components=n_components,
                 explained_variance_threshold=variance_threshold,
@@ -166,19 +184,23 @@ def run_dimensionality_reduction_workflow(
         evr = variance_df["explained_variance_ratio"].tolist()
         cvr = variance_df["cumulative_variance_ratio"].tolist()
 
-        summary.update({
-            "n_components_used": len(evr),
-            "variance_explained_per_pc": [round(v, 4) for v in evr[:10]],
-            "cumulative_variance_explained": round(cvr[-1], 4) if cvr else None,
-        })
+        summary.update(
+            {
+                "n_components_used": len(evr),
+                "variance_explained_per_pc": [round(v, 4) for v in evr[:10]],
+                "cumulative_variance_explained": round(cvr[-1], 4) if cvr else None,
+            }
+        )
 
-        outputs.update({
-            "pca_loadings.csv": "pca_loadings.csv",
-            "pca_variance_explained.csv": "pca_variance_explained.csv",
-            "pca_transformed_data.csv": "pca_transformed_data.csv",
-            "trait_variance_contrib.csv": "trait_variance_contrib.csv",
-            "feature_metrics.csv": "feature_metrics.csv",
-        })
+        outputs.update(
+            {
+                "pca_loadings.csv": "pca_loadings.csv",
+                "pca_variance_explained.csv": "pca_variance_explained.csv",
+                "pca_transformed_data.csv": "pca_transformed_data.csv",
+                "trait_variance_contrib.csv": "trait_variance_contrib.csv",
+                "feature_metrics.csv": "feature_metrics.csv",
+            }
+        )
 
         plot_path, plot_url = _plot_path_and_url(stem, version_id, "pca", "scree")
         _render_pca_scree(evr, cvr, stem, variance_threshold, plot_path)
@@ -197,13 +219,16 @@ def run_dimensionality_reduction_workflow(
             return {"error": f"UMAP failed: {exc}"}
 
         embedding = umap_out["embedding"]
-        summary.update({
-            "n_components_used": 2,
-            "n_neighbors": umap_out.get("n_neighbors", n_neighbors),
-            "min_dist": umap_out.get("min_dist", min_dist),
-        })
+        summary.update(
+            {
+                "n_components_used": 2,
+                "n_neighbors": umap_out.get("n_neighbors", n_neighbors),
+                "min_dist": umap_out.get("min_dist", min_dist),
+            }
+        )
 
         import pandas as pd
+
         emb_df = pd.DataFrame(embedding, columns=["UMAP1", "UMAP2"])
         emb_csv = version_dir / "umap_embedding.csv"
         emb_df.to_csv(emb_csv, index=False)

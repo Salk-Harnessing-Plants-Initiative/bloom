@@ -1,0 +1,19 @@
+{
+ "trait_cols": [
+  "Holes",
+  "Network Area (mm\u00b2)",
+  "Perimeter (mm)",
+  "Root Biomass (mg)",
+  "Shoot Biomass (mg)",
+  "Surface Area (mm\u00b2)",
+  "Total Root Length (mm)",
+  "Volume (mm\u00b3)"
+ ],
+ "pca_explained_variance": 0.9599095965599803,
+ "n_pca_components": 3,
+ "top_features": [
+  "Shoot Biomass (mg)",
+  "Surface Area (mm\u00b2)",
+  "Perimeter (mm)"
+ ]
+}

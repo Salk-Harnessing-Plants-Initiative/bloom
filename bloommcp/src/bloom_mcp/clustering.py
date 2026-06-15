@@ -7,7 +7,7 @@ outlier detection methods.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Union
+from typing import Dict, Optional, Union
 
 import numpy as np
 import pandas as pd

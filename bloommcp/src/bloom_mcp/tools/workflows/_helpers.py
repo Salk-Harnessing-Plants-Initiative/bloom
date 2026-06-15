@@ -1,10 +1,11 @@
 """Shared helpers used by every workflow."""
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
 
-from storage import AnalysisWriter
+from bloom_mcp.storage import AnalysisWriter
 
 # Logical prefix inside the bloommcp-data bucket for all versioned analysis
 # outputs. After the storage migration this replaces the BLOOM_OUTPUT_DIR

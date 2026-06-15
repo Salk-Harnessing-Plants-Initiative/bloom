@@ -37,11 +37,18 @@ if not PLOTS_URL:
 
 # --- Startup filesystem validation ---
 
+
 def _validate_dirs() -> None:
     """Check that configured data directories exist and are writable."""
-    for name, path in [("BLOOM_TRAITS_DIR", TRAITS_DIR), ("BLOOM_OUTPUT_DIR", OUTPUT_DIR), ("BLOOM_PLOTS_DIR", PLOTS_DIR)]:
+    for name, path in [
+        ("BLOOM_TRAITS_DIR", TRAITS_DIR),
+        ("BLOOM_OUTPUT_DIR", OUTPUT_DIR),
+        ("BLOOM_PLOTS_DIR", PLOTS_DIR),
+    ]:
         if not path.exists():
-            raise RuntimeError(f"{name}={path} does not exist. Create it or fix the path.")
+            raise RuntimeError(
+                f"{name}={path} does not exist. Create it or fix the path."
+            )
         if not path.is_dir():
             raise RuntimeError(f"{name}={path} is not a directory.")
         if not os.access(path, os.R_OK):
@@ -49,17 +56,41 @@ def _validate_dirs() -> None:
         if not os.access(path, os.W_OK):
             logger.warning(f"{name}={path} is not writable — analysis output will fail")
 
+
 _validate_dirs()
 
 # metadata columns, matched case-insensitively
 KNOWN_METADATA_COLS = {
-    "scan_id", "plant_qr_code", "scan_path", "scanner_id",
-    "species_id", "species_name", "species_genus", "species_species",
-    "uploaded_at", "wave_id", "wave_number", "wave_name",
-    "accession_id", "date_scanned", "experiment_id", "experiment_name",
-    "germ_day", "germ_day_color", "phenotyper_id", "plant_age_days",
-    "plant_id", "plant_name", "primary", "lateral", "crown",
-    "barcode", "geno", "genotype", "rep", "replicate",
+    "scan_id",
+    "plant_qr_code",
+    "scan_path",
+    "scanner_id",
+    "species_id",
+    "species_name",
+    "species_genus",
+    "species_species",
+    "uploaded_at",
+    "wave_id",
+    "wave_number",
+    "wave_name",
+    "accession_id",
+    "date_scanned",
+    "experiment_id",
+    "experiment_name",
+    "germ_day",
+    "germ_day_color",
+    "phenotyper_id",
+    "plant_age_days",
+    "plant_id",
+    "plant_name",
+    "primary",
+    "lateral",
+    "crown",
+    "barcode",
+    "geno",
+    "genotype",
+    "rep",
+    "replicate",
 }
 
 # Patterns to auto-detect special columns (checked case-insensitively)
@@ -91,16 +122,18 @@ def list_experiments(traits_dir: Optional[Path] = None) -> list[dict]:
             if "experiment_name" in df.columns:
                 exp_name = df["experiment_name"].iloc[0]
 
-            experiments.append({
-                "filename": csv_path.name,
-                "stem": csv_path.stem,
-                "rows": row_count,
-                "total_columns": len(df.columns),
-                "trait_columns": len(detected["trait_cols"]),
-                "experiment_name": exp_name or csv_path.stem,
-                "genotype_col": detected["genotype_col"],
-                "sample_id_col": detected["sample_id_col"],
-            })
+            experiments.append(
+                {
+                    "filename": csv_path.name,
+                    "stem": csv_path.stem,
+                    "rows": row_count,
+                    "total_columns": len(df.columns),
+                    "trait_columns": len(detected["trait_cols"]),
+                    "experiment_name": exp_name or csv_path.stem,
+                    "genotype_col": detected["genotype_col"],
+                    "sample_id_col": detected["sample_id_col"],
+                }
+            )
         except Exception:
             continue
 
@@ -190,8 +223,8 @@ def _resolve_versioned_cleaned(
     """
     import tempfile
 
-    from storage import AnalysisDir, ManifestSchemaError
-    from source.supabase_client import download_file, list_prefix
+    from bloom_mcp.storage import AnalysisDir, ManifestSchemaError
+    from bloom_mcp.supabase_client import download_file, list_prefix
 
     analysis_dir = AnalysisDir("bloommcp_output", f"{stem}.csv", "qc")
     try:
@@ -202,18 +235,20 @@ def _resolve_versioned_cleaned(
     if entry is None:
         if version == "latest":
             return None, None, None
-        return None, None, (
-            f"Version {version!r} not found for experiment '{stem}'. "
-            f"Use list_existing_analyses to see available versions."
+        return (
+            None,
+            None,
+            (
+                f"Version {version!r} not found for experiment '{stem}'. "
+                f"Use list_existing_analyses to see available versions."
+            ),
         )
 
     rel = entry.outputs.get("_cleaned.csv")
     if not rel:
         if version == "latest":
             return None, None, None
-        return None, None, (
-            f"Version {entry.id} has no cleaned CSV output."
-        )
+        return None, None, (f"Version {entry.id} has no cleaned CSV output.")
 
     if entry.version_dir:
         version_dir = entry.version_dir
@@ -221,18 +256,18 @@ def _resolve_versioned_cleaned(
         try:
             siblings = list_prefix(analysis_dir.path)
         except Exception as e:
-            return None, None, (
-                f"Could not list {analysis_dir.path}: {e}"
-            )
-        version_dir = next(
-            (n for n in siblings if n.startswith(f"{entry.id}_")), None
-        )
+            return None, None, (f"Could not list {analysis_dir.path}: {e}")
+        version_dir = next((n for n in siblings if n.startswith(f"{entry.id}_")), None)
         if version_dir is None:
             if version == "latest":
                 return None, None, None
-            return None, None, (
-                f"Manifest references version {entry.id} but its directory was "
-                f"not found under {analysis_dir.path}."
+            return (
+                None,
+                None,
+                (
+                    f"Manifest references version {entry.id} but its directory was "
+                    f"not found under {analysis_dir.path}."
+                ),
             )
 
     key = analysis_dir.key(f"{version_dir}/{rel}")
@@ -244,9 +279,13 @@ def _resolve_versioned_cleaned(
         tmp.unlink(missing_ok=True)
         if version == "latest":
             return None, None, None
-        return None, None, (
-            f"Manifest references {rel} for version {entry.id} but the "
-            f"download from storage failed: {e}"
+        return (
+            None,
+            None,
+            (
+                f"Manifest references {rel} for version {entry.id} but the "
+                f"download from storage failed: {e}"
+            ),
         )
     return tmp, f"{entry.id}_cleaned", None
 
@@ -283,7 +322,9 @@ def load_experiment_data(
     stem = Path(filename).stem
 
     if version != "raw":
-        cleaned_path, source_label, error = _resolve_versioned_cleaned(o_dir, stem, version)
+        cleaned_path, source_label, error = _resolve_versioned_cleaned(
+            o_dir, stem, version
+        )
         if error:
             return None, None, None, error
         if cleaned_path is not None:
@@ -299,10 +340,15 @@ def load_experiment_data(
                 return df, config["trait_cols"], config, "legacy_cleaned"
 
     if require_clean:
-        return None, None, None, (
-            f"No cleaned dataset found for '{filename}'. "
-            "UMAP cannot handle missing values. "
-            "Run clean_experiment_data first."
+        return (
+            None,
+            None,
+            None,
+            (
+                f"No cleaned dataset found for '{filename}'. "
+                "UMAP cannot handle missing values. "
+                "Run clean_experiment_data first."
+            ),
         )
 
     raw_path = t_dir / filename
@@ -313,4 +359,9 @@ def load_experiment_data(
 
     available = [f.name for f in t_dir.glob("*.csv")] if t_dir.exists() else []
     avail_str = ", ".join(available) if available else "none"
-    return None, None, None, f"File '{filename}' not found in {t_dir}. Available: {avail_str}"
+    return (
+        None,
+        None,
+        None,
+        f"File '{filename}' not found in {t_dir}. Available: {avail_str}",
+    )

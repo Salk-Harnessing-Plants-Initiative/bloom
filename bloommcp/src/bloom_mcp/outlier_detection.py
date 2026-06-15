@@ -13,7 +13,6 @@ from .pca import (
     perform_pca_analysis,
     calculate_mahalanobis_distances,
     calculate_pca_metrics,
-    build_feature_metrics_df,
     calculate_pca_reconstruction_error,
     standardize_data,
 )

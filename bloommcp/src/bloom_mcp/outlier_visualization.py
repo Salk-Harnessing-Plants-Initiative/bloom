@@ -7,11 +7,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import chi2
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
-from pathlib import Path
-from datetime import datetime
 
 
 def create_isolation_forest_plots(
@@ -404,7 +402,7 @@ def create_mahalanobis_outlier_plots(
                 linestyle=":",
                 linewidth=1,
                 alpha=0.5,
-                label=f"±1 SD",
+                label="±1 SD",
             )
             ax2.axhline(
                 y=chi2_mean - chi2_std,
@@ -421,7 +419,7 @@ def create_mahalanobis_outlier_plots(
                 linestyle=":",
                 linewidth=1,
                 alpha=0.5,
-                label=f"±2 SD",
+                label="±2 SD",
             )
             ax2.axhline(
                 y=chi2_mean - 2 * chi2_std,
@@ -476,7 +474,7 @@ def create_mahalanobis_outlier_plots(
             chi2_std = np.sqrt(2 * n_components)
             threshold_z = (plot_threshold - chi2_mean) / chi2_std
 
-            textstr = f"χ² Distribution Info:\n"
+            textstr = "χ² Distribution Info:\n"
             textstr += f"Expected mean = {chi2_mean:.1f}\n"
             textstr += f"Expected SD = {chi2_std:.2f}\n"
             textstr += f"Threshold = {plot_threshold:.2f}\n"
@@ -803,11 +801,11 @@ def create_mahalanobis_outlier_plots(
         # Add info box showing threshold interpretation
         if threshold_type == "chi_squared":
             current_k = (current_threshold - chi2_mean) / chi2_std
-            info_text = f"χ² Distribution Info:\n"
+            info_text = "χ² Distribution Info:\n"
             info_text += f"df = {n_components}\n"
             info_text += f"Mean = {chi2_mean:.1f}\n"
             info_text += f"SD = {chi2_std:.2f}\n\n"
-            info_text += f"Current threshold:\n"
+            info_text += "Current threshold:\n"
             info_text += f"χ²({n_components}) = {current_threshold:.2f}\n"
             info_text += f"= {current_k:.2f} SDs from mean"
 
@@ -1392,7 +1390,6 @@ def create_gmm_outlier_plots(
     """
     from sleap_roots_analyze.cluster_visualization import (
         create_cluster_scatter_pca,
-        create_distance_distribution_plot,
         create_cluster_size_barplot,
         create_bic_aic_comparison_plot,
         create_silhouette_plot,

@@ -5,8 +5,8 @@ The QC cleanup pipeline itself now lives in `tools/workflows/qc.py` as
 that the agent always loads (see `ALWAYS_INCLUDE_MCP_TOOLS`).
 """
 
-from source import data_cleanup as cleanup
-from source.experiment_utils import (
+from bloom_mcp import data_cleanup as cleanup
+from bloom_mcp.experiment_utils import (
     list_experiments,
     load_experiment_data as _load_data,
     TRAITS_DIR,
@@ -20,6 +20,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # ============================================================================
 # Tool 1: List available experiments
 # ============================================================================
+
 
 def list_available_experiments() -> str:
     """List all experiment CSV files available for analysis.
@@ -45,7 +46,9 @@ def list_available_experiments() -> str:
             f"    Sample ID column: {exp['sample_id_col'] or 'not detected'}"
         )
 
-    lines.append(f"\nTo analyze an experiment, use its filename (e.g., '{experiments[0]['filename']}')")
+    lines.append(
+        f"\nTo analyze an experiment, use its filename (e.g., '{experiments[0]['filename']}')"
+    )
 
     return "\n".join(lines)
 
@@ -53,6 +56,7 @@ def list_available_experiments() -> str:
 # ============================================================================
 # Tool 2: Load experiment data and show summary
 # ============================================================================
+
 
 def load_experiment_data(filename: str) -> str:
     """Load a SLEAP experiment CSV and show a summary of its contents.
@@ -77,11 +81,15 @@ def load_experiment_data(filename: str) -> str:
     ]
 
     if genotype_col and genotype_col in df.columns:
-        lines.append(f"  Genotypes: {df[genotype_col].nunique()} (column: {genotype_col})")
+        lines.append(
+            f"  Genotypes: {df[genotype_col].nunique()} (column: {genotype_col})"
+        )
 
     replicate_col = config["replicate_col"]
     if replicate_col and replicate_col in df.columns:
-        lines.append(f"  Replicates: {df[replicate_col].nunique()} (column: {replicate_col})")
+        lines.append(
+            f"  Replicates: {df[replicate_col].nunique()} (column: {replicate_col})"
+        )
 
     lines.append(f"  Trait columns: {n_traits}")
 
@@ -101,7 +109,7 @@ def load_experiment_data(filename: str) -> str:
     # Show top 5 traits with most NaN
     if traits_with_nan > 0:
         top_nan = nan_counts[nan_counts > 0].sort_values(ascending=False).head(5)
-        lines.append(f"\n  Top traits with missing data:")
+        lines.append("\n  Top traits with missing data:")
         for trait_name, count in top_nan.items():
             pct = count / n_samples * 100
             lines.append(f"    {trait_name}: {count} ({pct:.1f}%)")
@@ -112,6 +120,7 @@ def load_experiment_data(filename: str) -> str:
 # ============================================================================
 # Tool 3: Inspect data quality (NaN samples, zero-inflated traits)
 # ============================================================================
+
 
 def inspect_data_quality(filename: str) -> str:
     """Inspect data quality for a SLEAP experiment dataset.
@@ -131,12 +140,16 @@ def inspect_data_quality(filename: str) -> str:
     sample_id_col = config["sample_id_col"]
     replicate_col = config["replicate_col"]
 
-    lines = [f"Data Quality Report: {filename} (source: {source})", f"  {len(df)} samples, {len(trait_cols)} traits\n"]
+    lines = [
+        f"Data Quality Report: {filename} (source: {source})",
+        f"  {len(df)} samples, {len(trait_cols)} traits\n",
+    ]
 
     # 1. NaN inspection
     if sample_id_col and genotype_col and replicate_col:
         nan_df = cleanup.inspect_nan_samples(
-            df, trait_cols,
+            df,
+            trait_cols,
             barcode_col=sample_id_col,
             genotype_col=genotype_col,
             replicate_col=replicate_col,
@@ -162,7 +175,9 @@ def inspect_data_quality(filename: str) -> str:
         if zero_frac > 0.5:
             zero_traits.append((trait, zero_frac))
 
-    lines.append(f"\n2. Zero-inflated traits (>50% zeros): {len(zero_traits)} / {len(trait_cols)}")
+    lines.append(
+        f"\n2. Zero-inflated traits (>50% zeros): {len(zero_traits)} / {len(trait_cols)}"
+    )
     if zero_traits:
         for trait_name, frac in sorted(zero_traits, key=lambda x: -x[1])[:10]:
             lines.append(f"     {trait_name}: {frac * 100:.1f}% zeros")
@@ -174,7 +189,9 @@ def inspect_data_quality(filename: str) -> str:
         if nan_frac > 0.3:
             nan_heavy_traits.append((trait, nan_frac))
 
-    lines.append(f"\n3. NaN-heavy traits (>30% NaN): {len(nan_heavy_traits)} / {len(trait_cols)}")
+    lines.append(
+        f"\n3. NaN-heavy traits (>30% NaN): {len(nan_heavy_traits)} / {len(trait_cols)}"
+    )
     if nan_heavy_traits:
         for trait_name, frac in sorted(nan_heavy_traits, key=lambda x: -x[1])[:10]:
             lines.append(f"     {trait_name}: {frac * 100:.1f}% NaN")
@@ -186,13 +203,17 @@ def inspect_data_quality(filename: str) -> str:
         if valid < 10:
             low_sample_traits.append((trait, valid))
 
-    lines.append(f"\n4. Low-sample traits (<10 valid): {len(low_sample_traits)} / {len(trait_cols)}")
+    lines.append(
+        f"\n4. Low-sample traits (<10 valid): {len(low_sample_traits)} / {len(trait_cols)}"
+    )
     if low_sample_traits:
         for trait_name, valid_n in sorted(low_sample_traits, key=lambda x: x[1])[:10]:
             lines.append(f"     {trait_name}: {valid_n} valid samples")
 
     total_issues = len(zero_traits) + len(nan_heavy_traits) + len(low_sample_traits)
-    lines.append(f"\nSummary: {total_issues} trait-level issues, {n_nan_samples} sample-level issues")
+    lines.append(
+        f"\nSummary: {total_issues} trait-level issues, {n_nan_samples} sample-level issues"
+    )
     if total_issues > 0 or n_nan_samples > 0:
         lines.append("Recommendation: Run run_qc_workflow to apply cleanup filters")
     else:
@@ -204,6 +225,7 @@ def inspect_data_quality(filename: str) -> str:
 # ============================================================================
 # Registration
 # ============================================================================
+
 
 def register(mcp):
     """Register the 3 always-on discovery tools with the MCP server."""

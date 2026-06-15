@@ -6,9 +6,10 @@ when no manifest exists (a fresh experiment is a normal state, not an
 error). Writes overwrite via upsert — safe under the single-writer
 deployment topology bloommcp runs in.
 """
+
 from typing import Optional
 
-from source.supabase_client import list_prefix, read_json, write_json
+from bloom_mcp.supabase_client import list_prefix, read_json, write_json
 
 from .schema import CURRENT_SCHEMA_VERSION, Manifest
 

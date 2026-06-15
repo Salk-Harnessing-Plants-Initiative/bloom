@@ -12,19 +12,25 @@ import pandas as pd
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from source.visualization import (
+from bloom_mcp.visualization import (
     create_trait_histograms,
     create_trait_boxplots_by_genotype,
     create_correlation_heatmap,
     create_heritability_plot,
     create_variance_decomposition_plot,
 )
-from source.cluster_visualization import create_dendrogram
-from source.outlier_visualization import create_comprehensive_outlier_comparison
-from source.experiment_utils import load_experiment_data as _load_data, OUTPUT_DIR, PLOTS_DIR, PLOTS_URL
+from bloom_mcp.cluster_visualization import create_dendrogram
+from bloom_mcp.outlier_visualization import create_comprehensive_outlier_comparison
+from bloom_mcp.experiment_utils import (
+    load_experiment_data as _load_data,
+    OUTPUT_DIR,
+    PLOTS_DIR,
+    PLOTS_URL,
+)
 
 
 def _save_plot(fig, plot_name: str) -> str:
@@ -47,6 +53,7 @@ def _parse_traits(traits: str, available: list) -> list:
 # ============================================================================
 # Tool 1: Trait Histograms
 # ============================================================================
+
 
 def plot_trait_histograms(filename: str, traits: str = "") -> str:
     """Generate histogram plots showing the distribution of trait values.
@@ -85,6 +92,7 @@ def plot_trait_histograms(filename: str, traits: str = "") -> str:
 # Tool 2: Trait Boxplots by Genotype
 # ============================================================================
 
+
 def plot_trait_boxplots(filename: str, traits: str = "") -> str:
     """Generate boxplots of trait values grouped by genotype.
 
@@ -111,7 +119,9 @@ def plot_trait_boxplots(filename: str, traits: str = "") -> str:
 
     try:
         fig = create_trait_boxplots_by_genotype(
-            df, selected, genotype_col=genotype_col,
+            df,
+            selected,
+            genotype_col=genotype_col,
         )
     except Exception as e:
         return f"Boxplot generation failed: {e}"
@@ -127,6 +137,7 @@ def plot_trait_boxplots(filename: str, traits: str = "") -> str:
 # ============================================================================
 # Tool 3: Correlation Matrix
 # ============================================================================
+
 
 def plot_correlation_matrix(filename: str, traits: str = "") -> str:
     """Generate a correlation heatmap for trait relationships.
@@ -173,6 +184,7 @@ def plot_correlation_matrix(filename: str, traits: str = "") -> str:
 # Tool 4: Heritability Bar Plot
 # ============================================================================
 
+
 def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
     """Generate a bar plot of heritability (H2) estimates for all traits.
 
@@ -194,9 +206,11 @@ def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
     if not genotype_col or not replicate_col:
         return f"Heritability requires genotype and replicate columns. Detected: genotype={genotype_col}, replicate={replicate_col}"
 
-    from source import trait_statistics as stats_module
+    from bloom_mcp import trait_statistics as stats_module
+
     h2_results = stats_module.calculate_heritability_estimates(
-        df, trait_cols,
+        df,
+        trait_cols,
         genotype_col=genotype_col,
         replicate_col=replicate_col,
     )
@@ -212,7 +226,8 @@ def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
     url = _save_plot(fig, f"heritability_{stem}.png")
 
     above = sum(
-        1 for t in trait_cols
+        1
+        for t in trait_cols
         if "heritability" in h2_results.get(t, {})
         and h2_results[t]["heritability"] >= threshold
     )
@@ -227,6 +242,7 @@ def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
 # ============================================================================
 # Tool 5: Variance Decomposition
 # ============================================================================
+
 
 def plot_variance_decomposition(filename: str) -> str:
     """Generate variance decomposition plot (genetic vs environmental variance).
@@ -248,9 +264,11 @@ def plot_variance_decomposition(filename: str) -> str:
     if not genotype_col or not replicate_col:
         return f"Variance decomposition requires genotype and replicate columns. Detected: genotype={genotype_col}, replicate={replicate_col}"
 
-    from source import trait_statistics as stats_module
+    from bloom_mcp import trait_statistics as stats_module
+
     h2_results = stats_module.calculate_heritability_estimates(
-        df, trait_cols,
+        df,
+        trait_cols,
         genotype_col=genotype_col,
         replicate_col=replicate_col,
     )
@@ -262,12 +280,14 @@ def plot_variance_decomposition(filename: str) -> str:
     for trait in trait_cols:
         r = h2_results.get(trait, {})
         if "heritability" in r:
-            rows.append({
-                "trait": trait,
-                "H2": r["heritability"],
-                "var_genetic": r.get("var_genetic", 0),
-                "var_residual": r.get("var_residual", 0),
-            })
+            rows.append(
+                {
+                    "trait": trait,
+                    "H2": r["heritability"],
+                    "var_genetic": r.get("var_genetic", 0),
+                    "var_residual": r.get("var_residual", 0),
+                }
+            )
 
     if not rows:
         return "No valid heritability results to plot."
@@ -291,6 +311,7 @@ def plot_variance_decomposition(filename: str) -> str:
 # Tool 8: Hierarchical Clustering Dendrogram
 # ============================================================================
 
+
 def plot_dendrogram(
     filename: str,
     n_clusters: int = 3,
@@ -312,10 +333,16 @@ def plot_dendrogram(
 
     stem = Path(filename).stem
 
-    from source.clustering import perform_hierarchical_clustering, cut_dendrogram as cut_dendro
+    from bloom_mcp.clustering import (
+        perform_hierarchical_clustering,
+        cut_dendrogram as cut_dendro,
+    )
+
     try:
         hier_result = perform_hierarchical_clustering(
-            data=df[trait_cols], method=linkage_method, standardize=True,
+            data=df[trait_cols],
+            method=linkage_method,
+            standardize=True,
         )
         cut_result = cut_dendro(hier_result, n_clusters=n_clusters)
     except Exception as e:
@@ -342,6 +369,7 @@ def plot_dendrogram(
 # ============================================================================
 # Tool 9: Multi-method Outlier Comparison
 # ============================================================================
+
 
 def plot_outlier_comparison(filename: str) -> str:
     """Generate a multi-method outlier comparison plot.
@@ -373,8 +401,12 @@ def plot_outlier_comparison(filename: str) -> str:
         if json_path.exists():
             data = json.loads(json_path.read_text())
             outlier_results[method] = {
-                "outlier_indices": data.get("outlier_indices", data.get("consensus_outliers", [])),
-                "n_outliers": data.get("n_outliers", data.get("n_consensus_outliers", 0)),
+                "outlier_indices": data.get(
+                    "outlier_indices", data.get("consensus_outliers", [])
+                ),
+                "n_outliers": data.get(
+                    "n_outliers", data.get("n_consensus_outliers", 0)
+                ),
             }
 
     if not outlier_results:
@@ -401,6 +433,7 @@ def plot_outlier_comparison(filename: str) -> str:
 # ============================================================================
 # Registration
 # ============================================================================
+
 
 def register(mcp):
     """Register all visualization tools with the MCP server."""
