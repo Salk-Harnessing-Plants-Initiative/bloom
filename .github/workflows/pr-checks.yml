@@ -346,7 +346,15 @@ jobs:
           echo "API_EXTERNAL_URL=http://localhost:9999" >> .env.ci
           echo "ADDITIONAL_REDIRECT_URLS=http://localhost" >> .env.ci
           echo "SITE_URL=http://localhost" >> .env.ci
-          echo "NEXT_PUBLIC_SUPABASE_URL=http://kong:8000" >> .env.ci
+          # NEXT_PUBLIC_SUPABASE_URL is baked into the bloom-web JS bundle
+          # at build time and runs in the browser. The browser on the CI
+          # runner cannot resolve "kong" (internal Docker DNS only), so it
+          # must use the host-reachable Caddy URL. Caddy's `handle_path
+          # /api/*` strips the prefix and proxies to kong:8000 internally.
+          echo "NEXT_PUBLIC_SUPABASE_URL=http://localhost/api" >> .env.ci
+          # SUPABASE_URL is the SERVER-SIDE URL used by containers inside
+          # the Docker network (e.g. Next.js SSR fetches), so the internal
+          # kong hostname is correct here.
           echo "SUPABASE_URL=http://kong:8000" >> .env.ci
           echo "SUPABASE_COOKIE_NAME=sb-ci-auth-token" >> .env.ci
           echo "NEXT_PUBLIC_APP_URL=http://localhost" >> .env.ci
@@ -561,11 +569,6 @@ jobs:
       # Integration tests — smoke, auth, RLS, storage, API routing, migration
       # runner. Skips the whole step if `tests/integration/` is absent.
       #
-      # `uv run --extra test` installs the test-deps group pinned in the root
-      # pyproject.toml (pytest + psycopg[binary]). psycopg is required by the
-      # `pg_conn` fixture used by the migration-runner tests; without it the
-      # fixture FAILS (not skips) when POSTGRES_PASSWORD is set — see
-      # tests/integration/conftest.py.
       #
       # uv is already installed by the `Setup uv` step early in this job.
       - name: Run integration tests
@@ -583,6 +586,38 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
           POSTGRES_DB: postgres
           POSTGRES_HOST_PORT: "5432"
+
+      # Playwright E2E tests — run after integration tests against the same
+      # live compose stack. Skips gracefully if web/e2e/ is absent.
+      - name: Setup Node.js for Playwright
+        if: hashFiles('web/e2e/**') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install npm dependencies (for Playwright)
+        if: hashFiles('web/e2e/**') != ''
+        run: npm ci
+
+      - name: Install Playwright browsers (chromium only)
+        if: hashFiles('web/e2e/**') != ''
+        run: cd web && npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E tests
+        if: hashFiles('web/e2e/**') != ''
+        run: cd web && npm run test:e2e
+        env:
+          TEST_BASE_URL: http://localhost
+          ANON_KEY: ${{ secrets.CI_ANON_KEY }}
+
+      - name: Upload Playwright report on failure
+        if: failure() && hashFiles('web/e2e/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7
 
       - name: Debug logs on failure
         if: failure()

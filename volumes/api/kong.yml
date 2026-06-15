@@ -140,7 +140,7 @@ services:
   ## Secure Realtime routes
   - name: realtime-v1-ws
     _comment: 'Realtime: /realtime/v1/* -> ws://realtime:4000/socket/*'
-    url: http://realtime-dev.supabase-realtime:4000/socket
+    url: http://realtime:4000/socket
     protocol: ws
     routes:
       - name: realtime-v1-ws
@@ -159,8 +159,8 @@ services:
             - admin
             - anon
   - name: realtime-v1-rest
-    _comment: 'Realtime: /realtime/v1/* -> ws://realtime:4000/socket/*'
-    url: http://realtime-dev.supabase-realtime:4000/api
+    _comment: 'Realtime: /realtime/v1/api -> http://realtime:4000/api'
+    url: http://realtime:4000/api
     protocol: http
     routes:
       - name: realtime-v1-rest
@@ -190,27 +190,42 @@ services:
     plugins:
       - name: cors
 
-  ## Edge Functions routes
-  - name: functions-v1
-    _comment: 'Edge Functions: /functions/v1/* -> http://functions:9000/*'
-    url: http://functions:9000/
-    routes:
-      - name: functions-v1-all
-        strip_path: true
-        paths:
-          - /functions/v1/
-    plugins:
-      - name: cors
+  # ─── DORMANT ROUTES (commented out) ───────────────────────────────────
+  # The `functions` (Supabase Edge Functions) and `analytics` (Logflare)
+  # services are NOT in docker-compose.prod.yml — they were never wired
+  # in for this stack. Without an actual container behind the hostname,
+  # Kong returns 502 Bad Gateway for any client that hits these paths
+  # (most clients never do, but a security scanner / Supabase-docs probe
+  # can trigger them).
+  #
+  # The route definitions are retained here as a commented-out reference
+  # so they're trivially restorable if/when we decide to add either
+  # service: uncomment the block, add the matching `functions` /
+  # `analytics` service to docker-compose.prod.yml, redeploy.
+  #
+  # ----------------------------------------------------------------------
 
-  ## Analytics routes
-  - name: analytics-v1
-    _comment: 'Analytics: /analytics/v1/* -> http://logflare:4000/*'
-    url: http://analytics:4000/
-    routes:
-      - name: analytics-v1-all
-        strip_path: true
-        paths:
-          - /analytics/v1/
+  ## Edge Functions routes (DORMANT — see note above)
+  # - name: functions-v1
+  #   _comment: 'Edge Functions: /functions/v1/* -> http://functions:9000/*'
+  #   url: http://functions:9000/
+  #   routes:
+  #     - name: functions-v1-all
+  #       strip_path: true
+  #       paths:
+  #         - /functions/v1/
+  #   plugins:
+  #     - name: cors
+
+  ## Analytics routes (DORMANT — see note above)
+  # - name: analytics-v1
+  #   _comment: 'Analytics: /analytics/v1/* -> http://logflare:4000/*'
+  #   url: http://analytics:4000/
+  #   routes:
+  #     - name: analytics-v1-all
+  #       strip_path: true
+  #       paths:
+  #         - /analytics/v1/
 
   ## Secure Database routes
   - name: meta
