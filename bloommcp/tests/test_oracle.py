@@ -97,8 +97,14 @@ def test_shipped_kmeans_is_deterministic_under_numpy2(turface_19):
     assert first["inertia"] == pytest.approx(333.4642, rel=1e-3)
 
 
-def test_shipped_correlations_self_pairs_are_unit_and_sign_stable(turface_19):
-    """Self-correlations are fully determined (==1.0) — a sign-stable oracle."""
+def test_shipped_correlations_reproduce_recorded_offdiagonal(turface_19):
+    """A pinned off-diagonal Pearson coefficient — a real numpy-2 drift guard.
+
+    Self-correlations (corr(x, x) == 1) are a mathematical identity and would
+    pass even if every off-diagonal value were wrong, so they are not a drift
+    guard. Instead pin a recorded cross-trait coefficient computed by the
+    shipped correlation path over the 19 turface_19 genotype means.
+    """
     df, golden = turface_19
     traits = golden["trait_cols"]
     means = df.groupby(_GENOTYPE_COL)[traits].mean()
@@ -106,12 +112,12 @@ def test_shipped_correlations_self_pairs_are_unit_and_sign_stable(turface_19):
     corr = shipped_corr.calculate_cross_experiment_correlations(
         means, means, traits, traits, min_samples=3
     )
-    assert not corr.empty
-
-    self_pairs = corr[corr["exp1_trait"] == corr["exp2_trait"]]
-    assert len(self_pairs) == len(traits)
-    # Every trait correlated with itself is exactly +1 — fully determined and
-    # sign-stable regardless of numpy/BLAS version.
-    assert self_pairs["correlation"].to_numpy() == pytest.approx(1.0, abs=1e-9)
-    # The strongest correlation is therefore a self-pair.
-    assert corr.iloc[0]["correlation"] == pytest.approx(1.0, abs=1e-9)
+    pair = corr[
+        (corr["exp1_trait"] == "Surface Area (mm²)")
+        & (corr["exp2_trait"] == "Volume (mm³)")
+    ]
+    assert len(pair) == 1
+    # Recorded from the shipped path; rel tolerance absorbs BLAS noise but
+    # catches a real numeric regression.
+    assert pair.iloc[0]["correlation"] == pytest.approx(0.9789420001158863, rel=1e-6)
+    assert int(pair.iloc[0]["n_samples"]) == len(means)
