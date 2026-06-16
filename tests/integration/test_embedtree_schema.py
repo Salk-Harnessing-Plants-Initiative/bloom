@@ -78,6 +78,7 @@ def embedtree_seed(pg_conn):
                 "  raw_gene_id = excluded.raw_gene_id",
                 (uid, species, gene_id, raw_id),
             )
+            print(f"[SEED-DEBUG] proteins insert {uid}: rowcount={cur.rowcount}")
         for uid, vec in (
             ("test:Q",  QUERY_VEC),
             ("test:N1", NEAR_VEC),
@@ -89,7 +90,18 @@ def embedtree_seed(pg_conn):
                 "ON CONFLICT (uid) DO UPDATE SET embedding = excluded.embedding",
                 (uid, _to_pgvector(vec)),
             )
+            print(f"[SEED-DEBUG] embeddings insert {uid}: rowcount={cur.rowcount}, vec_len={len(vec)}")
         pg_conn.commit()
+
+        # Post-commit diagnostics
+        cur.execute("SELECT COUNT(*) FROM public.proteins WHERE uid = ANY(%s)", (list(TEST_UIDS),))
+        print(f"[SEED-DEBUG] proteins count after commit: {cur.fetchone()[0]}")
+        cur.execute("SELECT COUNT(*) FROM public.protein_embeddings_esm2 WHERE uid = ANY(%s)", (list(TEST_UIDS),))
+        print(f"[SEED-DEBUG] embeddings count after commit: {cur.fetchone()[0]}")
+        cur.execute("SELECT uid FROM public.protein_embeddings_esm2 WHERE uid = ANY(%s) ORDER BY uid", (list(TEST_UIDS),))
+        print(f"[SEED-DEBUG] embeddings uids: {[r[0] for r in cur.fetchall()]}")
+        cur.execute("SELECT current_user, session_user")
+        print(f"[SEED-DEBUG] current_user, session_user = {cur.fetchone()}")
 
     yield
 
@@ -185,10 +197,16 @@ def test_protein_embedding_models_seeded_with_esm2(pg_conn):
 def test_knn_search_esm2_returns_descending_similarity(pg_conn, embedtree_seed):
     """knn_search_esm2 must order results by descending cosine similarity."""
     with pg_conn.cursor() as cur:
+        # Pre-call diagnostics — what does THIS test's pg_conn see?
+        cur.execute("SELECT COUNT(*), array_agg(uid ORDER BY uid) FROM public.protein_embeddings_esm2 WHERE uid = ANY(%s)", (list(TEST_UIDS),))
+        n, uids = cur.fetchone()
+        print(f"[KNN-DEBUG] embeddings visible to this test: count={n}, uids={uids}")
+
         cur.execute(
             "SELECT uid, similarity FROM public.knn_search_esm2('test:Q', 3)"
         )
         rows = cur.fetchall()
+        print(f"[KNN-DEBUG] knn_search_esm2('test:Q', 3) returned {len(rows)} rows: {rows}")
 
     assert len(rows) == 3, f"expected 3 KNN results, got {len(rows)}"
 
