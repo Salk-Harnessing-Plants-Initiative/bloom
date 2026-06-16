@@ -91,10 +91,15 @@ CREATE TABLE IF NOT EXISTS public.protein_embeddings_esm2 (
   created_at timestamptz  NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS protein_embeddings_esm2_ivfflat_idx
+-- HNSW (vs IVFFLAT) because IVFFLAT clusters via K-means with `lists` partitions
+-- and default `probes=1` only searches the query vector's cluster — on tiny
+-- datasets (e.g. the 3-row test fixture), each row lands in its own partition
+-- and KNN returns only the query's exact match. HNSW has no training step,
+-- gives exact-ish results for typical configurations, and scales to millions
+-- of rows. Recommended pgvector index for any new schema.
+CREATE INDEX IF NOT EXISTS protein_embeddings_esm2_hnsw_idx
   ON public.protein_embeddings_esm2
-  USING ivfflat (embedding vector_cosine_ops)
-  WITH (lists = 100);
+  USING hnsw (embedding vector_cosine_ops);
 
 COMMENT ON TABLE public.protein_embeddings_esm2 IS
   'ESM-2 protein embeddings, vector(1280) cosine-indexed. Each row corresponds to a proteins.uid. Postgres rejects vectors of any other dimension at the type-cast boundary — this is the cross-model contamination guardrail.';
