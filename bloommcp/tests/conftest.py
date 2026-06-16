@@ -17,7 +17,7 @@ import tempfile
 os.environ.pop("SUPABASE_URL", None)
 os.environ.pop("BLOOM_AGENT_KEY", None)
 
-# --- Non-secret data dirs experiment_utils validates at import time ---
+# --- Non-secret data dirs experiment_utils reads (validated at startup, not import) ---
 _TMP = tempfile.mkdtemp(prefix="bloom_mcp_tests_")
 os.environ.setdefault("BLOOM_TRAITS_DIR", _TMP)
 os.environ.setdefault("BLOOM_OUTPUT_DIR", _TMP)

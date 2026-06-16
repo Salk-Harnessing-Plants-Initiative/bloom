@@ -157,6 +157,25 @@ def test_boot_validation_fails_fast_without_server_io(monkeypatch):
     assert called["run"] is False
 
 
+def test_boot_validation_fails_fast_on_missing_data_dirs(monkeypatch):
+    """main() also fails fast when BLOOM_*_DIR is missing (Supabase present)."""
+    import bloom_mcp.server as server
+
+    # Supabase satisfied so the failure must come from the data-dir validator.
+    monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
+    monkeypatch.setenv("BLOOM_AGENT_KEY", "fake-jwt")
+    monkeypatch.delenv("BLOOM_TRAITS_DIR", raising=False)
+
+    called = {"run": False}
+    monkeypatch.setattr(
+        server.mcp, "run", lambda *a, **k: called.__setitem__("run", True)
+    )
+
+    with pytest.raises(RuntimeError, match="BLOOM_TRAITS_DIR"):
+        server.main()
+    assert called["run"] is False
+
+
 # ── FastMCP Client smoke (no live Supabase) ─────────────────────────────────
 
 
