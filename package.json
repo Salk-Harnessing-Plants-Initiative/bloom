@@ -35,6 +35,7 @@
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-react": "^7.33.2",
     "eslint-plugin-react-hooks": "^5.0.0",
+    "json-schema-to-typescript": "15.0.4",
     "prettier": "^3.6.2",
     "prettier-plugin-nginx": "^1.0.3",
     "turbo": "^2.5.8",
@@ -46,6 +47,9 @@
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,md}\"",
     "format:check": "prettier --check \"**/*.{js,jsx,ts,tsx,json,md}\"",
     "test": "turbo run test",
-    "test:coverage": "turbo run test:coverage"
+    "test:coverage": "turbo run test:coverage",
+    "contracts:gen": "node scripts/contract_types.mjs --write",
+    "contracts:check": "node scripts/contract_types.mjs --check",
+    "contracts:test": "node --test scripts/contract_types.test.mjs"
   }
 }

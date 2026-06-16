@@ -284,10 +284,14 @@ jobs:
           "
 
       # Layer 2 — Verify Caddy obtained a real Let's Encrypt cert. First
-      # deploy: ACME takes 30-90s, poll up to 120s. Subsequent redeploys:
-      # cached cert served instantly, first check passes. Failure here =
-      # Cloudflare flow is broken (token, CNAME, or plugin) and Caddy will
-      # keep retrying — stop the container to protect the LE budget.
+      # deploy: ACME takes 30-90s per SAN, polled up to 180s total. Phase 1
+      # of the bloom.salk.edu migration uses a 4-SAN cert (new apex +
+      # wildcard, plus legacy apex + wildcard); each SAN requires its own
+      # sequential DNS-01 challenge through the dns_challenge_override_domain,
+      # so the timeout was raised from 120s to 180s to accommodate. Subsequent
+      # redeploys: cached cert served instantly, first check passes. Failure
+      # here = Cloudflare flow is broken (token, CNAME, or plugin) and Caddy
+      # will keep retrying — stop the container to protect the LE budget.
       - name: Verify Caddy obtained a Let's Encrypt cert
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
@@ -307,7 +311,7 @@ jobs:
               fi
               sleep 5
             done
-            echo \"::error::Caddy did not obtain a real Let's Encrypt cert within 120s. Stopping caddy to protect LE rate limits.\"
+            echo \"::error::Caddy did not obtain a real Let's Encrypt cert within 180s. Stopping caddy to protect LE rate limits.\"
             echo \"Last observed issuer: \$issuer\"
             docker compose -f docker-compose.prod.yml --env-file .env.prod stop caddy || true
             exit 1
@@ -797,7 +801,7 @@ jobs:
               fi
               sleep 5
             done
-            echo \"::error::Caddy did not obtain a real Let's Encrypt cert within 120s. Stopping caddy to protect LE rate limits.\"
+            echo \"::error::Caddy did not obtain a real Let's Encrypt cert within 180s. Stopping caddy to protect LE rate limits.\"
             echo \"Last observed issuer: \$issuer\"
             docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging stop caddy || true
             exit 1
