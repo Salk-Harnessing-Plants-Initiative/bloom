@@ -129,6 +129,19 @@ jobs:
       - name: Run Python unit tests
         run: uv run --extra test pytest tests/unit/ -v --tb=short
 
+      # Tier 0 oracle + acceptance: the bloom_mcp package's own Supabase-free
+      # suite. Run from bloommcp/ with its `test` extra (pytest/hypothesis/syrupy)
+      # and SUPABASE_URL / BLOOM_AGENT_KEY pinned empty, proving `import bloom_mcp`
+      # and the unit tests need no live Supabase. The empty env makes the
+      # fail-fast contract load-bearing instead of relying on ambient runner
+      # state. Without this step the oracle gate is never enforced — the root job
+      # above only runs tests/unit/.
+      - name: Run bloom_mcp package tests
+        run: cd bloommcp && uv run --frozen --extra test pytest tests/ -v --tb=short
+        env:
+          SUPABASE_URL: ""
+          BLOOM_AGENT_KEY: ""
+
       # Enforce lockfile-pyproject sync on the server side. Pre-commit catches
       # this locally but can be bypassed (--no-verify, web-UI merge, Dependabot
       # auto-merge). `uv export --frozen` (used by the audit steps below) exits
