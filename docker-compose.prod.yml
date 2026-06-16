@@ -111,6 +111,13 @@ services:
       SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
+      # Read by web/lib/config/validate-on-boot.ts in production via the
+      # Next.js 16 instrumentation hook (web/instrumentation.ts). Required:
+      # boot fails if unset. See openspec/changes/add-ghcr-image-publishing
+      # design.md Decision 13 for format
+      # (<internal_host>=<public_host>[,<internal_host>=<public_host>]*).
+      # The .env.prod / .env.staging / .env.ci sources MUST set this var.
+      SUPABASE_URL_HOSTS_ALLOWED: ${SUPABASE_URL_HOSTS_ALLOWED}
     depends_on:
       - kong
     healthcheck:
