@@ -32,6 +32,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Contract drift guard (pin-sleap-roots-contract / #294): regenerate the
+      # TS types from the pinned sleap-roots-contracts schema and fail if the
+      # committed contracts/generated/ types or contracts/pin.json drift from it.
+      - name: Contract types drift guard
+        run: npm run contracts:check
+
+      # Negative-path + $id-no-op unit tests for the drift guard (built-in
+      # node:test runner — no vitest config).
+      - name: Contract types guard unit tests
+        run: npm run contracts:test
+
       # Checks npm packages for known CVEs (critical only)
       - name: Security audit (npm)
         run: npm audit --audit-level=critical
