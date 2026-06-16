@@ -1,0 +1,63 @@
+# ─────────────────────────────────────────────────────────────────────
+# docker-compose.ci.yml — CI / local-without-GHCR build overlay
+# ─────────────────────────────────────────────────────────────────────
+#
+# Purpose
+#   This overlay restores `build:` blocks for the three custom services
+#   (bloom-web, langchain-agent, bloommcp) so that PR CI's
+#   `compose-health-check` job — which runs BEFORE any image is pushed
+#   to GHCR for the PR's branch — can still bring up the full stack by
+#   building locally. Production compose stays `image:`-only and pulls
+#   from `ghcr.io/${IMAGE_NAMESPACE}/<service>:${IMAGE_TAG:-staging}`.
+#
+# Usage
+#   In CI:
+#     docker compose -f docker-compose.prod.yml -f docker-compose.ci.yml \
+#       --env-file .env.ci up -d --build
+#   This single pair is hoisted to the `COMPOSE_FILES` env var on the
+#   `compose-health-check` job in .github/workflows/pr-checks.yml so the
+#   6+ compose commands in that job don't drift apart.
+#
+#   For local development without GHCR pull access, the same overlay
+#   gives you a buildable stack against prod compose — useful for
+#   operators who need to reproduce a prod-shaped deploy locally.
+#
+# Compose merge semantics
+#   When this overlay declares `build:` on a service whose base file
+#   declares `image:`, Docker Compose keeps BOTH keys in the merged
+#   config. `docker compose up --build` builds from `build:` and tags
+#   the result with the `image:` value — harmless for CI because the
+#   tag isn't pushed anywhere.
+#
+# Parity enforcement
+#   `tests/unit/test_pr_checks_workflow_shape.py` asserts that every
+#   GHCR-ref'd custom service in `docker-compose.prod.yml` has a
+#   corresponding `build:` block here, and that the `context:` /
+#   `dockerfile:` pair matches. A future PR-3 task
+#   (test_compose_ci_overlay_parity.py) extends this once prod compose
+#   flips to `image:`-only.
+#
+# DO NOT put environment variables, ports, volumes, or anything else in
+# this file. The overlay must remain a thin `build:` shim so reviewing
+# what differs between CI and prod stays trivial.
+#
+# Owned by:
+#   openspec/changes/add-ghcr-image-publishing — see §0.3, §8.4, §8.5
+#   of tasks.md and Decision 11 of design.md.
+# ─────────────────────────────────────────────────────────────────────
+
+services:
+  bloom-web:
+    build:
+      context: .
+      dockerfile: ./web/Dockerfile.bloom-web.prod
+
+  langchain-agent:
+    build:
+      context: ./langchain
+      dockerfile: Dockerfile
+
+  bloommcp:
+    build:
+      context: ./bloommcp
+      dockerfile: Dockerfile

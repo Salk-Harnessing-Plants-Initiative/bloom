@@ -1,5 +1,6 @@
 """MCP tool: list every prior analysis on file for an experiment."""
 import json
+import time
 
 import source.experiment_utils as _eu
 from storage import AnalysisDir, ManifestSchemaError
@@ -14,19 +15,39 @@ TOOL_CLASSES = (
     "correlation",
 )
 
+# Logical prefix inside the bloommcp-data bucket for all versioned outputs.
+# Mirrors the constant in tools/workflows/_helpers.py.
+_STORAGE_OUTPUT_PREFIX = "bloommcp_output"
+
+# Tiny per-experiment manifest cache. Each list_existing_analyses call walks
+# N tool classes, each doing one storage GET; in a single LLM session the
+# tool gets called repeatedly with the same filename, so a 30-second TTL
+# amortises the network cost without risking stale reads across sessions.
+_CACHE_TTL_SECONDS = 30
+_RESPONSE_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def _now() -> float:
+    return time.monotonic()
+
 
 def list_existing_analyses(experiment_filename: str) -> str:
-    """List every prior analysis recorded on disk for this experiment.
+    """List every prior analysis recorded on file for this experiment.
 
-    Walks each tool-class directory (qc_*, stats_*, dimred_*, clustering_*,
-    outlier_*, viz_*, correlation_*) under BLOOM_OUTPUT_DIR and aggregates
-    every version recorded in each manifest. Use this at the start of any
-    analysis session to see what's already been done and avoid redundant
-    computation.
+    Walks each tool-class prefix under `bloommcp_output/` in the
+    bloommcp-data bucket and aggregates every version recorded in each
+    manifest. Use this at the start of any analysis session to see
+    what's already been done and avoid redundant computation.
+
+    Results are cached per experiment for 30 seconds.
 
     Args:
         experiment_filename: CSV filename, e.g. "alfalfa_gwas_wave2.csv"
     """
+    cached = _RESPONSE_CACHE.get(experiment_filename)
+    if cached is not None and _now() - cached[0] < _CACHE_TTL_SECONDS:
+        return cached[1]
+
     raw_path = _eu.TRAITS_DIR / experiment_filename
     if not raw_path.exists():
         available = ", ".join(e["filename"] for e in _eu.list_experiments()) or "none"
@@ -42,7 +63,9 @@ def list_existing_analyses(experiment_filename: str) -> str:
     errors: list[str] = []
 
     for tool_class in TOOL_CLASSES:
-        analysis_dir = AnalysisDir(_eu.OUTPUT_DIR, experiment_filename, tool_class)
+        analysis_dir = AnalysisDir(
+            _STORAGE_OUTPUT_PREFIX, experiment_filename, tool_class
+        )
         try:
             versions = analysis_dir.list_versions()
         except ManifestSchemaError as e:
@@ -61,7 +84,10 @@ def list_existing_analyses(experiment_filename: str) -> str:
         )
     if errors:
         response["errors"] = errors
-    return json.dumps(response, indent=2)
+
+    response_str = json.dumps(response, indent=2)
+    _RESPONSE_CACHE[experiment_filename] = (_now(), response_str)
+    return response_str
 
 
 def register(mcp):

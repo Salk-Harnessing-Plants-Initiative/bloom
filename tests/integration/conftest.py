@@ -28,8 +28,12 @@ def _load_env(env_file: str) -> dict[str, str]:
     return env
 
 
-# Load env vars — prefer .env.prod locally, fall back to .env.ci in CI
-_env = _load_env(".env.prod") or _load_env(".env.ci")
+# Load env vars — prefer .env.prod locally, fall back to .env.ci in CI, then to
+# .env.dev for a local compose-dev run (so `make test-integration` against the
+# dev stack picks up its generated credentials instead of silently skipping).
+# Order matters: a left-to-right `or` returns the first non-empty mapping, so
+# CI (.env.ci) and prod (.env.prod) keep precedence over .env.dev.
+_env = _load_env(".env.prod") or _load_env(".env.ci") or _load_env(".env.dev")
 
 BASE_URL = os.environ.get("TEST_BASE_URL", "http://localhost")
 ANON_KEY = os.environ.get("ANON_KEY", _env.get("ANON_KEY", ""))

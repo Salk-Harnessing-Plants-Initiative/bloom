@@ -123,6 +123,7 @@ jobs:
           LANGCHAIN_API_KEY=${{ secrets.PROD_LANGCHAIN_API_KEY }}
           MINIO_DATA_PATH=${{ secrets.PROD_MINIO_DATA_PATH }}
           BLOOM_AGENT_KEY=${{ secrets.PROD_BLOOM_AGENT_KEY }}
+          CLOUDFLARE_API_TOKEN=${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           # _EOF_MARKER_
           SECRETS
 
@@ -216,6 +217,32 @@ jobs:
             echo \"Docker Compose \$COMPOSE_VER ok\"
           "
 
+      # Layer 1 — Cloudflare API token preflight. Catches revoked / wrong-
+      # scope / accidentally-empty tokens before Caddy boots and burns
+      # Let's Encrypt rate-limit budget on a Cloudflare flow that cannot
+      # succeed. /user/tokens/verify needs no permission and works for any
+      # valid token. Failure here = wrong token; fix the GH secret.
+      - name: Cloudflare API token preflight
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?PROD_CLOUDFLARE_API_TOKEN secret is empty or missing}"
+          echo "::add-mask::$CLOUDFLARE_API_TOKEN"
+          status=$(curl -sS -o /tmp/cf-verify.json -w '%{http_code}' \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            https://api.cloudflare.com/client/v4/user/tokens/verify)
+          if [ "$status" != "200" ]; then
+            echo "::error::Cloudflare /user/tokens/verify returned HTTP $status. Token rejected; refusing to deploy."
+            exit 1
+          fi
+          if ! grep -q '"status":"active"' /tmp/cf-verify.json; then
+            echo "::error::Cloudflare token verified but reports non-active status:"
+            cat /tmp/cf-verify.json
+            exit 1
+          fi
+          echo "Cloudflare API token is active."
+
       - name: Deploy production stack
         run: |
           : "${PROD_DEPLOY_PATH:?PROD_DEPLOY_PATH secret must be set (empty → would cd to \$HOME)}"
@@ -229,6 +256,66 @@ jobs:
           "
         env:
           PROD_DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+
+      # Layer 3 — Crash-loop detection. Caddyfile parse errors and missing
+      # modules send caddy into a restart loop; each restart is another
+      # ACME attempt against LE's rate-limit budget. Quick check, fail
+      # fast, stop the container so it cannot keep retrying.
+      - name: Caddy crash-loop check
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            cid=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps -q caddy)
+            if [ -z \"\$cid\" ]; then
+              echo \"::error::caddy container is not running after deploy\"
+              exit 1
+            fi
+            restarts=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\")
+            if [ \"\$restarts\" -gt 2 ]; then
+              echo \"::error::Caddy restarted \$restarts times since deploy — likely Caddyfile parse error or missing plugin. Stopping caddy to halt further ACME attempts.\"
+              echo '::group::caddy logs'
+              docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=100 caddy || true
+              echo '::endgroup::'
+              docker compose -f docker-compose.prod.yml --env-file .env.prod stop caddy || true
+              exit 1
+            fi
+            echo \"caddy restart count: \$restarts\"
+          "
+
+      # Layer 2 — Verify Caddy obtained a real Let's Encrypt cert. First
+      # deploy: ACME takes 30-90s per SAN, polled up to 180s total. Phase 1
+      # of the bloom.salk.edu migration uses a 4-SAN cert (new apex +
+      # wildcard, plus legacy apex + wildcard); each SAN requires its own
+      # sequential DNS-01 challenge through the dns_challenge_override_domain,
+      # so the timeout was raised from 120s to 180s to accommodate. Subsequent
+      # redeploys: cached cert served instantly, first check passes. Failure
+      # here = Cloudflare flow is broken (token, CNAME, or plugin) and Caddy
+      # will keep retrying — stop the container to protect the LE budget.
+      - name: Verify Caddy obtained a Let's Encrypt cert
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.prod | cut -d= -f2-)
+            PORT=\$(grep '^CADDY_HTTPS_LISTEN_PORT=' .env.prod | cut -d= -f2-)
+            : \"\${DOMAIN_MAIN:?missing DOMAIN_MAIN in .env.prod}\"
+            : \"\${PORT:?missing CADDY_HTTPS_LISTEN_PORT in .env.prod}\"
+
+            issuer=
+            for _ in \$(seq 1 24); do
+              issuer=\$(echo | openssl s_client -connect 127.0.0.1:\$PORT -servername \"\$DOMAIN_MAIN\" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || true)
+              if echo \"\$issuer\" | grep -qi encrypt; then
+                echo \"Real Let's Encrypt cert active: \$issuer\"
+                exit 0
+              fi
+              sleep 5
+            done
+            echo \"::error::Caddy did not obtain a real Let's Encrypt cert within 180s. Stopping caddy to protect LE rate limits.\"
+            echo \"Last observed issuer: \$issuer\"
+            docker compose -f docker-compose.prod.yml --env-file .env.prod stop caddy || true
+            exit 1
+          "
 
       - name: Deploy diagnostics on failure
         if: failure()
@@ -275,9 +362,12 @@ jobs:
             failed=0
             _probe() {
               local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
-              # Retry up to 3 times on connection failure (status 000) — Caddy's
-              # \`tls internal\` generates certs lazily on first handshake; the
-              # first probe after a fresh deploy can race the cert generation.
+              # Retry up to 3 times on connection failure (status 000). Normal
+              # path: Caddy serves a cached Let's Encrypt cert verified by the
+              # earlier Layer 2 step — should respond instantly. Break-glass
+              # path (manual \`tls internal\` in the Caddyfile): certs generate
+              # lazily on the first handshake; the first probe can race the
+              # cert generation, hence the retry loop.
               local status=000
               for _ in 1 2 3; do
                 if [ -n \"\$extra\" ]; then
@@ -554,6 +644,7 @@ jobs:
           LANGCHAIN_API_KEY=${{ secrets.STAGING_LANGCHAIN_API_KEY }}
           MINIO_DATA_PATH=${{ secrets.STAGING_MINIO_DATA_PATH }}
           BLOOM_AGENT_KEY=${{ secrets.STAGING_BLOOM_AGENT_KEY }}
+          CLOUDFLARE_API_TOKEN=${{ secrets.STAGING_CLOUDFLARE_API_TOKEN }}
           # _EOF_MARKER_
           SECRETS
 
@@ -629,6 +720,28 @@ jobs:
             echo \"Docker Compose \$COMPOSE_VER ok\"
           "
 
+      # Check for Cloudflare API token for Lets Encrypt
+      - name: Cloudflare API token preflight
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?STAGING_CLOUDFLARE_API_TOKEN secret is empty or missing}"
+          echo "::add-mask::$CLOUDFLARE_API_TOKEN"
+          status=$(curl -sS -o /tmp/cf-verify.json -w '%{http_code}' \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            https://api.cloudflare.com/client/v4/user/tokens/verify)
+          if [ "$status" != "200" ]; then
+            echo "::error::Cloudflare /user/tokens/verify returned HTTP $status. Token rejected; refusing to deploy."
+            exit 1
+          fi
+          if ! grep -q '"status":"active"' /tmp/cf-verify.json; then
+            echo "::error::Cloudflare token verified but reports non-active status:"
+            cat /tmp/cf-verify.json
+            exit 1
+          fi
+          echo "Cloudflare API token is active."
+
       - name: Deploy staging stack
         run: |
           : "${STAGING_DEPLOY_PATH:?STAGING_DEPLOY_PATH secret must be set (empty → would cd to \$HOME)}"
@@ -642,6 +755,57 @@ jobs:
           "
         env:
           STAGING_DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+
+      # Layer 3 — Crash-loop detection. See deploy-production's equivalent
+      # step for rationale.
+      - name: Caddy crash-loop check
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            cid=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps -q caddy)
+            if [ -z \"\$cid\" ]; then
+              echo \"::error::caddy container is not running after deploy\"
+              exit 1
+            fi
+            restarts=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\")
+            if [ \"\$restarts\" -gt 2 ]; then
+              echo \"::error::Caddy restarted \$restarts times since deploy — likely Caddyfile parse error or missing plugin. Stopping caddy to halt further ACME attempts.\"
+              echo '::group::caddy logs'
+              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --tail=100 caddy || true
+              echo '::endgroup::'
+              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging stop caddy || true
+              exit 1
+            fi
+            echo \"caddy restart count: \$restarts\"
+          "
+
+      # Layer 2 — Verify Caddy obtained a real Let's Encrypt cert. See
+      # deploy-production's equivalent step for rationale.
+      - name: Verify Caddy obtained a Let's Encrypt cert
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.staging | cut -d= -f2-)
+            PORT=\$(grep '^CADDY_HTTPS_LISTEN_PORT=' .env.staging | cut -d= -f2-)
+            : \"\${DOMAIN_MAIN:?missing DOMAIN_MAIN in .env.staging}\"
+            : \"\${PORT:?missing CADDY_HTTPS_LISTEN_PORT in .env.staging}\"
+
+            issuer=
+            for _ in \$(seq 1 24); do
+              issuer=\$(echo | openssl s_client -connect 127.0.0.1:\$PORT -servername \"\$DOMAIN_MAIN\" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || true)
+              if echo \"\$issuer\" | grep -qi encrypt; then
+                echo \"Real Let's Encrypt cert active: \$issuer\"
+                exit 0
+              fi
+              sleep 5
+            done
+            echo \"::error::Caddy did not obtain a real Let's Encrypt cert within 180s. Stopping caddy to protect LE rate limits.\"
+            echo \"Last observed issuer: \$issuer\"
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging stop caddy || true
+            exit 1
+          "
 
       - name: Deploy diagnostics on failure
         if: failure()
@@ -688,9 +852,12 @@ jobs:
             failed=0
             _probe() {
               local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
-              # Retry up to 3 times on connection failure (status 000) — Caddy's
-              # \`tls internal\` generates certs lazily on first handshake; the
-              # first probe after a fresh deploy can race the cert generation.
+              # Retry up to 3 times on connection failure (status 000). Normal
+              # path: Caddy serves a cached Let's Encrypt cert verified by the
+              # earlier Layer 2 step — should respond instantly. Break-glass
+              # path (manual \`tls internal\` in the Caddyfile): certs generate
+              # lazily on the first handshake; the first probe can race the
+              # cert generation, hence the retry loop.
               local status=000
               for _ in 1 2 3; do
                 if [ -n \"\$extra\" ]; then

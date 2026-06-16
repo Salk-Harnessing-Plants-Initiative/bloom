@@ -83,3 +83,10 @@ CVE-2026-42496
 # package included by python:3.11-slim. No fix available upstream.
 # Reassess on next python:3.11-slim SHA bump.
 CVE-2026-8376
+
+# linux-libc-dev (Debian 13 in python:3.11-slim) — affects: langchain-agent / bloommcp
+# kernel: ksmbd signedness bug. Kernel headers are a build-time-only transitive base
+# package; the container runs no kernel and uses no in-kernel SMB server (ksmbd), so the
+# affected code path is unreachable at runtime. No fix available upstream. Reassess on the
+# next python:3.11-slim SHA bump. Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-43185
+CVE-2026-43185

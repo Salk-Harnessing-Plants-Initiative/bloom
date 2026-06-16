@@ -39,7 +39,7 @@ bloom-v2/
 ### Development Stack
 
 - **Frontend**: Next.js (hot reload) - http://localhost:3000
-- **Database**: PostgreSQL via Supabase - localhost:5432
+- **Database**: PostgreSQL via Supabase - `localhost:${POSTGRES_HOST_PORT:-5432}`
 - **Storage**: MinIO Console - http://localhost:9101
 - **AI Agent**: LangChain agent - http://localhost:5002
 - **MCP Server**: Bloom FastMCP (Bloom tools) - http://localhost:8811
@@ -71,9 +71,17 @@ make prod-logs           # View production logs
 ### Database Operations
 
 ```bash
+make init                # Generate .env.dev from .env.dev.example (fresh secrets)
+make migrate-local       # Apply all migrations to the local dev DB
+make check               # Verify the stack: roles, schemas, migrations
+make verify-dev          # Clean reset -> up -> migrate -> check (destructive)
+make test-integration    # Run integration tests against the local stack
 make reset-storage       # Reset database and storage (DEV only)
 make load-test-data      # Load CSV test data into database
 ```
+
+> The full first-run workflow (WSL2 notes, port overrides, etc.) lives in
+> [DEV_SETUP.md](./DEV_SETUP.md) — the single source of truth for getting started.
 
 ### Storage (S3 Buckets) Operations
 

@@ -132,11 +132,14 @@ def test_literal_port_line_passes(tmp_path):
 
 
 def test_empty_rhs_line_passes(tmp_path):
+    # Verifies the parity checker accepts a legitimately empty value on both
+    # sides (KEY= with nothing after). Uses a synthetic key name so the test
+    # doesn't bind to whatever concrete vars happen to ship empty today.
     body = prod_heredoc([
-        "CADDY_HTTP_PORT=",
+        "OPTIONAL_EMPTY_OVERRIDE=",
         "POSTGRES_DB=${{ secrets.PROD_POSTGRES_DB }}",
     ]) + "\n" + staging_heredoc([
-        "CADDY_HTTP_PORT=",
+        "OPTIONAL_EMPTY_OVERRIDE=",
         "POSTGRES_DB=${{ secrets.STAGING_POSTGRES_DB }}",
     ])
     f = write_deploy(tmp_path, body)
