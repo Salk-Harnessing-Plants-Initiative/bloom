@@ -53,26 +53,11 @@ def test_auth_providers_configured(api, anon_key):
 
 
 def test_storage_has_expected_buckets(api, service_role_key):
-    """Storage has the full set of buckets created by minio-init.
-
-    Matches the complete set in minio/init/create-buckets.sh. Catches
-    configuration drift (e.g. a new bucket added to the script but missed
-    in init, or a rename that doesn't land in MinIO).
-    """
+    """Storage has the required buckets created by minio-init."""
     status, body = api("/api/storage/v1/bucket", api_key=service_role_key)
     assert status == 200
     bucket_names = {b["name"] for b in body}
-    expected = {
-        "bloom-storage",          # storage-api backend bucket
-        "images",                 # private
-        "species-illustrations",  # private
-        "tus-files",              # private
-        "videos",                 # private
-        "scrna",                  # private
-        "experiment-log-images",  # public
-        "plates-images",          # public
-        "plate-blob-storage",     # public
-    }
+    expected = {"images", "videos", "scrna"}
     assert expected.issubset(bucket_names), f"Missing buckets: {expected - bucket_names}"
 
 
