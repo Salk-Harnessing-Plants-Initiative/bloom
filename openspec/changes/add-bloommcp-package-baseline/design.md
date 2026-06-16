@@ -17,7 +17,8 @@ establishes the package + test foundation Tiers 1–4 build on.
 ## Goals / Non-Goals
 
 - **Goals:** installable `src/bloom_mcp/` uv package (`uv build` + importable wheel);
-  Supabase-free importability + unit tests, gated by CI; committed #120 turface_19
+  Supabase-free importability + unit tests, gated by CI; committed
+  `talmolab/sleap-roots-analyze#120` turface_19
   oracle with independent golden values; container/compose entry point updated for the
   `src/` layout; **zero** server behavior regression.
 - **Non-Goals:** delegating the vendored analysis to `sleap-roots-analyze` (rewriting
@@ -36,12 +37,14 @@ establishes the package + test foundation Tiers 1–4 build on.
   still imported by shipped code. *Alternative considered:* delegate + prune now —
   rejected; it is a behavior-changing refactor that belongs in its own tier with its own
   oracle gate, and folding it in here would make the move un-reviewable.
-- **Decision: independent oracle, explicit assertions.** Golden values come from the
-  #120 / PR #146 recording, **not** re-derived from `sleap-roots-analyze`; otherwise the
-  oracle (library output vs golden) would be a tautology. Assert explicit numeric values
-  with tolerances; do **not** use syrupy auto-snapshot for the oracle (snapshot-on-first-
-  run records whatever the code emits and can never be RED-first). syrupy is reserved for
-  stable structural/shape snapshots via the FastMCP `Client`.
+- **Decision: independent oracle, explicit assertions, on shipped + external code.**
+  Golden values come from the `talmolab/sleap-roots-analyze#120` / PR #146 recording,
+  **not** re-derived from `sleap-roots-analyze`; otherwise the oracle (library output vs
+  golden) would be a tautology. Assert explicit numeric values with tolerances against
+  **both** the external `sleap_roots_analyze.pca` (cutover-target check) and the shipped
+  `bloom_mcp` PCA / clustering / correlation paths (the numpy-2 regression guard for the
+  code the server actually runs). Do **not** use syrupy auto-snapshot for the oracle
+  (snapshot-on-first-run records whatever the code emits and can never be RED-first).
 - **Decision: real package + entry point + Dockerfile two-stage sync.** Add a
   `[build-system]` (uv_build with `module-root = "src"`, or hatchling
   `packages = ["src/bloom_mcp"]`) and a `[project.scripts]` / `python -m bloom_mcp`
@@ -63,7 +66,10 @@ establishes the package + test foundation Tiers 1–4 build on.
 
 - **numpy major-version jump** → `sleap-roots-analyze` requires `numpy>=2.3.2` vs the
   current `>=1.24`; the vendored sklearn/scipy code has never run on numpy 2.x here.
-  Mitigation: the full suite (6.3) runs against the regenerated numpy-2 lock as the gate.
+  Mitigation: the oracle pins **numeric** outputs of the shipped PCA / clustering /
+  correlation paths (not just "doesn't crash") under the numpy-2 lock; the full suite
+  (6.3) runs against that lock. UMAP and the shape-only integration tests remain
+  numeric-unverified — called out, not silently claimed as equivalent.
 - **Root-suite breakage from the move** → 13 root test files break at collection until
   their `sys.path` target moves to `bloommcp/src` and imports become `bloom_mcp.*`; two
   tests assert the import-time `RuntimeError` being removed and must be rewritten (3.3).
@@ -86,12 +92,12 @@ establishes the package + test foundation Tiers 1–4 build on.
    Dockerfile/compose + CI job + docs. 7. Full-suite + boot + `/health` gate. Rollback =
    revert the PR; no schema/runtime data migration.
 
-## Open Questions
+## Resolved during implementation
 
-- `server.py` placement: keep at package root (`bloommcp/server.py` importing
-  `bloom_mcp.*`) or move under `src/bloom_mcp/` with a console-script entry? Decide in
-  task 2.1/2.4; affects the Dockerfile `CMD`.
-- Build backend: `uv_build` vs hatchling for the `src/` wheel — pick in 2.3.
-- Branch owner prefix — issue prescribes `eberrigan/bloommcp-tier0-baseline`; the
-  implementer is a different user. Confirm the prefix and that the eventual approver is
-  neither author (branch protection needs one non-author review).
+- **`server.py` placement** → moved under `src/bloom_mcp/server.py` with a `main()`
+  entry + `__main__.py`; Dockerfile `CMD` is `python -m bloom_mcp`.
+- **Build backend** → `uv_build` with `module-name = "bloom_mcp"`, `module-root = "src"`.
+- **`experiment_utils` import-time dir gate** (raised in review) → made lazy the same way
+  as Supabase (tolerant module constants + `validate_env()` called at boot).
+- **Branch prefix** → kept `eberrigan/bloommcp-tier0-baseline` (per the issue); approver
+  is a non-author, satisfying branch protection.

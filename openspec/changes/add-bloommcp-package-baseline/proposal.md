@@ -38,20 +38,25 @@ Tiers 1–4) — see issue
     (`tests/unit/test_supabase_client.py:108-130`) MUST be rewritten to the
     `validate_env()` contract.
 - **Add dependencies (additive).** Add `sleap-roots-analyze>=0.1.0a2` and
-  `sleap-roots-contracts[pandas]>=0.1.0a1` to `bloommcp/pyproject.toml` and to the root
-  `tests/` `test` extra. These are the foundation Tiers 1–4 delegate to and the source
-  of the oracle's `perform_*` functions. **Existing analysis deps stay** — the vendored
-  `source/*` modules still import them directly (sklearn/scipy/statsmodels/umap/seaborn);
-  delegation + dep-pruning is a Non-Goal, deferred to the delegation tier. Adding
-  `sleap-roots-analyze` raises the numpy floor to `>=2.3.2`, so the full suite is the
-  gate for numpy-2 compatibility.
+  `sleap-roots-contracts[pandas]>=0.1.0a1` to `bloommcp/pyproject.toml`. These are the
+  foundation Tiers 1–4 delegate to and the source of the oracle's `perform_*` functions.
+  (The root `tests/` `test` extra is **not** changed — root tests import only the
+  vendored `bloom_mcp` modules, not the new deps.) **Existing analysis deps stay** — the
+  vendored `source/*` modules still import them directly
+  (sklearn/scipy/statsmodels/umap/seaborn); delegation + dep-pruning is a Non-Goal,
+  deferred to the delegation tier (tracked for the pre-PyPI-publish gate). Adding
+  `sleap-roots-analyze` raises the numpy floor `>=1.24` → `>=2.3.2` (a major-version
+  jump); numeric equivalence under numpy 2 is asserted by the oracle for the shipped
+  `bloom_mcp` PCA / clustering / correlation paths (see "No regression" below).
 - **Add the dev/test stack:** `pytest`, `hypothesis`, `syrupy`, and the FastMCP
   `Client`; a `bloommcp/tests/` layout that collects and runs with fakes (no live
   Supabase), plus a new CI job that runs it (today nothing runs `cd bloommcp && pytest`).
-- **Commit the #120 turface_19 fixture + recorded golden values** under
-  `bloommcp/tests/fixtures/`. Golden values are the **independent** #120 / PR #146
-  recording (not re-derived from `sleap-roots-analyze`), so the oracle is a real
-  cross-tier check, asserted with explicit numeric tolerances.
+- **Commit the turface_19 fixture + recorded golden values** under
+  `bloommcp/tests/fixtures/`. Golden values are the **independent**
+  `talmolab/sleap-roots-analyze#120` / PR #146 recording (not re-derived from
+  `sleap-roots-analyze`), so the oracle is a real cross-tier check, asserted with
+  explicit numeric tolerances against both the external library **and** the shipped
+  `bloom_mcp` code.
 - **Sync docs** left stale by the move: `_WIKI/BLOOMMCP/*` (link paths + `from source.*`
   code examples), `openspec/project.md` (monorepo tree + External Packages), root
   `README.md` tree.
@@ -70,8 +75,13 @@ Tiers 1–4) — see issue
   already lists `bloommcp` (lock gate still applies).
 - **Affected docs:** `_WIKI/BLOOMMCP/{README,storage-workflow,writing-a-new-tool}.md`,
   `openspec/project.md`, `README.md`, `.claude/commands/pre-merge.md` (smoke imports).
-- **No runtime behavior change** for the deployed server: tool surface and `/health` are
-  unchanged; fail-fast on missing env is preserved (moved from import-time to an explicit
-  boot call).
+- **No regression (scoped):** the server's tool surface, import behavior, and `/health`
+  are preserved, and fail-fast on missing env is retained (moved from import-time to an
+  explicit boot call). _Numeric equivalence under the numpy-2 jump_ is asserted for the
+  shipped PCA / clustering / correlation paths via the oracle; UMAP and the
+  shape-only integration tests are not numeric-pinned (the `compose-health-check` job is
+  the live `/health` gate). #305 AC5 ("necessary-and-sufficient deps, no unnecessary
+  packages") is **deferred** — Tier 0 ships `sleap-roots-analyze` alongside the vendored
+  stack it will later replace (tracked as a pre-PyPI-publish gate).
 - **Out of repo:** ticking the roadmap Tier 0 row is a GitHub action, not trackable here.
 - **Branch/PR target:** `staging` (staging-first repo); branch off `origin/staging`.

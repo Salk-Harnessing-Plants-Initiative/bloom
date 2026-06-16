@@ -1,10 +1,14 @@
 ## 1. Oracle & acceptance tests (RED first)
 
-- [x] 1.1 Vendor the #120 turface_19 fixture + independently recorded golden values
-      under `bloommcp/tests/fixtures/` (post-QC input CSV + recorded PCA metadata).
-- [x] 1.2 Oracle test with explicit numeric assertions: `sleap_roots_analyze.pca.
-      perform_pca_analysis` reproduces #120's recorded `n_pca_components` (3) and
-      `pca_explained_variance` (≈0.95991) within 1e-6.
+- [x] 1.1 Vendor the `talmolab/sleap-roots-analyze#120` turface_19 fixture +
+      independently recorded golden values under `bloommcp/tests/fixtures/` (post-QC
+      input CSV + recorded PCA metadata; unasserted `top_features` dropped).
+- [x] 1.2 Oracle tests with explicit numeric assertions: both the external
+      `sleap_roots_analyze.pca` **and** the shipped `bloom_mcp.pca` reproduce the
+      `talmolab/sleap-roots-analyze#120` recorded `n_pca_components` (3) and
+      `pca_explained_variance` (≈0.95991) within
+      1e-6, plus deterministic shipped k-means + correlation numerics as the numpy-2
+      regression guard.
 - [x] 1.3 Import test: `import bloom_mcp` succeeds with both Supabase vars unset.
 - [x] 1.4 Lazy-access test (parametrized over partial + both-unset): accessor raises
       naming exactly the missing variable.

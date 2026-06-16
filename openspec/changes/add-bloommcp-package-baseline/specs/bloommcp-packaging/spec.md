@@ -36,16 +36,21 @@ dev compose bind-mount SHALL still reflect local source edits (hot-reload preser
 - **THEN** the server process starts, resolves `bloom_mcp.*`, and `/health` returns OK
   in both
 
-### Requirement: Lazy Supabase Environment Validation
+### Requirement: Lazy Environment Validation
 
-The `bloom_mcp.supabase_client` module SHALL NOT validate `SUPABASE_URL` or
-`BLOOM_AGENT_KEY` at import time. Validation SHALL be deferred to an explicit
-`validate_env()` and to first Supabase access, so that `import bloom_mcp` and the
-fakes-based unit tests succeed with neither variable set.
+No `bloom_mcp` module SHALL validate runtime environment at import time. Both the
+`bloom_mcp.supabase_client` Supabase credentials (`SUPABASE_URL`,
+`BLOOM_AGENT_KEY`) and the `bloom_mcp.experiment_utils` data directories
+(`BLOOM_TRAITS_DIR`, `BLOOM_OUTPUT_DIR`, `BLOOM_PLOTS_DIR`, `BLOOM_PLOTS_URL`)
+SHALL be validated only by an explicit `validate_env()` (and, for Supabase, at
+first access), so that `import bloom_mcp` and the fakes-based unit tests succeed
+with **no** runtime environment set.
 
-#### Scenario: Import succeeds with no Supabase env
+#### Scenario: Import succeeds with no runtime env
 
-- **WHEN** `import bloom_mcp` runs with both `SUPABASE_URL` and `BLOOM_AGENT_KEY` unset
+- **WHEN** `import bloom_mcp.server` runs in a fresh interpreter with none of
+  `SUPABASE_URL`, `BLOOM_AGENT_KEY`, or the `BLOOM_*_DIR` / `BLOOM_PLOTS_URL`
+  variables set
 - **THEN** the import succeeds and raises no `RuntimeError`
 
 #### Scenario: First Supabase access validates and names the missing variable
@@ -55,18 +60,27 @@ fakes-based unit tests succeed with neither variable set.
 - **THEN** an error is raised at that call site naming exactly the missing variable, and
   no error is raised for a variable that is set
 
+#### Scenario: Data-directory validation defers to validate_env
+
+- **WHEN** `bloom_mcp.experiment_utils.validate_env()` is called with any of the
+  `BLOOM_*_DIR` / `BLOOM_PLOTS_URL` variables unset
+- **THEN** it raises a `RuntimeError` naming the missing variable(s), while merely
+  importing the module did not
+
 ### Requirement: Server Boot Fail-Fast Preserved
 
-The MCP server SHALL fail fast at startup when the Supabase environment is missing, via
-an explicit `validate_env()` call before `mcp.run()` rather than an import-time side
-effect, so a misconfigured deploy fails at container boot before serving requests. The
-`/health` endpoint SHALL continue to report healthy on a correctly configured boot.
+The MCP server SHALL fail fast at startup when its runtime environment is missing, via
+explicit `validate_env()` calls (Supabase credentials and data directories) before
+`mcp.run()` rather than an import-time side effect, so a misconfigured deploy fails at
+container boot before serving requests. The `/health` endpoint SHALL continue to report
+healthy on a correctly configured boot.
 
 #### Scenario: Misconfigured deploy fails at boot
 
-- **WHEN** the server starts with `SUPABASE_URL` or `BLOOM_AGENT_KEY` unset
-- **THEN** `validate_env()` raises a clear error before the port is bound or requests are
-  served
+- **WHEN** the server starts with `SUPABASE_URL` / `BLOOM_AGENT_KEY` **or** any
+  `BLOOM_*_DIR` / `BLOOM_PLOTS_URL` variable unset
+- **THEN** a validator raises a clear error naming the missing variable before the port
+  is bound or requests are served
 
 #### Scenario: Configured server boots healthy
 
@@ -99,10 +113,11 @@ removed. Committed lockfiles (`bloommcp/uv.lock` + root) SHALL stay in sync with
 
 The package SHALL provide a `bloommcp/tests/` layout using `pytest`, `hypothesis`,
 `syrupy`, and the FastMCP `Client`, runnable with fakes and **no live Supabase**, and
-this suite SHALL be executed by CI. The #120 turface_19 fixture and its independently
-recorded golden values SHALL be committed under `bloommcp/tests/fixtures/` and asserted —
-with explicit numeric tolerances, not auto-generated snapshots — by an oracle test that
-the `sleap-roots-analyze` `perform_*` functions reproduce.
+this suite SHALL be executed by CI. The `talmolab/sleap-roots-analyze#120` turface_19
+fixture and its independently recorded golden values SHALL be committed under
+`bloommcp/tests/fixtures/` and asserted — with explicit numeric tolerances, not
+auto-generated snapshots — by oracle tests that **both** the external
+`sleap_roots_analyze` and the shipped `bloom_mcp` analysis reproduce.
 
 #### Scenario: Suite collects, runs without Supabase, and is gated by CI
 
@@ -113,7 +128,7 @@ the `sleap-roots-analyze` `perform_*` functions reproduce.
 
 #### Scenario: Oracle reproduces independently recorded golden values
 
-- **WHEN** the `sleap-roots-analyze` `perform_*` functions run on the committed
-  turface_19 fixture
-- **THEN** their outputs match the independently recorded #120 golden values in
-  `bloommcp/tests/fixtures/` within the stated tolerance
+- **WHEN** the external `sleap_roots_analyze` and the shipped `bloom_mcp` PCA functions
+  run on the committed turface_19 fixture
+- **THEN** their outputs match the independently recorded `talmolab/sleap-roots-analyze#120`
+  golden values in `bloommcp/tests/fixtures/` within the stated tolerance

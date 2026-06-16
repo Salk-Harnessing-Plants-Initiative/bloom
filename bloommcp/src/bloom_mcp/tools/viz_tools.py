@@ -1,9 +1,9 @@
 """
 MCP Tool Wrappers for SLEAP Visualization.
 
-Wraps functions from source/visualization.py, source/cluster_visualization.py, and
-source/outlier_visualization.py. Uses source/experiment_utils.py for dynamic experiment
-discovery and column auto-detection.
+Wraps functions from bloom_mcp/visualization.py, bloom_mcp/cluster_visualization.py, and
+bloom_mcp/outlier_visualization.py. Uses bloom_mcp/experiment_utils.py for dynamic
+experiment discovery and column auto-detection.
 """
 
 import json

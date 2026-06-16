@@ -1,8 +1,8 @@
 """
 MCP Tool Wrappers for Cross-Experiment Correlation Analysis.
 
-Wraps functions from source/cross_experiment_correlations.py. Uses
-source/experiment_utils.py for dynamic experiment discovery.
+Wraps functions from bloom_mcp/cross_experiment_correlations.py. Uses
+bloom_mcp/experiment_utils.py for dynamic experiment discovery.
 """
 
 import pandas as pd

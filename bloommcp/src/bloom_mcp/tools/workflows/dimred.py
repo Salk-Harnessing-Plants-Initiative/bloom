@@ -3,7 +3,7 @@
 Clubs together the 4 PCA-related primitives that used to be separate MCP
 tools (run_pca, get_pca_feature_contributions, plot_pca_scree, plot_pca_biplot)
 into one workflow with a `method` parameter. Also brings UMAP into the MCP
-surface for the first time — bloommcp had `source/umap_embedding.py` with a
+surface for the first time — bloommcp had `bloom_mcp/umap_embedding.py` with a
 complete `perform_umap_analysis` function but no MCP tool wired to it.
 
 Maps to Elizabeth's `pca_analysis.py` + `umap_analysis.py` DAG steps from
