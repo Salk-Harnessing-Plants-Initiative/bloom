@@ -33,7 +33,8 @@ This change closes that gap by building the wheel in CI and importing it from a 
 
 ## Impact
 
-- **Affected specs**: `bloommcp-packaging` (ADDED only — composes with PR #313's in-flight capability).
+- **Affected specs**: `bloommcp-packaging` (ADDED only — composes with PR #313's capability).
+- **Archive order**: the `bloommcp-packaging` capability exists only as the (un-archived) `add-bloommcp-package-baseline` delta — it is not yet in `openspec/specs/`. Both changes are ADDED-only, so `validate --strict` and merge order are unaffected, but archiving MUST do `add-bloommcp-package-baseline` first (creating the canonical spec), then this change (appending the CI-gate requirement).
 - **Affected code**:
   - `.github/workflows/pr-checks.yml` — one step added to the `python-audit` job.
   - `tests/unit/test_bloommcp_wheel_import_gate.py` — new file.

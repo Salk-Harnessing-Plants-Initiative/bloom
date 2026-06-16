@@ -11,10 +11,14 @@ local guard instead asserts the gate is PRESENT and correctly shaped in
 narrowed (e.g. dropping a module from the import line, or removing the empty
 Supabase env that makes the lazy-validation contract load-bearing).
 
-Mirrors ``tests/unit/test_ci_workflow_uv_conventions.py`` and reuses its
-logical-line joiner so a gate whose command is split across backslash
-continuations is still detected. Matches on step *presence* (never a fixed
-index), so reordering steps in ``python-audit`` does not break the guard.
+Reuses the logical-line joiner from ``tests/unit/_workflow_helpers.py`` so a
+gate whose command is split across backslash continuations is still detected.
+Matches on step *presence* (never a fixed index), so reordering steps in
+``python-audit`` does not break the guard. The guard also asserts the gate's
+own load-bearing pieces — that it installs the built wheel (``--with`` the
+``bloommcp-*.whl``) and verifies provenance (``site-packages`` in
+``__file__``) — so a future edit cannot hollow the gate out while leaving it
+green.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from pathlib import Path
 
 import yaml
 
-from tests.unit.test_ci_workflow_uv_conventions import _logical_lines
+from tests.unit._workflow_helpers import _logical_lines
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 PR_CHECKS = REPO_ROOT / ".github" / "workflows" / "pr-checks.yml"
@@ -84,6 +88,35 @@ def test_wheel_import_gate_covers_all_modules() -> None:
         f"pr-checks.yml: {JOB}: wheel-import gate omits {missing} from its import "
         f"line; it must import all of {list(REQUIRED_IMPORTS)} so a narrowed "
         "namespace still fails the gate."
+    )
+
+
+def test_wheel_import_gate_installs_the_built_wheel() -> None:
+    """The gate imports the *built wheel* (``--with`` the bloommcp wheel), not src/."""
+    step = _find_gate_step()
+    assert (
+        step is not None
+    ), "gate step missing (see test_wheel_import_gate_step_exists)"
+    run = _logical_run(step)
+    assert "--with" in run and ("bloommcp-" in run and ".whl" in run), (
+        f"pr-checks.yml: {JOB}: wheel-import gate must install the built wheel via "
+        "`--with <bloommcp-*.whl>` so the import exercises the shipped artifact; "
+        "without it `--no-project` would import nothing (or leak src/)."
+    )
+
+
+def test_wheel_import_gate_asserts_wheel_provenance() -> None:
+    """The gate verifies the import resolved from the wheel, not the src/ checkout."""
+    step = _find_gate_step()
+    assert (
+        step is not None
+    ), "gate step missing (see test_wheel_import_gate_step_exists)"
+    run = _logical_run(step)
+    missing = [token for token in ("site-packages", "__file__") if token not in run]
+    assert not missing, (
+        f"pr-checks.yml: {JOB}: wheel-import gate is missing its provenance check "
+        f"({missing}); it must assert `'site-packages' in bloom_mcp.__file__` so a "
+        "regression that silently re-imports src/ still fails the gate."
     )
 
 
