@@ -84,10 +84,13 @@ One canonical `Provenance` model lives in `contract/provenance.py` and is comput
 | `agent` / actor | yes | Records `bloom_agent` now; real per-user identity is **deferred** (§8). |
 | `output_sha256` per artifact | **yes** | **App-computed** (hash bytes before upload) — *not* the S3/MinIO ETag, which is MD5/multipart-dependent and not reliably surfaced through storage-api. Makes runs content-addressed; hardens golden-test integrity. |
 | logical storage `key` per artifact | **yes** | Store the full Supabase logical key (`bloommcp_output/.../<file>`) per output, not only the relpath — makes each run self-describing/portable/auditable (today the key is reconstructed). No MinIO/physical-bucket id. |
-| `code_versions` extended | **yes** | v2's `code_versions` (`storage/code_versions.py`) records `bloommcp` + `supabase`; v3 also records **`sleap-roots-analyze` + `sleap-roots-contracts`** versions — this makes the `source_version` explicit in the existing schema. (**Benfica's suggestion on PR #310.**) |
+| `code_versions` extended (readable trace) | **yes** | v2's `code_versions` (`storage/code_versions.py`) records `bloommcp` + `supabase`; v3 also records **`sleap-roots-analyze` + `sleap-roots-contracts`** (makes `source_version` explicit; Benfica's PR #310 suggestion). **Installed-only:** record a version only for an *actually pip-installed* distribution — **never a vendored/uninstalled package**, which `importlib.metadata` returns as `"unknown"` (= noise; why Benfica removed `sleap_roots_analyze` while it was vendored). analyze/contracts qualify **only after Tier 0 makes them real deps**. |
+| **`environment` pointer (exact repro)** | **yes** | The headline `code_versions` is a *trace*, not a full reproducer. Record an exact-environment key: the **container image digest** (`sha256:…` — tightest, bloommcp ships as a container) and/or the **`bloom-mcp` version** whose committed **`uv.lock`** reproduces the whole env via `uv sync`. This is what actually pins `numpy`/`scipy`/`sklearn` — the libs that also move PCA/cluster numbers. |
 | existing (`tool`, `params`, `input_sha256`, `code_versions`, lineage, timestamps, `outputs`) | yes | Already present in v2; retained. |
 
 Provenance computed once (`contract`), persisted once (manifest v3).
+
+**Trace vs. reproducer (why both columns exist).** `code_versions` (headline packages) is the **human-readable trace** — "produced by bloom-mcp X + analyze Y." **Exact reproducibility comes from the locked environment, not the list**, because the numbers depend on `numpy`/`scipy`/`sklearn` too. `seed` pins the RNG; only the **image digest** (or the `bloom-mcp` version → its committed `uv.lock`) pins the library *math*. So a golden-test drift is **diagnosable**: the manifest's environment pointer says exactly which environment produced the original, even when the headline package versions look unchanged.
 
 ## 5. Tool contract, errors, return shape
 
@@ -99,7 +102,7 @@ Provenance computed once (`contract`), persisted once (manifest v3).
 
 ## 7. Testing
 
-Five patterns per tool, all runnable against `FakeReader` + `FakeResultStore` (no live Supabase): **schema round-trip**, **provenance presence** (incl. `seed`), **property/invariants** (hypothesis), **error-envelope**, **golden reproduction through the MCP tool** (PC1≈86.1% / PC2≈5.8% / PC3≈4.0% via the #120 turface_19 fixtures). Plus one real-adapter integration smoke against Storage. Tools appear in `tools/list` (FastMCP `Client`). Validated on Claude Desktop.
+Five patterns per tool, all runnable against `FakeReader` + `FakeResultStore` (no live Supabase): **schema round-trip**, **provenance presence** (incl. `seed` **and the environment pointer**), **property/invariants** (hypothesis), **error-envelope**, **golden reproduction through the MCP tool** (PC1≈86.1% / PC2≈5.8% / PC3≈4.0% via the #120 turface_19 fixtures). Plus one real-adapter integration smoke against Storage. Tools appear in `tools/list` (FastMCP `Client`). Validated on Claude Desktop. **Golden reproduction assumes a pinned environment** — the manifest's environment pointer (image digest / `uv.lock`) is what lets a future drift be traced to a `numpy`/`scipy`/`sklearn` bump rather than a code change.
 
 ## 8. Deferred — with explicit triggers
 
