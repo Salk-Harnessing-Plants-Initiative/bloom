@@ -12,7 +12,14 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# --- Required environment variables (no silent defaults) ---
+# --- Required environment variables (validated at startup, not at import) ---
+#
+# The package must be importable with no env set (`import bloom_mcp`, unit tests,
+# tooling), mirroring the lazy bloom_mcp.supabase_client.validate_env(). The
+# module-level paths below read env with empty-string fallbacks so import never
+# crashes; validate_env() does the hard check (missing vars + dirs exist) and is
+# called by server.main() before mcp.run(), so a misconfigured deploy still
+# fails fast at boot.
 
 _REQUIRED_DIRS = {
     "BLOOM_TRAITS_DIR": "Directory containing experiment CSV files",
@@ -20,22 +27,10 @@ _REQUIRED_DIRS = {
     "BLOOM_PLOTS_DIR": "Directory for generated plots",
 }
 
-_missing = [k for k in _REQUIRED_DIRS if not os.getenv(k)]
-if _missing:
-    raise RuntimeError(
-        f"Missing required environment variables: {', '.join(_missing)}. "
-        f"Set them in .env or docker-compose."
-    )
-
-TRAITS_DIR = Path(os.environ["BLOOM_TRAITS_DIR"])
-OUTPUT_DIR = Path(os.environ["BLOOM_OUTPUT_DIR"])
-PLOTS_DIR = Path(os.environ["BLOOM_PLOTS_DIR"])
-
-PLOTS_URL = os.getenv("BLOOM_PLOTS_URL")
-if not PLOTS_URL:
-    raise RuntimeError("BLOOM_PLOTS_URL environment variable is required")
-
-# --- Startup filesystem validation ---
+TRAITS_DIR = Path(os.getenv("BLOOM_TRAITS_DIR", ""))
+OUTPUT_DIR = Path(os.getenv("BLOOM_OUTPUT_DIR", ""))
+PLOTS_DIR = Path(os.getenv("BLOOM_PLOTS_DIR", ""))
+PLOTS_URL = os.getenv("BLOOM_PLOTS_URL", "")
 
 
 def _validate_dirs() -> None:
@@ -57,7 +52,21 @@ def _validate_dirs() -> None:
             logger.warning(f"{name}={path} is not writable — analysis output will fail")
 
 
-_validate_dirs()
+def validate_env() -> None:
+    """Validate the BLOOM_*_DIR / BLOOM_PLOTS_URL env and the data dirs.
+
+    Deferred from import to an explicit call (server startup) so the package
+    imports with no env; mirrors :func:`bloom_mcp.supabase_client.validate_env`.
+    """
+    required = list(_REQUIRED_DIRS) + ["BLOOM_PLOTS_URL"]
+    missing = [k for k in required if not os.getenv(k)]
+    if missing:
+        raise RuntimeError(
+            f"Missing required environment variables: {', '.join(missing)}. "
+            f"Set them in .env or docker-compose."
+        )
+    _validate_dirs()
+
 
 # metadata columns, matched case-insensitively
 KNOWN_METADATA_COLS = {

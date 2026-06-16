@@ -29,11 +29,12 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-# Env validation is lazy (see supabase_client.validate_env): importing this
-# module no longer requires Supabase, so `import bloom_mcp` and the unit tests
-# run with no env. main() calls validate_env() at startup to preserve the
-# fail-fast-at-boot behavior for a misconfigured deploy.
-from bloom_mcp.supabase_client import validate_env
+# Env validation is lazy (see supabase_client / experiment_utils validate_env):
+# importing this module no longer requires Supabase or the BLOOM_*_DIR env, so
+# `import bloom_mcp` and the unit tests run with no env. main() calls both
+# validators at startup to preserve fail-fast-at-boot for a misconfigured deploy.
+from bloom_mcp.supabase_client import validate_env as validate_supabase_env
+from bloom_mcp.experiment_utils import validate_env as validate_data_env
 
 from bloom_mcp.tools import (
     qc_tools,
@@ -107,11 +108,12 @@ async def health(_: Request) -> PlainTextResponse:
 def main() -> None:
     """Validate the Supabase env, then start the MCP server.
 
-    ``validate_env()`` runs before ``mcp.run()`` binds the port so a
-    misconfigured deploy fails fast at container boot — preserving the
-    fail-fast that used to come from importing ``supabase_client``.
+    The validators run before ``mcp.run()`` binds the port so a misconfigured
+    deploy fails fast at container boot — preserving the fail-fast that used to
+    come from importing ``supabase_client`` / ``experiment_utils``.
     """
-    validate_env()
+    validate_supabase_env()
+    validate_data_env()
     if API_KEY:
         print("Bloom MCP Server starting with API key authentication")
     else:

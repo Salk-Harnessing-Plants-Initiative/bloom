@@ -11,12 +11,25 @@ from __future__ import annotations
 import ast
 import asyncio
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from hypothesis import given, strategies as st
 
 _PKG_ROOT = Path(__file__).resolve().parents[1] / "src" / "bloom_mcp"
+
+# Every bloom-specific env var the package reads. A fresh interpreter must import
+# the server with none of these set.
+_BLOOM_ENV_VARS = (
+    "SUPABASE_URL",
+    "BLOOM_AGENT_KEY",
+    "BLOOM_TRAITS_DIR",
+    "BLOOM_OUTPUT_DIR",
+    "BLOOM_PLOTS_DIR",
+    "BLOOM_PLOTS_URL",
+)
 
 
 # ── Installable Package Layout ──────────────────────────────────────────────
@@ -30,6 +43,23 @@ def test_import_bloom_mcp_with_no_supabase_env():
     import bloom_mcp.server as server
 
     assert server.mcp.name == "bloom-tools"
+
+
+def test_fresh_interpreter_imports_server_with_no_bloom_env():
+    """A clean interpreter imports bloom_mcp.server with NO bloom env at all.
+
+    Guards against any module-load env gate (Supabase *or* the BLOOM_*_DIR check
+    in experiment_utils) re-crashing the import. Run in a subprocess so it is
+    immune to env already set by conftest in this process.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _BLOOM_ENV_VARS}
+    result = subprocess.run(
+        [sys.executable, "-c", "import bloom_mcp.server"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_no_stale_prototype_imports():
@@ -88,6 +118,22 @@ def test_validate_env_passes_when_both_present(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
     monkeypatch.setenv("BLOOM_AGENT_KEY", "fake-jwt")
     sc.validate_env()  # must not raise
+
+
+def test_experiment_utils_validate_env_raises_when_dirs_unset(monkeypatch):
+    """experiment_utils.validate_env() raises naming the missing BLOOM_*_DIR vars."""
+    import bloom_mcp.experiment_utils as eu
+
+    for var in (
+        "BLOOM_TRAITS_DIR",
+        "BLOOM_OUTPUT_DIR",
+        "BLOOM_PLOTS_DIR",
+        "BLOOM_PLOTS_URL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    with pytest.raises(RuntimeError, match="BLOOM_TRAITS_DIR"):
+        eu.validate_env()
 
 
 # ── Server Boot Fail-Fast ───────────────────────────────────────────────────
