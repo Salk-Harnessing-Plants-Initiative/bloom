@@ -25,6 +25,13 @@
 # database is left half-initialised (issue #124). Force LF for everything there.
 volumes/db/** text eol=lf
 
+# Generated contract types (pin-sleap-roots-contract / #294). The `* text=auto`
+# default would round-trip .ts through CRLF on Windows working trees, while
+# json-schema-to-typescript emits LF — breaking the byte-for-byte drift guard
+# (scripts/contract_types.mjs --check) locally vs CI. Force LF so the guard is
+# reproducible cross-platform. (The vendored schema is already covered by *.json.)
+contracts/generated/*.ts text eol=lf
+
 # Jupyter notebooks
 *.ipynb text eol=lf
 
