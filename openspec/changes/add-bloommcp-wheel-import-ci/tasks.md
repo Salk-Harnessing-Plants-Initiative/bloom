@@ -55,10 +55,5 @@
 
 - [x] 4.1 `openspec validate add-bloommcp-wheel-import-ci --strict` passes.
 - [x] 4.2 Full unit suite green: `uv run --extra test pytest tests/unit/ -v`.
-- [ ] 4.3 Update `tasks.md` checkboxes via `/openspec:apply`; open the PR (base: `eberrigan/bloommcp-tier0-baseline`, stacked on #313) with `/pr-description`. Commit the new test and the `pr-checks.yml` step **together** (one `ci(bloommcp):` commit) so no pushed commit is red — the red→green cycle (tasks 1.2/2.2) is a local TDD checkpoint, not a commit boundary. Squash-merge. Suggested commits: `docs(bloommcp): OpenSpec proposal — CI-gate built-wheel import` (proposal docs) then `ci(bloommcp): build wheel + clean-import gate in python-audit` (test + workflow).
-- [ ] 4.4 **After #313 merges to `staging`**: retarget this PR's base to `staging` in the GitHub UI, then rebase onto the new tip (do not rely on GitHub auto-retarget — #313 may squash/rebase-merge to new SHAs):
-  ```bash
-  git fetch origin staging
-  git rebase --onto origin/staging eberrigan/bloommcp-tier0-baseline add-bloommcp-wheel-import-ci
-  ```
-  Expect a `pr-checks.yml` conflict (the `python-audit` hunk overlaps #313's `Run bloom_mcp package tests` addition) — resolve by keeping **both** steps. Re-run the new guard test + `test_ci_workflow_uv_conventions.py`, confirm CI green against `staging`, then `git push --force-with-lease`.
+- [x] 4.3 Opened PR #320 with two commits — `docs(bloommcp): OpenSpec proposal …` then `ci(bloommcp): build wheel + clean-import gate in python-audit` (test + workflow together, so no pushed commit is red; the red→green cycle in 1.2/2.2 was a local TDD checkpoint).
+- [x] 4.4 #313 merged to `staging` (via merge-commit) while this was in flight, so PR #320 targets `staging` directly — no longer stacked. Rebased `add-bloommcp-wheel-import-ci` onto `origin/staging`: **clean, no `pr-checks.yml` conflict** (the merge-commit kept the baseline commit as an ancestor, so the `python-audit` hunk replayed without overlap). Re-ran the guard + `test_ci_workflow_uv_conventions.py` + `test_pr_checks_workflow_shape.py` (16 passed) and force-pushed with `--force-with-lease`.
