@@ -17,7 +17,10 @@ _WIKI/
 ├── SUPABASE/
 │   └── README.md        Self-hosted Supabase stack: roles, RLS, storage,
 │                        JWT flow, migration conventions, known issues.
-└── BLOOMMCP/
-    └── README.md        bloommcp MCP server: architecture, tool surface,
-                         auth, Supabase integration, dev gotchas.
+├── BLOOMMCP/
+│   └── README.md        bloommcp MCP server: architecture, tool surface,
+│                        auth, Supabase integration, dev gotchas.
+└── planningDocs/
+    └── README.md        Living architecture and roadmap docs for in-flight
+                         workstreams (routing, observability, etc.).
 ```
