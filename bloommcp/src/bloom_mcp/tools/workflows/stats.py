@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from bloom_mcp import trait_statistics as _stats_module
+from sleap_roots_analyze import statistics as _stats_module
 from bloom_mcp.experiment_utils import (
     TRAITS_DIR,
     load_experiment_data as _load_data,

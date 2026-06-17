@@ -206,7 +206,7 @@ def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
     if not genotype_col or not replicate_col:
         return f"Heritability requires genotype and replicate columns. Detected: genotype={genotype_col}, replicate={replicate_col}"
 
-    from bloom_mcp import trait_statistics as stats_module
+    from sleap_roots_analyze import statistics as stats_module
 
     h2_results = stats_module.calculate_heritability_estimates(
         df,
@@ -264,7 +264,7 @@ def plot_variance_decomposition(filename: str) -> str:
     if not genotype_col or not replicate_col:
         return f"Variance decomposition requires genotype and replicate columns. Detected: genotype={genotype_col}, replicate={replicate_col}"
 
-    from bloom_mcp import trait_statistics as stats_module
+    from sleap_roots_analyze import statistics as stats_module
 
     h2_results = stats_module.calculate_heritability_estimates(
         df,

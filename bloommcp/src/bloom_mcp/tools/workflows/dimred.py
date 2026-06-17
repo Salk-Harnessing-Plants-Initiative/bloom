@@ -2,9 +2,9 @@
 
 Clubs together the 4 PCA-related primitives that used to be separate MCP
 tools (run_pca, get_pca_feature_contributions, plot_pca_scree, plot_pca_biplot)
-into one workflow with a `method` parameter. Also brings UMAP into the MCP
-surface for the first time — bloommcp had `bloom_mcp/umap_embedding.py` with a
-complete `perform_umap_analysis` function but no MCP tool wired to it.
+into one workflow with a `method` parameter. UMAP is sourced from
+`sleap_roots_analyze.umap.perform_umap_analysis` (the vendored copy was a
+byte-identical duplicate and was removed — see #315).
 
 Maps to Elizabeth's `pca_analysis.py` + `umap_analysis.py` DAG steps from
 sleap-roots-analyze. t-SNE is intentionally NOT included: it has no source
@@ -27,7 +27,7 @@ from bloom_mcp.experiment_utils import (
     load_experiment_data as _load_data,
 )
 from bloom_mcp.pca import run_pca_and_export_artifacts
-from bloom_mcp.umap_embedding import UMAP_AVAILABLE, perform_umap_analysis
+from sleap_roots_analyze.umap import UMAP_AVAILABLE, perform_umap_analysis
 
 from ._helpers import build_writer
 
