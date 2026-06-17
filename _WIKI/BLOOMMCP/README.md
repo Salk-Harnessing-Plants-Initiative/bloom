@@ -67,11 +67,11 @@ Any new tool that reads or writes a CSV should use this bucket.
 
 ## File reading and writing
 
-Use the helper in `bloommcp/source/supabase_client.py` — don't call
+Use the helper in `bloommcp/src/bloom_mcp/supabase_client.py` — don't call
 `supabase.create_client()` directly:
 
 ```python
-from source.supabase_client import read_input_csv, write_output_csv
+from bloom_mcp.supabase_client import read_input_csv, write_output_csv
 
 df = read_input_csv("plant_traits.csv")
 # reads bloommcp-data/bloommcp_input/plant_traits.csv
@@ -93,7 +93,7 @@ The helper's `get_postgrest_client()` returns a fully authenticated
 PostgREST client:
 
 ```python
-from source.supabase_client import get_postgrest_client
+from bloom_mcp.supabase_client import get_postgrest_client
 
 client = get_postgrest_client()
 
@@ -111,8 +111,8 @@ role / RLS picture.
 ## Coding style for tool calls
 
 **Every workflow tool writes its outputs through the `AnalysisWriter`
-class** (from [`bloommcp/storage/writer.py`](../../bloommcp/storage/writer.py)), constructed via the `build_writer` factory in
-[`_helpers.py`](../../bloommcp/tools/workflows/_helpers.py).
+class** (from [`bloommcp/src/bloom_mcp/storage/writer.py`](../../bloommcp/src/bloom_mcp/storage/writer.py)), constructed via the `build_writer` factory in
+[`_helpers.py`](../../bloommcp/src/bloom_mcp/tools/workflows/_helpers.py).
 
 `AnalysisWriter` implements a versioned write contract: each  `(experiment, tool_class)` pair gets one folder in the `bloommcp-data` bucket containing a `manifest.json` that catalogs every run for that
 pair. 
@@ -133,7 +133,7 @@ Each tool's outputs land in a folder named after its `tool_class`.
 `tool_class` is one of the 9 canonical classes — `qc`, `stats`,
 `dimred`, `clustering`, `outlier`, `viz`, `correlation`,
 `heritability`, `anova` — registered in
-[`CANONICAL_TOOL_CLASSES`](../../bloommcp/storage/__init__.py).
+[`CANONICAL_TOOL_CLASSES`](../../bloommcp/src/bloom_mcp/storage/__init__.py).
 
 For the step-by-step guide to write a new workflow tool, see
 [writing-a-new-tool.md](./writing-a-new-tool.md). 

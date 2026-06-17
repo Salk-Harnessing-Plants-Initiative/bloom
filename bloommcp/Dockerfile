@@ -29,15 +29,23 @@ RUN addgroup --system bloom && adduser --system --ingroup bloom bloom \
 WORKDIR /app
 USER bloom
 
-# Install dependencies (cached independently of source code changes)
-COPY --chown=bloom:bloom pyproject.toml uv.lock .python-version ./
-RUN uv sync --frozen --no-dev --no-cache
+# Install dependencies only (cached independently of source code changes).
+# --no-install-project: bloom_mcp is now a real package under src/, which isn't
+# present at this layer — installing it here would fail, so defer it.
+COPY --chown=bloom:bloom pyproject.toml uv.lock .python-version README.md ./
+RUN uv sync --frozen --no-dev --no-cache --no-install-project
 
 COPY --chown=bloom:bloom . .
+
+# Install the project itself now that src/ is present. The install is editable
+# and the venv lives at /opt/venv (outside /app), so the dev bind-mount of
+# ./bloommcp:/app does not shadow it while the editable path /app/src/bloom_mcp
+# still resolves to the mounted source — preserving hot-reload.
+RUN uv sync --frozen --no-dev --no-cache
 
 EXPOSE 8811
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=60s \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8811/health', timeout=3).close()" || exit 1
 
-CMD ["python", "server.py"]
+CMD ["python", "-m", "bloom_mcp"]
