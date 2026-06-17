@@ -1,7 +1,7 @@
 /**
  * Builds a binary tree from a pairwise distance matrix.
  *
- * Input:  an N x N distance matrix + N leaf labels.
+ * Input:  an N x N symmetric distance matrix + N leaf labels.
  * Output: a rooted binary tree (every internal node has 2 children).
  *
  * The classic NJ algorithm doesn't pick a root; we use the last merge
@@ -9,10 +9,14 @@
  * the tree is drawn — the actual relationships between leaves are
  * the same either way.
  *
+ * Complexity: O(n³) time, O(n²) memory. Fine for embedtree's expected
+ * input sizes (n ≤ a few hundred from KNN results); larger inputs
+ * would want FastNJ or FastME instead.
+ *
  * This function does not modify the input matrix or labels.
  *
- * Throws on a non-square matrix, length mismatch with labels, empty
- * input, or NaN distances.
+ * Throws on: non-square matrix, label/row count mismatch, empty input,
+ * NaN distances, non-zero diagonal, or asymmetric off-diagonal entries.
  */
 import type { TreeNode } from "./types";
 
@@ -43,6 +47,18 @@ export function neighborJoining(
         );
       }
     }
+    if (distanceMatrix[i][i] !== 0) {
+      throw new Error(
+        `neighborJoining: non-zero diagonal at (${i}, ${i}) = ${distanceMatrix[i][i]} — distance from a point to itself must be 0`,
+      );
+    }
+    for (let j = i + 1; j < n; j += 1) {
+      if (distanceMatrix[i][j] !== distanceMatrix[j][i]) {
+        throw new Error(
+          `neighborJoining: asymmetric matrix at (${i}, ${j}): D[${i}][${j}] = ${distanceMatrix[i][j]} ≠ D[${j}][${i}] = ${distanceMatrix[j][i]}`,
+        );
+      }
+    }
   }
 
   if (n === 1) {
@@ -58,8 +74,10 @@ export function neighborJoining(
     };
   }
 
-  // Working copies so we never mutate caller's data.
-  const nodes: TreeNode[] = labels.map((name) => ({ name }));
+  // Working copies so we never mutate caller's data. `nodes` slots are
+  // nulled out as pairs merge, so the slice itself stays the same length
+  // throughout (we only iterate over the still-non-null entries).
+  const nodes: (TreeNode | null)[] = labels.map((name) => ({ name }));
   const dist: number[][] = distanceMatrix.map((row) => [...row]);
   let active = nodes.length;
 
@@ -104,8 +122,8 @@ export function neighborJoining(
 
     const newNode: TreeNode = {
       children: [
-        { ...nodes[bestI], distance: limbI },
-        { ...nodes[bestJ], distance: limbJ },
+        { ...nodes[bestI]!, distance: limbI },
+        { ...nodes[bestJ]!, distance: limbJ },
       ],
     };
 
@@ -130,8 +148,7 @@ export function neighborJoining(
         dist[k][bestI] = newRow[k];
       }
     }
-    // @ts-expect-error — we intentionally null out the merged slot
-    nodes[bestJ] = undefined;
+    nodes[bestJ] = null;
     nodes[bestI] = newNode;
     active -= 1;
   }
@@ -141,14 +158,14 @@ export function neighborJoining(
   let lastI = -1;
   let lastJ = -1;
   for (let k = 0; k < nodes.length; k += 1) {
-    if (nodes[k]) {
-      remaining.push(nodes[k]);
+    const node = nodes[k];
+    if (node) {
+      remaining.push(node);
       if (lastI === -1) lastI = k;
       else lastJ = k;
     }
   }
-  const finalDist = lastJ >= 0 ? dist[lastI][lastJ] : 0;
-  const half = finalDist / 2;
+  const half = dist[lastI][lastJ] / 2;
   return {
     children: [
       { ...remaining[0], distance: half },

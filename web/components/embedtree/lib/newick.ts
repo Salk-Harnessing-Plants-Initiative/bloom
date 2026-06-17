@@ -118,9 +118,8 @@ class Parser {
         ? { name: internalName, children }
         : { children };
     } else {
-      // Leaf: just a name (possibly empty for an unlabeled leaf).
       const name = this.readName();
-      node = name === "" ? { name: "" } : { name };
+      node = { name };
     }
 
     this.skipSpace();

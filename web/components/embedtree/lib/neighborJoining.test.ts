@@ -221,4 +221,16 @@ describe("neighborJoining", () => {
     const tree = neighborJoining(D, labels);
     expect(collectLeafNames(tree).sort()).toEqual(labels.sort());
   });
+
+  it("throws on asymmetric off-diagonal entries", () => {
+    const D = sym(3, [[1, 1], [1]]);
+    D[0][2] = 99; // break symmetry: D[0][2] ≠ D[2][0]
+    expect(() => neighborJoining(D, ["A", "B", "C"])).toThrow(/asymmetric/);
+  });
+
+  it("throws on non-zero diagonal", () => {
+    const D = sym(3, [[1, 1], [1]]);
+    D[1][1] = 0.5; // self-distance must be 0
+    expect(() => neighborJoining(D, ["A", "B", "C"])).toThrow(/non-zero diagonal/);
+  });
 });
