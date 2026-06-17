@@ -12,13 +12,13 @@ import asyncio
 
 import pytest
 
-from bloom_mcp.contract import BloomMCPError, as_mcp_tool
+from bloom_mcp.contract import BloomMCPError, as_mcp_tool, register
 
 from .conftest import StubInput, StubOutput
 
 
 def test_valid_input_returns_validated_output_and_is_registrable():
-    """Valid input returns the output object; the tool lists via FastMCP."""
+    """Valid input returns the output object; the tool lists via the register seam."""
     from fastmcp import FastMCP
 
     @as_mcp_tool(input_model=StubInput, output_model=StubOutput)
@@ -29,8 +29,7 @@ def test_valid_input_returns_validated_output_and_is_registrable():
     assert isinstance(out, StubOutput)
     assert out.n_components == 3
 
-    mcp = FastMCP("test")
-    mcp.tool()(stub_tool)
+    mcp = register(FastMCP("test"), stub_tool)
 
     async def _names():
         from fastmcp import Client
@@ -39,6 +38,20 @@ def test_valid_input_returns_validated_output_and_is_registrable():
             return {t.name for t in await client.list_tools()}
 
     assert "stub_tool" in asyncio.run(_names())
+
+
+def test_params_accepted_positionally_and_by_keyword():
+    """The advertised signature matches: `params` works positionally and by keyword."""
+
+    @as_mcp_tool(input_model=StubInput, output_model=StubOutput)
+    def stub_tool(params: StubInput) -> StubOutput:
+        return StubOutput(n_components=len(params.experiment))
+
+    by_dict = stub_tool({"experiment": "abc"})
+    by_keyword = stub_tool(params={"experiment": "abc"})
+    by_model = stub_tool(params=StubInput(experiment="abc"))
+
+    assert by_dict.n_components == by_keyword.n_components == by_model.n_components == 3
 
 
 def test_invalid_input_rejected_before_body_runs(recorder):

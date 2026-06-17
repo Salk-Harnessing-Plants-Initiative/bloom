@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bloom_mcp.storage.manifest import validate_schema
+import pytest
+
+from bloom_mcp.storage.manifest import ManifestSchemaError, validate_schema
 from bloom_mcp.storage.schema import Manifest
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "manifest_v2.json"
@@ -33,3 +35,11 @@ def test_recorded_v2_manifest_reads_under_v3():
     assert entry.environment is None
     assert entry.output_sha256 == {}
     assert entry.output_keys == {}
+    # A historical `code_versions.supabase == "unknown"` still reads.
+    assert entry.code_versions.supabase == "unknown"
+
+
+def test_newer_schema_version_is_rejected():
+    """The version guard rejects a manifest newer than this code understands."""
+    with pytest.raises(ManifestSchemaError):
+        validate_schema({"manifest_schema_version": 4})

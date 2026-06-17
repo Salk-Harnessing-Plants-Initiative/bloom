@@ -6,6 +6,8 @@ rather than recorded as `"unknown"` — a vendored/uninstalled package reads as
 noise and obscures the real provenance trace.
 """
 
+from __future__ import annotations
+
 from importlib.metadata import PackageNotFoundError, version
 
 from .schema import CodeVersions

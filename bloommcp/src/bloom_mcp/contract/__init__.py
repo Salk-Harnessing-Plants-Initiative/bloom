@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from .errors import BloomMCPError
 from .provenance import Provenance, resolve_environment, resolve_seed
-from .wrap import as_mcp_tool
+from .wrap import as_mcp_tool, register
 
 __all__ = [
     "as_mcp_tool",
+    "register",
     "BloomMCPError",
     "Provenance",
     "resolve_environment",

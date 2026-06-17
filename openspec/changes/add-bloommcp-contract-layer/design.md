@@ -20,16 +20,31 @@ and `2026-06-15-bloom-mcp-phase2-design.md` (§4, §6). Builds on Tier 0 (#313).
 
 ## Decisions
 
-- **`@as_mcp_tool` wraps FastMCP; registration is a deferred `register(mcp)` seam.** The
-  decorator owns the contract guarantees and attaches FastMCP-registration metadata, but
-  it does **not** register at decoration time — the deployed code registers via
-  `mcp.tool()(func)` inside a `register(mcp)` function at server-wiring time, because the
-  `mcp = FastMCP(...)` instance does not exist when a tool module is imported (and
-  `server.py` imports the tools — registering at import would be circular). Tier 1 unit
-  tests exercise the seam against an in-process `FastMCP` they construct; the first real
-  `server.py` registration lands in Tier 3. *Alternatives rejected:* register at decoration
-  (needs a live `mcp`, circular, and forbidden by Tier 1's no-`server.py` scope); a bespoke
-  registry (re-implements MCP machinery).
+- **`@as_mcp_tool` wraps FastMCP; registration is a shipped `register(mcp, *tools)` seam.**
+  The decorator owns the contract guarantees but does **not** register at decoration time —
+  the `mcp = FastMCP(...)` instance does not exist when a tool module is imported (and
+  `server.py` imports the tools — registering at import would be circular). Tier 1 ships a
+  trivial `register(mcp, *tools)` helper (each `mcp.tool()(tool)`) so the seam the spec
+  mandates actually exists and tests exercise it against an in-process `FastMCP`; the first
+  real `server.py` wiring lands in Tier 3. The wrapper carries an explicit single-`params`
+  `__signature__` (accepted positionally **and** by keyword — no positional-only mismatch)
+  so FastMCP builds a correct schema without seeing the injected kwargs; `functools.wraps`
+  preserves `__wrapped__` for `inspect.unwrap`. *Alternatives rejected:* register at
+  decoration (needs a live `mcp`, circular, forbidden by Tier 1's no-`server.py` scope); a
+  bespoke registry (re-implements MCP machinery).
+- **Seed-provenance integrity: record only what was applied.** The resolved seed is
+  recorded in `Provenance` **only** when the delegate declares `random_state` (so the
+  recorded value actually reached the computation). A non-stochastic tool records
+  `seed=None`; a seed *provided* to a delegate that can't accept it raises `internal_error`
+  rather than recording an unapplied seed (a reproducibility lie). Seeds are strict ints in
+  `[0, 2**32)`, validated at the input model (out-of-range/float/bool → `invalid_input`).
+  *Alternative rejected:* always stamping the resolved seed — produces a manifest claiming a
+  seed that never reached a `**kwargs`/no-`random_state` delegate.
+- **Errors never leak internals.** Declared (author opted-in) exceptions pass their message
+  through; an undeclared exception or output-contract breach returns a fixed message + a
+  correlation id with the detail logged server-side; input-validation errors surface only
+  field locations + types, never values. Prevents paths/hosts/connection-strings/bucket
+  keys reaching the LLM agent, beyond the existing "no raw traceback" guarantee.
 - **Seed: resolve, record, propagate — never global re-seed.** The decorator resolves the
   seed (drawing a concrete integer when params carry none), forwards it to the delegated
   `perform_*` as `random_state=` via an **explicit kwarg-injection contract** (not

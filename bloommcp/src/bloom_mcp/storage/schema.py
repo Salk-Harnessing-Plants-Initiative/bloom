@@ -15,6 +15,8 @@ Strict mode is on: passing an unknown field raises a ValidationError
 instead of being silently accepted into the file.
 """
 
+from __future__ import annotations
+
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field

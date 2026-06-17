@@ -104,6 +104,26 @@
 - [x] 6.3 `uv run black --check` + `uv run ruff check` clean (repo `/lint` convention).
 - [x] 6.4 `openspec validate add-bloommcp-contract-layer --strict` passes.
 
+## 8. Combined-review fixes (pre-merge — /openspec-review + /review-pr)
+
+- [x] 8.1 **B1** seed-provenance integrity: record `Provenance.seed` only when the delegate
+      applies it (declares `random_state`); non-stochastic tools record `None`; a provided
+      seed a delegate can't accept raises `internal_error`. Tests for all three paths.
+- [x] 8.2 **B2** no internal leakage: `errors.py` returns a fixed message + correlation id
+      for `internal_error` / `internal_output_contract` (detail logged server-side); input
+      validation surfaces only field locations + types. Leak tests added.
+- [x] 8.3 **B3** ship `register(mcp, *tools)` seam in `contract/`; reconcile spec + docstrings.
+- [x] 8.4 **I1** drop positional-only `/` so the real signature matches the advertised
+      single-`params` schema; keyword-call test.
+- [x] 8.5 **I2** seed strict + range-bound `[0, 2**32)` on `ToolParams` + `resolve_seed`
+      guard (named `SEED_MAX`); out-of-range/float/bool → `invalid_input`.
+- [x] 8.6 **I3** `resolve_environment` strips + validates the `sha256:` digest; `_uv_lock_hash`
+      guards the read against `OSError`.
+- [x] 8.7 **I4** test gaps: v4-version reject; absent-seed RNG byte-identical; v2 `"unknown"`
+      reads. **I5** version-guard reject scenario + deploy-ordering gate in spec.
+- [x] 8.8 **I6** `functools.wraps` (preserves `__wrapped__`/`inspect.unwrap`); `from __future__
+      import annotations` on `schema.py`/`code_versions.py`; docstrings "at most once".
+
 ## 7. Deferred (recorded, not done here)
 
 - [x] 7.1 Consuming `sleap-roots-analyze`'s serializable result dataclasses

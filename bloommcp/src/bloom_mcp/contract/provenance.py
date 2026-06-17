@@ -1,8 +1,9 @@
 """Canonical provenance for the bloom-mcp tool contract.
 
-`Provenance` is stamped exactly once per tool call at **contract time** (around
-delegation, before any artifact is written) and is the single source of truth
-for the manifest `VersionEntry` — there is no parallel provenance record. The
+`Provenance` is stamped at most once per tool call at **contract time** (around
+delegation, before any artifact is written; skipped when input validation fails,
+and discarded on any later failure path) and is the single source of truth for
+the manifest `VersionEntry` — there is no parallel provenance record. The
 per-artifact content hashes (`output_sha256`) and logical storage keys
 (`output_keys`) are **not** contract-time fields: the artifact bytes do not
 exist until the tool writes them to staging, so they are populated at commit by
@@ -32,16 +33,25 @@ from bloom_mcp.storage.schema import CodeVersions, VersionEntry
 # exact-environment identifier when bloom-mcp runs containerized.
 _IMAGE_DIGEST_ENV = "BLOOM_MCP_IMAGE_DIGEST"
 
+# Inclusive-exclusive upper bound for a seed: numpy/sklearn accept [0, 2**32).
+SEED_MAX = 2**32
+
 
 def resolve_seed(seed: Optional[int]) -> int:
     """Resolve the seed actually used: the given value, or a fresh integer.
 
     Recording the *resolved* seed (never null) is what makes a stochastic run
-    reproducible — replaying the recorded integer reproduces the artifact.
+    reproducible — replaying the recorded integer reproduces the artifact. A
+    provided seed must be a plain ``int`` in ``[0, SEED_MAX)`` (``bool`` is
+    rejected, since ``True``/``False`` would silently coerce to ``1``/``0``).
     """
-    if seed is not None:
-        return int(seed)
-    return secrets.randbelow(2**32)
+    if seed is None:
+        return secrets.randbelow(SEED_MAX)
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError(f"seed must be an int in [0, {SEED_MAX}); got {seed!r}")
+    if not 0 <= seed < SEED_MAX:
+        raise ValueError(f"seed must be in [0, {SEED_MAX}); got {seed}")
+    return seed
 
 
 def _uv_lock_hash() -> Optional[str]:
@@ -50,7 +60,10 @@ def _uv_lock_hash() -> Optional[str]:
     for parent in here.parents:
         lock = parent / "uv.lock"
         if lock.is_file():
-            digest = hashlib.sha256(lock.read_bytes()).hexdigest()
+            try:
+                digest = hashlib.sha256(lock.read_bytes()).hexdigest()
+            except OSError:
+                return None
             return f"uvlock:{digest[:16]}"
     return None
 
@@ -61,11 +74,15 @@ def resolve_environment() -> Optional[str]:
     Precedence: container image digest (`BLOOM_MCP_IMAGE_DIGEST`) → `bloom-mcp`
     version → `uv.lock` content hash. Returns None only when none resolves
     (optional for schema back-compat); a persisted run (Tier 2) is expected to
-    carry a value that actually pins a reproducible environment.
+    carry a value that actually pins a reproducible environment. A digest is
+    accepted only when it is a non-empty `sha256:…` string (whitespace stripped);
+    a malformed digest falls through to the next source rather than being stored.
     """
     digest = os.getenv(_IMAGE_DIGEST_ENV)
     if digest:
-        return digest
+        digest = digest.strip()
+        if digest.startswith("sha256:") and len(digest) > len("sha256:"):
+            return digest
 
     versions = get_code_versions()
     if versions.bloommcp:
@@ -88,7 +105,9 @@ class Provenance(BaseModel):
 
     tool: str
     params: dict
-    seed: int
+    # None only for a non-stochastic tool (one whose delegate takes no
+    # random_state); a stochastic call always records the resolved integer.
+    seed: Optional[int] = None
     agent: str = "bloom_agent"
     input_sha256: Optional[str] = None
     code_versions: CodeVersions
@@ -108,11 +127,15 @@ class Provenance(BaseModel):
         *,
         tool: str,
         params: dict,
-        seed: int,
+        seed: Optional[int] = None,
         agent: str = "bloom_agent",
         input_sha256: Optional[str] = None,
     ) -> "Provenance":
-        """Stamp a contract-time record, resolving code_versions + environment once."""
+        """Stamp a contract-time record, resolving code_versions + environment once.
+
+        `seed` is the *resolved* seed when the tool applied one, or None for a
+        non-stochastic tool.
+        """
         return cls(
             tool=tool,
             params=params,
