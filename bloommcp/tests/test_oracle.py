@@ -26,6 +26,10 @@ import bloom_mcp.clustering as shipped_clustering
 import bloom_mcp.cross_experiment_correlations as shipped_corr
 import bloom_mcp.pca as shipped_pca
 from sleap_roots_analyze.pca import perform_pca_analysis as library_pca
+from sleap_roots_analyze.statistics import (
+    calculate_heritability_estimates as library_heritability,
+)
+from sleap_roots_analyze.umap import perform_umap_analysis as library_umap
 
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -35,6 +39,13 @@ _FIXTURES = Path(__file__).resolve().parent / "fixtures"
 # regression would shift it by far more.
 _VAR_TOL = 1e-6
 _GENOTYPE_COL = "Genotype"
+_REPLICATE_COL = "Replicate"
+
+# Mean broad-sense heritability over the 8 trait_cols, via the statsmodels MixedLM
+# path. The relative tolerance absorbs cross-platform MLE-optimizer noise but is far
+# tighter than any real numeric regression; the method label and the (discrete)
+# count of high-H² traits are BLAS/optimizer-robust drift guards.
+_H2_TOL = 1e-5
 
 
 @pytest.fixture(scope="module")
@@ -121,3 +132,45 @@ def test_shipped_correlations_reproduce_recorded_offdiagonal(turface_19):
     # catches a real numeric regression.
     assert pair.iloc[0]["correlation"] == pytest.approx(0.9789420001158863, rel=1e-6)
     assert int(pair.iloc[0]["n_samples"]) == len(means)
+
+
+# ── Delegated paths (heritability, UMAP) reproduce the recorded oracle ───────
+#
+# The shipped heritability and UMAP tools delegate to ``sleap_roots_analyze`` (the
+# vendored ``trait_statistics.py`` / ``umap_embedding.py`` were byte-identical copies
+# and were removed). These lock the delegation target's behavior to the recorded #120
+# golden, so a future library bump that moves the numbers fails here.
+
+
+def test_external_library_heritability_matches_recorded_oracle(turface_19):
+    """The delegated heritability path reproduces the recorded #120 mean H²."""
+    df, golden = turface_19
+    results = library_heritability(
+        df,
+        golden["trait_cols"],
+        genotype_col=_GENOTYPE_COL,
+        replicate_col=_REPLICATE_COL,
+    )
+    h2 = [
+        float(results[t]["heritability"])
+        for t in golden["trait_cols"]
+        if "heritability" in results.get(t, {})
+    ]
+    mean_h2 = sum(h2) / len(h2)
+    assert mean_h2 == pytest.approx(golden["heritability_mean"], rel=_H2_TOL)
+    assert (
+        results["__calculation_metadata__"]["method_used_for_all_traits"]
+        == golden["heritability_method"]
+    )
+    # Discrete count of high-H² traits — optimizer-robust drift guard.
+    assert sum(1 for v in h2 if v >= 0.5) == golden["heritability_n_above_0.5"]
+
+
+def test_external_library_umap_is_deterministic(turface_19):
+    """Fixed-seed UMAP is reproducible within-process (coordinates are not cross-OS
+    bit-stable, so determinism + shape is the BLAS/numba-robust claim)."""
+    df, golden = turface_19
+    first = library_umap(df, feature_cols=golden["trait_cols"], random_state=42)
+    second = library_umap(df, feature_cols=golden["trait_cols"], random_state=42)
+    assert first["embedding"].shape == (len(df), 2)
+    assert (first["embedding"] == second["embedding"]).all()
