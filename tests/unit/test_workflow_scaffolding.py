@@ -27,7 +27,7 @@ import pytest
 # namespace collides with langchain/tools/ when both are on sys.path, so
 # the workflow modules are loaded by file path here instead of via import.
 # `storage` (no langchain counterpart) is safe to import normally.
-_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp"
+_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp" / "src"
 if str(_BLOOMMCP_DIR) not in sys.path:
     sys.path.insert(0, str(_BLOOMMCP_DIR))
 
@@ -41,7 +41,7 @@ os.environ.setdefault("BLOOM_PLOTS_URL", "http://localhost:5002/plots")
 
 import importlib.util  # noqa: E402
 
-from storage import AnalysisWriter, CANONICAL_TOOL_CLASSES  # noqa: E402
+from bloom_mcp.storage import AnalysisWriter, CANONICAL_TOOL_CLASSES  # noqa: E402
 
 
 def _load_module_by_path(name: str, path: Path):

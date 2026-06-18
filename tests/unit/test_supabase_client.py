@@ -1,16 +1,15 @@
-"""Unit tests for bloommcp.source.supabase_client.
+"""Unit tests for bloom_mcp.supabase_client.
 
-The module reads env at import time, so we set placeholders before the
-import and exercise the helpers against a mocked supabase.Client. These
-tests cover the prefix-application logic and the basename validation —
-the network/Storage I/O itself is covered by the staging smoke test in
-Task 5 of the proposal.
+Env validation is lazy (deferred to first access / validate_env), so the
+module imports with no Supabase env. These tests cover the prefix-application
+logic, the basename validation, and the lazy env-validation contract against a
+mocked supabase.Client — the network/Storage I/O itself is covered by the
+staging smoke test.
 """
 
 from __future__ import annotations
 
 import io
-import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -18,20 +17,25 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-# bloommcp ships its packages directly under bloommcp/ rather than under
-# a top-level package, mirroring the layout used by
-# tests/unit/test_workflow_scaffolding.py.
-_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp"
+# bloom_mcp is an installable package under bloommcp/src; inject that dir so the
+# test imports it without an editable install (mirrors test_workflow_scaffolding).
+_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp" / "src"
 if str(_BLOOMMCP_DIR) not in sys.path:
     sys.path.insert(0, str(_BLOOMMCP_DIR))
 
-# Module reads SUPABASE_URL + BLOOM_AGENT_KEY at import time and raises if
-# either is missing — set placeholders before the first import so module
-# collection doesn't crash.
-os.environ.setdefault("SUPABASE_URL", "http://kong:8000")
-os.environ.setdefault("BLOOM_AGENT_KEY", "fake-agent-jwt")
+from bloom_mcp import supabase_client  # noqa: E402
 
-from source import supabase_client  # noqa: E402
+
+@pytest.fixture(autouse=True)
+def _supabase_env(monkeypatch):
+    """Set placeholder Supabase env for accessor tests.
+
+    Validation is now lazy (per-call), so accessors raise without env. The
+    lazy-validation tests below delenv via their own monkeypatch to assert the
+    missing-var behavior.
+    """
+    monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
+    monkeypatch.setenv("BLOOM_AGENT_KEY", "fake-agent-jwt")
 
 
 # ─── Helper: build a Supabase-client mock whose .storage.from_().download
@@ -105,29 +109,31 @@ def test_get_postgrest_client_returns_a_fresh_client(supabase_mock, monkeypatch)
 
 # ─────────────────────── env-validation at import ────────────────────
 
-def test_import_fails_when_supabase_url_missing(monkeypatch):
-    """Reloading the module with no SUPABASE_URL raises RuntimeError."""
+def test_validate_env_raises_naming_supabase_url(monkeypatch):
+    """Validation is lazy: validate_env() raises naming only the missing URL."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.setenv("BLOOM_AGENT_KEY", "fake")
+    with pytest.raises(RuntimeError, match="SUPABASE_URL") as exc:
+        supabase_client.validate_env()
+    assert "BLOOM_AGENT_KEY" not in str(exc.value)
+
+
+def test_validate_env_raises_naming_bloom_agent_key(monkeypatch):
+    """validate_env() raises naming only the missing BLOOM_AGENT_KEY."""
+    monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
+    monkeypatch.delenv("BLOOM_AGENT_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="BLOOM_AGENT_KEY") as exc:
+        supabase_client.validate_env()
+    assert "SUPABASE_URL" not in str(exc.value)
+
+
+def test_module_imports_with_no_supabase_env(monkeypatch):
+    """The module imports (reloads) cleanly with neither var set — no raise."""
     import importlib
 
     monkeypatch.delenv("SUPABASE_URL", raising=False)
-    monkeypatch.setenv("BLOOM_AGENT_KEY", "fake")
-    with pytest.raises(RuntimeError, match="SUPABASE_URL"):
-        importlib.reload(supabase_client)
-    # Restore for other tests in this module.
-    monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
-    importlib.reload(supabase_client)
-
-
-def test_import_fails_when_bloom_agent_key_missing(monkeypatch):
-    """Reloading the module with no BLOOM_AGENT_KEY raises RuntimeError."""
-    import importlib
-
-    monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
     monkeypatch.delenv("BLOOM_AGENT_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="BLOOM_AGENT_KEY"):
-        importlib.reload(supabase_client)
-    monkeypatch.setenv("BLOOM_AGENT_KEY", "fake-agent-jwt")
-    importlib.reload(supabase_client)
+    importlib.reload(supabase_client)  # must not raise
 
 
 # ═══════════════════════════════════════════════════════════════════════════

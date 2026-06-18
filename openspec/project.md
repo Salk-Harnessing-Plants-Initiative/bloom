@@ -201,7 +201,7 @@ Host-facing port mappings differ per environment:
 
 - **Frontend**: Next.js, React, Material-UI, TypeScript
 - **LangGraph agent**: FastAPI, LangGraph, langchain-core, boto3, PyJWT
-- **FastMCP server**: FastMCP, statsmodels, umap, pandas (per the smoke imports in pre-merge.md)
+- **FastMCP server** (`bloommcp/`, installable package `bloom_mcp` under `src/`): FastMCP, sleap-roots-analyze, sleap-roots-contracts, statsmodels, umap, pandas (per the smoke imports in pre-merge.md)
 - **Video worker**: see `services/video-worker/pyproject.toml`
 - **Shared**: Supabase client libraries, custom bloom packages (`bloom-fs`, `bloom-js`, `bloom-nextjs-auth`)
 - **Build**: Turbo for monorepo orchestration; `uv` for Python services

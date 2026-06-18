@@ -1,0 +1,16 @@
+{
+ "_source": "talmolab/sleap-roots-analyze#120 / PR #146 — tests/fixtures/real/wheat_edpie/expected/viz/turface_19/viz_pca_metadata.json",
+ "_reproduced_by_sleap_roots_analyze_version": "0.1.0a2",
+ "trait_cols": [
+  "Holes",
+  "Network Area (mm²)",
+  "Perimeter (mm)",
+  "Root Biomass (mg)",
+  "Shoot Biomass (mg)",
+  "Surface Area (mm²)",
+  "Total Root Length (mm)",
+  "Volume (mm³)"
+ ],
+ "pca_explained_variance": 0.9599095965599803,
+ "n_pca_components": 3
+}
