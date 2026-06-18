@@ -37,6 +37,12 @@ VALID_METHODS = (
     "all_then_consensus",
 )
 
+# Methods whose detection runs Isolation Forest (stochastic, random_state=42).
+# Only these record a provenance seed; the purely-deterministic detectors
+# (mahalanobis, pca-reconstruction) record seed=None.
+_STOCHASTIC_METHODS = {"isolation_forest", "consensus", "all_then_consensus"}
+_RANDOM_STATE = 42
+
 
 def run_outlier_workflow(
     filename: str,
@@ -100,7 +106,9 @@ def run_outlier_workflow(
         detection_outputs["mahalanobis_outliers.json"] = res
 
     elif method == "isolation_forest":
-        res = _detect_isolation(data=data, contamination=contamination)
+        res = _detect_isolation(
+            data=data, contamination=contamination, random_state=_RANDOM_STATE
+        )
         if "error" in res:
             return {"error": f"Isolation Forest detection failed: {res['error']}"}
         outlier_indices = res.get("outlier_indices", [])
@@ -119,7 +127,9 @@ def run_outlier_workflow(
 
     else:  # consensus or all_then_consensus
         mahal = _detect_mahalanobis(data=data, chi2_percentile=chi2_percentile)
-        iso = _detect_isolation(data=data, contamination=contamination)
+        iso = _detect_isolation(
+            data=data, contamination=contamination, random_state=_RANDOM_STATE
+        )
         pca_res = _detect_pca(data=data, threshold_percentile=pca_threshold_percentile)
         combined = combine_outlier_methods(
             mahalanobis_results=mahal if "error" not in mahal else None,
@@ -163,6 +173,7 @@ def run_outlier_workflow(
             "remove_outliers": remove_outliers,
         },
         user_label=user_label,
+        seed=_RANDOM_STATE if method in _STOCHASTIC_METHODS else None,
     )
     version_dir = run.staging_dir
 
@@ -194,7 +205,7 @@ def run_outlier_workflow(
 
     return {
         "version_id": stored.run_ref,
-        "version_dir": str(version_dir),
+        "version_dir": stored.version_dir,
         "manifest_path": run.manifest_path,
         "summary": summary,
         "outputs": outputs,

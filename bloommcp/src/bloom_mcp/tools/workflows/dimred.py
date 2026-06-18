@@ -30,6 +30,11 @@ _TOOL_NAME = "run_dimensionality_reduction_workflow"
 _TOOL_CLASS = "dimred"
 VALID_METHODS = ("pca", "umap")
 
+# The seed the stochastic delegates actually run with. PCA/UMAP default to
+# random_state=42; we thread it explicitly (UMAP) and record it as the run's
+# provenance seed so a persisted run reproduces the numbers it produced.
+_RANDOM_STATE = 42
+
 
 def _plot_path_and_url(
     stem: str, version_id: str, method: str, suffix: str
@@ -150,6 +155,7 @@ def run_dimensionality_reduction_workflow(
             "min_dist": min_dist,
         },
         user_label=user_label,
+        seed=_RANDOM_STATE,
     )
     version_dir = run.staging_dir
     version_id = run.version_id
@@ -195,8 +201,10 @@ def run_dimensionality_reduction_workflow(
         )
 
         plot_path, plot_url = _plot_path_and_url(stem, version_id, "pca", "scree")
-        _render_pca_scree(evr, cvr, stem, variance_threshold, plot_path)
         plot_layout = "scree"
+
+        def _render_plot() -> None:
+            _render_pca_scree(evr, cvr, stem, variance_threshold, plot_path)
 
     else:  # method == "umap"
         try:
@@ -206,6 +214,7 @@ def run_dimensionality_reduction_workflow(
                 n_neighbors=n_neighbors,
                 min_dist=min_dist,
                 n_components=2,
+                random_state=_RANDOM_STATE,
             )
         except Exception as exc:  # noqa: BLE001
             return {"error": f"UMAP failed: {exc}"}
@@ -227,14 +236,19 @@ def run_dimensionality_reduction_workflow(
         outputs["umap_embedding.csv"] = "umap_embedding.csv"
 
         plot_path, plot_url = _plot_path_and_url(stem, version_id, "umap", "scatter")
-        _render_umap_scatter(embedding, stem, plot_path)
         plot_layout = "scatter"
 
+        def _render_plot() -> None:
+            _render_umap_scatter(embedding, stem, plot_path)
+
     stored = store().commit(run, outputs)
+    # Render the plot only after the run is committed, so a commit failure never
+    # leaves a plot_url pointing at a run that doesn't exist.
+    _render_plot()
 
     return {
         "version_id": stored.run_ref,
-        "version_dir": str(version_dir),
+        "version_dir": stored.version_dir,
         "manifest_path": run.manifest_path,
         "summary": summary,
         "outputs": outputs,

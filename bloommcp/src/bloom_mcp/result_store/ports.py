@@ -66,6 +66,7 @@ class StoredRun:
     seed: Optional[int]
     agent: Optional[str]
     environment: Optional[str]
+    code_versions: dict[str, Optional[str]]
 
     @classmethod
     def from_version_entry(
@@ -91,6 +92,7 @@ class StoredRun:
             seed=entry.seed,
             agent=entry.agent,
             environment=entry.environment,
+            code_versions=entry.code_versions.model_dump(mode="json"),
         )
 
 

@@ -115,7 +115,7 @@ def run_descriptive_stats_workflow(
 
     return {
         "version_id": stored.run_ref,
-        "version_dir": str(version_dir),
+        "version_dir": stored.version_dir,
         "manifest_path": run.manifest_path,
         "summary": {
             "n_traits": len(rows),

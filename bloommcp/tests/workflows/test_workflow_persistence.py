@@ -15,6 +15,7 @@ import pytest
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools.workflows import clustering as clustering_workflow
 from bloom_mcp.tools.workflows.qc import run_qc_workflow
 
 _FIXTURE = (
@@ -59,3 +60,31 @@ def test_second_run_increments_version(injected_ports):
     resp2 = run_qc_workflow("turface.csv")
     assert resp2["version_id"] == "v2"
     assert [r.run_ref for r in store.list_runs("turface.csv", "qc")] == ["v1", "v2"]
+
+
+def test_stochastic_workflow_threads_and_persists_the_real_seed(
+    injected_ports, monkeypatch
+):
+    """B1 regression: a stochastic workflow runs its delegate at random_state=42,
+    so the persisted seed must equal 42 (not null) — the field that makes the
+    result reproducible. Asserts the seed reaches both the computation and the
+    persisted provenance."""
+    _reader, store = injected_ports
+    captured: dict = {}
+
+    def _fake_kmeans(*, data, n_clusters, max_clusters, standardize, random_state):
+        captured["random_state"] = random_state
+        labels = [i % 2 for i in range(len(data))]
+        return {"cluster_labels": labels, "n_clusters": 2, "cluster_centers": None}
+
+    monkeypatch.setattr(clustering_workflow, "perform_kmeans_clustering", _fake_kmeans)
+
+    resp = clustering_workflow.run_clustering_workflow(
+        "turface.csv", algorithm="kmeans"
+    )
+
+    assert "error" not in resp, resp
+    assert resp["version_dir"].startswith("v1_")  # canonical dir, not a /tmp path
+    assert captured["random_state"] == 42  # threaded into the computation
+    stored = store.get_run("turface.csv", "clustering", "latest")
+    assert stored.seed == 42  # and recorded in provenance

@@ -10,6 +10,7 @@ each artifact's ``output_sha256`` (over the exact uploaded bytes) and logical
 
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -26,10 +27,9 @@ from bloom_mcp.storage import (
     write_manifest,
 )
 
-from ._artifacts import hash_outputs
+from ._artifacts import hash_outputs, validate_outputs
 from .ports import (
     CommitFailedError,
-    ResultStoreError,
     RunHandle,
     RunNotFoundError,
     RunStateError,
@@ -38,6 +38,8 @@ from .ports import (
 
 if TYPE_CHECKING:
     from bloom_mcp.contract.provenance import Provenance
+
+logger = logging.getLogger(__name__)
 
 _OUTPUT_PREFIX = "bloommcp_output"
 
@@ -69,6 +71,11 @@ class SupabaseResultStore:
         source_csv: Optional[Path] = None,
     ) -> RunHandle:
         adir = AnalysisDir(self._output_root, experiment, tool_class)
+        # Single-writer assumption (see AnalysisWriter docstring): version_id is
+        # allocated from the current manifest now and the manifest is re-read at
+        # commit without a compare-and-set, so two interleaved runs can allocate
+        # the same v<N>. Safe under bloommcp's one-container topology; a
+        # compare-and-set (or re-allocate-at-commit) is on the roadmap.
         version_id = next_version_id(adir.read_manifest())
         version_dir = version_dir_name(version_id, user_label)
         staging = Path(tempfile.mkdtemp(prefix="bloommcp_v_"))
@@ -90,6 +97,7 @@ class SupabaseResultStore:
         state: Optional[_SupabaseRunState] = run._backend
         if state is None or state.committed:
             raise RunStateError("commit() on an unknown or already-committed run")
+        validate_outputs(outputs)
         adir = state.adir
 
         def key_for(rel: str) -> str:
@@ -137,16 +145,20 @@ class SupabaseResultStore:
             # Manifest is written last: an upload failure above leaves `latest`
             # un-advanced rather than pointing at a half-written version.
             write_manifest(adir.path, manifest)
-        except ResultStoreError:
-            raise
-        except Exception as exc:  # caller-safe; no traceback leak
+        except Exception as exc:
+            # Leave the handle open and the staging dir intact so the caller can
+            # retry a transient failure. The detail is logged server-side only;
+            # the agent-facing message carries no Supabase URL / object path.
+            logger.exception(
+                "ResultStore.commit failed for %s/%s", adir.tool_class, adir.stem
+            )
             raise CommitFailedError(
-                f"commit failed for {adir.tool_class}/{adir.stem}: {exc}"
+                f"commit failed for {adir.tool_class}/{adir.stem} (transient — retry)"
             ) from exc
-        finally:
-            shutil.rmtree(run.staging_dir, ignore_errors=True)
-            state.committed = True
 
+        # Success only: tear down staging and seal the handle.
+        shutil.rmtree(run.staging_dir, ignore_errors=True)
+        state.committed = True
         return StoredRun.from_version_entry(
             entry,
             tool_class=adir.tool_class,

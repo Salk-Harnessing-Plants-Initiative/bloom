@@ -9,8 +9,24 @@ S3/MinIO ETag.
 from __future__ import annotations
 
 import hashlib
+from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Callable
+
+
+def validate_outputs(outputs: dict[str, str]) -> None:
+    """Reject an empty output set or a relative path that escapes the run dir.
+
+    Enforces the Tier-1 "no artifact without its hash" invariant (a run must
+    write at least one artifact) and guards the storage key against traversal
+    even though today's callers pass hardcoded literal names.
+    """
+    if not outputs:
+        raise ValueError("commit requires at least one output; got none")
+    for rel in outputs.values():
+        pure = PurePosixPath(rel)
+        if pure.is_absolute() or ".." in pure.parts:
+            raise ValueError(f"output path must stay within the run dir; got {rel!r}")
 
 
 def hash_outputs(

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Optional
 
 from bloom_mcp.storage.versioning import version_dir_name
 
-from ._artifacts import hash_outputs
+from ._artifacts import hash_outputs, validate_outputs
 from .ports import (
     RunHandle,
     RunNotFoundError,
@@ -75,6 +75,7 @@ class FakeResultStore:
     def commit(self, run: RunHandle, outputs: dict[str, str]) -> StoredRun:
         if id(run) not in self._open:
             raise RunStateError("commit() on an unknown or already-committed run")
+        validate_outputs(outputs)
         self._open.discard(id(run))
         state: _FakeRunState = run._backend
 
