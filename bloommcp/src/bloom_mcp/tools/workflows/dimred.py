@@ -20,16 +20,11 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from bloom_mcp.experiment_utils import (
-    PLOTS_DIR,
-    PLOTS_URL,
-    TRAITS_DIR,
-    load_experiment_data as _load_data,
-)
+from bloom_mcp.experiment_utils import PLOTS_DIR, PLOTS_URL
 from bloom_mcp.pca import run_pca_and_export_artifacts
 from bloom_mcp.umap_embedding import UMAP_AVAILABLE, perform_umap_analysis
 
-from ._helpers import build_writer
+from ._helpers import load_frame as _load_data, start_run, store
 
 _TOOL_NAME = "run_dimensionality_reduction_workflow"
 _TOOL_CLASS = "dimred"
@@ -143,15 +138,11 @@ def run_dimensionality_reduction_workflow(
         return {"error": source_label}
 
     stem = Path(filename).stem
-    src_csv = TRAITS_DIR / filename
-    writer = build_writer(
+    run = start_run(
         filename,
         _TOOL_CLASS,
-        source_csv=src_csv if src_csv.exists() else None,
-    )
-    version_dir = writer.create_version(
-        tool_name=_TOOL_NAME,
-        params={
+        _TOOL_NAME,
+        {
             "method": method,
             "n_components": n_components,
             "variance_threshold": variance_threshold,
@@ -160,7 +151,8 @@ def run_dimensionality_reduction_workflow(
         },
         user_label=user_label,
     )
-    version_id = writer.version_id
+    version_dir = run.staging_dir
+    version_id = run.version_id
 
     outputs: dict[str, str] = {}
     summary: dict = {"method": method, "source": source_label, "n_samples": len(df)}
@@ -238,12 +230,12 @@ def run_dimensionality_reduction_workflow(
         _render_umap_scatter(embedding, stem, plot_path)
         plot_layout = "scatter"
 
-    entry = writer.commit(outputs)
+    stored = store().commit(run, outputs)
 
     return {
-        "version_id": entry.id,
+        "version_id": stored.run_ref,
         "version_dir": str(version_dir),
-        "manifest_path": f"{writer.analysis_dir.path}manifest.json",
+        "manifest_path": run.manifest_path,
         "summary": summary,
         "outputs": outputs,
         "plot_url": plot_url,

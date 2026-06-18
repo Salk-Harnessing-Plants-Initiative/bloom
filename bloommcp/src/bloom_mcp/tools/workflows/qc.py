@@ -7,12 +7,8 @@ from typing import Optional
 
 from bloom_mcp import data_cleanup as cleanup
 from bloom_mcp.data_utils import convert_to_json_serializable
-from bloom_mcp.experiment_utils import (
-    TRAITS_DIR,
-    load_experiment_data as _load_data,
-)
 
-from ._helpers import build_writer
+from ._helpers import load_frame as _load_data, start_run, store
 
 _TOOL_NAME = "run_qc_workflow"
 _TOOL_CLASS = "qc"
@@ -64,15 +60,11 @@ def run_qc_workflow(
         min_samples_per_trait=min_samples_per_trait,
     )
 
-    src_csv = TRAITS_DIR / filename
-    writer = build_writer(
+    run = start_run(
         filename,
         _TOOL_CLASS,
-        source_csv=src_csv if src_csv.exists() else None,
-    )
-    version_dir = writer.create_version(
-        tool_name=_TOOL_NAME,
-        params={
+        _TOOL_NAME,
+        {
             "max_zeros_per_trait": max_zeros_per_trait,
             "max_nans_per_trait": max_nans_per_trait,
             "max_nans_per_sample": max_nans_per_sample,
@@ -80,6 +72,7 @@ def run_qc_workflow(
         },
         user_label=user_label,
     )
+    version_dir = run.staging_dir
 
     cleaned_csv = version_dir / "_cleaned.csv"
     df_clean.to_csv(cleaned_csv, index=False)
@@ -87,11 +80,12 @@ def run_qc_workflow(
     with open(log_path, "w") as f:
         json.dump(convert_to_json_serializable(cleanup_log), f, indent=2)
 
-    entry = writer.commit(
+    stored = store().commit(
+        run,
         {
             "_cleaned.csv": "_cleaned.csv",
             "cleanup_log.json": "cleanup_log.json",
-        }
+        },
     )
 
     final_samples = cleanup_log["final_samples"]
@@ -103,9 +97,9 @@ def run_qc_workflow(
     )
 
     return {
-        "version_id": entry.id,
+        "version_id": stored.run_ref,
         "version_dir": str(version_dir),
-        "manifest_path": f"{writer.analysis_dir.path}manifest.json",
+        "manifest_path": run.manifest_path,
         "summary": {
             "n_rows_in": original_samples,
             "n_rows_out": final_samples,

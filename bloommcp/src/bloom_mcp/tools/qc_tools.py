@@ -6,15 +6,14 @@ that the agent always loads (see `ALWAYS_INCLUDE_MCP_TOOLS`).
 """
 
 from bloom_mcp import data_cleanup as cleanup
-from bloom_mcp.experiment_utils import (
-    list_experiments,
-    load_experiment_data as _load_data,
-    TRAITS_DIR,
-    OUTPUT_DIR,
-)
+from bloom_mcp.experiment_utils import OUTPUT_DIR
+from bloom_mcp.tools import _ports
 
 # Ensure output directory exists
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Read through the injected ExperimentReader port (not Supabase/local FS).
+_load_data = _ports.load_frame
 
 
 # ============================================================================
@@ -29,25 +28,25 @@ def list_available_experiments() -> str:
     trait count, and auto-detected genotype column. Use this first to
     see what experiments are available before running analysis.
     """
-    experiments = list_experiments()
+    experiments = _ports.reader().list_experiments()
 
     if not experiments:
-        return f"No CSV files found in {TRAITS_DIR}"
+        return "No experiments available"
 
     lines = [f"Available experiments ({len(experiments)} files):\n"]
 
     for exp in experiments:
         lines.append(
-            f"  {exp['filename']}\n"
-            f"    Experiment: {exp['experiment_name']}\n"
-            f"    Samples: {exp['rows']}, Traits: {exp['trait_columns']}, "
-            f"Total columns: {exp['total_columns']}\n"
-            f"    Genotype column: {exp['genotype_col'] or 'not detected'}\n"
-            f"    Sample ID column: {exp['sample_id_col'] or 'not detected'}"
+            f"  {exp.filename}\n"
+            f"    Experiment: {exp.experiment_name}\n"
+            f"    Samples: {exp.rows}, Traits: {exp.trait_columns}, "
+            f"Total columns: {exp.total_columns}\n"
+            f"    Genotype column: {exp.genotype_col or 'not detected'}\n"
+            f"    Sample ID column: {exp.sample_id_col or 'not detected'}"
         )
 
     lines.append(
-        f"\nTo analyze an experiment, use its filename (e.g., '{experiments[0]['filename']}')"
+        f"\nTo analyze an experiment, use its filename (e.g., '{experiments[0].filename}')"
     )
 
     return "\n".join(lines)

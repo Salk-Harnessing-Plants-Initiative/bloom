@@ -29,14 +29,9 @@ from bloom_mcp.clustering import (
     perform_hierarchical_clustering,
     perform_kmeans_clustering,
 )
-from bloom_mcp.experiment_utils import (
-    PLOTS_DIR,
-    PLOTS_URL,
-    TRAITS_DIR,
-    load_experiment_data as _load_data,
-)
+from bloom_mcp.experiment_utils import PLOTS_DIR, PLOTS_URL
 
-from ._helpers import build_writer
+from ._helpers import load_frame as _load_data, start_run, store
 
 _TOOL_NAME = "run_clustering_workflow"
 _TOOL_CLASS = "clustering"
@@ -168,15 +163,11 @@ def run_clustering_workflow(
     label_array = np.asarray(labels)
     quality = calculate_cluster_quality_metrics(np.asarray(data), label_array)
 
-    src_csv = TRAITS_DIR / filename
-    writer = build_writer(
+    run = start_run(
         filename,
         _TOOL_CLASS,
-        source_csv=src_csv if src_csv.exists() else None,
-    )
-    version_dir = writer.create_version(
-        tool_name=_TOOL_NAME,
-        params={
+        _TOOL_NAME,
+        {
             "algorithm": algorithm,
             "k": k,
             "k_used": k_used,
@@ -185,7 +176,8 @@ def run_clustering_workflow(
         },
         user_label=user_label,
     )
-    version_id = writer.version_id
+    version_dir = run.staging_dir
+    version_id = run.version_id
 
     import pandas as pd
 
@@ -230,12 +222,12 @@ def run_clustering_workflow(
     }
     summary.update({k_metric: float(v) for k_metric, v in quality.items()})
 
-    entry = writer.commit(outputs)
+    stored = store().commit(run, outputs)
 
     response: dict = {
-        "version_id": entry.id,
+        "version_id": stored.run_ref,
         "version_dir": str(version_dir),
-        "manifest_path": f"{writer.analysis_dir.path}manifest.json",
+        "manifest_path": run.manifest_path,
         "summary": summary,
         "outputs": outputs,
     }

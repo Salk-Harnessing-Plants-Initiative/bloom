@@ -16,10 +16,6 @@ from pathlib import Path
 from typing import Optional
 
 from bloom_mcp.data_utils import convert_to_json_serializable
-from bloom_mcp.experiment_utils import (
-    TRAITS_DIR,
-    load_experiment_data as _load_data,
-)
 from bloom_mcp.outlier_detection import (
     combine_outlier_methods,
     detect_outliers_isolation_forest as _detect_isolation,
@@ -28,7 +24,7 @@ from bloom_mcp.outlier_detection import (
     remove_outliers_from_data,
 )
 
-from ._helpers import build_writer
+from ._helpers import load_frame as _load_data, start_run, store
 
 _TOOL_NAME = "run_outlier_workflow"
 _TOOL_CLASS = "outlier"
@@ -154,15 +150,11 @@ def run_outlier_workflow(
             if "error" not in pca_res:
                 detection_outputs["pca_outliers.json"] = pca_res
 
-    src_csv = TRAITS_DIR / filename
-    writer = build_writer(
+    run = start_run(
         filename,
         _TOOL_CLASS,
-        source_csv=src_csv if src_csv.exists() else None,
-    )
-    version_dir = writer.create_version(
-        tool_name=_TOOL_NAME,
-        params={
+        _TOOL_NAME,
+        {
             "method": method,
             "chi2_percentile": chi2_percentile,
             "contamination": contamination,
@@ -172,6 +164,7 @@ def run_outlier_workflow(
         },
         user_label=user_label,
     )
+    version_dir = run.staging_dir
 
     outputs: dict[str, str] = {}
     for fname, payload in detection_outputs.items():
@@ -197,12 +190,12 @@ def run_outlier_workflow(
         summary["n_removed"] = len(outlier_df)
         summary["n_remaining"] = len(cleaned_df)
 
-    entry = writer.commit(outputs)
+    stored = store().commit(run, outputs)
 
     return {
-        "version_id": entry.id,
+        "version_id": stored.run_ref,
         "version_dir": str(version_dir),
-        "manifest_path": f"{writer.analysis_dir.path}manifest.json",
+        "manifest_path": run.manifest_path,
         "summary": summary,
         "outputs": outputs,
     }
