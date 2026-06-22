@@ -20,6 +20,10 @@ dependencies = [
     "cryptography>=48.0.1",
     "python-multipart>=0.0.31",
     "starlette>=1.1.0",
+    # pydantic-settings GHSA-4xgf-cpjx-pc3j (disclosed 2026-06-19):
+    # NestedSecretsSettingsSource follows symlinks outside the configured
+    # secrets directory. Fix in 2.14.2+. Transitive via fastmcp/supabase.
+    "pydantic-settings>=2.14.2",
     # Supabase PostgREST + Storage client, used by bloom_mcp.supabase_client
     # for CSV exchange via the bloommcp-data bucket.
     "supabase>=2.0.0",
