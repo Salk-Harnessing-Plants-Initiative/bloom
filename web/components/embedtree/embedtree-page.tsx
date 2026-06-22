@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { GenePicker, type GeneRow } from "./gene-picker";
 import { KnnGraph, type KnnNeighbor } from "./knn-graph";
+import { ResultsPanel } from "./results-panel";
 import { DEFAULT_K, K_MAX, K_MIN, SIMILARITY_DISCLAIMER } from "./constants";
 
 // Loose RPC + table types until web/lib/database.types.ts is regenerated to
@@ -80,6 +81,9 @@ export function EmbedtreePage() {
   // Default off — query→neighbor edges are the primary signal; pairwise
   // edges are an optional second layer the user opts into.
   const [showPairwiseEdges, setShowPairwiseEdges] = useState(false);
+  // Lifted hover state — graph and results table share it so hovering
+  // one surface highlights the matching item in the other.
+  const [hoveredUid, setHoveredUid] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -194,20 +198,35 @@ export function EmbedtreePage() {
         )}
       </section>
 
-      <section className="flex flex-1 items-start justify-center overflow-hidden">
+      <section className="flex flex-1 flex-col items-stretch gap-4 overflow-y-auto">
         {query ? (
-          <KnnGraph
-            queryUid={query.uid}
-            querySpecies={query.species}
-            queryGeneId={query.gene_id}
-            neighbors={neighbors}
-            embeddings={embeddings}
-            showQueryEdges={showQueryEdges}
-            showPairwiseEdges={showPairwiseEdges}
-            onSelectNeighbor={(n) => handleSelect(n)}
-          />
+          <>
+            <div className="flex items-start justify-center">
+              <KnnGraph
+                queryUid={query.uid}
+                querySpecies={query.species}
+                queryGeneId={query.gene_id}
+                neighbors={neighbors}
+                embeddings={embeddings}
+                showQueryEdges={showQueryEdges}
+                showPairwiseEdges={showPairwiseEdges}
+                onSelectNeighbor={(n) => handleSelect(n)}
+                hoveredUid={hoveredUid}
+                onHoverNode={setHoveredUid}
+              />
+            </div>
+            <ResultsPanel
+              queryUid={query.uid}
+              querySpecies={query.species}
+              queryGeneId={query.gene_id}
+              neighbors={neighbors}
+              onSelectNeighbor={(n) => handleSelect(n)}
+              hoveredUid={hoveredUid}
+              onHoverRow={setHoveredUid}
+            />
+          </>
         ) : (
-          <div className="flex h-96 w-full max-w-3xl items-center justify-center rounded-md border border-dashed border-stone-300 bg-stone-50 text-sm text-neutral-500">
+          <div className="flex h-96 w-full max-w-3xl items-center justify-center self-center rounded-md border border-dashed border-stone-300 bg-stone-50 text-sm text-neutral-500">
             Search for a gene above to see its similarity neighborhood.
           </div>
         )}
