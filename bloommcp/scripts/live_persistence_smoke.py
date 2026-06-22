@@ -40,6 +40,7 @@ target in the repo-root Makefile.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import os
 import shutil
@@ -115,8 +116,9 @@ def provenance_checks(
             f"agent={agent!r}",
         ),
         Check(
-            "environment present",
-            isinstance(environment, str) and bool(environment),
+            "environment is an image-digest / uv.lock pointer",
+            isinstance(environment, str)
+            and ("sha256:" in environment or "uvlock:" in environment),
             f"environment={environment!r}",
         ),
         Check("output_keys present", bool(output_keys), f"output_keys={output_keys!r}"),
@@ -156,11 +158,25 @@ def hash_checks(
     return checks
 
 
+def _version_num(ref: str) -> Optional[int]:
+    """Parse the integer N from a ``v<N>`` run reference (else None)."""
+    if isinstance(ref, str) and ref.startswith("v") and ref[1:].isdigit():
+        return int(ref[1:])
+    return None
+
+
 def version_advance_check(first_ref: str, second_ref: str) -> Check:
-    """Assert a second commit advances ``latest`` from ``v1`` to ``v2``."""
+    """Assert a second commit advances ``latest`` by exactly one version.
+
+    Checked *relationally* (``N+1``), not against a hardcoded ``v1``/``v2`` — the
+    smoke runs against a shared dev stack whose manifest may already hold prior
+    versions (a local re-run or a CI retry without a bucket reset), so the
+    starting version is not guaranteed to be ``v1``.
+    """
+    a, b = _version_num(first_ref), _version_num(second_ref)
     return Check(
-        "latest advances v1 -> v2",
-        first_ref == "v1" and second_ref == "v2",
+        "second commit advances latest by one version",
+        a is not None and b is not None and b == a + 1,
         f"first={first_ref!r} second={second_ref!r}",
     )
 
@@ -217,12 +233,19 @@ def retry(
 
 # --- live wiring (exercised only with the dev stack up) -----------------------
 def _configure_live_env() -> None:
-    """Point BLOOM_*_DIR at host temp dirs (seeded with the fixture) before import."""
+    """Point BLOOM_*_DIR at host temp dirs (seeded with the fixture) before import.
+
+    The dirs are registered for cleanup at interpreter exit so a smoke run leaves
+    no host litter. Env is set here *before* the first ``import bloom_mcp`` in
+    ``main`` because ``experiment_utils`` captures the dir globals at import time.
+    """
     if not FIXTURE.exists():
         raise FileNotFoundError(f"fixture not found: {FIXTURE}")
     traits = Path(tempfile.mkdtemp(prefix="smoke_traits_"))
     out = Path(tempfile.mkdtemp(prefix="smoke_out_"))
     plots = Path(tempfile.mkdtemp(prefix="smoke_plots_"))
+    for d in (traits, out, plots):
+        atexit.register(shutil.rmtree, d, ignore_errors=True)
     shutil.copy(FIXTURE, traits / EXPERIMENT)
     os.environ["BLOOM_TRAITS_DIR"] = str(traits)
     os.environ["BLOOM_OUTPUT_DIR"] = str(out)
@@ -251,13 +274,8 @@ def main() -> int:
         print(text)
         return code
 
-    # 2) Configure the live env and import the real adapters.
+    # 2) Configure the live env (before the first import) and import the adapters.
     _configure_live_env()
-    import bloom_mcp.experiment_utils as eu  # noqa: E402
-
-    eu.TRAITS_DIR = Path(os.environ["BLOOM_TRAITS_DIR"])
-    eu.OUTPUT_DIR = Path(os.environ["BLOOM_OUTPUT_DIR"])
-    eu.PLOTS_DIR = Path(os.environ["BLOOM_PLOTS_DIR"])
 
     from bloom_mcp import supabase_client as sc  # noqa: E402
     from bloom_mcp.data_access import SupabaseReader  # noqa: E402
@@ -269,8 +287,10 @@ def main() -> int:
         run_clustering_workflow,
     )
 
+    # Bounded-retry each download too: if the manifest is visible but the object
+    # still lags in storage-api, retry rather than record a spurious hard FAIL.
     def read_bytes(key: str) -> bytes:
-        return sc.get_storage_client().download(key)
+        return retry(lambda: sc.get_storage_client().download(key))
 
     # 3) First run through the real ports.
     print(">>> running clustering(kmeans) on turface.csv through real ports ...")
@@ -309,7 +329,8 @@ def main() -> int:
     # 6) Hash each stored object and compare to the recorded sha256.
     checks.extend(hash_checks(stored.output_keys, stored.output_sha256, read_bytes))
 
-    # 7) Second run must advance latest v1 -> v2.
+    # 7) A second run must advance latest by one version without clobbering the
+    #    first: latest moves N -> N+1, and get_run(first_ref) still resolves.
     print(">>> running clustering(kmeans) a second time to advance latest ...")
     resp2 = run_clustering_workflow(EXPERIMENT, algorithm="kmeans")
     if not isinstance(resp2, dict) or "error" in resp2:
@@ -320,6 +341,14 @@ def main() -> int:
             lambda: _ports.store().get_run(EXPERIMENT, TOOL_CLASS, "latest")
         )
         checks.append(version_advance_check(first_ref, stored2.run_ref))
+        prior = retry(lambda: _ports.store().get_run(EXPERIMENT, TOOL_CLASS, first_ref))
+        checks.append(
+            Check(
+                "prior version still resolves (not clobbered)",
+                prior.run_ref == first_ref,
+                f"first_ref={first_ref!r} resolved={prior.run_ref!r}",
+            )
+        )
 
     text, code = summarize(checks)
     print(text)

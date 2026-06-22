@@ -82,7 +82,22 @@ def test_provenance_checks_flags_wrong_agent_and_empty_environment():
     checks = smoke.provenance_checks(**kwargs)
     failed = {c.name for c in checks if not c.ok}
     assert any(n.startswith("agent ==") for n in failed)
-    assert "environment present" in failed
+    assert any(n.startswith("environment is") for n in failed)
+
+
+def test_provenance_checks_rejects_arbitrary_environment_string():
+    # The guarantee is an image-digest / uv.lock pointer, not any truthy string.
+    kwargs = _good_prov_kwargs()
+    kwargs["environment"] = "x"
+    checks = smoke.provenance_checks(**kwargs)
+    assert any(c.name.startswith("environment is") and not c.ok for c in checks)
+
+
+def test_provenance_checks_accepts_image_digest_environment():
+    kwargs = _good_prov_kwargs()
+    kwargs["environment"] = "sha256:abc123"
+    checks = smoke.provenance_checks(**kwargs)
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
 
 
 def test_provenance_checks_flags_keyset_mismatch():
@@ -138,13 +153,27 @@ def test_hash_checks_fail_on_download_error():
     assert "download failed" in checks[0].detail
 
 
-# --- version-advance detection ------------------------------------------------
+# --- version-advance detection (relational, not hardcoded v1->v2) -------------
 def test_version_advance_pass_v1_to_v2():
     assert smoke.version_advance_check("v1", "v2").ok
 
 
+def test_version_advance_pass_from_nonzero_start():
+    # The regression the relational check guards: a re-run starting past v1 still
+    # passes as long as latest advances by exactly one.
+    assert smoke.version_advance_check("v3", "v4").ok
+
+
 def test_version_advance_fail_when_not_advanced():
     assert not smoke.version_advance_check("v1", "v1").ok
+
+
+def test_version_advance_fail_when_skips_a_version():
+    assert not smoke.version_advance_check("v1", "v3").ok
+
+
+def test_version_advance_fail_on_unparseable_ref():
+    assert not smoke.version_advance_check("latest", "v2").ok
 
 
 # --- bounded retry ------------------------------------------------------------
