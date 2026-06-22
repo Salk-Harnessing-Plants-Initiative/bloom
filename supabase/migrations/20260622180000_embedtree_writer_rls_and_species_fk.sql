@@ -25,6 +25,16 @@
 
 BEGIN;
 
+-- ─── 0. bloom_writer inherits authenticated for baseline Supabase access ──
+--
+-- Without this, bloom_writer hits "permission denied for schema auth" the
+-- moment PostgREST tries to evaluate JWT claims, and policies that target
+-- the `authenticated` role (e.g. on public.species, public.gene_candidates,
+-- and anything else created with the Supabase-default RLS pattern) don't
+-- apply. Inheriting `authenticated` is the same pattern Supabase uses for
+-- service_role and other built-in roles.
+GRANT authenticated TO bloom_writer;
+
 -- ─── 1. bloom_writer RLS policies + grants ────────────────────────────────
 
 -- proteins
