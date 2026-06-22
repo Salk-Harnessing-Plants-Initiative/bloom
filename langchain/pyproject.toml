@@ -29,4 +29,10 @@ dependencies = [
     "matplotlib>=3.8",
     "pandas>=2.0",
     "scipy>=1.11",
+    # Security floors for transitive deps disclosed 2026-06-19:
+    # langsmith (GHSA-f4xh-w4cj-qxq8) — file-read via TracingMiddleware
+    # pydantic-settings (GHSA-4xgf-cpjx-pc3j) — symlink follow in
+    # NestedSecretsSettingsSource. Open floors per repo convention.
+    "langsmith>=0.8.18",
+    "pydantic-settings>=2.14.2",
 ]
