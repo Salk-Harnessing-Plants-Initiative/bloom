@@ -21,6 +21,8 @@ type Props = {
   showQueryEdges?: boolean;
   showPairwiseEdges?: boolean;
   onSelectNeighbor?: (n: KnnNeighbor) => void;
+  hoveredUid?: string | null;
+  onHoverNode?: (uid: string | null) => void;
   width?: number;
   height?: number;
 };
@@ -69,6 +71,8 @@ export function KnnGraph({
   showQueryEdges = true,
   showPairwiseEdges = true,
   onSelectNeighbor,
+  hoveredUid = null,
+  onHoverNode,
   width = 760,
   height = 520,
 }: Props) {
@@ -81,8 +85,18 @@ export function KnnGraph({
   const dragMovedRef = useRef(false);
   const [renderedNodes, setRenderedNodes] = useState<Node[]>([]);
   const [renderedLinks, setRenderedLinks] = useState<Link[]>([]);
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
+  const hoveredId = hoveredUid;
+  const setHoveredId = useCallback(
+    (next: string | null | ((prev: string | null) => string | null)) => {
+      onHoverNode?.(
+        typeof next === "function"
+          ? (next as (prev: string | null) => string | null)(hoveredUid)
+          : next,
+      );
+    },
+    [hoveredUid, onHoverNode],
+  );
 
   // Build nodes + links from props. Pairwise edges are computed only if we
   // have embeddings for both endpoints — otherwise we silently degrade to
