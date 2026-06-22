@@ -5,19 +5,14 @@
 --
 -- 1. bloom_writer RLS + grants on proteins + protein_embeddings_esm2.
 --    The original embedtree migration (20260610000000) added admin / agent /
---    user policies but no writer policy, so an authenticated user whose JWT
---    role is `bloom_writer` cannot INSERT/UPDATE. The protein-embedding
---    ingest uploader runs as such a writer, so the missing policy blocks
+--    user policies but no writer policy. 
+--    
+--    The protein-embedding ingest uploader runs as such a writer, so the missing policy blocks
 --    every bulk load via REST.
 --
 -- 2. proteins.species_id FK to public.species.
---    Other bloom tables (cyl_experiments, assemblies, scrna_datasets,
---    gravi_experiments) link species via `species_id BIGINT REFERENCES
---    species(id)`. proteins.species was created as free-form text and missed
---    the convention. This migration adds the FK column alongside the text
---    column (kept for back-compat — knn_search_esm2 still returns the text
---    species field; a follow-up migration can drop the text column once
---    every caller migrates to JOINing species).
+--    This migration adds the FK column alongside the text
+--    column.
 --
 -- Idempotent: every CREATE POLICY is preceded by DROP IF EXISTS; the column
 -- addition uses IF NOT EXISTS; the constraint name is unique.
@@ -25,14 +20,6 @@
 
 BEGIN;
 
--- ─── 0. bloom_writer inherits authenticated for baseline Supabase access ──
---
--- Without this, bloom_writer hits "permission denied for schema auth" the
--- moment PostgREST tries to evaluate JWT claims, and policies that target
--- the `authenticated` role (e.g. on public.species, public.gene_candidates,
--- and anything else created with the Supabase-default RLS pattern) don't
--- apply. Inheriting `authenticated` is the same pattern Supabase uses for
--- service_role and other built-in roles.
 GRANT authenticated TO bloom_writer;
 
 -- ─── 1. bloom_writer RLS policies + grants ────────────────────────────────
