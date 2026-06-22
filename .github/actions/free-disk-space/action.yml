@@ -1,0 +1,52 @@
+name: "Free up runner disk space"
+description: >
+  Reclaim disk on GitHub-hosted ubuntu runners by removing preinstalled
+  language SDKs / toolchains the Bloom CI jobs never use, then log free space.
+  ubuntu-latest ships only ~14 GB free on /, which the stack-build + Playwright
+  jobs can exhaust ("No space left on device", see issue #334). This is the
+  single source of truth so compose-health-check and dev-stack-smoke can't
+  drift apart. Inline `rm` (no third-party action) keeps it under our control,
+  consistent with the SHA-pinning posture of the rest of the workflow.
+
+inputs:
+  min-free-gb:
+    description: >
+      If > 0, fail the step when free space on / after cleanup is below this
+      many GB — a fast, visible signal that runner headroom regressed instead
+      of a silent disk-full hang later. Default "0" is log-only.
+    required: false
+    default: "0"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Free up disk space
+      shell: bash
+      run: |
+        echo "::group::Disk before cleanup"
+        df -h /
+        echo "::endgroup::"
+
+        # Remove preinstalled SDKs/toolchains this repo's CI never uses.
+        # hostedtoolcache is left intact (minus CodeQL) so setup-uv /
+        # setup-node still resolve their runtimes.
+        sudo rm -rf \
+          /usr/local/lib/android \
+          /usr/share/dotnet \
+          /opt/ghc /usr/local/.ghcup \
+          /usr/share/swift \
+          /usr/local/share/powershell \
+          /opt/hostedtoolcache/CodeQL || true
+        sudo apt-get clean || true
+
+        echo "::group::Disk after cleanup"
+        df -h /
+        echo "::endgroup::"
+
+        free_gb=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+        echo "Free space on / after cleanup: ${free_gb} GB"
+        min='${{ inputs.min-free-gb }}'
+        if [ "${min}" -gt 0 ] && [ "${free_gb}" -lt "${min}" ]; then
+          echo "::error::Only ${free_gb} GB free on / after cleanup (need >= ${min} GB). Runner disk headroom regressed — see issue #334."
+          exit 1
+        fi
