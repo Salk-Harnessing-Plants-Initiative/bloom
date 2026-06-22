@@ -4,11 +4,11 @@ This doc explains how bloommcp saves analysis results (and how it reads
 them back). If you are about to write a new workflow tool start here.
 
 The storage layer lives under
-[bloommcp/storage/](../../bloommcp/storage/). Everything below is a view
+[bloommcp/src/bloom_mcp/storage/](../../bloommcp/src/bloom_mcp/storage/). Everything below is a view
 of those files plus the two callers that actually use them:
-[`build_writer`](../../bloommcp/tools/workflows/_helpers.py) (write
+[`build_writer`](../../bloommcp/src/bloom_mcp/tools/workflows/_helpers.py) (write
 side) and
-[`list_existing_analyses`](../../bloommcp/tools/storage_tools.py) (read
+[`list_existing_analyses`](../../bloommcp/src/bloom_mcp/tools/storage_tools.py) (read
 side).
 
 ## Why this exists
@@ -53,7 +53,7 @@ Two rules to internalise:
 - They never mix.
 
 `tool_class` is one of the strings in `CANONICAL_TOOL_CLASSES` in
-[`storage/__init__.py`](../../bloommcp/storage/__init__.py): `qc`, `stats`, `dimred`, `clustering`, `outlier`, `viz`, `correlation`,
+[`storage/__init__.py`](../../bloommcp/src/bloom_mcp/storage/__init__.py): `qc`, `stats`, `dimred`, `clustering`, `outlier`, `viz`, `correlation`,
 `heritability`, `anova`. 
 
 The experiment stem is `Path(filename).stem` — `plant_traits.csv` → `plant_traits`.
@@ -65,7 +65,7 @@ Every `bloommcp_output/<tool_class>_<stem>/` folder has the same shape:
 - One `manifest.json` at the top — the cumulative catalog of every run
   that has ever happened for this `(tool_class, experiment)` pair.
 - One subfolder per run, named `v<N>_<YYYY-MM-DD>[_<slug>]/` (see
-  `version_dir_name()` in [`versioning.py`](../../bloommcp/storage/versioning.py)).
+  `version_dir_name()` in [`versioning.py`](../../bloommcp/src/bloom_mcp/storage/versioning.py)).
 - The optional slug is a 32-char-max lowercase `_`-separated version of the
   `user_label`.
 - Inside each subfolder, whatever output files that run produced.
@@ -75,14 +75,14 @@ Every `bloommcp_output/<tool_class>_<stem>/` folder has the same shape:
 `v<N>` is monotonic and never reused. If you delete `v2/` from the
 bucket by hand, the next run is still `v3`. That logic lives in
 `next_version_id()` in
-[`versioning.py`](../../bloommcp/storage/versioning.py) — it scans the
+[`versioning.py`](../../bloommcp/src/bloom_mcp/storage/versioning.py) — it scans the
 manifest, finds the max `N`, returns `v<max+1>`.
 
 ## The four schema models
 
 `manifest.json` is a strict Pydantic-validated document. 
 
-The models live in [`schema.py`](../../bloommcp/storage/schema.py) and all inherit from `_StrictModel`, which sets `extra="forbid"`.
+The models live in [`schema.py`](../../bloommcp/src/bloom_mcp/storage/schema.py) and all inherit from `_StrictModel`, which sets `extra="forbid"`.
 
 That means if a writer accidentally adds a field that isn't in the schema, `model_validate`
 raises a `ValidationError` instead of silently writing garbage.
@@ -147,11 +147,11 @@ Concrete example of a `manifest.json` after one run:
 
 Every workflow tool goes through the same machinery:
 
-[`build_writer`](../../bloommcp/tools/workflows/_helpers.py) constructs an `AnalysisWriter`, the tool calls `create_version()` to get a tmp
+[`build_writer`](../../bloommcp/src/bloom_mcp/tools/workflows/_helpers.py) constructs an `AnalysisWriter`, the tool calls `create_version()` to get a tmp
 staging directory, writes outputs into it, then calls `commit({...})` to upload and register.
 
 What `commit()` does, step by step (see
-[`writer.py`](../../bloommcp/storage/writer.py)):
+[`writer.py`](../../bloommcp/src/bloom_mcp/storage/writer.py)):
 
 1. Hashes `source_csv` if it exists (cached on `AnalysisDir`, so re-runs
    don't re-hash).
@@ -176,11 +176,11 @@ uploaded to Supabase yet, so the bucket is unchanged.
 
 Reads only touch the manifest. The two main read entry points are
 `AnalysisDir.list_versions()` and `AnalysisDir.get_version(version_id)`
-in [`analysis_dir.py`](../../bloommcp/storage/analysis_dir.py).
+in [`analysis_dir.py`](../../bloommcp/src/bloom_mcp/storage/analysis_dir.py).
 
 When the agent calls the MCP tool
 `list_existing_analyses(experiment_filename)` (in
-[`storage_tools.py`](../../bloommcp/tools/storage_tools.py)):
+[`storage_tools.py`](../../bloommcp/src/bloom_mcp/tools/storage_tools.py)):
 
 1. The tool iterates over every `tool_class` in its registry.
 2. For each, it constructs an
@@ -202,7 +202,7 @@ A `ManifestSchemaError` from any tool class is caught and reported in an
 A missing manifest (no runs yet) returns an empty list, not an error.
 
 `load_experiment_data` in
-[`source/experiment_utils.py`](../../bloommcp/source/experiment_utils.py)
+[`source/experiment_utils.py`](../../bloommcp/src/bloom_mcp/experiment_utils.py)
 is the other big reader. It uses `AnalysisDir.get_version("latest")` to
 resolve the most recent cleaned CSV without the caller having to know
 its version id.
@@ -245,9 +245,9 @@ There are two distinct kinds of change. Don't confuse them.
 **Adding a field to `CodeVersions`.** Do this when you start depending
 on a new pip-installed package whose version actually changes the
 output. Add the field with a `= "unknown"` default in
-[`schema.py`](../../bloommcp/storage/schema.py), then add a
+[`schema.py`](../../bloommcp/src/bloom_mcp/storage/schema.py), then add a
 `_version_or_unknown("<package>")` call to `get_code_versions()` in
-[`code_versions.py`](../../bloommcp/storage/code_versions.py). Because
+[`code_versions.py`](../../bloommcp/src/bloom_mcp/storage/code_versions.py). Because
 the default is `"unknown"`, old manifests still parse — no schema bump
 needed.
 
@@ -278,7 +278,7 @@ Did the JSON shape change in a way that an old reader would mis-parse?
 ```
 
 The `validate_schema()` function in
-[`manifest.py`](../../bloommcp/storage/manifest.py) rejects manifests
+[`manifest.py`](../../bloommcp/src/bloom_mcp/storage/manifest.py) rejects manifests
 whose version is *newer* than this code knows about — so bumping the
 constant is also the signal that this code can read the new shape.
 
@@ -289,7 +289,7 @@ over otherwise.
 
 | Concept                 | Rule                                                                | Source                                                          |
 | ----------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------- |
-| Bucket name             | `bloommcp-data` (hardcoded constant)                              | [`supabase_client.py`](../../bloommcp/source/supabase_client.py) |
+| Bucket name             | `bloommcp-data` (hardcoded constant)                              | [`supabase_client.py`](../../bloommcp/src/bloom_mcp/supabase_client.py) |
 | Input prefix            | `bloommcp_input/` (flat)                                          | same                                                            |
 | Output prefix           | `bloommcp_output/`                                                | same                                                            |
 | Analysis folder         | `<output_root>/<tool_class>_<stem>/`                              | `AnalysisDir.__init__`                                        |
