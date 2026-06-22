@@ -380,6 +380,11 @@ jobs:
     name: Docker Compose Health Check
     needs: docker-build
     runs-on: ubuntu-latest
+    # Cap the job. The default GitHub timeout is 6h; on PR #323 a "No space left
+    # on device" fill left the health-wait / playwright install hanging for the
+    # full 6 hours before failing. Normal runtime is ~8-15 min, so 30 fails fast
+    # on any future hang instead of burning runner minutes.
+    timeout-minutes: 30
     env:
       # Single source of truth for the compose file pair. Hoisted here so
       # the 6+ docker compose commands below don't drift apart. The CI
@@ -388,6 +393,28 @@ jobs:
       # docker-compose.prod.yml to `image: ghcr.io/...` refs.
       COMPOSE_FILES: -f docker-compose.prod.yml -f docker-compose.ci.yml
     steps:
+      # Reclaim ~25 GB before anything runs. ubuntu-latest ships only ~14 GB
+      # free on /, and this job builds the full prod compose stack
+      # (web/langchain/bloommcp/caddy) AND installs the Supabase CLI .deb AND
+      # Playwright+Chromium on top — which overflowed the disk on PR #323
+      # ("No space left on device", then a 6h hang). These language SDKs are
+      # preinstalled on the runner but never used by this job. Inline rm (no
+      # third-party action) keeps it under our control and consistent with the
+      # SHA-pinning posture of the other steps. hostedtoolcache is left intact
+      # so setup-uv / setup-node still resolve their runtimes.
+      - name: Free up disk space
+        run: |
+          echo "Disk before cleanup:"; df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc /usr/local/.ghcup \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean || true
+          echo "Disk after cleanup:"; df -h /
+
       - name: Checkout code
         uses: actions/checkout@v4
 
