@@ -192,9 +192,20 @@ jobs:
   docker-build:
     name: Build Docker Images & Scan for CVEs
     runs-on: ubuntu-latest
+    # compose-health-check `needs: docker-build`, and this job builds all four
+    # images (bloom-web/langchain/bloommcp/caddy) + Trivy-scans them on the same
+    # ~14 GB-free runner — the same disk-heavy pattern as compose-health-check
+    # (issue #334). Protect it too: a disk-out here would skip the very job the
+    # cleanup is meant to guard. Cap the runtime so a wedge can't hang for 6h.
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Free up disk space
+        uses: ./.github/actions/free-disk-space
+        with:
+          min-free-gb: "20"
 
       - name: Build bloom-web image
         # NEXT_PUBLIC_* build args are still REQUIRED until PR-3 §6 of the
@@ -380,6 +391,10 @@ jobs:
     name: Docker Compose Health Check
     needs: docker-build
     runs-on: ubuntu-latest
+    # Cap the job. The GitHub default is 6h; a "No space left on device" fill
+    # once left this job hanging for the full 6h before failing (issue #334).
+    # Normal runtime is ~8-15 min, so 30 fails fast on any future hang.
+    timeout-minutes: 30
     env:
       # Single source of truth for the compose file pair. Hoisted here so
       # the 6+ docker compose commands below don't drift apart. The CI
@@ -388,8 +403,41 @@ jobs:
       # docker-compose.prod.yml to `image: ghcr.io/...` refs.
       COMPOSE_FILES: -f docker-compose.prod.yml -f docker-compose.ci.yml
     steps:
+      # Reclaim ~25 GB before anything runs. ubuntu-latest ships only ~14 GB
+      # free on /, and this job builds the full prod compose stack
+      # (web/langchain/bloommcp/caddy) AND installs the Supabase CLI .deb AND
+      # Playwright+Chromium on top — which overflowed the disk on PR #323
+      # ("No space left on device", then a 6h hang). These language SDKs are
+      # preinstalled on the runner but never used by this job. Inline rm (no
+      # third-party action) keeps it under our control and consistent with the
+      # SHA-pinning posture of the other steps. hostedtoolcache is left intact
+      # so setup-uv / setup-node still resolve their runtimes.
+      - name: Free up disk space
+        run: |
+          echo "Disk before cleanup:"; df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc /usr/local/.ghcup \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean || true
+          echo "Disk after cleanup:"; df -h /
+
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # This job builds the full prod compose stack (web/langchain/bloommcp/
+      # caddy) AND installs the Supabase CLI + Playwright/Chromium — which
+      # overflowed the runner's ~14 GB free on / (issue #334). Reclaim ~25 GB
+      # right after checkout (the local composite action needs the repo
+      # present), well before any heavy disk use. The 20 GB floor fails fast if
+      # the runner layout ever stops yielding the expected headroom.
+      - name: Free up disk space
+        uses: ./.github/actions/free-disk-space
+        with:
+          min-free-gb: "20"
 
       # Setup uv BEFORE compose starts — the compose stack creates
       # root-owned `volumes/db/data/` (postgres bind mount), and setup-uv's
@@ -758,9 +806,20 @@ jobs:
   dev-stack-smoke:
     name: Dev stack smoke (init -> dev-up -> migrate-local -> check)
     runs-on: ubuntu-latest
+    # Parity with compose-health-check: cap the job so a wedged build/health
+    # wait fails fast instead of running to the 6h default (issue #334).
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # Parity / defense-in-depth: this job builds the dev compose stack, which
+      # is lighter than compose-health-check (no Playwright) but shares the same
+      # ~14 GB-free runner. Reclaim the unused SDKs and log headroom so a future
+      # regression is visible (issue #334). Log-only floor — this job has slack
+      # today, so no hard minimum that could flake.
+      - name: Free up disk space
+        uses: ./.github/actions/free-disk-space
 
       # Setup uv BEFORE compose starts (the dev stack creates a root-owned
       # volumes/db/data bind mount; setup-uv's lockfile glob would EACCES on it).
