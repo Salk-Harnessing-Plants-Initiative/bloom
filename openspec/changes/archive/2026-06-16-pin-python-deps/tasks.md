@@ -199,7 +199,7 @@ Seven items surfaced by a parallel 5-subagent review (Code Quality · Testing ·
 
 ### Follow-up (filed separately, NOT in this PR)
 
-- [ ] 12.9 **Numerical reproducibility smoke test** — file as a new GitHub issue (NOT a task in this PR):
+- [x] 12.9 **Numerical reproducibility smoke test** — filed as a new GitHub issue (#141):
   - Scope: a pytest that runs a fixed-seed UMAP embedding + a reference pandas trait computation against a small committed input, asserts bit-exact output against a golden file
   - Motivation: catch silent numerical drift from lockfile updates (esp. numba/numpy/pandas)
   - Cross-link: mention this PR (#126) and the 5-subagent review comment as the origin
