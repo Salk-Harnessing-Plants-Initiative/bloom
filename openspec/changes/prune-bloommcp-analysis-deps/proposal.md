@@ -20,9 +20,13 @@ delegation, because shipped MCP visualization tools (`viz_tools`, `correlation_t
 | `scipy` | No — also viz tools (`dendrogram`, `chi2`) | retain |
 | `matplotlib` / `seaborn` | No — shipped viz tools import directly | retain |
 
-So AC5 is reached by delegating the two single-module-gated analysis paths to
-`sleap_roots_analyze`, deleting the vendored copies, pruning the two now-unimported deps,
-and confirming **every remaining declared dep is imported by shipped code**.
+So this change advances #305 AC5 **partially** (it does not fully satisfy it): it delegates
+the two single-module-gated analysis paths to `sleap_roots_analyze`, deletes the vendored
+copies, prunes the two now-unimported deps, and confirms **every remaining declared dep is
+imported by shipped code**. That is the **sufficient** half of AC5 ("no missing dep") — met
+and CI-gated. The **necessary** half ("no extra unnecessary package", i.e. minimizing
+`scikit-learn` / `scipy` / `matplotlib` / `seaborn`) is **deferred** to the shipped-viz
+refactor; **#315 stays open** to track it. This is a clean partial slice, not a close-out.
 
 (Note: `sleap-roots-analyze` itself hard-depends on scikit-learn/scipy/statsmodels/
 umap-learn/matplotlib/seaborn, so pruning bloommcp's *direct* deps does **not** shrink the
@@ -44,13 +48,32 @@ install — they remain transitive. This change is about AC5's "necessary-and-su
   `bloommcp/uv.lock` + the root lock.
 - **Behavior preservation:** extend the existing cross-tier oracle (turface_19 fixture +
   golden values from Tier 0) to assert the delegated heritability + UMAP outputs reproduce
-  the golden within stated tolerance — gated *before* deletion.
+  the golden within stated tolerance — gated *before* deletion. The UMAP gate asserts a
+  **structural** invariant (a Procrustes/kNN-overlap check against a recorded embedding),
+  not merely shape + within-process self-equality, so a delegation with wrong
+  `n_neighbors`/`min_dist`/`init` cannot pass silently. The heritability golden is labeled
+  as a **characterization snapshot of `0.1.0a2`** (drift gate), not an independently
+  validated scientific value, until reconciled to a real reference.
+- **Tool-wrapper drift guard:** add FastMCP-Client (or direct-call) assertions on the two
+  affected MCP tools (`viz_tools`, `dimred`/`stats`) that pin the delegated return's
+  **keys/units** — in particular that `var_genetic` / `var_residual` are present — so a
+  future library key-rename surfaces as a test failure instead of a silently zero-filled
+  variance decomposition shipped to a scientist.
 - **Regression guard:** add a shipped-code import guard asserting no shipped
   `bloom_mcp/*` module imports `statsmodels` or `umap` (so the prune can't silently
   regress), and rely on the existing clean-env wheel-import CI gate
   (`add-bloommcp-wheel-import-ci`, `python-audit` job) to catch any missing runtime dep.
-- **Reconcile #305 AC5:** every remaining declared dependency is imported by shipped
-  code; check the AC5 box.
+- **Drift-coverage scope:** the durable oracle runs on the balanced `turface_19` path; the
+  zero-variance / mixed-model-failure / small-N (`len < 4`) / NaN branches of the deleted
+  `trait_statistics.py` are **not** exercised by the fixture. Either parametrize the oracle
+  over an edge-case fixture or explicitly document that drift protection covers the balanced
+  path + the version pin only.
+- **Reconcile #305 AC5 (partial):** record that every remaining declared dependency is
+  imported by shipped code — AC5's *sufficient* half. Do **not** tick AC5 as fully met and
+  do **not** close #315: the *necessary* half (sklearn/scipy/matplotlib/seaborn
+  minimization) is the deferred viz refactor that #315 still tracks. (`Refs #315` does not
+  auto-close, and a staging merge would not fire a close either — so no mechanical
+  over-close risk; the fix is purely to not *claim* AC5 fully met.)
 - **Out of scope (documented follow-ups):** delegating `pca.py` / `clustering.py` /
   `outlier_detection.py` / `cross_experiment_correlations.py` (frees no additional dep —
   scikit-learn/scipy are held by shipped viz), and refactoring shipped visualization to
@@ -59,8 +82,9 @@ install — they remain transitive. This change is about AC5's "necessary-and-su
 
 ## Impact
 
-- Affected specs: **bloommcp-packaging** (extends the Tier 0 capability; reconciles its
-  deferred AC5 and the "Additive Dependency Set" stance). This change assumes
+- Affected specs: **bloommcp-packaging** (extends the Tier 0 capability; *partially*
+  reconciles its deferred AC5 — the sufficient half — and satisfies the Tier 0 "Additive
+  Dependency Set" conditional clause for the two pruned deps). This change assumes
   `add-bloommcp-package-baseline` archives first.
 - Affected code:
   - `bloommcp/src/bloom_mcp/umap_embedding.py` (deleted), `trait_statistics.py` (deleted)
@@ -70,5 +94,7 @@ install — they remain transitive. This change is about AC5's "necessary-and-su
   - `bloommcp/tests/` — extend the oracle; add the import guard
   - `bloommcp/pyproject.toml` `[tool.ruff.lint.per-file-ignores]` for the two deleted
     modules (remove the now-dead ignores)
-- Related: #313 (Tier 0), #305 (AC5), #306 / `add-bloommcp-contract-layer` (oracle =
-  `perform_*`), `add-bloommcp-wheel-import-ci` (the clean-env gate).
+- Related: #313 (Tier 0), #305 (AC5 — partially advanced, not closed), #315 (full
+  vendored-stack delegation — **stays open** for the deferred viz refactor), #306 /
+  `add-bloommcp-contract-layer` (oracle = `perform_*`), `add-bloommcp-wheel-import-ci`
+  (the clean-env gate).

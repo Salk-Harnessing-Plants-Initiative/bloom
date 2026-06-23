@@ -15,11 +15,16 @@ as the behavior-preservation gate.
 ## Goals / Non-Goals
 
 - **Goals**
-  - Satisfy #305 AC5: every declared `bloommcp` runtime dep is imported by shipped code.
+  - *Partially* advance #305 AC5: meet its **sufficient** half — every declared `bloommcp`
+    runtime dep is imported by shipped code — via the two single-module-gated prunes. The
+    **necessary** half (minimizing the viz-held deps) is explicitly a Non-Goal here.
   - Prune `statsmodels` and `umap-learn` (the only single-analysis-module-gated deps).
   - Preserve MCP tool behavior (external signatures + output schema) and numerical output
-    (within the oracle tolerance).
+    (within the oracle tolerance), with drift gates strong enough to catch a future
+    `sleap_roots_analyze` bump that changes parameters, return keys, or coordinates.
 - **Non-Goals**
+  - Fully satisfying #305 AC5 — its *necessary* half (minimizing sklearn/scipy/matplotlib/
+    seaborn) requires the viz refactor below and remains tracked by **#315 (kept open)**.
   - Delegating `pca` / `clustering` / `outlier_detection` / `cross_experiment_correlations`
     — frees no dep (scikit-learn/scipy held by shipped viz); a separate dedup tier.
   - Refactoring shipped visualization to drop direct scikit-learn/scipy — the only way to
@@ -48,9 +53,12 @@ as the behavior-preservation gate.
 - **Decision: ADDED requirements, not MODIFIED.** The baseline `bloommcp-packaging` spec
   is still in-flight (un-archived), so a MODIFIED/RENAMED delta against its requirements
   would dangle until it archives. This change instead ADDs two requirements that
-  explicitly reconcile #305 AC5 and supersede the baseline's additive/deferred stance for
-  the two pruned deps. Ordering: `add-bloommcp-package-baseline` archives first; a future
-  archive of this change folds the new requirements into `specs/bloommcp-packaging/`.
+  *partially* reconcile #305 AC5. Note there is **no conflict to "supersede"**: the Tier 0
+  "Additive Dependency Set" clause is conditional — "no dep **still imported by shipped
+  code** SHALL be removed" — and pruning `statsmodels`/`umap-learn` *after* delegation
+  satisfies that condition rather than overriding it. Ordering:
+  `add-bloommcp-package-baseline` archives first; a future archive of this change folds the
+  new requirements into `specs/bloommcp-packaging/`.
 
 - **Decision: a shipped-code import guard.** A unit test (mirroring the repo's existing
   `test_ci_workflow_uv_conventions.py` regression-guard pattern) asserts that no shipped
@@ -67,9 +75,40 @@ as the behavior-preservation gate.
 - **A retained dep turns out to be viz-only and removable later.** Accepted: this change
   is scoped to the two unambiguous prunes; scikit-learn/scipy removal is a separate viz
   refactor tracked as a follow-up.
-- **Tool output schema accidentally changes** (e.g. `sleap_roots_analyze` returns extra
-  dict keys). Mitigation: the tool wrappers project only the keys they already expose;
-  FastMCP Client tests assert the tool output schema is unchanged.
+- **Tool output schema accidentally changes** (e.g. `sleap_roots_analyze` renames/drops a
+  dict key). This is not hypothetical: `viz_tools` reads `.get("var_genetic", 0)` /
+  `.get("var_residual", 0)`, so a renamed variance key would make the tool **silently plot
+  0 variance** — a wrong variance-decomposition shipped to a scientist with no failure.
+  Mitigation: a wrapper-level test (FastMCP Client or direct call) asserts the two affected
+  tools' output **keys/units** — specifically that `var_genetic`/`var_residual` are present
+  and non-defaulted on the fixture — so a key-rename fails CI instead of zero-filling. The
+  oracle testing the library directly is **not** sufficient for this; the wrappers need
+  their own schema assertion.
+
+- **UMAP drift gate too weak to catch a delegation regression.** A gate asserting only
+  `shape == (n, 2)` + within-process self-equality is trivially true regardless of
+  correctness — a delegation with wrong `n_neighbors`/`min_dist`/`init` that produced a
+  structurally different but same-shape, deterministic embedding would pass (and
+  `dimred.py` reads those params back with `.get(default)`, so a silent default-swap would
+  not even surface in the manifest). Mitigation: assert a **structural** invariant against
+  a recorded embedding — Procrustes-on-aligned-coords (as upstream #162 does) or a
+  kNN-overlap/trustworthiness check — rather than dropping all coordinate assertions to
+  dodge cross-OS instability.
+
+- **Heritability golden is a characterization snapshot, not an independent reference.**
+  `heritability_mean = 0.7650052743157678` pins what `0.1.0a2` currently emits; it gates
+  future drift (good) but does **not** validate that the value is scientifically correct,
+  and its `_source` must not point at an unrelated PCA-metadata artifact. Mitigation:
+  either reconcile it to a genuine reference (the R/lme4 figure the docstring claims to
+  match) or label it explicitly as a characterization snapshot in the test/_source so no
+  one mistakes it for an independently recorded golden.
+
+- **Edge-case branches uncovered by the fixture.** The deleted `trait_statistics.py` had
+  distinct branches (`no_variance`, `mixed_model_failed`, `anova_based` fallback, `len < 4`
+  guard, `remove_low_h2`) that the balanced `turface_19` fixture never exercises, so a
+  future library bump that changed any of them would ship silently. Mitigation: parametrize
+  the oracle over a zero-variance / small-N / NaN fixture, or explicitly document that drift
+  protection is limited to the balanced path + the version pin.
 
 ## Migration Plan
 

@@ -280,12 +280,23 @@ def plot_variance_decomposition(filename: str) -> str:
     for trait in trait_cols:
         r = h2_results.get(trait, {})
         if "heritability" in r:
+            # Fail loudly on a missing variance key rather than defaulting to 0: a
+            # silent default would plot a wrong (zero) variance decomposition with no
+            # error if the delegated library ever renamed/dropped the key. The
+            # delegation-boundary oracle pins these keys, so this guards a future bump.
+            missing = [k for k in ("var_genetic", "var_residual") if k not in r]
+            if missing:
+                return (
+                    f"Variance decomposition unavailable: heritability result for "
+                    f"{trait!r} is missing {missing} — the sleap-roots-analyze return "
+                    f"contract changed. Refusing to plot a zero-filled decomposition."
+                )
             rows.append(
                 {
                     "trait": trait,
                     "H2": r["heritability"],
-                    "var_genetic": r.get("var_genetic", 0),
-                    "var_residual": r.get("var_residual", 0),
+                    "var_genetic": r["var_genetic"],
+                    "var_residual": r["var_residual"],
                 }
             )
 
