@@ -29,18 +29,18 @@ from bloom_mcp.clustering import (
     perform_hierarchical_clustering,
     perform_kmeans_clustering,
 )
-from bloom_mcp.experiment_utils import (
-    PLOTS_DIR,
-    PLOTS_URL,
-    TRAITS_DIR,
-    load_experiment_data as _load_data,
-)
+from bloom_mcp.experiment_utils import PLOTS_DIR, PLOTS_URL
 
-from ._helpers import build_writer
+from ._helpers import load_frame as _load_data, start_run, store
 
 _TOOL_NAME = "run_clustering_workflow"
 _TOOL_CLASS = "clustering"
 VALID_ALGORITHMS = ("kmeans", "gmm", "hierarchical")
+
+# The seed the clustering delegates run with (they default to random_state=42).
+# Threaded explicitly and recorded as the run's provenance seed so a persisted
+# stochastic clustering run reproduces the labels it produced.
+_RANDOM_STATE = 42
 
 
 def _plot_path_and_url(stem: str, version_id: str, algorithm: str) -> tuple[Path, str]:
@@ -129,6 +129,7 @@ def run_clustering_workflow(
                 n_clusters=k,
                 max_clusters=max_k,
                 standardize=True,
+                random_state=_RANDOM_STATE,
             )
             labels = result["cluster_labels"]
             k_used = result["n_clusters"]
@@ -140,6 +141,7 @@ def run_clustering_workflow(
                 n_components=k,
                 max_components=max_k,
                 standardize=True,
+                random_state=_RANDOM_STATE,
             )
             labels = result["cluster_labels"]
             k_used = (
@@ -154,6 +156,7 @@ def run_clustering_workflow(
                 data=data,
                 method=linkage_method,
                 standardize=True,
+                random_state=_RANDOM_STATE,
             )
             k_cut = k if k is not None else 3
             cut_result = cut_dendrogram(tree_result, n_clusters=k_cut)
@@ -168,15 +171,11 @@ def run_clustering_workflow(
     label_array = np.asarray(labels)
     quality = calculate_cluster_quality_metrics(np.asarray(data), label_array)
 
-    src_csv = TRAITS_DIR / filename
-    writer = build_writer(
+    run = start_run(
         filename,
         _TOOL_CLASS,
-        source_csv=src_csv if src_csv.exists() else None,
-    )
-    version_dir = writer.create_version(
-        tool_name=_TOOL_NAME,
-        params={
+        _TOOL_NAME,
+        {
             "algorithm": algorithm,
             "k": k,
             "k_used": k_used,
@@ -184,8 +183,10 @@ def run_clustering_workflow(
             "linkage_method": linkage_method if algorithm == "hierarchical" else None,
         },
         user_label=user_label,
+        seed=_RANDOM_STATE,
     )
-    version_id = writer.version_id
+    version_dir = run.staging_dir
+    version_id = run.version_id
 
     import pandas as pd
 
@@ -208,14 +209,6 @@ def run_clustering_workflow(
         centers_df.to_csv(version_dir / "cluster_centers.csv", index=False)
         outputs["cluster_centers.csv"] = "cluster_centers.csv"
 
-    plot_path, plot_url = _plot_path_and_url(stem, version_id, algorithm)
-    try:
-        _render_cluster_scatter(data, label_array, stem, algorithm, k_used, plot_path)
-        plot_layout = "scatter_by_cluster"
-    except Exception:  # noqa: BLE001
-        plot_url = None
-        plot_layout = None
-
     cluster_sizes = {
         int(c): int((label_array == c).sum()) for c in sorted(set(label_array.tolist()))
     }
@@ -230,12 +223,22 @@ def run_clustering_workflow(
     }
     summary.update({k_metric: float(v) for k_metric, v in quality.items()})
 
-    entry = writer.commit(outputs)
+    stored = store().commit(run, outputs)
+
+    # Render the plot only after the run is committed — a commit failure must
+    # not leave a plot_url pointing at a run that doesn't exist.
+    plot_path, plot_url = _plot_path_and_url(stem, version_id, algorithm)
+    try:
+        _render_cluster_scatter(data, label_array, stem, algorithm, k_used, plot_path)
+        plot_layout = "scatter_by_cluster"
+    except Exception:  # noqa: BLE001
+        plot_url = None
+        plot_layout = None
 
     response: dict = {
-        "version_id": entry.id,
-        "version_dir": str(version_dir),
-        "manifest_path": f"{writer.analysis_dir.path}manifest.json",
+        "version_id": stored.run_ref,
+        "version_dir": stored.version_dir,
+        "manifest_path": run.manifest_path,
         "summary": summary,
         "outputs": outputs,
     }
