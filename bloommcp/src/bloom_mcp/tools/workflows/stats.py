@@ -15,12 +15,8 @@ from __future__ import annotations
 from typing import Optional
 
 from bloom_mcp import trait_statistics as _stats_module
-from bloom_mcp.experiment_utils import (
-    TRAITS_DIR,
-    load_experiment_data as _load_data,
-)
 
-from ._helpers import build_writer
+from ._helpers import load_frame as _load_data, start_run, store
 
 _TOOL_NAME = "run_descriptive_stats_workflow"
 _TOOL_CLASS = "stats"
@@ -98,31 +94,29 @@ def run_descriptive_stats_workflow(
 
     stats_df = pd.DataFrame(rows)
 
-    src_csv = TRAITS_DIR / filename
-    writer = build_writer(
+    run = start_run(
         filename,
         _TOOL_CLASS,
-        source_csv=src_csv if src_csv.exists() else None,
-    )
-    version_dir = writer.create_version(
-        tool_name=_TOOL_NAME,
-        params={"traits": traits if traits.strip() else "all"},
+        _TOOL_NAME,
+        {"traits": traits if traits.strip() else "all"},
         user_label=user_label,
     )
+    version_dir = run.staging_dir
 
     stats_csv = version_dir / "stats.csv"
     stats_df.to_csv(stats_csv, index=False)
 
-    entry = writer.commit(
+    stored = store().commit(
+        run,
         {
             "stats.csv": "stats.csv",
-        }
+        },
     )
 
     return {
-        "version_id": entry.id,
-        "version_dir": str(version_dir),
-        "manifest_path": f"{writer.analysis_dir.path}manifest.json",
+        "version_id": stored.run_ref,
+        "version_dir": stored.version_dir,
+        "manifest_path": run.manifest_path,
         "summary": {
             "n_traits": len(rows),
             "n_failed": len(failed),

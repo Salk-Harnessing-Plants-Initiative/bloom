@@ -16,10 +16,6 @@ from pathlib import Path
 from typing import Optional
 
 from bloom_mcp.data_utils import convert_to_json_serializable
-from bloom_mcp.experiment_utils import (
-    TRAITS_DIR,
-    load_experiment_data as _load_data,
-)
 from bloom_mcp.outlier_detection import (
     combine_outlier_methods,
     detect_outliers_isolation_forest as _detect_isolation,
@@ -28,7 +24,7 @@ from bloom_mcp.outlier_detection import (
     remove_outliers_from_data,
 )
 
-from ._helpers import build_writer
+from ._helpers import load_frame as _load_data, start_run, store
 
 _TOOL_NAME = "run_outlier_workflow"
 _TOOL_CLASS = "outlier"
@@ -40,6 +36,12 @@ VALID_METHODS = (
     "consensus",
     "all_then_consensus",
 )
+
+# Methods whose detection runs Isolation Forest (stochastic, random_state=42).
+# Only these record a provenance seed; the purely-deterministic detectors
+# (mahalanobis, pca-reconstruction) record seed=None.
+_STOCHASTIC_METHODS = {"isolation_forest", "consensus", "all_then_consensus"}
+_RANDOM_STATE = 42
 
 
 def run_outlier_workflow(
@@ -104,7 +106,9 @@ def run_outlier_workflow(
         detection_outputs["mahalanobis_outliers.json"] = res
 
     elif method == "isolation_forest":
-        res = _detect_isolation(data=data, contamination=contamination)
+        res = _detect_isolation(
+            data=data, contamination=contamination, random_state=_RANDOM_STATE
+        )
         if "error" in res:
             return {"error": f"Isolation Forest detection failed: {res['error']}"}
         outlier_indices = res.get("outlier_indices", [])
@@ -123,7 +127,9 @@ def run_outlier_workflow(
 
     else:  # consensus or all_then_consensus
         mahal = _detect_mahalanobis(data=data, chi2_percentile=chi2_percentile)
-        iso = _detect_isolation(data=data, contamination=contamination)
+        iso = _detect_isolation(
+            data=data, contamination=contamination, random_state=_RANDOM_STATE
+        )
         pca_res = _detect_pca(data=data, threshold_percentile=pca_threshold_percentile)
         combined = combine_outlier_methods(
             mahalanobis_results=mahal if "error" not in mahal else None,
@@ -154,15 +160,11 @@ def run_outlier_workflow(
             if "error" not in pca_res:
                 detection_outputs["pca_outliers.json"] = pca_res
 
-    src_csv = TRAITS_DIR / filename
-    writer = build_writer(
+    run = start_run(
         filename,
         _TOOL_CLASS,
-        source_csv=src_csv if src_csv.exists() else None,
-    )
-    version_dir = writer.create_version(
-        tool_name=_TOOL_NAME,
-        params={
+        _TOOL_NAME,
+        {
             "method": method,
             "chi2_percentile": chi2_percentile,
             "contamination": contamination,
@@ -171,7 +173,9 @@ def run_outlier_workflow(
             "remove_outliers": remove_outliers,
         },
         user_label=user_label,
+        seed=_RANDOM_STATE if method in _STOCHASTIC_METHODS else None,
     )
+    version_dir = run.staging_dir
 
     outputs: dict[str, str] = {}
     for fname, payload in detection_outputs.items():
@@ -197,12 +201,12 @@ def run_outlier_workflow(
         summary["n_removed"] = len(outlier_df)
         summary["n_remaining"] = len(cleaned_df)
 
-    entry = writer.commit(outputs)
+    stored = store().commit(run, outputs)
 
     return {
-        "version_id": entry.id,
-        "version_dir": str(version_dir),
-        "manifest_path": f"{writer.analysis_dir.path}manifest.json",
+        "version_id": stored.run_ref,
+        "version_dir": stored.version_dir,
+        "manifest_path": run.manifest_path,
         "summary": summary,
         "outputs": outputs,
     }
