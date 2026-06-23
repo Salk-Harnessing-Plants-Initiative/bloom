@@ -255,22 +255,20 @@ migrate-local:
 		--db-url "postgresql://$${PG_USER}:$${PG_PASSWORD}@127.0.0.1:$(POSTGRES_HOST_PORT)/$${PG_DB}?sslmode=disable" \
 		--debug \
 		--yes; \
-	echo "Granting storage-schema USAGE to bloom_* roles..."; \
+	echo "Granting storage-schema USAGE to bloom_* roles (guarded for not-yet-created roles)..."; \
 	docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T -e PGPASSWORD="$$PG_PASSWORD" db-dev \
-		psql -U "$$PG_USER" -d "$$PG_DB" -v ON_ERROR_STOP=1 -c \
-		"GRANT USAGE ON SCHEMA storage TO bloom_user, bloom_admin, bloom_agent, bloom_writer;"
-# NOTE: the GRANT above repairs a privilege the migrations cannot set themselves.
-# `supabase db push` runs every migration after `SET SESSION ROLE postgres`, and
-# in this self-hosted stack `postgres` is not a superuser and is not a member of
-# `supabase_admin` (the owner of schema `storage`). So the
-# `GRANT USAGE ON SCHEMA storage TO bloom_*` in
-# 20260428130000_storage_grants_for_bloom_roles.sql silently no-ops
-# ("WARNING: no privileges were granted for storage") and bloom_agent ends up
-# unable to resolve storage.objects — the bloommcp SupabaseResultStore write
-# path then fails with `relation "objects" does not exist`. Re-running the grant
-# here as $$PG_USER (supabase_admin, the schema owner) outside the db-push role
-# downgrade makes it stick. The same grant must be applied by a privileged role
-# in the prod/staging migration runner; tracked separately.
+		psql -U "$$PG_USER" -d "$$PG_DB" -v ON_ERROR_STOP=1 \
+		< scripts/sql/repair_storage_grants.sql
+# NOTE: scripts/sql/repair_storage_grants.sql re-applies a privilege the
+# migrations cannot set themselves — `supabase db push` runs every migration
+# after `SET SESSION ROLE postgres`, which is neither a superuser nor the owner
+# of schema `storage` (`supabase_admin`), so `GRANT USAGE ON SCHEMA storage`
+# silently no-ops and bloom_agent ends up unable to resolve storage.objects (the
+# bloommcp write path then fails with `relation "objects" does not exist`).
+# Piping the file as $$PG_USER (supabase_admin) outside the db-push role
+# downgrade makes it stick. The file (not `psql -c`) avoids Make/shell mangling
+# the PL/pgSQL `$grant$` dollar-quote tags; its header documents the canonical
+# role set + the per-role IF EXISTS guard. Privileged-runner fix tracked in #333.
 
 # Preflight helper: fail fast with an actionable message if `uv` is not on PATH.
 # Used as a prerequisite by every target that invokes `uv run ...` below so the
