@@ -82,6 +82,36 @@ def test_bloommcp_is_required_not_optional():
     assert any("bloommcp" in p for p in problems)
 
 
+# --------------------------------------------------------------------------- #
+# Schema-USAGE grant matrix (issue #333) — pure helpers.
+# --------------------------------------------------------------------------- #
+
+def test_grant_matrix_loads_expected_pairs():
+    pairs = check_health.load_grant_matrix()
+    assert ("storage", "bloom_agent") in pairs
+    assert ("auth", "bloom_writer") in pairs
+    # #341 intentional gap: no auth USAGE for user/admin/agent.
+    assert ("auth", "bloom_user") not in pairs
+    assert ("auth", "bloom_agent") not in pairs
+
+
+def test_schema_usage_problem_when_a_role_is_missing():
+    expected = {
+        ("storage", "bloom_user"),
+        ("storage", "bloom_admin"),
+        ("storage", "bloom_agent"),
+        ("storage", "bloom_writer"),
+    }
+    observed = expected - {("storage", "bloom_agent")}  # partial: 3 of 4
+    problems = check_health.schema_usage_problems(expected, observed)
+    assert problems == ["role bloom_agent is missing USAGE on schema storage"]
+
+
+def test_schema_usage_no_problem_when_complete():
+    expected = {("storage", "bloom_agent"), ("auth", "bloom_writer")}
+    assert check_health.schema_usage_problems(expected, expected) == []
+
+
 def test_exited_core_service_with_nonzero_code_is_a_failure():
     """A crashed core service (e.g. realtime dying ~30s in on a bad DB_ENC_KEY)
     reports State=exited with a non-zero ExitCode and an EMPTY Health field (a

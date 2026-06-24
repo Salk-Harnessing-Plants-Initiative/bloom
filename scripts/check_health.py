@@ -7,6 +7,10 @@
   has exited non-zero),
 - the required Postgres roles exist (base Supabase roles + the bloom_* app roles),
 - the ``auth`` and ``storage`` schemas exist (``auth.uid()``, ``storage.buckets``),
+- every ``bloom_*`` role holds its expected schema ``USAGE`` (from
+  ``supabase/grants/bloom_grant_matrix.json``) and the grant helper
+  ``public.bloom_grant_schema_usage`` exists, is ``SECURITY DEFINER``, and is owned
+  by ``supabase_admin`` (issue #333 — a silent grant no-op fails here, loudly),
 - every ``supabase/migrations/*.sql`` is recorded in
   ``supabase_migrations.schema_migrations`` — by **set comparison** (no missing,
   no orphan), not a brittle count.
@@ -31,6 +35,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR = REPO_ROOT / "supabase" / "migrations"
 COMPOSE_FILE = REPO_ROOT / "docker-compose.dev.yml"
 ENV_DEV = REPO_ROOT / ".env.dev"
+# Single source of truth for the bloom_* schema-USAGE grants (issue #333). Also
+# consumed by the helper-calling migration; a unit test asserts the two agree.
+GRANT_MATRIX = REPO_ROOT / "supabase" / "grants" / "bloom_grant_matrix.json"
+GRANT_HELPER = "bloom_grant_schema_usage"
 
 # Roles the supabase/postgres image creates at init.
 REQUIRED_BASE_ROLES = [
@@ -81,6 +89,27 @@ def migration_problems(
             f"{len(orphans)} recorded migration(s) have no file on disk "
             f"(orphan): {sorted(orphans)[:5]}{'...' if len(orphans) > 5 else ''}"
         )
+    return problems
+
+
+def load_grant_matrix(path: Path = GRANT_MATRIX) -> set[tuple[str, str]]:
+    """The expected (schema, role) schema-USAGE pairs from the committed matrix."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))["schema_usage"]
+    return {(schema, role) for schema, roles in data.items() for role in roles}
+
+
+def schema_usage_problems(
+    expected: set[tuple[str, str]], observed: set[tuple[str, str]]
+) -> list[str]:
+    """Expected (schema, role) USAGE pairs that are missing from observed.
+
+    A silent grant no-op (the #333 bug) shows up here as a missing pair even though
+    the migration "succeeded" — reported per role/schema, including a partial run
+    (e.g. 3 of 4 roles granted → the 4th is reported).
+    """
+    problems: list[str] = []
+    for schema, role in sorted(expected - observed):
+        problems.append(f"role {role} is missing USAGE on schema {schema}")
     return problems
 
 
@@ -140,6 +169,74 @@ def check_schemas(conn) -> list[str]:
     if not _scalar(conn, "SELECT to_regclass('storage.buckets')"):
         problems.append("storage.buckets missing (storage-api not initialised?)")
     return problems
+
+
+def check_schema_usage(conn, matrix_path: Path = GRANT_MATRIX) -> list[str]:
+    """Assert each bloom_* role's schema USAGE and the grant helper's integrity.
+
+    Catches a silent grant no-op (#333), a missing/mis-owned/tampered helper, and an
+    absent role/schema (reported, not crashed).
+    """
+    problems: list[str] = []
+
+    # Helper integrity: must exist, be SECURITY DEFINER, owned by supabase_admin.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT p.prosecdef, pg_get_userbyid(p.proowner) "
+            "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE n.nspname = 'public' AND p.proname = %s",
+            (GRANT_HELPER,),
+        )
+        rows = cur.fetchall()
+    if not rows:
+        problems.append(
+            f"grant helper public.{GRANT_HELPER} is missing "
+            "(install it via the init layer / supabase/grants/README.md)"
+        )
+    else:
+        prosecdef, owner = rows[0]
+        if not prosecdef:
+            problems.append(f"grant helper public.{GRANT_HELPER} is not SECURITY DEFINER")
+        if owner != "supabase_admin":
+            problems.append(
+                f"grant helper public.{GRANT_HELPER} is owned by {owner}, "
+                "not supabase_admin (its grants will silently no-op)"
+            )
+
+    # Observed schema-USAGE grants, guarding against an absent role or schema.
+    try:
+        expected = load_grant_matrix(matrix_path)
+    except Exception as exc:  # noqa: BLE001 — surface a bad/missing matrix
+        problems.append(f"could not load grant matrix {matrix_path}: {exc}")
+        return problems
+
+    observed: set[tuple[str, str]] = set()
+    with conn.cursor() as cur:
+        for schema, role in expected:
+            role_exists = _exists(cur, "SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
+            schema_exists = _exists(
+                cur,
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+                (schema,),
+            )
+            if not role_exists:
+                problems.append(f"role {role} does not exist (cannot check {schema} USAGE)")
+                continue
+            if not schema_exists:
+                problems.append(f"schema {schema} does not exist (cannot check {role} USAGE)")
+                continue
+            cur.execute("SELECT has_schema_privilege(%s, %s, 'USAGE')", (role, schema))
+            row = cur.fetchone()
+            if row and row[0]:
+                observed.add((schema, role))
+
+    problems.extend(schema_usage_problems(expected, observed))
+    return problems
+
+
+def _exists(cur, sql: str, params: tuple) -> bool:
+    cur.execute(sql, params)
+    return cur.fetchone() is not None
 
 
 def wait_for_auth_uid(conn, timeout: float = 60.0, interval: float = 2.0) -> bool:
@@ -313,6 +410,7 @@ def main(argv: list[str] | None = None) -> int:
         all_problems += [f"[db] {p}" for p in check_roles(conn)]
         all_problems += [f"[db] {p}" for p in check_schemas(conn)]
         all_problems += [f"[db] {p}" for p in check_migrations(conn)]
+        all_problems += [f"[db] {p}" for p in check_schema_usage(conn)]
     finally:
         conn.close()
 
