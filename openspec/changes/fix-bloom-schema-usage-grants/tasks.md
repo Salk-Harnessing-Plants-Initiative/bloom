@@ -126,6 +126,6 @@
 - [x] 8.3 Separate issue for the `bloom_user`/`bloom_admin`/`bloom_agent` `auth.uid()`
       / `auth` USAGE gap (finding 6) → filed as #341, **settled as an intentional
       read-only gap** (no grant added here).
-- [ ] 8.4 Update issue #333 marking the checklist done, noting the mechanism landed in
-      the init layer (helper installed at fresh init + one-time manual apply for
-      persistent volumes; migrations call it) and that #341 is cross-linked/settled.
+- [x] 8.4 Updated issue #333 (comment) with the checklist done, the init-layer
+      mechanism, the from-scratch verification, the #341 cross-link, and the prod/staging
+      one-time apply note. Implemented in PR #345.
