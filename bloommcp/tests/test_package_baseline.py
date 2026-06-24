@@ -80,6 +80,48 @@ def test_no_stale_prototype_imports():
     assert not offenders, "stale prototype imports remain:\n" + "\n".join(offenders)
 
 
+def _shipped_top_level_imports() -> set[str]:
+    """Top-level package names imported by any shipped ``src/bloom_mcp`` module."""
+    names: set[str] = set()
+    for py in _PKG_ROOT.rglob("*.py"):
+        tree = ast.parse(py.read_text(), filename=str(py))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:
+                    names.add(node.module.split(".")[0])
+    return names
+
+
+def test_pruned_analysis_deps_not_imported():
+    """statsmodels + umap-learn were delegated to sleap-roots-analyze and pruned (#315),
+    so no shipped module may import them — else the prune regressed."""
+    imported = _shipped_top_level_imports()
+    leaked = {"statsmodels", "umap"} & imported
+    assert not leaked, (
+        f"pruned deps re-imported by shipped code: {sorted(leaked)} — delegate to "
+        "sleap_roots_analyze instead, or restore the dependency in pyproject.toml"
+    )
+
+
+def test_retained_heavy_deps_are_each_imported():
+    """Necessary-and-sufficient (other direction): every retained heavy dependency is
+    imported by shipped code, so none is an 'unnecessary package' (#305 AC5)."""
+    imported = _shipped_top_level_imports()
+    # dist name -> import name
+    retained = {
+        "scikit-learn": "sklearn",
+        "scipy": "scipy",
+        "matplotlib": "matplotlib",
+        "seaborn": "seaborn",
+    }
+    unused = {dist for dist, mod in retained.items() if mod not in imported}
+    assert not unused, (
+        f"declared deps not imported by shipped code (prune them): {sorted(unused)}"
+    )
+
+
 # ── Lazy Supabase Environment Validation ────────────────────────────────────
 
 

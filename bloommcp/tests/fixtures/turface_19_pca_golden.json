@@ -1,5 +1,7 @@
 {
- "_source": "talmolab/sleap-roots-analyze#120 / PR #146 — tests/fixtures/real/wheat_edpie/expected/viz/turface_19/viz_pca_metadata.json",
+ "_pca_source": "talmolab/sleap-roots-analyze#120 / PR #146 — tests/fixtures/real/wheat_edpie/expected/viz/turface_19/viz_pca_metadata.json. Independently recorded golden (NOT re-derived from the code under test).",
+ "_heritability_source": "Characterization snapshot of sleap-roots-analyze==0.1.0a2 on this fixture — NOT an independently validated scientific value. It gates future drift only. The viz_pca_metadata.json above does NOT contain a heritability mean. TODO(#315): reconcile heritability_mean against the R/lme4 reference calculate_heritability_estimates' docstring claims to match, then promote this to an independent golden.",
+ "_umap_source": "Characterization snapshot of sleap-roots-analyze==0.1.0a2 on this fixture. UMAP coordinates are not cross-OS bit-stable, so the recorded value is the STRUCTURAL trustworthiness (neighbor-preservation) of the embedding w.r.t. the standardized input — a wrong n_neighbors/min_dist/init delegation drops it well below the floor.",
  "_reproduced_by_sleap_roots_analyze_version": "0.1.0a2",
  "trait_cols": [
   "Holes",
@@ -12,5 +14,10 @@
   "Volume (mm³)"
  ],
  "pca_explained_variance": 0.9599095965599803,
- "n_pca_components": 3
+ "n_pca_components": 3,
+ "heritability_mean": 0.7650052743157678,
+ "heritability_method": "mixed_model",
+ "heritability_n_above_0.5": 8,
+ "umap_trustworthiness": 0.9524,
+ "umap_trustworthiness_floor": 0.88
 }
