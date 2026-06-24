@@ -99,11 +99,12 @@
 
 ## 7. Retire the #330 repair grant (conditional, atomic)
 
-- [x] 7.1 **Conditional on PR #330:** if the base contains the raw `make migrate-local`
-      repair grant (base #323 commit `f5b89ca`), delete it (the init helper +
-      helper-calling migration replace it, covering the `bloom_writer` widening). If
-      absent on this branch's base, no-op — do not invent a removal. Coordinate merge
-      order with #330; never remove it in a commit lacking the helper path.
+- [x] 7.1 **#330 merged to `staging` (2026-06-24).** Merged `staging` into this branch
+      and **deleted `scripts/sql/repair_storage_grants.sql`**; replaced the
+      post-`db push` raw repair grant in `migrate-local` with a pre-`db push` install
+      of `install_bloom_grant_helper.sql` as `supabase_admin` (so existing local
+      volumes self-heal; fresh inits use the init layer). Grants now come from the
+      helper-calling migration (covers the `bloom_writer` widening).
 - [ ] 7.2 Run `make verify-dev` (clean reset → up → migrate → check): `bloom_agent`
       holds `storage` `USAGE`, the bloommcp persistence write path no longer hits
       `relation "objects" does not exist`, and no raw repair grant runs.

@@ -86,14 +86,22 @@ separate workflows.
 
 ## Decisions
 
-- **D1 — Install the helper via the init layer, not via three pre-`db push`
-  steps.** Mount `supabase/grants/install_bloom_grant_helper.sql` into the db
-  service's `docker-entrypoint-initdb.d` in both compose files (alongside the
-  existing `roles.sql` mount). `docker-entrypoint-initdb.d` runs as the superuser at
-  fresh cluster init, satisfying finding 3 automatically on local-reset / CI / DR —
-  no Makefile / `deploy.yml` / `pr-checks.yml` wiring, and the deploy path is left
-  untouched. The helper is generic (schema/role are arguments) so it installs at
-  init even though the `bloom_*` roles are created later by migrations.
+- **D1 — Install the helper via the init layer; one targeted `migrate-local` step
+  for existing local volumes.** Mount `supabase/grants/install_bloom_grant_helper.sql`
+  into the db service's `docker-entrypoint-initdb.d` in both compose files (alongside
+  the existing `roles.sql` mount). `docker-entrypoint-initdb.d` runs as the superuser
+  at fresh cluster init, satisfying finding 3 automatically on local-reset / CI / DR.
+  The helper is generic (schema/role are arguments) so it installs at init even
+  though the `bloom_*` roles are created later by migrations. The **deploy path
+  (`deploy.yml`) and `pr-checks.yml` are left untouched** — CI's `compose-health-check`
+  brings up a fresh volume (init runs), and prod/staging use the one-time runbook
+  (D4). The **one exception is `make migrate-local`**: a developer's volume is
+  persistent, so a plain `make migrate-local` would not re-init and the helper-calling
+  migration would error. So `migrate-local` installs the helper as `supabase_admin`
+  (idempotent `psql` exec) *before* `supabase db push` — this **replaces the #330
+  raw repair grant** (which granted directly, after push) with an install of the
+  durable helper (before push), keeping local dev self-healing without a raw
+  schema-grant.
   - *Alternative rejected:* move `bloom_*` role creation **and** grants into the
     init `roles.sql` (no helper needed — init is superuser). More drift-proof and
     more literal to the #341 note, but it pulls role creation out of migrations and

@@ -88,12 +88,14 @@ grants stop drifting from prod.
   exists, is `SECURITY DEFINER`, and is owned by `supabase_admin`. A silent no-op or
   a missing/mis-owned helper then fails loudly. **BREAKING:** `make check` now fails
   on a stack missing these grants (intended).
-- **Retire the #330 repair grant.** The raw `make migrate-local` repair grant
-  (base #323 commit `f5b89ca`, carried on PR #330) exists only because the grants
-  no-op locally. Once this lands on a base containing it, **delete it** (the init
-  helper + helper-calling migration replace it, covering the `bloom_writer`
-  widening). The helper artifacts and the removal MUST land atomically so the stack
-  never has neither path.
+- **Retire the #330 repair grant (done — #330 is now merged to `staging`).** The
+  raw `make migrate-local` repair grant shipped as `scripts/sql/repair_storage_grants.sql`
+  (PR #330). This branch merges `staging` and **deletes that file**, replacing the
+  post-`db push` raw grant with a pre-`db push` install of the durable helper as
+  `supabase_admin` in `migrate-local` (so existing local volumes still self-heal;
+  fresh inits use the init layer). The grant set now comes from the helper-calling
+  migration, covering the `bloom_writer` widening. Helper + removal land together so
+  the stack never has neither path.
 - Resolve the open sub-question (task 1): confirm/record that the prod/staging
   deploy applies migrations as the downgraded `postgres` and that prod's grants were
   applied manually as `supabase_admin` — so future schema-grant migrations are known
