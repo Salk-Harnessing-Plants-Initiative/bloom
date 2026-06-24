@@ -68,3 +68,24 @@ def test_raw_grant_noops_as_postgres(pg_conn):
             assert cur.fetchone()[0] is True, "grant as supabase_admin should stick"
     finally:
         pg_conn.rollback()
+
+
+def test_bloom_agent_can_resolve_storage_objects(pg_conn):
+    """The #333 symptom, end to end: bloom_agent must resolve storage.objects.
+
+    Without schema USAGE the bloommcp write path failed with
+    `relation "objects" does not exist` / `permission denied for schema storage`.
+    Asserting the (storage, bloom_agent) grant pair is present is necessary but not
+    sufficient — this proves the role can actually reference the relation. Read-only
+    query in a rolled-back txn; bloom_agent holds SELECT on storage.objects.
+    """
+    try:
+        with pg_conn.cursor() as cur:
+            cur.execute("SET LOCAL ROLE bloom_agent")
+            # Raises (permission denied for schema / relation does not exist) if
+            # schema USAGE is missing; resolves cleanly once the grant is applied.
+            cur.execute("SELECT count(*) FROM storage.objects")
+            assert cur.fetchone()[0] is not None
+            cur.execute("RESET ROLE")
+    finally:
+        pg_conn.rollback()
