@@ -24,6 +24,7 @@ help:
 	@echo "  make new-migration name=xxx - Create a new migration file"
 	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
 	@echo "  make test-integration - Run integration tests against the local dev stack"
+	@echo "  make bloommcp-smoke   - Live persistence smoke: drive a workflow through real Supabase storage"
 	@echo "  make check            - Verify local stack: services, roles, schemas, migrations"
 	@echo "  make verify-dev       - Clean reset -> up -> migrate -> check (destructive)"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
@@ -253,7 +254,21 @@ migrate-local:
 	supabase db push \
 		--db-url "postgresql://$${PG_USER}:$${PG_PASSWORD}@127.0.0.1:$(POSTGRES_HOST_PORT)/$${PG_DB}?sslmode=disable" \
 		--debug \
-		--yes
+		--yes; \
+	echo "Granting storage-schema USAGE to bloom_* roles (guarded for not-yet-created roles)..."; \
+	docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T -e PGPASSWORD="$$PG_PASSWORD" db-dev \
+		psql -U "$$PG_USER" -d "$$PG_DB" -v ON_ERROR_STOP=1 \
+		< scripts/sql/repair_storage_grants.sql
+# NOTE: scripts/sql/repair_storage_grants.sql re-applies a privilege the
+# migrations cannot set themselves — `supabase db push` runs every migration
+# after `SET SESSION ROLE postgres`, which is neither a superuser nor the owner
+# of schema `storage` (`supabase_admin`), so `GRANT USAGE ON SCHEMA storage`
+# silently no-ops and bloom_agent ends up unable to resolve storage.objects (the
+# bloommcp write path then fails with `relation "objects" does not exist`).
+# Piping the file as $$PG_USER (supabase_admin) outside the db-push role
+# downgrade makes it stick. The file (not `psql -c`) avoids Make/shell mangling
+# the PL/pgSQL `$grant$` dollar-quote tags; its header documents the canonical
+# role set + the per-role IF EXISTS guard. Privileged-runner fix tracked in #333.
 
 # Preflight helper: fail fast with an actionable message if `uv` is not on PATH.
 # Used as a prerequisite by every target that invokes `uv run ...` below so the
@@ -279,6 +294,33 @@ test-integration: check-uv
 .PHONY: check
 check: check-uv
 	@uv run --extra test python scripts/check_health.py
+
+## Live persistence smoke (issue #326): drive a workflow end-to-end through the
+## REAL SupabaseReader/SupabaseResultStore against the running dev stack, then
+## assert the committed run is a v3 manifest with real provenance and that each
+## recorded output_sha256 == the bytes actually stored. Requires the stack to be
+## up (`make dev-up`) and migrated (`make migrate-local` — which creates the
+## bloommcp-data bucket and applies the storage grants the write path needs).
+## Bridges the host<->container env gap: .env.dev points SUPABASE_URL at the
+## in-container gateway http://kong:8000 and BLOOM_*_DIR at /app paths, so here we
+## derive the host gateway from KONG_HTTP_PORT and let the driver use host temp
+## dirs. The same target backs the CI gate, so local and CI never drift. The
+## BLOOM_AGENT_KEY line is `@`-prefixed and never echoed.
+.PHONY: bloommcp-smoke
+bloommcp-smoke: check-uv
+	@if [ ! -f .env.dev ]; then \
+		echo "Error: .env.dev not found. Run 'make init' first."; \
+		exit 1; \
+	fi
+	@if ! docker ps | grep -q db-dev; then \
+		echo "Error: dev stack not running. Start with 'make dev-up' (then 'make migrate-local')."; \
+		exit 1; \
+	fi
+	@KONG_PORT=$$(sed -n 's/^KONG_HTTP_PORT=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); KONG_PORT=$${KONG_PORT:-8000}; \
+	BLOOM_AGENT_KEY=$$(sed -n 's/^BLOOM_AGENT_KEY=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
+	if [ -z "$$BLOOM_AGENT_KEY" ]; then echo "Error: BLOOM_AGENT_KEY is empty in .env.dev — run 'make init'."; exit 1; fi; \
+	cd bloommcp && SUPABASE_URL="http://localhost:$${KONG_PORT}" BLOOM_AGENT_KEY="$$BLOOM_AGENT_KEY" \
+		uv run python scripts/live_persistence_smoke.py
 
 ## One-shot: clean reset -> up -> migrate -> health check. Destructive (wipes the
 ## local DB). Use to reproduce a fresh-clone init and prove it end to end.

@@ -853,6 +853,18 @@ jobs:
       - name: make check (verify services, roles, schemas, migrations)
         run: make check
 
+      # Live persistence smoke (issue #326): drive a workflow end-to-end through
+      # the REAL SupabaseReader/SupabaseResultStore and assert the committed run
+      # is a v3 manifest with real provenance whose output_sha256 == the bytes
+      # actually stored. MUST run after `make migrate-local` — that step creates
+      # the bloommcp-data bucket and applies the storage-schema grants the write
+      # path needs. `make bloommcp-smoke` is the same target developers run
+      # locally (pre-merge), so local and CI never drift. The make target sources
+      # BLOOM_AGENT_KEY from the `make init`-generated .env.dev and derives the
+      # host gateway from KONG_HTTP_PORT; no repo secrets are needed.
+      - name: make bloommcp-smoke (live persistence smoke through real ports)
+        run: make bloommcp-smoke
+
       - name: Debug logs on failure
         if: failure()
         run: |
@@ -862,6 +874,10 @@ jobs:
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs db-dev --tail=100
           echo "=== storage logs ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs storage --tail=80
+          echo "=== supabase-minio logs ==="
+          docker compose -f docker-compose.dev.yml --env-file .env.dev logs supabase-minio --tail=50
+          echo "=== kong logs ==="
+          docker compose -f docker-compose.dev.yml --env-file .env.dev logs kong --tail=50
           echo "=== bloommcp logs ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs bloommcp --tail=50
           echo "=== langchain-agent logs ==="

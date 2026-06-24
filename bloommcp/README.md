@@ -29,3 +29,8 @@ first Supabase access); `import bloom_mcp` itself requires no environment.
 uv sync                   # installs the package + dev group
 uv run pytest             # runs the Supabase-free test suite
 ```
+
+`make bloommcp-smoke` (from the repo root, with the dev stack up + migrated) drives a
+workflow end-to-end through the **real** Supabase storage and asserts the committed run's
+v3 provenance — the live counterpart to the Supabase-free suite above. See
+`openspec/changes/add-bloommcp-live-persistence-smoke/`.
