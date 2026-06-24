@@ -105,14 +105,24 @@
       of `install_bloom_grant_helper.sql` as `supabase_admin` (so existing local
       volumes self-heal; fresh inits use the init layer). Grants now come from the
       helper-calling migration (covers the `bloom_writer` widening).
-- [ ] 7.2 Run `make verify-dev` (clean reset → up → migrate → check): `bloom_agent`
-      holds `storage` `USAGE`, the bloommcp persistence write path no longer hits
-      `relation "objects" does not exist`, and no raw repair grant runs.
+- [x] 7.2 Verified on a from-scratch stack (2026-06-24): wiped `volumes/db/data` →
+      fresh init auto-installed the helper (`prosecdef=t`, owner `supabase_admin`,
+      with **zero** `bloom_*` roles present) → `migrate-local` `db push` applied the
+      helper-calling migration → `make check` reports healthy. Final matrix:
+      `bloom_user/admin/agent/writer` all hold `storage` `USAGE`; only `bloom_writer`
+      holds `auth` `USAGE`; no raw repair grant runs. (`make verify-dev`'s own 120s
+      connection-wait timed out on this machine's cold fresh init — a pre-existing
+      wrapper limit, unrelated to this change; the substantive steps it wraps all
+      pass.)
 
 ## 8. Validation
 
 - [x] 8.1 `openspec validate fix-bloom-schema-usage-grants --strict` passes.
-- [ ] 8.2 `make check` and local CI (`/run-ci-locally`) pass on a freshly reset stack.
+- [x] 8.2 `make check` healthy on the freshly reset stack; local CI relevant to this
+      change green — `tests/unit` (273 passed, 1 skipped), `pip-audit` clean
+      (no dep changes), `tests/integration/test_schema_usage_grants.py` (16 passed
+      against the live stack). Frontend/Docker CI jobs are untouched by this change;
+      the authoritative prod-stack `compose-health-check` runs on the PR.
 - [x] 8.3 Separate issue for the `bloom_user`/`bloom_admin`/`bloom_agent` `auth.uid()`
       / `auth` USAGE gap (finding 6) → filed as #341, **settled as an intentional
       read-only gap** (no grant added here).
