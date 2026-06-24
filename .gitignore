@@ -104,6 +104,10 @@ prompts/
 # the production code path the agent uses for graph-node prompts).
 !langchain/prompts/
 !langchain/prompts/**
+# ...but keep Python build artifacts ignored (the `**` re-include above is broad
+# enough to otherwise track __pycache__/*.pyc under the prompt module).
+langchain/prompts/**/__pycache__/
+langchain/prompts/**/*.pyc
 .claude/settings.local.json
 .claude/draft-pr/
 langchain/ANALYSIS_OUTPUT/
