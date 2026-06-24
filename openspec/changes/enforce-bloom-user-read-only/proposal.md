@@ -95,10 +95,16 @@ the maintainer).
   only ever functioned as **`bloom_writer`**, which this migration leaves untouched
   (its UPDATE grants are direct, not via `bloom_user`). As `bloom_user` those updates
   already failed pre-migration: `gene_candidates` via the inert `auth.uid()` policy
-  (errors), `genes` via a missing `user_update_*` policy (RLS yields 0 rows). The
-  `accessions` `USING (true)` path is likewise unused. So removing the grant changes
-  nothing observable for real users — it makes the already-true read-only design
-  explicit.
+  (errors), `genes` via a missing `user_update_*` policy (RLS yields 0 rows).
+- **`accessions` is the one genuine capability removal.** Of the five dropped
+  policies it is the only `USING (true)` one, so `bloom_user` _could_ UPDATE
+  `accessions` before this change (the other four gate on the unreachable
+  `auth.uid()`). A repo-wide grep — web (React + server routes), the langchain agent,
+  the bloommcp/MCP server, API routes, RPCs, and SQL functions — found **no path that
+  updates `accessions` as `bloom_user`** (the only reference is a `.select()` read; a
+  seed `INSERT` runs as superuser). It is genuinely unused, so removing it is safe;
+  pinned by `test_update_accessions_denied`. So removing the grant changes nothing
+  observable for real users — it makes the already-true read-only design explicit.
 - Settles #341 (the read-only cleanup half; the auth-decision + grant-mechanism
   half lives in #333).
 - Branch targets `staging` (repo is staging-first). Related: #333

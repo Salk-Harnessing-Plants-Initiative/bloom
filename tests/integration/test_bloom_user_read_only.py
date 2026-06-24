@@ -73,6 +73,33 @@ def test_update_general_public_table_denied_at_privilege_layer(pg_conn):
             pg_conn.rollback()
 
 
+def test_update_accessions_denied(pg_conn):
+    """accessions is the ONE dropped policy that was USING (true) — i.e. the only
+    real capability removal (bloom_user could UPDATE accessions before this change;
+    the other four user_update_* policies gated on the unreachable auth.uid()).
+    Pin that it is now denied at the privilege layer, and the row is unchanged."""
+    with pg_conn.cursor() as cur:
+        try:
+            cur.execute(
+                "INSERT INTO public.accessions (name) VALUES ('acc-probe') RETURNING id"
+            )
+            accession_id = cur.fetchone()[0]
+            cur.execute("SAVEPOINT before_update")
+            cur.execute("SET LOCAL ROLE bloom_user")
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                cur.execute(
+                    "UPDATE public.accessions SET name = 'mutated' WHERE id = %s",
+                    (accession_id,),
+                )
+            cur.execute("ROLLBACK TO SAVEPOINT before_update")
+            cur.execute(
+                "SELECT name FROM public.accessions WHERE id = %s", (accession_id,)
+            )
+            assert cur.fetchone()[0] == "acc-probe", "row must be unchanged"
+        finally:
+            pg_conn.rollback()
+
+
 def test_update_experiment_progress_logs_allowed(pg_conn):
     """The one retained write path: bloom_user may UPDATE experiment_progress_logs."""
     with pg_conn.cursor() as cur:
