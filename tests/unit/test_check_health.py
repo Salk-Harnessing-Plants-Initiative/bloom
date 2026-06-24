@@ -86,7 +86,8 @@ def test_bloommcp_is_required_not_optional():
 # Schema-USAGE grant matrix (issue #333) — pure helpers.
 # --------------------------------------------------------------------------- #
 
-def test_grant_matrix_loads_expected_pairs():
+def test_grant_matrix_parses_schema_grants_sql():
+    """The expected matrix is parsed from the single-source schema_grants.sql."""
     pairs = check_health.load_grant_matrix()
     assert ("storage", "bloom_agent") in pairs
     assert ("auth", "bloom_writer") in pairs

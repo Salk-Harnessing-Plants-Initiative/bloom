@@ -1,38 +1,33 @@
-"""Integration tests for the bloom_* schema-USAGE grant mechanism (issue #333).
+"""Integration tests for the bloom_* schema-USAGE grants (issue #333).
 
-Run against the live compose stack (the `compose-health-check` job applies
-migrations first, and the init layer installs the grant helper). Uses the
-`pg_conn` fixture (connects as POSTGRES_USER = supabase_admin, the schema owner).
+Run against the live compose stack. Migrations are applied first, then
+`supabase/grants/schema_grants.sql` is applied as supabase_admin (by
+`make migrate-local` locally, and by the `Apply bloom_* schema-USAGE grants` step in
+CI compose-health-check). Uses the `pg_conn` fixture (connects as POSTGRES_USER =
+supabase_admin, the schema owner).
 """
 
-import json
+import re
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-MATRIX = json.loads(
-    (REPO_ROOT / "supabase" / "grants" / "bloom_grant_matrix.json").read_text(
-        encoding="utf-8"
-    )
-)["schema_usage"]
-EXPECTED_PAIRS = sorted(
-    (schema, role) for schema, roles in MATRIX.items() for role in roles
+GRANTS_FILE = REPO_ROOT / "supabase" / "grants" / "schema_grants.sql"
+_GRANT_USAGE = re.compile(
+    r"GRANT\s+USAGE\s+ON\s+SCHEMA\s+(\w+)\s+TO\s+([^;]+);", re.IGNORECASE
 )
 
 
-def test_grant_helper_exists_secdef_and_owned_by_supabase_admin(pg_conn):
-    with pg_conn.cursor() as cur:
-        cur.execute(
-            "SELECT p.prosecdef, pg_get_userbyid(p.proowner) "
-            "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
-            "WHERE n.nspname = 'public' AND p.proname = 'bloom_grant_schema_usage'"
-        )
-        rows = cur.fetchall()
-    assert rows, "grant helper public.bloom_grant_schema_usage is missing"
-    prosecdef, owner = rows[0]
-    assert prosecdef is True, "helper must be SECURITY DEFINER"
-    assert owner == "supabase_admin", f"helper owned by {owner}, not supabase_admin"
+def _expected_pairs() -> list[tuple[str, str]]:
+    pairs: set[tuple[str, str]] = set()
+    for schema, roles in _GRANT_USAGE.findall(GRANTS_FILE.read_text(encoding="utf-8")):
+        for role in roles.split(","):
+            pairs.add((schema, role.strip()))
+    return sorted(pairs)
+
+
+EXPECTED_PAIRS = _expected_pairs()
 
 
 @pytest.mark.parametrize("schema,role", EXPECTED_PAIRS)
@@ -53,67 +48,23 @@ def test_auth_usage_absent_for_user_admin_agent(pg_conn, role):
         )
 
 
-def test_raw_grant_noops_as_postgres_but_helper_sticks(pg_conn):
-    """The core proof: as postgres a raw grant no-ops; the helper makes it stick.
+def test_raw_grant_noops_as_postgres(pg_conn):
+    """Why schema_grants.sql must be applied as supabase_admin, not via db push.
 
-    All mutations are rolled back so the stack is unchanged.
+    A raw `GRANT USAGE ON SCHEMA storage` as `postgres` (what db push downgrades to)
+    silently no-ops. All mutations are rolled back.
     """
     try:
         with pg_conn.cursor() as cur:
-            # As the owner (supabase_admin), revoke so we start from f.
             cur.execute("REVOKE USAGE ON SCHEMA storage FROM bloom_agent")
-            # As postgres (what db push downgrades to), a raw grant silently no-ops.
             cur.execute("SET LOCAL ROLE postgres")
             cur.execute("GRANT USAGE ON SCHEMA storage TO bloom_agent")
             cur.execute("RESET ROLE")
             cur.execute("SELECT has_schema_privilege('bloom_agent','storage','USAGE')")
             assert cur.fetchone()[0] is False, "raw grant as postgres should no-op"
-            # The helper, called even as postgres, grants with the owner's authority.
-            cur.execute("SET LOCAL ROLE postgres")
-            cur.execute("SELECT public.bloom_grant_schema_usage('storage','bloom_agent')")
-            cur.execute("RESET ROLE")
+            # Applied as supabase_admin (the fixture's role) it sticks.
+            cur.execute("GRANT USAGE ON SCHEMA storage TO bloom_agent")
             cur.execute("SELECT has_schema_privilege('bloom_agent','storage','USAGE')")
-            assert cur.fetchone()[0] is True, "helper call should make the grant stick"
+            assert cur.fetchone()[0] is True, "grant as supabase_admin should stick"
     finally:
         pg_conn.rollback()
-
-
-def test_helper_is_idempotent(pg_conn):
-    """Re-applying a grant via the helper changes nothing and does not error."""
-    try:
-        with pg_conn.cursor() as cur:
-            cur.execute("SELECT public.bloom_grant_schema_usage('storage','bloom_agent')")
-            cur.execute("SELECT public.bloom_grant_schema_usage('storage','bloom_agent')")
-            cur.execute("SELECT has_schema_privilege('bloom_agent','storage','USAGE')")
-            assert cur.fetchone()[0] is True
-    finally:
-        pg_conn.rollback()
-
-
-@pytest.mark.parametrize("role", ["anon", "authenticated", "bloom_user", "bloom_agent"])
-def test_unprivileged_roles_cannot_execute_helper(pg_conn, role):
-    import psycopg
-
-    try:
-        with pg_conn.cursor() as cur:
-            cur.execute(f"SET LOCAL ROLE {role}")
-            with pytest.raises(psycopg.errors.InsufficientPrivilege):
-                cur.execute(
-                    "SELECT public.bloom_grant_schema_usage('storage','bloom_user')"
-                )
-    finally:
-        pg_conn.rollback()
-
-
-def test_helper_rejects_out_of_whitelist_arguments(pg_conn):
-    import psycopg
-
-    for schema, role in [("vault", "bloom_user"), ("auth", "postgres")]:
-        try:
-            with pg_conn.cursor() as cur:
-                with pytest.raises(psycopg.errors.RaiseException):
-                    cur.execute(
-                        "SELECT public.bloom_grant_schema_usage(%s, %s)", (schema, role)
-                    )
-        finally:
-            pg_conn.rollback()

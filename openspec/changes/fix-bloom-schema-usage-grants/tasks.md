@@ -1,131 +1,69 @@
-> **Commit safety:** the init-layer helper mount (both compose files), the helper
-> file, the helper-calling migration, the CI guard, the health check, and any
-> repair-grant removal MUST land together (one PR / squashed) so the stack never has
-> neither grant path between commits. Never delete a repair grant in a commit
-> lacking the helper migration.
+> **Commit safety:** the grants file, its application in `migrate-local` + CI, the
+> CI guard, the health check, and the #330 repair-grant removal land together so the
+> stack never has neither grant path between commits.
 
 ## 1. Resolve the open sub-question (prod application role)
 
-- [x] 1.1 Inspect `.github/workflows/deploy.yml` + `scripts/deploy_run_supabase.sh`
-      to confirm the role `supabase db push` applies migrations as in prod/staging
-      (finding 5 indicates it downgrades to `postgres` regardless of the
-      `supabase_admin` connection user).
-- [x] 1.2 Confirm prod/staging hold the `bloom_*` schema-`USAGE` grants because they
-      were applied **manually as `supabase_admin`** at setup (per @blm3886). Record
-      both findings in `design.md` (Open Questions → resolved).
+- [x] 1.1 Confirmed the prod/staging deploy (`scripts/deploy_run_supabase.sh` →
+      `supabase db push --db-url postgresql://${PG_USER}@…`, `PG_USER=supabase_admin`)
+      still downgrades to `postgres` for migration application.
+- [x] 1.2 Recorded that prod/staging grants were applied **manually as
+      `supabase_admin`** at setup (per @blm3886). See `design.md` Open Questions.
 
-## 2. SECURITY DEFINER helper (hardened, init-installable)
+## 2. Single source of truth: `schema_grants.sql`
 
-- [x] 2.1 Add `supabase/grants/install_bloom_grant_helper.sql` (committed; **not**
-      under `supabase/migrations/`): `CREATE OR REPLACE FUNCTION
-      public.bloom_grant_schema_usage(p_schema text, p_role text) RETURNS void
-      LANGUAGE plpgsql SECURITY DEFINER SET search_path=''` whose body **whitelists**
-      (`p_schema IN ('storage','auth')`, `p_role LIKE 'bloom\_%'`, else
-      `RAISE EXCEPTION`) then `EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', …)`.
-- [x] 2.2 In the same file: `ALTER FUNCTION … OWNER TO supabase_admin;` then assert
-      `proowner = supabase_admin` (fail loudly if not);
-      `REVOKE EXECUTE ON FUNCTION … FROM PUBLIC, anon, authenticated;`
-      `GRANT EXECUTE ON FUNCTION … TO postgres;`. Header comment: installed as the
-      superuser by the init layer (and once manually on persistent volumes), why
-      (link #333 + #341 + `design.md`); idempotent (`CREATE OR REPLACE`, re-issued
-      REVOKE/GRANT). The file MUST run cleanly when no `bloom_*` role exists yet (it
-      creates only the generic helper; it does not reference any `bloom_*` role).
-- [x] 2.3 Re-confirm on a fresh dev DB after the file lands: `prosecdef=t`,
-      `proowner=supabase_admin`, `anon`/`authenticated`/`bloom_*` lack EXECUTE, a
-      `postgres`-role call flips a revoked grant `f`→`t`, and a bad-arg call
-      (`('vault','bloom_user')` / `('auth','postgres')`) raises.
+- [x] 2.1 Add `supabase/grants/schema_grants.sql` (committed; **not** under
+      `supabase/migrations/`): plain idempotent
+      `GRANT USAGE ON SCHEMA storage TO bloom_user, bloom_admin, bloom_agent, bloom_writer;`
+      + `GRANT USAGE ON SCHEMA auth TO bloom_writer;`. Header: MUST run as
+      `supabase_admin`, after migrations create the roles; when/how to apply
+      (local/CI/manual); #341 note (auth → writer only).
 
-## 3. Install via the init layer + one-time manual apply
+## 3. Apply it as supabase_admin in every DB-bringing-up path
 
-- [x] 3.1 Mount `install_bloom_grant_helper.sql` into the db service's
-      `docker-entrypoint-initdb.d` in **both** `docker-compose.dev.yml` and
-      `docker-compose.prod.yml` (alongside the existing `roles.sql` mount, e.g.
-      `…/init-scripts/99-bloom-grant-helper.sql`), so a fresh cluster init installs
-      the helper as the superuser.
-- [x] 3.2 Add `supabase/grants/README.md`: the one-time manual-apply runbook for
-      existing persistent volumes (prod, staging, pre-existing local) — run
-      `install_bloom_grant_helper.sql` once as `supabase_admin` (psql exec); note it
-      is idempotent and that fresh inits do not need it. This is the source of truth
-      that replaces ad-hoc setup notes.
-- [x] 3.3 Add a YAML/shape test asserting the helper-install mount exists in both
-      compose files' db service (mirror the existing init-script mount expectations).
+- [x] 3.1 `migrate-local`: pipe `schema_grants.sql` via `psql -U $PG_USER`
+      (= `supabase_admin`) **after** `supabase db push`. (Covers `make verify-dev`
+      and the `dev-stack-smoke` CI job, which runs `migrate-local`.)
+- [x] 3.2 `pr-checks.yml` `compose-health-check`: add an `Apply bloom_* schema-USAGE
+      grants` step (psql as `supabase_admin` into `db-prod`) after the migration step.
+- [x] 3.3 Document the prod/staging manual apply in the `schema_grants.sql` header
+      (apply when grants change).
 
-## 4. Helper-calling migration (the grant set = source of truth)
+## 4. CI guard against raw schema grants in migrations
 
-- [x] 4.1 Add `supabase/migrations/2026MMDDHHMMSS_apply_bloom_schema_usage_via_helper.sql`
-      (timestamp `> 20260622180000` **and** `> 20260519130000` so the roles exist)
-      calling the helper for the complete set: `storage` `USAGE` →
-      `bloom_user`/`bloom_admin`/`bloom_agent`/`bloom_writer`; `auth` `USAGE` →
-      `bloom_writer`. Uses `SELECT bloom_grant_schema_usage(…)` (not raw `GRANT … ON
-      SCHEMA`). Transaction-wrapped; idempotent; errors loudly if the helper is absent.
-- [x] 4.2 Add a committed grant-matrix artifact (e.g.
-      `supabase/grants/bloom_grant_matrix.json`) listing the role→schema pairs
-      (storage: user/admin/agent/writer; auth: writer only — **no** auth for
-      user/admin/agent per #341); the migration and `check_health.py` both derive
-      from it.
-- [x] 4.3 Confirm the new migration passes `tests/integration/test_lint_migrations.py`
-      (filename/timestamp) and is recorded by `test_migrations.py`. Do **not** edit
-      the historical grant migrations (editing applied migrations breaks `db push`
-      history validation).
+- [x] 4.1 `tests/unit/test_schema_usage_grants.py`: fail any
+      `supabase/migrations/*.sql` with a raw `GRANT`/`REVOKE … ON SCHEMA
+      (auth|storage)` (comment-stripped), allowlisting + byte-pinning `20260428130000`
+      and `20260519130000`. Plus: `schema_grants.sql` grants the expected matrix;
+      `auth` only to `bloom_writer`; `migrate-local` applies it after `db push`; CI
+      applies it.
 
-## 5. CI guard against raw schema grants in migrations
+## 5. Health-check guardrail
 
-- [x] 5.1 (test-first) Add a `tests/unit/` test that scans `supabase/migrations/*.sql`
-      and fails on any `GRANT`/`REVOKE … ON SCHEMA (auth|storage)` (case/whitespace
-      tolerant), allowlisting `20260428130000` and `20260519130000` with a comment
-      pointing to the helper-calling migration. Assert the helper-calling migration is
-      **not** flagged (it calls the helper) and that the two allowlisted files are not
-      edited (byte-stable).
+- [x] 5.1 (test-first) Unit test for `schema_usage_problems(expected, observed)` —
+      partial case (3 of 4 → 4th reported); and `load_grant_matrix` parses
+      `schema_grants.sql`.
+- [x] 5.2 `check_schema_usage(conn)` in `scripts/check_health.py`: parse expected
+      pairs from `schema_grants.sql`, assert `has_schema_privilege` per pair, report
+      (not crash on) an absent role/schema. Wired into `main()`.
+- [x] 5.3 Integration tests (`tests/integration/test_schema_usage_grants.py`): grants
+      present for the matrix; `auth` USAGE absent for user/admin/agent (#341); raw
+      grant as `postgres` no-ops while the same grant as `supabase_admin` sticks.
 
-## 6. Health-check guardrail (test-first)
+## 6. Retire the #330 repair grant
 
-- [x] 6.1 (test-first) Add a pytest unit test for a pure helper that, given the grant
-      matrix (from 4.2) and observed grants, returns missing pairs — including a
-      partial case (3 of 4 roles granted → the 4th reported). No DB / no docker;
-      mirror the `migration_problems` pattern and existing `test_check_health`.
-- [x] 6.2 Add `check_schema_usage(conn)` to `scripts/check_health.py`: assert each
-      `bloom_*` role holds its expected schema `USAGE` (`has_schema_privilege`, driven
-      by the matrix) and assert the helper exists, is `prosecdef=t`, and is owned by
-      `supabase_admin`. Wire into `main()`/`_report`. Handle an absent role/schema
-      gracefully (report a problem, do not crash).
-- [x] 6.3 (test-first) Add integration tests in `tests/integration/` mapped to the
-      spec scenarios: helper exists + owner + `prosecdef`; grants stuck for all four
-      `storage` roles + `bloom_writer` `auth`; `auth` USAGE **absent** for
-      user/admin/agent; in a rolled-back txn `SET LOCAL ROLE postgres` and assert a
-      raw grant stays `f` while a helper call flips `f`→`t`; helper-calling migration
-      re-apply changes no privileges; `anon`/`bloom_*` cannot EXECUTE the helper.
-- [x] 6.4 Add a CI test asserting the helper-calling migration's grant set equals the
-      committed matrix (anti-drift).
+- [x] 6.1 #330 merged to `staging`; merged it in and **deleted
+      `scripts/sql/repair_storage_grants.sql`**, replacing its post-`db push`
+      invocation in `migrate-local` with the `schema_grants.sql` apply.
 
-## 7. Retire the #330 repair grant (conditional, atomic)
+## 7. Validation
 
-- [x] 7.1 **#330 merged to `staging` (2026-06-24).** Merged `staging` into this branch
-      and **deleted `scripts/sql/repair_storage_grants.sql`**; replaced the
-      post-`db push` raw repair grant in `migrate-local` with a pre-`db push` install
-      of `install_bloom_grant_helper.sql` as `supabase_admin` (so existing local
-      volumes self-heal; fresh inits use the init layer). Grants now come from the
-      helper-calling migration (covers the `bloom_writer` widening).
-- [x] 7.2 Verified on a from-scratch stack (2026-06-24): wiped `volumes/db/data` →
-      fresh init auto-installed the helper (`prosecdef=t`, owner `supabase_admin`,
-      with **zero** `bloom_*` roles present) → `migrate-local` `db push` applied the
-      helper-calling migration → `make check` reports healthy. Final matrix:
-      `bloom_user/admin/agent/writer` all hold `storage` `USAGE`; only `bloom_writer`
-      holds `auth` `USAGE`; no raw repair grant runs. (`make verify-dev`'s own 120s
-      connection-wait timed out on this machine's cold fresh init — a pre-existing
-      wrapper limit, unrelated to this change; the substantive steps it wraps all
-      pass.)
-
-## 8. Validation
-
-- [x] 8.1 `openspec validate fix-bloom-schema-usage-grants --strict` passes.
-- [x] 8.2 `make check` healthy on the freshly reset stack; local CI relevant to this
-      change green — `tests/unit` (273 passed, 1 skipped), `pip-audit` clean
-      (no dep changes), `tests/integration/test_schema_usage_grants.py` (16 passed
-      against the live stack). Frontend/Docker CI jobs are untouched by this change;
-      the authoritative prod-stack `compose-health-check` runs on the PR.
-- [x] 8.3 Separate issue for the `bloom_user`/`bloom_admin`/`bloom_agent` `auth.uid()`
-      / `auth` USAGE gap (finding 6) → filed as #341, **settled as an intentional
-      read-only gap** (no grant added here).
-- [x] 8.4 Updated issue #333 (comment) with the checklist done, the init-layer
-      mechanism, the from-scratch verification, the #341 cross-link, and the prod/staging
-      one-time apply note. Implemented in PR #345.
+- [x] 7.1 `openspec validate fix-bloom-schema-usage-grants --strict` passes.
+- [x] 7.2 Verified on a from-scratch stack: fresh `volumes/db/data` wipe →
+      `migrate-local` (`db push` + apply `schema_grants.sql` as `supabase_admin`) →
+      `make check` healthy. Final matrix: `bloom_user/admin/agent/writer` hold
+      `storage` `USAGE`; only `bloom_writer` holds `auth`; no repair grant runs.
+- [x] 7.3 Local CI relevant to this change: `tests/unit` (273 passed, 1 skipped),
+      `pip-audit` clean; integration tests pass against the live stack.
+- [x] 7.4 #341 settled as an intentional read-only gap (no grant added here).
+- [ ] 7.5 Update issue #333 noting the single-source `schema_grants.sql` mechanism.

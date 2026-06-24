@@ -1,7 +1,0 @@
-{
-  "_comment": "Single source of truth for bloom_* schema-USAGE grants (issue #333). Consumed by the helper-calling migration (20260624120000_apply_bloom_schema_usage_via_helper.sql) and by scripts/check_health.py, with a CI anti-drift test asserting the two agree. auth USAGE is granted to bloom_writer ONLY: the auth-schema gap for bloom_user/admin/agent is #341's intentional read-only gap and is deliberately NOT listed here.",
-  "schema_usage": {
-    "storage": ["bloom_user", "bloom_admin", "bloom_agent", "bloom_writer"],
-    "auth": ["bloom_writer"]
-  }
-}

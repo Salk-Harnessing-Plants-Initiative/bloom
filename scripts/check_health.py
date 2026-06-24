@@ -7,10 +7,9 @@
   has exited non-zero),
 - the required Postgres roles exist (base Supabase roles + the bloom_* app roles),
 - the ``auth`` and ``storage`` schemas exist (``auth.uid()``, ``storage.buckets``),
-- every ``bloom_*`` role holds its expected schema ``USAGE`` (from
-  ``supabase/grants/bloom_grant_matrix.json``) and the grant helper
-  ``public.bloom_grant_schema_usage`` exists, is ``SECURITY DEFINER``, and is owned
-  by ``supabase_admin`` (issue #333 — a silent grant no-op fails here, loudly),
+- every ``bloom_*`` role holds its expected schema ``USAGE`` (parsed from
+  ``supabase/grants/schema_grants.sql``, the single source of truth — issue #333;
+  a silent grant no-op fails here, loudly),
 - every ``supabase/migrations/*.sql`` is recorded in
   ``supabase_migrations.schema_migrations`` — by **set comparison** (no missing,
   no orphan), not a brittle count.
@@ -26,8 +25,8 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -35,10 +34,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR = REPO_ROOT / "supabase" / "migrations"
 COMPOSE_FILE = REPO_ROOT / "docker-compose.dev.yml"
 ENV_DEV = REPO_ROOT / ".env.dev"
-# Single source of truth for the bloom_* schema-USAGE grants (issue #333). Also
-# consumed by the helper-calling migration; a unit test asserts the two agree.
-GRANT_MATRIX = REPO_ROOT / "supabase" / "grants" / "bloom_grant_matrix.json"
-GRANT_HELPER = "bloom_grant_schema_usage"
+# Single source of truth for the bloom_* schema-USAGE grants (issue #333):
+# the same .sql file applied (as supabase_admin) by `make migrate-local`, CI, and
+# the prod/staging manual step. check_schema_usage parses it for the expected set.
+GRANT_FILE = REPO_ROOT / "supabase" / "grants" / "schema_grants.sql"
+_GRANT_RE = re.compile(
+    r"GRANT\s+USAGE\s+ON\s+SCHEMA\s+(\w+)\s+TO\s+([^;]+);",
+    re.IGNORECASE,
+)
 
 # Roles the supabase/postgres image creates at init.
 REQUIRED_BASE_ROLES = [
@@ -92,10 +95,18 @@ def migration_problems(
     return problems
 
 
-def load_grant_matrix(path: Path = GRANT_MATRIX) -> set[tuple[str, str]]:
-    """The expected (schema, role) schema-USAGE pairs from the committed matrix."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))["schema_usage"]
-    return {(schema, role) for schema, roles in data.items() for role in roles}
+def load_grant_matrix(path: Path = GRANT_FILE) -> set[tuple[str, str]]:
+    """Parse the expected (schema, role) USAGE pairs from schema_grants.sql.
+
+    The .sql file is the single source of truth; we read the grant set straight from
+    it rather than keep a second machine-readable copy.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    pairs: set[tuple[str, str]] = set()
+    for schema, roles in _GRANT_RE.findall(text):
+        for role in roles.split(","):
+            pairs.add((schema, role.strip()))
+    return pairs
 
 
 def schema_usage_problems(
@@ -171,43 +182,19 @@ def check_schemas(conn) -> list[str]:
     return problems
 
 
-def check_schema_usage(conn, matrix_path: Path = GRANT_MATRIX) -> list[str]:
-    """Assert each bloom_* role's schema USAGE and the grant helper's integrity.
+def check_schema_usage(conn, matrix_path: Path = GRANT_FILE) -> list[str]:
+    """Assert each bloom_* role holds its expected schema USAGE (issue #333).
 
-    Catches a silent grant no-op (#333), a missing/mis-owned/tampered helper, and an
-    absent role/schema (reported, not crashed).
+    Catches a silent grant no-op (e.g. schema_grants.sql never applied, or applied as
+    the wrong role) and an absent role/schema (reported, not crashed).
     """
     problems: list[str] = []
 
-    # Helper integrity: must exist, be SECURITY DEFINER, owned by supabase_admin.
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT p.prosecdef, pg_get_userbyid(p.proowner) "
-            "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
-            "WHERE n.nspname = 'public' AND p.proname = %s",
-            (GRANT_HELPER,),
-        )
-        rows = cur.fetchall()
-    if not rows:
-        problems.append(
-            f"grant helper public.{GRANT_HELPER} is missing "
-            "(install it via the init layer / supabase/grants/README.md)"
-        )
-    else:
-        prosecdef, owner = rows[0]
-        if not prosecdef:
-            problems.append(f"grant helper public.{GRANT_HELPER} is not SECURITY DEFINER")
-        if owner != "supabase_admin":
-            problems.append(
-                f"grant helper public.{GRANT_HELPER} is owned by {owner}, "
-                "not supabase_admin (its grants will silently no-op)"
-            )
-
-    # Observed schema-USAGE grants, guarding against an absent role or schema.
+    # Expected schema-USAGE grants from the single-source .sql file.
     try:
         expected = load_grant_matrix(matrix_path)
-    except Exception as exc:  # noqa: BLE001 — surface a bad/missing matrix
-        problems.append(f"could not load grant matrix {matrix_path}: {exc}")
+    except Exception as exc:  # noqa: BLE001 — surface a bad/missing grants file
+        problems.append(f"could not load grant set {matrix_path}: {exc}")
         return problems
 
     observed: set[tuple[str, str]] = set()

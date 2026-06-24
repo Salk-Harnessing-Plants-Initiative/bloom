@@ -251,25 +251,22 @@ migrate-local:
 		if [ $$i -eq 90 ]; then echo "Error: storage.buckets not ready after 180s (is storage-api running? some migrations INSERT into it). Last psql stderr:"; tail -5 /tmp/migrate_storage_wait.err 2>/dev/null; exit 1; fi; \
 		sleep 2; \
 	done; \
-	echo "Installing bloom_* schema-USAGE grant helper as supabase_admin (idempotent)..."; \
-	docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T -e PGPASSWORD="$$PG_PASSWORD" db-dev \
-		psql -U "$$PG_USER" -d "$$PG_DB" -v ON_ERROR_STOP=1 \
-		< supabase/grants/install_bloom_grant_helper.sql; \
 	supabase db push \
 		--db-url "postgresql://$${PG_USER}:$${PG_PASSWORD}@127.0.0.1:$(POSTGRES_HOST_PORT)/$${PG_DB}?sslmode=disable" \
 		--debug \
-		--yes
-# NOTE: bloom_* schema-USAGE grants are applied by migration
-# 20260624120000_apply_bloom_schema_usage_via_helper.sql, which CALLS the
-# SECURITY DEFINER helper public.bloom_grant_schema_usage (owned by
-# supabase_admin). `supabase db push` runs migrations after `SET SESSION ROLE
-# postgres`, which cannot grant on the supabase_admin-owned storage/auth schemas,
-# so a raw `GRANT USAGE ON SCHEMA storage` silently no-ops; the helper runs the
-# grant with the owner's authority. The helper is installed above (as
-# supabase_admin, $$PG_USER) BEFORE db push so the helper-calling migration sticks
-# on existing local volumes; fresh inits (CI, `make verify-dev` reset, DR) install
-# it via the db docker-entrypoint-initdb.d layer (see supabase/grants/). This
-# supersedes the #330 repair grant (issue #333).
+		--yes; \
+	echo "Applying bloom_* schema-USAGE grants as supabase_admin (supabase/grants/schema_grants.sql)..."; \
+	docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T -e PGPASSWORD="$$PG_PASSWORD" db-dev \
+		psql -U "$$PG_USER" -d "$$PG_DB" -v ON_ERROR_STOP=1 \
+		< supabase/grants/schema_grants.sql
+# NOTE: supabase/grants/schema_grants.sql is the single source of truth for bloom_*
+# schema-level USAGE grants (issue #333). `supabase db push` runs migrations after
+# `SET SESSION ROLE postgres`, which cannot grant on the supabase_admin-owned
+# storage/auth schemas, so a raw `GRANT USAGE ON SCHEMA storage` in a migration
+# silently no-ops. Applied here as supabase_admin ($$PG_USER) AFTER db push (roles
+# exist; outside the db-push role downgrade) the grant sticks. CI applies the same
+# file in compose-health-check; ongoing prod/staging apply it manually when grants
+# change. Supersedes the #330 repair grant.
 
 # Preflight helper: fail fast with an actionable message if `uv` is not on PATH.
 # Used as a prerequisite by every target that invokes `uv run ...` below so the
