@@ -48,26 +48,83 @@ def test_auth_usage_absent_for_user_admin_agent(pg_conn, role):
         )
 
 
-def test_raw_grant_noops_as_postgres(pg_conn):
-    """Why schema_grants.sql must be applied as supabase_admin, not via db push.
+@pytest.mark.parametrize("schema", ["storage", "auth"])
+def test_schema_grant_sticks_iff_postgres_has_grant_option(pg_conn, schema):
+    """Why schema_grants.sql is applied as supabase_admin, not via a db push migration.
 
-    A raw `GRANT USAGE ON SCHEMA storage` as `postgres` (what db push downgrades to)
-    silently no-ops. All mutations are rolled back.
+    A `GRANT USAGE ON SCHEMA` only takes effect when run by a role with grant
+    authority on that schema (the owner, or a USAGE ... WITH GRANT OPTION holder).
+    `supabase db push` downgrades to `postgres`, so an in-migration schema grant
+    sticks **iff** `postgres` holds grant option on that schema — otherwise it
+    silently no-ops (`WARNING: no privileges were granted`). Applied as
+    `supabase_admin` (the owner) it always sticks.
+
+    This splits by schema/image and is the reason schema_grants.sql exists:
+
+    - **auth**: no platform image grants `postgres` grant option on `auth`, so an
+      in-migration `auth` grant ALWAYS no-ops → the supabase_admin path is genuinely
+      required on every supported image (this is `bloom_writer`'s auth USAGE).
+    - **storage**: newer `supabase/postgres` images (>= the 2025-07-09
+      `grant_storage_schema_to_postgres_with_grant_option` migration — e.g. prod/CI's
+      15.14.1.104) DO grant `postgres` grant option, so an in-migration storage grant
+      sticks there; older images (dev's 15.8.1.060) do not, so it no-ops. The
+      workaround is load-bearing on old images and idempotent belt-and-suspenders on
+      new ones.
+
+    Uses a throwaway role so no inherited privilege confounds the observation. All
+    mutations are rolled back.
     """
     try:
         with pg_conn.cursor() as cur:
-            cur.execute("REVOKE USAGE ON SCHEMA storage FROM bloom_agent")
+            cur.execute(
+                "SELECT has_schema_privilege('postgres', %s, 'USAGE WITH GRANT OPTION')",
+                (schema,),
+            )
+            postgres_can_grant = cur.fetchone()[0]
+
+            cur.execute("CREATE ROLE bloom_probe_tmp NOLOGIN")
             cur.execute("SET LOCAL ROLE postgres")
-            cur.execute("GRANT USAGE ON SCHEMA storage TO bloom_agent")
+            cur.execute(f"GRANT USAGE ON SCHEMA {schema} TO bloom_probe_tmp")
             cur.execute("RESET ROLE")
-            cur.execute("SELECT has_schema_privilege('bloom_agent','storage','USAGE')")
-            assert cur.fetchone()[0] is False, "raw grant as postgres should no-op"
-            # Applied as supabase_admin (the fixture's role) it sticks.
-            cur.execute("GRANT USAGE ON SCHEMA storage TO bloom_agent")
-            cur.execute("SELECT has_schema_privilege('bloom_agent','storage','USAGE')")
-            assert cur.fetchone()[0] is True, "grant as supabase_admin should stick"
+            cur.execute(
+                "SELECT has_schema_privilege('bloom_probe_tmp', %s, 'USAGE')", (schema,)
+            )
+            stuck_as_postgres = cur.fetchone()[0]
+            assert stuck_as_postgres == postgres_can_grant, (
+                f"on {schema}: grant as postgres should stick iff postgres has grant "
+                f"option (grant_option={postgres_can_grant}, stuck={stuck_as_postgres})"
+            )
+
+            # Applied as supabase_admin (the fixture's role, the schema owner) it
+            # always sticks — which is exactly how schema_grants.sql applies it.
+            cur.execute(f"GRANT USAGE ON SCHEMA {schema} TO bloom_probe_tmp")
+            cur.execute(
+                "SELECT has_schema_privilege('bloom_probe_tmp', %s, 'USAGE')", (schema,)
+            )
+            assert cur.fetchone()[0] is True, (
+                f"grant as supabase_admin on {schema} should stick"
+            )
     finally:
         pg_conn.rollback()
+
+
+def test_auth_grant_always_noops_in_migration(pg_conn):
+    """The surviving, image-independent justification for schema_grants.sql.
+
+    `postgres` must NOT hold grant option on `auth` on any supported image — so a
+    raw `GRANT USAGE ON SCHEMA auth` inside a `db push` migration always no-ops, and
+    `bloom_writer`'s auth USAGE genuinely requires the supabase_admin path. If a
+    future platform image grants this, revisit whether the auth workaround is still
+    needed (as already happened for storage).
+    """
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_schema_privilege('postgres', 'auth', 'USAGE WITH GRANT OPTION')"
+        )
+        assert cur.fetchone()[0] is False, (
+            "postgres unexpectedly has grant option on auth — the platform image may "
+            "now grant it (as it does for storage); revisit the auth workaround"
+        )
 
 
 def test_bloom_agent_can_resolve_storage_objects(pg_conn):

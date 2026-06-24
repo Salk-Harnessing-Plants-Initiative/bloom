@@ -5,9 +5,13 @@ Single source of truth: `supabase/grants/schema_grants.sql`, applied as
 and the manual prod/staging step). These are pure, no-DB checks:
 
 1. **CI guard** — no `supabase/migrations/*.sql` may contain a raw
-   `GRANT`/`REVOKE … ON SCHEMA (auth|storage)`; such statements silently no-op
-   under `supabase db push` (applied as the downgraded `postgres`). Two historical
-   files are allowlisted and pinned byte-stable. Would have caught #333 and #341.
+   `GRANT`/`REVOKE … ON SCHEMA (auth|storage)`. Under `supabase db push` (applied as
+   the downgraded `postgres`) such a grant silently no-ops unless `postgres` holds
+   grant option on that schema — true for `auth` on every image, and for `storage`
+   on images predating the platform's 2025-07-09 storage grant-option migration (the
+   dev image still does). Keeping them out of migrations on every image makes
+   `schema_grants.sql` the one source of truth. Two historical files are allowlisted
+   and pinned byte-stable. Would have caught #333 and #341.
 2. **Grant set** — `schema_grants.sql` grants the expected matrix, and `auth` USAGE
    only to `bloom_writer` (#341 intentional gap).
 3. **Applied post-`db push`** — `migrate-local` and the CI job apply the file as

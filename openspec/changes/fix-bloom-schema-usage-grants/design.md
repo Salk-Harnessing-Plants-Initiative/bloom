@@ -10,16 +10,34 @@ themselves **created by migrations** (`20260414002000_security_groups.sql` for
 user/admin/agent; `20260519130000_add_bloom_writer_role.sql` for writer), i.e. by
 `db push` *after* container init — so they do not exist at cluster-init time.
 
-## Empirical findings (live dev DB, non-destructive / rolled back)
+## Empirical findings (live DBs, non-destructive / rolled back)
 
-1. **Only `supabase_admin` (owner + superuser) can grant schema USAGE.** A plain
-   `GRANT USAGE ON SCHEMA storage TO bloom_agent` as `postgres` →
-   `WARNING: no privileges were granted`; `has_schema_privilege` stays `f`. As
-   `supabase_admin` it sticks (`t`). Verified `f`→`t`.
-2. **`db push` downgrades regardless of connection user.** `migrate-local` and the
-   deploy both connect as `supabase_admin` via `--db-url`, yet the in-migration grant
-   still no-ops — so any schema-grant *migration* silently no-ops everywhere, which is
-   why prod's grants were applied manually (task 1).
+1. **A schema-USAGE grant sticks only when run by a role with grant authority on
+   that schema** — the owner (`supabase_admin`), or a `USAGE … WITH GRANT OPTION`
+   holder. `db push` downgrades to `postgres` regardless of connection user
+   (`migrate-local` and the deploy both connect as `supabase_admin` via `--db-url`,
+   yet application is `postgres`), so an in-migration grant sticks **iff `postgres`
+   holds grant option on that schema**, else it silently no-ops
+   (`WARNING: no privileges were granted`). Applied as `supabase_admin` it always
+   sticks (`f`→`t`).
+2. **The grant authority splits by schema and by `supabase/postgres` image** (probed
+   `pg_namespace` ACLs on both images this repo runs):
+   - **`auth`**: `postgres=U` (no grant option) on **every** image — no platform
+     migration grants it. So an in-migration `auth` grant **always** no-ops, and
+     `bloom_writer`'s `auth` USAGE genuinely requires the `supabase_admin` path
+     everywhere. This is the surviving, image-independent justification for the file.
+   - **`storage`**: the new image (prod/CI, `15.14.1.104`) ships the baked migration
+     `20250709135250_grant_storage_schema_to_postgres_with_grant_option.sql`
+     (`grant usage on schema storage to postgres with grant option`) → `postgres=U*`,
+     so an in-migration storage grant **sticks** there. The old image (dev,
+     `15.8.1.060`) lacks it → `postgres=UC` → it **no-ops** (the original #333 repro).
+     So `schema_grants.sql`'s storage grant is **load-bearing on old images and
+     idempotent belt-and-suspenders on new ones**; the end state (grants present) is
+     identical either way.
+   - Consequence for tests: the integration test asserts the portable invariant
+     (`stuck == postgres-has-grant-option`, per schema, via a throwaway role) plus a
+     dedicated check that `postgres` never has grant option on `auth` — rather than a
+     hard-coded "storage no-ops" claim that is false on the new image.
 3. **`auth`-USAGE asymmetry is intentional (#341).** `bloom_user/admin/agent` hold
    `storage` but not `auth` USAGE; #341 settled that the real request paths don't
    evaluate their `auth.uid()` policies as those roles, so it is a documented gap, not
