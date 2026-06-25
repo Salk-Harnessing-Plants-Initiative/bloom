@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 
 from . import __version__
@@ -16,18 +18,39 @@ def cli() -> None:
 
 
 @cli.command()
-@click.option("--server", default=DEFAULT_SERVER, show_default=True,
-              help="Which Bloom server to log in to — prod by default; pass a staging/local URL to switch.")
-@click.option("--api-url", default=None,
-              help="Supabase API URL (e.g. https://bloom.salk.edu/api). Pair with --anon-key to skip the /client-info fetch.")
-@click.option("--anon-key", default=None,
-              help="Public anon key — pair with --api-url to supply credentials manually when /client-info can't be fetched (interim / local / offline).")
-@click.option("-p", "--profile", default=DEFAULT_PROFILE, show_default=True,
-              help="Credentials profile to write (credentials.txt for prod).")
+@click.option(
+    "--server",
+    default=DEFAULT_SERVER,
+    show_default=True,
+    help="Which Bloom server to log in to — prod by default; pass a staging/local URL to switch.",
+)
+@click.option(
+    "--api-url",
+    default=None,
+    help="Supabase API URL (e.g. https://bloom.salk.edu/api). Pair with --anon-key to skip the /client-info fetch.",
+)
+@click.option(
+    "--anon-key",
+    default=None,
+    help="Public anon key — pair with --api-url to supply credentials manually when /client-info can't be fetched (interim / local / offline).",
+)
+@click.option(
+    "-p",
+    "--profile",
+    default=DEFAULT_PROFILE,
+    show_default=True,
+    help="Credentials profile to write (credentials.txt for prod).",
+)
 @click.option("--email", default=None, help="Login email (prompted if omitted).")
 @click.option("--password", default=None, help="Login password (prompted if omitted).")
-def login(server: str, api_url: str | None, anon_key: str | None,
-          profile: str, email: str | None, password: str | None) -> None:
+def login(
+    server: str,
+    api_url: str | None,
+    anon_key: str | None,
+    profile: str,
+    email: str | None,
+    password: str | None,
+) -> None:
     """Log in to Bloom and save credentials to ~/.bloom/credentials.txt."""
     from . import auth
     from .credentials import Credentials, save_credentials
@@ -61,3 +84,106 @@ def login(server: str, api_url: str | None, anon_key: str | None,
         profile=profile,
     )
     click.echo(f"Logged in as {email}. Credentials saved to {path}.")
+
+
+@cli.command()
+@click.argument("out_dir", type=click.Path(file_okay=False, path_type=Path))
+@click.option(
+    "--experiment-id",
+    "--experiment_id",
+    "experiment_id",
+    type=int,
+    required=True,
+    help="Experiment ID to download.",
+)
+@click.option(
+    "-p",
+    "--profile",
+    default=DEFAULT_PROFILE,
+    show_default=True,
+    help="Credentials profile to use.",
+)
+@click.option(
+    "--meta-only",
+    "--meta_only",
+    "meta_only",
+    is_flag=True,
+    help="Write scans.csv only; skip image download.",
+)
+@click.option(
+    "--plant-qr-code",
+    "--plant_qr_code",
+    "plant_qr_code",
+    default=None,
+    help="Restrict to a single plant QR code.",
+)
+@click.option(
+    "--plant-age-min",
+    "--plant_age_min",
+    "plant_age_min",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Minimum plant age in days.",
+)
+@click.option(
+    "--plant-age-max",
+    "--plant_age_max",
+    "plant_age_max",
+    type=int,
+    default=1000,
+    show_default=True,
+    help="Maximum plant age in days.",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=100000,
+    show_default=True,
+    help="Maximum number of scans to fetch.",
+)
+def download(
+    out_dir: Path,
+    experiment_id: int,
+    profile: str,
+    meta_only: bool,
+    plant_qr_code: str | None,
+    plant_age_min: int,
+    plant_age_max: int,
+    limit: int,
+) -> None:
+    """Download a cylinder experiment's metadata (scans.csv) and per-frame images."""
+    from . import auth
+    from . import download as dl
+    from .credentials import load_credentials
+
+    try:
+        creds = load_credentials(profile)
+    except (FileNotFoundError, ValueError) as exc:
+        raise click.ClickException(f"{exc} — run `bloomcli login`.") from exc
+    try:
+        client = auth.make_authed_client(creds)
+    except auth.AuthError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    scans = dl.fetch_scans(
+        client,
+        experiment_id,
+        plant_qr_code=plant_qr_code,
+        plant_age_min=plant_age_min,
+        plant_age_max=plant_age_max,
+        limit=limit,
+    )
+    genotypes = dl.fetch_genotypes(client, [s.get("accession_id") for s in scans])
+    rows = [dl.build_scan_row(s, genotypes.get(s.get("accession_id"))) for s in scans]
+
+    out = Path(out_dir)
+    csv_path = out / "scans.csv"
+    dl.write_scans_csv(rows, csv_path)
+    click.echo(f"Wrote {len(rows)} scans → {csv_path}")
+
+    if meta_only:
+        return
+
+    written = dl.download_images(client, scans, out)
+    click.echo(f"Downloaded {written} image frames → {out / 'images'}")
