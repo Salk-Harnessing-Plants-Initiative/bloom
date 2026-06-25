@@ -647,6 +647,20 @@ jobs:
             exit 1
           }
 
+      # bloom_* schema-USAGE grants (issue #333). `supabase db push` applies
+      # migrations as the downgraded `postgres`, which cannot grant on the
+      # supabase_admin-owned storage/auth schemas (a raw grant there silently
+      # no-ops). Apply the single-source grants file as supabase_admin, AFTER db
+      # push has created the bloom_* roles. Same file `make migrate-local` applies.
+      - name: Apply bloom_* schema-USAGE grants
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+        run: |
+          docker compose $COMPOSE_FILES --env-file .env.ci exec -T \
+            -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
+            psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+            < supabase/grants/schema_grants.sql
+
       # Layer B — runs only on failure. Prints applied-vs-pending state so an
       # on-call engineer can see which migration broke without digging through
       # step logs. `|| true` stops a diagnostic-fetch failure from masking
