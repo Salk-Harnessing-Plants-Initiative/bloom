@@ -69,12 +69,15 @@ the maintainer).
   holds UPDATE only on `experiment_progress_logs`; inert UPDATE policies are
   removed). The capability is **founded** by the in-flight #333 change
   `fix-bloom-schema-usage-grants`; this delta extends it.
-- **Merge/archive order (hard, for spec coherence):** #333 must merge to `staging`
-  **first** — it materializes `database-role-grants` in `openspec/specs/`. This
-  change's migration timestamp must sort **after** #333's latest
-  (`20260622180000`); use a `2026-06-24`+ timestamp (e.g. `20260624000000`). The two
-  are runtime-independent (this migration needs neither `schema_grants.sql` nor the
-  #333 CI guard to apply); only spec-archival and timestamp ordering depend on #333.
+- **Merge/archive order:** #333 (`fix-bloom-schema-usage-grants`) is **merged** to
+  `staging` (its raw-schema-grant guard is present); this branch is rebased onto it.
+  Migration timestamp `20260624000000` sorts after staging's latest
+  (`20260622180000`). The two are runtime-independent (this migration needs neither
+  `schema_grants.sql` nor the #333 guard to apply). **Archive ordering:** the
+  `database-role-grants` base requirements are founded by #333 and are not yet in
+  `openspec/specs/` (PR #355 archives the deployed changes and lands that spec).
+  Archive #355 (or #333) **before** archiving this change, so this delta extends the
+  existing capability rather than creating it from only its own requirements.
 - Affected code:
   - `supabase/migrations/20260624000000_bloom_user_read_only_cleanup.sql` (new,
     idempotent; header documents #341 + that it supersedes the now-stale

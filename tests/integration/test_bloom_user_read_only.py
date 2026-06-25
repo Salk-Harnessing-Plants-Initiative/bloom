@@ -1,18 +1,19 @@
 """
-Integration tests for the `bloom_user` read-only contract (issue #341).
+Integration tests for the `bloom_user` no-UPDATE contract (issue #341).
 
-`bloom_user` is intended read-only: it may SELECT and INSERT on `public`, but
-UPDATE is denied on every `public` table EXCEPT `public.experiment_progress_logs`
-(the gene-page "Progress" panel writes there via a `USING (true)` RLS policy that
-never touches the `auth` schema).
+This is a no-UPDATE change, not full read-only: `bloom_user` keeps SELECT and
+INSERT on `public` (INSERT retained intentionally per #341); UPDATE is denied on
+every `public` table EXCEPT `public.experiment_progress_logs` (the gene-page
+"Progress" panel writes there via a `USING (true)` RLS policy that never touches
+the `auth` schema). DELETE was never granted.
 
 Migration `20260624000000_bloom_user_read_only_cleanup.sql` enforces this by
 revoking the blanket table-level UPDATE grant (so a non-exempt UPDATE is rejected
 at the privilege check, SQLSTATE 42501 — *before* RLS is evaluated) and dropping
-the five now-dead `user_update_*` policies, four of which gated on
-`created_by = auth.uid()` and were inert only because `bloom_user` lacks `auth`
-USAGE. Removing the grant makes the read-only design explicit instead of relying
-on that withheld grant.
+the five now-dead `user_update_*` policies (four gated on the unreachable
+`auth.uid()`, the fifth — accessions — `USING (true)`, the only live one).
+Removing the grant makes the no-UPDATE design explicit instead of relying on that
+withheld grant.
 
 Requires a live compose stack with migrations applied (the same harness as
 `test_migrations.py`). Uses the `pg_conn` fixture (connects as `supabase_admin`);
@@ -100,6 +101,25 @@ def test_update_accessions_denied(pg_conn):
             pg_conn.rollback()
 
 
+def test_update_genes_denied(pg_conn):
+    """genes is the behaviorally subtle case: it had NO user_update_* policy, so a
+    bloom_user UPDATE pre-migration silently returned 0 rows (the grant existed, RLS
+    denied). Post-migration the grant is gone, so the same UPDATE raises 42501 — a
+    louder, clearer failure. Pin that transition."""
+    with pg_conn.cursor() as cur:
+        try:
+            cur.execute("INSERT INTO public.genes (gene_id) VALUES ('GENE_DENY_341')")
+            cur.execute("SAVEPOINT before_update")
+            cur.execute("SET LOCAL ROLE bloom_user")
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                cur.execute(
+                    "UPDATE public.genes SET symbol = 'x' WHERE gene_id = 'GENE_DENY_341'"
+                )
+            cur.execute("ROLLBACK TO SAVEPOINT before_update")
+        finally:
+            pg_conn.rollback()
+
+
 def test_update_experiment_progress_logs_allowed(pg_conn):
     """The one retained write path: bloom_user may UPDATE experiment_progress_logs."""
     with pg_conn.cursor() as cur:
@@ -131,11 +151,36 @@ def test_update_experiment_progress_logs_allowed(pg_conn):
 
 
 def test_read_and_insert_preserved(pg_conn):
-    """The revoke is UPDATE-only: SELECT and INSERT on public.species are kept."""
+    """The change is no-UPDATE, not no-write: SELECT + INSERT are kept (INSERT
+    retained intentionally per #341), UPDATE + DELETE are not. Asserts the grant
+    matrix on public.species and an actually-executed INSERT as bloom_user on
+    experiment_progress_logs.
+
+    NOTE: an executed INSERT as bloom_user on a `created_by` table (e.g. species)
+    independently fails today via the `set_created_by()` BEFORE-INSERT trigger,
+    which calls `auth.uid()` and hits the same #341 auth-schema gap. That is
+    pre-existing and unrelated to this UPDATE-only change, so the executed-INSERT
+    proof uses experiment_progress_logs (no `created_by` trigger)."""
     with pg_conn.cursor() as cur:
         assert _has_priv(cur, "bloom_user", "public.species", "SELECT") is True
         assert _has_priv(cur, "bloom_user", "public.species", "INSERT") is True
         assert _has_priv(cur, "bloom_user", "public.species", "UPDATE") is False
+        assert _has_priv(cur, "bloom_user", "public.species", "DELETE") is False
+    with pg_conn.cursor() as cur:
+        try:
+            # Seed the FK chain as superuser, then INSERT as bloom_user.
+            cur.execute("INSERT INTO public.genes (gene_id) VALUES ('INS_GENE_341')")
+            cur.execute(
+                "INSERT INTO public.gene_candidates (gene) VALUES ('INS_GENE_341')"
+            )
+            cur.execute("SET LOCAL ROLE bloom_user")
+            cur.execute(
+                "INSERT INTO public.experiment_progress_logs (gene, message) "
+                "VALUES ('INS_GENE_341', 'insert-probe')"
+            )
+            assert cur.rowcount == 1
+        finally:
+            pg_conn.rollback()
 
 
 def test_future_tables_do_not_regrant_update(pg_conn):
@@ -160,9 +205,13 @@ def test_future_tables_do_not_regrant_update(pg_conn):
             pg_conn.rollback()  # drops the probe table
 
 
-def test_admin_and_agent_unaffected(pg_conn):
-    """Regression guard: bloom_admin keeps full CRUD, bloom_agent stays read-only."""
+def test_writer_admin_agent_unaffected(pg_conn):
+    """Regression guard. bloom_writer KEEPS UPDATE — it inherits bloom_user but
+    survives on its own direct grant, so writes still flow through it (the PR's
+    central premise; a future revoke refactor that broke it would fail here).
+    bloom_admin keeps full CRUD; bloom_agent stays read-only."""
     with pg_conn.cursor() as cur:
+        assert _has_priv(cur, "bloom_writer", "public.species", "UPDATE") is True
         assert _has_priv(cur, "bloom_admin", "public.species", "UPDATE") is True
         assert _has_priv(cur, "bloom_agent", "public.species", "UPDATE") is False
         assert _has_priv(cur, "bloom_agent", "public.species", "SELECT") is True
