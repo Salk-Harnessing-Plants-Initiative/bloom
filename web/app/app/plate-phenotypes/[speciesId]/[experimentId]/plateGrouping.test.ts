@@ -11,6 +11,9 @@ import {
   scanWave,
   plateSortKey,
   waveLabel,
+  waveKey,
+  parseWaveKey,
+  waveScanDateRange,
   type ScanRow,
 } from "./plateGrouping";
 
@@ -132,5 +135,32 @@ describe("plateSortKey / waveLabel", () => {
   it("labels waves, with null as 'No wave'", () => {
     expect(waveLabel(2)).toBe("Wave 2");
     expect(waveLabel(null)).toBe("No wave");
+  });
+});
+
+describe("waveKey / parseWaveKey", () => {
+  it("round-trips a wave number and the null sentinel", () => {
+    expect(waveKey(3)).toBe("3");
+    expect(waveKey(null)).toBe("none");
+    expect(parseWaveKey("3")).toBe(3);
+    expect(parseWaveKey("none")).toBeNull();
+  });
+});
+
+describe("waveScanDateRange", () => {
+  it("returns earliest and latest capture_date across a wave's plates", () => {
+    const waves = groupByWave([
+      scan({ plate_id: "Plate_1", wave_number: 1, capture_date: "2026-05-05T00:00:00Z" }),
+      scan({ plate_id: "Plate_1", wave_number: 1, capture_date: "2026-05-01T00:00:00Z" }),
+      scan({ plate_id: "Plate_2", wave_number: 1, capture_date: "2026-05-08T00:00:00Z" }),
+    ]);
+    expect(waveScanDateRange(waves[0].plates)).toEqual({
+      first: "2026-05-01T00:00:00Z",
+      last: "2026-05-08T00:00:00Z",
+    });
+  });
+
+  it("returns nulls when there are no plates", () => {
+    expect(waveScanDateRange([])).toEqual({ first: null, last: null });
   });
 });
