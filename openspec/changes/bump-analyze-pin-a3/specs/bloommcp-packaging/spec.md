@@ -8,8 +8,10 @@ The `bloommcp` `pyproject.toml` SHALL declare a publication-ready project that a
 by the vendored modules. The `sleap-roots-analyze` floor SHALL be `>=0.1.0a3` so that the
 serializable result types (`PCAResult`, `HeritabilityResult`, `KMeansResult`,
 `GMMResult`) resolve from the released package for downstream tiers. No dependency that is
-still imported by shipped code SHALL be removed. Committed lockfiles (`bloommcp/uv.lock` +
-root) SHALL stay in sync with their `pyproject.toml`.
+still imported by shipped code SHALL be removed. The committed `bloommcp/uv.lock` SHALL
+stay in sync with `bloommcp/pyproject.toml`, verified by `scripts/check-uv-locks.py`,
+which checks the `langchain`, `bloommcp`, and `services/video-worker` service locks (the
+root lock is independent of this package and is not a checked service).
 
 #### Scenario: Build and import succeed in a clean environment
 
@@ -20,8 +22,10 @@ root) SHALL stay in sync with their `pyproject.toml`.
 
 #### Scenario: Lockfiles are in sync
 
-- **WHEN** `uv lock --check` runs against the committed `bloommcp/uv.lock` and the root
-  lock (and `scripts/check-uv-locks.py` runs)
+- **WHEN** `uv lock --check` runs against the committed `bloommcp/uv.lock`, and
+  `scripts/check-uv-locks.py` runs across the `langchain`, `bloommcp`, and
+  `services/video-worker` service locks (the root lock is independent and not a checked
+  service)
 - **THEN** each reports the lockfile in sync with its `pyproject.toml`
 
 #### Scenario: Released analyze result types resolve
