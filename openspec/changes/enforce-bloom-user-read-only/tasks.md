@@ -1,9 +1,8 @@
 ## 0. Prerequisite ordering
 
-- [ ] 0.1 Confirm #333 (`fix-bloom-schema-usage-grants`) has merged to `staging`
-      (it founds the `database-role-grants` capability in `openspec/specs/`). This
-      branch is based on `staging`; rebase if #333 landed after branch creation.
-      **NOT YET MERGED — gate before opening this PR.**
+- [x] 0.1 #333 (`fix-bloom-schema-usage-grants`) merged to `staging` (the
+      `test_schema_usage_grants.py` guard is present; capability archives separately).
+      Rebased this branch onto the updated `staging`.
 - [x] 0.2 Pick the migration timestamp `> 20260622180000` (the latest on staging).
       Use `20260624000000` (today is 2026-06-24).
 
@@ -87,9 +86,9 @@
 
 - [x] 5.1 `uv run --extra test pytest tests/integration/test_bloom_user_read_only.py -v`
       (after `make migrate-local`).
-- [ ] 5.2 `uv run --extra test pytest tests/unit/test_schema_usage_grants.py` — the
-      #333 raw-schema-grant CI guard stays green; the new migration is public-only,
-      so it must **not** be flagged and must **not** be added to the allowlist.
+- [x] 5.2 `uv run --extra test pytest tests/unit/test_schema_usage_grants.py` — the
+      #333 raw-schema-grant CI guard stays green (6 passed); the new migration is
+      public-only, not flagged, and not added to the allowlist.
 - [x] 5.3 `uv run --extra test pytest tests/integration/test_migrations.py::test_db_push_is_idempotent`
       — proves the new migration re-runs as a no-op.
 - [x] 5.4 `bash scripts/lint_migrations.sh origin/staging` — filename pattern + a
@@ -102,8 +101,8 @@
 
 ## 6. Wrap up
 
-- [ ] 6.1 Open the PR against `staging`; body notes `Depends on #333`, `Closes #341`,
-      the task-1 due diligence, and the reverse DDL.
+- [x] 6.1 Opened PR #346 against `staging`; body notes the #333 dependency,
+      `Closes #341`, the task-1 due diligence, and the reverse DDL.
 - [ ] 6.2 Update issue #341 with the resolution (read-only cleanup landed; auth gap
       intentional and unchanged).
 - [ ] 6.3 After deploy, archive this change (`openspec archive
