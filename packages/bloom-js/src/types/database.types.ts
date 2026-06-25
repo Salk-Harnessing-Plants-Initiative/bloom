@@ -691,6 +691,64 @@ export type Database = {
           },
         ]
       }
+      cyl_scan_intermediates: {
+        Row: {
+          box_link: string | null
+          checksum: string | null
+          file_size: number | null
+          id: number
+          kind: string
+          root_type: string
+          s3_location: string | null
+          scan_id: number
+          source_id: number
+        }
+        Insert: {
+          box_link?: string | null
+          checksum?: string | null
+          file_size?: number | null
+          id?: number
+          kind: string
+          root_type: string
+          s3_location?: string | null
+          scan_id: number
+          source_id: number
+        }
+        Update: {
+          box_link?: string | null
+          checksum?: string | null
+          file_size?: number | null
+          id?: number
+          kind?: string
+          root_type?: string
+          s3_location?: string | null
+          scan_id?: number
+          source_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cyl_scan_intermediates_scan_id_fkey"
+            columns: ["scan_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_scan_intermediates_scan_id_fkey"
+            columns: ["scan_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans_extended"
+            referencedColumns: ["scan_id"]
+          },
+          {
+            foreignKeyName: "cyl_scan_intermediates_source_id_fkey"
+            columns: ["source_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_trait_sources"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cyl_scan_traits: {
         Row: {
           id: number
