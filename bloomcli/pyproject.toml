@@ -14,6 +14,8 @@ classifiers = [
 dependencies = [
     "click>=8.1",
     "rich>=13.0",
+    # /client-info bootstrap fetch (login).
+    "httpx>=0.27",
     # Supabase PostgREST + Storage client (auth, metadata query, image signing).
     "supabase>=2.0.0",
     "python-dotenv>=1.0.0",
