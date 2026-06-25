@@ -53,7 +53,7 @@
       cleanup-threshold + trait-selection params, and `seed = None`; the persisted
       `StoredRun` for `(experiment, "qc")` carries the same provenance and includes the
       `_cleaned.csv` + `cleanup_log.json` outputs; the returned result references those via
-      `resource_link`s and does **not** embed the cleaned dataframe inline.
+      links (object keys + manifest path) and does **not** embed the cleaned dataframe inline.
 - [x] 3.4 Property/invariant: the cleaned table is a subset of the input (kept trait cols ⊆
       input trait cols, rows ⊆ input rows), has no NaNs, and `0 < n_samples_out <=
       n_samples_in`, `0 < n_traits_out <= n_traits_in`.
@@ -73,16 +73,26 @@
 - [x] 3.8 Composition (through the harness from task 1.4): after `qc_clean` commits a run,
       a `require_clean=True` load through the `SupabaseReader`/`SupabaseResultStore` over the
       shared `_InMemoryObjectStore` resolves the committed cleaned version (source
-      `v<N>_cleaned`, not `raw`). Optional: a second `qc_clean` run increments to `v2` and
-      `latest` resolves to it.
+      `v<N>_cleaned`, not `raw`). **The reloaded artifact is the no-NaN/golden-shape oracle**
+      (187 samples × 18 traits, `isna()==0`) — the FakeResultStore path can't reload, so this
+      real round-trip guards against a persisted-NaN regression.
+- [x] 3.9 Guard tests (post-review): residual NaNs in kept columns → `assumption_violated`,
+      no run; **every sample dropped** (traits survive) → `assumption_violated`, no run.
+- [x] 3.10 `trait_columns` validation: an unknown column → `invalid_input` naming it; a
+      non-numeric column (e.g. `geno`) → `invalid_input`.
+- [x] 3.11 Non-default role forwarding: a capitalized `Genotype`/`Replicate` fixture proves
+      the tool forwards the **detected** roles (overriding the delegate's `geno`/`rep`
+      defaults), not hard-coded defaults.
+- [x] 3.12 Second run increments version: two `qc_clean` runs → `v1`, `v2`; `latest` → `v2`.
 
 ## 4. GREEN — implement the tool
 
 - [x] 4.1 Add `bloommcp/src/bloom_mcp/tools/qc_clean_tool.py`: `QCCleanParams(BaseModel)`
       (experiment name, optional trait-column selection, the four cleanup thresholds with
       `[0,1]` / positive-int validation — **no `seed`**) and a `QCCleanResult`-shaped output
-      model (`n_samples_in/out`, `n_traits_in/out`, retention, kept trait cols, NaN-location
-      summary, `resource_link`s to cleaned CSV + log, `run_ref`, `manifest`).
+      model (`n_samples_in/out`, `n_traits_in/out`, separate `sample_retention`/
+      `trait_retention`, kept trait cols, input-scoped `input_nan_summary` +
+      `cleaned_nan_cells_remaining`, links — object keys + `manifest_path` + `run_ref`).
 - [x] 4.2 Implement `qc_clean(params, *, provenance)` wrapped by `@as_mcp_tool` (declares
       `provenance`, **not** `random_state`): load the **raw** frame via
       `_ports.reader().load_experiment(name)` (no `require_clean`), mapping
@@ -90,21 +100,22 @@
 - [x] 4.3 Delegate to `sleap_roots_analyze.clean_traits_for_analysis(df, trait_cols,
       barcode_col=…, genotype_col=…, replicate_col=…, **thresholds)` — forwarding detected
       role columns, omitting any that are `None`. Map the returned `(df, kept_cols, log)` into
-      the output model; raise a `BloomMCPError` if `kept_cols` is empty. Optionally call
-      `inspect_nan_samples` for the NaN-location summary. **No QC logic in the MCP** (no call
-      to `bloom_mcp.data_cleanup`).
+      the output model. **Guard before commit:** residual NaNs in kept cols, zero kept traits,
+      or zero samples → `BloomMCPError(assumption_violated)`, persist nothing. Validate a
+      caller `trait_columns` subset (existence + numeric) → `invalid_input`. **No QC logic in
+      the MCP** (no call to `bloom_mcp.data_cleanup`).
 - [x] 4.4 Persist via `_ports.store().create_run(experiment=…, tool_class="qc",
       provenance=provenance, …)` → stage `_cleaned.csv` + `cleanup_log.json` into the run's
-      staging dir → `commit(...)`; return the inline summary + `resource_link`s from the
-      `StoredRun`. Match the `_cleaned.csv` naming the reader's cleaned-version resolution
-      expects. (`create_run` takes `tool_class=` and carries no `params` arg — params live in
+      staging dir → `commit(...)`; return the inline summary + links from the `StoredRun`.
+      Use the shared `CLEANED_CSV_NAME` constant (producer + consumer agree via it, not a
+      literal) and wire `source_csv` (local-FS input) for manifest content-addressing.
+      (`create_run` takes `tool_class=` and carries no `params` arg — params live in
       `provenance`; matches the shipped port code.)
 - [x] 4.5 Add `register(mcp)` using `bloom_mcp.contract.register(mcp, qc_clean)`.
 - [x] 4.6 Register the module in `src/bloom_mcp/server.py` under "Direct tools (granular)"
       and add `qc_clean` to its module-docstring tool list.
-- [x] 4.7 Update `bloommcp/docs/roadmap.md`: insert a `qc_clean` Tier 3 row (#338) and
-      renumber the granular tiers (PCA → Tier 4 / clustering → Tier 5), reconciling the
-      sequencing/pre-work lines with the new numbering.
+- [ ] 4.7 Roadmap reshape (qc_clean=Tier 3, PCA→4, clustering→5) — **owned by PR #339**
+      (Elizabeth's `reshape Tier 3`); not edited here to avoid a conflict on `roadmap.md`.
 - [x] 4.8 Run the suite; debug to GREEN **without** weakening the no-NaN / fewer-than-dropna
       oracle.
 

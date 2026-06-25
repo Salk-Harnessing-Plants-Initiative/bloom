@@ -80,11 +80,34 @@ The constraints are fixed by the existing code:
   `n_traits_in/out`, retention, and the NaN-location summary go inline; the cleaned CSV and
   the cleanup log go to `ResultStore` and come back as `resource_link`s — per design
   (small structured results inline + `resource_link`s, never inline blobs).
-- **Decision: a cleanup that would drop every trait is a structured error, not an empty
-  run.** If the delegate returns zero kept trait columns, the tool raises a `BloomMCPError`
-  with a relax-the-thresholds remedy rather than persisting a degenerate, unusable cleaned
-  run that a downstream PCA would then fail on opaquely. The property invariant
-  (`0 < n_traits_out`) is enforced by this guard.
+- **Decision: an unconditional no-NaN / non-degenerate guard before commit.** The delegate
+  (`clean_traits_for_analysis`) already dropnas to a no-NaN table on `0.1.0a3` (verified
+  across all threshold combinations), but the tool does not *rely* on that — before
+  committing it asserts `cleaned_df[kept_cols]` is NaN-free and `0 < n_traits_out` and
+  `0 < n_samples_out`. Any violation (residual NaNs, all traits dropped, **or all samples
+  dropped** — the asymmetric case a trait-only guard would miss) raises a `BloomMCPError`
+  (`assumption_violated`, relax-thresholds remedy) and persists nothing. This makes the
+  guarantee `pca_analysis (require_clean=True)` depends on explicit and version-independent.
+- **Decision: validate a caller-supplied `trait_columns` subset up front.** An unknown column
+  would otherwise raise `KeyError` → opaque `internal_error`, and a non-numeric column would
+  silently corrupt the delegate's zero/NaN-fraction filtering. The tool checks existence +
+  numeric dtype and raises `invalid_input` naming the offending columns (the most likely
+  real-world misuse: an agent guessing a column name).
+- **Decision: report `sample_retention` and `trait_retention` separately**, not a single
+  cell-count ratio — the sample-vs-trait distinction is exactly what the tool exists to
+  surface, and a combined `(s_out·t_out)/(s_in·t_in)` ratio obscures it.
+- **Decision: `input_nan_summary` is explicitly input-scoped, plus a guaranteed-zero
+  `cleaned_nan_cells_remaining`** — so the NaN reporting next to the in/out counts can't be
+  misread as "NaNs remaining in the cleaned table".
+- **Decision: `qc_clean` and `run_qc_workflow` share tool class `qc` and `CLEANED_CSV_NAME`.**
+  Both write a cleaned version the reader resolves; "latest cleaned" is whichever committed
+  most recently. They use *different* cleaners (analyze delegate vs vendored `data_cleanup`),
+  so mixing them on one experiment makes "latest" algorithm-dependent — acceptable while
+  retirement of the workflow is deferred (after Stage 1); document "prefer one cleaner per
+  experiment". Versioning is **single-writer** (`create_run` allocates `v<N>` with no
+  compare-and-set) — correct for one bloom-mcp container; concurrent cleans on the same
+  experiment are an accepted, documented non-goal (manifest CAS is a deferred adapter
+  concern).
 
 ## Risks / Trade-offs
 

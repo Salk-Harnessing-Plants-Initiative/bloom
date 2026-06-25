@@ -313,4 +313,133 @@ def test_qc_clean_run_composes_into_require_clean_read(fake_supabase_storage, tm
 
     assert resolved.source.endswith("_cleaned")
     assert resolved.source != "raw"
+    # Artifact-level oracle: the *reloaded* cleaned frame is genuinely no-NaN and
+    # matches the golden shape — a regression that persisted NaN rows fails here
+    # (the FakeResultStore path can't reload, so this real round-trip is the guard).
     assert int(resolved.df[resolved.trait_cols].isna().sum().sum()) == 0
+    assert len(resolved.df) == _GOLDEN["cleaned_samples"] == 187
+    assert len(resolved.trait_cols) == _GOLDEN["cleaned_traits"] == 18
+
+
+# ── trait_columns validation (blocking #3) ──────────────────────────────────
+
+
+def test_unknown_trait_column_is_invalid_input_naming_it(injected_ports):
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment=_EXPERIMENT, trait_columns=["NoSuchTrait"]))
+    assert exc.value.code == "invalid_input"
+    assert "NoSuchTrait" in exc.value.message
+
+
+def test_non_numeric_trait_column_is_invalid_input(injected_ports):
+    # 'geno' is a metadata/label column, not a numeric trait.
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment=_EXPERIMENT, trait_columns=["geno"]))
+    assert exc.value.code == "invalid_input"
+    assert "geno" in exc.value.message
+
+
+# ── all-samples-dropped guard (blocking #4) ─────────────────────────────────
+
+
+def test_all_samples_dropped_is_structured_error_with_no_run(
+    injected_ports, monkeypatch
+):
+    _reader, store = injected_ports
+
+    def _drops_all_samples(df, trait_cols=None, **kwargs):
+        # Keeps trait columns but zero rows — the asymmetric case the trait-only
+        # guard would miss.
+        cols = list(trait_cols or [])
+        return (
+            df.iloc[:0][cols].copy(),
+            cols,
+            {
+                "original_samples": len(df),
+                "final_samples": 0,
+                "original_traits": len(cols),
+                "final_traits": len(cols),
+                "removed_traits": [],
+            },
+        )
+
+    monkeypatch.setattr(qc_clean_tool, "clean_traits_for_analysis", _drops_all_samples)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "assumption_violated"
+    assert store.list_runs(_EXPERIMENT, "qc") == []
+
+
+# ── residual-NaN guard (blocking #1/#2) ─────────────────────────────────────
+
+
+def test_residual_nans_in_kept_columns_are_rejected_before_commit(
+    injected_ports, monkeypatch
+):
+    _reader, store = injected_ports
+
+    def _leaves_nans(df, trait_cols=None, **kwargs):
+        cols = list(trait_cols or [])
+        out = df[cols].copy()
+        out.iloc[0, 0] = float("nan")  # a NaN the delegate failed to clean
+        return out, cols, {"final_samples": len(out), "final_traits": len(cols)}
+
+    monkeypatch.setattr(qc_clean_tool, "clean_traits_for_analysis", _leaves_nans)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "assumption_violated"
+    assert "nan" in exc.value.message.lower()
+    assert store.list_runs(_EXPERIMENT, "qc") == []  # nothing persisted
+
+
+# ── role forwarding overrides delegate defaults (non-default roles) ─────────
+
+
+def test_non_default_roles_are_forwarded_overriding_delegate_defaults(monkeypatch):
+    # Capitalized Genotype/Replicate differ from the delegate defaults geno/rep,
+    # so this distinguishes "forwards detected roles" from "hard-codes defaults".
+    df = pd.DataFrame(
+        {
+            "Genotype": (["g1", "g2"] * 8),
+            "Replicate": list(range(16)),
+            "tA": [float(i) for i in range(16)],
+            "tB": [float(2 * i) for i in range(16)],
+        }
+    )
+    reader = FakeReader()
+    reader.add_experiment("caps.csv", df)
+    store = FakeResultStore()
+    _ports.configure(reader=reader, store=store)
+
+    captured = {}
+
+    def _spy(frame_df, trait_cols=None, **kwargs):
+        captured["kwargs"] = kwargs
+        cols = list(trait_cols or [])
+        return (
+            frame_df[cols].copy(),
+            cols,
+            {"final_samples": len(frame_df), "final_traits": len(cols)},
+        )
+
+    monkeypatch.setattr(qc_clean_tool, "clean_traits_for_analysis", _spy)
+    try:
+        qc_clean(QCCleanParams(experiment="caps.csv"))
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert captured["kwargs"]["genotype_col"] == "Genotype"
+    assert captured["kwargs"]["replicate_col"] == "Replicate"
+    # sample_id undetected here → barcode_col omitted (not forwarded as None).
+    assert captured["kwargs"].get("barcode_col") != "Genotype"
+
+
+# ── second run increments version (latest resolves to it) ───────────────────
+
+
+def test_second_run_increments_version(injected_ports):
+    _reader, store = injected_ports
+    _run()
+    _run()
+    assert [r.run_ref for r in store.list_runs(_EXPERIMENT, "qc")] == ["v1", "v2"]
+    assert store.get_run(_EXPERIMENT, "qc", "latest").run_ref == "v2"

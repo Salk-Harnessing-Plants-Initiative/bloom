@@ -35,10 +35,18 @@ tool, `qc_clean` yields a no-NaN table that **drops fewer samples than a naive `
     entry point — cleanup + validate; analyze#164). It **does not** run the full
     `QCPipeline` and **does not** re-stitch `load → cleanup → validate` in the MCP — that
     orchestration is analyze's, tested upstream. The MCP contains **no QC logic**;
+  - validates a caller-supplied `trait_columns` subset up front (existence + numeric) →
+    `invalid_input` naming the bad columns, rather than an opaque `KeyError`/`internal_error`
+    or silent mis-filtering;
+  - **guarantees** the cleaned table is no-NaN and non-degenerate **before** persisting:
+    residual NaNs in kept columns, or a cleanup that drops every trait or every sample, raise
+    a structured `assumption_violated` error (relax-thresholds remedy) and persist nothing —
+    the guarantee `pca_analysis (require_clean=True)` relies on;
   - **persists a versioned run via the `ResultStore` port** under tool class `qc` — the
-    cleaned trait CSV (`_cleaned.csv`) + the cleanup log (`cleanup_log.json`: what
-    traits/samples were dropped and why) + provenance — so the run is resolvable by the
-    reader as a **cleaned version** that `pca_analysis` (`require_clean=True`) consumes;
+    cleaned trait CSV (`_cleaned.csv`, the shared `CLEANED_CSV_NAME` constant) + the cleanup
+    log (`cleanup_log.json`: what traits/samples were dropped and why) + provenance (with
+    `source_csv` wired for input content-addressing) — so the run is resolvable by the reader
+    as a **cleaned version** that `pca_analysis` (`require_clean=True`) consumes;
   - returns a small summary inline (n samples in/out, n traits in/out, retention) +
     `resource_link`s to the cleaned CSV and the log — never inline blobs;
   - optionally surfaces `inspect_nan_samples` output in the summary (where the NaNs were);
@@ -75,11 +83,15 @@ tool, `qc_clean` yields a no-NaN table that **drops fewer samples than a naive `
     in `tests/fixtures/README.md`, since only the *post-QC* `turface_19_final_data.csv`
     exists today;
   - `bloommcp/pyproject.toml` + `uv.lock` (bump the analyze pin to `>=0.1.0a3`, landed in the
-    same commit so `uv lock --check` / the `python-audit` gate stays clean);
-  - `bloommcp/docs/roadmap.md` — insert `qc_clean` as Tier 3 and renumber the granular tiers
-    (PCA → Tier 4 / clustering → Tier 5), reconciling the table with the #338/#308 issue
-    numbering;
-  - no change to `bloom_mcp.data_cleanup`, `tools/workflows/qc.py`, or the discovery tools.
+    same commit so `uv lock --check` / the `python-audit` gate stays clean). **This bump is
+    identical to PR #354** (the dedicated #327 pin PR); whichever lands first makes the other
+    a no-op — land #354 first and this rebases cleanly, or fold it here and close #354;
+  - `bloommcp/src/bloom_mcp/experiment_utils.py` + `tools/workflows/qc.py` — extract the
+    shared `CLEANED_CSV_NAME` constant (producer + `require_clean` consumer no longer agree
+    via a repeated string literal);
+  - **roadmap reshape is owned by PR #339** (Elizabeth's `reshape Tier 3 — QC before PCA`),
+    so `bloommcp/docs/roadmap.md` is **not** edited here to avoid a conflict;
+  - no change to `bloom_mcp.data_cleanup`'s logic or the discovery tools.
 - **Dependencies:** `sleap_roots_analyze.clean_traits_for_analysis` (analyze#164), released
   in `0.1.0a3`. Consuming any upstream typed cleanup-log result is a possible later upgrade,
   but `clean_traits_for_analysis` returns a plain `(df, kept_cols, log_dict)` tuple the tool

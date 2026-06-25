@@ -103,6 +103,13 @@ structured `BloomMCPError` (never a raw traceback or leaked backend internals), 
 - **THEN** both validate without loss, and an invalid input (e.g. missing experiment, a
   cleanup threshold out of `[0,1]`) yields a `BloomMCPError` with an `input`/validation code
 
+#### Scenario: A caller-supplied trait column that is unknown or non-numeric is rejected
+
+- **WHEN** `trait_columns` names a column absent from the experiment, or a non-numeric
+  (metadata/identifier) column
+- **THEN** the tool returns a `BloomMCPError` with code `invalid_input` whose message names
+  the offending column(s), rather than an opaque internal error or silent mis-filtering
+
 #### Scenario: Errors surface as a structured envelope
 
 - **WHEN** the delegated computation or backend read/write raises
@@ -115,21 +122,41 @@ structured `BloomMCPError` (never a raw traceback or leaked backend internals), 
 - **THEN** the stamped `Provenance` records the tool name, the cleanup-threshold and
   trait-selection params, and `seed = None` (QC applies no `random_state`)
 
-#### Scenario: A cleanup that would drop every trait is a structured error
+### Requirement: QC Clean Guarantees a No-NaN, Non-Degenerate Cleaned Table Before Persisting
 
-- **WHEN** the delegate's cleanup would leave no kept trait columns (every trait fails the
-  thresholds)
-- **THEN** `qc_clean` returns a `BloomMCPError` with a remedy (e.g. relax the thresholds)
-  rather than persisting an empty cleaned run
+The `qc_clean` tool SHALL verify, before committing any run, that the cleaned table has no
+NaNs in its kept trait columns and retains at least one trait column and at least one sample.
+If the cleanup would leave residual NaNs, drop every trait, or drop every sample, the tool
+SHALL return a `BloomMCPError` (code `assumption_violated`) with a relax-the-thresholds
+remedy and SHALL NOT persist a run. This is the guarantee a downstream
+`pca_analysis (require_clean=True)` relies on.
+
+#### Scenario: Residual NaNs in kept columns are rejected
+
+- **WHEN** the cleaned table would still contain a NaN in a kept trait column
+- **THEN** the tool returns a `BloomMCPError` and no run is persisted
+
+#### Scenario: A cleanup that drops every trait is rejected
+
+- **WHEN** the cleanup would leave no kept trait columns
+- **THEN** the tool returns a `BloomMCPError` with a relax-the-thresholds remedy and no run is
+  persisted
+
+#### Scenario: A cleanup that drops every sample is rejected
+
+- **WHEN** the cleanup would leave zero samples (even if trait columns survive)
+- **THEN** the tool returns a `BloomMCPError` and no run is persisted, so no empty cleaned
+  version can be resolved downstream
 
 ### Requirement: QC Clean Persists a Versioned Cleaned Run and Returns Links
 
 The `qc_clean` tool SHALL persist its outputs as a versioned run via the `ResultStore` port
 under tool class `qc`, carrying the contract-stamped `Provenance` into the manifest, writing
 the cleaned trait CSV and the cleanup log, and SHALL return the small in/out summary inline
-together with `resource_link`s to the persisted artifacts — never the cleaned table inline.
-The persisted run SHALL be resolvable by the `ExperimentReader` as a **cleaned version** so a
-later `pca_analysis` (`require_clean=True`) consumes it.
+together with **links** to the persisted artifacts (the `run_ref`, the `manifest_path`, and
+the per-output object keys) — never the cleaned table inline. The persisted run SHALL be
+resolvable by the `ExperimentReader` as a **cleaned version** so a later `pca_analysis`
+(`require_clean=True`) consumes it.
 
 #### Scenario: Run is committed with provenance
 
@@ -141,10 +168,10 @@ later `pca_analysis` (`require_clean=True`) consumes it.
 #### Scenario: Result returns links and a summary, not the table
 
 - **WHEN** the tool returns its result
-- **THEN** `n_samples_in` / `n_samples_out` / `n_traits_in` / `n_traits_out` (and retention)
-  are inline
-- **AND** the cleaned CSV and cleanup log are referenced via `resource_link`s to the
-  persisted run rather than embedded inline
+- **THEN** `n_samples_in` / `n_samples_out` / `n_traits_in` / `n_traits_out` and the separate
+  `sample_retention` / `trait_retention` ratios are inline
+- **AND** the cleaned CSV and cleanup log are referenced via links (object keys + manifest
+  path) to the persisted run rather than embedded inline
 
 #### Scenario: Cleaned run composes into the PCA tool
 
