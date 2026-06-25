@@ -56,16 +56,20 @@ samples than a naive `dropna()`** over the same raw trait columns.
 
 #### Scenario: Cleaned table has no NaNs
 
-- **WHEN** `qc_clean` completes on the raw turface_19 experiment
+- **WHEN** `qc_clean` completes on the raw turface_19 experiment (187 samples × 20 traits)
+  at `max_nans_per_trait = 0.1`
 - **THEN** the persisted cleaned trait table has zero NaNs across its kept trait columns
-- **AND** the inline summary reports `n_samples_out` and `n_traits_out` matching the
-  recorded golden cleaned shape
+- **AND** the inline summary reports `n_samples_out == 187` and `n_traits_out == 18`,
+  matching the recorded golden cleaned shape (the two NaN-heavy traits `Root_Biomass_mg` and
+  `Root_Shoot_Ratio` are dropped)
 
 #### Scenario: Fewer samples dropped than a naive dropna
 
 - **WHEN** the same raw turface_19 trait columns are reduced by a naive row-wise `dropna()`
-- **THEN** `qc_clean` retains strictly more samples than that naive drop
-- **AND** the summary reports `n_samples_in` and `n_samples_out` so the retention is visible
+- **THEN** the naive drop retains 158 samples, while `qc_clean` retains all 187
+  (`n_samples_out > naive_dropna_samples`)
+- **AND** the summary reports `n_samples_in == 187` and `n_samples_out == 187` so the
+  retention is visible
 
 ### Requirement: QC Clean Operates on Raw Input and Reads via the Port
 
