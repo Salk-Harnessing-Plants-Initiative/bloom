@@ -70,9 +70,15 @@ tool, `qc_clean` yields a no-NaN table that **drops fewer samples than a naive `
   - new `bloommcp/tests/tools/test_qc_clean_tool.py` (5 patterns) + the oracle through the
     tool;
   - new **raw** turface_19 fixture under `bloommcp/tests/fixtures/` (the pre-QC, NaN-bearing
-    input from the same talmolab/sleap-roots-analyze #120 / #146 source) + a recorded
-    golden cleaned shape, since only the *post-QC* `turface_19_final_data.csv` exists today;
-  - `bloommcp/pyproject.toml` + `uv.lock` (bump the analyze pin to `>=0.1.0a3`);
+    input from the same talmolab/sleap-roots-analyze #120 / #146 source:
+    `turface_19_raw_data.csv` + `turface_19_qc_golden.json`) + the fixture-provenance entry
+    in `tests/fixtures/README.md`, since only the *post-QC* `turface_19_final_data.csv`
+    exists today;
+  - `bloommcp/pyproject.toml` + `uv.lock` (bump the analyze pin to `>=0.1.0a3`, landed in the
+    same commit so `uv lock --check` / the `python-audit` gate stays clean);
+  - `bloommcp/docs/roadmap.md` — insert `qc_clean` as Tier 3 and renumber the granular tiers
+    (PCA → Tier 4 / clustering → Tier 5), reconciling the table with the #338/#308 issue
+    numbering;
   - no change to `bloom_mcp.data_cleanup`, `tools/workflows/qc.py`, or the discovery tools.
 - **Dependencies:** `sleap_roots_analyze.clean_traits_for_analysis` (analyze#164), released
   in `0.1.0a3`. Consuming any upstream typed cleanup-log result is a possible later upgrade,

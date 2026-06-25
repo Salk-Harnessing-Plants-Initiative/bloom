@@ -17,10 +17,15 @@ The constraints are fixed by the existing code:
 - The `SupabaseReader` resolves a cleaned version from **versioned-cleaned outputs in
   Storage** (the `qc` tool-class runs that wrote `_cleaned.csv`), then the legacy
   un-versioned cleaned CSV, then the raw input. `data_access/supabase_reader.py:4-6`
-- `ResultStore.create_run(*, experiment, tool_class, provenance, …) -> RunHandle` then
-  `commit(run, outputs) -> StoredRun`; `StoredRun` exposes `run_ref`, `version_dir`,
-  `manifest_path`, `outputs`, `output_keys`, `output_sha256`, `seed`, `code_versions`.
-  `result_store/ports.py:99-135`
+- `ResultStore.create_run(*, experiment, tool_class, provenance, user_label, source_csv)
+  -> RunHandle` then `commit(run, outputs) -> StoredRun`; `StoredRun` exposes `run_ref`,
+  `version_dir`, `manifest_path`, `outputs`, `output_keys`, `output_sha256`, `seed`,
+  `code_versions`. The port arg is `tool_class=` (not `tool=`) and carries **no** `params`
+  arg — `params` flow via `Provenance.stamp(params=…)`, which the decorator stamps and the
+  tool hands to `create_run(provenance=…)`. (NB: the `bloommcp-result-store` *spec* text
+  still reads `create_run(experiment, tool, params, …)` — a stale spec vs. the shipped code;
+  this tool follows the **code** signature. Flagged for a separate spec-sync fix, not this
+  change's job.) `result_store/ports.py:99-135`, `tools/_ports.py:70-90`
 - Tools reach the ports through `bloom_mcp.tools._ports` (`reader()`, `store()`); the
   composition root injects Supabase adapters at boot and fakes in tests. `tools/_ports.py`
 - The existing `run_qc_workflow` already shows the persistence shape (writes `_cleaned.csv` +
@@ -75,6 +80,11 @@ The constraints are fixed by the existing code:
   `n_traits_in/out`, retention, and the NaN-location summary go inline; the cleaned CSV and
   the cleanup log go to `ResultStore` and come back as `resource_link`s — per design
   (small structured results inline + `resource_link`s, never inline blobs).
+- **Decision: a cleanup that would drop every trait is a structured error, not an empty
+  run.** If the delegate returns zero kept trait columns, the tool raises a `BloomMCPError`
+  with a relax-the-thresholds remedy rather than persisting a degenerate, unusable cleaned
+  run that a downstream PCA would then fail on opaquely. The property invariant
+  (`0 < n_traits_out`) is enforced by this guard.
 
 ## Risks / Trade-offs
 
@@ -85,10 +95,17 @@ The constraints are fixed by the existing code:
 - **Hard dep on `0.1.0a3`** → unlike PCA, the delegate did not exist in `0.1.0a2`; the pin
   bump (bloom #327) is a prerequisite, captured as task 1.1. Without it the tool cannot
   import `clean_traits_for_analysis`.
-- **Fakes diverge from Supabase adapters** → drive the tests through the same `_ports` seam
-  the server uses (`configure(reader=FakeReader(...), store=FakeResultStore(...))`), and
-  assert the composition (a `require_clean=True` load resolves the committed cleaned run) so
-  the persisted-run + provenance assertions exercise the real port contract.
+- **Fakes diverge from Supabase adapters** → drive the per-tool tests through the same
+  `_ports` seam the server uses (`configure(reader=FakeReader(...),
+  store=FakeResultStore(...))`) for the persisted-run + provenance assertions.
+- **The composition (commit → `require_clean` resolves) is NOT wireable through the fakes** →
+  `FakeReader._cleaned` (populated only by `add_cleaned_version`) and `FakeResultStore._runs`
+  are disjoint in-memory stores with no bridge, so a `qc_clean` commit to the fake store does
+  not become a cleaned version the fake reader resolves. The honest composition test drives
+  the **Supabase adapters** (`SupabaseReader` + `SupabaseResultStore`) over the shared
+  `_InMemoryObjectStore` test double in `tests/conftest.py:41` — which exercises the real
+  `qc`-class / `_cleaned.csv` resolution rule end-to-end. The fakes path asserts the per-port
+  contracts; the adapters-over-object-store path asserts the cross-port handoff.
 - **Role-column mismatch** → if detected roles are `None` (adapter could not detect), fall
   back to the delegate defaults rather than passing `None`; covered by the property test.
 

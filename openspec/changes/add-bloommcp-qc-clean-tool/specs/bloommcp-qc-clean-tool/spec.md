@@ -42,6 +42,12 @@ into the delegate rather than relying on the delegate's `geno`/`rep`/`Barcode` d
 - **THEN** `qc_clean` passes the `ExperimentFrame`'s detected `genotype_col`,
   `replicate_col`, and `sample_id_col` into `clean_traits_for_analysis`
 
+#### Scenario: An undetected role column falls back to the delegate default
+
+- **WHEN** the `ExperimentFrame` reports a role column (e.g. `genotype_col`) as `None`
+- **THEN** `qc_clean` lets `clean_traits_for_analysis` use its default for that role rather
+  than forwarding `None` into the delegate
+
 ### Requirement: QC Clean Produces a No-NaN Table With Less Sample Loss Than Naive Dropna Through the Tool
 
 The `qc_clean` tool SHALL, when invoked through the MCP boundary on the raw #120 turface_19
@@ -104,6 +110,13 @@ structured `BloomMCPError` (never a raw traceback or leaked backend internals), 
 - **WHEN** `qc_clean` completes
 - **THEN** the stamped `Provenance` records the tool name, the cleanup-threshold and
   trait-selection params, and `seed = None` (QC applies no `random_state`)
+
+#### Scenario: A cleanup that would drop every trait is a structured error
+
+- **WHEN** the delegate's cleanup would leave no kept trait columns (every trait fails the
+  thresholds)
+- **THEN** `qc_clean` returns a `BloomMCPError` with a remedy (e.g. relax the thresholds)
+  rather than persisting an empty cleaned run
 
 ### Requirement: QC Clean Persists a Versioned Cleaned Run and Returns Links
 
