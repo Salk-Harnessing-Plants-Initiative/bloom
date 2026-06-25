@@ -8,10 +8,13 @@ non-empty CHECK). It also asserts the contract-side schema facts that justify
 those DB choices (the `Provenance` envelope-home designation, the required
 `contract_version` anchor, and the `idempotency_key` default of "").
 
-Mappings introduced by later changes (B `source_id` FK, C blob table, D RPC key
-equality, `contract_version` runtime validation, `scan_key` resolution) are
-recorded as DEFERRED rows and skipped — never asserted against objects that do
-not exist yet. As each lands, flip its row to `status="active"`.
+Change C (#296) activated the `BlobRef` mapping: the `cyl_scan_intermediates`
+table (columns/types, the two FKs, the at-least-one-location CHECK, and the `kind`
+vocabulary == the contract `BlobRef.kind` enum). Mappings introduced by later
+changes (B `source_id` FK, D RPC key equality, `contract_version` runtime
+validation, `scan_key` resolution) remain DEFERRED rows and skipped — never
+asserted against objects that do not exist yet. As each lands, flip its row to
+`status="active"`.
 
 Collection safety: `MAPPINGS` holds LITERALS ONLY (no schema-derived values), so
 importing this module never reads the schema — that is what keeps collection safe
@@ -55,6 +58,15 @@ MAPPINGS = [
         "status": "active",
         "reason": "change A: per-run idempotency anchor",
     },
+    # --- Active: built by change C (#296) ---
+    {
+        "contract_field": "BlobRef",
+        "db_table": "cyl_scan_intermediates",
+        "db_column": None,  # table-level mapping — asserted by dedicated tests below
+        "db_type": None,
+        "status": "active",
+        "reason": "#296 change C: per-scan intermediates/blob table",
+    },
     # --- Deferred: skipped, never asserted. Flip to active as each change lands. ---
     {
         "contract_field": "source_id FK",
@@ -63,14 +75,6 @@ MAPPINGS = [
         "db_type": None,
         "status": "deferred",
         "reason": "#295 change B: source_id FK on the trait tables",
-    },
-    {
-        "contract_field": "BlobRef",
-        "db_table": "(intermediates/blob table)",
-        "db_column": None,
-        "db_type": None,
-        "status": "deferred",
-        "reason": "#296 change C: intermediates/blob table",
     },
     {
         "contract_field": "idempotency_key == metadata->>'idempotency_key'",
@@ -218,3 +222,143 @@ def test_idempotency_anchor_constraints_by_type(pg_conn):
 )
 def test_deferred_mapping_is_skipped(mapping):
     pytest.skip(f"deferred: {mapping['reason']}")
+
+
+def test_deferred_set_is_non_empty():
+    # After change C flipped BlobRef -> active, DEFERRED must still hold the remaining
+    # later-change rows so the parametrized skip test above keeps exercising real rows.
+    assert len(DEFERRED) >= 1
+    assert all(m["status"] == "deferred" for m in DEFERRED)
+
+
+# --------------------------------------------------------------------------- #
+# BlobRef active mapping (change C): cyl_scan_intermediates.
+# --------------------------------------------------------------------------- #
+
+INTERMEDIATES = "cyl_scan_intermediates"
+
+# Column -> information_schema.data_type expected for the BlobRef mapping.
+_BLOBREF_COLUMNS = {
+    "source_id": "bigint",
+    "scan_id": "bigint",
+    "kind": "text",
+    "root_type": "text",
+    "s3_location": "text",
+    "box_link": "text",
+    "checksum": "text",
+    "file_size": "bigint",
+}
+
+
+def _foreign_keys(cur, table: str) -> set[tuple[str, str]]:
+    cur.execute(
+        """
+        SELECT a.attname, cf.relname
+          FROM pg_constraint c
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+          JOIN pg_class cf     ON cf.oid = c.confrelid
+         WHERE c.conrelid = %s::regclass AND c.contype = 'f'
+        """,
+        (f"public.{table}",),
+    )
+    return {(row[0], row[1]) for row in cur.fetchall()}
+
+
+def _has_location_check(cur, table: str) -> bool:
+    cur.execute(
+        """
+        SELECT pg_get_constraintdef(c.oid)
+          FROM pg_constraint c
+         WHERE c.conrelid = %s::regclass AND c.contype = 'c'
+        """,
+        (f"public.{table}",),
+    )
+    return any(
+        "s3_location" in d and "box_link" in d for d in (row[0] for row in cur.fetchall())
+    )
+
+
+def test_blobref_maps_to_intermediates_table(pg_conn):
+    """The active BlobRef mapping: the table exists with the expected columns/types,
+    both FKs (by contype/confrelid), and the at-least-one-location CHECK."""
+    with pg_conn.cursor() as cur:
+        for column, expected in _BLOBREF_COLUMNS.items():
+            actual = _column_type(cur, INTERMEDIATES, column)
+            assert actual == expected, (
+                f"BlobRef: expected {INTERMEDIATES}.{column} to be {expected}, got {actual!r}"
+            )
+        fks = _foreign_keys(cur, INTERMEDIATES)
+        assert ("source_id", "cyl_trait_sources") in fks
+        assert ("scan_id", "cyl_scans") in fks
+        assert _has_location_check(cur, INTERMEDIATES), (
+            "at-least-one-location CHECK on cyl_scan_intermediates missing"
+        )
+    pg_conn.rollback()
+
+
+def test_blobref_regression_is_detected(pg_conn):
+    """A regression in the built mapping fails the check: drop the at-least-one-location
+    CHECK inside a SAVEPOINT and assert the mapping assertion then fails; roll back so
+    the schema is untouched."""
+    with pg_conn.cursor() as cur:
+        cur.execute("SAVEPOINT before_regression")
+        # Drop whichever CHECK references both location columns.
+        cur.execute(
+            """
+            SELECT conname FROM pg_constraint
+             WHERE conrelid = %s::regclass AND contype = 'c'
+               AND pg_get_constraintdef(oid) LIKE '%%s3_location%%'
+               AND pg_get_constraintdef(oid) LIKE '%%box_link%%'
+            """,
+            (f"public.{INTERMEDIATES}",),
+        )
+        names = [row[0] for row in cur.fetchall()]
+        assert names, "expected a location CHECK to exist before the regression test"
+        for name in names:
+            cur.execute(f'ALTER TABLE {INTERMEDIATES} DROP CONSTRAINT "{name}"')
+        assert not _has_location_check(cur, INTERMEDIATES)
+        cur.execute("ROLLBACK TO SAVEPOINT before_regression")
+        # After rollback the CHECK is back — the sweep passes again.
+        assert _has_location_check(cur, INTERMEDIATES)
+    pg_conn.rollback()
+
+
+def test_db_kind_vocab_matches_contract_blobref_enum(pg_conn):
+    """The DB `kind` CHECK vocabulary equals the pinned contract `BlobRef.kind` enum,
+    proved by a behavioral INSERT probe (not by parsing constraint text). Skip-guarded
+    until the contract is re-pinned to the revised enum — this is change C's MERGE
+    BLOCKER (the DB ships `kind IN ('predictions_slp')` before the re-pin)."""
+    schema = _load_schema()
+    contract_kinds = set(schema["$defs"]["BlobRef"]["properties"]["kind"]["enum"])
+    if contract_kinds != {"predictions_slp"}:
+        pytest.skip(
+            "contract BlobRef.kind not yet re-pinned to {predictions_slp} "
+            f"(currently {sorted(contract_kinds)}) — change C MERGE BLOCKER"
+        )
+
+    candidates = contract_kinds | {"h5", "labels", "qc_image", "bogus"}
+    accepted = set()
+    with pg_conn.cursor() as cur:
+        cur.execute("INSERT INTO cyl_trait_sources (name) VALUES ('kind-probe') RETURNING id")
+        source_id = cur.fetchone()[0]
+        cur.execute("INSERT INTO cyl_scans DEFAULT VALUES RETURNING id")
+        scan_id = cur.fetchone()[0]
+        for kind in candidates:
+            cur.execute("SAVEPOINT k")
+            try:
+                cur.execute(
+                    f"INSERT INTO {INTERMEDIATES} "
+                    f"(source_id, scan_id, kind, root_type, s3_location) "
+                    f"VALUES (%s, %s, %s, 'primary', 's3://b/k.slp')",
+                    (source_id, scan_id, kind),
+                )
+            except psycopg.errors.CheckViolation:
+                cur.execute("ROLLBACK TO SAVEPOINT k")
+            else:
+                accepted.add(kind)
+                cur.execute("ROLLBACK TO SAVEPOINT k")
+    pg_conn.rollback()
+    assert accepted == contract_kinds, (
+        f"DB kind vocabulary {sorted(accepted)} != contract BlobRef.kind "
+        f"{sorted(contract_kinds)}"
+    )

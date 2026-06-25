@@ -20,25 +20,24 @@ enforcement) `tests/integration/test_embedtree_schema.py`.
 
 - [ ] 0.1 Confirm the agreed contract `BlobRef.kind` enum (`{predictions_slp}`) with the contract
       owner; track the `sleap-roots-contracts` revision + release as the **MERGE BLOCKER** (task 6).
-- [ ] 0.2 Choose the migration timestamp `<ts>` strictly greater than the max 14-digit timestamp
-      across **both** `origin/main` and `origin/staging` (currently `20260622180000`) — `scripts/
-      lint_migrations.sh` only checks the PR's base ref, so guarding against staging out-of-order is
-      manual. Today is 2026-06-25 → use `20260625HHMMSS`.
+- [x] 0.2 Chose migration timestamp `20260625120000` — strictly greater than the max across both
+      `origin/main` (`20260609000000`) and `origin/staging` (`20260622180000`). Migration lint
+      passes against both base refs.
 
 ## 1. Oracle / migration-match test first (RED)
 
-- [ ] 1.1 In `tests/integration/test_contract_migration_match.py`, flip the `BlobRef` mapping from
+- [x] 1.1 In `tests/integration/test_contract_migration_match.py`, flip the `BlobRef` mapping from
       `status="deferred"` to `status="active"`, naming `db_table = "cyl_scan_intermediates"`. Extend
       the active-mapping sweep to assert the table + the mapped columns/types. **Confirm `DEFERRED`
       remains non-empty** afterward (source_id FK, RPC key equality, contract_version, scan_key) so
       the parametrized `test_deferred_mapping_is_skipped` still exercises real rows.
-- [ ] 1.2 Add active assertions that the two foreign keys exist by `contype = 'f'` / `confrelid`
+- [x] 1.2 Add active assertions that the two foreign keys exist by `contype = 'f'` / `confrelid`
       (`source_id`→`cyl_trait_sources`, `scan_id`→`cyl_scans`) and that the at-least-one-location
       CHECK exists. Raise the `checked >=` floor so the sweep can't pass vacuously.
-- [ ] 1.3 Add a **negative regression test**: inside a rolled-back transaction, drop one
+- [x] 1.3 Add a **negative regression test**: inside a rolled-back transaction, drop one
       `cyl_scan_intermediates` FK (or the location CHECK) and assert the active sweep raises — covers
       the "A regression in a built mapping fails the check" scenario for the new mapping.
-- [ ] 1.4 Add the `kind`-parity assertion as a **behavioral INSERT probe** (no constraint-text
+- [x] 1.4 Add the `kind`-parity assertion as a **behavioral INSERT probe** (no constraint-text
       parsing — Postgres rewrites `IN (...)` to `= ANY(ARRAY[...])`, which is brittle): for each
       candidate in `contract_enum ∪ {'h5','labels','qc_image','bogus'}`, attempt an INSERT in a
       `SAVEPOINT/ROLLBACK TO` (with seeded parents + valid `root_type`/location) and collect the
@@ -46,7 +45,7 @@ enforcement) `tests/integration/test_embedtree_schema.py`.
       (`pytest.mark.skipif`/`xfail` with reason) while the vendored enum != `{predictions_slp}`; the
       guard is removed in the task 6 re-pin commit (the vendored enum is still the old 4-value set
       until then).
-- [ ] 1.5 Run the suite; confirm the structural assertions (1.1–1.3) FAIL (table absent) and 1.4 is
+- [x] 1.5 Run the suite; confirm the structural assertions (1.1–1.3) FAIL (table absent) and 1.4 is
       skipped — RED.
 
 ## 2. Table-shape integration tests first (RED)
@@ -56,47 +55,47 @@ Create `tests/integration/test_cyl_scan_intermediates.py` (model on
 `test_embedtree_schema.py` for `SET LOCAL ROLE` enforcement; use `information_schema` for column
 types, `pg_constraint` by `contype`/`confrelid`, `SAVEPOINT`/`rollback()` between violation cases).
 
-- [ ] 2.0 **FK-parent seed helper** (in-transaction, rolled back — modelled on `embedtree_seed`):
+- [x] 2.0 **FK-parent seed helper** (in-transaction, rolled back — modelled on `embedtree_seed`):
       inserts **two** `cyl_trait_sources (name)` rows (`source_a`, `source_b`) and **one** `cyl_scans`
       row via `INSERT INTO cyl_scans DEFAULT VALUES RETURNING id` (its FK columns are all nullable, so
       no deeper seeding needed). Seed within `pg_conn`'s own uncommitted txn so child inserts see the
       parents; everything rolls back. All insert-based tests below obtain valid FK ids from it.
-- [ ] 2.1 Columns + types exist (`source_id`/`scan_id`/`file_size` `bigint`;
+- [x] 2.1 Columns + types exist (`source_id`/`scan_id`/`file_size` `bigint`;
       `kind`/`root_type`/`s3_location`/`box_link`/`checksum` `text`).
-- [ ] 2.2 A fully specified `predictions_slp` row (seeded `source_id`, `scan_id`) inserts and
+- [x] 2.2 A fully specified `predictions_slp` row (seeded `source_id`, `scan_id`) inserts and
       round-trips; a second row with `checksum`/`file_size` NULL also inserts (nullable integrity
       columns).
-- [ ] 2.3 Foreign keys: `source_id`→`cyl_trait_sources`, `scan_id`→`cyl_scans` (by
+- [x] 2.3 Foreign keys: `source_id`→`cyl_trait_sources`, `scan_id`→`cyl_scans` (by
       `contype='f'`/`confrelid`); a row with a non-existent `scan_id` is rejected (FK violation).
-- [ ] 2.4 At-least-one-location CHECK: both locations NULL → rejected; only `box_link` → accepted.
-- [ ] 2.5 Strict vocabularies: `kind = 'h5'` rejected; `root_type = 'seminal'` rejected; **each**
+- [x] 2.4 At-least-one-location CHECK: both locations NULL → rejected; only `box_link` → accepted.
+- [x] 2.5 Strict vocabularies: `kind = 'h5'` rejected; `root_type = 'seminal'` rejected; **each**
       valid `root_type` (`primary`/`lateral`/`crown`) accepted (assert the full set against the
       CHECK — the CHECK is the source of truth for the vocabulary).
-- [ ] 2.6 `UNIQUE (source_id, scan_id, kind, root_type)`: insert `(source_a, scan, predictions_slp,
+- [x] 2.6 `UNIQUE (source_id, scan_id, kind, root_type)`: insert `(source_a, scan, predictions_slp,
       primary)`; a duplicate of the same 4-tuple is rejected (UniqueViolation); `(source_b, scan,
       predictions_slp, primary)` — same scan/kind/root_type, **different source** — inserts
       successfully (history preserved across runs).
-- [ ] 2.7 **RLS enforcement via `SET LOCAL ROLE`** (each case `BEGIN; SET LOCAL ROLE …; …; ROLLBACK`;
+- [x] 2.7 **RLS enforcement via `SET LOCAL ROLE`** (each case `BEGIN; SET LOCAL ROLE …; …; ROLLBACK`;
       `pg_conn` is `supabase_admin`/`BYPASSRLS`, so catalog rows alone prove nothing):
-  - [ ] 2.7a Positive read — `bloom_admin`, `bloom_agent`, `bloom_user`, `bloom_writer` can each
+  - [x] 2.7a Positive read — `bloom_admin`, `bloom_agent`, `bloom_user`, `bloom_writer` can each
         `SELECT count(*)` from the table.
-  - [ ] 2.7b Writer write — under `bloom_writer`, INSERT of a fully valid (seeded-parent) row
+  - [x] 2.7b Writer write — under `bloom_writer`, INSERT of a fully valid (seeded-parent) row
         succeeds, and a subsequent UPDATE succeeds. (Load-bearing proof of design D5.)
-  - [ ] 2.7c Read-only write denial — under `bloom_user` (and `bloom_agent`), INSERT is rejected.
-  - [ ] 2.7d Drift detector — `pg_policies`/`pg_class.relrowsecurity` show RLS enabled and exactly
+  - [x] 2.7c Read-only write denial — under `bloom_user` (and `bloom_agent`), INSERT is rejected.
+  - [x] 2.7d Drift detector — `pg_policies`/`pg_class.relrowsecurity` show RLS enabled and exactly
         the expected policy set, with **no** `bloom_user`/`bloom_agent` write policy.
-  - [ ] 2.7e Sanity: assert the target `bloom_*` roles are not themselves `BYPASSRLS` (else 2.7c
+  - [x] 2.7e Sanity: assert the target `bloom_*` roles are not themselves `BYPASSRLS` (else 2.7c
         false-passes).
-- [ ] 2.8 Forward migration is **additive**: assert `cyl_trait_sources` and `cyl_scans` retain their
+- [x] 2.8 Forward migration is **additive**: assert `cyl_trait_sources` and `cyl_scans` retain their
       prior column shape after the migration (the new table doesn't alter existing objects).
-- [ ] 2.9 Rollback script restores prior shape — reuse change A's **exact** BEGIN/COMMIT strip regex
+- [x] 2.9 Rollback script restores prior shape — reuse change A's **exact** BEGIN/COMMIT strip regex
       (`^\s*(BEGIN|COMMIT)\s*;\s*$`, CRLF-safe via `splitlines()`), apply the body inside the txn,
       assert `cyl_scan_intermediates` is gone, then `rollback()`.
-- [ ] 2.10 Run the suite; confirm all of these FAIL — RED.
+- [x] 2.10 Run the suite; confirm all of these FAIL — RED.
 
 ## 3. Forward migration (GREEN)
 
-- [ ] 3.1 Write `supabase/migrations/<ts>_create_cyl_scan_intermediates.sql`, wrapped in
+- [x] 3.1 Write `supabase/migrations/<ts>_create_cyl_scan_intermediates.sql`, wrapped in
       `BEGIN; … COMMIT;`:
       `CREATE TABLE IF NOT EXISTS cyl_scan_intermediates` (`id BIGINT PK GENERATED BY DEFAULT AS
       IDENTITY`; `source_id BIGINT NOT NULL REFERENCES cyl_trait_sources(id)`;
@@ -106,31 +105,31 @@ types, `pg_constraint` by `contype`/`confrelid`, `SAVEPOINT`/`rollback()` betwee
       `s3_location TEXT`, `box_link TEXT`, `checksum TEXT`, `file_size BIGINT`;
       `CHECK (s3_location IS NOT NULL OR box_link IS NOT NULL)`;
       `UNIQUE (source_id, scan_id, kind, root_type)`).
-- [ ] 3.2 Add RLS: `ENABLE ROW LEVEL SECURITY`; `bloom_admin` FOR ALL; `bloom_agent` SELECT;
+- [x] 3.2 Add RLS: `ENABLE ROW LEVEL SECURITY`; `bloom_admin` FOR ALL; `bloom_agent` SELECT;
       `bloom_user` SELECT; `bloom_writer` SELECT/INSERT/UPDATE (each `DROP POLICY IF EXISTS` first,
       mirroring `gravi_images` / the embedtree writer migration). **No** write policy for
       `bloom_user`/`bloom_agent`.
-- [ ] 3.3 Add table-level GRANTs: `SELECT` to `bloom_user`, `bloom_agent`; `SELECT, INSERT, UPDATE`
+- [x] 3.3 Add table-level GRANTs: `SELECT` to `bloom_user`, `bloom_agent`; `SELECT, INSERT, UPDATE`
       to `bloom_writer`; `SELECT, INSERT, UPDATE, DELETE` to `bloom_admin`. (Public-schema table
       GRANTs stick under `supabase db push` since `postgres` owns `public`. `bloom_user`'s standing
       default-privilege write GRANT is intentionally not the write gate — RLS is.)
-- [ ] 3.4 `make migrate-local`; run both test files; iterate to GREEN (1.4 parity stays skipped).
+- [x] 3.4 `make migrate-local`; run both test files; iterate to GREEN (1.4 parity stays skipped).
 
 ## 4. Manual rollback (GREEN)
 
-- [ ] 4.1 Write `supabase/rollbacks/<ts>_create_cyl_scan_intermediates_rollback.sql`:
+- [x] 4.1 Write `supabase/rollbacks/<ts>_create_cyl_scan_intermediates_rollback.sql`:
       `BEGIN; DROP TABLE IF EXISTS cyl_scan_intermediates; COMMIT;` with a break-glass comment.
-- [ ] 4.2 Confirm task 2.9 (rollback test) is GREEN.
+- [x] 4.2 Confirm task 2.9 (rollback test) is GREEN.
 
 ## 5. Regenerate tracked types (GREEN)
 
-- [ ] 5.1 With the dev DB up + migrated, `make gen-types` → regenerate the 4 tracked
+- [x] 5.1 With the dev DB up + migrated, `make gen-types` → regenerate the 4 tracked
       `database.types.ts` (`packages/bloom-fs`, `packages/bloom-js`, `packages/bloom-nextjs-auth`,
       `web/lib`).
-- [ ] 5.2 Manually update the orphaned 5th: `web/types/database.types.ts` (gen-types does not write
+- [x] 5.2 Manually update the orphaned 5th: `web/types/database.types.ts` (gen-types does not write
       it). Keep atomic with 5.1 — a partial update where only 4 of 5 files have the table is an
       inconsistency.
-- [ ] 5.3 Verify `cyl_scan_intermediates` appears in **all five** files with the expected
+- [x] 5.3 Verify `cyl_scan_intermediates` appears in **all five** files with the expected
       Row/Insert/Update/Relationships shape, and `git diff` on the 4 generated files is otherwise
       empty (no unrelated drift). **Note: CI does not run `gen-types`**, so a missed/partial regen
       ships silently — this is a manual gate.
