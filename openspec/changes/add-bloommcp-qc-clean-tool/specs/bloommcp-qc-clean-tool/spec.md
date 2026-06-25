@@ -126,10 +126,19 @@ structured `BloomMCPError` (never a raw traceback or leaked backend internals), 
 
 The `qc_clean` tool SHALL verify, before committing any run, that the cleaned table has no
 NaNs in its kept trait columns and retains at least one trait column and at least one sample.
-If the cleanup would leave residual NaNs, drop every trait, or drop every sample, the tool
-SHALL return a `BloomMCPError` (code `assumption_violated`) with a relax-the-thresholds
-remedy and SHALL NOT persist a run. This is the guarantee a downstream
-`pca_analysis (require_clean=True)` relies on.
+If the cleanup would leave residual NaNs, drop every trait, or drop every sample — **whether
+the delegate raises (e.g. over-strict thresholds leaving too few samples or no non-constant
+trait) or returns a degenerate frame** — the tool SHALL surface a `BloomMCPError` (code
+`assumption_violated`) with a relax-the-thresholds remedy and SHALL NOT persist a run, rather
+than letting the delegate's error fall through to the contract's opaque `internal_error`.
+This is the guarantee a downstream `pca_analysis (require_clean=True)` relies on.
+
+#### Scenario: Over-strict thresholds (delegate raises) surface as a self-correctable error
+
+- **WHEN** thresholds are strict enough that the delegate `clean_traits_for_analysis` raises
+  (e.g. `min_samples_per_trait` larger than the dataset)
+- **THEN** the tool returns a `BloomMCPError` with code `assumption_violated` and a
+  relax-the-thresholds remedy (not `internal_error`), and no run is persisted
 
 #### Scenario: Residual NaNs in kept columns are rejected
 

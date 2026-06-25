@@ -443,3 +443,18 @@ def test_second_run_increments_version(injected_ports):
     _run()
     assert [r.run_ref for r in store.list_runs(_EXPERIMENT, "qc")] == ["v1", "v2"]
     assert store.get_run(_EXPERIMENT, "qc", "latest").run_ref == "v2"
+
+
+# ── real-delegate degenerate case maps to a structured, self-correctable error ──
+
+
+def test_overstrict_thresholds_real_delegate_is_structured_not_internal(injected_ports):
+    """The real clean_traits_for_analysis RAISES ValueError on over-strict thresholds
+    (no mock). It must surface as a self-correctable assumption_violated with a
+    relax-thresholds remedy — not the contract's opaque internal_error."""
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment=_EXPERIMENT, min_samples_per_trait=100000))
+    assert exc.value.code == "assumption_violated"
+    assert "threshold" in exc.value.remedy.lower()
+    assert store.list_runs(_EXPERIMENT, "qc") == []  # nothing persisted

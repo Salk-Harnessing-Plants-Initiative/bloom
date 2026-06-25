@@ -176,24 +176,42 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     n_samples_in = len(frame.df)
     n_traits_in = len(trait_cols)
 
-    # Delegate ALL cleanup + validate. No QC logic lives here.
-    cleaned_df, kept_cols, log = clean_traits_for_analysis(
-        frame.df,
-        trait_cols=trait_cols,
-        max_zeros_per_trait=params.max_zeros_per_trait,
-        max_nans_per_trait=params.max_nans_per_trait,
-        max_nans_per_sample=params.max_nans_per_sample,
-        min_samples_per_trait=params.min_samples_per_trait,
-        **_role_kwargs(frame),
-    )
+    # Delegate ALL cleanup + validate. No QC logic lives here. The delegate
+    # *raises* ValueError on its degenerate cases (too-strict thresholds leaving
+    # <2 samples / no non-constant trait / all traits dropped / empty input) — the
+    # common real-world misuse. Map it to a structured, self-correctable error
+    # (its message is already actionable) rather than letting it fall through to
+    # the contract's opaque `internal_error`.
+    try:
+        cleaned_df, kept_cols, log = clean_traits_for_analysis(
+            frame.df,
+            trait_cols=trait_cols,
+            max_zeros_per_trait=params.max_zeros_per_trait,
+            max_nans_per_trait=params.max_nans_per_trait,
+            max_nans_per_sample=params.max_nans_per_sample,
+            min_samples_per_trait=params.min_samples_per_trait,
+            **_role_kwargs(frame),
+        )
+    except ValueError as exc:
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=f"Cleanup could not produce an analysis-ready table: {exc}",
+            remedy=(
+                "Relax the cleanup thresholds (e.g. raise max_nans_per_trait / "
+                "max_zeros_per_trait / max_nans_per_sample, or lower "
+                "min_samples_per_trait) and retry."
+            ),
+        ) from None
 
     kept_cols = list(kept_cols)
     n_samples_out = len(cleaned_df)
     n_traits_out = len(kept_cols)
 
-    # No-NaN / non-degenerate guarantee, enforced before any run is committed so a
-    # bad cleanup never ships a NaN-bearing or empty "cleaned" artifact that
-    # pca_analysis(require_clean=True) would then resolve and fail on opaquely.
+    # No-NaN / non-degenerate guarantee — defense-in-depth for a delegate that
+    # *returns* (rather than raises on) a degenerate frame. Enforced before any
+    # run is committed so a bad cleanup never ships a NaN-bearing or empty
+    # "cleaned" artifact that pca_analysis(require_clean=True) would resolve and
+    # fail on opaquely.
     cleaned_nan_cells = (
         int(cleaned_df[kept_cols].isna().sum().sum()) if kept_cols else 0
     )

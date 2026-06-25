@@ -78,6 +78,9 @@
       real round-trip guards against a persisted-NaN regression.
 - [x] 3.9 Guard tests (post-review): residual NaNs in kept columns → `assumption_violated`,
       no run; **every sample dropped** (traits survive) → `assumption_violated`, no run.
+      **Real-delegate degenerate case** (no mock): over-strict thresholds
+      (`min_samples_per_trait` huge) make `clean_traits_for_analysis` *raise* `ValueError` →
+      mapped to `assumption_violated` with a relax-thresholds remedy (not `internal_error`).
 - [x] 3.10 `trait_columns` validation: an unknown column → `invalid_input` naming it; a
       non-numeric column (e.g. `geno`) → `invalid_input`.
 - [x] 3.11 Non-default role forwarding: a capitalized `Genotype`/`Replicate` fixture proves
