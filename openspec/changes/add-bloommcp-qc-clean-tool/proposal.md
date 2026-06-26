@@ -66,6 +66,17 @@ tool, `qc_clean` yields a no-NaN table that **drops fewer samples than a naive `
 - Tests cover the **5 contract patterns + the no-NaN / fewer-than-dropna oracle through the
   tool**: oracle reproduction, `tools/list` presence, schema round-trip, provenance presence,
   property/invariant, and the structured error envelope.
+- **EXTEND** the live persistence smoke (`make bloommcp-smoke`) with a **Tier-3 `qc_clean`
+  leg** driven through the **real** `SupabaseReader` / `SupabaseResultStore`: it seeds the raw
+  `turface_19` fixture as `turface_raw.csv`, runs `qc_clean(max_nans_per_trait=0.1)`, asserts
+  the committed run carries `_cleaned.csv` + `cleanup_log.json` with a v3 manifest and
+  bytes-matching `output_sha256`, then asserts `load_experiment(require_clean=True)` resolves
+  the cleaned version (`v<N>_cleaned`, not `raw`) with zero NaN trait cells — the fakes-free
+  counterpart to the in-memory composition test. The driver's new decision helpers
+  (`qc_persist_checks`, `qc_cleaned_read_checks`) are unit-tested with no live stack.
+- **DOCUMENT** local validation: add `bloommcp/docs/local-validation.md` (what
+  `make bloommcp-smoke` validates and how to run it), link it from `bloommcp/README.md`, and
+  add a one-line pointer in `DEV_SETUP.md`.
 
 ## Impact
 
@@ -91,6 +102,11 @@ tool, `qc_clean` yields a no-NaN table that **drops fewer samples than a naive `
     via a repeated string literal);
   - **roadmap reshape is owned by PR #339** (Elizabeth's `reshape Tier 3 — QC before PCA`),
     so `bloommcp/docs/roadmap.md` is **not** edited here to avoid a conflict;
+  - `bloommcp/scripts/live_persistence_smoke.py` + `tests/scripts/`
+    `test_live_persistence_smoke_logic.py` — extend the existing live smoke with the qc_clean
+    leg + its pure-helper unit tests;
+  - new `bloommcp/docs/local-validation.md`; one-line pointers from `bloommcp/README.md` and
+    `DEV_SETUP.md`;
   - no change to `bloom_mcp.data_cleanup`'s logic or the discovery tools.
 - **Dependencies:** `sleap_roots_analyze.clean_traits_for_analysis` (analyze#164), released
   in `0.1.0a3`. Consuming any upstream typed cleanup-log result is a possible later upgrade,

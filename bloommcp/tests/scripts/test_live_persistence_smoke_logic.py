@@ -110,6 +110,65 @@ def test_provenance_checks_flags_keyset_mismatch():
     )
 
 
+# --- Tier-3 qc_clean leg checks -----------------------------------------------
+def _good_qc_kwargs():
+    return dict(
+        schema_version=3,
+        output_keys={
+            "_cleaned.csv": "bloommcp_output/qc_turface_raw/v1/_cleaned.csv",
+            "cleanup_log.json": "bloommcp_output/qc_turface_raw/v1/cleanup_log.json",
+        },
+        output_sha256={"_cleaned.csv": "dead", "cleanup_log.json": "beef"},
+        expected_outputs={"_cleaned.csv", "cleanup_log.json"},
+    )
+
+
+def test_qc_persist_checks_all_pass_on_valid_v3_entry():
+    checks = smoke.qc_persist_checks(**_good_qc_kwargs())
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_qc_persist_checks_flags_v2_schema():
+    kwargs = _good_qc_kwargs()
+    kwargs["schema_version"] = 2
+    checks = smoke.qc_persist_checks(**kwargs)
+    assert any(c.name == "qc_clean: manifest schema == 3" and not c.ok for c in checks)
+
+
+def test_qc_persist_checks_flags_missing_cleaned_artifact():
+    # Drop cleanup_log.json from the committed outputs → the catalog check fails.
+    kwargs = _good_qc_kwargs()
+    kwargs["output_keys"] = {
+        k: v for k, v in kwargs["output_keys"].items() if k == "_cleaned.csv"
+    }
+    kwargs["output_sha256"] = {"_cleaned.csv": "dead"}
+    checks = smoke.qc_persist_checks(**kwargs)
+    assert any("committed outputs include" in c.name and not c.ok for c in checks)
+
+
+def test_qc_persist_checks_flags_keyset_mismatch():
+    kwargs = _good_qc_kwargs()
+    kwargs["output_sha256"] = {"_cleaned.csv": "dead"}  # missing cleanup_log.json
+    checks = smoke.qc_persist_checks(**kwargs)
+    assert any("share one key-set" in c.name and not c.ok for c in checks)
+
+
+def test_qc_cleaned_read_checks_pass_on_cleaned_source():
+    checks = smoke.qc_cleaned_read_checks("v3_cleaned", trait_nan_cells=0)
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_qc_cleaned_read_checks_flags_raw_source():
+    # The contract: require_clean must NOT resolve to the raw input.
+    checks = smoke.qc_cleaned_read_checks("raw", trait_nan_cells=0)
+    assert any("resolves the cleaned artifact" in c.name and not c.ok for c in checks)
+
+
+def test_qc_cleaned_read_checks_flags_residual_nans():
+    checks = smoke.qc_cleaned_read_checks("v1_cleaned", trait_nan_cells=5)
+    assert any("zero NaN trait cells" in c.name and not c.ok for c in checks)
+
+
 # --- hash-compare loop (against the fake storage boundary) --------------------
 def test_hash_checks_pass_when_bytes_match(fake_supabase_storage):
     store = fake_supabase_storage

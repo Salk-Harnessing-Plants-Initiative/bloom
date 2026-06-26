@@ -134,14 +134,43 @@
       no-NaN cleaned run, and a follow-up `pca_analysis` consumes that cleaned run; sanity-check
       on the small Qwen surface that the tool returns a sane structured result.
 
-## 6. Follow-ups (out of this change's scope — tracked, not done here)
+## 6. Live persistence smoke leg + local-validation docs (Elizabeth's request)
 
-- [ ] 6.1 Retirement of the vendored `bloom_mcp.data_cleanup` + `run_qc_workflow` stays
+- [x] 6.1 Add a Tier-3 `qc_clean` leg to `bloommcp/scripts/live_persistence_smoke.py`, driven
+      through the **real** `SupabaseReader` / `SupabaseResultStore` against the dev stack: seed
+      the raw `turface_19_raw_data.csv` fixture as `turface_raw.csv` (matching the existing
+      fixture-upload pattern in `_configure_live_env`), run
+      `qc_clean(experiment="turface_raw.csv", max_nans_per_trait=0.1)`, then assert the
+      committed outputs include `_cleaned.csv` + `cleanup_log.json`, the manifest is
+      `manifest_schema_version == 3`, and each recorded `output_sha256` matches the actual
+      stored bytes for **both** artifacts. Make the qc_clean leg visibly distinct in the
+      smoke's stdout and the final summary line.
+- [x] 6.2 In the same leg, call `SupabaseReader().load_experiment("turface_raw.csv",
+      require_clean=True)` after the run commits and assert the resolved `source` is the
+      cleaned artifact (`v<N>_cleaned`, **not** `raw`) and
+      `df[trait_cols].isna().sum().sum() == 0` — the qc_clean →
+      `pca_analysis(require_clean=True)` contract proven over the real ports.
+- [x] 6.3 Add pure-logic unit tests for the new smoke helpers (`qc_persist_checks`,
+      `qc_cleaned_read_checks`) to `tests/scripts/test_live_persistence_smoke_logic.py`,
+      matching the existing no-live-stack pattern (load the driver by path; assert pass/fail).
+- [x] 6.4 Add `bloommcp/docs/local-validation.md` documenting `make bloommcp-smoke` (prereqs:
+      dev stack up + migrated; both legs — clustering + qc_clean — and what each asserts; how
+      to run and troubleshoot). Link it from `bloommcp/README.md` (Development) and add a
+      one-line pointer in `DEV_SETUP.md`.
+- [x] 6.5 Re-run `make bloommcp-smoke` (both legs green) and `uv run pytest
+      tests/scripts/test_live_persistence_smoke_logic.py` (all helper tests green).
+
+## 7. Follow-ups (out of this change's scope — tracked, not done here)
+
+- [ ] 7.1 Retirement of the vendored `bloom_mcp.data_cleanup` + `run_qc_workflow` stays
       deferred to after Stage 1 (Tiers 0–4) — do **not** remove here.
-- [ ] 6.2 If analyze later exposes a typed cleanup-log result, swap the internal
+- [ ] 7.2 If analyze later exposes a typed cleanup-log result, swap the internal
       `(df, kept_cols, log)` mapping for it — a localized change, not a duplicated adapter.
-- [ ] 6.3 Spec-sync (separate change): the `bloommcp-result-store` spec text reads
+- [ ] 7.3 Spec-sync (separate change): the `bloommcp-result-store` spec text reads
       `create_run(experiment, tool, params, …)` but the shipped port is
       `create_run(experiment, tool_class, …)` with params via `Provenance`. Reconcile the
       spec to the code.
+- [ ] 7.4 Inputs still load from the local `BLOOM_TRAITS_DIR` (the smoke seeds the raw fixture
+      there); when raw inputs migrate to the `bloommcp_input/` storage prefix, switch the
+      qc_clean leg's upload to that bucket and drop the traits-dir seeding.
 </content>

@@ -187,4 +187,31 @@ resolvable by the `ExperimentReader` as a **cleaned version** so a later `pca_an
 - **WHEN** a downstream tool loads the experiment with `require_clean=True` after `qc_clean`
   has committed a run
 - **THEN** the reader resolves the `qc_clean` cleaned version rather than the raw input
+
+### Requirement: QC Clean Is Exercised End-to-End by the Live Persistence Smoke
+
+The `qc_clean` tool SHALL be validated against a running dev stack through the **real**
+`SupabaseReader` and `SupabaseResultStore` adapters (not the in-memory fakes) by the
+`make bloommcp-smoke` driver, so the cleaned run is proven to persist with a v3 manifest and
+real stored bytes and to be resolvable by `require_clean=True` as a no-NaN cleaned version —
+the live counterpart to the fakes-backed composition above. The smoke driver's pure decision
+logic SHALL remain factored into importable helpers that are unit-testable with no live stack.
+
+#### Scenario: qc_clean persists a cleaned run through the real Supabase ports
+
+- **WHEN** the live persistence smoke uploads the raw `turface_19` input as `turface_raw.csv`
+  and runs `qc_clean(experiment="turface_raw.csv", max_nans_per_trait=0.1)` through the real
+  `SupabaseReader` / `SupabaseResultStore`
+- **THEN** the committed run's outputs include `_cleaned.csv` and `cleanup_log.json`, its
+  manifest reports `manifest_schema_version == 3`, and each recorded `output_sha256` equals
+  the SHA-256 of the bytes actually stored for **both** artifacts
+
+#### Scenario: require_clean resolves the cleaned artifact with zero NaNs
+
+- **WHEN** the smoke then calls `SupabaseReader().load_experiment("turface_raw.csv",
+  require_clean=True)` after the `qc_clean` run commits
+- **THEN** the reader resolves the committed cleaned version (source `v<N>_cleaned`, not the
+  `raw` input)
+- **AND** the resolved frame's trait columns contain zero NaN cells
+  (`df[trait_cols].isna().sum().sum() == 0`)
 </content>
