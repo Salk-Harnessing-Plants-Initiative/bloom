@@ -14,6 +14,22 @@ import urllib.request
 pytestmark = pytest.mark.integration
 
 
+# --- Edge Routing Tests (Caddy, not Kong) ---
+
+def test_client_info_returns_200(api):
+    """Caddy routes the exact path /api/client-info to bloom-web (NOT Kong's
+    basic-auth dashboard, which 401s it) and the route returns a populated
+    public config (issue #347). Asserts a NON-NULL body: the route reads
+    NEXT_PUBLIC_SUPABASE_* from process.env at request time, so a missing
+    runtime env returns 200 {"api_url": null, "anon_key": null} — green status,
+    broken CLI login. No apikey header — the endpoint is public."""
+    status, body = api("/api/client-info")
+    assert status == 200, f"expected 200, got {status} (Kong basic-auth 401 = route fell through)"
+    assert isinstance(body, dict), f"expected JSON object, got {body!r}"
+    assert body.get("api_url"), "client-info api_url must be non-null"
+    assert body.get("anon_key"), "client-info anon_key must be non-null"
+
+
 # --- Kong Routing Tests ---
 
 def test_kong_routes_auth(api, anon_key):

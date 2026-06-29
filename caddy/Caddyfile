@@ -3,6 +3,8 @@
 #
 # Routes (all served by ONE wildcard SAN cert — see below):
 #   {DOMAIN_MAIN}              → bloom-web (frontend)
+#   {DOMAIN_MAIN}/api/client-info → bloom-web (public {api_url, anon_key} for
+#                              CLI bootstrap — exact path, ahead of /api/*)
 #   {DOMAIN_MAIN}/api/*        → kong (Supabase API gateway, /api prefix stripped)
 #   {DOMAIN_MAIN}/langchain/*  → langchain-agent (FastAPI, prefix preserved)
 #   {DOMAIN_MAIN}/bloommcp/*   → bloommcp (MCP server, /bloommcp prefix stripped)
