@@ -35,6 +35,11 @@ tool, `qc_clean` yields a no-NaN table that **drops fewer samples than a naive `
     entry point — cleanup + validate; analyze#164). It **does not** run the full
     `QCPipeline` and **does not** re-stitch `load → cleanup → validate` in the MCP — that
     orchestration is analyze's, tested upstream. The MCP contains **no QC logic**;
+  - **defaults its four cleanup thresholds to the canonical QC pipeline values** (`CleanupConfig`
+    / the `_QC_DEFAULTS` `clean_traits_for_analysis` injects: `max_zeros_per_trait=0.5`,
+    `max_nans_per_trait=0.2`, `max_nans_per_sample=0.0`, `min_samples_per_trait=10`), **not** the
+    looser `apply_data_cleanup_filters` signature defaults — so an unparameterized `qc_clean`
+    reproduces the pipeline's clean rather than a looser one (per talmolab/sleap-roots-analyze#167);
   - validates a caller-supplied `trait_columns` subset up front (existence + numeric) →
     `invalid_input` naming the bad columns, rather than an opaque `KeyError`/`internal_error`
     or silent mis-filtering;

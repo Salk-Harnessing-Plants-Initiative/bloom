@@ -124,6 +124,22 @@ def test_invalid_threshold_is_input_validation_error(injected_ports):
     assert exc.value.code == "invalid_input"
 
 
+def test_default_thresholds_match_canonical_qc_pipeline():
+    """3.2b — qc_clean's default thresholds mirror the **canonical QC pipeline**
+    defaults (sleap_roots_analyze ``CleanupConfig`` / ``clean_traits_for_analysis``'s
+    injected ``_QC_DEFAULTS``), NOT the looser ``apply_data_cleanup_filters``
+    signature defaults. Drift guard for talmolab/sleap-roots-analyze#167: because
+    ``qc_clean`` forwards all four thresholds explicitly, a default that diverged
+    from the pipeline canonical (e.g. reverting to the helper's 0.3 / 0.2) would
+    silently ship a looser clean than the pipeline — this catches that.
+    """
+    p = QCCleanParams(experiment="x.csv")
+    assert p.max_zeros_per_trait == 0.5
+    assert p.max_nans_per_trait == 0.2  # canonical (NOT the helper's looser 0.3)
+    assert p.max_nans_per_sample == 0.0  # canonical (NOT the helper's looser 0.2)
+    assert p.min_samples_per_trait == 10
+
+
 # ── 3.3 provenance + links (not blobs) ──────────────────────────────────────
 
 
@@ -443,6 +459,36 @@ def test_second_run_increments_version(injected_ports):
     _run()
     assert [r.run_ref for r in store.list_runs(_EXPERIMENT, "qc")] == ["v1", "v2"]
     assert store.get_run(_EXPERIMENT, "qc", "latest").run_ref == "v2"
+
+
+# ── re-run after a cleaned version exists still reads RAW (dogfood regression) ──
+
+
+def test_rerun_with_existing_cleaned_version_still_reads_raw(injected_ports):
+    """qc_clean is the *producer* of cleaned data, so it must always clean from the
+    RAW input — never re-clean its own prior output.
+
+    Regression for the dogfood finding: ``qc_clean`` called
+    ``reader.load_experiment(experiment)`` without ``version="raw"``, so the default
+    ``"latest"`` resolution fed the newest ``_cleaned.csv`` back in once a cleaned
+    version existed — re-cleaning already-cleaned data and reporting a misleading
+    ``source`` of ``v<N>_cleaned``. The existing tests missed this because the
+    FakeReader only ever held the raw frame (cleaned runs land in the *store*); here
+    we seed a cleaned version into the *reader* to reproduce the real resolution.
+    """
+    reader, _store = injected_ports
+    raw = _raw_df()
+    # A cleaned version already exists and is marked latest — the trap the old
+    # default-"latest" load would resolve to instead of the raw input.
+    reader.add_cleaned_version(_EXPERIMENT, "v1", raw.copy(), make_latest=True)
+
+    result = _run()
+
+    # The clean is sourced from RAW, never the pre-existing cleaned artifact.
+    assert result.source == "raw"
+    assert not result.source.endswith("_cleaned")
+    # And it genuinely processed the full raw frame (187), not a cleaned re-read.
+    assert result.n_samples_in == len(raw) == 187
 
 
 # ── real-delegate degenerate case maps to a structured, self-correctable error ──

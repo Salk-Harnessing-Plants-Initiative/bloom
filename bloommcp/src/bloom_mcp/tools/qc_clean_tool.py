@@ -54,9 +54,34 @@ from bloom_mcp.tools import _ports
 _TOOL_CLASS = "qc"
 _LOG_NAME = "cleanup_log.json"
 
+# Default cleanup thresholds mirror the **canonical QC pipeline** defaults — the
+# values ``sleap_roots_analyze``'s QC pipeline actually cleans with
+# (``CleanupConfig`` in ``pipeline/config/components.py``, and the ``_QC_DEFAULTS``
+# that ``clean_traits_for_analysis`` injects) — NOT the looser
+# ``apply_data_cleanup_filters`` *signature* defaults
+# (``max_nans_per_trait=0.3`` / ``max_nans_per_sample=0.2``). Two values differ:
+# the pipeline is stricter — ``max_nans_per_trait=0.2`` drops NaN-heavier traits
+# sooner, and ``max_nans_per_sample=0.0`` drops any sample that still carries a NaN
+# in a kept trait. Mirroring the pipeline means a default ``qc_clean`` reproduces
+# the QC pipeline's clean rather than shipping a looser one. Because ``qc_clean``
+# forwards all four thresholds *explicitly*, they must carry the canonical values
+# here — otherwise our looser defaults would override the delegate's own canonical
+# injection. Source of truth: talmolab/sleap-roots-analyze#167 +
+# ``CleanupConfig`` (max_nan_fraction=0.0, max_zeros_per_trait=0.5,
+# max_nans_per_trait=0.2, min_samples_per_trait=10).
+_CANONICAL_MAX_ZEROS_PER_TRAIT = 0.5
+_CANONICAL_MAX_NANS_PER_TRAIT = 0.2
+_CANONICAL_MAX_NANS_PER_SAMPLE = 0.0
+_CANONICAL_MIN_SAMPLES_PER_TRAIT = 10
+
 
 class QCCleanParams(BaseModel):
-    """Inputs for ``qc_clean``. No ``seed`` — QC is deterministic (threshold filters)."""
+    """Inputs for ``qc_clean``. No ``seed`` — QC is deterministic (threshold filters).
+
+    The four cleanup-threshold defaults are the **canonical QC pipeline** values
+    (see ``_CANONICAL_*`` above), so an unparameterized ``qc_clean`` reproduces the
+    pipeline's clean rather than a looser one.
+    """
 
     experiment: str = Field(
         ..., description="CSV filename from list_available_experiments."
@@ -66,25 +91,32 @@ class QCCleanParams(BaseModel):
         description="Subset of trait columns to clean; omit to clean all detected traits.",
     )
     max_zeros_per_trait: float = Field(
-        default=0.5,
+        default=_CANONICAL_MAX_ZEROS_PER_TRAIT,
         ge=0.0,
         le=1.0,
-        description="Max fraction of zeros per trait before the trait is dropped.",
+        description="Max fraction of zeros per trait before the trait is dropped. "
+        "Default mirrors the canonical QC pipeline (CleanupConfig.max_zeros_per_trait=0.5).",
     )
     max_nans_per_trait: float = Field(
-        default=0.3,
+        default=_CANONICAL_MAX_NANS_PER_TRAIT,
         ge=0.0,
         le=1.0,
-        description="Max fraction of NaNs per trait before the trait is dropped.",
+        description="Max fraction of NaNs per trait before the trait is dropped. "
+        "Default mirrors the canonical QC pipeline (CleanupConfig.max_nans_per_trait=0.2).",
     )
     max_nans_per_sample: float = Field(
-        default=0.2,
+        default=_CANONICAL_MAX_NANS_PER_SAMPLE,
         ge=0.0,
         le=1.0,
-        description="Max fraction of NaNs per sample before the sample is dropped.",
+        description="Max fraction of NaNs per sample before the sample is dropped. "
+        "Default mirrors the canonical QC pipeline (CleanupConfig.max_nan_fraction=0.0): "
+        "any sample with a residual NaN in a kept trait is dropped.",
     )
     min_samples_per_trait: int = Field(
-        default=10, ge=1, description="Min valid samples required to keep a trait."
+        default=_CANONICAL_MIN_SAMPLES_PER_TRAIT,
+        ge=1,
+        description="Min valid samples required to keep a trait. "
+        "Default mirrors the canonical QC pipeline (CleanupConfig.min_samples_per_trait=10).",
     )
     user_label: Optional[str] = Field(
         default=None,
@@ -168,8 +200,11 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     reader = _ports.reader()
     store = _ports.store()
 
-    # qc_clean is the producer of cleaned data — read the RAW frame (no require_clean).
-    frame = reader.load_experiment(params.experiment)
+    # qc_clean is the producer of cleaned data, so it must always clean from the
+    # RAW input — never re-clean a prior cleaned artifact. Force version="raw" so a
+    # re-run (after a cleaned version already exists) still reads raw rather than
+    # the default "latest" resolution, which would resolve the newest _cleaned.csv.
+    frame = reader.load_experiment(params.experiment, version="raw")
     if params.trait_columns is not None:
         _validate_trait_subset(frame, params.trait_columns, params.experiment)
     trait_cols = params.trait_columns or frame.trait_cols

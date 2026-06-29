@@ -160,17 +160,40 @@
 - [x] 6.5 Re-run `make bloommcp-smoke` (both legs green) and `uv run pytest
       tests/scripts/test_live_persistence_smoke_logic.py` (all helper tests green).
 
-## 7. Follow-ups (out of this change's scope — tracked, not done here)
+## 7. Default-threshold alignment to the canonical QC pipeline (Elizabeth's review)
 
-- [ ] 7.1 Retirement of the vendored `bloom_mcp.data_cleanup` + `run_qc_workflow` stays
+- [x] 7.1 Confirm the authoritative defaults: `clean_traits_for_analysis` injects
+      `_QC_DEFAULTS = {max_nans_per_trait: 0.2, max_nans_per_sample: 0.0}` (data_cleanup.py),
+      `CleanupConfig` (pipeline/config/components.py) = `{max_nan_fraction: 0.0,
+      max_zeros_per_trait: 0.5, max_nans_per_trait: 0.2, min_samples_per_trait: 10}`, and
+      talmolab/sleap-roots-analyze#167 fixes the looser `apply_data_cleanup_filters` signature
+      defaults (`0.3` / `0.2`) to the canonical ones — so the pipeline canonical is the source
+      of truth, **not** the helper signature.
+- [x] 7.2 Change `QCCleanParams` defaults from the helper-signature values to the canonical
+      pipeline values: `max_nans_per_trait` `0.3 → 0.2`, `max_nans_per_sample` `0.2 → 0.0`
+      (`max_zeros_per_trait=0.5` / `min_samples_per_trait=10` already matched). Add
+      `_CANONICAL_*` constants + a sourced comment explaining the MCP mirrors the pipeline.
+- [x] 7.3 Add a drift-guard unit test asserting `QCCleanParams()` defaults equal the canonical
+      `{0.5, 0.2, 0.0, 10}` (not the helper's `0.3` / `0.2`). Golden unaffected (the oracle
+      passes `max_nans_per_trait=0.1` explicitly and the result is NaN-free either way).
+- [x] 7.4 Record the intent in the spec (new "Default Thresholds Mirror the Canonical QC
+      Pipeline" requirement + scenario). Re-run the qc_clean suite + `make bloommcp-smoke`.
+
+## 8. Follow-ups (out of this change's scope — tracked, not done here)
+
+- [ ] 8.1 Retirement of the vendored `bloom_mcp.data_cleanup` + `run_qc_workflow` stays
       deferred to after Stage 1 (Tiers 0–4) — do **not** remove here.
-- [ ] 7.2 If analyze later exposes a typed cleanup-log result, swap the internal
+- [ ] 8.2 If analyze later exposes a typed cleanup-log result, swap the internal
       `(df, kept_cols, log)` mapping for it — a localized change, not a duplicated adapter.
-- [ ] 7.3 Spec-sync (separate change): the `bloommcp-result-store` spec text reads
+- [ ] 8.3 Spec-sync (separate change): the `bloommcp-result-store` spec text reads
       `create_run(experiment, tool, params, …)` but the shipped port is
       `create_run(experiment, tool_class, …)` with params via `Provenance`. Reconcile the
       spec to the code.
-- [ ] 7.4 Inputs still load from the local `BLOOM_TRAITS_DIR` (the smoke seeds the raw fixture
+- [ ] 8.4 Inputs still load from the local `BLOOM_TRAITS_DIR` (the smoke seeds the raw fixture
       there); when raw inputs migrate to the `bloommcp_input/` storage prefix, switch the
       qc_clean leg's upload to that bucket and drop the traits-dir seeding.
+- [ ] 8.5 When talmolab/sleap-roots-analyze#167 merges (aligning the
+      `apply_data_cleanup_filters` *signature* defaults to canonical), the MCP `_CANONICAL_*`
+      constants still hold — re-confirm they match the released `CleanupConfig` on the next
+      analyze bump.
 </content>
