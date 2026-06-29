@@ -1,7 +1,7 @@
 ---
 title: bloom-mcp — splitting the server into per-owner sub-servers
 date: 2026-06-29
-status: proposal — pending Elizabeth review
+status: Plan — pending Elizabeth review
 author: Benfica
 scope: bloommcp server layout only — no change to the tool contract, persistence, or analyze delegation
 ---
