@@ -119,8 +119,8 @@ app = Starlette(
 ## 7. Questions for review
 
 1. **Naming:** are `sleap_analyze` and `phenotyping_segmentation` the
-   right first two sections?
-2. **Paths:** OK with `/all`, `/sleap_analyze`, `/phenotyping_segmentation`
-   as the section URLs?
-3. **Phase 2:** this is scoped to server layout only — does the `mount()`
+   right first two sections?,(answer if this plan is approved.)
+3. **Paths:** OK with `/all`, `/sleap_analyze`, `/phenotyping_segmentation`
+   as the section URLs?(answer if this plan is approved.)
+5. **Phase 2:** this is scoped to server layout only — does the `mount()`
    approach clash with anything in your Phase 2 direction?
