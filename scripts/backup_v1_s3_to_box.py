@@ -17,10 +17,10 @@ Prerequisites
 * A pre-configured rclone **Box** remote (e.g. `rclone config` -> Box).
   Its name is read from BOX_RCLONE_REMOTE (default `box`). The destination
   folder is created on Box automatically by rclone if it does not exist.
-* AWS credentials for the V1 bucket, supplied via the standard
-  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars (and
-  AWS_SESSION_TOKEN if using temporary creds). Secrets are passed to
-  rclone through env, never on the command line.
+* AWS credentials for the V1 bucket. Authentication uses the standard AWS
+  credential chain (rclone env_auth): AWS_* env vars, else
+  ~/.aws/credentials, else SSO, else an instance role. If `aws s3 ls`
+  works in your shell, this script is authenticated — no keys to copy.
 
 --------------------------------------------------------------------------
 Configuration (env vars, all overridable by CLI flags)
@@ -28,22 +28,29 @@ Configuration (env vars, all overridable by CLI flags)
   V1_S3_BUCKET           V1 source bucket name              (required)
   V1_S3_PREFIX           optional key prefix to limit scope (default: "")
   V1_S3_REGION           AWS region of the bucket           (default: us-west-2)
-  AWS_ACCESS_KEY_ID      AWS access key                     (required)
-  AWS_SECRET_ACCESS_KEY  AWS secret key                     (required)
-  AWS_SESSION_TOKEN      AWS session token                  (optional)
   BOX_RCLONE_REMOTE      name of the rclone Box remote      (default: box)
   V1_ARCHIVE_DEST_DIR    folder path on Box                 (default: bloom-v1-archive)
+
+AWS auth is taken from the ambient credential chain (see above); there is
+no AWS_* config to set here if your shell already has working AWS access.
 
 --------------------------------------------------------------------------
 Usage
 --------------------------------------------------------------------------
-  # See how big the transfer is and what would happen, without copying:
-  V1_S3_BUCKET=salk-hpi-bloom AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
-      python scripts/backup_v1_s3_to_box.py --dry-run
+  # Preview what would copy, without copying anything:
+  python scripts/backup_v1_s3_to_box.py --bucket salk-hpi-bloom --dry-run
 
-  # Run the archive, then verify source vs Box by size+count:
-  V1_S3_BUCKET=salk-hpi-bloom AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
-      python scripts/backup_v1_s3_to_box.py --verify
+  # Run the archive in the background (survives closing the terminal) and
+  # follow progress in the log. This bucket is ~8 TB / ~7M objects, so the
+  # copy runs for days; nohup is the intended way to launch it:
+  nohup python scripts/backup_v1_s3_to_box.py \
+      --bucket salk-hpi-bloom \
+      --dest "Bloom-Backups/Old_Bloom_Final_State" \
+      --verify > v1_archive.log 2>&1 &
+  tail -f v1_archive.log
+
+The slow up-front size measurement is OFF by default (it walks every object).
+Pass --measure only if you want the total logged before copying.
 
 Exit codes:
   0 = archive copied (and verified, if --verify)
@@ -89,15 +96,22 @@ def _which(name: str) -> str:
 
 
 def _run(cmd: list[str], env: dict[str, str]) -> None:
-    """Run rclone, streaming its output to the log; raise on non-zero exit."""
+    """Run rclone, streaming each line to the log live; raise on non-zero exit.
+
+    Live streaming (vs. capturing at the end) matters for the multi-day copy:
+    under nohup you can `tail -f` the log and watch progress as it happens.
+    """
     logger.info("running: %s", " ".join(cmd))
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
-    for line in (result.stdout or "").rstrip().splitlines():
-        logger.info("  %s", line)
-    for line in (result.stderr or "").rstrip().splitlines():
-        logger.warning("  %s", line)
-    if result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, cmd)
+    proc = subprocess.Popen(
+        cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        logger.info("  %s", line.rstrip())
+    proc.wait()
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
 def build_config() -> argparse.Namespace:
@@ -111,29 +125,31 @@ def build_config() -> argparse.Namespace:
                    help="destination folder path on Box")
     p.add_argument("--transfers", type=int, default=8, help="parallel transfers")
     p.add_argument("--checkers", type=int, default=16, help="parallel checkers")
+    p.add_argument("--tpslimit", type=int, default=10,
+                   help="max rclone API transactions/sec (throttle for Box limits)")
+    p.add_argument("--measure", action="store_true",
+                   help="walk the source first and log total size+count (slow on "
+                        "large buckets — millions of LIST calls); off by default")
     p.add_argument("--dry-run", action="store_true",
-                   help="report size and show what would copy, without copying")
+                   help="show what would copy, without copying")
     p.add_argument("--verify", action="store_true",
                    help="after copy, compare source and Box by size + count")
     return p.parse_args()
 
 
 def rclone_env(cfg: argparse.Namespace) -> dict[str, str]:
-    """Build the child env: an ad-hoc rclone S3 remote fed from AWS creds."""
-    access = _env("AWS_ACCESS_KEY_ID")
-    secret = _env("AWS_SECRET_ACCESS_KEY")
-    if not access or not secret:
-        raise ConfigError("AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY must be set")
+    """Build the child env: an ad-hoc rclone S3 remote that authenticates via
+    the standard AWS credential chain (env_auth=true).
 
+    rclone reads, in order: AWS_* env vars, then ~/.aws/credentials, then SSO,
+    then an EC2/instance role. So if `aws s3 ls` works in your shell, this
+    script is authenticated too — no need to copy keys out.
+    """
     env = dict(os.environ)
     env[f"RCLONE_CONFIG_{RCLONE_REMOTE_NAME}_TYPE"] = "s3"
     env[f"RCLONE_CONFIG_{RCLONE_REMOTE_NAME}_PROVIDER"] = "AWS"
     env[f"RCLONE_CONFIG_{RCLONE_REMOTE_NAME}_REGION"] = cfg.region
-    env[f"RCLONE_CONFIG_{RCLONE_REMOTE_NAME}_ACCESS_KEY_ID"] = access
-    env[f"RCLONE_CONFIG_{RCLONE_REMOTE_NAME}_SECRET_ACCESS_KEY"] = secret
-    session = _env("AWS_SESSION_TOKEN")
-    if session:
-        env[f"RCLONE_CONFIG_{RCLONE_REMOTE_NAME}_SESSION_TOKEN"] = session
+    env[f"RCLONE_CONFIG_{RCLONE_REMOTE_NAME}_ENV_AUTH"] = "true"
     return env
 
 
@@ -175,8 +191,10 @@ def copy_to_box(cfg: argparse.Namespace, rclone: str, env: dict[str, str]) -> No
         rclone, "copy", src, dest,
         "--transfers", str(cfg.transfers),
         "--checkers", str(cfg.checkers),
-        "--progress",
-        "--stats", "30s",
+        "--tpslimit", str(cfg.tpslimit),
+        "--stats", "1m",
+        "--stats-one-line",
+        "--stats-log-level", "NOTICE",
     ]
     if cfg.dry_run:
         cmd.append("--dry-run")
@@ -211,7 +229,8 @@ def main() -> int:
         return 2
 
     try:
-        report_size(cfg, rclone, env)
+        if cfg.measure:
+            report_size(cfg, rclone, env)
         copy_to_box(cfg, rclone, env)
     except subprocess.CalledProcessError as exc:
         logger.error("rclone failed (exit %s)", exc.returncode)
