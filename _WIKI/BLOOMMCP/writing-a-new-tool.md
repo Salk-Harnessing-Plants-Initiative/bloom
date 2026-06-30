@@ -1,6 +1,12 @@
 # Writing a new workflow tool
 
-This doc is the guide for adding a new MCP workflow tool to bloommcp.
+> **Adding a tool to a section (e.g. phenotyping)?** Use
+> [adding-a-section-tool.md](./adding-a-section-tool.md) instead — that's the
+> current pattern (`@as_mcp_tool` + Pydantic input/output). This doc is the
+> older **workflow-tool** style (read CSV → write a versioned output folder,
+> registered with `mcp.tool()`).
+
+This doc is the guide for adding a new MCP workflow tool to the bloommcp.(sleap-trait-analyze)
 
 If you're trying to understand how the storage layer works under the
 hood, read [storage-workflow.md](./storage-workflow.md) first.
