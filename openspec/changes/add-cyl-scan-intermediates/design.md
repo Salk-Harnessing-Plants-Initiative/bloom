@@ -61,11 +61,13 @@ ceremony for no gain. `root_type` is the **union** across pipelines; *which* pip
 row is recoverable from provenance (`source_id → cyl_trait_sources.metadata`), so pipeline identity
 is **not** a column here. `root_type` is `NOT NULL` (every `predictions_slp` row has a root type);
 revisit nullability only if a future root-type-agnostic `kind` (e.g. `viewer_html`) is added.
-The **`root_type` `CHECK` constraint is the single source of truth** for the accepted vocabulary
-(unlike `kind`, whose authority is the vendored contract enum with CI-enforced parity, `root_type`
-has no contract/test anchor): the integration test asserts the full accepted set against the
-constraint, and the prose copies in this proposal/tasks are explanatory only. To change the
-vocabulary, change the `CHECK`.
+**`root_type` is contract-anchored, symmetric with `kind`** (revised after the `v0.1.0a2` re-pin,
+which added a required `BlobRef.root_type` enum to the contract). Both vocabularies have a
+behavioral CI parity probe (`test_db_{kind,root_type}_vocab_matches_contract_blobref_enum`) asserting
+the DB `CHECK` accepts exactly the contract enum — so a contract/DB divergence on either fails CI.
+(Earlier in this change's design `root_type` was DB-anchored because the contract did not yet own it;
+that is now reversed — the contract is the authority, and changing the `root_type` vocabulary
+requires a contract release + re-pin, like `kind`.)
 
 ### D4 — At-least-one-location CHECK
 `CHECK (s3_location IS NOT NULL OR box_link IS NOT NULL)` mirrors the contract `BlobRef` top-level
@@ -100,9 +102,15 @@ are independent; issue both") without being a hard prerequisite.
 
 ### D6 — Trait↔blob link is implicit via `(source_id, scan_id)`
 A trait value (`cyl_scan_traits`) and an artifact (`cyl_scan_intermediates`) produced by the same
-run share `source_id` (→ `cyl_trait_sources`) and `scan_id` (→ `cyl_scans`). No FK is added to
-`cyl_scan_traits`: the grain is mismatched (many traits per `.slp`) and a hard per-trait link, if
-ever needed, belongs to change D.
+run share `source_id` (→ `cyl_trait_sources`) and `scan_id` (→ `cyl_scans`). The link is **FK-backed
+on both tables**: `cyl_scan_traits` has carried a `source_id` FK since
+`20240731010924_add_source_id_to_cyl_scan_traits.sql` (and `scan_id` since its creation), and this
+change gives `cyl_scan_intermediates` the same two FKs — so a trait and an artifact from one run
+converge on `(source_id, scan_id)`. No FK is added *between* the two leaf tables: the grain is
+mismatched (many traits per `.slp`) and a hard per-trait link, if ever needed, belongs to change D.
+Caveat: `cyl_scan_traits.source_id` is **nullable**, so the join is guaranteed only for
+pipeline-written rows (change D populates `source_id`); legacy/manual trait rows with a NULL
+`source_id` won't join — acceptable, since the artifact table only ever holds pipeline output.
 
 ### D7 — Contract enum revision sequencing (and which check actually gates it)
 The contract `BlobRef.kind` enum is being revised to `{predictions_slp}` (dropping

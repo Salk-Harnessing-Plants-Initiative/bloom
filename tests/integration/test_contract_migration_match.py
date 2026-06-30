@@ -323,37 +323,85 @@ def test_blobref_regression_is_detected(pg_conn):
     pg_conn.rollback()
 
 
+def _blobref_enum(schema: dict, prop: str) -> set[str]:
+    """Read a BlobRef property's allowed-value set defensively. Pydantic renders a
+    single-value Literal as JSON-Schema `const` and a multi-value one as `enum`, so accept
+    either — a `KeyError` here would mask the real ("DB vocab != contract vocab") signal."""
+    p = schema["$defs"]["BlobRef"]["properties"][prop]
+    values = p.get("enum")
+    if values is None and "const" in p:
+        values = [p["const"]]
+    assert values, f"BlobRef.{prop} has no enum/const in the vendored schema"
+    return set(values)
+
+
+def _probe_accepted(cur, source_id, scan_id, *, column, fixed, candidates) -> set[str]:
+    """Behavioral CHECK probe: try one INSERT per candidate value for `column` (with the
+    other vocabulary column held at `fixed`), each in its own SAVEPOINT that always rolls
+    back — so no row persists and the UNIQUE 4-tuple can never collide across iterations.
+    Returns the set the DB CHECK accepted. No constraint-text parsing (Postgres rewrites
+    `IN (...)` to `= ANY(ARRAY[...])`, which is brittle)."""
+    accepted = set()
+    for value in candidates:
+        cur.execute("SAVEPOINT probe")
+        try:
+            cur.execute(
+                f"INSERT INTO {INTERMEDIATES} "
+                f"(source_id, scan_id, kind, root_type, s3_location) "
+                f"VALUES (%(src)s, %(scan)s, %(kind)s, %(root_type)s, 's3://b/k.slp')",
+                {"src": source_id, "scan": scan_id, **fixed, column: value},
+            )
+        except psycopg.errors.CheckViolation:
+            cur.execute("ROLLBACK TO SAVEPOINT probe")
+        else:
+            accepted.add(value)
+            cur.execute("ROLLBACK TO SAVEPOINT probe")  # MUST roll back to stay re-entrant
+    return accepted
+
+
 def test_db_kind_vocab_matches_contract_blobref_enum(pg_conn):
     """The DB `kind` CHECK vocabulary equals the pinned contract `BlobRef.kind` enum,
-    proved by a behavioral INSERT probe (not by parsing constraint text). Unconditional
-    since the contract was re-pinned to `v0.1.0a2` (`BlobRef.kind == {predictions_slp}`);
-    if a future re-pin diverges from the DB CHECK, this fails loudly."""
-    schema = _load_schema()
-    contract_kinds = set(schema["$defs"]["BlobRef"]["properties"]["kind"]["enum"])
-
-    candidates = contract_kinds | {"h5", "labels", "qc_image", "bogus"}
-    accepted = set()
+    proved by a behavioral INSERT probe. Unconditional since the contract was re-pinned to
+    `v0.1.0a2` (`BlobRef.kind == {predictions_slp}`); a future re-pin diverging from the DB
+    CHECK fails loudly."""
+    contract_kinds = _blobref_enum(_load_schema(), "kind")
+    negatives = {"h5", "labels", "qc_image", "bogus"} - contract_kinds
+    assert negatives, "negative-control set is empty — the probe would not test rejection"
     with pg_conn.cursor() as cur:
         cur.execute("INSERT INTO cyl_trait_sources (name) VALUES ('kind-probe') RETURNING id")
         source_id = cur.fetchone()[0]
         cur.execute("INSERT INTO cyl_scans DEFAULT VALUES RETURNING id")
         scan_id = cur.fetchone()[0]
-        for kind in candidates:
-            cur.execute("SAVEPOINT k")
-            try:
-                cur.execute(
-                    f"INSERT INTO {INTERMEDIATES} "
-                    f"(source_id, scan_id, kind, root_type, s3_location) "
-                    f"VALUES (%s, %s, %s, 'primary', 's3://b/k.slp')",
-                    (source_id, scan_id, kind),
-                )
-            except psycopg.errors.CheckViolation:
-                cur.execute("ROLLBACK TO SAVEPOINT k")
-            else:
-                accepted.add(kind)
-                cur.execute("ROLLBACK TO SAVEPOINT k")
+        accepted = _probe_accepted(
+            cur, source_id, scan_id,
+            column="kind", fixed={"root_type": "primary"}, candidates=contract_kinds | negatives,
+        )
     pg_conn.rollback()
     assert accepted == contract_kinds, (
-        f"DB kind vocabulary {sorted(accepted)} != contract BlobRef.kind "
-        f"{sorted(contract_kinds)}"
+        f"DB kind vocabulary {sorted(accepted)} != contract BlobRef.kind {sorted(contract_kinds)}"
+    )
+
+
+def test_db_root_type_vocab_matches_contract_blobref_enum(pg_conn):
+    """The DB `root_type` CHECK vocabulary equals the pinned contract `BlobRef.root_type`
+    enum — symmetric with the `kind` probe. As of `v0.1.0a2` the contract owns `root_type`
+    (`{primary, lateral, crown}`), so it is contract-anchored (design D3, revised): a
+    contract/DB divergence on `root_type` fails CI just like `kind`."""
+    contract_root_types = _blobref_enum(_load_schema(), "root_type")
+    negatives = {"seminal", "tap", "bogus"} - contract_root_types
+    assert negatives, "negative-control set is empty — the probe would not test rejection"
+    with pg_conn.cursor() as cur:
+        cur.execute("INSERT INTO cyl_trait_sources (name) VALUES ('rt-probe') RETURNING id")
+        source_id = cur.fetchone()[0]
+        cur.execute("INSERT INTO cyl_scans DEFAULT VALUES RETURNING id")
+        scan_id = cur.fetchone()[0]
+        accepted = _probe_accepted(
+            cur, source_id, scan_id,
+            column="root_type", fixed={"kind": "predictions_slp"},
+            candidates=contract_root_types | negatives,
+        )
+    pg_conn.rollback()
+    assert accepted == contract_root_types, (
+        f"DB root_type vocabulary {sorted(accepted)} != contract BlobRef.root_type "
+        f"{sorted(contract_root_types)}"
     )

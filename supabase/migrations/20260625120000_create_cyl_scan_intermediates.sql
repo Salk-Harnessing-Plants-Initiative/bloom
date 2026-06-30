@@ -10,12 +10,18 @@
 --
 -- Grain: one row per (source_id, scan_id, kind, root_type) — UNIQUE preserves history
 -- across re-runs (distinct source_id) and is the write-back path's (change D) upsert key.
+-- A re-emission of the SAME run's artifact (same source_id) must therefore use UPDATE,
+-- not a second INSERT (the latter collides on the UNIQUE 4-tuple).
 --
 -- RLS (modern role model, matching gravi_images / embedtree): bloom_admin FOR ALL;
 -- bloom_agent + bloom_user SELECT; bloom_writer SELECT/INSERT/UPDATE (the ingest /
--- write-back role). No write policy for bloom_user/bloom_agent — their read-only
--- posture is enforced by the absence of write policies. Table-level GRANTs gate
--- PostgREST exposure (independent of, and required alongside, the RLS policies).
+-- write-back role). No write policy for bloom_user/bloom_agent. NOTE the write-denial is
+-- single-layered and RLS-only: 20260414002000_security_groups.sql sets `ALTER DEFAULT
+-- PRIVILEGES ... GRANT SELECT, INSERT, UPDATE ON TABLES TO bloom_user`, so bloom_user
+-- silently holds a table-level INSERT/UPDATE grant here — the ONLY thing preventing writes
+-- is the absence of a permitting RLS policy. Do not `DISABLE ROW LEVEL SECURITY` or add a
+-- bloom_user/agent write policy without re-checking this. Table-level GRANTs gate PostgREST
+-- exposure (independent of, and required alongside, the RLS policies).
 --
 -- Forward-only + additive; companion manual rollback under supabase/rollbacks/.
 -- Idempotent for a re-runnable `supabase db push`: CREATE TABLE IF NOT EXISTS,
@@ -39,39 +45,44 @@ CREATE TABLE IF NOT EXISTS cyl_scan_intermediates (
         UNIQUE (source_id, scan_id, kind, root_type)
 );
 
-ALTER TABLE cyl_scan_intermediates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cyl_scan_intermediates ENABLE ROW LEVEL SECURITY;
+
+COMMENT ON COLUMN public.cyl_scan_intermediates.box_link IS
+  'Human-shareable Box link (non-canonical; s3_location is the canonical copy). Readable by '
+  'every authenticated lab user (SELECT policies use USING (true)), so this MUST hold only '
+  'company-/SSO-scoped Box shares, never an open/public capability URL.';
 
 -- bloom_admin: full access
-DROP POLICY IF EXISTS admin_all_cyl_scan_intermediates ON cyl_scan_intermediates;
-CREATE POLICY admin_all_cyl_scan_intermediates ON cyl_scan_intermediates
+DROP POLICY IF EXISTS admin_all_cyl_scan_intermediates ON public.cyl_scan_intermediates;
+CREATE POLICY admin_all_cyl_scan_intermediates ON public.cyl_scan_intermediates
     FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
 
 -- bloom_agent + bloom_user: read-only
-DROP POLICY IF EXISTS agent_read_cyl_scan_intermediates ON cyl_scan_intermediates;
-CREATE POLICY agent_read_cyl_scan_intermediates ON cyl_scan_intermediates
+DROP POLICY IF EXISTS agent_read_cyl_scan_intermediates ON public.cyl_scan_intermediates;
+CREATE POLICY agent_read_cyl_scan_intermediates ON public.cyl_scan_intermediates
     FOR SELECT TO bloom_agent USING (true);
 
-DROP POLICY IF EXISTS user_read_cyl_scan_intermediates ON cyl_scan_intermediates;
-CREATE POLICY user_read_cyl_scan_intermediates ON cyl_scan_intermediates
+DROP POLICY IF EXISTS user_read_cyl_scan_intermediates ON public.cyl_scan_intermediates;
+CREATE POLICY user_read_cyl_scan_intermediates ON public.cyl_scan_intermediates
     FOR SELECT TO bloom_user USING (true);
 
 -- bloom_writer: the ingest / write-back role (change D writes here)
-DROP POLICY IF EXISTS writer_read_cyl_scan_intermediates ON cyl_scan_intermediates;
-CREATE POLICY writer_read_cyl_scan_intermediates ON cyl_scan_intermediates
+DROP POLICY IF EXISTS writer_read_cyl_scan_intermediates ON public.cyl_scan_intermediates;
+CREATE POLICY writer_read_cyl_scan_intermediates ON public.cyl_scan_intermediates
     FOR SELECT TO bloom_writer USING (true);
 
-DROP POLICY IF EXISTS writer_insert_cyl_scan_intermediates ON cyl_scan_intermediates;
-CREATE POLICY writer_insert_cyl_scan_intermediates ON cyl_scan_intermediates
+DROP POLICY IF EXISTS writer_insert_cyl_scan_intermediates ON public.cyl_scan_intermediates;
+CREATE POLICY writer_insert_cyl_scan_intermediates ON public.cyl_scan_intermediates
     FOR INSERT TO bloom_writer WITH CHECK (true);
 
-DROP POLICY IF EXISTS writer_update_cyl_scan_intermediates ON cyl_scan_intermediates;
-CREATE POLICY writer_update_cyl_scan_intermediates ON cyl_scan_intermediates
+DROP POLICY IF EXISTS writer_update_cyl_scan_intermediates ON public.cyl_scan_intermediates;
+CREATE POLICY writer_update_cyl_scan_intermediates ON public.cyl_scan_intermediates
     FOR UPDATE TO bloom_writer USING (true) WITH CHECK (true);
 
 -- Table-level GRANTs (RLS policy + GRANT are independent; both are required for
 -- PostgREST to expose the table to a role).
-GRANT SELECT ON cyl_scan_intermediates TO bloom_user, bloom_agent;
-GRANT SELECT, INSERT, UPDATE ON cyl_scan_intermediates TO bloom_writer;
-GRANT SELECT, INSERT, UPDATE, DELETE ON cyl_scan_intermediates TO bloom_admin;
+GRANT SELECT ON public.cyl_scan_intermediates TO bloom_user, bloom_agent;
+GRANT SELECT, INSERT, UPDATE ON public.cyl_scan_intermediates TO bloom_writer;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.cyl_scan_intermediates TO bloom_admin;
 
 COMMIT;
