@@ -135,7 +135,10 @@ Each tool's outputs land in a folder named after its `tool_class`.
 `heritability`, `anova` — registered in
 [`CANONICAL_TOOL_CLASSES`](../../bloommcp/src/bloom_mcp/storage/__init__.py).
 
-For the step-by-step guide to write a new workflow tool, see
+To add a tool to a **section** (the current pattern — e.g. phenotyping), see
+[adding-a-section-tool.md](./adding-a-section-tool.md).
+
+For the older **workflow-tool** style (read CSV → versioned output), see
 [writing-a-new-tool.md](./writing-a-new-tool.md). 
 
 For the underlying schema and the manifest's data model, see
