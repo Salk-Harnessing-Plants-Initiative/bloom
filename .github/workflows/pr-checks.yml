@@ -364,6 +364,21 @@ jobs:
       - name: Run migration lint
         run: ./scripts/lint_migrations.sh origin/${{ github.base_ref }}
 
+  lint-cve-isolation:
+    name: Lint CVE changes are isolated
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Need history on both sides so the lint can diff against the base ref
+          fetch-depth: 0
+
+      # Fails if a PR folds a .trivyignore (CVE-suppression) change into
+      # unrelated work — CVE/security changes must ship in their own PR.
+      - name: Enforce CVE-change PR isolation
+        run: ./scripts/lint_cve_isolation.sh origin/${{ github.base_ref }}
+
   # Runs the new web/ Vitest suite added by the openspec change
   # add-ghcr-image-publishing (proposal/tasks/specs already on this branch).
   # No `needs:` block — runs in parallel with the rest of pr-checks so a
