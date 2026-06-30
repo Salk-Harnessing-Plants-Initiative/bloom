@@ -18,7 +18,7 @@ enforcement) `tests/integration/test_embedtree_schema.py`.
 
 ## 0. Pre-work / dependency gate
 
-- [ ] 0.1 Confirm the agreed contract `BlobRef.kind` enum (`{predictions_slp}`) with the contract
+- [x] 0.1 Confirm the agreed contract `BlobRef.kind` enum (`{predictions_slp}`) with the contract (DONE: v0.1.0a2 released, issue #5)
       owner; track the `sleap-roots-contracts` revision + release as the **MERGE BLOCKER** (task 6).
 - [x] 0.2 Chose migration timestamp `20260625120000` — strictly greater than the max across both
       `origin/main` (`20260609000000`) and `origin/staging` (`20260622180000`). Migration lint
@@ -136,14 +136,14 @@ types, `pg_constraint` by `contype`/`confrelid`, `SAVEPOINT`/`rollback()` betwee
 
 ## 6. Contract re-pin (MERGE BLOCKER / gate commit)
 
-- [ ] 6.1 Once `sleap-roots-contracts` is released with the revised `BlobRef.kind` enum, re-pin
+- [x] 6.1 Once `sleap-roots-contracts` is released with the revised `BlobRef.kind` enum, re-pin
       `contracts/` via the consume-pin procedure (regenerate, do **not** hand-edit): update
       `pin.json`, `schema/result_envelope.schema.json`, `generated/result-envelope.ts`.
-- [ ] 6.2 Update `contracts/README.md`: bump the documented "Currently pinned" version, refresh the
+- [x] 6.2 Update `contracts/README.md`: bump the documented "Currently pinned" version, refresh the
       `v0.1.0a1`-vs-`v0.1.0` note, and correct the change-C codegen-caveat enum from
       `(predictions_slp|labels|h5|qc_image)` to `(predictions_slp)`.
-- [ ] 6.3 Remove the skip-guard on the task 1.4 `kind`-parity probe (same commit as 6.1).
-- [ ] 6.4 Re-run `npm run contracts:check` (drift guard: pin/`$id` + `generated/` byte-identity) and
+- [x] 6.3 Remove the skip-guard on the task 1.4 `kind`-parity probe (same commit as 6.1).
+- [x] 6.4 Re-run `npm run contracts:check` (drift guard: pin/`$id` + `generated/` byte-identity) and
       the migration-match `kind` parity assertion; confirm both GREEN against the new enum.
 
 ## 7. Validate + finalize

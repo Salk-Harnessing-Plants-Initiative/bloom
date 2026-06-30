@@ -325,16 +325,11 @@ def test_blobref_regression_is_detected(pg_conn):
 
 def test_db_kind_vocab_matches_contract_blobref_enum(pg_conn):
     """The DB `kind` CHECK vocabulary equals the pinned contract `BlobRef.kind` enum,
-    proved by a behavioral INSERT probe (not by parsing constraint text). Skip-guarded
-    until the contract is re-pinned to the revised enum — this is change C's MERGE
-    BLOCKER (the DB ships `kind IN ('predictions_slp')` before the re-pin)."""
+    proved by a behavioral INSERT probe (not by parsing constraint text). Unconditional
+    since the contract was re-pinned to `v0.1.0a2` (`BlobRef.kind == {predictions_slp}`);
+    if a future re-pin diverges from the DB CHECK, this fails loudly."""
     schema = _load_schema()
     contract_kinds = set(schema["$defs"]["BlobRef"]["properties"]["kind"]["enum"])
-    if contract_kinds != {"predictions_slp"}:
-        pytest.skip(
-            "contract BlobRef.kind not yet re-pinned to {predictions_slp} "
-            f"(currently {sorted(contract_kinds)}) — change C MERGE BLOCKER"
-        )
 
     candidates = contract_kinds | {"h5", "labels", "qc_image", "bogus"}
     accepted = set()
