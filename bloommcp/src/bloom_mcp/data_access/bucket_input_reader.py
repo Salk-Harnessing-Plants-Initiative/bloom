@@ -1,11 +1,11 @@
 """BucketInputReader — additive fallback so experiments in the Supabase
 ``bloommcp_input/`` bucket are readable and discoverable.
 
-A temporary shim, not a rewrite: it wraps the existing reader and ONLY adds
+A temporary compatibility layer, not a rewrite: it wraps the existing reader and ONLY adds
 ``bloommcp_input/`` as a fallback. The existing read path (cleaned-from-bucket,
 legacy cleaned, local raw mount) is unchanged, so nothing currently working
 breaks. When the Tier-2 input migration (#307) folds bucket input into
-``load_experiment_data`` and retires ``BLOOM_TRAITS_DIR``, delete this shim.
+``load_experiment_data`` and retires ``BLOOM_TRAITS_DIR``, delete this layer.
 """
 
 from __future__ import annotations
