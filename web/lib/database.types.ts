@@ -2424,6 +2424,7 @@ export type Database = {
         }[]
       }
       insert_cyl_qc_codes: { Args: { qc_codes: Json }; Returns: undefined }
+      insert_cyl_result_envelope: { Args: { envelope: Json }; Returns: Json }
       insert_image:
         | {
             Args: {
