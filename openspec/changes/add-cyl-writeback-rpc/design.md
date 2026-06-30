@@ -51,9 +51,15 @@ call, so no partial source/trait/blob/registry rows persist. The source insert i
 (idempotency_key) DO NOTHING RETURNING id`. If a row is returned, **this** transaction created the
 source and is the writer — it proceeds to write all traits and blobs. If no row is returned, a prior
 (or concurrent-then-committed) delivery already wrote the run in full, so the RPC **short-circuits**:
-it writes nothing further and returns `was_noop = true`. Re-delivery of an already-ingested run is
-therefore a **pure no-op** — source, traits, and blobs are all immutable and nothing (not even a blob
-pointer) is rewritten. The stored `metadata`/provenance is never overwritten.
+it writes nothing further and returns `was_noop = true` (with `scan_id` null — see D4). Re-delivery of
+an already-ingested run is therefore a **pure no-op** — source, traits, and blobs are all immutable and
+nothing (not even a blob pointer) is rewritten. The stored `metadata`/provenance is never overwritten.
+The gate runs **before** scan resolution (D4) so a re-delivery short-circuits without re-resolving
+images — making re-delivery robust even if the original `image_ids` were since deleted, and avoiding a
+misleading `scan_id` from the new delivery. Intra-envelope duplicates (two traits with the same name,
+or two blobs with the same `kind`/`root_type`) are a malformed envelope and are **rejected** by the
+respective UNIQUE constraints (no silent dedup, symmetric across traits and blobs); the returned
+`trait_count`/`blob_count` therefore equal rows actually written.
 
 This is safe under crash/partial/concurrent delivery precisely because of atomicity: a
 `cyl_trait_sources` row becomes visible only when the transaction commits, and that commit includes
@@ -92,7 +98,9 @@ guard). Re-implementing the hash would couple Bloom to the producer's internals.
 
 The contract carries **no** `scan_id` — only `provenance.scan_key` (producer-side, opaque to Bloom)
 and `provenance.inputs.image_ids` (Bloom's `cyl_images.id` as strings). The RPC resolves the scan
-from `image_ids` and SHALL NOT use `scan_key` for resolution. Hardening (review-driven):
+from `image_ids` and SHALL NOT use `scan_key` for resolution. Resolution runs **only on the write
+path** (after the source gate, D2), so a no-op re-delivery returns `scan_id = null`. Hardening
+(review-driven):
 - parse `image_ids` defensively — a non-numeric id yields a clean "unresolvable" rejection, not a raw
   `22P02` cast error (filter/validate before casting to `bigint`);
 - de-duplicate the requested ids first, then require that the count of **distinct** matched
@@ -137,19 +145,17 @@ written once (re-delivery short-circuits) and `name` is not an identity column (
 
 ### D7 — Finite-or-null trait values (explicit finite check)
 
-Each `TraitValue.value` is `anyOf: [number, null]`; the contract normalizes NaN/inf → null. Postgres
-`real`/`double precision` **accept** `'NaN'`, `'Infinity'`, `'-Infinity'` on cast, so a bare
-`(v->>'value')::real` would store a non-finite real. The RPC SHALL therefore apply the finite check
-**on the `::real`-cast result** (cast-then-check), writing `NULL` unless the cast yields a finite
-number — guard with `jsonb_typeof(v->'value') = 'number'` plus an explicit post-cast finite test
-(`r = r` rules out NaN, `r <> '+Infinity'::real AND r <> '-Infinity'::real` rules out infinities),
-mapping everything else (numeric NaN/inf, the strings `"NaN"`/`"Infinity"`, and JSON null) to SQL
-`NULL`. Checking post-cast is important for the **range-overflow** edge: a finite float64 exceeding
-float4's range (≈3.4e38) overflows to `Infinity` on the narrowing cast, so a JSON-side finite check
-would let it through and store `Infinity` — the post-cast check catches it and stores `NULL` instead.
-Finite values round-trip to `real` precision (float64 traits narrow to ~7 significant digits, and
-values beyond float4 range normalize to `NULL` — both silent narrowings, acceptable because such
-magnitudes are non-physical for these phenotype traits; pre-existing `real` column from change A).
+Each `TraitValue.value` is `anyOf: [number, null]`; the contract normalizes NaN/inf → null. The RPC
+writes `value` only when the JSON value is a **number** (`jsonb_typeof(v->'value') = 'number'`);
+anything else — JSON null, a (non-conforming) string such as `"NaN"`/`"Infinity"`/`"1.5"`/`"abc"`, a
+bool, etc. — maps to SQL `NULL`. A JSON number can never be NaN/inf (JSON has no such literals), so
+the only remaining hazard is **range overflow**: a finite float64 exceeding `real` range (≈3.4e38)
+raises `numeric_value_out_of_range` on the narrowing `::real` cast, caught in a tight `BEGIN…EXCEPTION`
+block that maps it to `NULL`. Finite in-range values round-trip to `real` precision (float64 traits
+narrow to ~7 significant digits; values beyond float4 range normalize to `NULL` — both silent
+narrowings, acceptable because such magnitudes are non-physical for these phenotype traits;
+pre-existing `real` column from change A). The `jsonb_typeof` guard (vs. a bare cast-and-catch) avoids
+silently coercing a non-conforming string-number like `"1.5"` into a stored `1.5`.
 
 ### D8 — Envelope self-consistency (scan_key) and structural validation
 

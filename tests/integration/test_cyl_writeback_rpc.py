@@ -308,10 +308,10 @@ def test_omitted_grain_accepted_as_scan(pg_conn):
 # --------------------------------------------------------------------------- #
 
 
-# JSON has no NaN/inf literal (a conforming producer already normalized numeric
-# NaN/inf to null), so the reachable non-finite cases are JSON null, the non-
-# conforming string forms "NaN"/"Infinity", and a finite number out of real range.
-@pytest.mark.parametrize("bad_value", [None, "NaN", "Infinity", 1e40])
+# Only a JSON *number* is a value candidate. JSON null, the non-conforming string
+# forms ("NaN"/"Infinity"/"abc"/"1.5"), and a finite number out of real range all
+# map to SQL NULL (the jsonb_typeof='number' guard + overflow-on-cast).
+@pytest.mark.parametrize("bad_value", [None, "NaN", "Infinity", "abc", "1.5", 1e40])
 def test_non_finite_or_overflow_value_is_null(pg_conn, bad_value):
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
@@ -319,6 +319,58 @@ def test_non_finite_or_overflow_value_is_null(pg_conn, bad_value):
         _call(cur, env)
         rows = _trait_rows(cur, "fin")
         assert rows[0][1] is None, f"{bad_value!r} should normalize to NULL, got {rows[0][1]!r}"
+    pg_conn.rollback()
+
+
+def test_duplicate_trait_name_in_envelope_rejected(pg_conn):
+    # Intra-envelope duplicate (scan, trait) is a malformed envelope -> rejected
+    # (no silent dedup; symmetric with blobs). The source gate handles re-delivery.
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        env = _envelope(imgs, idempotency_key="dupt",
+                        traits=[_trait("t", 1.0), _trait("t", 2.0)])
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            _call(cur, env)
+    pg_conn.rollback()
+
+
+def test_duplicate_blob_in_envelope_rejected(pg_conn):
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        env = _envelope(imgs, idempotency_key="dupb",
+                        blobs=[_blob(root_type="primary"), _blob(root_type="primary")])
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            _call(cur, env)
+    pg_conn.rollback()
+
+
+def test_traits_not_an_array_is_rejected_cleanly(pg_conn):
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        env = _envelope(imgs, idempotency_key="ta")
+        env["traits"] = {"not": "an array"}
+        with pytest.raises(psycopg.errors.RaiseException):
+            _call(cur, env)
+    pg_conn.rollback()
+
+
+def test_null_trait_name_is_rejected(pg_conn):
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        env = _envelope(imgs, idempotency_key="nn",
+                        traits=[{"scan_key": "SK1", "value": 1.0}])  # no name
+        with pytest.raises(psycopg.errors.RaiseException):
+            _call(cur, env)
+    pg_conn.rollback()
+
+
+def test_non_numeric_file_size_is_rejected_cleanly(pg_conn):
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        env = _envelope(imgs, idempotency_key="fs",
+                        blobs=[_blob(file_size="not-a-number")])
+        with pytest.raises(psycopg.errors.RaiseException):
+            _call(cur, env)
     pg_conn.rollback()
 
 

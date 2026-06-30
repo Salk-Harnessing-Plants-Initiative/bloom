@@ -59,6 +59,14 @@ BEGIN
     IF prov -> 'inputs' IS NULL OR jsonb_typeof(prov -> 'inputs') <> 'object' THEN
         RAISE EXCEPTION 'invalid envelope: missing provenance.inputs object';
     END IF;
+    -- traits/blobs, when present, MUST be arrays — reject cleanly rather than let
+    -- jsonb_array_elements() leak a raw "cannot extract elements from an object".
+    IF envelope ? 'traits' AND jsonb_typeof(envelope -> 'traits') NOT IN ('array', 'null') THEN
+        RAISE EXCEPTION 'invalid envelope: traits must be an array';
+    END IF;
+    IF envelope ? 'blobs' AND jsonb_typeof(envelope -> 'blobs') NOT IN ('array', 'null') THEN
+        RAISE EXCEPTION 'invalid envelope: blobs must be an array';
+    END IF;
 
     -- 2. Contract version ------------------------------------------------------
     IF (prov ->> 'contract_version') IS DISTINCT FROM pinned_version THEN
@@ -90,7 +98,31 @@ BEGIN
         RAISE EXCEPTION 'blob scan_key disagrees with provenance.scan_key';
     END IF;
 
-    -- 5. Scan resolution via inputs.image_ids (no scan_id in the contract) ------
+    -- 5. Source gate: first-writer-wins, BEFORE scan resolution. If we did not
+    --    create the row, the run was already ingested in full (one txn) -> pure
+    --    no-op short-circuit. Resolving the scan first would (a) report this
+    --    delivery's scan instead of the run-of-record's, and (b) turn a re-delivery
+    --    whose images were since deleted into a hard error. Concurrency: under
+    --    READ COMMITTED the loser of a same-key race blocks on the conflicting
+    --    tuple, then DO NOTHING yields no row and the re-select sees the committed
+    --    row (no NULL window). source_id is always non-null past this point.
+    v_name := coalesce(prov ->> 'pipeline_run_id', 'sleap-roots:' || v_idem);
+    INSERT INTO public.cyl_trait_sources (name, metadata, idempotency_key)
+    VALUES (v_name, prov, v_idem)
+    ON CONFLICT (idempotency_key) DO NOTHING
+    RETURNING id INTO v_source_id;
+
+    IF v_source_id IS NULL THEN
+        SELECT id INTO v_source_id
+          FROM public.cyl_trait_sources WHERE idempotency_key = v_idem;
+        -- Pure no-op: no scan is resolved (scan_id null), nothing further written.
+        RETURN jsonb_build_object(
+            'source_id', v_source_id, 'scan_id', NULL,
+            'trait_count', 0, 'blob_count', 0, 'was_noop', true
+        );
+    END IF;
+
+    -- 6. Scan resolution via inputs.image_ids (no scan_id in the contract) ------
     SELECT array_agg(DISTINCT elem)
       INTO v_req_ids
       FROM jsonb_array_elements_text(coalesce(prov -> 'inputs' -> 'image_ids', '[]'::jsonb)) elem;
@@ -103,6 +135,8 @@ BEGIN
         RAISE EXCEPTION 'non-numeric image_id in inputs.image_ids';
     END IF;
 
+    -- min(scan_id) is the single resolved scan: safe because v_n_scans <> 1 below
+    -- rejects anything but exactly one distinct non-null scan_id.
     SELECT count(DISTINCT i.id), count(DISTINCT i.scan_id), min(i.scan_id)
       INTO v_n_matched, v_n_scans, v_scan_id
       FROM public.cyl_images i
@@ -117,56 +151,55 @@ BEGIN
         RAISE EXCEPTION 'image_ids resolve to % scans, expected exactly 1', v_n_scans;
     END IF;
 
-    -- 6. Source gate: first-writer-wins. If we did not create the row, the run
-    --    was already ingested in full (one txn) -> pure no-op short-circuit. ----
-    v_name := coalesce(prov ->> 'pipeline_run_id', 'sleap-roots:' || v_idem);
-    INSERT INTO public.cyl_trait_sources (name, metadata, idempotency_key)
-    VALUES (v_name, prov, v_idem)
-    ON CONFLICT (idempotency_key) DO NOTHING
-    RETURNING id INTO v_source_id;
-
-    IF v_source_id IS NULL THEN
-        SELECT id INTO v_source_id
-          FROM public.cyl_trait_sources WHERE idempotency_key = v_idem;
-        RETURN jsonb_build_object(
-            'source_id', v_source_id, 'scan_id', v_scan_id,
-            'trait_count', 0, 'blob_count', 0, 'was_noop', true
-        );
-    END IF;
-
     -- 7. Trait rows via the cyl_traits registry (auto-register) -----------------
+    --    No ON CONFLICT on the scan_traits insert: the source gate already makes
+    --    re-delivery a no-op, so the only way the UNIQUE(scan_id,source_id,trait_id)
+    --    could fire here is a duplicate trait name WITHIN one envelope — a malformed
+    --    envelope, which is rejected (symmetric with blobs). Counts therefore equal
+    --    rows written.
     FOR v_trait IN
         SELECT * FROM jsonb_array_elements(coalesce(envelope -> 'traits', '[]'::jsonb))
     LOOP
         IF coalesce(v_trait ->> 'grain', 'scan') <> 'scan' THEN
             RAISE EXCEPTION 'non-scan-grain trait rejected (grain=%)', v_trait ->> 'grain';
         END IF;
+        IF v_trait ->> 'name' IS NULL THEN
+            RAISE EXCEPTION 'invalid trait: missing name';
+        END IF;
 
         INSERT INTO public.cyl_traits (name) VALUES (v_trait ->> 'name')
         ON CONFLICT (name) DO NOTHING;
         SELECT id INTO v_trait_id FROM public.cyl_traits WHERE name = v_trait ->> 'name';
 
-        -- Finite-or-null: cast-then-check. NaN/Infinity (numeric or string) and a
-        -- finite value out of real range (overflow raises) all map to NULL.
-        BEGIN
-            v_value := (v_trait ->> 'value')::real;
-            IF v_value IN ('NaN'::real, 'Infinity'::real, '-Infinity'::real) THEN
+        -- Finite-or-null: only a JSON number is a value candidate; JSON null/string/
+        -- bool/etc. -> NULL. A finite number beyond real range overflows on cast
+        -- (raises) -> NULL. (float64 narrows to real/~7 sig-digits; magnitudes beyond
+        -- float4 range are non-physical for these traits, so NULL is acceptable.)
+        IF jsonb_typeof(v_trait -> 'value') = 'number' THEN
+            BEGIN
+                v_value := (v_trait ->> 'value')::real;
+            EXCEPTION WHEN numeric_value_out_of_range THEN
                 v_value := NULL;
-            END IF;
-        EXCEPTION WHEN numeric_value_out_of_range OR invalid_text_representation THEN
+            END;
+        ELSE
             v_value := NULL;
-        END;
+        END IF;
 
         INSERT INTO public.cyl_scan_traits (scan_id, source_id, trait_id, value)
-        VALUES (v_scan_id, v_source_id, v_trait_id, v_value)
-        ON CONFLICT (scan_id, source_id, trait_id) DO NOTHING;
+        VALUES (v_scan_id, v_source_id, v_trait_id, v_value);
         v_trait_count := v_trait_count + 1;
     END LOOP;
 
     -- 8. Blob rows -------------------------------------------------------------
+    --    Like traits, no ON CONFLICT: a duplicate (kind, root_type) within one
+    --    envelope is a malformed envelope and is rejected by the UNIQUE 4-tuple.
     FOR v_blob IN
         SELECT * FROM jsonb_array_elements(coalesce(envelope -> 'blobs', '[]'::jsonb))
     LOOP
+        IF v_blob ->> 'file_size' IS NOT NULL AND v_blob ->> 'file_size' !~ '^[0-9]+$' THEN
+            RAISE EXCEPTION 'invalid blob: file_size must be an integer, got %',
+                v_blob ->> 'file_size';
+        END IF;
         INSERT INTO public.cyl_scan_intermediates
             (source_id, scan_id, kind, root_type, s3_location, box_link, checksum, file_size)
         VALUES (

@@ -13,7 +13,8 @@ granted only to `bloom_writer`, `service_role`, and `bloom_admin`. The RPC perfo
 (4) the source upsert; (5) trait-name resolution and trait writes; (6) blob writes. Any validation or
 constraint failure SHALL abort the entire call so that no partial source, trait, registry, or blob
 rows persist (all-or-nothing). The RPC SHALL return a `jsonb` summary reporting the source id, the
-resolved scan id, the trait and blob counts, and whether the call was a no-op re-delivery.
+resolved scan id (null on a no-op re-delivery), the trait and blob counts (equal to rows written), and
+whether the call was a no-op re-delivery.
 
 #### Scenario: A valid envelope writes source, trait, and blob rows in one transaction
 
@@ -34,7 +35,7 @@ resolved scan id, the trait and blob counts, and whether the call was a no-op re
 
 - **WHEN** the RPC is called with a valid envelope and then called again with the same envelope
 - **THEN** the first call returns the source id, resolved scan id, trait/blob counts, and a no-op flag
-  that is false; the second returns the same ids and a no-op flag that is true
+  that is false; the second returns the same source id, a null scan id, and a no-op flag that is true
 
 #### Scenario: EXECUTE is granted only to the sanctioned roles, not PUBLIC
 
@@ -206,8 +207,8 @@ check **on the cast result** (cast-then-check), so a non-finite value (as a numb
 
 #### Scenario: A non-finite or null trait value is stored as NULL
 
-- **WHEN** the RPC ingests a `TraitValue` whose value is JSON null, NaN, infinite, the string
-  `"NaN"`/`"Infinity"`, or a finite number larger than the `real` column's range
+- **WHEN** the RPC ingests a `TraitValue` whose value is JSON null, any non-numeric string (e.g.
+  `"NaN"`, `"Infinity"`, `"1.5"`, `"abc"`), or a finite number larger than the `real` column's range
 - **THEN** the corresponding `cyl_scan_traits.value` is SQL `NULL`
 
 #### Scenario: A finite trait value round-trips
@@ -217,18 +218,28 @@ check **on the cast result** (cast-then-check), so a non-finite value (as a numb
 
 ### Requirement: Write-back validates envelope self-consistency and structure
 
-The RPC SHALL reject a structurally invalid envelope (not a JSON object, or missing `provenance` or
-`provenance.inputs`) cleanly rather than raising an unhandled error, writing nothing. It SHALL validate
-the envelope's one self-consistency anchor: every `traits[].scan_key` and every `blobs[].scan_key`
-MUST equal `provenance.scan_key`, and a mismatch SHALL reject the envelope. A valid envelope with an
-empty `traits` array and/or empty `blobs` array SHALL succeed, writing the source row and zero trait
-and/or blob rows.
+The RPC SHALL reject — cleanly, writing nothing, rather than leaking a low-level error — a
+structurally invalid envelope: not a JSON object; missing `provenance` or `provenance.inputs`; a
+`traits` or `blobs` value that is present but not an array; a trait missing its `name`; or a blob
+whose `file_size` is not an integer. It SHALL validate the envelope's one self-consistency anchor:
+every `traits[].scan_key` and every `blobs[].scan_key` MUST equal `provenance.scan_key`, and a mismatch
+SHALL reject the envelope. An intra-envelope duplicate — two traits resolving to the same
+`(scan, source, trait)` or two blobs sharing `(kind, root_type)` — is a malformed envelope and SHALL
+be rejected (symmetric handling; no silent de-duplication). A valid envelope with an empty `traits`
+array and/or empty `blobs` array SHALL succeed, writing the source row and zero trait and/or blob rows.
 
 #### Scenario: A structurally malformed envelope is rejected cleanly
 
-- **WHEN** the RPC is called with a non-object jsonb, or an envelope missing `provenance` or
-  `provenance.inputs`
+- **WHEN** the RPC is called with a non-object jsonb, an envelope missing `provenance` or
+  `provenance.inputs`, a non-array `traits`/`blobs`, a trait missing its `name`, or a blob with a
+  non-integer `file_size`
 - **THEN** the call is rejected with a clean error and nothing is written
+
+#### Scenario: An intra-envelope duplicate is rejected
+
+- **WHEN** the RPC is called with an envelope containing two traits that resolve to the same
+  `(scan, source, trait)` or two blobs sharing `(kind, root_type)`
+- **THEN** the call is rejected and nothing is written
 
 #### Scenario: A scan_key mismatch across the envelope is rejected
 
