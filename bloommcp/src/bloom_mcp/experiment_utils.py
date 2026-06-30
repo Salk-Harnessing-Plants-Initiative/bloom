@@ -6,9 +6,11 @@ All tool modules import from this instead of hardcoding EXPERIMENTS dicts.
 
 import logging
 import os
-import pandas as pd
+import warnings
 from pathlib import Path
 from typing import Optional
+
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -108,43 +110,72 @@ REPLICATE_PATTERNS = ["rep", "replicate", "wave_number"]
 SAMPLE_ID_PATTERNS = ["barcode", "plant_qr_code", "scan_id", "plant_id", "plant_name"]
 
 
+def _experiment_summary(df: pd.DataFrame, filename: str, rows: int) -> dict:
+    """Build one list_experiments entry from a loaded frame."""
+    stem = Path(filename).stem
+    detected = detect_columns(df)
+    exp_name = (
+        df["experiment_name"].iloc[0]
+        if "experiment_name" in df.columns and len(df) > 0
+        else stem
+    )
+    return {
+        "filename": filename,
+        "stem": stem,
+        "rows": rows,
+        "total_columns": len(df.columns),
+        "trait_columns": len(detected["trait_cols"]),
+        "experiment_name": exp_name,
+        "genotype_col": detected["genotype_col"],
+        "sample_id_col": detected["sample_id_col"],
+    }
+
+
 def list_experiments(traits_dir: Optional[Path] = None) -> list[dict]:
-    """Scan BLOOM_TRAITS_DIR for CSV files and return metadata about each.
+    """List experiment CSVs available for analysis.
+
+    Reads the bloommcp_input/ bucket first, then the local BLOOM_TRAITS_DIR
+    mount (deprecated, retired in #370) for anything not already in the bucket.
 
     Returns:
-        List of dicts with keys: filename, stem, rows, columns, trait_columns, experiment_name
+        List of dicts with keys: filename, stem, rows, total_columns,
+        trait_columns, experiment_name, genotype_col, sample_id_col
     """
+    experiments: list[dict] = []
+    seen: set[str] = set()
+
+    # Bucket inputs (bloommcp_input/) first.
+    try:
+        from bloom_mcp.supabase_client import INPUT_PREFIX, list_prefix, read_input_csv
+
+        for key in list_prefix(INPUT_PREFIX):
+            name = key.rsplit("/", 1)[-1]
+            if not name.endswith(".csv") or name in seen:
+                continue
+            try:
+                df = read_input_csv(name)
+            except Exception:
+                continue
+            experiments.append(_experiment_summary(df, name, len(df)))
+            seen.add(name)
+    except Exception:
+        pass
+
+    # Local mount (deprecated) for anything not already in the bucket.
     d = traits_dir or TRAITS_DIR
-    if not d.exists():
-        return []
-
-    experiments = []
-    for csv_path in sorted(d.glob("*.csv")):
-        try:
-            df = pd.read_csv(csv_path, nrows=5)
-            with open(csv_path) as f:
-                row_count = sum(1 for _ in f) - 1  # fast line count
-            detected = detect_columns(df)
-
-            # Try to extract experiment name from data
-            exp_name = None
-            if "experiment_name" in df.columns:
-                exp_name = df["experiment_name"].iloc[0]
-
-            experiments.append(
-                {
-                    "filename": csv_path.name,
-                    "stem": csv_path.stem,
-                    "rows": row_count,
-                    "total_columns": len(df.columns),
-                    "trait_columns": len(detected["trait_cols"]),
-                    "experiment_name": exp_name or csv_path.stem,
-                    "genotype_col": detected["genotype_col"],
-                    "sample_id_col": detected["sample_id_col"],
-                }
-            )
-        except Exception:
-            continue
+    if d.exists():
+        for csv_path in sorted(d.glob("*.csv")):
+            if csv_path.name in seen:
+                continue
+            try:
+                df = pd.read_csv(csv_path, nrows=5)
+                with open(csv_path) as f:
+                    row_count = sum(1 for _ in f) - 1  # fast line count
+                experiments.append(
+                    _experiment_summary(df, csv_path.name, row_count)
+                )
+            except Exception:
+                continue
 
     return experiments
 
@@ -312,7 +343,8 @@ def load_experiment_data(
       1. Versioned manifest entry (qc_<stem>/manifest.json -> latest -> _cleaned.csv)
       2. Legacy un-versioned cleaned CSV (qc_<stem>/<stem>_cleaned.csv) — preserves
          pre-migration behaviour; replaced by v0_legacy after the Phase B migration runs
-      3. Raw CSV from BLOOM_TRAITS_DIR
+      3. Raw CSV from the bloommcp_input/ bucket, then the local BLOOM_TRAITS_DIR
+         mount (deprecated, retired in #370)
 
     Args:
         filename: CSV filename (e.g., "alfalfa_gwas_wave2.csv")
@@ -360,17 +392,35 @@ def load_experiment_data(
             ),
         )
 
+    # Raw input: prefer the bloommcp_input/ bucket; fall back to the local
+    # BLOOM_TRAITS_DIR mount (deprecated, retired in #370).
+    try:
+        from bloom_mcp.supabase_client import read_input_csv
+
+        df = read_input_csv(filename)
+    except Exception:
+        df = None
+    if df is not None:
+        config = detect_columns(df)
+        return df, config["trait_cols"], config, "raw"
+
     raw_path = t_dir / filename
     if raw_path.exists():
+        warnings.warn(
+            "Reading raw experiment inputs from the local BLOOM_TRAITS_DIR is "
+            "deprecated; upload inputs to Supabase Storage (bloommcp_input/).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         df = pd.read_csv(raw_path)
         config = detect_columns(df)
         return df, config["trait_cols"], config, "raw"
 
-    available = [f.name for f in t_dir.glob("*.csv")] if t_dir.exists() else []
-    avail_str = ", ".join(available) if available else "none"
+    avail_str = ", ".join(e["filename"] for e in list_experiments()) or "none"
     return (
         None,
         None,
         None,
-        f"File '{filename}' not found in {t_dir}. Available: {avail_str}",
+        f"File '{filename}' not found in bloommcp_input/ or the local mount. "
+        f"Available: {avail_str}",
     )

@@ -118,18 +118,11 @@ def main() -> None:
     # Composition root: inject the production persistence adapters into the
     # tools layer. Tools depend on the ports (bloom_mcp.tools._ports), never on
     # Supabase / AnalysisWriter directly, so swapping a backend is a change here.
-    # BucketInputReader is an additive fallback so experiments in bloommcp_input/
-    # are readable; it wraps SupabaseReader and changes nothing existing. Remove
-    # it once the input migration (#307) folds bucket input into the reader.
     from bloom_mcp.data_access import SupabaseReader
-    from bloom_mcp.data_access.bucket_input_reader import BucketInputReader
     from bloom_mcp.result_store import SupabaseResultStore
     from bloom_mcp.tools import _ports
 
-    _ports.configure(
-        reader=BucketInputReader(SupabaseReader()),
-        store=SupabaseResultStore(),
-    )
+    _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
     if API_KEY:
         print("Bloom MCP Server starting with API key authentication")
