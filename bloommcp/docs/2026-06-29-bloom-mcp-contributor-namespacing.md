@@ -89,21 +89,22 @@ from starlette.applications import Starlette
 from starlette.routing import Mount
 
 combined = mcp.http_app(path="/mcp")                       # everything — the agent uses this
-analyze  = sleap_roots_analyze_mcp.http_app(path="/mcp")
 seg      = seg_mcp.http_app(path="/mcp")
 
 app = Starlette(
     routes=[
-        Mount("/all", app=combined),
-        Mount("/sleap_roots_analyze", app=analyze),
+        # Sections first (more specific), combined at root last so /mcp falls through.
         Mount("/phenotyping_segmentation", app=seg),
+        Mount("/", app=combined),
     ],
-    lifespan=combined.lifespan,
+    lifespan=combine_lifespans(combined.lifespan, seg.lifespan),
 )
 # same container, one port
 ```
 
-- The agent connects to `/all/mcp` and gets every section.
+- The agent connects to the root `/mcp` and gets every section — its URL and
+  the Docker `/health` probe are **unchanged**, so nothing about the existing
+  deploy moves.
 - A Claude Desktop user adds `/phenotyping_segmentation/mcp` as a connector to
   load only the segmentation tools. Each section URL is a separate connector
   they can turn on or off.
@@ -134,7 +135,7 @@ tools *live* and how they're *named*, never the contract they meet.
 
 | File | Change |
 | --- | --- |
-| `bloom_mcp/server.py` | build each section with `mcp.mount(...)`, then serve them through a small Starlette app with one path per section (`/all`, `/sleap_roots_analyze`, `/phenotyping_segmentation`) |
+| `bloom_mcp/server.py` | build each section with `mcp.mount(...)`, then serve them through a small Starlette app: the combined surface stays at the root (`/mcp`, `/health` unchanged) and each section gets its own path (`/phenotyping_segmentation/mcp`) |
 | `bloom_mcp/sections/*.py` | one file per section, each owning its sub-server and tools |
 | `pyproject.toml` | each section declares its package as a **pinned dependency** (e.g. `sleap-roots-analyze>=0.1.0a3`) |
 
@@ -154,8 +155,10 @@ three-way collision. Not a blocker, just ordering.
 
 1. **Naming:** settled — sections are named by package
    (`sleap_roots_analyze`, `phenotyping_segmentation`).
-2. **Paths:** OK with `/all`, `/sleap_roots_analyze`,
-   `/phenotyping_segmentation` as the section URLs?
+2. **Paths:** settled — the combined surface stays at the root `/mcp` (the
+   agent's URL and the `/health` probe are unchanged), and each section gets
+   its own path (`/phenotyping_segmentation/mcp`). No `/all` prefix, so the
+   existing deploy does not move.
 3. **Phase 2:** confirmed compatible — this complements the roadmap; the only
    `mount()` there is the deferred URL-namespace-for-versioning (a different
    axis).
