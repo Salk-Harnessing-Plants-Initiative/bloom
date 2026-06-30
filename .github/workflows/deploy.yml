@@ -335,13 +335,15 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            # Connectivity smoke test — hits 4 endpoints through Caddy and
+            # Connectivity smoke test — hits 5 endpoints through Caddy and
             # asserts each returns a 2xx/3xx:
             #   1. <main>/                bloom-web frontend
             #   2. <studio>/              Studio UI
             #   3. <minio>/               MinIO console
             #   4. <main>/api/rest/v1/    Kong key-auth -> ACL -> REST -> DB
             #                             (sends apikey header)
+            #   5. <main>/api/client-info bloom-web public config (issue #347 —
+            #                             must NOT 401 via Kong's basic-auth)
             #
             # Probes HTTPS directly via --resolve (forces domain -> 127.0.0.1)
             # so the test works regardless of whether CADDY_HTTPS_LISTEN_PORT
@@ -390,6 +392,7 @@ jobs:
             _probe \"\$DOMAIN_STUDIO\" \"/\"
             _probe \"\$DOMAIN_MINIO\"  \"/\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
+            _probe \"\$DOMAIN_MAIN\"   \"/api/client-info\"
 
             exit \$failed
           "
@@ -825,13 +828,15 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            # Connectivity smoke test — hits 4 endpoints through Caddy and
+            # Connectivity smoke test — hits 5 endpoints through Caddy and
             # asserts each returns a 2xx/3xx:
             #   1. <main>/                bloom-web frontend
             #   2. <studio>/              Studio UI
             #   3. <minio>/               MinIO console
             #   4. <main>/api/rest/v1/    Kong key-auth -> ACL -> REST -> DB
             #                             (sends apikey header)
+            #   5. <main>/api/client-info bloom-web public config (issue #347 —
+            #                             must NOT 401 via Kong's basic-auth)
             #
             # Probes HTTPS directly via --resolve (forces domain -> 127.0.0.1)
             # so the test works regardless of whether CADDY_HTTPS_LISTEN_PORT
@@ -880,6 +885,7 @@ jobs:
             _probe \"\$DOMAIN_STUDIO\" \"/\"
             _probe \"\$DOMAIN_MINIO\"  \"/\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
+            _probe \"\$DOMAIN_MAIN\"   \"/api/client-info\"
 
             exit \$failed
           "

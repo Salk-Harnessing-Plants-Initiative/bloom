@@ -33,13 +33,16 @@ sequenced it first, and added `read-path` #298); the design doc uses the `A–H`
 | `pin.json`                           | The pin manifest: `package`, `version`, full schema `$id`, `source`, file paths                              | The declared pin                                          |
 | `generated/result-envelope.ts`       | TypeScript types (`ResultEnvelope`/`Provenance`/`TraitValue`/`BlobRef` + sub-defs) generated from the schema | Emitted by codegen — **do not edit by hand**              |
 
-**Currently pinned: `v0.1.0a1`.** These are the _contract_ types (from the JSON Schema), distinct
+**Currently pinned: `v0.1.0a2`.** These are the _contract_ types (from the JSON Schema), distinct
 from the Supabase `database.types.ts` (generated from the database by `make gen-types`).
 
-> Note on `v0.1.0a1` vs `v0.1.0`: issue #294 named `v0.1.0a0` and preferred a non-prerelease
-> `v0.1.0` cut. That release does not exist yet, so we pin the current `v0.1.0a1` (`result_envelope`
-> is byte-identical to `a0` except its `$id`). When `v0.1.0` is cut, re-pin per below — it will be a
-> zero-TS-diff event (see the `$id` no-op rule).
+> Note on `v0.1.0a2`: re-pinned from `v0.1.0a1` for Bloom change C
+> ([talmolab/sleap-roots-contracts#5](https://github.com/talmolab/sleap-roots-contracts/issues/5)) —
+> a **real contract revision**, not a `$id` no-op. `BlobRef.kind` was narrowed to
+> `Literal["predictions_slp"]` (dropping `labels`/`h5`/`qc_image`) and a required `BlobRef.root_type`
+> (`Literal["primary","lateral","crown"]`) was added. The schema diff is real; the generated TS is
+> unchanged because `json-schema-to-typescript` renders `BlobRef` from its top-level `anyOf` only
+> (see the change-C codegen caveat below). When `v0.1.0` is cut, re-pin per below.
 
 ## Guards (CI)
 
@@ -97,7 +100,8 @@ inside the opaque `metadata` jsonb and are not promoted to columns by change A.
 
 **Codegen caveat for change C (blob table):** `json-schema-to-typescript` renders `BlobRef` from
 its top-level `anyOf` only (`{ s3_location } | { box_link }`), so the generated `BlobRef` type
-**does not surface** the required `kind`/`scan_key` fields or the `kind` enum
-(`predictions_slp|labels|h5|qc_image`) — they survive only via the `[k: string]: unknown` index
-signature. This is faithful-but-lossy (under-specified, not mis-specified). Change C MUST validate a
-blob against the JSON Schema directly, not trust the generated `BlobRef` for `kind`/`scan_key`.
+**does not surface** the required `kind`/`root_type`/`scan_key` fields or the `kind` enum
+(`predictions_slp`) — they survive only via the `[k: string]: unknown` index
+signature. This is faithful-but-lossy (under-specified, not mis-specified). Change C validates a
+blob against the JSON Schema directly, not the generated `BlobRef`, for `kind`/`root_type`/`scan_key`
+(the Bloom DB enforces `kind`/`root_type` via CHECK constraints).
