@@ -1527,6 +1527,12 @@ export interface Database {
         }
         Returns: undefined
       }
+      insert_cyl_result_envelope: {
+        Args: {
+          envelope: Json
+        }
+        Returns: Json
+      }
       get_scan_traits: {
         Args: {
           experiment_id_: number
