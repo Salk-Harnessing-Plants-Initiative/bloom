@@ -148,10 +148,10 @@ types, `pg_constraint` by `contype`/`confrelid`, `SAVEPOINT`/`rollback()` betwee
 
 ## 7. Validate + finalize
 
-- [ ] 7.1 `openspec validate add-cyl-scan-intermediates --strict` passes.
-- [ ] 7.2 Full local CI parity for the touched surface per `/pre-merge`: migration lint, integration
+- [x] 7.1 `openspec validate add-cyl-scan-intermediates --strict` passes.
+- [x] 7.2 Full local CI parity for the touched surface per `/pre-merge`: migration lint, integration
       tests (both files), `npm run contracts:check`, `tsc --noEmit` / `next build`, and a
       `git diff`-clean check on the 4 generated `database.types.ts` (no uncommitted gen-types drift).
-- [ ] 7.3 Self-review the diff; confirm no `cyl_scan_traits` change and no out-of-scope artifacts.
-- [ ] 7.4 At archive (step 9), retire the leftover `Purpose: TBD` lines in
+- [x] 7.3 Self-review the diff; confirm no `cyl_scan_traits` change and no out-of-scope artifacts.
+- [x] 7.4 At archive (step 9), retire the leftover `Purpose: TBD` lines in
       `openspec/specs/cyl-trait-writeback/spec.md` and `openspec/specs/contract-pinning/spec.md`.
