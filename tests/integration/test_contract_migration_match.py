@@ -10,11 +10,13 @@ those DB choices (the `Provenance` envelope-home designation, the required
 
 Change C (#296) activated the `BlobRef` mapping: the `cyl_scan_intermediates`
 table (columns/types, the two FKs, the at-least-one-location CHECK, and the `kind`
-vocabulary == the contract `BlobRef.kind` enum). Mappings introduced by later
-changes (B `source_id` FK, D RPC key equality, `contract_version` runtime
-validation, `scan_key` resolution) remain DEFERRED rows and skipped — never
-asserted against objects that do not exist yet. As each lands, flip its row to
-`status="active"`.
+vocabulary == the contract `BlobRef.kind` enum). Changes D/E (#13/#297) activated
+the write-back-RPC mappings — their STRUCTURAL support is asserted here (the
+`insert_cyl_result_envelope` function exists; the `cyl_images.scan_id -> cyl_scans`
+resolution FK exists), while the RPC's runtime behavior (key equality,
+`contract_version` validation, scan resolution) is verified by
+`test_cyl_writeback_rpc.py`. The remaining deferred row is change B's
+`cyl_image_traits.source_id` FK; as it lands, flip its row to `status="active"`.
 
 Collection safety: `MAPPINGS` holds LITERALS ONLY (no schema-derived values), so
 importing this module never reads the schema — that is what keeps collection safe
@@ -76,29 +78,30 @@ MAPPINGS = [
         "status": "deferred",
         "reason": "#295 change B: source_id FK on the trait tables",
     },
+    # --- Active: built by change D (#13/#297) — structural support for the RPC. ---
     {
         "contract_field": "idempotency_key == metadata->>'idempotency_key'",
         "db_table": "cyl_trait_sources",
         "db_column": None,
         "db_type": None,
-        "status": "deferred",
-        "reason": "change D: RPC-enforced key equality (RPC-only)",
+        "status": "active",
+        "reason": "change D: RPC enforces key equality (structural support: the RPC exists)",
     },
     {
         "contract_field": "Provenance.contract_version (runtime row value)",
         "db_table": "cyl_trait_sources",
         "db_column": None,
         "db_type": None,
-        "status": "deferred",
-        "reason": "D/G consumer: validate provenance.contract_version == pinned version",
+        "status": "active",
+        "reason": "change D: RPC validates contract_version (structural support: the RPC exists)",
     },
     {
         "contract_field": "Provenance.scan_key -> cyl_scans.id",
         "db_table": "cyl_scans",
         "db_column": None,
         "db_type": None,
-        "status": "deferred",
-        "reason": "caller-side scan_key resolution via inputs.image_ids",
+        "status": "active",
+        "reason": "change D: image_ids -> cyl_images.scan_id resolution (FK present)",
     },
 ]
 
@@ -225,10 +228,61 @@ def test_deferred_mapping_is_skipped(mapping):
 
 
 def test_deferred_set_is_non_empty():
-    # After change C flipped BlobRef -> active, DEFERRED must still hold the remaining
-    # later-change rows so the parametrized skip test above keeps exercising real rows.
+    # After changes C and D flipped their rows -> active, DEFERRED must still hold the
+    # remaining change-B row so the parametrized skip test above keeps exercising a real row.
     assert len(DEFERRED) >= 1
     assert all(m["status"] == "deferred" for m in DEFERRED)
+
+
+# --------------------------------------------------------------------------- #
+# Change D structural mappings (#13/#297): the write-back RPC and the
+# scan-resolution FK. These assert the STRUCTURAL precondition for the RPC's
+# runtime enforcement (key equality, contract_version validation, scan
+# resolution) — the behavior itself is verified by test_cyl_writeback_rpc.py.
+# --------------------------------------------------------------------------- #
+
+WRITEBACK_RPC = "insert_cyl_result_envelope"
+
+
+def _rpc_exists(cur) -> bool:
+    cur.execute("SELECT 1 FROM pg_proc WHERE proname = %s", (WRITEBACK_RPC,))
+    return cur.fetchone() is not None
+
+
+def _scan_resolution_fk_exists(cur) -> bool:
+    """cyl_images.scan_id -> cyl_scans.id — the image_ids resolution path."""
+    cur.execute(
+        """
+        SELECT 1
+          FROM pg_constraint c
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+          JOIN pg_class cf     ON cf.oid = c.confrelid
+         WHERE c.conrelid = 'public.cyl_images'::regclass AND c.contype = 'f'
+           AND a.attname = 'scan_id' AND cf.relname = 'cyl_scans'
+        """
+    )
+    return cur.fetchone() is not None
+
+
+def test_writeback_rpc_structural_support_present(pg_conn):
+    with pg_conn.cursor() as cur:
+        assert _rpc_exists(cur), "write-back RPC insert_cyl_result_envelope is missing"
+        assert _scan_resolution_fk_exists(cur), (
+            "cyl_images.scan_id -> cyl_scans FK (the image_ids resolution path) is missing"
+        )
+    pg_conn.rollback()
+
+
+def test_writeback_rpc_regression_is_detected(pg_conn):
+    """A regression in the newly-active mapping fails the check: drop the RPC inside a
+    SAVEPOINT and assert the structural check then fails; roll back so nothing changes."""
+    with pg_conn.cursor() as cur:
+        cur.execute("SAVEPOINT before_regression")
+        cur.execute("DROP FUNCTION public.insert_cyl_result_envelope(jsonb)")
+        assert not _rpc_exists(cur)
+        cur.execute("ROLLBACK TO SAVEPOINT before_regression")
+        assert _rpc_exists(cur)  # restored — the check passes again
+    pg_conn.rollback()
 
 
 # --------------------------------------------------------------------------- #

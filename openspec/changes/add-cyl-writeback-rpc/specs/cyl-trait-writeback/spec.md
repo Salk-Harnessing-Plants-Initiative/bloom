@@ -84,20 +84,21 @@ retry writes the full envelope.
 ### Requirement: Write-back validates the idempotency key
 
 The RPC SHALL treat `provenance.idempotency_key` as an opaque producer-derived identity and MUST NOT
-recompute it. It SHALL reject an envelope whose `provenance.idempotency_key` is empty or absent, and
-SHALL reject an envelope where `provenance.idempotency_key` does not equal the value stored at
-`metadata->>'idempotency_key'`, writing nothing in either case.
+recompute it. It SHALL reject an envelope whose `provenance.idempotency_key` is empty or absent,
+writing nothing. It SHALL write the dedup-anchor `idempotency_key` column and the stored Provenance
+`metadata` from the same envelope field, so every written row satisfies
+`idempotency_key == metadata->>'idempotency_key'` — the invariant the sole-writer RPC maintains (change
+A deliberately omitted a DB CHECK for it because that would break the nullable/opaque-jsonb columns).
 
 #### Scenario: Empty or absent idempotency key is rejected
 
 - **WHEN** the RPC is called with `provenance.idempotency_key = ''` or with the key absent
 - **THEN** the call is rejected and nothing is written
 
-#### Scenario: Key diverging from the stored metadata is rejected
+#### Scenario: Every written row satisfies the key/metadata invariant
 
-- **WHEN** the RPC is called with an envelope whose `provenance.idempotency_key` does not equal
-  `metadata->>'idempotency_key'`
-- **THEN** the call is rejected and nothing is written
+- **WHEN** the RPC writes a source row
+- **THEN** that row's `idempotency_key` column equals its `metadata->>'idempotency_key'`
 
 ### Requirement: Write-back validates the contract version
 

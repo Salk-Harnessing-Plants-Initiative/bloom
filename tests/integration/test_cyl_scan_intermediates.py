@@ -10,9 +10,14 @@ pointer, at least one required) and `checksum` / `file_size` (integrity).
 These tests assert: the columns and types; the two FKs (by contype/confrelid);
 the at-least-one-location CHECK; the strict kind/root_type vocabularies; the
 UNIQUE(source_id, scan_id, kind, root_type) idempotency key; role-based RLS
-ENFORCEMENT via `SET LOCAL ROLE` (bloom_writer can write; bloom_user/bloom_agent
-cannot; every role can read) plus a pg_policies drift detector; that the migration
-is additive (FK parents unchanged); and that the rollback script drops the table.
+ENFORCEMENT via `SET LOCAL ROLE` plus a pg_policies drift detector; that the
+migration is additive (FK parents unchanged); and that the rollback script drops
+the table.
+
+NOTE (changes D/E, `add-cyl-writeback-rpc`): the table is now locked to RPC-only
+writes — `bloom_writer`'s direct INSERT/UPDATE policies were dropped, so every
+role except `bloom_admin` is read-only at the table; all writes go through the
+`insert_cyl_result_envelope` RPC (covered by `test_cyl_writeback_rpc.py`).
 
 LOCAL ONLY: the `pg_conn` fixture connects to 127.0.0.1 on POSTGRES_HOST_PORT and
 mutates nothing — every test rolls back, leaving the database untouched. The fixture
@@ -306,15 +311,16 @@ def test_every_role_can_read(pg_conn, role):
     pg_conn.rollback()
 
 
-def test_writer_can_insert_and_update(pg_conn):
-    # Load-bearing proof of design D5: the write-back role can write the moment it exists.
+def test_writer_cannot_insert_or_update_directly(pg_conn):
+    # Changes D/E: the table is locked to RPC-only writes — bloom_writer's direct
+    # INSERT/UPDATE policies were dropped, so a direct write is now denied by RLS.
+    # (Writes go through insert_cyl_result_envelope; see test_cyl_writeback_rpc.py.)
     with pg_conn.cursor() as cur:
         source_a, _, scan_id = _seed_parents(cur)  # as supabase_admin
         cur.execute("SET LOCAL ROLE bloom_writer")
-        rid = _insert(cur, source_a, scan_id)
-        cur.execute(f"UPDATE {TABLE} SET checksum = 'sha256:new' WHERE id = %s", (rid,))
-        assert cur.rowcount == 1
-        cur.execute("RESET ROLE")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            _insert(cur, source_a, scan_id)
+        # the denied INSERT aborts the txn; pg_conn.rollback() resets the LOCAL ROLE
     pg_conn.rollback()
 
 
@@ -330,9 +336,10 @@ def test_read_only_roles_cannot_insert(pg_conn, role):
 
 def test_expected_policy_set_with_no_readonly_write_policy(pg_conn):
     """Drift detector. RLS enabled; exactly the expected (role, cmd) policy pairs;
-    and NO write policy for bloom_user / bloom_agent (their read-only posture is
-    enforced by the absence of write policies, since the standing default GRANT to
-    bloom_user is permissive)."""
+    and (changes D/E) NO write policy for any non-admin role — bloom_writer is now
+    read-only at the table too, since writes go through the write-back RPC. Read-only
+    posture is enforced by the absence of write policies (the standing default GRANTs
+    are permissive, so RLS, not the GRANT, is the write gate)."""
     with pg_conn.cursor() as cur:
         cur.execute(
             "SELECT relrowsecurity FROM pg_class WHERE oid = %s::regclass",
@@ -356,18 +363,16 @@ def test_expected_policy_set_with_no_readonly_write_policy(pg_conn):
         ("bloom_agent", "SELECT"),
         ("bloom_user", "SELECT"),
         ("bloom_writer", "SELECT"),
-        ("bloom_writer", "INSERT"),
-        ("bloom_writer", "UPDATE"),
     }
     assert expected <= pairs, f"missing expected policies: {expected - pairs}"
 
     forbidden = {
         (role, cmd)
         for (role, cmd) in pairs
-        if role in {"bloom_user", "bloom_agent"}
+        if role in {"bloom_user", "bloom_agent", "bloom_writer"}
         and cmd in {"INSERT", "UPDATE", "DELETE", "ALL"}
     }
-    assert not forbidden, f"read-only roles must not have write policies: {forbidden}"
+    assert not forbidden, f"non-admin roles must not have write policies: {forbidden}"
 
 
 # --------------------------------------------------------------------------- #
