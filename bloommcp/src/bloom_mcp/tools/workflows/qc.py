@@ -7,6 +7,7 @@ from typing import Optional
 
 from bloom_mcp import data_cleanup as cleanup
 from bloom_mcp.data_utils import convert_to_json_serializable
+from bloom_mcp.experiment_utils import CLEANED_CSV_NAME
 
 from ._helpers import load_frame as _load_data, start_run, store
 
@@ -74,7 +75,7 @@ def run_qc_workflow(
     )
     version_dir = run.staging_dir
 
-    cleaned_csv = version_dir / "_cleaned.csv"
+    cleaned_csv = version_dir / CLEANED_CSV_NAME
     df_clean.to_csv(cleaned_csv, index=False)
     log_path = version_dir / "cleanup_log.json"
     with open(log_path, "w") as f:
@@ -83,7 +84,7 @@ def run_qc_workflow(
     stored = store().commit(
         run,
         {
-            "_cleaned.csv": "_cleaned.csv",
+            CLEANED_CSV_NAME: CLEANED_CSV_NAME,
             "cleanup_log.json": "cleanup_log.json",
         },
     )

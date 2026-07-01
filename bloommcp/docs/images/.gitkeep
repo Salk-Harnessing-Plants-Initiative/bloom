@@ -1,0 +1,6 @@
+# Placeholder so docs/images/ exists for the qc_clean dogfood screenshots.
+# Planned captures (see ../local-validation.md → "Claude dogfood validation"):
+#   qc-clean-tool-list.png
+#   qc-clean-success.png
+#   qc-clean-structured-error-retry.png
+#   qc-clean-pca-composition.png
