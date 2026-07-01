@@ -88,9 +88,10 @@ DEFAULT NULL` means exactly one candidate; a 2-arg call binds the defaults (veri
 - **D4 — `cyl_scan_traits_latest` and `cyl_scan_trait_names` are thin views on the substrate.**
   `cyl_scan_traits_latest := SELECT scan_id, trait_id, trait_name, source_id, value FROM
 cyl_scan_traits_source WHERE is_latest`. `cyl_scan_trait_names := SELECT DISTINCT trait_name FROM
-cyl_scan_traits_latest WHERE trait_name IS NOT NULL ORDER BY trait_name` (the `IS NOT NULL` guard
-  stops an unresolved legacy row with `NULL` `trait_id` from surfacing a `NULL` name). No duplicated
-  max() logic anywhere.
+cyl_scan_traits_latest WHERE trait_name IS NOT NULL ORDER BY trait_name`, emitted `AS name` so the
+  view's output column stays `name` (its stable contract, unchanged from the prior definition). The
+  `IS NOT NULL` guard stops an unresolved legacy row with `NULL` `trait_id` from surfacing a `NULL`
+  name. No duplicated max() logic anywhere.
 - **D5 — Grants are issued explicitly per object; `bloom_*` roles are load-bearing.** Each view uses
   `WITH (security_invoker = on)` and an explicit `GRANT SELECT … TO bloom_agent, bloom_user,
 bloom_admin, authenticated`, mirroring the `cyl_trait_by_experiment_wave` precedent — but the grants
@@ -145,6 +146,14 @@ caller still typechecks under `tsc --noEmit`.
 - **Dropping then recreating `get_scan_traits`** is atomic within the migration transaction, so no
   window where the function is missing for live callers. The two new views use `CREATE OR REPLACE VIEW`
   so the migration body is re-runnable (idempotent).
+- **Known coupling — `cyl_scan_traits_source` reads `cyl_trait_sources.metadata`** (for
+  `pipeline_run_id`), so the change-A break-glass rollback
+  (`supabase/rollbacks/20260609000000_add_cyl_trait_source_provenance_rollback.sql`), which
+  `DROP COLUMN metadata`, must use `CASCADE` — otherwise it errors with `DependentObjectsStillExist`
+  while these read-path views exist. That rollback therefore cascade-drops the three read-path views;
+  restore them by re-running this migration. A regression test
+  (`test_change_a_rollback_cascades_read_views`) pins this invariant. To roll back _this_ change alone,
+  use its own rollback, which drops the views before touching the base tables.
 
 ## Testing (TDD)
 

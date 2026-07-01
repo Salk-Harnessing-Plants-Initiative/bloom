@@ -37,6 +37,14 @@ PINNED_VERSION = "v0.1.0a2"
 _TS = "20260701000000_cyl_trait_read_source_aware"
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TS}.sql"
 ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS}_rollback.sql"
+# The read-path views read cyl_trait_sources.metadata, so change-A's break-glass rollback
+# must CASCADE-drop them (regression guard below).
+A_PROVENANCE_ROLLBACK = (
+    REPO_ROOT
+    / "supabase"
+    / "rollbacks"
+    / "20260609000000_add_cyl_trait_source_provenance_rollback.sql"
+)
 
 # The 10 result columns get_scan_traits has always returned, in order.
 RESULT_COLUMNS = [
@@ -625,4 +633,39 @@ def test_recreated_trait_names_readable_by_read_role(pg_conn):
         cur.execute("SELECT count(*) FROM cyl_scan_trait_names")
         assert cur.fetchone()[0] is not None
         cur.execute("RESET ROLE")
+    pg_conn.rollback()
+
+
+def test_change_a_rollback_cascades_read_views(pg_conn):
+    """Coexistence invariant: the read-path views read cyl_trait_sources.metadata, so change-A's
+    break-glass provenance rollback (DROP COLUMN metadata) must CASCADE-drop them — else it errors
+    with DependentObjectsStillExist. This locks the ripple that broke compose-health-check before
+    the CASCADE fix (a regression here means change-A's rollback lost CASCADE or the dependency
+    changed)."""
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(A_PROVENANCE_ROLLBACK))  # must not raise
+        cur.execute("SELECT to_regclass('public.cyl_scan_traits_source')")
+        assert (
+            cur.fetchone()[0] is None
+        ), "change-A rollback must CASCADE-drop the read-path views"
+    pg_conn.rollback()
+
+
+def test_authenticated_has_select_grant_on_views(pg_conn):
+    """`authenticated` is granted SELECT on all three views (spec + precedent), but a raw
+    `SET LOCAL ROLE authenticated` has no JWT/auth.uid() context, so assert the grant exists
+    rather than exercising a read — a dropped grant would otherwise ship green."""
+    with pg_conn.cursor() as cur:
+        for view in (
+            "cyl_scan_traits_source",
+            "cyl_scan_traits_latest",
+            "cyl_scan_trait_names",
+        ):
+            cur.execute(
+                "SELECT has_table_privilege('authenticated', %s, 'SELECT')",
+                (f"public.{view}",),
+            )
+            assert (
+                cur.fetchone()[0] is True
+            ), f"authenticated should have SELECT on {view}"
     pg_conn.rollback()

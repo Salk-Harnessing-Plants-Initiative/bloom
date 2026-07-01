@@ -92,6 +92,7 @@ CREATE OR REPLACE FUNCTION public.get_scan_traits(
 )
 LANGUAGE plpgsql
 STABLE
+SECURITY INVOKER
 AS $$
 BEGIN
     IF source_id_ IS NOT NULL AND run_id_ IS NOT NULL THEN

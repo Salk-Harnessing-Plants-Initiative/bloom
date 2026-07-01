@@ -109,7 +109,7 @@ source-disambiguated views instead:
 
 ```python
 # Latest source per scan (the default you almost always want)
-traits = client.table("cyl_scan_traits_latest").select("trait_id, value").limit(1000).execute()
+traits = client.table("cyl_scan_traits_latest").select("scan_id, trait_name, value").limit(1000).execute()
 
 # Full source/run dimension when you need it: source_id, source_name,
 # pipeline_run_id (the batch key), and an is_latest flag. Group/filter by
