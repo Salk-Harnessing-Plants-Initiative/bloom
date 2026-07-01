@@ -92,7 +92,7 @@ def save_credentials(
 ) -> Path:
     """Write ``creds`` to the profile's dotenv file (creating ``config_dir``)."""
     config_dir = config_dir or default_config_dir()
-    config_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = config_dir / filename_for_profile(profile)
     path.write_text(
         f"BLOOM_EMAIL={creds.email}\n"
@@ -100,4 +100,5 @@ def save_credentials(
         f"BLOOM_API_URL={creds.api_url}\n"
         f"BLOOM_ANON_KEY={creds.anon_key}\n"
     )
+    path.chmod(0o600)
     return path

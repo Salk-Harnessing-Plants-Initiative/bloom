@@ -48,6 +48,12 @@ def test_saved_file_is_dotenv_with_four_keys(tmp_path):
         assert line in text
 
 
+def test_saved_file_is_owner_only(tmp_path):
+    # The file holds a plaintext password — it must not be readable by group/other.
+    path = save_credentials(CREDS, config_dir=tmp_path)
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+
 def test_available_profiles_maps_filenames(tmp_path):
     (tmp_path / "credentials.txt").write_text("BLOOM_EMAIL=a\n")
     (tmp_path / "credentials.staging.txt").write_text("BLOOM_EMAIL=b\n")
