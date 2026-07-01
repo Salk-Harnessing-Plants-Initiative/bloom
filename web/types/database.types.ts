@@ -527,6 +527,64 @@ export interface Database {
           },
         ]
       }
+      cyl_scan_intermediates: {
+        Row: {
+          box_link: string | null
+          checksum: string | null
+          file_size: number | null
+          id: number
+          kind: string
+          root_type: string
+          s3_location: string | null
+          scan_id: number
+          source_id: number
+        }
+        Insert: {
+          box_link?: string | null
+          checksum?: string | null
+          file_size?: number | null
+          id?: number
+          kind: string
+          root_type: string
+          s3_location?: string | null
+          scan_id: number
+          source_id: number
+        }
+        Update: {
+          box_link?: string | null
+          checksum?: string | null
+          file_size?: number | null
+          id?: number
+          kind?: string
+          root_type?: string
+          s3_location?: string | null
+          scan_id?: number
+          source_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cyl_scan_intermediates_scan_id_fkey"
+            columns: ["scan_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_scan_intermediates_scan_id_fkey"
+            columns: ["scan_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans_extended"
+            referencedColumns: ["scan_id"]
+          },
+          {
+            foreignKeyName: "cyl_scan_intermediates_source_id_fkey"
+            columns: ["source_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_trait_sources"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cyl_scan_traits: {
         Row: {
           id: number
@@ -1399,6 +1457,29 @@ export interface Database {
         }
         Relationships: []
       }
+      cyl_scan_traits_latest: {
+        Row: {
+          scan_id: number | null
+          source_id: number | null
+          trait_id: number | null
+          trait_name: string | null
+          value: number | null
+        }
+        Relationships: []
+      }
+      cyl_scan_traits_source: {
+        Row: {
+          is_latest: boolean | null
+          pipeline_run_id: string | null
+          scan_id: number | null
+          source_id: number | null
+          source_name: string | null
+          trait_id: number | null
+          trait_name: string | null
+          value: number | null
+        }
+        Relationships: []
+      }
       cyl_scans_extended: {
         Row: {
           accession_id: number | null
@@ -1469,9 +1550,17 @@ export interface Database {
         }
         Returns: undefined
       }
+      insert_cyl_result_envelope: {
+        Args: {
+          envelope: Json
+        }
+        Returns: Json
+      }
       get_scan_traits: {
         Args: {
           experiment_id_: number
+          run_id_?: string
+          source_id_?: number
           trait_name_: string
         }
         Returns: {

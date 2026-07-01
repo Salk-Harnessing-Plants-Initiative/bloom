@@ -63,12 +63,18 @@
         },
         "kind": {
           "enum": [
-            "predictions_slp",
-            "labels",
-            "h5",
-            "qc_image"
+            "predictions_slp"
           ],
           "title": "Kind",
+          "type": "string"
+        },
+        "root_type": {
+          "enum": [
+            "primary",
+            "lateral",
+            "crown"
+          ],
+          "title": "Root Type",
           "type": "string"
         },
         "s3_location": {
@@ -90,6 +96,7 @@
       },
       "required": [
         "kind",
+        "root_type",
         "scan_key"
       ],
       "title": "BlobRef",
@@ -352,7 +359,7 @@
       "type": "object"
     }
   },
-  "$id": "https://github.com/talmolab/sleap-roots-contracts/schema/v0.1.0a1/result_envelope.schema.json",
+  "$id": "https://github.com/talmolab/sleap-roots-contracts/schema/v0.1.0a2/result_envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "One per-scan result: 1 envelope : 1 source row : 1 scan.",
   "properties": {
