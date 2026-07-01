@@ -1,12 +1,12 @@
-"""Task 3.1 — `bloomcli login` (supabase + /client-info fetch mocked)."""
+"""Task 3.1 — `bloomctl login` (supabase + /client-info fetch mocked)."""
 
 import pytest
 from click.testing import CliRunner
 
-import bloomcli.auth as auth
-import bloomcli.credentials as credentials
-from bloomcli.cli import cli
-from bloomcli.credentials import load_credentials
+import bloomctl.auth as auth
+import bloomctl.credentials as credentials
+from bloomctl.cli import cli
+from bloomctl.credentials import load_credentials
 
 
 @pytest.fixture

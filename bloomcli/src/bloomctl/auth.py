@@ -1,7 +1,7 @@
-"""Auth helpers for bloomcli: anon-key bootstrap + login verification.
+"""Auth helpers for bloomctl: anon-key bootstrap + login verification.
 
 Heavy imports (httpx, supabase) are deferred into the functions that use them so
-importing this module (e.g. for ``bloomcli --help``) stays fast.
+importing this module (e.g. for ``bloomctl --help``) stays fast.
 """
 
 from __future__ import annotations
