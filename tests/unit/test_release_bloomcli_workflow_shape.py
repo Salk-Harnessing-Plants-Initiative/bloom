@@ -1,4 +1,4 @@
-"""Regression guard for the bloomcli release + version workflows.
+"""Regression guard for the bloomctl release + version workflows.
 
 These workflows can never be exercised by PR CI before they land
 (`release-bloomcli.yml` fires only on a published Release or manual dispatch;
@@ -12,7 +12,7 @@ It locks the safety-critical properties the design signed off on:
   - `build-and-publish` requests the OIDC token (`id-token: write`) and pins the
     `pypi` environment so trusted publishing works, and stores no API token;
   - the actual `uv publish` runs only on a real Release event;
-  - the built wheel is smoke-tested (import + `bloomcli --version`) before upload;
+  - the built wheel is smoke-tested (import + `bloomctl --version`) before upload;
   - there is no TestPyPI lane;
   - the version workflow bumps via `uv version` and opens a PR.
 """
@@ -103,8 +103,8 @@ def test_publish_step_gated_on_real_release():
 def test_built_wheel_is_smoke_tested_before_publish():
     text = _steps_text(_load(RELEASE)["jobs"]["build-and-publish"])
     assert "uv build" in text
-    assert "import bloomcli" in text            # wheel imports
-    assert "bloomcli --version" in text         # CLI entry point runs
+    assert "import bloomctl" in text            # wheel imports
+    assert "bloomctl --version" in text         # CLI entry point runs
     assert "dist/*.whl" in text                 # from the freshly built wheel
 
 

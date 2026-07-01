@@ -1,6 +1,6 @@
-# bloomcli Release Process
+# bloomctl Release Process
 
-How to cut a `bloomcli` release to PyPI. The pipeline is a single workflow,
+How to cut a `bloomctl` release to PyPI. The pipeline is a single workflow,
 `.github/workflows/release-bloomcli.yml`, that publishes to **real PyPI** via
 trusted publishing (OIDC) — there is no TestPyPI lane and no stored token.
 
@@ -12,13 +12,13 @@ trusted publishing (OIDC) — there is no TestPyPI lane and no stored token.
   manual `workflow_dispatch` run validates + builds + smoke-tests but does NOT
   publish (a safe dry run).
 - **Pre-releases** — publish to real PyPI as PEP 440 `aN`/`bN`/`rcN`, marked
-  "pre-release" on the GitHub Release. `uvx bloomcli` ignores them unless the
+  "pre-release" on the GitHub Release. `uvx bloomctl` ignores them unless the
   caller passes `--prerelease=allow`.
 
 ## Version management
 
 The version lives in `bloomcli/pyproject.toml` (single source of truth;
-`bloomcli/src/bloomcli/__init__.py` reads it from installed metadata).
+`bloomcli/src/bloomctl/__init__.py` reads it from installed metadata).
 
 - **In CI:** run the **version-bloomcli** workflow (Actions tab → Run workflow),
   pick a bump type, and it opens a PR with the bump.
@@ -41,14 +41,14 @@ and are marked as a pre-release on GitHub.
 
 1. Bump the version (workflow or `uv version`), merge the bump PR.
 2. Add a `## [X.Y.Z] - YYYY-MM-DD` entry to `bloomcli/CHANGELOG.md`.
-3. Create a **GitHub Release** whose tag matches the version (`bloomcli-vX.Y.Z`,
+3. Create a **GitHub Release** whose tag matches the version (`bloomctl-vX.Y.Z`,
    `vX.Y.Z`, or `X.Y.Z`). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.
 4. Publishing the Release runs `release-bloomcli.yml`:
    - `validate-release`: tag ↔ version match, changelog entry exists, lint + tests.
-   - `build-and-publish`: `uv build`, import the wheel + run `bloomcli --version`,
+   - `build-and-publish`: `uv build`, import the wheel + run `bloomctl --version`,
      then `uv publish`.
-5. Verify on PyPI: `uvx bloomcli --version` (stable) or
-   `uvx --prerelease=allow bloomcli --version` (pre-release).
+5. Verify on PyPI: `uvx bloomctl --version` (stable) or
+   `uvx --prerelease=allow bloomctl --version` (pre-release).
 
 ## Setup requirements (one-time, before the first release)
 
@@ -59,7 +59,7 @@ bound to exactly these values — they must match the workflow or publishing fai
 
 | Field | Value |
 |---|---|
-| PyPI Project Name | `bloomcli` |
+| PyPI Project Name | `bloomctl` |
 | Owner | `Salk-Harnessing-Plants-Initiative` |
 | Repository name | `bloom` |
 | Workflow name | `release-bloomcli.yml` |

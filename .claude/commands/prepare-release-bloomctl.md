@@ -1,13 +1,13 @@
 ---
-name: Prepare bloomcli Release
-description: Drive a bloomcli PyPI release (version bump, changelog, GitHub Release) per RELEASE_PROCESS.md
+name: Prepare bloomctl Release
+description: Drive a bloomctl PyPI release (version bump, changelog, GitHub Release) per RELEASE_PROCESS.md
 category: Release
-tags: [bloomcli, release, pypi, changelog]
+tags: [bloomctl, release, pypi, changelog]
 ---
 
-# Prepare bloomcli Release
+# Prepare bloomctl Release
 
-Guide a `bloomcli` release end to end, following
+Guide a `bloomctl` release end to end, following
 [`bloomcli/RELEASE_PROCESS.md`](../../bloomcli/RELEASE_PROCESS.md). The pipeline
 publishes to real PyPI via trusted publishing on a **published GitHub Release**
 only.
@@ -33,14 +33,14 @@ only.
 
 4. **Dry-run (optional but recommended).** Trigger `release-bloomcli.yml` via
    `workflow_dispatch` — it validates, builds, and smoke-tests the wheel
-   (`import bloomcli` + `bloomcli --version`) without publishing.
+   (`import bloomctl` + `bloomctl --version`) without publishing.
 
 5. **Cut the Release.** Create a GitHub Release whose tag matches the version
-   (`bloomcli-vX.Y.Z`). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.
+   (`bloomctl-vX.Y.Z`). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.
    Publishing it runs `release-bloomcli.yml` → validate → build → publish to PyPI.
 
-6. **Verify.** `uvx bloomcli --version` (stable) or
-   `uvx --prerelease=allow bloomcli --version` (pre-release).
+6. **Verify.** `uvx bloomctl --version` (stable) or
+   `uvx --prerelease=allow bloomctl --version` (pre-release).
 
 ## Guardrails
 

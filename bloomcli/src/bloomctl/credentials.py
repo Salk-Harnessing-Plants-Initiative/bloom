@@ -1,4 +1,4 @@
-"""Profile-based credential storage for bloomcli.
+"""Profile-based credential storage for bloomctl.
 
 Mirrors the legacy ``packages/bloom-fs`` format: a dotenv file at
 ``~/.bloom/credentials.txt`` (profile ``prod``) or ``~/.bloom/credentials.<name>.txt``
@@ -64,7 +64,7 @@ def resolve_profile_path(profile: str, config_dir: Path | None = None) -> Path:
     config_dir = config_dir or default_config_dir()
     profiles = available_profiles(config_dir)
     if profile not in profiles:
-        hint = "bloomcli login" + ("" if profile == DEFAULT_PROFILE else f" --profile {profile}")
+        hint = "bloomctl login" + ("" if profile == DEFAULT_PROFILE else f" --profile {profile}")
         raise FileNotFoundError(
             f"No credentials for profile '{profile}'. Run `{hint}` "
             f"(expected {config_dir / filename_for_profile(profile)})."

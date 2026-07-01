@@ -1,9 +1,9 @@
 name: version-bloomcli
 
-# Manually bump the bloomcli version and open a PR with the change.
+# Manually bump the bloomctl version and open a PR with the change.
 #
 # Modeled on talmolab/sleap-roots-analyze's version.yml. Replaces the old
-# bloomcli-version-bump-check.yml guard: instead of a CI check asserting a human
+# bloomctl-version-bump-check.yml guard: instead of a CI check asserting a human
 # remembered to bump, the bump itself is a reviewable PR. Run it from the Actions
 # tab, pick a bump type (or a custom version), and merge the PR it opens. Then
 # update bloomcli/CHANGELOG.md and cut a GitHub Release to publish.
@@ -38,7 +38,7 @@ defaults:
 
 jobs:
   bump-version:
-    name: Bump bloomcli version
+    name: Bump bloomctl version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,10 +65,10 @@ jobs:
           add-paths: |
             bloomcli/pyproject.toml
             bloomcli/uv.lock
-          commit-message: "chore(bloomcli): bump version to ${{ steps.bump.outputs.new_version }}"
-          title: "chore(bloomcli): bump version to ${{ steps.bump.outputs.new_version }}"
+          commit-message: "chore(bloomctl): bump version to ${{ steps.bump.outputs.new_version }}"
+          title: "chore(bloomctl): bump version to ${{ steps.bump.outputs.new_version }}"
           body: |
-            Automated `bloomcli` version bump.
+            Automated `bloomctl` version bump.
 
             - Previous: `${{ steps.current.outputs.version }}`
             - New: `${{ steps.bump.outputs.new_version }}`
@@ -76,6 +76,6 @@ jobs:
             Before releasing: add a `## [${{ steps.bump.outputs.new_version }}]`
             entry to `bloomcli/CHANGELOG.md`, then publish a GitHub Release tagged
             to this version to trigger `release-bloomcli.yml`.
-          branch: bloomcli-version-bump-${{ steps.bump.outputs.new_version }}
+          branch: bloomctl-version-bump-${{ steps.bump.outputs.new_version }}
           delete-branch: true
           labels: version

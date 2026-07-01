@@ -1,4 +1,4 @@
-"""bloomcli command group (entry point ``bloomcli = bloomcli.cli:cli``)."""
+"""bloomctl command group (entry point ``bloomctl = bloomctl.cli:cli``)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from .credentials import DEFAULT_PROFILE
 
 
 @click.group()
-@click.version_option(version=__version__, prog_name="bloomcli")
+@click.version_option(version=__version__, prog_name="bloomctl")
 def cli() -> None:
     """Bloom command-line tool"""
 

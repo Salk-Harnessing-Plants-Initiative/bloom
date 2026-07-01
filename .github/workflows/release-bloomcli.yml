@@ -1,6 +1,6 @@
 name: release-bloomcli
 
-# Builds and publishes the bloomcli package to PyPI.
+# Builds and publishes the bloomctl package to PyPI.
 #
 # Trigger: a *published* GitHub Release (the developer-gated entry point, with a
 # home for release notes and a pre-release flag) or a manual workflow_dispatch.
@@ -10,14 +10,14 @@ name: release-bloomcli
 #
 # The validate-release job gates build-and-publish (`needs:`), so an immutable
 # PyPI upload can only happen after tag/version/changelog/lint/test checks pass
-# and the freshly built wheel has been imported and run (`bloomcli --version`).
+# and the freshly built wheel has been imported and run (`bloomctl --version`).
 #
 # Auth is PyPI trusted publishing (OIDC) — no API token is stored. The publisher
 # is bound to this repo + this workflow filename + the `pypi` environment; that
 # pending publisher must be registered on PyPI before the first release.
 #
 # Pre-releases (aN/bN/rcN) publish to real PyPI and are marked "pre-release" on
-# the GitHub Release; `uvx bloomcli` ignores them unless `--prerelease=allow`.
+# the GitHub Release; `uvx bloomctl` ignores them unless `--prerelease=allow`.
 
 on:
   release:
@@ -48,16 +48,16 @@ jobs:
         run: |
           VERSION=$(uv version | awk '{print $NF}')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "bloomcli version: $VERSION"
+          echo "bloomctl version: $VERSION"
 
-      # Release tag must equal the package version. Accepts `bloomcli-vX`, `vX`,
+      # Release tag must equal the package version. Accepts `bloomctl-vX`, `vX`,
       # or a bare `X` tag by stripping the known prefixes.
       - name: Validate tag matches version
         if: github.event_name == 'release'
         run: |
           TAG="${{ github.event.release.tag_name }}"
           VERSION="${{ steps.version.outputs.version }}"
-          TAG_VERSION="${TAG#bloomcli-v}"
+          TAG_VERSION="${TAG#bloomctl-v}"
           TAG_VERSION="${TAG_VERSION#v}"
           if [ "$TAG_VERSION" != "$VERSION" ]; then
             echo "::error::Release tag ($TAG -> $TAG_VERSION) does not match bloomcli/pyproject.toml version ($VERSION)"
@@ -101,10 +101,10 @@ jobs:
       # Immutable-upload insurance: prove the built wheel imports and the CLI
       # entry point runs from an isolated install BEFORE publishing.
       - name: Verify wheel imports
-        run: uv run --isolated --no-project --with dist/*.whl python -c "import bloomcli; print('bloomcli', bloomcli.__version__)"
+        run: uv run --isolated --no-project --with dist/*.whl python -c "import bloomctl; print('bloomctl', bloomctl.__version__)"
 
       - name: Verify CLI entry point
-        run: uv run --isolated --no-project --with dist/*.whl bloomcli --version
+        run: uv run --isolated --no-project --with dist/*.whl bloomctl --version
 
       # Publishes only on a real Release; a workflow_dispatch dry run stops here.
       - name: Publish to PyPI (trusted publishing)
