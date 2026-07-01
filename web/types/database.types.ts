@@ -1457,6 +1457,29 @@ export interface Database {
         }
         Relationships: []
       }
+      cyl_scan_traits_latest: {
+        Row: {
+          scan_id: number | null
+          source_id: number | null
+          trait_id: number | null
+          trait_name: string | null
+          value: number | null
+        }
+        Relationships: []
+      }
+      cyl_scan_traits_source: {
+        Row: {
+          is_latest: boolean | null
+          pipeline_run_id: string | null
+          scan_id: number | null
+          source_id: number | null
+          source_name: string | null
+          trait_id: number | null
+          trait_name: string | null
+          value: number | null
+        }
+        Relationships: []
+      }
       cyl_scans_extended: {
         Row: {
           accession_id: number | null
@@ -1536,6 +1559,8 @@ export interface Database {
       get_scan_traits: {
         Args: {
           experiment_id_: number
+          run_id_?: string
+          source_id_?: number
           trait_name_: string
         }
         Returns: {
