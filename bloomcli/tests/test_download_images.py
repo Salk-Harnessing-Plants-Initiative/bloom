@@ -1,11 +1,11 @@
-"""Task 5 — `bloomcli download` image download via Supabase Storage."""
+"""Task 5 — `bloomctl download` image download via Supabase Storage."""
 
 from click.testing import CliRunner
 
-import bloomcli.auth as auth
-import bloomcli.download as dl
-from bloomcli.cli import cli
-from bloomcli.credentials import Credentials
+import bloomctl.auth as auth
+import bloomctl.download as dl
+from bloomctl.cli import cli
+from bloomctl.credentials import Credentials
 from test_download_metadata import SCAN
 
 
@@ -51,7 +51,7 @@ def test_download_images_writes_frames(tmp_path, monkeypatch):
 
 def test_full_download_writes_csv_and_images(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "bloomcli.credentials.load_credentials",
+        "bloomctl.credentials.load_credentials",
         lambda *a, **k: Credentials("https://x/api", "KEY", "u@s.edu", "pw"),
     )
     monkeypatch.setattr(auth, "make_authed_client", lambda creds: _FakeClient())

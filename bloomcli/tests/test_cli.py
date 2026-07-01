@@ -2,7 +2,7 @@
 
 from click.testing import CliRunner
 
-from bloomcli.cli import cli
+from bloomctl.cli import cli
 
 
 def test_root_help_lists_commands():

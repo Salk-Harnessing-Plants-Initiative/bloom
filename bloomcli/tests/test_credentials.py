@@ -2,7 +2,7 @@
 
 import pytest
 
-from bloomcli.credentials import (
+from bloomctl.credentials import (
     Credentials,
     available_profiles,
     filename_for_profile,
@@ -63,7 +63,7 @@ def test_conflicting_prod_files_raise(tmp_path):
 
 
 def test_missing_profile_raises_with_login_hint(tmp_path):
-    with pytest.raises(FileNotFoundError, match="bloomcli login"):
+    with pytest.raises(FileNotFoundError, match="bloomctl login"):
         resolve_profile_path("prod", config_dir=tmp_path)
 
 

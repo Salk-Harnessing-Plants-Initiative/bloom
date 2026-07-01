@@ -1,5 +1,5 @@
 [project]
-name = "bloomcli"
+name = "bloomctl"
 version = "0.1.0a1"
 description = "Bloom command-line tool from the Bloom server"
 readme = "README.md"
@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.scripts]
-bloomcli = "bloomcli.cli:cli"
+bloomctl = "bloomctl.cli:cli"
 
 # Test stack lives in the `test` extra (not a dev dependency-group) so CI invokes
 # it as `uv run --extra test pytest` — the repo-wide convention enforced by
@@ -40,7 +40,7 @@ requires = ["uv_build>=0.11.0,<0.12.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "bloomcli"
+module-name = "bloomctl"
 module-root = "src"
 
 [tool.pytest.ini_options]

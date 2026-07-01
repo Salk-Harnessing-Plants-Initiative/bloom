@@ -1,13 +1,13 @@
-"""Task 4 — `bloomcli download` metadata (scans.csv) contract."""
+"""Task 4 — `bloomctl download` metadata (scans.csv) contract."""
 
 import csv
 
 from click.testing import CliRunner
 
-import bloomcli.auth as auth
-import bloomcli.download as dl
-from bloomcli.cli import cli
-from bloomcli.credentials import Credentials
+import bloomctl.auth as auth
+import bloomctl.download as dl
+from bloomctl.cli import cli
+from bloomctl.credentials import Credentials
 
 SCAN = {
     "scan_id": 1,
@@ -62,7 +62,7 @@ def test_write_scans_csv_roundtrip(tmp_path):
 
 def test_meta_only_writes_csv_and_skips_images(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "bloomcli.credentials.load_credentials",
+        "bloomctl.credentials.load_credentials",
         lambda *a, **k: Credentials("https://x/api", "KEY", "u@s.edu", "pw"),
     )
     monkeypatch.setattr(auth, "make_authed_client", lambda creds: object())
