@@ -1,53 +1,112 @@
 name: release-bloomcli
 
-# Publishes the final bloomcli package to PyPI. Fires on either a merge to main
-# or a bloomcli-v* tag (plus manual dispatch). Separate from the server deploy
-# workflow. PyPI versions are immutable and one-shot, so the job first checks
-# whether the version in pyproject.toml is already on PyPI and skips cleanly if
-# so — this makes "publish on every main push" safe without a version bump.
+# Builds and publishes the bloomcli package to PyPI.
+#
+# Trigger: a *published* GitHub Release (the developer-gated entry point, with a
+# home for release notes and a pre-release flag) or a manual workflow_dispatch.
+#
+# A dispatch run validates + builds + smoke-tests but NEVER publishes — use it
+# as a dry run. There is intentionally no push/tag publish trigger.
+#
+# The validate-release job gates build-and-publish (`needs:`), so an immutable
+# PyPI upload can only happen after tag/version/changelog/lint/test checks pass
+# and the freshly built wheel has been imported and run (`bloomcli --version`).
+#
+# Auth is PyPI trusted publishing (OIDC) — no API token is stored. The publisher
+# is bound to this repo + this workflow filename + the `pypi` environment; that
+# pending publisher must be registered on PyPI before the first release.
+#
+# Pre-releases (aN/bN/rcN) publish to real PyPI and are marked "pre-release" on
+# the GitHub Release; `uvx bloomcli` ignores them unless `--prerelease=allow`.
+
 on:
-  push:
-    branches: [main]
-    tags: ['bloomcli-v*']
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write  # OIDC token for PyPI trusted publishing
 
 concurrency:
-  group: release-bloomcli-prod
+  group: release-bloomcli
   cancel-in-progress: false
 
+defaults:
+  run:
+    working-directory: bloomcli
+
 jobs:
-  pypi:
-    name: Publish to PyPI
+  validate-release:
+    name: Validate release
     runs-on: ubuntu-latest
-    environment: pypi
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
-      - name: Read package version
-        id: ver
-        working-directory: bloomcli
-        run: echo "version=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')" >> "$GITHUB_OUTPUT"
-      - name: Skip if version already on PyPI (immutability guard)
-        id: guard
+
+      - name: Read version from pyproject.toml
+        id: version
         run: |
-          v="${{ steps.ver.outputs.version }}"
-          code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/bloomcli/${v}/json")
-          if [ "$code" = "200" ]; then
-            echo "bloomcli ${v} is already on PyPI — skipping publish."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "bloomcli ${v} not yet on PyPI — will publish."
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+          VERSION=$(uv version | awk '{print $NF}')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "bloomcli version: $VERSION"
+
+      # Release tag must equal the package version. Accepts `bloomcli-vX`, `vX`,
+      # or a bare `X` tag by stripping the known prefixes.
+      - name: Validate tag matches version
+        if: github.event_name == 'release'
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG_VERSION="${TAG#bloomcli-v}"
+          TAG_VERSION="${TAG_VERSION#v}"
+          if [ "$TAG_VERSION" != "$VERSION" ]; then
+            echo "::error::Release tag ($TAG -> $TAG_VERSION) does not match bloomcli/pyproject.toml version ($VERSION)"
+            exit 1
           fi
+          echo "Tag $TAG matches version $VERSION"
+
+      - name: Validate changelog entry exists
+        if: github.event_name == 'release'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
+            echo "::error::No changelog entry '## [$VERSION]' found in bloomcli/CHANGELOG.md"
+            exit 1
+          fi
+          echo "Changelog entry found for $VERSION"
+
+      # Lint via uvx (pinned to the repo's .pre-commit-config.yaml ruff version)
+      # so ruff is not a project dependency.
+      - name: Lint (ruff)
+        run: uvx ruff@0.9.9 check .
+
+      - name: Run tests
+        run: uv run --extra test pytest -q
+
+  build-and-publish:
+    name: Build and publish
+    needs: validate-release
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write # OIDC token for PyPI trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+
       - name: Build sdist + wheel
-        if: steps.guard.outputs.exists == 'false'
-        working-directory: bloomcli
         run: uv build
-      - name: Publish to PyPI (OIDC trusted publishing)
-        if: steps.guard.outputs.exists == 'false'
-        working-directory: bloomcli
+
+      # Immutable-upload insurance: prove the built wheel imports and the CLI
+      # entry point runs from an isolated install BEFORE publishing.
+      - name: Verify wheel imports
+        run: uv run --isolated --no-project --with dist/*.whl python -c "import bloomcli; print('bloomcli', bloomcli.__version__)"
+
+      - name: Verify CLI entry point
+        run: uv run --isolated --no-project --with dist/*.whl bloomcli --version
+
+      # Publishes only on a real Release; a workflow_dispatch dry run stops here.
+      - name: Publish to PyPI (trusted publishing)
+        if: github.event_name == 'release'
         run: uv publish --trusted-publishing always

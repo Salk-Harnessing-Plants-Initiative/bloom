@@ -1,0 +1,81 @@
+name: version-bloomcli
+
+# Manually bump the bloomcli version and open a PR with the change.
+#
+# Modeled on talmolab/sleap-roots-analyze's version.yml. Replaces the old
+# bloomcli-version-bump-check.yml guard: instead of a CI check asserting a human
+# remembered to bump, the bump itself is a reviewable PR. Run it from the Actions
+# tab, pick a bump type (or a custom version), and merge the PR it opens. Then
+# update bloomcli/CHANGELOG.md and cut a GitHub Release to publish.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - alpha
+          - beta
+          - rc
+          - stable
+      custom_version:
+        description: "Custom version (optional, overrides bump_type)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+defaults:
+  run:
+    working-directory: bloomcli
+
+jobs:
+  bump-version:
+    name: Bump bloomcli version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+
+      - name: Read current version
+        id: current
+        run: echo "version=$(uv version | awk '{print $NF}')" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version
+        id: bump
+        run: |
+          if [ -n "${{ inputs.custom_version }}" ]; then
+            uv version "${{ inputs.custom_version }}"
+          else
+            uv version --bump "${{ inputs.bump_type }}"
+          fi
+          echo "new_version=$(uv version | awk '{print $NF}')" >> "$GITHUB_OUTPUT"
+
+      - name: Open version-bump PR
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          # uv version edits bloomcli/pyproject.toml (and bloomcli/uv.lock).
+          add-paths: |
+            bloomcli/pyproject.toml
+            bloomcli/uv.lock
+          commit-message: "chore(bloomcli): bump version to ${{ steps.bump.outputs.new_version }}"
+          title: "chore(bloomcli): bump version to ${{ steps.bump.outputs.new_version }}"
+          body: |
+            Automated `bloomcli` version bump.
+
+            - Previous: `${{ steps.current.outputs.version }}`
+            - New: `${{ steps.bump.outputs.new_version }}`
+
+            Before releasing: add a `## [${{ steps.bump.outputs.new_version }}]`
+            entry to `bloomcli/CHANGELOG.md`, then publish a GitHub Release tagged
+            to this version to trigger `release-bloomcli.yml`.
+          branch: bloomcli-version-bump-${{ steps.bump.outputs.new_version }}
+          delete-branch: true
+          labels: version

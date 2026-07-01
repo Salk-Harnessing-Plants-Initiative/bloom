@@ -1,17 +1,20 @@
-"""Regression guard for the bloomcli publish + version-bump workflows.
+"""Regression guard for the bloomcli release + version workflows.
 
-These three workflows can never be exercised by PR CI before they land
-(release-* fire only on push to staging/main or a tag; the version-bump check
-gates merges), so this unit test is the only pre-merge gate on their shape.
+These workflows can never be exercised by PR CI before they land
+(`release-bloomcli.yml` fires only on a published Release or manual dispatch;
+`version-bloomcli.yml` is dispatch-only), so this unit test is the only
+pre-merge gate on their shape.
 
 It locks the safety-critical properties the design signed off on:
-  - dev builds go to TestPyPI, final builds go to real PyPI;
-  - both publish jobs request the OIDC token (`id-token: write`) and pin an
-    environment so PyPI trusted publishing works;
-  - the prod job is immutability-safe (skips when the version already exists);
-  - prod fires on BOTH a main push and a bloomcli-v* tag, plus manual dispatch;
-  - the version-bump check runs on PRs to staging AND main and inspects
-    bloomcli/src.
+  - the publish workflow triggers ONLY on a Release (`published`) or
+    workflow_dispatch — never on a push or tag;
+  - `build-and-publish` is gated by `needs: validate-release`;
+  - `build-and-publish` requests the OIDC token (`id-token: write`) and pins the
+    `pypi` environment so trusted publishing works, and stores no API token;
+  - the actual `uv publish` runs only on a real Release event;
+  - the built wheel is smoke-tested (import + `bloomcli --version`) before upload;
+  - there is no TestPyPI lane;
+  - the version workflow bumps via `uv version` and opens a PR.
 """
 
 from __future__ import annotations
@@ -23,9 +26,8 @@ import yaml
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
-DEV = WORKFLOWS / "release-bloomcli-dev.yml"
-PROD = WORKFLOWS / "release-bloomcli.yml"
-BUMP = WORKFLOWS / "bloomcli-version-bump-check.yml"
+RELEASE = WORKFLOWS / "release-bloomcli.yml"
+VERSION = WORKFLOWS / "version-bloomcli.yml"
 
 
 def _load(path: Path) -> dict:
@@ -38,75 +40,91 @@ def _on(wf: dict) -> dict:
 
 
 def _steps_text(job: dict) -> str:
-    return "\n".join(str(s.get("run", "")) for s in job["steps"])
+    parts = []
+    for s in job["steps"]:
+        parts.append(str(s.get("run", "")))
+        parts.append(str(s.get("uses", "")))
+    return "\n".join(parts)
 
 
-# --- dev → TestPyPI ---------------------------------------------------------
-
-def test_dev_triggers_on_staging_push_and_dispatch():
-    on = _on(_load(DEV))
-    assert "workflow_dispatch" in on
-    assert on["push"]["branches"] == ["staging"]
-    assert any("bloomcli/**" in p for p in on["push"]["paths"])
+def _raw(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
 
 
-def test_dev_publishes_to_testpypi_with_oidc():
-    wf = _load(DEV)
-    assert wf["permissions"]["id-token"] == "write"
-    job = wf["jobs"]["testpypi"]
-    assert job["environment"] == "testpypi"
-    text = _steps_text(job)
-    assert "test.pypi.org/legacy/" in text
-    assert "--trusted-publishing always" in text
-    assert "uv build" in text
+# --- publish workflow: triggers --------------------------------------------
+
+def test_release_triggers_only_on_release_and_dispatch():
+    on = _on(_load(RELEASE))
+    assert set(on) == {"release", "workflow_dispatch"}
+    assert on["release"]["types"] == ["published"]
+    # Never publish on a push or a raw tag.
+    assert "push" not in on
 
 
-def test_dev_stamps_a_dev_version():
-    assert "dev${{ github.run_number }}" in _steps_text(_load(DEV)["jobs"]["testpypi"])
+# --- publish workflow: validate gates publish ------------------------------
+
+def test_publish_needs_validate_release():
+    jobs = _load(RELEASE)["jobs"]
+    assert "validate-release" in jobs
+    assert "build-and-publish" in jobs
+    assert jobs["build-and-publish"]["needs"] == "validate-release"
 
 
-# --- prod → PyPI ------------------------------------------------------------
+def test_validate_checks_tag_changelog_lint_tests():
+    text = _steps_text(_load(RELEASE)["jobs"]["validate-release"])
+    assert "github.event.release.tag_name" in text  # tag ↔ version match
+    assert "CHANGELOG.md" in text                    # changelog entry check
+    assert "ruff" in text                            # lint
+    assert "pytest" in text                          # tests
 
-def test_prod_triggers_on_main_push_tag_and_dispatch():
-    on = _on(_load(PROD))
-    assert "workflow_dispatch" in on
-    assert on["push"]["branches"] == ["main"]
-    assert any(t.startswith("bloomcli-v") for t in on["push"]["tags"])
 
+# --- publish workflow: trusted publishing + immutability guard -------------
 
-def test_prod_publishes_to_real_pypi_with_oidc():
-    wf = _load(PROD)
-    assert wf["permissions"]["id-token"] == "write"
-    job = wf["jobs"]["pypi"]
+def test_publish_uses_oidc_pypi_env_and_no_token():
+    wf = _load(RELEASE)
+    job = wf["jobs"]["build-and-publish"]
+    assert job["permissions"]["id-token"] == "write"
     assert job["environment"] == "pypi"
     text = _steps_text(job)
     assert "uv publish --trusted-publishing always" in text
-    assert "test.pypi.org" not in text
+    # No stored PyPI token anywhere in the workflow.
+    raw = _raw(RELEASE)
+    assert "PYPI_API_TOKEN" not in raw
+    assert "test.pypi.org" not in raw  # no TestPyPI lane
 
 
-def test_prod_has_immutability_guard():
-    job = _load(PROD)["jobs"]["pypi"]
-    text = _steps_text(job)
-    assert "pypi.org/pypi/bloomcli/" in text  # queries existing version
-    # build + publish are gated on the guard's "does not exist" result.
-    gated = [s for s in job["steps"] if "exists == 'false'" in str(s.get("if", ""))]
-    assert len(gated) >= 2
+def test_publish_step_gated_on_real_release():
+    job = _load(RELEASE)["jobs"]["build-and-publish"]
+    publish = [s for s in job["steps"] if "uv publish" in str(s.get("run", ""))]
+    assert len(publish) == 1
+    assert publish[0]["if"] == "github.event_name == 'release'"
 
 
-# --- version-bump pre-merge check -------------------------------------------
+def test_built_wheel_is_smoke_tested_before_publish():
+    text = _steps_text(_load(RELEASE)["jobs"]["build-and-publish"])
+    assert "uv build" in text
+    assert "import bloomcli" in text            # wheel imports
+    assert "bloomcli --version" in text         # CLI entry point runs
+    assert "dist/*.whl" in text                 # from the freshly built wheel
 
-def test_bump_check_runs_on_staging_and_main_prs():
-    on = _on(_load(BUMP))
-    assert set(on["pull_request"]["branches"]) == {"staging", "main"}
-    # No path filter, so it always reports a status (required-check friendly).
-    assert "paths" not in on["pull_request"]
+
+# --- version workflow -------------------------------------------------------
+
+def test_version_workflow_is_dispatch_only_with_bump_input():
+    on = _on(_load(VERSION))
+    assert set(on) == {"workflow_dispatch"}
+    inputs = on["workflow_dispatch"]["inputs"]
+    assert "bump_type" in inputs
+    assert {"patch", "minor", "major"}.issubset(set(inputs["bump_type"]["options"]))
 
 
-def test_bump_check_inspects_bloomcli_src_and_can_fail():
-    text = _steps_text(_load(BUMP)["jobs"]["version-bump"])
-    assert "bloomcli/src" in text
-    assert "bloomcli/pyproject.toml" in text
-    assert "exit 1" in text
+def test_version_workflow_bumps_and_opens_pr():
+    wf = _load(VERSION)
+    assert wf["permissions"]["contents"] == "write"
+    assert wf["permissions"]["pull-requests"] == "write"
+    text = _steps_text(wf["jobs"]["bump-version"])
+    assert "uv version" in text
+    assert "peter-evans/create-pull-request" in text
 
 
 if __name__ == "__main__":
