@@ -1,8 +1,8 @@
 {
  "_pca_source": "talmolab/sleap-roots-analyze#120 / PR #146 — tests/fixtures/real/wheat_edpie/expected/viz/turface_19/viz_pca_metadata.json. Independently recorded golden (NOT re-derived from the code under test).",
- "_heritability_source": "Characterization snapshot of sleap-roots-analyze==0.1.0a2 on this fixture — NOT an independently validated scientific value. It gates future drift only. The viz_pca_metadata.json above does NOT contain a heritability mean. TODO(#315): reconcile heritability_mean against the R/lme4 reference calculate_heritability_estimates' docstring claims to match, then promote this to an independent golden.",
- "_umap_source": "Characterization snapshot of sleap-roots-analyze==0.1.0a2 on this fixture. UMAP coordinates are not cross-OS bit-stable, so the recorded value is the STRUCTURAL trustworthiness (neighbor-preservation) of the embedding w.r.t. the standardized input — a wrong n_neighbors/min_dist/init delegation drops it well below the floor.",
- "_reproduced_by_sleap_roots_analyze_version": "0.1.0a2",
+ "_heritability_source": "Characterization snapshot of sleap-roots-analyze==0.1.0a2 on this fixture (re-verified unchanged through 0.1.0a3, #327) — NOT an independently validated scientific value. It gates future drift only. The viz_pca_metadata.json above does NOT contain a heritability mean. TODO(#315): reconcile heritability_mean against the R/lme4 reference calculate_heritability_estimates' docstring claims to match, then promote this to an independent golden.",
+ "_umap_source": "Characterization snapshot of sleap-roots-analyze==0.1.0a2 on this fixture (re-verified unchanged through 0.1.0a3, #327). UMAP coordinates are not cross-OS bit-stable, so the recorded value is the STRUCTURAL trustworthiness (neighbor-preservation) of the embedding w.r.t. the standardized input — a wrong n_neighbors/min_dist/init delegation drops it well below the floor.",
+ "_reproduced_by_sleap_roots_analyze_version": "0.1.0a2 (re-verified unchanged through 0.1.0a3, #327)",
  "trait_cols": [
   "Holes",
   "Network Area (mm²)",

@@ -29,7 +29,7 @@ dependencies = [
     "supabase>=2.0.0",
     # Phase-2 foundation: the public root-trait analysis library (source of the
     # cross-tier oracle's perform_* functions) and the contracts schemas.
-    "sleap-roots-analyze>=0.1.0a2",
+    "sleap-roots-analyze>=0.1.0a3",
     "sleap-roots-contracts[pandas]>=0.1.0a1",
     # Data & analysis. numpy floor is >=2.3.2 because sleap-roots-analyze
     # requires numpy 2.x. scipy + scikit-learn are retained because shipped

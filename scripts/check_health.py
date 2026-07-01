@@ -7,6 +7,9 @@
   has exited non-zero),
 - the required Postgres roles exist (base Supabase roles + the bloom_* app roles),
 - the ``auth`` and ``storage`` schemas exist (``auth.uid()``, ``storage.buckets``),
+- every ``bloom_*`` role holds its expected schema ``USAGE`` (parsed from
+  ``supabase/grants/schema_grants.sql``, the single source of truth — issue #333;
+  a silent grant no-op fails here, loudly),
 - every ``supabase/migrations/*.sql`` is recorded in
   ``supabase_migrations.schema_migrations`` — by **set comparison** (no missing,
   no orphan), not a brittle count.
@@ -22,8 +25,8 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -31,6 +34,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR = REPO_ROOT / "supabase" / "migrations"
 COMPOSE_FILE = REPO_ROOT / "docker-compose.dev.yml"
 ENV_DEV = REPO_ROOT / ".env.dev"
+# Single source of truth for the bloom_* schema-USAGE grants (issue #333):
+# the same .sql file applied (as supabase_admin) by `make migrate-local`, CI, and
+# the prod/staging manual step. check_schema_usage parses it for the expected set.
+GRANT_FILE = REPO_ROOT / "supabase" / "grants" / "schema_grants.sql"
+_GRANT_RE = re.compile(
+    r"GRANT\s+USAGE\s+ON\s+SCHEMA\s+(\w+)\s+TO\s+([^;]+);",
+    re.IGNORECASE,
+)
 
 # Roles the supabase/postgres image creates at init.
 REQUIRED_BASE_ROLES = [
@@ -81,6 +92,35 @@ def migration_problems(
             f"{len(orphans)} recorded migration(s) have no file on disk "
             f"(orphan): {sorted(orphans)[:5]}{'...' if len(orphans) > 5 else ''}"
         )
+    return problems
+
+
+def load_grant_matrix(path: Path = GRANT_FILE) -> set[tuple[str, str]]:
+    """Parse the expected (schema, role) USAGE pairs from schema_grants.sql.
+
+    The .sql file is the single source of truth; we read the grant set straight from
+    it rather than keep a second machine-readable copy.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    pairs: set[tuple[str, str]] = set()
+    for schema, roles in _GRANT_RE.findall(text):
+        for role in roles.split(","):
+            pairs.add((schema, role.strip()))
+    return pairs
+
+
+def schema_usage_problems(
+    expected: set[tuple[str, str]], observed: set[tuple[str, str]]
+) -> list[str]:
+    """Expected (schema, role) USAGE pairs that are missing from observed.
+
+    A silent grant no-op (the #333 bug) shows up here as a missing pair even though
+    the migration "succeeded" — reported per role/schema, including a partial run
+    (e.g. 3 of 4 roles granted → the 4th is reported).
+    """
+    problems: list[str] = []
+    for schema, role in sorted(expected - observed):
+        problems.append(f"role {role} is missing USAGE on schema {schema}")
     return problems
 
 
@@ -140,6 +180,50 @@ def check_schemas(conn) -> list[str]:
     if not _scalar(conn, "SELECT to_regclass('storage.buckets')"):
         problems.append("storage.buckets missing (storage-api not initialised?)")
     return problems
+
+
+def check_schema_usage(conn, matrix_path: Path = GRANT_FILE) -> list[str]:
+    """Assert each bloom_* role holds its expected schema USAGE (issue #333).
+
+    Catches a silent grant no-op (e.g. schema_grants.sql never applied, or applied as
+    the wrong role) and an absent role/schema (reported, not crashed).
+    """
+    problems: list[str] = []
+
+    # Expected schema-USAGE grants from the single-source .sql file.
+    try:
+        expected = load_grant_matrix(matrix_path)
+    except Exception as exc:  # noqa: BLE001 — surface a bad/missing grants file
+        problems.append(f"could not load grant set {matrix_path}: {exc}")
+        return problems
+
+    observed: set[tuple[str, str]] = set()
+    with conn.cursor() as cur:
+        for schema, role in expected:
+            role_exists = _exists(cur, "SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
+            schema_exists = _exists(
+                cur,
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+                (schema,),
+            )
+            if not role_exists:
+                problems.append(f"role {role} does not exist (cannot check {schema} USAGE)")
+                continue
+            if not schema_exists:
+                problems.append(f"schema {schema} does not exist (cannot check {role} USAGE)")
+                continue
+            cur.execute("SELECT has_schema_privilege(%s, %s, 'USAGE')", (role, schema))
+            row = cur.fetchone()
+            if row and row[0]:
+                observed.add((schema, role))
+
+    problems.extend(schema_usage_problems(expected, observed))
+    return problems
+
+
+def _exists(cur, sql: str, params: tuple) -> bool:
+    cur.execute(sql, params)
+    return cur.fetchone() is not None
 
 
 def wait_for_auth_uid(conn, timeout: float = 60.0, interval: float = 2.0) -> bool:
@@ -313,6 +397,7 @@ def main(argv: list[str] | None = None) -> int:
         all_problems += [f"[db] {p}" for p in check_roles(conn)]
         all_problems += [f"[db] {p}" for p in check_schemas(conn)]
         all_problems += [f"[db] {p}" for p in check_migrations(conn)]
+        all_problems += [f"[db] {p}" for p in check_schema_usage(conn)]
     finally:
         conn.close()
 

@@ -221,6 +221,9 @@ make load-test-data
 # Step 2: Upload sample images to MinIO (72 images)
 make upload-images
 ```
+
+> **Validate the bloom-mcp persistence path:** with the stack up + migrated, `make bloommcp-smoke` drives clustering + `qc_clean` end-to-end through real Supabase storage — see [bloommcp/docs/local-validation.md](bloommcp/docs/local-validation.md).
+
 ---
 
 ## Service URLs and Ports
