@@ -2,17 +2,15 @@
 
 This adapter relocates ``experiment_utils.load_experiment_data`` behind the
 port: versioned-cleaned outputs from Supabase Storage, then the legacy
-un-versioned cleaned CSV, then the raw input. The raw-input read still comes
-from the local ``BLOOM_TRAITS_DIR`` and is **deprecated** — it emits a
-:class:`DeprecationWarning` so the follow-up that migrates inputs into
-``bloommcp_input/`` can remove it.
+un-versioned cleaned CSV, then the raw input from the ``bloommcp_input/``
+bucket (falling back to the deprecated local ``BLOOM_TRAITS_DIR`` mount,
+retired in #370).
 """
 
 from __future__ import annotations
 
-import warnings
-
 from bloom_mcp.experiment_utils import (
+    READ_ERROR_PREFIX,
     detect_columns,
     list_experiments as _list_experiments,
     load_experiment_data as _load_experiment_data,
@@ -22,12 +20,8 @@ from .ports import (
     CleanedVersionRequiredError,
     ExperimentFrame,
     ExperimentNotFoundError,
+    ExperimentReadError,
     ExperimentSummary,
-)
-
-_LOCAL_RAW_DEPRECATION = (
-    "Reading raw experiment inputs from the local BLOOM_TRAITS_DIR is "
-    "deprecated; inputs will move to Supabase Storage (bloommcp_input/)."
 )
 
 
@@ -47,7 +41,14 @@ class SupabaseReader:
         if df is None:
             # `source_label` here is the raw error string from the deployed
             # loader (may name a path); do NOT surface it. Raise a caller-safe
-            # message instead.
+            # message instead. A tagged backend failure (network / RLS / 5xx on
+            # a file that IS in the bucket) is a read error, not a genuine miss.
+            if isinstance(source_label, str) and source_label.startswith(
+                READ_ERROR_PREFIX
+            ):
+                raise ExperimentReadError(
+                    f"Could not read experiment {name!r} from storage."
+                )
             if require_clean:
                 raise CleanedVersionRequiredError(
                     f"No cleaned dataset found for {name!r}; run the QC workflow first."
@@ -55,9 +56,6 @@ class SupabaseReader:
             raise ExperimentNotFoundError(
                 f"Experiment {name!r} (version={version!r}) could not be resolved."
             )
-
-        if source_label == "raw":
-            warnings.warn(_LOCAL_RAW_DEPRECATION, DeprecationWarning, stacklevel=2)
 
         return ExperimentFrame(
             df=df,

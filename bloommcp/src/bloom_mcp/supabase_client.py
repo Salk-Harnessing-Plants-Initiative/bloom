@@ -6,7 +6,7 @@ prefix decisions in one place means future tools cannot accidentally
 upload to the wrong bucket, hit Supabase as service_role, or skip the
 required input/output prefix.
 
-Public surface (exactly three functions):
+Primary read-path entry points (generic storage helpers follow below):
 
     get_postgrest_client()           → supabase.Client authenticated as
                                        bloom_agent. Use for table reads
@@ -35,6 +35,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -42,6 +43,10 @@ import supabase
 
 BUCKET = "bloommcp-data"
 INPUT_PREFIX = "bloommcp_input/"
+
+# Object basenames must be a single path segment of safe characters — an
+# allowlist (not just a slash block) is defense-in-depth against traversal.
+_VALID_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _require_env() -> tuple[str, str]:
@@ -85,10 +90,10 @@ def _validate_name(name: str) -> None:
     basename like `accessions.csv`."""
     if not name:
         raise ValueError("name must be a non-empty basename, got empty string")
-    if "/" in name:
+    if not _VALID_NAME.match(name):
         raise ValueError(
-            f"name must be a basename without slashes; got {name!r}. The "
-            f"input/output prefix is added by this helper."
+            f"name must be a basename matching [A-Za-z0-9._-]; got {name!r}. "
+            f"The input/output prefix is added by this helper."
         )
 
 
@@ -157,13 +162,23 @@ def get_storage_client():
 
 def list_prefix(prefix: str) -> list[str]:
     """List basenames of objects directly under `prefix` in `bloommcp-data`.
-    Lists file inside the folder.
-    list_prefix("") is shows at the root"
-    list_prefix("bloommcp_output/") shows file under the prefix folder
+
+    `list_prefix("")` lists the bucket root; `list_prefix("bloommcp_input/")`
+    lists objects under that prefix. Paginates so results are not capped at
+    Supabase Storage's default 100-item page.
     """
     client = get_storage_client()
-    items = client.list(prefix)
-    return [item["name"] for item in items]
+    names: list[str] = []
+    offset, page = 0, 100
+    while True:
+        items = client.list(prefix, {"limit": page, "offset": offset})
+        if not items:
+            break
+        names.extend(item["name"] for item in items)
+        if len(items) < page:
+            break
+        offset += page
+    return names
 
 
 def read_json(key: str) -> dict:
