@@ -24,6 +24,17 @@ code under test — so the oracle is a genuine cross-tier regression check.
   naive `dropna()` that would discard 29 samples (158 left). This is the tool's oracle:
   no-NaN output with strictly less sample loss than `dropna()`. Reproduced-by version is
   recorded in the `_reproduced_by_sleap_roots_analyze_version` key.
+- `turface_19_qc_inspect_golden.json` — independently-computed oracle for the **read-only
+  `qc_inspect`** tool (#360), using `sleap_roots_analyze.apply_data_cleanup_filters` (the
+  delegate `qc_inspect` wraps) on `turface_19_raw_data.csv` at the **canonical defaults**
+  (`max_zeros=0.5, max_nans_per_trait=0.2, max_nans_per_sample=0.0, min_samples=10`, i.e.
+  `qc_clean`'s defaults). It records the consequence the agent must see: at the defaults the
+  two NaN-heavy traits (see the `turface_19_raw_data.csv` entry above for the shared 187×20 /
+  58-NaN / 29-sample facts) are **kept** and, because `max_nans_per_sample=0.0`, their 29
+  NaN-bearing samples are **dropped** — whereas lowering `max_nans_per_trait` to `≤0.15`
+  drops the two traits instead and **retains all 187 samples (0 lost)**. The recommendation
+  block pins `recommended_max_nans_per_trait=0.15`, `would_remove_traits=[Root_Biomass_mg,
+  Root_Shoot_Ratio]`, `samples_lost_at_recommendation=0`. **Not** re-derived from the tool.
 - `turface_19_pca_golden.json` — recorded golden + drift snapshots for that table.
   The keys carry **distinct provenance** (see the `_*_source` fields):
   - **PCA** (`pca_explained_variance` ≈0.95991, `n_pca_components` = 3) is an
