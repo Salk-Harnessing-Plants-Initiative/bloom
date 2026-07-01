@@ -106,12 +106,17 @@ CHECK is present (mirroring the `BlobRef` `anyOf`); and the DB `kind` vocabulary
 contract's `BlobRef.kind` enum. The check SHALL also assert the contract-side schema facts that
 justify change A's DB choices: `Provenance.contract_version` is `required` and typed `string` (the
 per-row provenance-of-origin anchor), and `Provenance.idempotency_key.default` is `""` (the
-documented basis for the non-empty CHECK). The check SHALL be driven by a declarative mapping in
-which mappings introduced by later changes (RPC-enforced key equality, `contract_version`
-row-anchor validation, and `scan_key` resolution) are marked deferred and explicitly skipped, so
-the check does not assert against database objects that do not yet exist and can be extended as
-those changes land. Loading the contract schema SHALL NOT crash test collection when the schema
-file is absent.
+documented basis for the non-empty CHECK). The check SHALL also assert the **structural** schema
+support for the write-back mappings: the write-back RPC function is present in the catalog, and the
+`cyl_images.scan_id → cyl_scans.id` foreign key (the `image_ids → cyl_images.scan_id` resolution path)
+is present. These are structural preconditions only — the runtime *behavior* of the RPC
+(`idempotency_key == metadata->>'idempotency_key'` enforcement, `contract_version` validation, and
+scan resolution) is verified by the write-back RPC's own behavioral tests, not by this static check.
+The check SHALL be driven by a declarative mapping in which mappings introduced by changes not yet
+built (the `cyl_image_traits.source_id` foreign key) remain marked deferred and explicitly skipped, so
+the check does not assert against database objects that do not yet exist and can be extended as those
+changes land. Loading the contract schema SHALL NOT crash test collection when the schema file is
+absent.
 
 Note: this requirement may relocate to the `cyl-trait-writeback` capability in a future refactor.
 
@@ -144,18 +149,27 @@ Note: this requirement may relocate to the `cyl-trait-writeback` capability in a
   `Provenance.idempotency_key.default` is `""`, and the check fails if a re-pin drops either (the
   provenance anchor and the empty-string CHECK rationale must stay guaranteed by the contract)
 
+#### Scenario: Write-back mappings are active and their structural support is asserted
+
+- **WHEN** the check introspects the applied database
+- **THEN** the write-back RPC function is present in the catalog and the
+  `cyl_images.scan_id → cyl_scans.id` foreign key (the `image_ids → cyl_images.scan_id` resolution
+  path) is present, and these mappings are no longer marked deferred (their runtime enforcement is
+  covered by the write-back RPC behavioral tests, not this static check)
+
 #### Scenario: Deferred mappings are skipped, not asserted
 
-- **WHEN** the check encounters a mapping marked deferred (e.g. RPC-enforced key equality,
-  `contract_version` validation, or `scan_key` resolution not yet built)
+- **WHEN** the check encounters a mapping marked deferred (the `cyl_image_traits.source_id` foreign
+  key, not yet built)
 - **THEN** that mapping is skipped with a recorded reason and does not cause a failure
 
 #### Scenario: A regression in a built mapping fails the check
 
 - **WHEN** an active mapping no longer holds (e.g. `cyl_trait_sources.metadata` is missing or not
   `jsonb`, the contract no longer designates that home, the non-empty CHECK or the UNIQUE
-  constraint on `idempotency_key` is absent, or `cyl_scan_intermediates` is missing a mapped
-  column, foreign key, or the at-least-one-location CHECK)
+  constraint on `idempotency_key` is absent, `cyl_scan_intermediates` is missing a mapped
+  column, foreign key, or the at-least-one-location CHECK, the write-back RPC function is absent, or
+  the `cyl_images.scan_id → cyl_scans.id` foreign key is absent)
 - **THEN** the check fails, identifying the violated contract↔database mapping
 
 #### Scenario: Missing contract schema does not crash test collection
