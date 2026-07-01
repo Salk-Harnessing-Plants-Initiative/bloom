@@ -26,19 +26,25 @@ code under test — so the oracle is a genuine cross-tier regression check.
   recorded in the `_reproduced_by_sleap_roots_analyze_version` key.
 - `turface_19_pca_golden.json` — recorded golden + drift snapshots for that table.
   The keys carry **distinct provenance** (see the `_*_source` fields):
+
   - **PCA** (`pca_explained_variance` ≈0.95991, `n_pca_components` = 3) is an
-    *independently recorded* golden from #120's `viz_pca_metadata.json`. The recorded
+    _independently recorded_ golden from #120's `viz_pca_metadata.json`. The recorded
     `top_features` field was **omitted**: it comes from a viz-specific ranking
     heuristic in #120 that `perform_pca_analysis` does not expose, so it cannot be
-    asserted as a faithful oracle.
+    asserted as a faithful oracle. The per-PC `pca_explained_variance_ratio`
+    (`[0.8613, 0.0582, 0.0404]`, added for Tier 4 / #308) is a **characterization
+    snapshot** re-derived from `perform_pca_analysis==0.1.0a3` (see `_pca_evr_source`):
+    the upstream viz metadata records only the _cumulative_ value, so this per-PC split
+    is a drift gate, **not** an independent oracle — its three entries sum to the
+    independent cumulative `pca_explained_variance` above.
   - **Heritability** (`heritability_mean` = 0.7650…, `heritability_method`,
-    `heritability_n_above_0.5`) is a *characterization snapshot* of
+    `heritability_n_above_0.5`) is a _characterization snapshot_ of
     `sleap-roots-analyze==0.1.0a2` on this fixture — **not** an independently validated
     value (the PCA-metadata source above does not contain a heritability mean). It gates
     future drift only; reconciling it to the R/lme4 reference the library docstring
     claims to match is tracked by **#315**.
   - **UMAP** (`umap_trustworthiness` ≈0.95, `umap_trustworthiness_floor` = 0.88) is a
-    *structural* snapshot: UMAP coordinates are not cross-OS bit-stable, so the gate
+    _structural_ snapshot: UMAP coordinates are not cross-OS bit-stable, so the gate
     asserts neighbor-preservation (trustworthiness) of the embedding w.r.t. the
     standardized input — a wrong `n_neighbors`/`min_dist`/`init` delegation drops it
     below the floor (verified by a companion negative test).

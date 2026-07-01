@@ -337,6 +337,167 @@ def test_qc_clean_run_composes_into_require_clean_read(fake_supabase_storage, tm
     assert len(resolved.trait_cols) == _GOLDEN["cleaned_traits"] == 18
 
 
+# ── parity: qc_clean output == direct pipeline cleanup step on same fixture ──
+
+
+def test_qc_clean_matches_pipeline_cleanup_on_same_fixture(
+    fake_supabase_storage, tmp_path
+):
+    """Parity oracle: the table qc_clean persists is exactly the table the QC
+    pipeline cleanup step (``clean_traits_for_analysis``) produces on the same raw
+    fixture, called with the same params + adapter-detected role columns.
+
+    The other tests pin *delegation happens* (the spy in
+    ``test_delegates_once_...``) and *output matches a frozen golden shape*
+    (``test_cleaned_table_has_no_nans_and_matches_golden_shape``) — but none
+    re-derive the delegate's actual output and compare it, cell-for-cell, to what
+    the tool shipped. This closes that gap end-to-end: run the cleanup step
+    directly, run qc_clean, reload the persisted cleaned frame, assert equal.
+
+    Both sides share ONE ``QCCleanParams`` instance, so thresholds cannot drift
+    between the direct call and the tool call. Driven through the Supabase adapters
+    (like ``test_qc_clean_run_composes_into_require_clean_read``) because that is
+    the only path that can reload the persisted cleaned frame for comparison.
+    """
+    from sleap_roots_analyze import clean_traits_for_analysis
+
+    from bloom_mcp.tools.qc_clean_tool import _role_kwargs
+
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, _raw_df())
+    store = SupabaseResultStore()  # writes to the patched object store
+    _ports.configure(reader=reader, store=store)
+
+    # One params object feeds BOTH sides — the exact inputs the tool forwards.
+    params = QCCleanParams(experiment=_EXPERIMENT, max_nans_per_trait=_MNT)
+    try:
+        frame = reader.load_experiment(_EXPERIMENT, version="raw")
+        # The pipeline cleanup step, called directly with the tool's own params.
+        expected_df, expected_kept, _log = clean_traits_for_analysis(
+            frame.df,
+            trait_cols=frame.trait_cols,
+            max_zeros_per_trait=params.max_zeros_per_trait,
+            max_nans_per_trait=params.max_nans_per_trait,
+            max_nans_per_sample=params.max_nans_per_sample,
+            min_samples_per_trait=params.min_samples_per_trait,
+            **_role_kwargs(frame),
+        )
+
+        result = qc_clean(params)
+        # Reload the cleaned frame the tool actually persisted.
+        resolved = SupabaseReader().load_experiment(_EXPERIMENT, require_clean=True)
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    expected_kept = list(expected_kept)
+    # The summary the tool reported matches the direct cleanup step.
+    assert result.kept_trait_columns == expected_kept
+    assert result.n_samples_out == len(expected_df)
+    assert result.n_traits_out == len(expected_kept)
+
+    # The persisted cleaned trait table equals the direct pipeline output.
+    pd.testing.assert_frame_equal(
+        resolved.df[expected_kept].reset_index(drop=True),
+        expected_df[expected_kept].reset_index(drop=True),
+        check_dtype=False,
+    )
+
+
+# ── parity: qc_clean persisted output == the FULL QC pipeline's cleanup step ──
+
+
+def test_qc_clean_matches_full_pipeline_cleanup_step(fake_supabase_storage, tmp_path):
+    """Strong parity oracle: what ``qc_clean`` persists equals what the **full QC
+    pipeline's cleanup step** (``CleanupTraitsStep``, QC step 02) produces on the
+    same raw fixture — the guarantee ``qc_clean``'s "reproduces the canonical
+    pipeline clean" claim rests on.
+
+    ``test_qc_clean_matches_pipeline_cleanup_on_same_fixture`` above compares
+    against ``clean_traits_for_analysis`` — the *same* function ``qc_clean`` calls,
+    so it can't catch a divergence between that minimal entry point and the real
+    pipeline. This test drives the genuine pipeline **step object** instead, with
+    the real ``QCPipelineConfig`` / canonical ``CleanupConfig``, and asserts the
+    tool's persisted cleaned table makes the *same cleaning decisions* cell-for-cell.
+
+    The step sanitizes/abbreviates trait names (``Total.Root.Length.mm`` →
+    ``Total Root Length (mm)``) and reorders columns; ``qc_clean`` does neither
+    (analyze#164 minimal entry point). Byte-equivalence is explicitly a non-goal —
+    so we compare *decisions*: same surviving samples, same surviving trait
+    identities (mapped through the step's own name map), same values aligned on
+    ``Barcode``. Both sides run at the canonical config with no threshold override,
+    so a drift in either path's defaults breaks this.
+    """
+    from sleap_roots_analyze.pipeline.config import get_default_qc_config
+    from sleap_roots_analyze.pipeline.core import StepResult
+    from sleap_roots_analyze.pipeline.steps.cleanup_traits import CleanupTraitsStep
+
+    raw = _raw_df()
+    meta_cols = ["Barcode", "geno", "rep"]
+    trait_cols = [c for c in raw.columns if c not in meta_cols]
+
+    # ── Full pipeline cleanup step (step 02), driven with the REAL pipeline config.
+    # Only config.cleanup / config.columns are consulted by the step; the canonical
+    # CleanupConfig is the default, asserted here so a config-default drift is loud.
+    config = get_default_qc_config(pipeline_name="qc_clean_parity")
+    config.columns.barcode = "Barcode"
+    config.columns.genotype = "geno"
+    config.columns.replicate = "rep"
+    assert (
+        config.cleanup.max_zeros_per_trait,
+        config.cleanup.max_nans_per_trait,
+        config.cleanup.max_nan_fraction,
+        config.cleanup.min_samples_per_trait,
+    ) == (0.5, 0.2, 0.0, 10)
+
+    prev = StepResult(
+        data=raw,
+        metadata={
+            "trait_column_names": trait_cols,
+            "metadata_column_names": meta_cols,
+        },
+    )
+    pipe = CleanupTraitsStep().execute(
+        data=raw, config=config, run_dir=tmp_path, prev_result=prev
+    )
+    pipe_clean = pipe.data
+    # raw → sanitized name map the step applied (only *changed* names are keyed).
+    name_map = pipe.metadata["trait_name_mapping"]
+    pipe_meta = {"Barcode", "Genotype", "Replicate"}
+    pipe_kept_sanitized = sorted(c for c in pipe_clean.columns if c not in pipe_meta)
+
+    # ── qc_clean at canonical defaults (no override), through the persistence path,
+    # then reload the frame the tool actually shipped.
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, raw)
+    _ports.configure(reader=reader, store=SupabaseResultStore())
+    try:
+        result = qc_clean(QCCleanParams(experiment=_EXPERIMENT))  # canonical defaults
+        resolved = SupabaseReader().load_experiment(_EXPERIMENT, require_clean=True)
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    tool_clean = resolved.df
+
+    # 1. Same cleaning decisions: surviving sample + trait counts.
+    assert result.n_samples_out == len(pipe_clean) == 158
+    assert result.n_traits_out == pipe.metadata["traits_final"]
+
+    # 2. Same surviving trait identities (map the tool's raw names through the
+    #    step's own sanitizer; unchanged names are absent from the map).
+    tool_kept_raw = list(result.kept_trait_columns)
+    tool_kept_sanitized = sorted(name_map.get(c, c) for c in tool_kept_raw)
+    assert tool_kept_sanitized == pipe_kept_sanitized
+
+    # 3. Same values, cell-for-cell — align on Barcode, rename the tool's traits to
+    #    the step's sanitized names, put both in the same column order.
+    tool_vals = (
+        tool_clean.set_index("Barcode")[tool_kept_raw]
+        .rename(columns=name_map)
+        .sort_index()[tool_kept_sanitized]
+    )
+    pipe_vals = pipe_clean.set_index("Barcode")[tool_kept_sanitized].sort_index()
+    pd.testing.assert_frame_equal(tool_vals, pipe_vals, check_dtype=False)
+
+
 # ── trait_columns validation (blocking #3) ──────────────────────────────────
 
 
