@@ -181,7 +181,7 @@
       `client.table("cyl_scan_traits").select(...)` example to read `cyl_scan_traits_latest` (note
       `cyl_scan_traits_source` for the source/run dimension); cross-reference the spec/migration for the
       latest-selection rule rather than restating it. Cite the section by name (it is unnumbered).
-- [ ] 6.2 File the broadened sibling issue "repoint source-blind cyl trait readers at the latest-source
+- [x] 6.2 File the broadened sibling issue "repoint source-blind cyl trait readers at the latest-source
       surface" (covering: rebuild `cyl_trait_by_experiment_wave` on `cyl_scan_traits_latest`; repoint +
       fix `cyl_tools.py` `get_scan_traits_tool`; refresh `context_tools.py` `CONTEXT_CYL`). Reference it
       from the PR body so the deferral is durably tracked before the change folder is archived.
