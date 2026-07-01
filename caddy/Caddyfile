@@ -96,6 +96,12 @@
 			}
 		}
 
+		# Workflow API — strip /workflow-api prefix, proxy to FastAPI on 5100.
+		# App routes are unprefixed (/health, /), so .../workflow-api/health → /health.
+		handle_path /workflow-api/* {
+			reverse_proxy workflow-api:5100
+		}
+
 		# Bloom Frontend
 		handle {
 			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
