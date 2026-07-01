@@ -10,6 +10,7 @@ retired in #370).
 from __future__ import annotations
 
 from bloom_mcp.experiment_utils import (
+    READ_ERROR_PREFIX,
     detect_columns,
     list_experiments as _list_experiments,
     load_experiment_data as _load_experiment_data,
@@ -19,8 +20,10 @@ from .ports import (
     CleanedVersionRequiredError,
     ExperimentFrame,
     ExperimentNotFoundError,
+    ExperimentReadError,
     ExperimentSummary,
 )
+
 
 class SupabaseReader:
     """Reads experiment inputs via the deployed Supabase + local-FS path."""
@@ -38,7 +41,14 @@ class SupabaseReader:
         if df is None:
             # `source_label` here is the raw error string from the deployed
             # loader (may name a path); do NOT surface it. Raise a caller-safe
-            # message instead.
+            # message instead. A tagged backend failure (network / RLS / 5xx on
+            # a file that IS in the bucket) is a read error, not a genuine miss.
+            if isinstance(source_label, str) and source_label.startswith(
+                READ_ERROR_PREFIX
+            ):
+                raise ExperimentReadError(
+                    f"Could not read experiment {name!r} from storage."
+                )
             if require_clean:
                 raise CleanedVersionRequiredError(
                     f"No cleaned dataset found for {name!r}; run the QC workflow first."

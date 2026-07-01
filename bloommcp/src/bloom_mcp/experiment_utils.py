@@ -110,14 +110,44 @@ REPLICATE_PATTERNS = ["rep", "replicate", "wave_number"]
 SAMPLE_ID_PATTERNS = ["barcode", "plant_qr_code", "scan_id", "plant_id", "plant_name"]
 
 
+# Backend read failures (network / RLS / 5xx) are tagged in the error slot so
+# the reader surfaces them as ExperimentReadError, not "not found" (#368 review).
+READ_ERROR_PREFIX = "__read_error__: "
+
+
+def _list_bucket_csv_names() -> list[str]:
+    """Basenames of ``*.csv`` objects under ``bloommcp_input/``.
+
+    Returns ``[]`` and logs a warning if the bucket can't be listed, so a
+    storage outage degrades to the local mount rather than erroring every read.
+    """
+    try:
+        from bloom_mcp.supabase_client import INPUT_PREFIX, list_prefix
+
+        names = [n.rsplit("/", 1)[-1] for n in list_prefix(INPUT_PREFIX)]
+        return [n for n in names if n.endswith(".csv")]
+    except Exception as exc:
+        logger.warning("could not list bloommcp_input/: %s", exc)
+        return []
+
+
 def _experiment_summary(df: pd.DataFrame, filename: str, rows: int) -> dict:
-    """Build one list_experiments entry from a loaded frame."""
+    """Build one list_experiments entry from a loaded frame.
+
+    Column roles are detected on the *full* frame (not a 5-row sample) so the
+    same file yields the same trait set regardless of source (#368 review).
+    """
     stem = Path(filename).stem
     detected = detect_columns(df)
-    exp_name = (
+    raw_name = (
         df["experiment_name"].iloc[0]
         if "experiment_name" in df.columns and len(df) > 0
-        else stem
+        else None
+    )
+    exp_name = (
+        stem
+        if raw_name is None or pd.isna(raw_name) or str(raw_name).strip() == ""
+        else str(raw_name)
     )
     return {
         "filename": filename,
@@ -134,8 +164,14 @@ def _experiment_summary(df: pd.DataFrame, filename: str, rows: int) -> dict:
 def list_experiments(traits_dir: Optional[Path] = None) -> list[dict]:
     """List experiment CSVs available for analysis.
 
-    Reads the bloommcp_input/ bucket first, then the local BLOOM_TRAITS_DIR
-    mount (deprecated, retired in #370) for anything not already in the bucket.
+    Reads the ``bloommcp_input/`` bucket first, then the local BLOOM_TRAITS_DIR
+    mount (deprecated, retired in #370) for anything not already in the bucket;
+    a bucket file shadows a same-named local one. Column roles and row counts
+    come from the full frame in **both** sources, for consistency.
+
+    Cost: this reads every input CSV in full (bucket download + local read) to
+    build each summary — not a cheap metadata-only listing. A preview/range read
+    is deferred to #370.
 
     Returns:
         List of dicts with keys: filename, stem, rows, total_columns,
@@ -144,22 +180,17 @@ def list_experiments(traits_dir: Optional[Path] = None) -> list[dict]:
     experiments: list[dict] = []
     seen: set[str] = set()
 
-    # Bucket inputs (bloommcp_input/) first.
-    try:
-        from bloom_mcp.supabase_client import INPUT_PREFIX, list_prefix, read_input_csv
+    # Bucket inputs (bloommcp_input/) first; a bucket file shadows a local one.
+    for name in _list_bucket_csv_names():
+        try:
+            from bloom_mcp.supabase_client import read_input_csv
 
-        for key in list_prefix(INPUT_PREFIX):
-            name = key.rsplit("/", 1)[-1]
-            if not name.endswith(".csv") or name in seen:
-                continue
-            try:
-                df = read_input_csv(name)
-            except Exception:
-                continue
-            experiments.append(_experiment_summary(df, name, len(df)))
-            seen.add(name)
-    except Exception:
-        pass
+            df = read_input_csv(name)
+        except Exception as exc:
+            logger.warning("skipping bucket input %r: %s", name, exc)
+            continue
+        experiments.append(_experiment_summary(df, name, len(df)))
+        seen.add(name)
 
     # Local mount (deprecated) for anything not already in the bucket.
     d = traits_dir or TRAITS_DIR
@@ -168,14 +199,11 @@ def list_experiments(traits_dir: Optional[Path] = None) -> list[dict]:
             if csv_path.name in seen:
                 continue
             try:
-                df = pd.read_csv(csv_path, nrows=5)
-                with open(csv_path) as f:
-                    row_count = sum(1 for _ in f) - 1  # fast line count
-                experiments.append(
-                    _experiment_summary(df, csv_path.name, row_count)
-                )
-            except Exception:
+                df = pd.read_csv(csv_path)
+            except Exception as exc:
+                logger.warning("skipping local input %r: %s", csv_path.name, exc)
                 continue
+            experiments.append(_experiment_summary(df, csv_path.name, len(df)))
 
     return experiments
 
@@ -393,14 +421,24 @@ def load_experiment_data(
         )
 
     # Raw input: prefer the bloommcp_input/ bucket; fall back to the local
-    # BLOOM_TRAITS_DIR mount (deprecated, retired in #370).
-    try:
-        from bloom_mcp.supabase_client import read_input_csv
+    # BLOOM_TRAITS_DIR mount (deprecated, retired in #370). Listing the bucket
+    # first distinguishes a genuine miss (fall through to local) from a backend
+    # failure on a file that IS there — the latter is surfaced, not silently
+    # served from a possibly-stale local copy (#368 review).
+    bucket_names = _list_bucket_csv_names()
+    if filename in bucket_names:
+        try:
+            from bloom_mcp.supabase_client import read_input_csv
 
-        df = read_input_csv(filename)
-    except Exception:
-        df = None
-    if df is not None:
+            df = read_input_csv(filename)
+        except Exception as exc:
+            logger.warning("bucket read failed for %r: %s", filename, exc)
+            return (
+                None,
+                None,
+                None,
+                f"{READ_ERROR_PREFIX}could not read {filename!r} from bloommcp_input/",
+            )
         config = detect_columns(df)
         return df, config["trait_cols"], config, "raw"
 
@@ -416,7 +454,9 @@ def load_experiment_data(
         config = detect_columns(df)
         return df, config["trait_cols"], config, "raw"
 
-    avail_str = ", ".join(e["filename"] for e in list_experiments()) or "none"
+    # Build the hint from names only (no per-file downloads).
+    local_names = [p.name for p in t_dir.glob("*.csv")] if t_dir.exists() else []
+    avail_str = ", ".join(sorted(set(bucket_names) | set(local_names))) or "none"
     return (
         None,
         None,

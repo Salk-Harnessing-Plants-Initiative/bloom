@@ -72,6 +72,23 @@ class _InMemoryObjectStore:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(self.objects[key])
 
+    def read_input_csv(self, name: str):
+        """Stand-in for supabase_client.read_input_csv (bloommcp_input/ read)."""
+        import io
+
+        import pandas as pd
+
+        key = f"bloommcp_input/{name}"
+        if key not in self.objects:
+            raise RuntimeError(f"object not found: {key}")
+        return pd.read_csv(io.BytesIO(self.objects[key]))
+
+    def put_input_csv(self, name: str, df) -> None:
+        """Seed a bucket input CSV under bloommcp_input/ for tests."""
+        self.objects[f"bloommcp_input/{name}"] = df.to_csv(index=False).encode(
+            "utf-8"
+        )
+
 
 @pytest.fixture
 def fake_supabase_storage(monkeypatch):
@@ -89,6 +106,7 @@ def fake_supabase_storage(monkeypatch):
         "write_json",
         "upload_file",
         "download_file",
+        "read_input_csv",
     ):
         monkeypatch.setattr(_sc, name, getattr(store, name))
     for name in ("list_prefix", "read_json", "write_json"):
