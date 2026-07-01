@@ -1,4 +1,4 @@
-# Bloom Workflow API
+# Bloom Workflows API
 
 A small FastAPI service intended to host workflow-related HTTP endpoints.
 
@@ -10,18 +10,19 @@ variables so those endpoints can use them when built.
 ## Run locally
 
 ```bash
-cd services/workflow-api
+cd services/workflows
 uv sync
 uv run uvicorn main:app --host 0.0.0.0 --port 5100 --reload
 ```
 
-Or via the dev stack (runs as the `workflow-api` service):
+Or via the dev stack (runs as the `workflows` service):
 
 ```bash
-docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --build workflow-api
+docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --build workflows
 ```
 
 Interactive docs (Swagger) are auto-generated at http://localhost:5100/docs
+Behind Caddy it is served under `/workflows/*` (e.g. `<domain>/workflows/health`).
 
 ## Endpoints
 
@@ -34,7 +35,7 @@ Interactive docs (Swagger) are auto-generated at http://localhost:5100/docs
 
 | Env var                     | Default                  | Notes                                             |
 |-----------------------------|--------------------------|---------------------------------------------------|
-| `WORKFLOW_API_CORS_ORIGINS` | `http://localhost:3000`  | Comma-separated browser origins allowed (frontend)|
+| `WORKFLOWS_CORS_ORIGINS`    | `http://localhost:3000`  | Comma-separated browser origins allowed (frontend)|
 | `SUPABASE_URL`              | –                        | Supabase gateway URL (for future data access)     |
 | `SUPABASE_ANON_KEY`         | –                        | Supabase anon key (for future data access)        |
 | `SUPABASE_SERVICE_KEY`      | –                        | Supabase service role key (for future data access)|

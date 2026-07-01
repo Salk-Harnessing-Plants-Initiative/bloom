@@ -1,7 +1,7 @@
 [project]
-name = "bloom-workflow-api"
+name = "bloom-workflows"
 version = "0.1.0"
-description = "Public HTTP API to enqueue and track Bloom workflow jobs (video, ...)"
+description = "HTTP API service hosting Bloom workflow endpoints"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",

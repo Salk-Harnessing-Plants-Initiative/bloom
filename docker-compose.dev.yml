@@ -75,14 +75,14 @@ services:
       - db-dev
     restart: unless-stopped
 
-  workflow-api:
+  workflows:
     build:
-      context: ./services/workflow-api
+      context: ./services/workflows
       dockerfile: Dockerfile
     ports:
-      - "${WORKFLOW_API_PORT:-5100}:5100"
+      - "${WORKFLOWS_PORT:-5100}:5100"
     environment:
-      WORKFLOW_API_CORS_ORIGINS: "http://localhost:3000"
+      WORKFLOWS_CORS_ORIGINS: "http://localhost:3000"
       # Supabase access — wired in for later login/data endpoints (unused today)
       SUPABASE_URL: http://kong:8000
       SUPABASE_ANON_KEY: ${ANON_KEY}
@@ -90,7 +90,7 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
     volumes:
-      - ./services/workflow-api:/app
+      - ./services/workflows:/app
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--reload"]
     networks:
       - supanet

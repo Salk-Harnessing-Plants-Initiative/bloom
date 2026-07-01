@@ -179,11 +179,11 @@ services:
     command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5002", "--workers", "4"]
 
   # -------------------
-  # Workflow API
+  # Workflows API
   # -------------------
-  workflow-api:
+  workflows:
     build:
-      context: ./services/workflow-api
+      context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
     tmpfs:
@@ -195,7 +195,7 @@ services:
     expose:
       - "5100"
     environment:
-      WORKFLOW_API_CORS_ORIGINS: ${CORS_ORIGINS}
+      WORKFLOWS_CORS_ORIGINS: ${CORS_ORIGINS}
       # Supabase access — wired in for later login/data endpoints (unused today)
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_ANON_KEY: ${ANON_KEY}
