@@ -172,7 +172,7 @@
 - [x] 5.2 `openspec validate add-cyl-trait-read-source-aware --strict` passes.
 - [x] 5.3 `cd web && npx tsc --noEmit` and the Next.js build pass against the edited types (catches a
       stale `get_scan_traits` arg list); `packages/bloom-js` + `bloom-fs` `tsc -p` clean.
-- [ ] 5.4 Migration lint clean (filename `^[0-9]{14}_[a-z0-9_]+\.sql$`, timestamp > 20260630180000);
+- [x] 5.4 Migration lint clean (filename `^[0-9]{14}_[a-z0-9_]+\.sql$`, timestamp > 20260630180000);
       ruff/black/prettier and full pre-merge suite green.
 
 ## 6. Docs + follow-up
