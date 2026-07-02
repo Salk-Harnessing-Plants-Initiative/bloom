@@ -17,6 +17,8 @@ Discovery tools (always-on):
   - list_existing_analyses
 
 Direct tools (granular, available for ad-hoc use):
+  - qc_clean:          clean a raw trait table for analysis (delegates to
+                       sleap_roots_analyze.clean_traits_for_analysis)
   - correlation_tools: 8 cross-experiment correlation tools
   - viz_tools:         7 plotting tools
 """
@@ -41,6 +43,7 @@ from bloom_mcp.tools import (
     viz_tools,
     correlation_tools,
     storage_tools,
+    qc_clean_tool,
 )
 from bloom_mcp.tools.workflows import (
     clustering as clustering_workflow,
@@ -90,6 +93,7 @@ dimred_workflow.register(mcp)
 clustering_workflow.register(mcp)
 
 # Direct tools (granular)
+qc_clean_tool.register(mcp)
 correlation_tools.register(mcp)
 viz_tools.register(mcp)
 

@@ -8,6 +8,22 @@ code under test — so the oracle is a genuine cross-tier regression check.
 
 - `turface_19_final_data.csv` — the post-QC, analysis-ready turface_19 traits
   table (`inputs/post_qc/turface_19_final_data.csv`).
+- `turface_19_raw_data.csv` — the **pre-QC, NaN-bearing** turface_19 input
+  (`inputs/raw/turface_19/Turface_all_traits_2024_RSR_diameter_angle_traits_removed.csv`):
+  187 samples × 20 traits (+ `Barcode`/`geno`/`rep`), 58 NaNs confined to two derived
+  traits (`Root_Biomass_mg`, `Root_Shoot_Ratio`, 29 samples each). This is the input the
+  `qc_clean` tool's oracle cleans; the post-QC `turface_19_final_data.csv` above is the
+  result of the **full** `QCPipeline` (cleanup → samples → outlier removal → heritability
+  filter), whereas `qc_clean` delegates only to `clean_traits_for_analysis` (cleanup +
+  validate), so the two are **not** expected to match.
+- `turface_19_qc_golden.json` — characterization snapshot of
+  `sleap_roots_analyze.clean_traits_for_analysis` (v0.1.0a3) on `turface_19_raw_data.csv`
+  at `max_nans_per_trait=0.1`, called with the reader-detected role + trait columns exactly
+  as `qc_clean` calls it: it drops the two NaN-heavy traits (`Root_Biomass_mg`,
+  `Root_Shoot_Ratio`) and so **retains all 187 samples (18 traits) with zero NaNs**, versus a
+  naive `dropna()` that would discard 29 samples (158 left). This is the tool's oracle:
+  no-NaN output with strictly less sample loss than `dropna()`. Reproduced-by version is
+  recorded in the `_reproduced_by_sleap_roots_analyze_version` key.
 - `turface_19_pca_golden.json` — recorded golden + drift snapshots for that table.
   The keys carry **distinct provenance** (see the `_*_source` fields):
   - **PCA** (`pca_explained_variance` ≈0.95991, `n_pca_components` = 3) is an

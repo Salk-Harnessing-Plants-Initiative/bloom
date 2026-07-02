@@ -208,6 +208,13 @@ def _find_column(columns, patterns: list[str]) -> Optional[str]:
     return None
 
 
+# Logical output key + filename for the cleaned trait CSV. The producer
+# (`qc_clean`, `run_qc_workflow`) and the `require_clean` consumer
+# (`_resolve_versioned_cleaned`) MUST agree on this string, so it lives here and
+# is imported on both sides rather than repeated as a literal.
+CLEANED_CSV_NAME = "_cleaned.csv"
+
+
 def _resolve_versioned_cleaned(
     o_dir: Path,
     stem: str,
@@ -253,7 +260,7 @@ def _resolve_versioned_cleaned(
             ),
         )
 
-    rel = entry.outputs.get("_cleaned.csv")
+    rel = entry.outputs.get(CLEANED_CSV_NAME)
     if not rel:
         if version == "latest":
             return None, None, None

@@ -255,20 +255,18 @@ migrate-local:
 		--db-url "postgresql://$${PG_USER}:$${PG_PASSWORD}@127.0.0.1:$(POSTGRES_HOST_PORT)/$${PG_DB}?sslmode=disable" \
 		--debug \
 		--yes; \
-	echo "Granting storage-schema USAGE to bloom_* roles (guarded for not-yet-created roles)..."; \
+	echo "Applying bloom_* schema-USAGE grants as supabase_admin (supabase/grants/schema_grants.sql)..."; \
 	docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T -e PGPASSWORD="$$PG_PASSWORD" db-dev \
 		psql -U "$$PG_USER" -d "$$PG_DB" -v ON_ERROR_STOP=1 \
-		< scripts/sql/repair_storage_grants.sql
-# NOTE: scripts/sql/repair_storage_grants.sql re-applies a privilege the
-# migrations cannot set themselves — `supabase db push` runs every migration
-# after `SET SESSION ROLE postgres`, which is neither a superuser nor the owner
-# of schema `storage` (`supabase_admin`), so `GRANT USAGE ON SCHEMA storage`
-# silently no-ops and bloom_agent ends up unable to resolve storage.objects (the
-# bloommcp write path then fails with `relation "objects" does not exist`).
-# Piping the file as $$PG_USER (supabase_admin) outside the db-push role
-# downgrade makes it stick. The file (not `psql -c`) avoids Make/shell mangling
-# the PL/pgSQL `$grant$` dollar-quote tags; its header documents the canonical
-# role set + the per-role IF EXISTS guard. Privileged-runner fix tracked in #333.
+		< supabase/grants/schema_grants.sql
+# NOTE: supabase/grants/schema_grants.sql is the single source of truth for bloom_*
+# schema-level USAGE grants (issue #333). `supabase db push` runs migrations after
+# `SET SESSION ROLE postgres`, which cannot grant on the supabase_admin-owned
+# storage/auth schemas, so a raw `GRANT USAGE ON SCHEMA storage` in a migration
+# silently no-ops. Applied here as supabase_admin ($$PG_USER) AFTER db push (roles
+# exist; outside the db-push role downgrade) the grant sticks. CI applies the same
+# file in compose-health-check; ongoing prod/staging apply it manually when grants
+# change. Supersedes the #330 repair grant.
 
 # Preflight helper: fail fast with an actionable message if `uv` is not on PATH.
 # Used as a prerequisite by every target that invokes `uv run ...` below so the
