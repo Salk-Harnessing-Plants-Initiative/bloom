@@ -63,6 +63,6 @@ def make_authed_client(creds):
         raise AuthError(f"sign-in failed: {exc}") from exc
     if not getattr(res, "session", None):
         raise AuthError(
-            "sign-in failed — check stored credentials (try `bloomcli login`)"
+            "sign-in failed — check stored credentials (try `bloomctl login`)"
         )
     return client

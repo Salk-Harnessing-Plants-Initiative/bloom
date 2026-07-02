@@ -200,10 +200,20 @@ def download(
     out = Path(out_dir)
     csv_path = out / "scans.csv"
     dl.write_scans_csv(rows, csv_path)
-    click.echo(f"Wrote {len(rows)} scans → {csv_path}")
+    click.echo(f"Wrote {len(rows)} scans -> {csv_path}")
 
     if meta_only:
         return
 
-    written = dl.download_images(client, scans, out)
-    click.echo(f"Downloaded {written} image frames → {out / 'images'}")
+    result = dl.download_images(client, scans, out)
+    log_path = out / "download_log.txt"
+    dl.write_download_log(result, log_path)
+    click.echo(
+        f"Downloaded {result.ok}/{result.total} image frames -> {out / 'images'}  (log: {log_path})"
+    )
+    if result.failed:
+        # Partial download: surface it and exit non-zero so a pipeline knows the
+        # output is incomplete (the log lists every failed frame).
+        raise click.ClickException(
+            f"{result.failed} of {result.total} frames failed to download — see {log_path}"
+        )

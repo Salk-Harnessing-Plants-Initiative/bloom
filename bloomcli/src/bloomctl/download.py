@@ -7,6 +7,7 @@ so the contract is unit-testable without a live server.
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -140,19 +141,71 @@ def fetch_images(client: Any, scan_id: Any) -> list[dict[str, Any]]:
     )
 
 
-def download_images(client: Any, scans: list[dict[str, Any]], out_dir: Path) -> int:
+@dataclass
+class FrameResult:
+    """Outcome of one frame download."""
+
+    scan_id: Any
+    frame_number: Any
+    object_path: str
+    ok: bool
+    error: str = ""
+
+
+@dataclass
+class DownloadResult:
+    """Aggregate outcome of a `download_images` run."""
+
+    frames: list[FrameResult]
+
+    @property
+    def ok(self) -> int:
+        return sum(1 for f in self.frames if f.ok)
+
+    @property
+    def failed(self) -> int:
+        return sum(1 for f in self.frames if not f.ok)
+
+    @property
+    def total(self) -> int:
+        return len(self.frames)
+
+
+def download_images(client: Any, scans: list[dict[str, Any]], out_dir: Path) -> DownloadResult:
     """Download every frame for every scan from Storage bucket `images`.
 
-    Returns the number of frames written. Signs server-side via Supabase
-    Storage (no MinIO secrets, no legacy Lambda).
+    Each frame is downloaded independently: a failure is recorded, not raised, so
+    one bad frame (missing object, transient 5xx) can't abort the whole run.
+    Signs server-side via Supabase Storage (no MinIO secrets, no legacy Lambda).
     """
     bucket = client.storage.from_("images")
-    written = 0
+    frames: list[FrameResult] = []
     for scan in scans:
         for image in fetch_images(client, scan["scan_id"]):
-            data = bucket.download(image["object_path"])
-            dest = image_dest(out_dir, scan, image)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
-            written += 1
-    return written
+            object_path = image.get("object_path", "")
+            result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
+            try:
+                data = bucket.download(object_path)
+                if data is None:
+                    raise ValueError("empty response from storage")
+                dest = image_dest(out_dir, scan, image)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+                result.ok = True
+            except Exception as exc:  # per-frame: record and continue
+                result.error = str(exc)
+            frames.append(result)
+    return DownloadResult(frames)
+
+
+def write_download_log(result: DownloadResult, path: Path) -> None:
+    """Write a per-frame download log (one line per frame) with a summary footer."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for f in result.frames:
+        line = f"{'OK  ' if f.ok else 'FAIL'} scan={f.scan_id} frame={f.frame_number} {f.object_path}"
+        if not f.ok:
+            line += f"  error={f.error}"
+        lines.append(line)
+    lines.append(f"\nSummary: {result.ok} downloaded, {result.failed} failed, {result.total} total")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
