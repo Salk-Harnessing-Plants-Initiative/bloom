@@ -10,18 +10,23 @@ Endpoints:
     GET /health   - health check
     GET /         - basic test route
 """
+
 import os
 import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 # Comma-separated browser origins allowed to call this API (the frontend).
 # CORS only restricts browser JS — it is not access control for curl/servers.
-CORS_ORIGINS = os.environ.get("WORKFLOWS_CORS_ORIGINS", "http://localhost:3000").split(",")
+CORS_ORIGINS = os.environ.get("WORKFLOWS_CORS_ORIGINS", "http://localhost:3000").split(
+    ","
+)
 
 app = FastAPI(title="Bloom Workflows API", version="0.1.0")
 app.add_middleware(
