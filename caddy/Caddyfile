@@ -63,6 +63,14 @@
 	# -------------------
 	@main host {$DOMAIN_MAIN}
 	handle @main {
+		# CLI bootstrap config: the public {api_url, anon_key}. EXACT path only
+		# (no wildcard) so every other /api/* still routes to Kong unchanged.
+		# Served by bloom-web's Next.js route; must NOT fall through to Kong's
+		# basic-auth dashboard catch-all, which 401s it (issue #347).
+		handle /api/client-info {
+			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
+		}
+
 		# Supabase API — strip /api prefix, proxy to Kong
 		handle_path /api/* {
 			reverse_proxy kong:{$KONG_PORT}
