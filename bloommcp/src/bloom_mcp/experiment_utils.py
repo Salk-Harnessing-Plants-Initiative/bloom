@@ -67,6 +67,13 @@ def validate_env() -> None:
         )
     _validate_dirs()
 
+    # Fail fast on a misconfigured storage backend (invalid BLOOM_STORAGE_BACKEND,
+    # or BLOOM_STORAGE_BACKEND=local with an unusable resolved root). Imported here
+    # (not at module top) so importing this module stays side-effect-free.
+    from bloom_mcp.storage_backend import validate_storage_backend
+
+    validate_storage_backend()
+
 
 # metadata columns, matched case-insensitively
 KNOWN_METADATA_COLS = {

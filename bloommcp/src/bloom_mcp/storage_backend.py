@@ -1,0 +1,292 @@
+"""Object-storage backend selection for bloommcp.
+
+The five object-storage helpers in :mod:`bloom_mcp.supabase_client`
+(``upload_file`` / ``download_file`` / ``write_json`` / ``read_json`` /
+``list_prefix``) delegate to the *active* backend selected here. Two backends
+exist:
+
+* :class:`SupabaseStorageBackend` — the deployed default (Supabase Storage in the
+  ``bloommcp-data`` bucket). Its method bodies are the pre-backend
+  ``supabase_client`` helpers verbatim, so the default path is byte-for-byte
+  unchanged.
+* :class:`LocalStorageBackend` — opt-in; writes/reads real files under a root
+  dir, mapping each ``/``-separated storage key to ``<root>/<key>``. It preserves
+  the object store's implicit guarantees on a POSIX filesystem: atomic writes
+  (temp file on the root's filesystem + ``os.replace``), upsert/overwrite,
+  verbatim bytes (so recorded ``output_sha256`` equals the file on disk), and
+  redacted (no host-path) not-found errors.
+
+Selection is driven by ``BLOOM_STORAGE_BACKEND`` (default ``supabase``; ``local``
+opts in). Resolution is **lazy** — this module reads no environment variable and
+touches no filesystem at import, so ``import bloom_mcp`` stays side-effect-free.
+:func:`validate_storage_backend` is called at server boot (via
+``experiment_utils.validate_env``) so a misconfigured value or an unusable local
+root fails fast at boot rather than mid-run.
+
+Out of scope: PostgREST/table access (``get_postgrest_client``) and
+``read_input_csv``, which rides that client — neither is one of the five swapped
+helpers, so both are unaffected by the selected backend.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import tempfile
+from pathlib import Path
+from typing import Optional, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
+
+VALID_BACKENDS = ("supabase", "local")
+_DEFAULT_BACKEND = "supabase"
+
+
+@runtime_checkable
+class StorageBackend(Protocol):
+    """The five object-storage operations bloommcp's write/read paths use."""
+
+    def upload_file(self, key: str, local_path: Path) -> None: ...
+
+    def download_file(self, key: str, local_path: Path) -> None: ...
+
+    def write_json(self, key: str, payload: dict) -> None: ...
+
+    def read_json(self, key: str) -> dict: ...
+
+    def list_prefix(self, prefix: str) -> list[str]: ...
+
+
+def _json_bytes(payload: dict) -> bytes:
+    """Canonical JSON serialization shared by both backends.
+
+    ``sort_keys`` + ``indent=2`` make the manifest bytes deterministic and
+    backend-invariant, so the serialized ``manifest.json`` is byte-identical
+    across the Supabase and local backends for the same payload.
+    """
+    return json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+
+
+class StorageKeyNotFound(FileNotFoundError):
+    """A key has no backing object. The message is redacted — no host path.
+
+    Subclasses ``FileNotFoundError`` so the broad ``except Exception`` gates in
+    the read path keep working, while carrying only the logical key (never an
+    absolute filesystem path) into any agent-facing message.
+    """
+
+
+# ─── Supabase backend (deployed default) ──────────────────────────────────────
+
+
+class SupabaseStorageBackend:
+    """Supabase Storage in the ``bloommcp-data`` bucket — the deployed default.
+
+    Method bodies are the pre-backend ``supabase_client`` helpers verbatim
+    (they re-use ``get_storage_client`` / ``_guess_content_type`` from that
+    module), so selecting ``supabase`` is byte-for-byte the prior behavior.
+    Stateless — each call builds a fresh client via ``get_storage_client``.
+    """
+
+    def upload_file(self, key: str, local_path: Path) -> None:
+        from bloom_mcp.supabase_client import _guess_content_type, get_storage_client
+
+        client = get_storage_client()
+        body = Path(local_path).read_bytes()
+        client.upload(
+            path=key,
+            file=body,
+            file_options={
+                "content-type": _guess_content_type(Path(local_path)),
+                "upsert": "true",
+            },
+        )
+
+    def download_file(self, key: str, local_path: Path) -> None:
+        from bloom_mcp.supabase_client import get_storage_client
+
+        client = get_storage_client()
+        payload = client.download(key)
+        p = Path(local_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(payload)
+
+    def write_json(self, key: str, payload: dict) -> None:
+        from bloom_mcp.supabase_client import get_storage_client
+
+        client = get_storage_client()
+        client.upload(
+            path=key,
+            file=_json_bytes(payload),
+            file_options={"content-type": "application/json", "upsert": "true"},
+        )
+
+    def read_json(self, key: str) -> dict:
+        from bloom_mcp.supabase_client import get_storage_client
+
+        client = get_storage_client()
+        payload = client.download(key)
+        return json.loads(payload.decode("utf-8"))
+
+    def list_prefix(self, prefix: str) -> list[str]:
+        from bloom_mcp.supabase_client import get_storage_client
+
+        client = get_storage_client()
+        items = client.list(prefix)
+        return [item["name"] for item in items]
+
+
+# ─── Local filesystem backend (opt-in) ────────────────────────────────────────
+
+
+class LocalStorageBackend:
+    """Writes/reads the bloommcp object store as real files under ``root``.
+
+    Storage keys are ``/``-separated logical paths; each maps to ``<root>/<key>``.
+    Writes are atomic (temp file on the root's filesystem + ``os.replace``) and
+    overwrite in place; bytes are copied verbatim (binary, no newline/encoding
+    translation) so a recorded ``output_sha256`` equals the file on disk. A
+    resolved-path guard rejects any key that would escape the root.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = Path(root).resolve()
+
+    # key → path, with a resolved-path containment guard
+    def _resolve(self, key: str) -> Path:
+        if not key or key.startswith("/") or "\\" in key:
+            raise ValueError(f"invalid storage key {key!r}")
+        segments = key.split("/")
+        if any(seg in ("", ".", "..") for seg in segments):
+            raise ValueError(f"invalid storage key {key!r}")
+        target = (self._root / Path(*segments)).resolve()
+        if target != self._root and self._root not in target.parents:
+            raise ValueError(f"storage key {key!r} escapes the local root")
+        return target
+
+    # atomic write: temp file in the target's dir (same filesystem) + os.replace
+    def _atomic_write(self, target: Path, data: bytes) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=str(target.parent), prefix=".tmp-", suffix=target.suffix
+        )
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def upload_file(self, key: str, local_path: Path) -> None:
+        self._atomic_write(self._resolve(key), Path(local_path).read_bytes())
+
+    def write_json(self, key: str, payload: dict) -> None:
+        self._atomic_write(self._resolve(key), _json_bytes(payload))
+
+    def download_file(self, key: str, local_path: Path) -> None:
+        src = self._resolve(key)
+        if not src.is_file():
+            logger.debug("local storage miss: key=%s", key)
+            raise StorageKeyNotFound(f"storage object not found: {key}")
+        # Copy bytes to the caller-owned destination — never symlink or hand back
+        # the canonical file under the root (the caller manages dest's lifetime).
+        dest = Path(local_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(src.read_bytes())
+
+    def read_json(self, key: str) -> dict:
+        src = self._resolve(key)
+        if not src.is_file():
+            logger.debug("local storage miss: key=%s", key)
+            raise StorageKeyNotFound(f"storage object not found: {key}")
+        return json.loads(src.read_bytes().decode("utf-8"))
+
+    def list_prefix(self, prefix: str) -> list[str]:
+        rel = prefix.strip("/")
+        directory = self._root if rel == "" else self._resolve(rel)
+        try:
+            return sorted(os.listdir(directory))
+        except (FileNotFoundError, NotADirectoryError):
+            return []
+
+
+# ─── Selection ────────────────────────────────────────────────────────────────
+
+_active: Optional[StorageBackend] = None
+
+
+def _selected_backend_name() -> str:
+    """The lower-cased ``BLOOM_STORAGE_BACKEND`` value, defaulting to ``supabase``."""
+    return (
+        os.environ.get("BLOOM_STORAGE_BACKEND") or _DEFAULT_BACKEND
+    ).strip().lower() or _DEFAULT_BACKEND
+
+
+def _resolve_local_root() -> Path:
+    """The local root: ``BLOOM_STORAGE_LOCAL_ROOT`` if set, else ``BLOOM_OUTPUT_DIR``."""
+    root = os.environ.get("BLOOM_STORAGE_LOCAL_ROOT") or os.environ.get(
+        "BLOOM_OUTPUT_DIR", ""
+    )
+    return Path(root)
+
+
+def _build_backend() -> StorageBackend:
+    name = _selected_backend_name()
+    if name == "supabase":
+        return SupabaseStorageBackend()
+    if name == "local":
+        return LocalStorageBackend(_resolve_local_root())
+    raise RuntimeError(
+        f"BLOOM_STORAGE_BACKEND={name!r} is not recognized; "
+        f"valid values: {', '.join(VALID_BACKENDS)}."
+    )
+
+
+def active_backend() -> StorageBackend:
+    """The process's active object-storage backend (memoized, resolved on first use)."""
+    global _active
+    if _active is None:
+        _active = _build_backend()
+    return _active
+
+
+def reset_backend_for_tests() -> None:
+    """Clear the memoized backend so tests can re-select from a changed env."""
+    global _active
+    _active = None
+
+
+def validate_storage_backend() -> None:
+    """Fail fast at boot on an invalid backend value or an unusable local root.
+
+    Called from ``experiment_utils.validate_env`` (which ``server.main()`` runs
+    before binding the port). Raising here names the offending value / root, so a
+    misconfigured deploy fails at boot rather than on the first storage call.
+    """
+    name = _selected_backend_name()
+    if name not in VALID_BACKENDS:
+        raise RuntimeError(
+            f"BLOOM_STORAGE_BACKEND={name!r} is not recognized; "
+            f"valid values: {', '.join(VALID_BACKENDS)}."
+        )
+    if name == "local":
+        root = _resolve_local_root()
+        if str(root) in ("", "."):
+            raise RuntimeError(
+                "BLOOM_STORAGE_BACKEND=local but neither BLOOM_STORAGE_LOCAL_ROOT "
+                "nor BLOOM_OUTPUT_DIR is set."
+            )
+        if not root.exists() or not root.is_dir():
+            raise RuntimeError(
+                f"BLOOM_STORAGE_BACKEND=local root {root} does not exist or is not "
+                f"a directory."
+            )
+        if not os.access(root, os.W_OK):
+            raise RuntimeError(
+                f"BLOOM_STORAGE_BACKEND=local root {root} is not writable."
+            )
