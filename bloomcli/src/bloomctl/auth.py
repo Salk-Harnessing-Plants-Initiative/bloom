@@ -13,7 +13,9 @@ class AuthError(Exception):
     """Login bootstrap or authentication failed."""
 
 
-def fetch_anon_credentials(server: str = DEFAULT_SERVER, *, timeout: float = 10.0) -> tuple[str, str]:
+def fetch_anon_credentials(
+    server: str = DEFAULT_SERVER, *, timeout: float = 10.0
+) -> tuple[str, str]:
     """Fetch ``(api_url, anon_key)`` from ``<server>/api/client-info``.
 
     Mirrors the legacy CLI bootstrap. Raises :class:`AuthError` if the endpoint
@@ -46,3 +48,21 @@ def verify_credentials(api_url: str, anon_key: str, email: str, password: str) -
         raise AuthError(f"sign-in failed: {exc}") from exc
     if not getattr(res, "session", None):
         raise AuthError("sign-in failed — check email/password")
+
+
+def make_authed_client(creds):
+    """Create a Supabase client signed in as ``creds`` (for authenticated queries)."""
+    from supabase import create_client
+
+    client = create_client(creds.api_url, creds.anon_key)
+    try:
+        res = client.auth.sign_in_with_password(
+            {"email": creds.email, "password": creds.password}
+        )
+    except Exception as exc:
+        raise AuthError(f"sign-in failed: {exc}") from exc
+    if not getattr(res, "session", None):
+        raise AuthError(
+            "sign-in failed — check stored credentials (try `bloomctl login`)"
+        )
+    return client

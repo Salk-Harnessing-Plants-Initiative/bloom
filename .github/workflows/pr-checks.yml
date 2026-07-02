@@ -121,42 +121,18 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
-      # Fast feedback on pure-Python utility scripts. Placed in python-audit
-      # (not compose-health-check) because this job runs in parallel, has no
-      # continue-on-error, and already has uv installed. The `test` extra is
-      # pinned in the root pyproject.toml — one source of truth for both
-      # unit + integration test runs.
       - name: Run Python unit tests
         run: uv run --extra test pytest tests/unit/ -v --tb=short
 
-      # Tier 0 oracle + acceptance: the bloom_mcp package's own Supabase-free
-      # suite. Run from bloommcp/ with its `test` extra (pytest/hypothesis/syrupy)
-      # and SUPABASE_URL / BLOOM_AGENT_KEY pinned empty, proving `import bloom_mcp`
-      # and the unit tests need no live Supabase. The empty env makes the
-      # fail-fast contract load-bearing instead of relying on ambient runner
-      # state. Without this step the oracle gate is never enforced — the root job
-      # above only runs tests/unit/.
       - name: Run bloom_mcp package tests
         run: cd bloommcp && uv run --frozen --extra test pytest tests/ -v --tb=short
         env:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
 
-      # Build the wheel and import it from a clean, project-free env so a
-      # packaging regression (bad module-name/module-root, dropped __init__.py,
-      # empty-namespace wheel) fails the PR — the src/-on-sys.path import tests
-      # AND the editable Docker install both resolve `bloom_mcp` off the source
-      # tree, so neither can catch this. The `__file__` assert proves the import
-      # resolved the installed wheel, not src/. `--no-project` gives the src-free
-      # namespace (the actual goal); `--isolated` is omitted on purpose — it
-      # bypasses the uv cache and would cold-download the whole heavy dep tree
-      # (sleap-roots-analyze/statsmodels/umap/scipy/fastmcp) from PyPI every run.
-      # `rm -rf dist` + the single-wheel test guard the glob. SUPABASE_URL/
-      # BLOOM_AGENT_KEY empty keeps the lazy-validation contract load-bearing.
-      # `--with <wheel>` is allowed by the uv-conventions guard (Invariant 3
-      # only forbids --with alongside pytest; this line runs `python -c`).
-      # (`uv build` has no --frozen flag — it builds in PEP 517 isolation and
-      # does not sync the project env, so there is no lockfile to freeze.)
+      - name: Run bloomctl package tests
+        run: cd bloomcli && uv run --extra test pytest tests/ -v --tb=short
+
       - name: Build bloom_mcp wheel and import in a clean env
         run: |
           cd bloommcp
@@ -170,11 +146,6 @@ jobs:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
 
-      # Enforce lockfile-pyproject sync on the server side. Pre-commit catches
-      # this locally but can be bypassed (--no-verify, web-UI merge, Dependabot
-      # auto-merge). `uv export --frozen` (used by the audit steps below) exits
-      # 0 even on drift — `uv lock --check` is the actual detector, invoked
-      # per-service by scripts/check-uv-locks.py.
       - name: Verify uv lockfiles are synced
         run: python scripts/check-uv-locks.py
 
