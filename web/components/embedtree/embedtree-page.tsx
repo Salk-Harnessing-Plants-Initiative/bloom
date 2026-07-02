@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { GenePicker, type GeneRow } from "./gene-picker";
 import { KnnGraph, type KnnNeighbor } from "./knn-graph";
 import { ResultsPanel } from "./results-panel";
+import { SpeciesFilter, type SpeciesOption } from "./species-filter";
+import { resolveSpeciesFilter } from "./lib/speciesFilter";
 import { DEFAULT_K, K_MAX, K_MIN, SIMILARITY_DISCLAIMER } from "./constants";
 
 // Loose RPC + table types until web/lib/database.types.ts is regenerated to
@@ -86,14 +88,33 @@ export function EmbedtreePage() {
   const [hoveredUid, setHoveredUid] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Species that have ESM-2 embeddings (feeds the filter). Empty selection
+  // = all species; a strict subset narrows the KNN to those species.
+  const [species, setSpecies] = useState<SpeciesOption[]>([]);
+  const [selectedSpecies, setSelectedSpecies] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { data, error: rpcErr } = await (supabase.rpc as unknown as RpcCall)(
+        "list_embedding_species",
+        {},
+      );
+      if (cancelled || rpcErr || !data) return;
+      setSpecies(data as SpeciesOption[]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase]);
 
   const runKnn = useCallback(
-    async (q: QueryState, kVal: number) => {
+    async (q: QueryState, kVal: number, speciesFilter: string[] | null) => {
       setLoading(true);
       setError(null);
       const { data, error: rpcErr } = await (supabase.rpc as unknown as RpcCall)(
         "knn_search_esm2",
-        { query_uid: q.uid, match_count: kVal },
+        { query_uid: q.uid, match_count: kVal, species_filter: speciesFilter },
       );
       if (rpcErr) {
         setLoading(false);
@@ -141,19 +162,38 @@ export function EmbedtreePage() {
         gene_id: row.gene_id,
       };
       setQuery(next);
-      void runKnn(next, k);
+      void runKnn(next, k, resolveSpeciesFilter(selectedSpecies, species.length));
     },
-    [k, runKnn],
+    [k, runKnn, selectedSpecies, species.length],
   );
 
   const handleKChange = useCallback(
     (next: number) => {
       const clamped = Math.max(K_MIN, Math.min(K_MAX, Math.round(next)));
       setK(clamped);
-      if (query) void runKnn(query, clamped);
+      if (query) {
+        void runKnn(query, clamped, resolveSpeciesFilter(selectedSpecies, species.length));
+      }
     },
-    [query, runKnn],
+    [query, runKnn, selectedSpecies, species.length],
   );
+
+  const handleSpeciesToggle = useCallback(
+    (sp: string) => {
+      const next = new Set(selectedSpecies);
+      if (next.has(sp)) next.delete(sp);
+      else next.add(sp);
+      setSelectedSpecies(next);
+      if (query) void runKnn(query, k, resolveSpeciesFilter(next, species.length));
+    },
+    [selectedSpecies, query, k, runKnn, species.length],
+  );
+
+  const handleSpeciesReset = useCallback(() => {
+    const next = new Set<string>();
+    setSelectedSpecies(next);
+    if (query) void runKnn(query, k, null);
+  }, [query, k, runKnn]);
 
   return (
     <div className="flex h-full flex-col gap-4 p-4">
@@ -197,6 +237,13 @@ export function EmbedtreePage() {
           <span className="text-xs text-red-600">Error: {error}</span>
         )}
       </section>
+
+      <SpeciesFilter
+        options={species}
+        selected={selectedSpecies}
+        onToggle={handleSpeciesToggle}
+        onReset={handleSpeciesReset}
+      />
 
       <section className="flex flex-1 flex-col items-stretch gap-4 overflow-y-auto">
         {query ? (
