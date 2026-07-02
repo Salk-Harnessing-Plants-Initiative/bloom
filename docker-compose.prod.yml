@@ -48,10 +48,22 @@ services:
       BLOOM_WEB_PORT: ${BLOOM_WEB_PORT}
       STUDIO_PORT: ${STUDIO_PORT}
       MINIO_CONSOLE_PORT: ${MINIO_CONSOLE_PORT}
+      # Caddy site addresses — comma-separated, scheme-prefixed. Prod needs
+      # apex + wildcard, staging needs only the wildcard, CI uses
+      # http://localhost so no ACME is attempted. See caddy/Caddyfile for
+      # the parsing-safety rationale.
       CADDY_SITE_ADDRESSES: ${CADDY_SITE_ADDRESSES}
+      # Required for ACME DNS-01 — consumed by the cloudflare DNS provider
+      # plugin baked into the Caddy image (see caddy/Dockerfile + Caddyfile).
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Break-glass path: if ACME issuance fails catastrophically, drop
+      # cert.pem + key.pem into ./caddy/certs/ on the host and add a
+      # `tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem` line to
+      # the Caddyfile (overrides the `tls { dns cloudflare ... }` block).
+      # Empty in normal operation; LE certs live in the caddy-data volume
+      # at /data/caddy/certificates/.
       - ./caddy/certs:/etc/caddy/certs:ro
       - caddy-data:/data
       - caddy-config:/config
