@@ -116,6 +116,19 @@ def fetch_scan(client: Any, scan_id: Any) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+def fetch_experiments(client: Any) -> list[dict[str, Any]]:
+    """Non-deleted cyl_experiments the user can see (id-ordered)."""
+    return (
+        client.table("cyl_experiments")
+        .select("id, name, created_at")
+        .eq("deleted", False)
+        .order("id")
+        .execute()
+        .data
+        or []
+    )
+
+
 def fetch_genotypes(client: Any, accession_ids: list[Any]) -> dict[Any, str]:
     """Map accession_id -> accessions.name for the given ids."""
     ids = sorted({a for a in accession_ids if a is not None})

@@ -1,12 +1,12 @@
 """Single-scan download (`bloomctl download --scan-id`)."""
 
 from click.testing import CliRunner
+from test_download_metadata import SCAN
 
 import bloomctl.auth as auth
 import bloomctl.download as dl
 from bloomctl.cli import cli
 from bloomctl.credentials import Credentials
-from test_download_metadata import SCAN
 
 
 class _FakeBucket:

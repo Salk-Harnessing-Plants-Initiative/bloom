@@ -17,6 +17,21 @@ def cli() -> None:
     """Bloom command-line tool"""
 
 
+def _authed_client(profile: str):
+    """Load a profile's credentials and return a signed-in Supabase client."""
+    from . import auth
+    from .credentials import load_credentials
+
+    try:
+        creds = load_credentials(profile)
+    except (FileNotFoundError, ValueError) as exc:
+        raise click.ClickException(f"{exc} — run `bloomctl login`.") from exc
+    try:
+        return auth.make_authed_client(creds)
+    except auth.AuthError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @cli.command()
 @click.option(
     "--server",
@@ -163,22 +178,13 @@ def download(
 ) -> None:
     """Download a cylinder experiment (--experiment-id) or a single scan (--scan-id):
     metadata (scans.csv) and per-frame images."""
-    from . import auth
     from . import download as dl
-    from .credentials import load_credentials
 
     # Exactly one of --experiment-id / --scan-id.
     if (experiment_id is None) == (scan_id is None):
         raise click.UsageError("Pass exactly one of --experiment-id or --scan-id.")
 
-    try:
-        creds = load_credentials(profile)
-    except (FileNotFoundError, ValueError) as exc:
-        raise click.ClickException(f"{exc} — run `bloomctl login`.") from exc
-    try:
-        client = auth.make_authed_client(creds)
-    except auth.AuthError as exc:
-        raise click.ClickException(str(exc)) from exc
+    client = _authed_client(profile)
 
     if scan_id is not None:
         scan = dl.fetch_scan(client, scan_id)
@@ -217,3 +223,75 @@ def download(
         raise click.ClickException(
             f"{result.failed} of {result.total} frames failed to download — see {log_path}"
         )
+
+
+@cli.group(name="list")
+def list_() -> None:
+    """List experiments or scans you can access."""
+
+
+def _print_table(title: str, columns: list[str], rows: list[list[str]], empty: str) -> None:
+    """Render a rich table (or an 'empty' message when there are no rows)."""
+    if not rows:
+        click.echo(empty)
+        return
+    from rich.console import Console
+    from rich.table import Table
+
+    table = Table(title=title)
+    for col in columns:
+        table.add_column(col, overflow="fold")
+    for row in rows:
+        table.add_row(*row)
+    Console().print(table)
+
+
+@list_.command(name="experiments")
+@click.option(
+    "-p", "--profile", default=DEFAULT_PROFILE, show_default=True,
+    help="Credentials profile to use.",
+)
+def list_experiments(profile: str) -> None:
+    """List cylinder experiments (id, name) you can access."""
+    from . import download as dl
+
+    client = _authed_client(profile)
+    experiments = dl.fetch_experiments(client)
+    _print_table(
+        "Experiments",
+        ["ID", "Name", "Created"],
+        [[str(e.get("id", "")), e.get("name") or "", str(e.get("created_at") or "")[:10]] for e in experiments],
+        empty="No experiments found.",
+    )
+
+
+@list_.command(name="scans")
+@click.option(
+    "--experiment-id", "--experiment_id", "experiment_id", type=int, required=True,
+    help="Experiment to list scans for.",
+)
+@click.option(
+    "-p", "--profile", default=DEFAULT_PROFILE, show_default=True,
+    help="Credentials profile to use.",
+)
+def list_scans(experiment_id: int, profile: str) -> None:
+    """List scans in an experiment (scan id, plant, wave, date)."""
+    from . import download as dl
+
+    client = _authed_client(profile)
+    scans = dl.fetch_scans(client, experiment_id)
+    _print_table(
+        f"Scans in experiment {experiment_id}",
+        ["Scan ID", "Plant QR", "Wave", "Age (d)", "Date"],
+        [
+            [
+                str(s.get("scan_id", "")),
+                s.get("qr_code") or "",
+                str(s.get("wave_number") or ""),
+                str(s.get("plant_age_days") or ""),
+                str(s.get("date_scanned") or ""),
+            ]
+            for s in scans
+        ],
+        empty=f"No scans found for experiment {experiment_id}.",
+    )
