@@ -44,6 +44,7 @@ def _steps_text(job: dict) -> str:
     for s in job["steps"]:
         parts.append(str(s.get("run", "")))
         parts.append(str(s.get("uses", "")))
+        parts.append(str(s.get("env", "")))  # untrusted inputs are passed via env:
     return "\n".join(parts)
 
 

@@ -48,23 +48,28 @@ jobs:
         id: current
         run: echo "version=$(uv version | awk '{print $NF}')" >> "$GITHUB_OUTPUT"
 
+      # Free-text inputs go through env, never interpolated into the script text,
+      # so a crafted custom_version can't break out of the command.
       - name: Bump version
         id: bump
+        env:
+          CUSTOM_VERSION: ${{ inputs.custom_version }}
+          BUMP_TYPE: ${{ inputs.bump_type }}
         run: |
-          if [ -n "${{ inputs.custom_version }}" ]; then
-            uv version "${{ inputs.custom_version }}"
+          if [ -n "$CUSTOM_VERSION" ]; then
+            uv version "$CUSTOM_VERSION"
           else
-            uv version --bump "${{ inputs.bump_type }}"
+            uv version --bump "$BUMP_TYPE"
           fi
           echo "new_version=$(uv version | awk '{print $NF}')" >> "$GITHUB_OUTPUT"
 
       - name: Open version-bump PR
         uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
         with:
-          # uv version edits bloomcli/pyproject.toml (and bloomcli/uv.lock).
+          # bloomctl commits no uv.lock (not in scripts/check-uv-locks.py), so the
+          # bump PR only touches pyproject.toml.
           add-paths: |
             bloomcli/pyproject.toml
-            bloomcli/uv.lock
           commit-message: "chore(bloomctl): bump version to ${{ steps.bump.outputs.new_version }}"
           title: "chore(bloomctl): bump version to ${{ steps.bump.outputs.new_version }}"
           body: |

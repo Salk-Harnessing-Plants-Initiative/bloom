@@ -52,11 +52,14 @@ jobs:
 
       # Release tag must equal the package version. Accepts `bloomctl-vX`, `vX`,
       # or a bare `X` tag by stripping the known prefixes.
+      # Untrusted inputs (the release tag) go through env, never interpolated
+      # into the script text, so a crafted tag can't break out of the command.
       - name: Validate tag matches version
         if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          TAG="${{ github.event.release.tag_name }}"
-          VERSION="${{ steps.version.outputs.version }}"
           TAG_VERSION="${TAG#bloomctl-v}"
           TAG_VERSION="${TAG_VERSION#v}"
           if [ "$TAG_VERSION" != "$VERSION" ]; then
@@ -67,8 +70,9 @@ jobs:
 
       - name: Validate changelog entry exists
         if: github.event_name == 'release'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
             echo "::error::No changelog entry '## [$VERSION]' found in bloomcli/CHANGELOG.md"
             exit 1

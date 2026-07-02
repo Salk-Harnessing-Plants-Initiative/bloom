@@ -1,7 +1,7 @@
 [project]
 name = "bloomctl"
 version = "0.1.0a1"
-description = "Bloom command-line tool from the Bloom D"
+description = "Bloom command-line tool for Bloom Database"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "BSD-2-Clause"
