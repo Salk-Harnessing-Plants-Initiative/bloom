@@ -75,6 +75,35 @@ services:
       - db-dev
     restart: unless-stopped
 
+  workflows:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    ports:
+      - "${WORKFLOWS_PORT:-5100}:5100"
+    environment:
+      WORKFLOWS_CORS_ORIGINS: "http://localhost:3000"
+      # Supabase access — wired in for later login/data endpoints (unused today)
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+    volumes:
+      - ./services/workflows:/app
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--reload"]
+    networks:
+      - supanet
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5100/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - db-dev
+      - kong
+    restart: unless-stopped
+
   bloommcp:
     build:
       context: ./bloommcp

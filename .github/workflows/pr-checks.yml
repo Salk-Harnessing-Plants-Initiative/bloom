@@ -160,6 +160,10 @@ jobs:
       - name: Audit video-worker dependencies
         run: cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
+      # Checks workflows Python packages for vulnerabilities
+      - name: Audit workflows dependencies
+        run: cd services/workflows && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+
   docker-build:
     name: Build Docker Images & Scan for CVEs
     runs-on: ubuntu-latest
@@ -204,6 +208,9 @@ jobs:
       - name: Build caddy image
         run: docker build --provenance=false -f caddy/Dockerfile -t caddy:ci ./caddy
 
+      - name: Build workflows image
+        run: docker build --provenance=false -f services/workflows/Dockerfile -t workflows:ci ./services/workflows
+
       # Scan built images for CVEs and generate markdown report
       - name: Scan bloom-web image
         uses: aquasecurity/trivy-action@v0.35.0
@@ -245,6 +252,16 @@ jobs:
           output: 'trivy-caddy.txt'
           trivyignores: '.trivyignore'
 
+      - name: Scan workflows image
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'workflows:ci'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-workflows.txt'
+          trivyignores: '.trivyignore'
+
       - name: Generate Trivy report
         if: always()
         run: |
@@ -253,7 +270,7 @@ jobs:
             echo ""
             echo "| Image | Critical | High |"
             echo "|-------|----------|------|"
-            for img in bloom-web langchain bloommcp caddy; do
+            for img in bloom-web langchain bloommcp caddy workflows; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
                 crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || echo 0)
@@ -262,7 +279,7 @@ jobs:
               fi
             done
             echo ""
-            for img in bloom-web langchain bloommcp caddy; do
+            for img in bloom-web langchain bloommcp caddy workflows; do
               file="trivy-${img}.txt"
               if [ -f "$file" ] && [ -s "$file" ]; then
                 cves=$(grep -oP 'CVE-\d+-\d+' "$file" | sort -u | tr '\n' ', ' | sed 's/,$//')
@@ -318,6 +335,14 @@ jobs:
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'caddy:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+
+      - name: Check workflows for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'workflows:ci'
           severity: 'CRITICAL'
           exit-code: '1'
           trivyignores: '.trivyignore'
