@@ -93,8 +93,16 @@ def login(
     "--experiment_id",
     "experiment_id",
     type=int,
-    required=True,
-    help="Experiment ID to download.",
+    default=None,
+    help="Download a whole experiment by ID (mutually exclusive with --scan-id).",
+)
+@click.option(
+    "--scan-id",
+    "--scan_id",
+    "scan_id",
+    type=int,
+    default=None,
+    help="Download a single scan by ID (mutually exclusive with --experiment-id).",
 )
 @click.option(
     "-p",
@@ -144,7 +152,8 @@ def login(
 )
 def download(
     out_dir: Path,
-    experiment_id: int,
+    experiment_id: int | None,
+    scan_id: int | None,
     profile: str,
     meta_only: bool,
     plant_qr_code: str | None,
@@ -152,28 +161,39 @@ def download(
     plant_age_max: int,
     limit: int,
 ) -> None:
-    """Download a cylinder experiment's metadata (scans.csv) and per-frame images."""
+    """Download a cylinder experiment (--experiment-id) or a single scan (--scan-id):
+    metadata (scans.csv) and per-frame images."""
     from . import auth
     from . import download as dl
     from .credentials import load_credentials
 
+    # Exactly one of --experiment-id / --scan-id.
+    if (experiment_id is None) == (scan_id is None):
+        raise click.UsageError("Pass exactly one of --experiment-id or --scan-id.")
+
     try:
         creds = load_credentials(profile)
     except (FileNotFoundError, ValueError) as exc:
-        raise click.ClickException(f"{exc} — run `bloomcli login`.") from exc
+        raise click.ClickException(f"{exc} — run `bloomctl login`.") from exc
     try:
         client = auth.make_authed_client(creds)
     except auth.AuthError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    scans = dl.fetch_scans(
-        client,
-        experiment_id,
-        plant_qr_code=plant_qr_code,
-        plant_age_min=plant_age_min,
-        plant_age_max=plant_age_max,
-        limit=limit,
-    )
+    if scan_id is not None:
+        scan = dl.fetch_scan(client, scan_id)
+        if scan is None:
+            raise click.ClickException(f"Scan {scan_id} not found.")
+        scans = [scan]
+    else:
+        scans = dl.fetch_scans(
+            client,
+            experiment_id,
+            plant_qr_code=plant_qr_code,
+            plant_age_min=plant_age_min,
+            plant_age_max=plant_age_max,
+            limit=limit,
+        )
     genotypes = dl.fetch_genotypes(client, [s.get("accession_id") for s in scans])
     rows = [dl.build_scan_row(s, genotypes.get(s.get("accession_id"))) for s in scans]
 

@@ -101,6 +101,20 @@ def fetch_scans(
     return query.limit(limit).execute().data or []
 
 
+def fetch_scan(client: Any, scan_id: Any) -> dict[str, Any] | None:
+    """Single cyl_scans_extended row for one scan_id, or None if not found."""
+    rows = (
+        client.table("cyl_scans_extended")
+        .select("*")
+        .eq("scan_id", scan_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    return rows[0] if rows else None
+
+
 def fetch_genotypes(client: Any, accession_ids: list[Any]) -> dict[Any, str]:
     """Map accession_id -> accessions.name for the given ids."""
     ids = sorted({a for a in accession_ids if a is not None})
