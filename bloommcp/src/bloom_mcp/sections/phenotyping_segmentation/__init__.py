@@ -19,9 +19,15 @@ from fastmcp import FastMCP
 from bloom_mcp.auth import auth_provider
 from bloom_mcp.contract import register
 
-from . import summarize_trait
+from . import compute_median, compute_min, compute_mode, summarize_trait
 
 section = FastMCP("phenotyping-segmentation", auth=auth_provider)
 
 # Register every tool in this section. Add new tools here.
-register(section, summarize_trait.summarize_trait)
+register(
+    section,
+    summarize_trait.summarize_trait,
+    compute_min.compute_min,
+    compute_median.compute_median,
+    compute_mode.compute_mode,
+)

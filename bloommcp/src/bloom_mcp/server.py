@@ -88,8 +88,7 @@ viz_tools.register(mcp)
 
 # --- Sections ---
 # Mount each section into the combined server so its tools appear on /mcp,
-# namespaced as <section>_<tool>, for the agent. Each section is also served
-# at its own URL in build_app() for single-section Claude clients.
+# namespaced as <section>_<tool>, for the agent.
 for _name, _section in SECTIONS.items():
     mcp.mount(_section, namespace=_name)
 
