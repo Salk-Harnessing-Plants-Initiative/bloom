@@ -90,3 +90,12 @@ CVE-2026-8376
 # affected code path is unreachable at runtime. No fix available upstream. Reassess on the
 # next python:3.11-slim SHA bump. Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-43185
 CVE-2026-43185
+
+# libpython3.13 / python3.13 (Debian 13 in python:3.11-slim) — affects: langchain-agent / bloommcp
+# tarfile.extractall() 'data'/'tar' filter bypass allowing path traversal on
+# extraction. The container runs python3.11 (not 3.13); python3.13 ships as a
+# base Debian package but is never executed, and no application code extracts
+# untrusted tar archives. Affected code path is unreachable at runtime. No fix
+# available upstream. Reassess on the next python:3.11-slim SHA bump.
+# Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-11940
+CVE-2026-11940
