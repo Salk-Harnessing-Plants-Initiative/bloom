@@ -87,7 +87,9 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
     img_bucket = client.storage.from_(IMAGES_BUCKET)
     frames_written = 0
     with tempfile.TemporaryDirectory() as tmp_dir:
-        video_path = os.path.join(tmp_dir, f"{scan_id}.mp4")
+        # Constant name in the unique temp dir — keeps user-derived scan_id out
+        # of the local filesystem path and the ffmpeg command line.
+        video_path = os.path.join(tmp_dir, "scan.mp4")
         writer = VideoWriter(filename=video_path)
 
         for image in images:
