@@ -208,16 +208,10 @@ services:
       - "5100"
     environment:
       WORKFLOWS_CORS_ORIGINS: ${CORS_ORIGINS}
-      # DB read (scan/image metadata) + S3 read/write (frames in, video out),
-      # service credentials — same contract as services/video-worker. Endpoint,
-      # bucket and region are hardcoded to match the storage service (the
-      # MINIO_* endpoint/bucket/region vars are dev-only).
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
-      S3_ENDPOINT: http://supabase-minio:9000
-      S3_BUCKET_NAME: bloom-storage
-      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
-      AWS_REGION: us-east-1
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
     networks:
       - supanet
     healthcheck:
