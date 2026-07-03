@@ -31,7 +31,7 @@ docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --build workf
 
 Interactive docs (Swagger) are auto-generated at http://localhost:5100/docs
 Behind Caddy the application routes are served under `/workflows/*` (e.g.
-`<domain>/workflows/experiments/{id}/scans/{id}/video`). `/health` is
+`<domain>/workflows/cyl/experiments/{id}/scans/{id}/video`). `/health` is
 internal-only and not exposed through the public proxy.
 
 ## Endpoints
@@ -39,7 +39,7 @@ internal-only and not exposed through the public proxy.
 | Method | Path                                          | Auth | Purpose                                   |
 | ------ | --------------------------------------------- | ---- | ----------------------------------------- |
 | GET    | `/health`                                   | none (internal-only) | Liveness — kept for the in-container probe; **not** exposed via the public proxy |
-| POST   | `/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT | Generate a scan's video, upload to Storage |
+| POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT | Generate a scan's video, upload to Storage |
 
 ### Video generation
 
@@ -58,7 +58,7 @@ Synchronous — mirrors `services/video-worker` but runs in the request.
 
 ```bash
 # Request: experiment 123, scan 456 — requires the caller's Supabase user JWT
-curl -X POST http://localhost:5100/experiments/123/scans/456/video \
+curl -X POST http://localhost:5100/cyl/experiments/123/scans/456/video \
   -H "Authorization: Bearer <supabase-user-jwt>" \
   -H "apikey: <anon-key>"
 
