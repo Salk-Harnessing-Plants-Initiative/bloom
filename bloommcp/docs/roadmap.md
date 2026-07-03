@@ -50,6 +50,38 @@ Tier order is now **0 → 1 → 2 → 3 `qc_clean` → 3b `qc_inspect` → 3c `r
 ## Deferred (out of slice scope — triggers in design §8)
 **Retirement of `source/*` + the bespoke `run_X_workflow` tools** (**after Stage 1 / Tiers 0–4 — Benfica confirmed on PR #310**; deleting `source/pca.py`/`source/clustering.py` now would break the booting server via the workflow tools' module-level imports — so retire only when the workflow tools are removed/repointed, once the granular tools land) · async/long-running pipeline tools · `find_tools` + RAG-MCP (Phase 3) · URL-namespace versioning · api-diff gate (at first publish) · Phase-3 generator · **DB-direct trait-read adapter** behind `ExperimentReader` (trigger: integration sub-project #2) · **orchestrator-owned / per-user-identity writes + real RLS** behind `ResultStore` (trigger: per-user attribution / least-privilege; Benfica — the single shared `bloom_agent` write identity makes RLS decorative today) · **manifest compare-and-swap** (trigger: bloom-mcp scales past one instance; `AnalysisWriter` has no CAS today).
 
+## Cleanup backlog & #388 (file access) integration (added 2026-07-02)
+**Context:** the deployed prototype accumulated legacy paths (local-FS output convention, the `run_X_workflow` tools, `BLOOM_OUTPUT_DIR` overloading). Most of this cleanup is **not** separate effort — it is the *tail of the Stage-1 retirement* already scheduled in Deferred above. [#389](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/389) (opt-in local storage backend, closes [#386](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/386)) introduced a third seam — the `StorageBackend` bytes-destination abstraction, below `ResultStore` — that [#388](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/388) (user file upload/download) will build on.
+
+**Data-access seams (where things plug in):**
+- **`ExperimentReader`** (read port) → `SupabaseReader`. *Deferred: DB-direct adapter (sub-project #2).*
+- **`ResultStore`** (write port) → `SupabaseResultStore`. *Deferred: per-user-identity writes + real RLS.*
+- **`StorageBackend`** (bytes destination, new in #389) → Supabase / Local, sits *below* `ResultStore`.
+
+**Cleanup workstreams (discrete PRs):**
+
+| # | Cleanup | What | Trigger / dep |
+|---|---|---|---|
+| A | Retire `BLOOM_OUTPUT_DIR` → standardize on `BLOOM_STORAGE_LOCAL_ROOT` | drop from `_REQUIRED_DIRS`; kill dead `o_dir` params; retire legacy un-versioned read fallback | tail of B + F; [#386](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/386) context |
+| B | Retire `run_X_workflow` + `source/*` | keystone restructure — removes legacy tool surface + local-dir output convention | **Stage 1 (Tiers 0–5) lands** (Deferred; Benfica-confirmed on #310) |
+| C | Consolidate read path | collapse near-dead `_resolve_versioned_cleaned` branches (`version_dir=""`, legacy local read, near-dead `list_prefix` leg) onto `ExperimentReader`/Supabase | Tier 2 scope ([#307](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/307)); independent |
+| D | Windows/encoding hardening | `read_text()`-no-encoding `cp1252` bug; POSIX-only atomicity claims; backend-aware boot gate (offline) | surfaced by #389 review; independent |
+| F | Outlier suite decision | repoint/retire `plot_outlier_comparison` (reads local `OUTPUT_DIR`); granular replacement is `remove_outliers` ([#378](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/378) / Tier 3c) | blocks A + B completion |
+
+**Through-line — B is the keystone.** When Stage 1 lands, B fires → the local-dir output convention dies → **A and F resolve largely as a byproduct** (straggler local writes in `viz_tools`/`qc_tools` go away; `BLOOM_OUTPUT_DIR` collapses to the local-backend root). **C and D are the two genuinely independent cleanups** and can proceed anytime.
+
+**#388 (file upload/download) integration:**
+
+| #388 part | Builds on | Gated by | Size |
+|---|---|---|---|
+| 2 — download outputs / signed URLs | `create_signed_url` on the `StorageBackend` seam (#389) | just needs #389 merged; wants C | small |
+| 1 — upload inputs via chat | `ExperimentReader` + `bloommcp_input/` consolidation | input consolidation + a provenance decision for ad-hoc CSVs | medium |
+| 3 — web + CLI file explorer | `list_prefix`/signed-URL + web/CLI surfaces | **deferred per-user-identity + real RLS** (else the explorer exposes all users' files under the shared `bloom_agent`) | large |
+
+**#388 sequencing:** Part 2 is the near-term win (rides #389's seam, unblocks the "results out" need) → Part 1 after input consolidation → Part 3 only after per-user identity (the deferred `ResultStore` work). Decompose #388 into these three rather than building it as one issue.
+
+**Proposed order:** land #389 (w/ review fixes) → C + D anytime → **#388 Part 2 as a fast follow on the seam** → finish Tiers 3b/4/3c/5 → B fires → A + F resolve → #388 Part 1 → per-user RLS → #388 Part 3.
+
 ## Related dependencies (not slice-gating)
 - **#116** — the `statistics.py` heritability functions are **already public** (PR **#138 merged**) and `HeritabilityResult` is merged (**#150**); #116 stays open only for a deferred `mypy --strict` item. So a *future* `heritability` tool is **not blocked** by it — it only wants the `0.1.0a3` release (same soft-dep as Tiers 3/4). Not slice-gating.
 - analyze↔contracts wiring (PR #155) is **merged**; bloom-mcp depends on `sleap-roots-contracts` **directly**, so this never gated the slice.
