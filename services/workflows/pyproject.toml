@@ -6,4 +6,10 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn>=0.32.0",
+    # DB reads (scan/image metadata) + S3 writes (video), same as video-worker.
+    "psycopg2-binary>=2.9.0",
+    "boto3>=1.40.0",
+    # Frame decoding + encoding for scan-to-video.
+    "numpy>=2.0.0",
+    "pillow>=12.0.0",
 ]

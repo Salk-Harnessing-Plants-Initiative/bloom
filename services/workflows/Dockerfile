@@ -3,6 +3,10 @@ FROM python:3.11-slim@sha256:9358444059ed78e2975ada2c189f1c1a3144a5dab6f35bff8c9
 
 WORKDIR /app
 
+# ffmpeg is required by video_writer.py (H.264 encoding of scan frames)
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml ./

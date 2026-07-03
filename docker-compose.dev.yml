@@ -83,12 +83,14 @@ services:
       - "${WORKFLOWS_PORT:-5100}:5100"
     environment:
       WORKFLOWS_CORS_ORIGINS: "http://localhost:3000"
-      # Supabase access — wired in for later login/data endpoints (unused today)
-      SUPABASE_URL: http://kong:8000
-      SUPABASE_ANON_KEY: ${ANON_KEY}
-      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
-      JWT_SECRET: ${JWT_SECRET}
+      # DB read (scan/image metadata) + S3 read/write (frames in, video out),
+      # service credentials — same contract as services/video-worker.
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      S3_ENDPOINT: ${MINIO_STORAGE_S3_ENDPOINT}
+      S3_BUCKET_NAME: ${MINIO_DEFAULT_BUCKET}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_REGION: ${MINIO_S3_STORAGE_REGION}
     volumes:
       - ./services/workflows:/app
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--reload"]
