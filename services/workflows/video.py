@@ -32,9 +32,11 @@ DOWNLOAD_URL_TTL = 86400  # 24h signed URL
 # setup the app user has access to.
 IMAGES_BUCKET = os.environ.get("WORKFLOWS_IMAGES_BUCKET", "images")
 VIDEOS_BUCKET = os.environ.get("WORKFLOWS_VIDEOS_BUCKET", "videos")
-# Plain record table (NOT video_jobs — that would re-trigger the async worker).
-# Unset -> skip the record and only write the bucket.
-VIDEO_TABLE = os.environ.get("WORKFLOWS_VIDEO_TABLE") or None
+# Path within the videos bucket — must match what Bloom web plays
+# (web/components/plant-scan.tsx -> videos/cyl-videos/{scan_id}.mp4).
+VIDEO_PATH_PREFIX = "cyl-videos"
+# Record table linking scan_id -> stored video path (upserted per scan).
+VIDEO_TABLE = os.environ.get("WORKFLOWS_VIDEO_TABLE", "cyl_scan_videos")
 
 
 def scan_in_experiment(client, experiment_id: int, scan_id: int) -> bool:
@@ -115,24 +117,24 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
         with open(video_path, "rb") as fh:
             video_bytes = fh.read()
 
-    key = f"{scan_id}.mp4"
+    key = f"{VIDEO_PATH_PREFIX}/{scan_id}.mp4"
     vids = client.storage.from_(VIDEOS_BUCKET)
     vids.upload(key, video_bytes, {"content-type": "video/mp4", "upsert": "true"})
-    return {"frames": frames_written, "download_url": _signed_url(vids, key)}
+    return {
+        "frames": frames_written,
+        "path": key,
+        "download_url": _signed_url(vids, key),
+    }
 
 
-def _record_video(client, experiment_id: int, scan_id: int, result: dict):
-    """Insert a record of the generated video (only if WORKFLOWS_VIDEO_TABLE is set)."""
+def _record_video(client, scan_id: int, result: dict):
+    """Upsert the scan -> video-path record (best-effort; one row per scan)."""
     if not VIDEO_TABLE:
         return
     try:
-        client.table(VIDEO_TABLE).insert(
-            {
-                "experiment_id": experiment_id,
-                "scan_id": scan_id,
-                "frames": result["frames"],
-                "download_url": result["download_url"],
-            }
+        client.table(VIDEO_TABLE).upsert(
+            {"scan_id": scan_id, "path": result["path"]},
+            on_conflict="scan_id",
         ).execute()
     except Exception:
         # A failed record write shouldn't lose the already-generated video.
@@ -149,5 +151,5 @@ def generate_experiment_scan_video(experiment_id: int, scan_id: int) -> dict:
         )
     result = generate_scan_video(client, scan_id)
     result["scan_id"] = scan_id
-    _record_video(client, experiment_id, scan_id, result)
+    _record_video(client, scan_id, result)
     return result
