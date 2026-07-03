@@ -2,6 +2,19 @@
 
 A small FastAPI service intended to host workflow-related HTTP endpoints.
 
+## On-demand vs queued generation
+
+This service's video endpoint is the **on-demand** path: a user action (e.g. a
+"generate video" button, or a CLI call) triggers `POST …/scans/{id}/video`, the
+video is generated **synchronously in the request**, and the signed URL is
+returned right away. Best for a single scan a user is looking at now.
+
+**Batch / workflow-driven** generation (cyl scan, graviscan, or any pipeline
+producing many videos) is a separate, **job-queue-based** mechanism (submit a
+job → a worker processes it → poll/subscribe for the result), not this route.
+That async path is intentionally kept out of this endpoint; see
+`services/video-worker` and the `video_jobs` queue.
+
 Run locally
 
 ```bash
@@ -17,7 +30,9 @@ docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --build workf
 ```
 
 Interactive docs (Swagger) are auto-generated at http://localhost:5100/docs
-Behind Caddy it is served under `/workflows/*` (e.g. `<domain>/workflows/health`).
+Behind Caddy the application routes are served under `/workflows/*` (e.g.
+`<domain>/workflows/experiments/{id}/scans/{id}/video`). `/health` is
+internal-only and not exposed through the public proxy.
 
 ## Endpoints
 
