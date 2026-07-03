@@ -106,3 +106,42 @@ CVE-2026-53260
 # upstream. Reassess on the next python:3.11-slim SHA bump.
 # Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-11940
 CVE-2026-11940
+
+# Mesa — libgbm1 / libglx-mesa0 / mesa-libgallium 25.0.7-2 (Debian 13 in python:3.11-slim) — affects: workflows
+# Out-of-bounds access in the Mesa GPU/OpenGL userspace driver. The workflows
+# service encodes H.264 in software (libx264) on the CPU, in a container with no
+# GPU and no OpenGL/EGL/GBM/display; ffmpeg never drives a Mesa render path, so
+# the affected code is unreachable at runtime. Mesa is a transitive dependency of
+# the Debian ffmpeg package. Debian marks this will_not_fix — no fixed Debian
+# version available. Reassess on the next python:3.11-slim / ffmpeg SHA bump.
+# Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-40393
+CVE-2026-40393
+
+# glib — libglib2.0-0t64 2.84.4-3~deb13u3 (Debian 13 in python:3.11-slim) — affects: workflows
+# Integer underflow in gio/gdbusintrospection.c while parsing D-Bus introspection
+# XML. The workflows service uses no D-Bus (no bus daemon, no GDBus connection);
+# glib is a transitive dependency of the Debian ffmpeg package and this code path
+# is never invoked at runtime. No fixed Debian version available upstream.
+# Reassess on the next python:3.11-slim / ffmpeg SHA bump.
+# Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-58016
+CVE-2026-58016
+
+# mbedtls — libmbedcrypto16 3.6.5-0.1~deb13u1 (Debian 13 in python:3.11-slim) — affects: workflows
+# Client impersonation during a TLS 1.3 handshake. mbedtls is only used by ffmpeg
+# for network inputs (https/rtmps/tls URLs); the service hands ffmpeg local file
+# paths and piped raw frames only, and its own HTTP/TLS runs through httpx→OpenSSL,
+# so the mbedtls TLS client path is never exercised. Transitive dependency of the
+# Debian ffmpeg package. No fixed Debian version available upstream. Reassess on the
+# next python:3.11-slim / ffmpeg SHA bump.
+# Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-34873
+CVE-2026-34873
+
+# mbedtls — libmbedcrypto16 3.6.5-0.1~deb13u1 (Debian 13 in python:3.11-slim) — affects: workflows
+# Arbitrary code execution in mbedtls / TF-PSA-Crypto, reachable only via the
+# mbedtls TLS/crypto path. ffmpeg uses mbedtls only for network (https/rtmps/tls)
+# inputs; the workflows service only ever encodes local files / piped raw frames
+# and does its own TLS via httpx→OpenSSL, so this path is never exercised.
+# Transitive dependency of the Debian ffmpeg package. No fixed Debian version
+# available upstream. Reassess on the next python:3.11-slim / ffmpeg SHA bump.
+# Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-34875
+CVE-2026-34875
