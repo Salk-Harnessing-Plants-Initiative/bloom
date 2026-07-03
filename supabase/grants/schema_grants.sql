@@ -45,5 +45,5 @@
 -- bloom_user/admin/agent is #341's intentional read-only gap — do not add them here
 -- without that review.
 
-GRANT USAGE ON SCHEMA storage TO bloom_user, bloom_admin, bloom_agent, bloom_writer;
+GRANT USAGE ON SCHEMA storage TO bloom_user, bloom_admin, bloom_agent, bloom_writer, bloom_workflows;
 GRANT USAGE ON SCHEMA auth TO bloom_writer;

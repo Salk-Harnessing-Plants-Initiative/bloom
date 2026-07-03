@@ -37,7 +37,8 @@ GRANT SELECT ON public.cyl_scans_extended TO bloom_workflows;
 -- Bloom web plays the file from videos/cyl-videos/{scan_id}.mp4
 -- (web/components/plant-scan.tsx). The upload also records the object path in
 -- storage.objects (Storage API), hence the storage.objects grant.
-GRANT USAGE ON SCHEMA storage TO bloom_workflows;
+-- NOTE: `GRANT USAGE ON SCHEMA storage TO bloom_workflows` lives in
+-- supabase/grants/schema_grants.sql (schema grants no-op under `supabase db push`).
 GRANT SELECT ON storage.buckets TO bloom_workflows;
 GRANT SELECT, INSERT, UPDATE ON storage.objects TO bloom_workflows;
 
