@@ -67,16 +67,15 @@ def _s3():
     )
 
 
-def resolve_scan_id(conn, experiment_id: int) -> int | None:
-    """First scan_id for an experiment via the cyl_scans_extended view."""
+def scan_in_experiment(conn, experiment_id: int, scan_id: int) -> bool:
+    """True if scan_id belongs to experiment_id (via cyl_scans_extended)."""
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT scan_id FROM cyl_scans_extended "
-            "WHERE experiment_id = %s ORDER BY scan_id LIMIT 1",
-            (experiment_id,),
+            "SELECT 1 FROM cyl_scans_extended "
+            "WHERE experiment_id = %s AND scan_id = %s LIMIT 1",
+            (experiment_id, scan_id),
         )
-        row = cur.fetchone()
-    return row[0] if row else None
+        return cur.fetchone() is not None
 
 
 def get_scan_images(conn, scan_id: int):
@@ -149,19 +148,19 @@ def generate_scan_video(scan_id: int, decimate: int = DECIMATE_FACTOR) -> dict:
     return {"frames": frames_written, "download_url": download_url}
 
 
-def generate_experiment_video(experiment_id: int, scan_id: int | None = None) -> dict:
-    """Resolve the experiment's scan (unless given) and generate its video."""
+def generate_experiment_scan_video(experiment_id: int, scan_id: int) -> dict:
+    """Validate the scan belongs to the experiment, then generate its video."""
     _require_config()
-    if scan_id is None:
-        conn = _db()
-        try:
-            scan_id = resolve_scan_id(conn, experiment_id)
-        finally:
-            conn.close()
-        if scan_id is None:
-            raise HTTPException(
-                status_code=404, detail=f"No scans found for experiment {experiment_id}"
-            )
+    conn = _db()
+    try:
+        belongs = scan_in_experiment(conn, experiment_id, scan_id)
+    finally:
+        conn.close()
+    if not belongs:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Scan {scan_id} not found in experiment {experiment_id}",
+        )
     result = generate_scan_video(scan_id)
     result["scan_id"] = scan_id
     return result

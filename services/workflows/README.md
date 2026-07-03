@@ -21,27 +21,32 @@ Behind Caddy it is served under `/workflows/*` (e.g. `<domain>/workflows/health`
 
 ## Endpoints
 
-| Method | Path                        | Purpose                                            |
-| ------ | --------------------------- | -------------------------------------------------- |
-| GET    | `/health`                 | Health check                                        |
-| GET    | `/`                       | Basic test route                                    |
-| POST   | `/experiments/{id}/video` | Generate the experiment's scan video, write to S3   |
+| Method | Path                                          | Purpose                                          |
+| ------ | --------------------------------------------- | ------------------------------------------------ |
+| GET    | `/health`                                   | Health check                                      |
+| GET    | `/`                                         | Basic test route                                  |
+| POST   | `/experiments/{experiment_id}/scans/{scan_id}/video` | Generate a scan's video, write to S3      |
 
 ### Video generation
 
-`POST /experiments/{id}/video` runs the generation inline using the service's own
-DB + S3 credentials (no per-user auth for now). It resolves
-experiment → scan (via `cyl_scans_extended`) → images (`cyl_images`), downloads
-each frame from S3, decimates, encodes H.264 with ffmpeg, uploads the MP4 to
-`cyl-videos/{scan_id}.mp4`, and returns a presigned download URL. This mirrors
-`services/video-worker`, but runs synchronously from the request instead of a
-`pg_notify` job.
+A video is **per scan** — one cylinder scan has many frames (~72 rotation
+images), and that set of frames is one video. An experiment has *many* scans, so
+the route takes **both** ids: `scan_id` identifies the video, and `experiment_id`
+scopes it (the scan must belong to that experiment, else 404).
+
+`POST /experiments/{experiment_id}/scans/{scan_id}/video` runs inline using the
+service's own DB + S3 credentials (no per-user auth for now). It validates the
+scan belongs to the experiment (`cyl_scans_extended`), reads the scan's images
+(`cyl_images`), downloads each frame from S3, decimates, encodes H.264 with
+ffmpeg, uploads the MP4 to `cyl-videos/{scan_id}.mp4`, and returns a presigned
+download URL. Mirrors `services/video-worker`, but synchronously.
 
 ```bash
-# generate the video for an experiment's first scan (or pass {"scan_id": N})
-curl -X POST http://localhost:5100/experiments/123/video \
-  -H "Content-Type: application/json" -d '{}'
-# → {"experiment_id": 123, "scan_id": 456, "frames": 72, "download_url": "https://.../cyl-videos/456.mp4?..."}
+# Request: experiment 123, scan 456
+curl -X POST http://localhost:5100/experiments/123/scans/456/video
+
+# Response:
+# {"experiment_id": 123, "scan_id": 456, "frames": 72, "download_url": "https://.../cyl-videos/456.mp4?..."}
 ```
 
 > **No auth yet** — the route is currently unauthenticated and runs with a shared

@@ -7,10 +7,12 @@ Run:
     uvicorn main:app --host 0.0.0.0 --port 5100 --reload
 
 Endpoints:
-    GET  /health                   - health check
-    GET  /                         - basic test route
-    POST /experiments/{id}/video   - generate the experiment's scan video, write
-                                     it to S3, return a presigned download URL
+    GET  /health                                     - health check
+    GET  /                                           - basic test route
+    POST /experiments/{experiment_id}/scans/{scan_id}/video
+                                                     - generate the scan's video,
+                                                       write it to S3, return a
+                                                       presigned download URL
 """
 
 import os
@@ -18,9 +20,8 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 
-from video import generate_experiment_video
+from video import generate_experiment_scan_video
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -42,11 +43,6 @@ app.add_middleware(
 )
 
 
-class VideoRequest(BaseModel):
-    # Optionally target a specific scan; otherwise the experiment's first scan.
-    scan_id: int | None = Field(default=None, gt=0)
-
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -57,15 +53,14 @@ def root():
     return {"message": "Bloom Workflows API is running"}
 
 
-@app.post("/experiments/{experiment_id}/video")
-def experiment_video(experiment_id: int, req: VideoRequest | None = None):
-    """Generate the experiment's scan video, upload to S3, return the download URL."""
-    scan_id = req.scan_id if req else None
-    result = generate_experiment_video(experiment_id, scan_id)
+@app.post("/experiments/{experiment_id}/scans/{scan_id}/video")
+def experiment_scan_video(experiment_id: int, scan_id: int):
+    """Generate the scan's video (validated against the experiment), return its URL."""
+    result = generate_experiment_scan_video(experiment_id, scan_id)
     logger.info(
         "Generated video for experiment %s scan %s (%d frames)",
         experiment_id,
-        result["scan_id"],
+        scan_id,
         result["frames"],
     )
     return {"experiment_id": experiment_id, **result}
