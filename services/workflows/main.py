@@ -7,20 +7,21 @@ Run:
     uvicorn main:app --host 0.0.0.0 --port 5100 --reload
 
 Endpoints:
-    GET  /health                                     - health check
-    GET  /                                           - basic test route
+    GET  /health                                     - liveness (internal-only)
     POST /experiments/{experiment_id}/scans/{scan_id}/video
                                                      - generate the scan's video,
-                                                       write it to S3, return a
-                                                       presigned download URL
+                                                       upload it to Storage, return
+                                                       a signed download URL
+                                                       (requires a Supabase user JWT)
 """
 
 import os
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
+from auth import require_supabase_user, enforce_rate_limit
 from video import generate_experiment_scan_video
 
 logging.basicConfig(
@@ -43,19 +44,24 @@ app.add_middleware(
 )
 
 
+# Liveness only — minimal by design. Kept for the in-container/orchestrator
+# probe (http://localhost:5100/health); NOT exposed through the public proxy.
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-@app.get("/")
-def root():
-    return {"message": "Bloom Workflows API is running"}
-
-
 @app.post("/experiments/{experiment_id}/scans/{scan_id}/video")
-def experiment_scan_video(experiment_id: int, scan_id: int):
-    """Generate the scan's video (validated against the experiment), return its URL."""
+def experiment_scan_video(
+    experiment_id: int,
+    scan_id: int,
+    user_id: str = Depends(require_supabase_user),
+):
+    """Generate the scan's video (validated against the experiment), return its URL.
+
+    Requires a valid Supabase user JWT (Bearer). Rate-limited per user.
+    """
+    enforce_rate_limit(user_id)
     result = generate_experiment_scan_video(experiment_id, scan_id)
     logger.info(
         "Generated video for experiment %s scan %s (%d frames)",
