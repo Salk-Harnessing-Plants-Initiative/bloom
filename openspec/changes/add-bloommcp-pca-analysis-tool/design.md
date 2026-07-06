@@ -112,12 +112,21 @@ Dict`. It `dropna()`s internally and **raises `ValueError`** on degenerate input
   and the certified `n_samples` / `n_features` go inline; `loadings.csv`, `scores.csv`, and the
   serialized `PCAResult` (`pca_result.json`) go to `ResultStore` and come back as `resource_link`s.
   The N×k score matrix is **never** inlined. (Resolves the earlier open question on the artifact
-  set: three artifacts — `loadings.csv`, `scores.csv`, `pca_result.json`.)
+  set: three artifacts — `loadings.csv`, `scores.csv`, `pca_result.json`.) `scores.csv` prepends the
+  frame's `metadata_cols` (Barcode/Genotype/Replicate, mirroring upstream's
+  `run_pca_and_export_artifacts` stitch) so a score row is traceable to its plant by a shared key,
+  not by fragile positional alignment — sound because the finite-guard makes the delegate's `dropna()`
+  a no-op, keeping `pca.scores` row-aligned with `frame.df`. `loadings.csv` keeps its
+  feature-name index.
 - **Decision: persist under tool class `pca` and record the cleaned-source lineage.** A new analysis
   class, distinct from the legacy `dimred` workflow and from `qc`. The stamped `Provenance` sets
   `based_on_version = frame.source` (the `v<N>_cleaned` label) so the manifest answers "which
   `qc_clean` run produced the input this PCA consumed"; `input_sha256` / `source_csv` capture input
-  _content_, `based_on_version` captures the _version lineage_. Versioning is single-writer.
+  _content_, `based_on_version` captures the _version lineage_. Because the consumed cleaned frame
+  lives in the backend (not at a known local path), the tool snapshots `frame.df` to a temp CSV and
+  passes it as `source_csv`, so `input_sha256` content-addresses the exact bytes fed to the fit — the
+  same parity `qc_clean` gives its raw input, closing the "bytes changed under an unchanged
+  `v<N>_cleaned` label" gap. Versioning is single-writer.
 
 ## Risks / Trade-offs
 
@@ -146,6 +155,25 @@ Dict`. It `dropna()`s internally and **raises `ValueError`** on degenerate input
   collinear traits, or `n_components > rank`) yields a near-zero-variance trailing PC without a
   warning (constant/all-zero/<2-sample inputs correctly raise `ValueError → assumption_violated`).
   Documented as a known limitation for now; a low-variance-component warning is a possible follow-up.
+  Note that duplicate **column names** (`["Holes", "Holes"]`) are a distinct hazard — the delegate's
+  `standardize_data` re-selects each, inflating the feature set while `n_features` under-reports — so
+  the tool rejects duplicates up front (`invalid_input`) rather than fitting collinear copies.
+- **`seed = None` is regime-scoped, not universal** → the determinism claim rests on sklearn's
+  `svd_solver="auto"` choosing the deterministic `covariance_eigh` path, which holds only while
+  `n_features <= 1000` **and** `n_samples >= 10 * n_features`. That is comfortably true for this
+  tool's tabular-phenotyping regime (a handful to a few dozen traits over hundreds–thousands of
+  samples), and every shipped test exercises it. A pathologically **wide** selection (e.g. ~150
+  traits × ~1300 samples fails the `10×` guard) could route `auto` to the randomized solver, which
+  consumes the delegate's hard-coded `random_state=42`. The fit stays *reproducible* (fixed internal
+  seed), but `seed = None` would then under-describe the computation. This is a documented boundary,
+  not a silent assumption; if wide selections become in-scope, the tool should either assert the
+  `covariance_eigh` precondition (reject/branch otherwise) or record the effective seed.
+- **`n_features` mismatch from a constant certified trait** → the delegate silently drops
+  zero-variance columns before fitting, which would leave `n_features` (requested count) disagreeing
+  with the shorter `loadings`/`feature_names` it actually fit. The tool detects the drop after the
+  fit and raises `assumption_violated` naming the constant column(s) rather than persisting an
+  internally inconsistent artifact, so the reported `n_features` always equals the fitted feature
+  count.
 - **Cleaned frame has 12 detected traits, golden uses 8** → `detect_columns(turface_19_final_data)`
   finds 12 numeric traits (15 columns − Barcode/Genotype/Replicate); the golden oracle is over a
   specific 8 (`golden["trait_cols"]`). All 8 are within the 12, so the certified-set restriction

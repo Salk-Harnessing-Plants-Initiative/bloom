@@ -169,3 +169,40 @@ add .` / `git add bloommcp/`); run `git status` before each commit and confirm t
 - [ ] 8.5 `/pre-merge` → `/pr-description` → PR to `staging` linking #308 (stage by explicit path;
       confirm `n`, `render_plate_videos.py`, `bloommcp/data/` are not staged). Merge order relative
       to #356: this PR may merge first (fakes oracle); the §7 live-smoke leg follows post-#356.
+
+## 9. Review hardening (PR #377 re-review — silent-inconsistency + provenance gaps)
+
+- [x] 9.1 **Scores traceability (blocking #1):** `scores.csv` prepends the frame's `metadata_cols`
+      (mirroring upstream's `run_pca_and_export_artifacts` metadata stitch) so a PC-score row maps
+      back to its plant by a shared key, not fragile positional alignment. Sound because the
+      finite-guard keeps `pca.scores` row-aligned with `frame.df`. Test: scores CSV carries the
+      identity columns in row-aligned order.
+- [x] 9.2 **Empty selection (blocking #2):** an explicitly empty `trait_columns=[]` is rejected with
+      `invalid_input` instead of silently meaning "all certified traits". Selection no longer uses a
+      truthiness fall-through. Test added.
+- [x] 9.3 **Duplicate columns (blocking #3):** duplicate names in `trait_columns` are rejected with
+      `invalid_input` naming them, rather than the delegate re-selecting each and inflating the
+      feature set. Test added.
+- [x] 9.4 **`n_features` consistency (blocking #4):** after the fit, if the delegate dropped a
+      constant (zero-variance) certified trait, the tool raises `assumption_violated` naming it
+      (no run persisted) rather than reporting a count that disagrees with the shorter loadings;
+      `n_features` is reported from `pca.feature_names`. Test added.
+- [x] 9.5 **Threshold provenance (#5):** `PCAResult.from_pca_dict` is called with
+      `explained_variance_threshold=params.explained_variance_threshold` so the serialized result
+      self-describes its selection rule; `random_state` stays `None` (consistent with `seed=None`).
+      Test asserts the persisted `pca_result.json` records the threshold.
+- [x] 9.6 **Non-finite guard (#6):** the NaN check is replaced by `np.isfinite(...).all()` so a
+      certified trait carrying `±inf` (which `dropna()` keeps) is rejected as `assumption_violated`
+      rather than poisoning the fit. Test added.
+- [x] 9.7 **Seed regime boundary (#7):** the design's Risks now own the `covariance_eigh`
+      precondition (`n_features <= 1000` and `n_samples >= 10 * n_features`) under which `seed = None`
+      is honest, and the module docstring scopes the determinism claim to this tool's regime rather
+      than asserting `random_state` is universally inert.
+- [x] 9.8 **Input content-addressing (#8):** the consumed cleaned frame is snapshotted to a temp CSV
+      and passed as `source_csv`, so the manifest's `input_sha256` pins the exact input bytes (parity
+      with `qc_clean`), honoring the design's `input_sha256`/`source_csv` claim.
+- [x] 9.9 **ValueError message (#9):** the single degenerate-fit remedy message is reworded to be
+      accurate across the delegate's collapsed `ValueError` causes (empty / <2 samples / no
+      non-constant trait); raw exception text is still never echoed (no-leak test unchanged).
+- [x] 9.10 **Style:** `Optional[...]` → `X | None` (the file has `from __future__ import
+      annotations`), matching the `qc_clean` sibling.

@@ -151,6 +151,19 @@ stamped per call.
 - **THEN** the tool returns a `BloomMCPError` with code `invalid_input` whose message names the
   offending column(s), rather than an opaque internal error or a silently mis-selected fit
 
+#### Scenario: An explicitly empty trait selection is rejected, not treated as "all traits"
+
+- **WHEN** `trait_columns` is supplied as an empty list `[]`
+- **THEN** the tool returns a `BloomMCPError` with code `invalid_input`, rather than falling through
+  to a full-frame PCA over every certified trait the caller did not select
+
+#### Scenario: A trait selection with duplicate column names is rejected
+
+- **WHEN** `trait_columns` names the same column more than once (e.g. `["Holes", "Holes"]`)
+- **THEN** the tool returns a `BloomMCPError` with code `invalid_input` naming the duplicate(s),
+  rather than fitting collinear copies the delegate would re-select — which would inflate the fitted
+  feature set while `n_features` under-reported it
+
 #### Scenario: A degenerate fit surfaces as a self-correctable error
 
 - **WHEN** the delegate `perform_pca_analysis` raises `ValueError` (e.g. a `trait_columns` subset
@@ -158,13 +171,30 @@ stamped per call.
 - **THEN** the tool returns a `BloomMCPError` with code `assumption_violated` and a remedy (not
   `internal_error`), and no run is persisted
 
+#### Scenario: A constant certified trait is surfaced rather than silently dropped
+
+- **WHEN** the selection includes a certified-clean trait that is constant (zero variance), so the
+  delegate would silently drop it and fit fewer features than requested
+- **THEN** the tool returns a `BloomMCPError` with code `assumption_violated` naming the dropped
+  column(s), and no run is persisted — rather than persisting an artifact whose reported
+  `n_features` disagrees with the shorter `loadings`/`feature_names` actually fit
+
+#### Scenario: A non-finite value in a certified trait is rejected
+
+- **WHEN** a selected certified-clean trait carries a non-finite value (`NaN`, `+inf`, or `-inf`)
+  that would survive the delegate's `dropna()`
+- **THEN** the tool returns a `BloomMCPError` with code `assumption_violated` and no run is
+  persisted, rather than poisoning standardization/eigendecomposition with the non-finite value
+
 ### Requirement: PCA Analysis Persists a Versioned Run With Lineage and Returns Links
 
 The `pca_analysis` tool SHALL persist its outputs as a versioned run via the `ResultStore` port
 under tool class `pca`, carrying the contract-stamped `Provenance` into the manifest, recording the
-cleaned-source version it consumed as `based_on_version`, writing the component loadings and scores
-and the serialized `PCAResult`, and SHALL return the small variance summary inline together with
-**links** to the persisted artifacts — never the loadings or score matrices inline.
+cleaned-source version it consumed as `based_on_version` and content-addressing the consumed frame
+via `source_csv` (so the manifest's `input_sha256` pins the exact input bytes, not just the mutable
+`v<N>_cleaned` label), writing the component loadings and the component scores **with sample
+identity** and the serialized `PCAResult`, and SHALL return the small variance summary inline
+together with **links** to the persisted artifacts — never the loadings or score matrices inline.
 
 #### Scenario: Run is committed with provenance and cleaned-source lineage
 
@@ -174,6 +204,15 @@ and the serialized `PCAResult`, and SHALL return the small variance summary inli
   to the consumed cleaned source version (e.g. `v3_cleaned`)
 - **AND** the committed outputs include the loadings CSV, the component scores CSV, and the
   serialized `PCAResult` (`pca_result.json`)
+- **AND** the tool passes the consumed cleaned frame as `source_csv`, so the manifest's
+  `input_sha256` content-addresses the exact input rather than resting on the mutable version label
+
+#### Scenario: Persisted scores carry sample identity for traceability
+
+- **WHEN** the tool writes the component-scores CSV
+- **THEN** each score row is prefixed with the frame's `metadata_cols` (e.g. Barcode/Genotype/
+  Replicate), so a PC-score row maps back to its plant by a shared key rather than by fragile
+  positional alignment against the cleaned version
 
 #### Scenario: Result returns a summary and links, not the matrices
 

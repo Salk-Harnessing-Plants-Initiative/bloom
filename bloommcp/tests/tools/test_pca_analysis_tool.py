@@ -15,6 +15,7 @@ reader/store fakes are disjoint), so these tests do not depend on a live ``qc_cl
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 from pathlib import Path
 
@@ -313,3 +314,161 @@ def test_second_run_increments_version(injected_ports):
     _run()
     assert [r.run_ref for r in store.list_runs(_EXPERIMENT, "pca")] == ["v1", "v2"]
     assert store.get_run(_EXPERIMENT, "pca", "latest").run_ref == "v2"
+
+
+# ── 9. Review hardening — silent-inconsistency + provenance gaps (PR #377) ───
+
+
+def _capture_staged_outputs(store, monkeypatch) -> dict[str, str]:
+    """Read each staged artifact's text at commit time (before the fake store rmtree's it)."""
+    captured: dict[str, str] = {}
+    real_commit = store.commit
+
+    def _commit(run, outputs):
+        for name in outputs:
+            captured[name] = (run.staging_dir / name).read_text()
+        return real_commit(run, outputs)
+
+    monkeypatch.setattr(store, "commit", _commit)
+    return captured
+
+
+# 9.2 — an explicitly empty selection is rejected, not treated as "all traits"
+
+
+def test_empty_trait_columns_is_invalid_input(injected_ports, monkeypatch):
+    _reader, store = injected_ports
+
+    def _spy(*a, **k):  # pragma: no cover - must not run
+        raise AssertionError("delegate called on an empty selection")
+
+    monkeypatch.setattr(pca_analysis_tool, "perform_pca_analysis", _spy)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run(trait_columns=[])
+    assert exc.value.code == "invalid_input"
+    assert store.list_runs(_EXPERIMENT, "pca") == []
+
+
+# 9.3 — duplicate names are rejected before they inflate the feature set
+
+
+def test_duplicate_trait_columns_is_invalid_input_naming_them(
+    injected_ports, monkeypatch
+):
+    _reader, store = injected_ports
+
+    def _spy(*a, **k):  # pragma: no cover - must not run
+        raise AssertionError("delegate called with duplicate columns")
+
+    monkeypatch.setattr(pca_analysis_tool, "perform_pca_analysis", _spy)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run(trait_columns=[_TRAITS[0], _TRAITS[0]])
+    assert exc.value.code == "invalid_input"
+    assert _TRAITS[0] in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "pca") == []
+
+
+# 9.4 — a constant certified trait the delegate would silently drop is surfaced
+
+
+def test_constant_certified_trait_is_assumption_violated(injected_ports):
+    reader, store = injected_ports
+    # Two varying traits (a real fit is reachable) + one constant trait the delegate drops.
+    mixed = pd.DataFrame(
+        {
+            "tA": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "tB": [2.0, 1.0, 5.0, 3.0, 8.0, 4.0],
+            "tConst": [7.0] * 6,
+        }
+    )
+    reader.add_cleaned_version("mixed.csv", "v1", mixed, make_latest=True)
+    with pytest.raises(BloomMCPError) as exc:
+        pca_analysis(PCAAnalysisParams(experiment="mixed.csv"))
+    assert exc.value.code == "assumption_violated"
+    assert "tConst" in exc.value.message
+    # The internally inconsistent artifact is never persisted.
+    assert store.list_runs("mixed.csv", "pca") == []
+
+
+def test_n_features_equals_fitted_feature_count(injected_ports):
+    """The reported n_features is the count actually fit, never the requested count."""
+    result = _run()
+    assert result.n_features == len(result.feature_names) == 8
+
+
+# 9.6 — a non-finite value that dropna() would keep is rejected, not fit
+
+
+def test_non_finite_certified_trait_is_rejected(injected_ports, monkeypatch):
+    reader, store = injected_ports
+    inf_df = pd.DataFrame(
+        {
+            "tA": [1.0, 2.0, 3.0, 4.0],
+            "tB": [4.0, float("inf"), 2.0, 1.0],
+        }
+    )
+    reader.add_cleaned_version("inf.csv", "v1", inf_df, make_latest=True)
+
+    def _spy(*a, **k):  # pragma: no cover - must not run
+        raise AssertionError("delegate called with a non-finite value")
+
+    monkeypatch.setattr(pca_analysis_tool, "perform_pca_analysis", _spy)
+
+    with pytest.raises(BloomMCPError) as exc:
+        pca_analysis(PCAAnalysisParams(experiment="inf.csv"))
+    assert exc.value.code == "assumption_violated"
+    assert store.list_runs("inf.csv", "pca") == []
+
+
+# 9.1 — persisted scores carry sample identity (traceability, not positional alignment)
+
+
+def test_scores_csv_carries_sample_identity(injected_ports, monkeypatch):
+    _reader, store = injected_ports
+    captured = _capture_staged_outputs(store, monkeypatch)
+    _run()
+
+    scores = pd.read_csv(io.StringIO(captured["scores.csv"]))
+    # Identity columns (Barcode/Genotype/Replicate) prefix the PC columns.
+    assert list(scores.columns[:3]) == ["Barcode", "Genotype", "Replicate"]
+    assert scores.columns[3].startswith("PC")
+    # Row-aligned with the cleaned frame's samples (same Barcodes, same order).
+    final = _final_df()
+    assert scores["Barcode"].tolist() == final["Barcode"].tolist()
+    assert len(scores) == len(final) == 153
+
+
+# 9.5 — the serialized PCAResult stamps the threshold that produced it (random_state None)
+
+
+def test_persisted_result_records_threshold(injected_ports, monkeypatch):
+    _reader, store = injected_ports
+    captured = _capture_staged_outputs(store, monkeypatch)
+    _run(explained_variance_threshold=0.8)
+
+    payload = json.loads(captured["pca_result.json"])
+    assert payload["explained_variance_threshold"] == pytest.approx(0.8)
+    assert payload["random_state"] is None  # consistent with seed=None
+
+
+# 9.8 — the consumed cleaned frame is content-addressed via source_csv
+
+
+def test_passes_source_csv_for_input_lineage(injected_ports, monkeypatch):
+    _reader, store = injected_ports
+    captured: dict[str, object] = {}
+    real_create = store.create_run
+
+    def _spy(**kwargs):
+        src = kwargs.get("source_csv")
+        captured["source_csv"] = src
+        captured["exists"] = src is not None and Path(src).exists()
+        return real_create(**kwargs)
+
+    monkeypatch.setattr(store, "create_run", _spy)
+    _run()
+
+    assert captured["source_csv"] is not None
+    assert captured["exists"]  # the snapshot exists when the store hashes it
