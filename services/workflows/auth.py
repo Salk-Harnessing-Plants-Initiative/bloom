@@ -18,12 +18,28 @@ from fastapi import Header, HTTPException
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
-# Simple per-instance fixed-window limiter. Per-user; per-process until a shared
-# store is warranted (see change design.md). Bounds the expensive encode route.
+# Coarse per-instance fixed-window limiter. Per-user; per-process — it bounds
+# the expensive encode route as a safeguard, not a hard global quota (the real
+# limit scales with workers/replicas until a shared store is warranted).
 RATE_LIMIT = int(os.environ.get("WORKFLOWS_RATE_LIMIT", "5"))
 RATE_WINDOW_SECONDS = int(os.environ.get("WORKFLOWS_RATE_WINDOW_SECONDS", "60"))
 _hits: dict[str, list[float]] = defaultdict(list)
 _hits_lock = threading.Lock()
+# Timestamp of the last stale-key sweep; keeps _hits from growing one dead entry
+# per past caller forever. Swept at most once per window.
+_last_sweep = 0.0
+
+
+def _sweep_expired(now: float) -> None:
+    """Drop users whose hits are all outside the window so _hits stays bounded
+    by *active* users, not everyone who ever called. Caller holds _hits_lock."""
+    stale = [
+        uid
+        for uid, times in _hits.items()
+        if all(now - t >= RATE_WINDOW_SECONDS for t in times)
+    ]
+    for uid in stale:
+        del _hits[uid]
 
 
 def require_supabase_user(authorization: str = Header(default=None)) -> str:
@@ -65,8 +81,13 @@ def require_supabase_user(authorization: str = Header(default=None)) -> str:
 
 def enforce_rate_limit(user_id: str) -> None:
     """Raise 429 if the user has exceeded RATE_LIMIT calls in the window."""
+    global _last_sweep
     now = time.time()
     with _hits_lock:
+        # Evict stale users at most once per window (cheap, bounds memory).
+        if now - _last_sweep >= RATE_WINDOW_SECONDS:
+            _sweep_expired(now)
+            _last_sweep = now
         recent = [t for t in _hits[user_id] if now - t < RATE_WINDOW_SECONDS]
         if len(recent) >= RATE_LIMIT:
             raise HTTPException(

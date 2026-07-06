@@ -71,7 +71,9 @@ curl -X POST http://localhost:5100/cyl/experiments/123/scans/456/video \
 **Layer 1 — caller auth (who may call):** application routes require the
 caller's **Supabase user JWT** (`Authorization: Bearer`). The service validates
 it by delegating to Supabase (`GET /auth/v1/user`), so it **never needs
-`JWT_SECRET`**. Requests are rate-limited per user (`429` when exceeded).
+`JWT_SECRET`**. A coarse per-user rate limit (`429` when exceeded) safeguards the
+expensive encode route; it is enforced per process, so the effective limit scales
+with workers/replicas rather than being a hard global quota.
 `/health` is internal-only and not publicly exposed.
 
 **Layer 2 — service identity (what the server may touch):** the service holds
@@ -105,7 +107,7 @@ All of the above is set up by the migration `…_create_workflows_role.sql`.
 | `WORKFLOWS_IMAGES_BUCKET`      | `images`                | Storage bucket to read frames from                   |
 | `WORKFLOWS_VIDEOS_BUCKET`      | `videos`                | Storage bucket to write the MP4 to                   |
 | `WORKFLOWS_VIDEO_TABLE`        | `cyl_scan_videos`       | Record table (`scan_id -> path`)                     |
-| `WORKFLOWS_RATE_LIMIT`         | `5`                     | Max video requests per user per window (429 over)    |
+| `WORKFLOWS_RATE_LIMIT`         | `5`                     | Max video requests per user per window, per process (429 over) |
 | `WORKFLOWS_RATE_WINDOW_SECONDS`| `60`                    | Rate-limit window                                    |
 
 > `ffmpeg` must be present in the runtime image — the Dockerfile copies a digest-pinned static `ffmpeg` binary (avoids apt's ffmpeg pulling in vulnerable GPU/TLS libraries).

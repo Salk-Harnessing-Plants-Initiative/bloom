@@ -38,6 +38,7 @@ def _configured(monkeypatch):
     monkeypatch.setattr(auth, "SUPABASE_ANON_KEY", "anon")
     # reset the in-process rate-limit state between tests
     auth._hits.clear()
+    monkeypatch.setattr(auth, "_last_sweep", 0.0)
 
 
 def _patch_user_endpoint(monkeypatch, resp):
@@ -88,3 +89,31 @@ def test_rate_limit_is_per_user(monkeypatch):
     monkeypatch.setattr(auth, "RATE_LIMIT", 1)
     auth.enforce_rate_limit("a")
     auth.enforce_rate_limit("b")  # different user, own budget — no raise
+
+
+def test_stale_users_are_evicted(monkeypatch):
+    # "old" called once, then went quiet; a later call from "new" past the
+    # window triggers the sweep and drops "old" so _hits stays bounded.
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(auth.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(auth, "RATE_WINDOW_SECONDS", 60)
+
+    auth.enforce_rate_limit("old")
+    assert "old" in auth._hits
+
+    clock["t"] += 120  # two windows later
+    auth.enforce_rate_limit("new")
+
+    assert "old" not in auth._hits  # evicted
+    assert "new" in auth._hits
+
+
+def test_active_users_are_not_evicted(monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(auth.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(auth, "RATE_WINDOW_SECONDS", 60)
+
+    auth.enforce_rate_limit("u")
+    clock["t"] += 90  # a window later, sweep runs...
+    auth.enforce_rate_limit("u")  # ...but u is calling now, so it stays
+    assert "u" in auth._hits
