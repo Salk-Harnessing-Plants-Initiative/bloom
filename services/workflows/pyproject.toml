@@ -16,3 +16,8 @@ dependencies = [
     # Security floor for the supabase auth/JWT transitive dep, per repo convention.
     "cryptography>=48.0.1",
 ]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.3",
+]
