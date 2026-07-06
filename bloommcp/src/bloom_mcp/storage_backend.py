@@ -144,10 +144,13 @@ class LocalStorageBackend:
     """Writes/reads the bloommcp object store as real files under ``root``.
 
     Storage keys are ``/``-separated logical paths; each maps to ``<root>/<key>``.
-    Writes are atomic (temp file on the root's filesystem + ``os.replace``) and
-    overwrite in place; bytes are copied verbatim (binary, no newline/encoding
-    translation) so a recorded ``output_sha256`` equals the file on disk. A
-    resolved-path guard rejects any key that would escape the root.
+    On **POSIX filesystems** writes are atomic (temp file on the root's
+    filesystem, ``fsync``, then ``os.replace``) and overwrite in place; bytes are
+    copied verbatim (binary, no newline/encoding translation) so a recorded
+    ``output_sha256`` equals the file on disk. A resolved-path guard rejects any
+    key that would escape the root. Windows/NTFS does **not** guarantee atomic
+    replace-over-existing (and may raise if a reader holds the target open) — this
+    is an opt-in dev backend; production stays on Supabase Storage.
     """
 
     def __init__(self, root: Path) -> None:
@@ -165,8 +168,17 @@ class LocalStorageBackend:
             raise ValueError(f"storage key {key!r} escapes the local root")
         return target
 
-    # atomic write: temp file in the target's dir (same filesystem) + os.replace
     def _atomic_write(self, target: Path, data: bytes) -> None:
+        """Write ``data`` to ``target`` atomically on POSIX.
+
+        Writes a temp file in the target's directory (same filesystem), fsyncs
+        it, then ``os.replace``s it into place, so a crash / kill / ENOSPC
+        mid-write leaves either the whole prior file or the whole new file —
+        never a truncated ``manifest.json``. The parent dir is fsynced
+        best-effort for power-loss durability of the rename. NOTE: ``os.replace``
+        is atomic over an existing file on POSIX only; on Windows/NTFS it is not
+        guaranteed atomic (see the class docstring).
+        """
         target.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(
             dir=str(target.parent), prefix=".tmp-", suffix=target.suffix
@@ -174,13 +186,22 @@ class LocalStorageBackend:
         try:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
             os.replace(tmp, target)
         except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+            Path(tmp).unlink(missing_ok=True)
             raise
+        # Best-effort durability of the rename itself (POSIX dir fsync; a no-op
+        # / OSError on platforms that can't open a directory fd, e.g. Windows).
+        try:
+            dir_fd = os.open(str(target.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
 
     def upload_file(self, key: str, local_path: Path) -> None:
         self._atomic_write(self._resolve(key), Path(local_path).read_bytes())
@@ -210,9 +231,13 @@ class LocalStorageBackend:
         rel = prefix.strip("/")
         directory = self._root if rel == "" else self._resolve(rel)
         try:
-            return sorted(os.listdir(directory))
+            names = [p.name for p in Path(directory).iterdir()]
         except (FileNotFoundError, NotADirectoryError):
             return []
+        # Hide in-flight atomic-write temp files: a SIGKILL between mkstemp and
+        # os.replace can orphan a `.tmp-*`, which never appears in the Supabase
+        # backend — filtering keeps cross-backend list parity.
+        return sorted(n for n in names if not n.startswith(".tmp-"))
 
 
 # ─── Selection ────────────────────────────────────────────────────────────────
@@ -228,11 +253,26 @@ def _selected_backend_name() -> str:
 
 
 def _resolve_local_root() -> Path:
-    """The local root: ``BLOOM_STORAGE_LOCAL_ROOT`` if set, else ``BLOOM_OUTPUT_DIR``."""
-    root = os.environ.get("BLOOM_STORAGE_LOCAL_ROOT") or os.environ.get(
-        "BLOOM_OUTPUT_DIR", ""
-    )
-    return Path(root)
+    """The local root for the ``local`` backend.
+
+    ``BLOOM_STORAGE_LOCAL_ROOT`` when set. Otherwise falls back to
+    ``BLOOM_OUTPUT_DIR`` — a **bridge-only, deprecated** default that reuses the
+    already-mounted dev dir so ``BLOOM_STORAGE_BACKEND=local`` needs no second var
+    in dev. Prefer setting ``BLOOM_STORAGE_LOCAL_ROOT`` explicitly; the fallback is
+    logged (not silent) so a fourth overlapping use of ``BLOOM_OUTPUT_DIR`` stays
+    observable.
+    """
+    explicit = os.environ.get("BLOOM_STORAGE_LOCAL_ROOT")
+    if explicit:
+        return Path(explicit)
+    fallback = os.environ.get("BLOOM_OUTPUT_DIR", "")
+    if fallback:
+        logger.warning(
+            "BLOOM_STORAGE_BACKEND=local is using BLOOM_OUTPUT_DIR as the local "
+            "storage root because BLOOM_STORAGE_LOCAL_ROOT is unset; this fallback "
+            "is a deprecated dev bridge — set BLOOM_STORAGE_LOCAL_ROOT explicitly."
+        )
+    return Path(fallback)
 
 
 def _build_backend() -> StorageBackend:

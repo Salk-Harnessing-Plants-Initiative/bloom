@@ -187,8 +187,30 @@ def test_missing_key_raises_redacted(tmp_path):
     msg = str(exc.value)
     assert str(tmp_path) not in msg  # no absolute host path leaked
     assert "bloommcp_output/x/missing.csv" in msg  # only the logical key
-    with pytest.raises(FileNotFoundError):
+    # read_json arm is redacted the same way as download_file
+    with pytest.raises(FileNotFoundError) as exc2:
         b.read_json("bloommcp_output/x/missing.json")
+    msg2 = str(exc2.value)
+    assert str(tmp_path) not in msg2
+    assert "bloommcp_output/x/missing.json" in msg2
+
+
+def test_empty_file_roundtrip(tmp_path):
+    b = _local(tmp_path)
+    src = _seed_file(tmp_path, b"")
+    b.upload_file("bloommcp_output/x/v1/empty.csv", src)
+    assert (tmp_path / "bloommcp_output/x/v1/empty.csv").read_bytes() == b""
+    dest = tmp_path / "d.csv"
+    b.download_file("bloommcp_output/x/v1/empty.csv", dest)
+    assert dest.read_bytes() == b""
+
+
+def test_unicode_key_and_payload_roundtrip(tmp_path):
+    b = _local(tmp_path)
+    key = "bloommcp_output/qc_café/v1/manifest.json"
+    b.write_json(key, {"trait": "primär-läng"})
+    assert (tmp_path / "bloommcp_output" / "qc_café" / "v1" / "manifest.json").is_file()
+    assert b.read_json(key) == {"trait": "primär-läng"}
 
 
 @pytest.mark.parametrize(
@@ -451,3 +473,99 @@ def test_qc_workflow_local_roundtrip_with_hash_equality(local_workflow_env):
     frame = SupabaseReader().load_experiment("turface.csv", version="latest")
     assert frame.source.startswith("v1")
     assert len(frame.df) > 0
+
+
+# ─── 5. Cross-backend list_prefix parity + read-path fallback ──────────────────
+
+
+def test_list_prefix_parity_fake_vs_local(fake_supabase_storage, tmp_path):
+    """The in-memory fake (Supabase oracle) and the local backend return the same
+    list_prefix results across empty / no-slash / trailing-slash / missing prefixes
+    — the property read_manifest and _resolve_versioned_cleaned depend on."""
+    fake = fake_supabase_storage
+    root = tmp_path / "root"
+    root.mkdir()
+    local = sb.LocalStorageBackend(root)
+    src = tmp_path / "seed.csv"
+    src.write_bytes(b"x")
+
+    keys = [
+        "bloommcp_output/qc_x/manifest.json",
+        "bloommcp_output/qc_x/v1_2026/_cleaned.csv",
+        "bloommcp_output/qc_x/v2_2026/_cleaned.csv",
+        "bloommcp_output/qc_y/manifest.json",
+    ]
+    for k in keys:
+        if k.endswith(".json"):
+            fake.write_json(k, {"k": 1})
+            local.write_json(k, {"k": 1})
+        else:
+            fake.upload_file(k, src)
+            local.upload_file(k, src)
+
+    for prefix in [
+        "",
+        "bloommcp_output",
+        "bloommcp_output/",
+        "bloommcp_output/qc_x",
+        "bloommcp_output/qc_x/",
+        "bloommcp_output/qc_missing/",
+    ]:
+        fake_names = sorted(fake.list_prefix(prefix))
+        local_names = sorted(local.list_prefix(prefix))
+        assert fake_names == local_names, f"list_prefix mismatch for {prefix!r}"
+
+
+def test_resolve_versioned_cleaned_via_local_list_prefix_fallback(
+    monkeypatch, tmp_path
+):
+    """A manifest entry with version_dir='' forces _resolve_versioned_cleaned to
+    locate the version directory via list_prefix — exercising the local backend's
+    list leg end-to-end in the read path (the qc round-trip never hits it because
+    writers always set version_dir)."""
+    from bloom_mcp import experiment_utils as eu
+    from bloom_mcp.storage import (
+        ExperimentBlock,
+        Manifest,
+        VersionEntry,
+        get_code_versions,
+        write_manifest,
+    )
+    from bloom_mcp.supabase_client import upload_file
+
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(root))
+    sb.reset_backend_for_tests()
+
+    stem = "exp"
+    prefix = f"bloommcp_output/qc_{stem}/"
+    cleaned = tmp_path / "cleaned.csv"
+    cleaned.write_bytes(b"trait,value\n1,2\n")
+    upload_file(f"{prefix}v1_2026-07-06/_cleaned.csv", cleaned)
+
+    entry = VersionEntry(
+        id="v1",
+        created_at="2026-07-06T00:00:00Z",
+        tool="run_qc_workflow",
+        params={},
+        based_on_version="raw",
+        code_versions=get_code_versions(),
+        outputs={"_cleaned.csv": "_cleaned.csv"},
+        version_dir="",  # empty → forces the list_prefix sibling lookup
+    )
+    manifest = Manifest(
+        experiment=ExperimentBlock(
+            filename=f"{stem}.csv", source_path="", input_sha256=""
+        ),
+        versions=[entry],
+        latest="v1",
+    )
+    write_manifest(prefix, manifest)
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, stem, "latest")
+    assert err is None
+    assert path is not None
+    assert path.read_bytes() == b"trait,value\n1,2\n"
+    assert label == "v1_cleaned"

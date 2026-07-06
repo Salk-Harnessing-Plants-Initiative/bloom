@@ -43,6 +43,9 @@ exactly the five faked object-storage helpers — no more, no less.
     `ResultStore` / `ExperimentReader` adapters, so both use the chosen backend transparently.
   - Cross-store reconciliation or migration. A backend is not a migration; mixing backends
     for one experiment splits its history (see Risks).
+  - Fully-offline operation. `local` changes only where *outputs* go; bloommcp still boots
+    through `validate_supabase_env()` and reads inputs/tables via Supabase, so Supabase env
+    is still required. True offline would also need inputs sourced locally (follow-up #395).
 
 ## Decisions
 

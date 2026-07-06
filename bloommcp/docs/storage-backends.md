@@ -61,9 +61,15 @@ Resulting on-disk layout (the storage key becomes the path under the root):
   `./bloommcp/data/ANALYSIS_OUTPUT`) — so in dev, `BLOOM_STORAGE_BACKEND=local`
   needs no second variable and finally populates that folder.
 - **Same semantics as Supabase:** manifest/versioning are unchanged; the backend
-  writes atomically (temp file + rename), overwrites in place, copies bytes
-  verbatim (so the recorded `output_sha256` matches the file on disk), and reads
-  resolve back through the same manifest/versioned-cleaned path.
+  overwrites in place, copies bytes verbatim (so the recorded `output_sha256`
+  matches the file on disk), and reads resolve back through the same
+  manifest/versioned-cleaned path.
+- **Atomic writes (POSIX):** on POSIX filesystems the backend writes a temp file,
+  `fsync`s it, then `os.replace`s it into place, so a crash mid-write never leaves
+  a truncated `manifest.json`. **On Windows/NTFS** `os.replace` over an existing
+  file is **not** guaranteed atomic (and can fail if a reader holds the target
+  open) — acceptable for this dev-only backend, but don't rely on crash-atomicity
+  there. (Crash-atomic, not power-loss-durable beyond a best-effort dir `fsync`.)
 - **Read paths work too:** manifest resolution, the versioned-cleaned lookup, and
   the MCP read tools all resolve against the local files.
 
@@ -86,6 +92,16 @@ This backend selection governs **object storage only**. PostgREST/table reads
 (`get_postgrest_client`, `read_input_csv`) and raw-experiment-input reads from the
 local `BLOOM_TRAITS_DIR` are unaffected by `BLOOM_STORAGE_BACKEND`. Production and
 staging stay on Supabase Storage; `local` is opt-in for local/dev.
+
+### `local` is not a fully-offline mode
+
+`local` changes only **where outputs are written**. bloommcp still boots through
+`validate_supabase_env()` and still reads inputs and database tables via Supabase,
+so **`SUPABASE_URL` / `BLOOM_AGENT_KEY` are still required** to start the server and
+to run any tool that reads a table or a `bloommcp_input/` CSV. It gives you real
+output files on disk for inspection — it does not, on its own, make bloommcp run
+without a Supabase stack. (A fully offline mode would also need inputs sourced
+locally — tracked in #395.)
 
 Related: this reshapes the same `supabase_client.py` storage boundary that #388
 (user-facing upload/download of bloommcp files) will build signed-URL downloads

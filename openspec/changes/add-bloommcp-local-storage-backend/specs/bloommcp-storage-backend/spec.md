@@ -136,17 +136,21 @@ filesystem paths; detail SHALL be logged server-side only.
 
 ### Requirement: Local Backend Write Atomicity
 
-The local-filesystem backend SHALL write every object — and especially `manifest.json`, the
-single catalog for all versions of an experiment — atomically against interruption, by
-writing to a temporary file on the same filesystem as the root (in the target's directory)
-and renaming it into place with `os.replace`. A crash, kill, or disk-full condition mid-write
-SHALL leave the on-disk file as either the complete prior content or the complete new content,
-never a truncated or partially-written file, so a reader never observes a corrupt manifest.
+On **POSIX filesystems**, the local-filesystem backend SHALL write every object — and
+especially `manifest.json`, the single catalog for all versions of an experiment —
+atomically against interruption, by writing to a temporary file on the same filesystem as
+the root (in the target's directory), `fsync`-ing it, and renaming it into place with
+`os.replace`. A crash, kill, or disk-full condition mid-write SHALL leave the on-disk file
+as either the complete prior content or the complete new content, never a truncated or
+partially-written file, so a reader never observes a corrupt manifest. This guarantee is
+POSIX-scoped: on Windows/NTFS `os.replace` over an existing file is not guaranteed atomic
+(and may raise if a reader holds the target open); the backend is an opt-in dev feature and
+production stays on Supabase Storage, so the caveat is documented rather than worked around.
 
-#### Scenario: Interrupted manifest write leaves a whole file
+#### Scenario: Interrupted manifest write leaves a whole file (POSIX)
 
-- **WHEN** the local backend writes `manifest.json` (or any object) and the process is
-  interrupted mid-write
+- **WHEN** the local backend writes `manifest.json` (or any object) on a POSIX filesystem and
+  the process is interrupted mid-write
 - **THEN** the on-disk file is either the complete prior content or the complete new content —
   never truncated — because the backend writes a temp file on the root's filesystem and
   `os.replace`s it into place
