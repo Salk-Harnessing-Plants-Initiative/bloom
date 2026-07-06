@@ -79,6 +79,17 @@ services:
     build:
       context: ./services/workflows
       dockerfile: Dockerfile
+    # Sandbox the service in dev too — it runs ffmpeg + Pillow/numpy on
+    # attacker-influenced image bytes. Matches prod hardening. The source
+    # bind-mount below stays writable for --reload; only the container's own
+    # filesystem is read-only, with a size-capped tmpfs for the temp MP4.
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - "${WORKFLOWS_PORT:-5100}:5100"
     environment:

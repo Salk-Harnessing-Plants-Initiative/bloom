@@ -199,7 +199,9 @@ services:
       dockerfile: Dockerfile
     read_only: true
     tmpfs:
-      - /tmp
+      # Size-capped so the temp MP4 can't exhaust host RAM (sized for the full
+      # video × the 2 workers, with headroom).
+      - /tmp:mode=1777,size=512m
     security_opt:
       - no-new-privileges:true
     cap_drop:
