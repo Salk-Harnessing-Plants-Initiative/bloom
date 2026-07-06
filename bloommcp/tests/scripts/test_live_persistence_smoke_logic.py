@@ -169,6 +169,81 @@ def test_qc_cleaned_read_checks_flags_residual_nans():
     assert any("zero NaN trait cells" in c.name and not c.ok for c in checks)
 
 
+# --- remove_outliers leg checks (#378) ----------------------------------------
+def _good_ro_kwargs():
+    return dict(
+        schema_version=3,
+        seed=42,
+        output_keys={
+            "_cleaned.csv": "bloommcp_output/qc_turface_raw/v2/_cleaned.csv",
+            "outlier_report.json": "bloommcp_output/qc_turface_raw/v2/outlier_report.json",
+        },
+        output_sha256={"_cleaned.csv": "dead", "outlier_report.json": "beef"},
+        expected_outputs={"_cleaned.csv", "outlier_report.json"},
+    )
+
+
+def test_ro_persist_checks_all_pass_on_valid_v3_entry():
+    checks = smoke.ro_persist_checks(**_good_ro_kwargs())
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_ro_persist_checks_flags_wrong_seed():
+    # remove_outliers is stochastic — a seed != 42 is a reproducibility regression.
+    kwargs = _good_ro_kwargs()
+    kwargs["seed"] = 7
+    checks = smoke.ro_persist_checks(**kwargs)
+    assert any("seed == 42" in c.name and not c.ok for c in checks)
+
+
+def test_ro_persist_checks_flags_null_seed():
+    kwargs = _good_ro_kwargs()
+    kwargs["seed"] = None
+    checks = smoke.ro_persist_checks(**kwargs)
+    assert any("seed == 42" in c.name and not c.ok for c in checks)
+
+
+def test_ro_persist_checks_flags_missing_report_artifact():
+    kwargs = _good_ro_kwargs()
+    kwargs["output_keys"] = {
+        k: v for k, v in kwargs["output_keys"].items() if k == "_cleaned.csv"
+    }
+    kwargs["output_sha256"] = {"_cleaned.csv": "dead"}
+    checks = smoke.ro_persist_checks(**kwargs)
+    assert any("committed outputs include" in c.name and not c.ok for c in checks)
+
+
+def test_ro_trimmed_read_checks_pass_on_fewer_rows_no_nans():
+    checks = smoke.ro_trimmed_read_checks(
+        "v2_cleaned", trait_nan_cells=0, n_output=150, n_pre_trim=187
+    )
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_ro_trimmed_read_checks_flags_raw_source():
+    checks = smoke.ro_trimmed_read_checks(
+        "raw", trait_nan_cells=0, n_output=150, n_pre_trim=187
+    )
+    assert any("resolves the trimmed artifact" in c.name and not c.ok for c in checks)
+
+
+def test_ro_trimmed_read_checks_flags_no_rows_removed():
+    # If nothing was trimmed (n_output == n_pre_trim) the composition did not compose.
+    checks = smoke.ro_trimmed_read_checks(
+        "v2_cleaned", trait_nan_cells=0, n_output=187, n_pre_trim=187
+    )
+    assert any(
+        "fewer rows than the pre-trim clean" in c.name and not c.ok for c in checks
+    )
+
+
+def test_ro_trimmed_read_checks_flags_residual_nans():
+    checks = smoke.ro_trimmed_read_checks(
+        "v2_cleaned", trait_nan_cells=3, n_output=150, n_pre_trim=187
+    )
+    assert any("zero NaN trait cells" in c.name and not c.ok for c in checks)
+
+
 # --- hash-compare loop (against the fake storage boundary) --------------------
 def test_hash_checks_pass_when_bytes_match(fake_supabase_storage):
     store = fake_supabase_storage
