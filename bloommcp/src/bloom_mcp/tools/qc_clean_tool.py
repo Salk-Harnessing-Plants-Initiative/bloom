@@ -147,6 +147,14 @@ class QCCleanResult(BaseModel):
     version_dir: str
     manifest_path: str
     outputs: dict[str, str]
+    next_step: Optional[str] = Field(
+        default=None,
+        description=(
+            "Advisory populated only when cleaning dropped samples: nudges the "
+            "caller to run qc_inspect to see which traits drove the loss and get a "
+            "threshold recommendation. None when no samples were dropped."
+        ),
+    )
 
 
 def _role_kwargs(frame: ExperimentFrame) -> dict[str, str]:
@@ -296,6 +304,18 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         {CLEANED_CSV_NAME: CLEANED_CSV_NAME, _LOG_NAME: _LOG_NAME},
     )
 
+    # Message-only tie-in to qc_inspect (#360): when cleaning drops samples, nudge
+    # the caller to inspect the missingness that drove the loss. Kept out of the
+    # cleanup logic (no behavior change) — it is purely advisory on the summary.
+    n_samples_dropped = n_samples_in - n_samples_out
+    next_step = (
+        f"Cleaning dropped {n_samples_dropped} of {n_samples_in} sample(s). Run "
+        f"qc_inspect on {params.experiment!r} to see which traits drove the loss "
+        f"and get a max_nans_per_trait recommendation that retains more samples."
+        if n_samples_dropped > 0
+        else None
+    )
+
     return QCCleanResult(
         experiment=params.experiment,
         source=frame.source,
@@ -303,7 +323,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         n_samples_out=n_samples_out,
         n_traits_in=n_traits_in,
         n_traits_out=n_traits_out,
-        n_samples_dropped=n_samples_in - n_samples_out,
+        n_samples_dropped=n_samples_dropped,
         n_traits_dropped=n_traits_in - n_traits_out,
         sample_retention=round(n_samples_out / n_samples_in, 4)
         if n_samples_in
@@ -317,6 +337,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,
         outputs=dict(stored.output_keys),
+        next_step=next_step,
     )
 
 
