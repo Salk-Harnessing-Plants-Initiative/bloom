@@ -80,10 +80,10 @@ for non-technical users (see Non-Goals).
   through the port. `list_available_experiments` already routes through
   `_ports.reader().list_experiments()`, so it needs no change (AC #4's mention of it is
   satisfied by the existing wiring). `start_run`'s source-CSV read is routed through the
-  reader by **snapshotting the resolved frame to a temp CSV and hashing it** (mirroring
-  `pca_analysis_tool`'s `source_snapshot`), so the 5 legacy workflow tools that use
-  `start_run` keep a non-empty `input_sha256` — provenance is preserved, not degraded to
-  `None`. This overlaps roadmap cleanup **C** and fulfills the "routed through the port in
+  reader's optional `raw_source_path` capability (the on-disk input at the active
+  adapter's root), so the 5 legacy workflow tools that use `start_run` keep a non-empty
+  `input_sha256` at the correct root — provenance is preserved, and only a genuinely
+  path-less adapter degrades to `None`. This overlaps roadmap cleanup **C** and fulfills the "routed through the port in
   the follow-up" promise the current spec makes — by **promoting** the path, not removing it.
 - **Docs.** Update `bloommcp/docs/storage-backends.md` to document that
   `BLOOM_STORAGE_BACKEND=local` is now a **fully-local (offline) dev mode** (input +

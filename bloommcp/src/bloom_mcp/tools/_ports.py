@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-import bloom_mcp.experiment_utils as _eu
 from bloom_mcp.contract import Provenance
 from bloom_mcp.data_access import (
     ExperimentReader,
@@ -81,12 +80,18 @@ def start_run(
     Write outputs into the returned handle's ``staging_dir``, then
     ``store().commit(run, outputs)``.
     """
-    src = _eu.TRAITS_DIR / filename
+    # Source-CSV provenance goes through the active reader so the local adapter's
+    # input root is honoured rather than a hard-coded TRAITS_DIR. Adapters that
+    # expose a concrete on-disk input implement ``raw_source_path``; a path-less
+    # adapter omits it and the run records no input hash (source_csv=None) rather
+    # than a fabricated path.
+    raw_source_path = getattr(_reader, "raw_source_path", None)
+    src = raw_source_path(filename) if raw_source_path is not None else None
     provenance = Provenance.stamp(tool=tool_name, params=params, seed=seed)
     return _store.create_run(
         experiment=filename,
         tool_class=tool_class,
         provenance=provenance,
         user_label=user_label,
-        source_csv=src if src.exists() else None,
+        source_csv=src,
     )

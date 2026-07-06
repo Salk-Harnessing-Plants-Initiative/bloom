@@ -13,19 +13,23 @@ from scipy import stats as sp_stats
 from scipy.cluster.hierarchy import fcluster, linkage
 
 
-def load_and_align_experiments(
-    path1,
-    path2,
+def align_experiments(
+    df1,
+    df2,
     genotype_col1="Geno",
     genotype_col2="geno",
     rep_col1="Rep",
     rep_col2="rep",
 ):
-    """Load two experiment CSVs and align them by shared genotypes.
+    """Align two already-loaded experiment frames by shared genotypes.
+
+    The frame-accepting core of :func:`load_and_align_experiments`, so callers can
+    source frames through the ``ExperimentReader`` port (honouring the active
+    local/Supabase adapter) instead of reading CSV paths directly.
 
     Args:
-        path1: Path to first experiment CSV
-        path2: Path to second experiment CSV
+        df1: First experiment DataFrame
+        df2: Second experiment DataFrame
         genotype_col1: Genotype column name in experiment 1
         genotype_col2: Genotype column name in experiment 2
         rep_col1: Replicate column name in experiment 1
@@ -35,9 +39,6 @@ def load_and_align_experiments(
         (exp1_df, exp2_df, common_genotypes) with standardized column names
         'genotype' and 'replicate'.
     """
-    df1 = pd.read_csv(path1)
-    df2 = pd.read_csv(path2)
-
     # Standardize column names
     df1 = df1.rename(columns={genotype_col1: "genotype", rep_col1: "replicate"})
     df2 = df2.rename(columns={genotype_col2: "genotype", rep_col2: "replicate"})
@@ -52,6 +53,40 @@ def load_and_align_experiments(
     df2 = df2[df2["genotype"].isin(common)].copy()
 
     return df1, df2, common
+
+
+def load_and_align_experiments(
+    path1,
+    path2,
+    genotype_col1="Geno",
+    genotype_col2="geno",
+    rep_col1="Rep",
+    rep_col2="rep",
+):
+    """Load two experiment CSVs and align them by shared genotypes.
+
+    Backward-compatible path-based wrapper around :func:`align_experiments`.
+
+    Args:
+        path1: Path to first experiment CSV
+        path2: Path to second experiment CSV
+        genotype_col1: Genotype column name in experiment 1
+        genotype_col2: Genotype column name in experiment 2
+        rep_col1: Replicate column name in experiment 1
+        rep_col2: Replicate column name in experiment 2
+
+    Returns:
+        (exp1_df, exp2_df, common_genotypes) with standardized column names
+        'genotype' and 'replicate'.
+    """
+    return align_experiments(
+        pd.read_csv(path1),
+        pd.read_csv(path2),
+        genotype_col1=genotype_col1,
+        genotype_col2=genotype_col2,
+        rep_col1=rep_col1,
+        rep_col2=rep_col2,
+    )
 
 
 def calculate_genotype_means(df, trait_cols, genotype_col="genotype"):

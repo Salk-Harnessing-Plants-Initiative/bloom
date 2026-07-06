@@ -149,12 +149,13 @@ un-addressed data without error.
   `list_experiments` resolve through the port.
 - **`start_run` source provenance** (used by the 5 legacy workflow tools — `qc_clean` /
   `pca_analysis` self-compute their `source_csv` and do not call `start_run`) is preserved by
-  **snapshotting the resolved frame to a temp CSV and hashing it** (mirroring
-  `pca_analysis_tool`'s `source_snapshot`), so `input_sha256` stays non-empty under both
-  backends. Degrading `source_csv` to `None` — which empties `input_sha256` — is **not**
-  accepted for these tools; `None` is reserved for a genuinely path-less future adapter, and
-  the manifest would then explicitly flag input as un-addressed rather than silently
-  empty-stringing it.
+  resolving the on-disk input **through the active reader** (an optional `raw_source_path`
+  adapter capability that `SupabaseReader` and `LocalReader` both implement, each rooting at
+  its own input dir), so `input_sha256` stays non-empty and honours the local input root
+  rather than a hard-coded `TRAITS_DIR`. This hashes the real input file (exactly what the
+  prior code did, just at the correct root) — no temp-snapshot lifetime to manage across
+  `create_run`/`commit`. `source_csv` degrades to `None` only for a genuinely path-less
+  adapter (e.g. the in-memory `FakeReader` or a future DB adapter), which omits the method.
 
 ## Risks / Trade-offs
 

@@ -65,7 +65,7 @@ The system SHALL select `LocalReader` as the injected `ExperimentReader` when fu
 
 ### Requirement: Cross-Experiment Reads Routed Through the Port
 
-Cross-experiment and provenance reads that currently read raw CSVs directly from the local `BLOOM_TRAITS_DIR` SHALL be routed through the injected `ExperimentReader`, so the active adapter (local or Supabase) is honoured consistently. The cross-experiment correlation reads — which today happen in `cross_experiment_correlations.load_and_align_experiments` (fed filesystem paths from a hardcoded `EXPERIMENTS` dict by `correlation_tools`) — SHALL obtain frames through `reader.load_experiment(name, version="raw")` (preserving today's raw-only semantics), which requires `load_and_align_experiments` to accept frames rather than paths. `start_run`'s source-CSV provenance SHALL be obtained through the reader **without weakening input hashing**: the resolved frame is snapshotted to a temporary CSV and hashed, so `input_sha256` stays non-empty. The observable outputs of the affected tools SHALL be preserved.
+Cross-experiment and provenance reads that currently read raw CSVs directly from the local `BLOOM_TRAITS_DIR` SHALL be routed through the injected `ExperimentReader`, so the active adapter (local or Supabase) is honoured consistently. The cross-experiment correlation reads — which today happen in `cross_experiment_correlations.load_and_align_experiments` (fed filesystem paths from a hardcoded `EXPERIMENTS` dict by `correlation_tools`) — SHALL obtain frames through `reader.load_experiment(name, version="raw")` (preserving today's raw-only semantics), which requires `load_and_align_experiments` to accept frames rather than paths. `start_run`'s source-CSV provenance SHALL be obtained through the active reader **without weakening input hashing**: the reader resolves the on-disk input at its own root (an optional `raw_source_path` adapter capability), so the committed `input_sha256` stays non-empty and honours the local input root rather than a hard-coded `TRAITS_DIR`; `source_csv` degrades to `None` only for a genuinely path-less adapter. The observable outputs of the affected tools SHALL be preserved.
 
 #### Scenario: correlation reads flow through the port with raw semantics
 
@@ -75,7 +75,7 @@ Cross-experiment and provenance reads that currently read raw CSVs directly from
 #### Scenario: start_run source provenance is preserved, not degraded
 
 - **WHEN** a run is opened via `start_run` under `LocalReader`
-- **THEN** the source CSV is obtained through the reader by snapshotting the resolved frame to a temp CSV, and the committed manifest records a **non-empty** `input_sha256` equal to `sha256` of that snapshot — provenance is not silently emptied to `""`/`None`
+- **THEN** the source CSV is obtained through the reader's `raw_source_path` (the on-disk input at the local input root), and the committed manifest records a **non-empty** `input_sha256` equal to `sha256` of that input — provenance is not silently emptied to `""`/`None`
 
 ## MODIFIED Requirements
 

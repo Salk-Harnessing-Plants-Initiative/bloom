@@ -1,6 +1,7 @@
 """Experiment-read port (Tier 2) — tools depend on the interface, not Supabase."""
 
 from .fake_reader import FakeReader
+from .local_reader import LocalReader
 from .ports import (
     CleanedVersionRequiredError,
     ExperimentFrame,
@@ -19,5 +20,6 @@ __all__ = [
     "ExperimentReader",
     "ExperimentSummary",
     "FakeReader",
+    "LocalReader",
     "SupabaseReader",
 ]

@@ -11,7 +11,10 @@ from the local ``BLOOM_TRAITS_DIR`` and is **deprecated** — it emits a
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
+from typing import Optional
 
+import bloom_mcp.experiment_utils as _eu
 from bloom_mcp.experiment_utils import (
     detect_columns,
     list_experiments as _list_experiments,
@@ -26,8 +29,9 @@ from .ports import (
 )
 
 _LOCAL_RAW_DEPRECATION = (
-    "Reading raw experiment inputs from the local BLOOM_TRAITS_DIR is "
-    "deprecated; inputs will move to Supabase Storage (bloommcp_input/)."
+    "Reading raw experiment inputs from the local BLOOM_TRAITS_DIR on the Supabase "
+    "path is deprecated; for local inputs use the opt-in LocalReader adapter "
+    "(BLOOM_STORAGE_BACKEND=local) — the path is promoted, not slated for removal."
 )
 
 
@@ -68,6 +72,17 @@ class SupabaseReader:
             sample_id_col=config["sample_id_col"],
             source=source_label,
         )
+
+    def raw_source_path(self, name: str) -> Optional[Path]:
+        """The on-disk raw input path for ``name`` (local ``BLOOM_TRAITS_DIR``).
+
+        Used by ``tools._ports.start_run`` to content-address a run's input; the
+        deployed raw inputs still live on local disk, so this is the path the store
+        hashes into ``input_sha256``. Returns ``None`` when the file is absent.
+        Read via the module attribute so a monkeypatched ``TRAITS_DIR`` is honoured.
+        """
+        candidate = _eu.TRAITS_DIR / name
+        return candidate if candidate.is_file() else None
 
     def list_experiments(self) -> list[ExperimentSummary]:
         return [

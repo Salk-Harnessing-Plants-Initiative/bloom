@@ -307,6 +307,27 @@ def _selected_backend_name() -> str:
     ).strip().lower() or _DEFAULT_BACKEND
 
 
+def selected_backend_name() -> str:
+    """Public accessor for the selected backend name.
+
+    The composition root (``server.main``) and the reader-selection in
+    ``tools._ports`` need to know which backend is active without reaching into
+    the private ``_selected_backend_name``. Resolved lazily (reads env on call),
+    so it preserves the side-effect-free-import contract.
+    """
+    return _selected_backend_name()
+
+
+def is_local_backend() -> bool:
+    """Whether fully-local mode is selected (``BLOOM_STORAGE_BACKEND=local``).
+
+    A single switch means "local input AND output": the input-side ``LocalReader``
+    is wired only when this is true, so the reader and object-storage backends
+    stay coupled (no local-raw / Supabase-cleaned split lineage).
+    """
+    return _selected_backend_name() == "local"
+
+
 def _resolve_local_root() -> Path:
     """The local root for the ``local`` backend.
 
