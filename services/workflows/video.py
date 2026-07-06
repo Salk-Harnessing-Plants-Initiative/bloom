@@ -11,6 +11,7 @@ H.264 with VideoWriter -> upload MP4 to the videos bucket -> signed URL ->
 """
 
 import io
+import logging
 import os
 import tempfile
 
@@ -19,7 +20,9 @@ from PIL import Image
 from fastapi import HTTPException
 
 from supabase_client import app_client
-from video_writer import VideoWriter
+from video_writer import VideoWriter, VideoEncodeError
+
+logger = logging.getLogger(__name__)
 
 DECIMATE_FACTOR = 4
 # Hard cap on frames for the synchronous route (a cyl scan is ~72). Guards
@@ -110,10 +113,25 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
                 # Skip unreadable/missing frames rather than fail the whole video.
                 continue
 
-        writer.close()
         if frames_written == 0:
             raise HTTPException(
                 status_code=500, detail=f"No frames could be encoded for scan {scan_id}"
+            )
+
+        # A non-zero/stuck ffmpeg raises here — so a truncated MP4 is never
+        # uploaded to the canonical path the web trusts. Log the real reason;
+        # keep the HTTP detail generic (ffmpeg stderr can leak internal paths).
+        try:
+            writer.close()
+        except VideoEncodeError as exc:
+            logger.warning("scan %s: video encode failed: %s", scan_id, exc)
+            raise HTTPException(
+                status_code=500, detail=f"Video encoding failed for scan {scan_id}"
+            ) from exc
+
+        if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
+            raise HTTPException(
+                status_code=500, detail=f"Encoded video for scan {scan_id} is empty"
             )
 
         with open(video_path, "rb") as fh:
