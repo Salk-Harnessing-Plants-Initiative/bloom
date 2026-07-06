@@ -5,13 +5,13 @@ narrow module, `bloom_mcp.supabase_client`, which exposes five object-storage he
 and the unit suite already substitutes exactly these five behind `fake_supabase_storage`
 (`bloommcp/tests/conftest.py:86-95`):
 
-| Helper | Used by |
-| --- | --- |
-| `upload_file(key, path)` | `AnalysisWriter.commit`, `SupabaseResultStore.commit` |
+| Helper                     | Used by                                                                |
+| -------------------------- | ---------------------------------------------------------------------- |
+| `upload_file(key, path)`   | `AnalysisWriter.commit`, `SupabaseResultStore.commit`                  |
 | `download_file(key, path)` | `experiment_utils._resolve_versioned_cleaned` (versioned-cleaned read) |
-| `write_json(key, payload)` | `storage.manifest.write_manifest` |
-| `read_json(key)` | `storage.manifest.read_manifest` |
-| `list_prefix(prefix)` | `storage.manifest.read_manifest`, `_resolve_versioned_cleaned` |
+| `write_json(key, payload)` | `storage.manifest.write_manifest`                                      |
+| `read_json(key)`           | `storage.manifest.read_manifest`                                       |
+| `list_prefix(prefix)`      | `storage.manifest.read_manifest`, `_resolve_versioned_cleaned`         |
 
 Higher layers depend only on the `ResultStore` / `ExperimentReader` ports — never on
 `supabase` directly. So the boundary is proven swappable; this change adds a second
@@ -30,7 +30,7 @@ exactly the five faked object-storage helpers — no more, no less.
 
 - **Goals**
   - An opt-in `local` backend that writes/reads bloommcp object storage as real files,
-    preserving the object store's *implicit* integrity guarantees on a POSIX filesystem
+    preserving the object store's _implicit_ integrity guarantees on a POSIX filesystem
     (atomic manifest, verbatim bytes, hash-truthful, non-leaking errors).
   - Zero behavior change when the backend is unset or `supabase` (byte-for-byte).
   - No churn for callers or the existing test fake — the `supabase_client` helper
@@ -43,7 +43,7 @@ exactly the five faked object-storage helpers — no more, no less.
     `ResultStore` / `ExperimentReader` adapters, so both use the chosen backend transparently.
   - Cross-store reconciliation or migration. A backend is not a migration; mixing backends
     for one experiment splits its history (see Risks).
-  - Fully-offline operation. `local` changes only where *outputs* go; bloommcp still boots
+  - Fully-offline operation. `local` changes only where _outputs_ go; bloommcp still boots
     through `validate_supabase_env()` and reads inputs/tables via Supabase, so Supabase env
     is still required. True offline would also need inputs sourced locally (follow-up #395).
 
@@ -56,11 +56,12 @@ exactly the five faked object-storage helpers — no more, no less.
   module-level functions as the public surface — each becomes a thin delegate to the
   process's active backend. This preserves every import site and the `fake_supabase_storage`
   monkeypatch (it patches the module-level names, which still exist as wrapper objects).
-  - *Verified:* the `from bloom_mcp.supabase_client import upload_file` callers still route
+
+  - _Verified:_ the `from bloom_mcp.supabase_client import upload_file` callers still route
     to the newly-selected backend, because the imported wrapper object's identity is stable
     and only its internal dispatch target changes. The fake still overwrites those wrapper
     objects wholesale in both `supabase_client` and `manifest`, so it is undisturbed.
-  - *Alternative considered:* add `LocalResultStore` / `LocalReader` adapters at the
+  - _Alternative considered:_ add `LocalResultStore` / `LocalReader` adapters at the
     port layer. Rejected — it duplicates versioning/manifest logic across adapters,
     and the issue explicitly wants a backend at the storage boundary, not per-writer.
 
@@ -77,7 +78,7 @@ exactly the five faked object-storage helpers — no more, no less.
 
 - **Decision: local root = `BLOOM_STORAGE_LOCAL_ROOT`, else `BLOOM_OUTPUT_DIR`.**
   A dedicated var (rather than repurposing `BLOOM_OUTPUT_DIR`) because it names the
-  *storage-backend root* explicitly instead of overloading a var the issue already flags as
+  _storage-backend root_ explicitly instead of overloading a var the issue already flags as
   misleading, and it leaves room for future storage-backed prefixes. Falling back to
   `BLOOM_OUTPUT_DIR` (a required, dev-mounted dir) means `BLOOM_STORAGE_BACKEND=local` needs
   no second var in dev and populates the folder people already expect. Because
@@ -94,15 +95,15 @@ exactly the five faked object-storage helpers — no more, no less.
   symlink escapes, not just a substring `..` scan. `list_prefix(prefix)` returns the
   **bare** immediate-child names (files and first-level subdir names, **no trailing slash,
   no path prefix**) under `<root>/<prefix>/`, matching `os.listdir`, the in-memory fake, and
-  Supabase `.list(prefix)`; a trailing-slash-terminated prefix lists *inside* that dir,
+  Supabase `.list(prefix)`; a trailing-slash-terminated prefix lists _inside_ that dir,
   `list_prefix("")` lists the root, and a missing prefix returns `[]` (catch
   `FileNotFoundError`) rather than raising. Both callers depend on this: `manifest.py:46`
   needs the file `"manifest.json"`, `experiment_utils.py:273` needs the bare dir name for
   `startswith(f"{entry.id}_")`.
 
 - **Decision: preserve the object store's implicit guarantees explicitly.**
-  - **Atomic writes.** `write_json` / `upload_file` write to a temp file *in the target's
-    directory* (same filesystem as the root — a `/tmp` temp file would degrade `os.replace`
+  - **Atomic writes.** `write_json` / `upload_file` write to a temp file _in the target's
+    directory_ (same filesystem as the root — a `/tmp` temp file would degrade `os.replace`
     to a non-atomic cross-mount copy) then `os.replace` into place. A crash / `kill -9` /
     `ENOSPC` mid-write leaves either the whole prior file or the whole new file — never a
     truncated `manifest.json`, which is the single catalog for every version of an experiment.
@@ -114,8 +115,8 @@ exactly the five faked object-storage helpers — no more, no less.
     normal read path re-verifies the hash, so a silent divergence would be invisible).
     `download_file` **copies** bytes to the caller's destination path — it never hands back
     or symlinks the canonical file under the root, whose lifetime the caller does not own.
-  - **Byte-identical provenance.** Provenance (seed/agent/environment/code_versions/
-    output_sha256/output_keys) is built *above* the seam, so the serialized `manifest.json`
+  - **Byte-identical provenance.** Provenance (seed/agent/environment/code*versions/
+    output_sha256/output_keys) is built \_above* the seam, so the serialized `manifest.json`
     is byte-identical across backends for the same run (both use
     `json.dumps(indent=2, sort_keys=True)`); the parity test asserts this, not merely
     "equivalent shapes."
@@ -133,7 +134,7 @@ exactly the five faked object-storage helpers — no more, no less.
 - **Byte divergence (e.g. Windows newline translation) breaks `output_sha256` silently**,
   since no read path re-hashes. → Verbatim binary copy + a hash-equality test on disk.
 - **Mixed-backend / backend-flip splits version history.** Run v1/v2 under `supabase`, flip
-  to `local`, and `next_version_id` reads the *absent* local manifest and re-allocates `v1`
+  to `local`, and `next_version_id` reads the _absent_ local manifest and re-allocates `v1`
   into a fresh local catalog — two artifacts both claiming "v1", the Supabase lineage
   invisible to later `local` reads. → Documented non-goal + a docs warning ("do not mix
   backends for one experiment; there is no cross-store view"); the spec states it so it is
@@ -143,10 +144,19 @@ exactly the five faked object-storage helpers — no more, no less.
   last-write-wins, no-compare-and-swap semantics as the Supabase path — no stronger, no
   weaker. Atomicity-against-interruption (above) is distinct from and does not imply
   concurrent-writer safety.
+- **`list_prefix` parity is against the fake/local interface, not Supabase pagination.** The
+  cross-backend parity test pins fake-vs-local; the deployed
+  `SupabaseStorageBackend.list_prefix` calls `client.list(prefix)`, which inherits the upstream
+  client's default **100-item page cap** and does not paginate — so a prefix with >100 immediate
+  children (e.g. >100 version dirs) could list a truncated set on the `supabase` backend. Low-risk
+  today: callers (`read_manifest`, `_resolve_versioned_cleaned`) use `manifest.json` as the
+  authoritative version list, not `list_prefix` enumeration, and experiments have far fewer than
+  100 versions; the `local` backend is complete (`iterdir`). Paginating the Supabase list is a
+  **follow-up (#396)**, deliberately out of this PR.
 - **Legacy-fallback collision.** The legacy read fallback reads
   `<BLOOM_OUTPUT_DIR>/qc_<stem>/<stem>_cleaned.csv` (`experiment_utils.py:352`), one level
   shallower than the local backend's `<root>/bloommcp_output/qc_<stem>/…`. They are disjoint
-  *today*, but both are rooted at the same bind mount and the disjointness is load-bearing
+  _today_, but both are rooted at the same bind mount and the disjointness is load-bearing
   (a stray `<stem>_cleaned.csv` in the legacy path would be read as an un-versioned,
   un-hashed "certified" CSV and fed to PCA/UMAP). → The spec asserts disjointness and a test
   confirms a `local` run produces nothing the legacy branch would pick up.

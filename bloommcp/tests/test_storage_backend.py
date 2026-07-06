@@ -272,8 +272,51 @@ def test_interrupted_write_leaves_prior_content_intact(tmp_path, monkeypatch):
     # never truncated: the whole prior content survives
     assert target.read_bytes() == original
     # and no orphaned temp files remain
-    leftovers = [p.name for p in target.parent.iterdir() if p.name.startswith(".tmp-")]
+    leftovers = [
+        p.name for p in target.parent.iterdir() if p.name.startswith(sb._TMP_PREFIX)
+    ]
     assert leftovers == []
+
+
+def test_write_permission_error_is_redacted(tmp_path, monkeypatch):
+    """A permission/OS error during the atomic write surfaces to the caller with
+    NO absolute host path — only the logical key (spec: errors do not leak host
+    paths). The raw path is logged server-side, not raised."""
+    b = _local(tmp_path)
+    key = "bloommcp_output/qc_x/manifest.json"
+    leaked = str(tmp_path / "bloommcp_output" / "qc_x" / ".tmp-abc")
+
+    def boom(*a, **k):
+        raise PermissionError(13, "Permission denied", leaked)
+
+    monkeypatch.setattr(sb.tempfile, "mkstemp", boom)
+    with pytest.raises(OSError) as exc:
+        b.write_json(key, {"v": 1})
+    msg = str(exc.value)
+    assert str(tmp_path) not in msg  # no absolute host path leaked
+    assert leaked not in msg
+    assert key in msg  # only the logical storage key
+    assert "permission" in msg.lower()
+
+
+def test_read_permission_error_is_redacted(tmp_path, monkeypatch):
+    """The read path redacts a permission/OS error the same way — logical key
+    only, no host path (distinct from the not-found redaction)."""
+    b = _local(tmp_path)
+    key = "bloommcp_output/x/f.csv"
+    on_disk = tmp_path / "bloommcp_output" / "x" / "f.csv"
+    on_disk.parent.mkdir(parents=True)
+    on_disk.write_bytes(b"data")  # exists, so we pass is_file() and hit read_bytes
+
+    def boom(self, *a, **k):
+        raise PermissionError(13, "Permission denied", str(on_disk))
+
+    monkeypatch.setattr(sb.Path, "read_bytes", boom)
+    with pytest.raises(OSError) as exc:
+        b.download_file(key, tmp_path / "dest")
+    msg = str(exc.value)
+    assert str(tmp_path) not in msg
+    assert key in msg
 
 
 # ─── 3. Root resolution + startup validation ──────────────────────────────────

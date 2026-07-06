@@ -14,7 +14,7 @@ exist:
   the object store's implicit guarantees on a POSIX filesystem: atomic writes
   (temp file on the root's filesystem + ``os.replace``), upsert/overwrite,
   verbatim bytes (so recorded ``output_sha256`` equals the file on disk), and
-  redacted (no host-path) not-found errors.
+  redacted (no host-path) not-found and permission/OS errors.
 
 Selection is driven by ``BLOOM_STORAGE_BACKEND`` (default ``supabase``; ``local``
 opts in). Resolution is **lazy** — this module reads no environment variable and
@@ -41,6 +41,11 @@ logger = logging.getLogger(__name__)
 
 VALID_BACKENDS = ("supabase", "local")
 _DEFAULT_BACKEND = "supabase"
+
+# Prefix for the in-flight atomic-write temp file. Shared by the writer (which
+# creates `<dir>/.tmp-*`) and list_prefix (which filters it out for cross-backend
+# parity), so the two never drift.
+_TMP_PREFIX = ".tmp-"
 
 
 @runtime_checkable
@@ -75,6 +80,35 @@ class StorageKeyNotFound(FileNotFoundError):
     the read path keep working, while carrying only the logical key (never an
     absolute filesystem path) into any agent-facing message.
     """
+
+
+class StorageBackendError(OSError):
+    """A local-backend filesystem failure (permission/OS error), redacted.
+
+    Subclasses ``OSError`` so the read path's broad ``except`` gates keep working,
+    while the agent-facing message names only the logical storage key — never an
+    absolute host path (which would reveal the server's local root layout). The
+    raw error (errno + path) is logged server-side only. See
+    :func:`_redacted_io_error`.
+    """
+
+
+def _redacted_io_error(key: str, exc: OSError) -> StorageBackendError:
+    """Log the raw OSError server-side and return a path-free error for the caller.
+
+    The spec requires local-backend permission/OS errors to surface to agents
+    without leaking an absolute host path, with the detail available only in
+    server logs — mirroring the redaction :class:`StorageKeyNotFound` already
+    gives the not-found case.
+    """
+    logger.warning(
+        "local storage I/O error: key=%s errno=%s",
+        key,
+        getattr(exc, "errno", None),
+        exc_info=True,
+    )
+    kind = "permission denied" if isinstance(exc, PermissionError) else "I/O error"
+    return StorageBackendError(f"storage {kind} for key: {key}")
 
 
 # ─── Supabase backend (deployed default) ──────────────────────────────────────
@@ -168,7 +202,7 @@ class LocalStorageBackend:
             raise ValueError(f"storage key {key!r} escapes the local root")
         return target
 
-    def _atomic_write(self, target: Path, data: bytes) -> None:
+    def _atomic_write(self, target: Path, data: bytes, *, key: str) -> None:
         """Write ``data`` to ``target`` atomically on POSIX.
 
         Writes a temp file in the target's directory (same filesystem), fsyncs
@@ -178,17 +212,26 @@ class LocalStorageBackend:
         best-effort for power-loss durability of the rename. NOTE: ``os.replace``
         is atomic over an existing file on POSIX only; on Windows/NTFS it is not
         guaranteed atomic (see the class docstring).
+
+        ``OSError``\\ s (e.g. a permission-denied root, ENOSPC) are redacted to
+        carry only ``key`` — never the absolute temp/target path.
         """
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(
-            dir=str(target.parent), prefix=".tmp-", suffix=target.suffix
-        )
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(
+                dir=str(target.parent), prefix=_TMP_PREFIX, suffix=target.suffix
+            )
+        except OSError as exc:
+            raise _redacted_io_error(key, exc) from None
         try:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(data)
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, target)
+        except OSError as exc:
+            Path(tmp).unlink(missing_ok=True)
+            raise _redacted_io_error(key, exc) from None
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
             raise
@@ -204,28 +247,37 @@ class LocalStorageBackend:
             pass
 
     def upload_file(self, key: str, local_path: Path) -> None:
-        self._atomic_write(self._resolve(key), Path(local_path).read_bytes())
+        self._atomic_write(self._resolve(key), Path(local_path).read_bytes(), key=key)
 
     def write_json(self, key: str, payload: dict) -> None:
-        self._atomic_write(self._resolve(key), _json_bytes(payload))
+        self._atomic_write(self._resolve(key), _json_bytes(payload), key=key)
 
     def download_file(self, key: str, local_path: Path) -> None:
         src = self._resolve(key)
         if not src.is_file():
             logger.debug("local storage miss: key=%s", key)
             raise StorageKeyNotFound(f"storage object not found: {key}")
+        # Read the canonical file, redacting any permission/OS error to the key.
+        try:
+            data = src.read_bytes()
+        except OSError as exc:
+            raise _redacted_io_error(key, exc) from None
         # Copy bytes to the caller-owned destination — never symlink or hand back
         # the canonical file under the root (the caller manages dest's lifetime).
         dest = Path(local_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(src.read_bytes())
+        dest.write_bytes(data)
 
     def read_json(self, key: str) -> dict:
         src = self._resolve(key)
         if not src.is_file():
             logger.debug("local storage miss: key=%s", key)
             raise StorageKeyNotFound(f"storage object not found: {key}")
-        return json.loads(src.read_bytes().decode("utf-8"))
+        try:
+            raw = src.read_bytes()
+        except OSError as exc:
+            raise _redacted_io_error(key, exc) from None
+        return json.loads(raw.decode("utf-8"))
 
     def list_prefix(self, prefix: str) -> list[str]:
         rel = prefix.strip("/")
@@ -234,10 +286,13 @@ class LocalStorageBackend:
             names = [p.name for p in Path(directory).iterdir()]
         except (FileNotFoundError, NotADirectoryError):
             return []
+        except OSError as exc:
+            # e.g. a permission-denied directory — redact the absolute path.
+            raise _redacted_io_error(prefix, exc) from None
         # Hide in-flight atomic-write temp files: a SIGKILL between mkstemp and
         # os.replace can orphan a `.tmp-*`, which never appears in the Supabase
         # backend — filtering keeps cross-backend list parity.
-        return sorted(n for n in names if not n.startswith(".tmp-"))
+        return sorted(n for n in names if not n.startswith(_TMP_PREFIX))
 
 
 # ─── Selection ────────────────────────────────────────────────────────────────
@@ -275,20 +330,39 @@ def _resolve_local_root() -> Path:
     return Path(fallback)
 
 
+def _unrecognized_backend_error(name: str) -> RuntimeError:
+    """The single 'unrecognized BLOOM_STORAGE_BACKEND' error.
+
+    Shared by lazy selection (:func:`_build_backend`) and boot validation
+    (:func:`validate_storage_backend`) so the message — the offending value + the
+    accepted set — never drifts between the two raise sites.
+    """
+    return RuntimeError(
+        f"BLOOM_STORAGE_BACKEND={name!r} is not recognized; "
+        f"valid values: {', '.join(VALID_BACKENDS)}."
+    )
+
+
 def _build_backend() -> StorageBackend:
     name = _selected_backend_name()
     if name == "supabase":
         return SupabaseStorageBackend()
     if name == "local":
         return LocalStorageBackend(_resolve_local_root())
-    raise RuntimeError(
-        f"BLOOM_STORAGE_BACKEND={name!r} is not recognized; "
-        f"valid values: {', '.join(VALID_BACKENDS)}."
-    )
+    raise _unrecognized_backend_error(name)
 
 
 def active_backend() -> StorageBackend:
-    """The process's active object-storage backend (memoized, resolved on first use)."""
+    """The process's active object-storage backend (memoized, resolved on first use).
+
+    Intentionally lock-free. Under a concurrent first call two threads could each
+    run :func:`_build_backend` and race on the assignment below; that is safe —
+    both backends are cheap and stateless/idempotent to construct
+    (``SupabaseStorageBackend`` holds nothing; ``LocalStorageBackend`` just stores a
+    resolved root), so the two instances are interchangeable and last-write-wins
+    leaves an equivalent object. A lock would only add contention on the hot
+    storage path to prevent a harmless, transient double-build.
+    """
     global _active
     if _active is None:
         _active = _build_backend()
@@ -310,10 +384,7 @@ def validate_storage_backend() -> None:
     """
     name = _selected_backend_name()
     if name not in VALID_BACKENDS:
-        raise RuntimeError(
-            f"BLOOM_STORAGE_BACKEND={name!r} is not recognized; "
-            f"valid values: {', '.join(VALID_BACKENDS)}."
-        )
+        raise _unrecognized_backend_error(name)
     if name == "local":
         root = _resolve_local_root()
         if str(root) in ("", "."):
