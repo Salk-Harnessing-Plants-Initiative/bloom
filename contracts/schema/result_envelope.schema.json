@@ -234,12 +234,38 @@
           "title": "Predict Container Digest",
           "type": "string"
         },
+        "predict_inference_config": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Predict Inference Config"
+        },
         "predict_models": {
           "items": {
             "$ref": "#/$defs/ModelRef"
           },
           "title": "Predict Models",
           "type": "array"
+        },
+        "predict_output_params": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Predict Output Params"
         },
         "produced_at": {
           "anyOf": [
@@ -359,7 +385,7 @@
       "type": "object"
     }
   },
-  "$id": "https://github.com/talmolab/sleap-roots-contracts/schema/v0.1.0a2/result_envelope.schema.json",
+  "$id": "https://github.com/talmolab/sleap-roots-contracts/schema/v0.1.0a3/result_envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "One per-scan result: 1 envelope : 1 source row : 1 scan.",
   "properties": {

@@ -28,7 +28,7 @@ psycopg = pytest.importorskip("psycopg")
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 RPC = "public.insert_cyl_result_envelope"
-PINNED_VERSION = "v0.1.0a2"
+PINNED_VERSION = "0.1.0a3"
 
 
 # --------------------------------------------------------------------------- #
@@ -65,7 +65,7 @@ def _blob(*, kind="predictions_slp", root_type="primary", scan_key="SK1",
 
 def _envelope(image_ids, *, contract_version=PINNED_VERSION, scan_key="SK1",
               idempotency_key="key-1", pipeline_run_id=None, traits=None, blobs=None,
-              drop_provenance=False, drop_inputs=False):
+              drop_provenance=False, drop_inputs=False, drop_contract_version=False):
     prov = {
         "contract_version": contract_version,
         "scan_key": scan_key,
@@ -76,6 +76,8 @@ def _envelope(image_ids, *, contract_version=PINNED_VERSION, scan_key="SK1",
         prov["pipeline_run_id"] = pipeline_run_id
     if drop_inputs:
         prov.pop("inputs")
+    if drop_contract_version:
+        prov.pop("contract_version")
     env = {"provenance": prov, "traits": traits or [], "blobs": blobs or []}
     if drop_provenance:
         env.pop("provenance")
@@ -226,7 +228,37 @@ def test_key_metadata_invariant_holds_on_written_row(pg_conn):
 # --------------------------------------------------------------------------- #
 
 
+def test_bare_contract_version_accepted(pg_conn):
+    # The emitter stamps the bare PEP 440 package version; it must be accepted.
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        res = _call(cur, _envelope(imgs, contract_version="0.1.0a3", idempotency_key="cvbare"))
+        assert res["was_noop"] is False
+    pg_conn.rollback()
+
+
+def test_v_prefixed_contract_version_accepted(pg_conn):
+    # The v-prefixed git-tag/$id form normalizes to the same pinned version.
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        res = _call(cur, _envelope(imgs, contract_version="v0.1.0a3", idempotency_key="cvvpref"))
+        assert res["was_noop"] is False
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("ver", ["0.1.0a2", "v0.1.0a2"])
+def test_a2_contract_version_rejected(pg_conn, ver):
+    # Hard cutover: the previously pinned version (either form) is refused, not
+    # accepted as a compatibility fallback.
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        with pytest.raises(psycopg.errors.RaiseException):
+            _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cva2"))
+    pg_conn.rollback()
+
+
 def test_contract_version_mismatch_rejected(pg_conn):
+    # An arbitrary unrelated version is rejected.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
         with pytest.raises(psycopg.errors.RaiseException):
@@ -234,11 +266,27 @@ def test_contract_version_mismatch_rejected(pg_conn):
     pg_conn.rollback()
 
 
-def test_matching_contract_version_accepted(pg_conn):
+@pytest.mark.parametrize("ver", ["V0.1.0a3", "0.1.0a3 ", "0.1.0a30", "vv0.1.0a3"])
+def test_version_boundary_forms_rejected(pg_conn, ver):
+    # Normalization strips a single lowercase leading `v` only: uppercase V, a
+    # doubled vv, trailing whitespace, and near-miss versions all reject.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        res = _call(cur, _envelope(imgs, idempotency_key="cvok"))
-        assert res["was_noop"] is False
+        with pytest.raises(psycopg.errors.RaiseException):
+            _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cvbound"))
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"contract_version": ""}, {"drop_contract_version": True}], ids=["empty", "absent"]
+)
+def test_absent_or_empty_contract_version_rejected(pg_conn, kwargs):
+    # NULL/absent collapses to '' via coalesce before the compare, so it fails the
+    # match rather than passing (the one way a naive `= pinned` would get wrong).
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        with pytest.raises(psycopg.errors.RaiseException):
+            _call(cur, _envelope(imgs, idempotency_key="cvae", **kwargs))
     pg_conn.rollback()
 
 
@@ -702,4 +750,41 @@ def test_rollback_restores_prior_policies(pg_conn):
             assert rows[upd][1] == "true" and rows[upd][2] == "true", (
                 f"{upd} must restore BOTH USING and WITH CHECK"
             )
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# a3 contract-version re-pin migration (repin-cyl-contract-a3, #393)
+# --------------------------------------------------------------------------- #
+
+_TS_A3 = "20260706170000_cyl_writeback_contract_a3"
+MIGRATION_A3 = REPO_ROOT / "supabase" / "migrations" / f"{_TS_A3}.sql"
+ROLLBACK_A3 = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS_A3}_rollback.sql"
+
+
+def test_a3_migration_body_is_idempotent(pg_conn):
+    # Re-applying the a3 migration on top of the applied state is a clean no-op
+    # (CREATE OR REPLACE FUNCTION / ALTER OWNER / REVOKE / GRANT), and the RPC still
+    # accepts the pinned a3 contract_version afterward.
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(MIGRATION_A3))
+        cur.execute(_sql_body(MIGRATION_A3))  # second apply: must be a no-op, not an error
+        _, imgs = _seed_scan(cur)
+        res = _call(cur, _envelope(imgs, contract_version="0.1.0a3", idempotency_key="a3idem"))
+        assert res["was_noop"] is False
+    pg_conn.rollback()
+
+
+def test_a3_rollback_restores_strict_a2(pg_conn):
+    """Apply the a3 body then its rollback in an uncommitted txn; assert the function is
+    restored to the strict v0.1.0a2 posture — the a3 version it just accepted is now
+    rejected — and the function still exists (the a3 change only replaced its body)."""
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(MIGRATION_A3))   # a3 body present
+        cur.execute(_sql_body(ROLLBACK_A3))    # roll back to strict v0.1.0a2
+        cur.execute("SELECT 1 FROM pg_proc WHERE proname='insert_cyl_result_envelope'")
+        assert cur.fetchone() is not None, "a3 rollback must keep the function (body-only change)"
+        _, imgs = _seed_scan(cur)
+        with pytest.raises(psycopg.errors.RaiseException):
+            _call(cur, _envelope(imgs, contract_version="0.1.0a3", idempotency_key="a3rb"))
     pg_conn.rollback()
