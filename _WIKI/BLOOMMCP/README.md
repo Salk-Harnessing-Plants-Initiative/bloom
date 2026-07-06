@@ -65,6 +65,22 @@ bloommcp-data/
 
 Any new tool that reads or writes a CSV should use this bucket.
 
+### Storage backend (`local` opt-in)
+
+Analysis **outputs** go to Supabase Storage by default — in local dev that means
+MinIO, not files under `./bloommcp/data/ANALYSIS_OUTPUT`. Two env vars control an
+opt-in local-filesystem backend:
+
+- `BLOOM_STORAGE_BACKEND` — `supabase` (default) or `local`. `local` writes outputs
+  as real files laid out by storage key.
+- `BLOOM_STORAGE_LOCAL_ROOT` — the local root when `local`; defaults to
+  `BLOOM_OUTPUT_DIR` when unset.
+
+Note `BLOOM_OUTPUT_DIR` / `BLOOM_USE_LOCAL` do **not** by themselves write local
+CSVs. Do not mix backends for one experiment. Full details:
+[storage-backends.md](../../bloommcp/docs/storage-backends.md). (This is the same
+`supabase_client.py` boundary that #388's user-facing downloads build on.)
+
 ## File reading and writing
 
 Use the helper in `bloommcp/src/bloom_mcp/supabase_client.py` — don't call
