@@ -76,9 +76,10 @@ it by delegating to Supabase (`GET /auth/v1/user`), so it **never needs
 
 **Layer 2 — service identity (what the server may touch):** the service holds
 **no privileged credential** — it signs into Supabase as a dedicated app user
-(`WORKFLOWS_SUPABASE_EMAIL` / `_PASSWORD`) whose Postgres `role` is
-`bloom_workflows`, so **its grants and storage policies are the boundary**. The
-app user needs only:
+(`WORKFLOWS_SUPABASE_EMAIL` / `_PASSWORD`) flagged `is_workflows` in its
+service-role-only `raw_app_meta_data`. On login, `custom_access_token_hook`
+stamps the token's Postgres `role` claim to `bloom_workflows`, so **its grants
+and storage policies are the boundary**. The app user needs only:
 
 - `SELECT` on `cyl_scans_extended`, `cyl_images`
 - read on the images bucket, write on the videos bucket
@@ -89,7 +90,7 @@ All of the above is set up by the migration `…_create_workflows_role.sql`.
 ## Provisioning (per environment)
 
 1. Create the Supabase auth user (Studio → Authentication, or the Auth Admin API) with an email + password.
-2. Give it the scoped role: `UPDATE auth.users SET role = 'bloom_workflows' WHERE email = '…';` (so its login token is scoped to the migration's grants, not broad `authenticated`).
+2. Flag it as the workflows identity in its **service-role-only** `raw_app_meta_data` — e.g. the Auth Admin API (`PUT /admin/users/{id}` with `app_metadata: { "is_workflows": true }`) or `UPDATE auth.users SET raw_app_meta_data = COALESCE(raw_app_meta_data, '{}'::jsonb) || '{"is_workflows": true}' WHERE email = '…';`. On login, `custom_access_token_hook` maps this flag to a `bloom_workflows` role claim, so the token is scoped to the migration's grants rather than broad `authenticated`. (Setting `auth.users.role` directly does **not** work — the hook overwrites the claim.)
 3. Set the deploy secrets `PROD_/STAGING_WORKFLOWS_SUPABASE_EMAIL` and `_PASSWORD`.
 
 ## Configuration
@@ -107,5 +108,5 @@ All of the above is set up by the migration `…_create_workflows_role.sql`.
 | `WORKFLOWS_RATE_LIMIT`         | `5`                     | Max video requests per user per window (429 over)    |
 | `WORKFLOWS_RATE_WINDOW_SECONDS`| `60`                    | Rate-limit window                                    |
 
-> `ffmpeg` must be present in the runtime image — the Dockerfile installs it.
+> `ffmpeg` must be present in the runtime image — the Dockerfile copies a digest-pinned static `ffmpeg` binary (avoids apt's ffmpeg pulling in vulnerable GPU/TLS libraries).
 > Caller auth is delegated to Supabase (`/auth/v1/user`), so `JWT_SECRET` is **not** needed by this service.

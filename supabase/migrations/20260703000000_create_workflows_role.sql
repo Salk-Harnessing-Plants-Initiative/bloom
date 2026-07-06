@@ -8,8 +8,9 @@
 --           the file from storage at videos/cyl-videos/{scan_id}.mp4; the table
 --           gives a queryable record of which scan has a video and its path.
 -- Unlike bloom_agent this is NOT granted on all tables — only what the endpoint
--- touches. Expand explicitly as new endpoints need it. The access method
--- (direct LOGIN vs role-JWT) is set at deploy; these grants apply either way.
+-- touches. Expand explicitly as new endpoints need it. The service reaches this
+-- role by signing in as an app user flagged is_workflows in raw_app_meta_data;
+-- custom_access_token_hook maps that flag to a bloom_workflows role claim at login.
 
 -- 1. Role -------------------------------------------------------------------
 DO $$
