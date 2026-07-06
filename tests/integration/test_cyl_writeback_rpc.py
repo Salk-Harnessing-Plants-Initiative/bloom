@@ -249,7 +249,9 @@ def test_v_prefixed_contract_version_accepted(pg_conn):
 @pytest.mark.parametrize("ver", ["0.1.0a2", "v0.1.0a2"])
 def test_a2_contract_version_rejected(pg_conn, ver):
     # Hard cutover: the previously pinned version (either form) is refused, not
-    # accepted as a compatibility fallback.
+    # accepted as a compatibility fallback. Note `v0.1.0a2` is the load-bearing
+    # revert-detector -- it was ACCEPTED by the pre-a3 strict RPC, so this case
+    # fails if the a3 migration is reverted; bare `0.1.0a2` rejects either way.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
         with pytest.raises(psycopg.errors.RaiseException):
@@ -274,6 +276,18 @@ def test_version_boundary_forms_rejected(pg_conn, ver):
         _, imgs = _seed_scan(cur)
         with pytest.raises(psycopg.errors.RaiseException):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cvbound"))
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("ver", [3, True, {"a": 1}, [1, 2]], ids=["number", "bool", "object", "array"])
+def test_non_string_contract_version_rejected(pg_conn, ver):
+    # A non-string JSON contract_version serializes via `->>` (e.g. 3 -> '3',
+    # {"a":1} -> '{"a": 1}') and fails the match cleanly -- no crash, no silent
+    # accept.
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        with pytest.raises(psycopg.errors.RaiseException):
+            _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cvns"))
     pg_conn.rollback()
 
 

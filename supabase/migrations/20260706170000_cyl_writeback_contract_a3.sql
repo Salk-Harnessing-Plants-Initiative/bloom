@@ -25,6 +25,27 @@
 
 BEGIN;
 
+-- Cutover safety gate. This migration makes the RPC permanently reject 0.1.0a2, so
+-- any already-persisted a2-provenance row would silently become non-current (not
+-- corrupted -- metadata is opaque). No real a2 row can exist: the deployed
+-- v-prefixed 'v0.1.0a2' check rejected every bare-versioned emitter payload, so the
+-- RPC never wrote one, and it is on staging (not main). This is therefore expected
+-- to be a no-op -- but fail LOUDLY rather than silently orphan if the premise is
+-- ever violated (e.g. a hand-seeded a2 row). Runs in the same transaction, so a
+-- trip aborts the whole migration.
+DO $guard$
+DECLARE
+    n_a2 bigint;
+BEGIN
+    SELECT count(*) INTO n_a2
+      FROM public.cyl_trait_sources
+     WHERE metadata ->> 'contract_version' LIKE '%0.1.0a2%';
+    IF n_a2 > 0 THEN
+        RAISE EXCEPTION 'a3 cutover blocked: % cyl_trait_sources row(s) carry a 0.1.0a2 contract_version; the a3 RPC would render them non-current -- resolve before applying', n_a2;
+    END IF;
+END
+$guard$;
+
 CREATE OR REPLACE FUNCTION public.insert_cyl_result_envelope(envelope jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
