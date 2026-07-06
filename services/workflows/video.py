@@ -29,7 +29,7 @@ DECIMATE_FACTOR = 4
 # against a huge scan blowing the request timeout; revisit when we measure the
 # real max a sync request can handle.
 MAX_IMAGES = 72
-DOWNLOAD_URL_TTL = 86400  # 24h signed URL
+DOWNLOAD_URL_TTL = 3600  # 1h signed URL, matching the app-wide convention
 
 # Storage buckets + optional record table — configurable to match the Supabase
 # setup the app user has access to.
@@ -57,18 +57,37 @@ def scan_in_experiment(client, experiment_id: int, scan_id: int) -> bool:
     return bool(rows)
 
 
-def get_scan_images(client, scan_id: int) -> list[dict]:
-    """A scan's images (object_path, frame_number), ordered, capped at MAX_IMAGES."""
+def get_scan_images(client, scan_id: int, limit: int = MAX_IMAGES) -> list[dict]:
+    """A scan's images (object_path, frame_number), ordered, capped at `limit`."""
     return (
         client.table("cyl_images")
         .select("object_path, frame_number")
         .eq("scan_id", scan_id)
         .order("frame_number")
-        .limit(MAX_IMAGES)
+        .limit(limit)
         .execute()
         .data
         or []
     )
+
+
+def _recorded_frames(client, scan_id: int):
+    """Frame count of the video currently recorded for this scan, or None."""
+    if not VIDEO_TABLE:
+        return None
+    try:
+        rows = (
+            client.table(VIDEO_TABLE)
+            .select("frames")
+            .eq("scan_id", scan_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return None
+    return rows[0].get("frames") if rows else None
 
 
 def _signed_url(bucket, path: str) -> str:
@@ -81,11 +100,23 @@ def _signed_url(bucket, path: str) -> str:
 
 def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -> dict:
     """Build the scan's MP4, upload to the videos bucket, return {frames, download_url}."""
-    images = get_scan_images(client, scan_id)
+    # Fetch one past the cap so we can tell a truncated (>MAX_IMAGES) scan apart
+    # from one that is exactly at the cap.
+    images = get_scan_images(client, scan_id, MAX_IMAGES + 1)
     if not images:
         raise HTTPException(
             status_code=404, detail=f"No images found for scan {scan_id}"
         )
+
+    truncated = len(images) > MAX_IMAGES
+    if truncated:
+        images = images[:MAX_IMAGES]
+        logger.warning(
+            "scan %s: has more than %s images; encoding the first %s "
+            "(higher frame_numbers dropped)",
+            scan_id, MAX_IMAGES, MAX_IMAGES,
+        )
+    frames_expected = len(images)
 
     img_bucket = client.storage.from_(IMAGES_BUCKET)
     frames_written = 0
@@ -141,19 +172,46 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
         with open(video_path, "rb") as fh:
             video_bytes = fh.read()
 
+    if frames_written < frames_expected:
+        logger.warning(
+            "scan %s: encoded %s of %s frames (%s skipped)",
+            scan_id, frames_written, frames_expected, frames_expected - frames_written,
+        )
+
     key = f"{VIDEO_PATH_PREFIX}/{scan_id}.mp4"
     vids = client.storage.from_(VIDEOS_BUCKET)
-    vids.upload(key, video_bytes, {"content-type": "video/mp4", "upsert": "true"})
 
+    # Don't let a re-run degrade the canonical asset: if a video with more frames
+    # is already recorded, keep it instead of overwriting with a worse one.
+    prior_frames = _recorded_frames(client, scan_id)
+    if prior_frames is not None and frames_written < prior_frames:
+        logger.warning(
+            "scan %s: new encode has %s frames < recorded %s; keeping the existing video",
+            scan_id, frames_written, prior_frames,
+        )
+        return _result(
+            scan_id, vids, key, prior_frames, frames_expected, truncated, regenerated=False
+        )
+
+    vids.upload(key, video_bytes, {"content-type": "video/mp4", "upsert": "true"})
+    return _result(
+        scan_id, vids, key, frames_written, frames_expected, truncated, regenerated=True
+    )
+
+
+def _result(scan_id, vids, key, frames, frames_expected, truncated, regenerated) -> dict:
+    """Build the response, failing (not returning null) if no URL can be signed."""
     download_url = _signed_url(vids, key)
     if not download_url:
-        # The video is stored, but a response without a usable URL is a failure,
-        # not a success — surface it rather than returning download_url: null.
+        # A response without a usable URL is a failure, not a success.
         raise HTTPException(
             status_code=500, detail=f"Could not create a download URL for scan {scan_id}"
         )
     return {
-        "frames": frames_written,
+        "frames": frames,
+        "frames_expected": frames_expected,
+        "truncated": truncated,
+        "regenerated": regenerated,
         "path": key,
         "download_url": download_url,
     }
@@ -165,7 +223,7 @@ def _record_video(client, scan_id: int, result: dict):
         return
     try:
         client.table(VIDEO_TABLE).upsert(
-            {"scan_id": scan_id, "path": result["path"]},
+            {"scan_id": scan_id, "path": result["path"], "frames": result.get("frames")},
             on_conflict="scan_id",
         ).execute()
     except Exception as exc:
@@ -189,5 +247,8 @@ def generate_experiment_scan_video(experiment_id: int, scan_id: int) -> dict:
         )
     result = generate_scan_video(client, scan_id)
     result["scan_id"] = scan_id
-    _record_video(client, scan_id, result)
+    # Only (re)record when we actually wrote a new video — a kept-existing result
+    # must not overwrite the recorded frame count with a lower one.
+    if result.get("regenerated", True):
+        _record_video(client, scan_id, result)
     return result

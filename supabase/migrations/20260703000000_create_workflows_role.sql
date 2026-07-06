@@ -62,15 +62,18 @@ CREATE TABLE IF NOT EXISTS public.cyl_scan_videos (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   scan_id     bigint NOT NULL UNIQUE REFERENCES public.cyl_scans(id),
   path        text NOT NULL,
+  -- Frames encoded into the stored video; lets a re-run avoid overwriting a
+  -- good video with a worse (fewer-frame) one.
+  frames      integer,
   created_at  timestamptz DEFAULT now()
 );
 ALTER TABLE public.cyl_scan_videos ENABLE ROW LEVEL SECURITY;
 
--- Column-level write: the endpoint only sets scan_id + path (id/created_at
--- come from defaults). UPDATE(path) supports upsert-on-conflict(scan_id).
+-- Column-level write: the endpoint only sets scan_id + path + frames
+-- (id/created_at come from defaults). UPDATE supports upsert-on-conflict(scan_id).
 GRANT SELECT ON public.cyl_scan_videos TO bloom_workflows;
-GRANT INSERT (scan_id, path) ON public.cyl_scan_videos TO bloom_workflows;
-GRANT UPDATE (path) ON public.cyl_scan_videos TO bloom_workflows;
+GRANT INSERT (scan_id, path, frames) ON public.cyl_scan_videos TO bloom_workflows;
+GRANT UPDATE (path, frames) ON public.cyl_scan_videos TO bloom_workflows;
 
 DROP POLICY IF EXISTS workflows_insert_cyl_scan_videos ON public.cyl_scan_videos;
 CREATE POLICY workflows_insert_cyl_scan_videos ON public.cyl_scan_videos

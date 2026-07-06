@@ -76,7 +76,7 @@ def test_record_video_upserts_scan_and_path(monkeypatch):
     c = _Client()
     video._record_video(c, 5, {"path": "cyl-videos/5.mp4", "frames": 72})
     up = c.q.recorded["upsert"]
-    assert up["payload"] == {"scan_id": 5, "path": "cyl-videos/5.mp4"}
+    assert up["payload"] == {"scan_id": 5, "path": "cyl-videos/5.mp4", "frames": 72}
     assert up["on_conflict"] == "scan_id"
     assert c.last_table == "cyl_scan_videos"
 
@@ -121,12 +121,12 @@ class _StorageClient:
         return _S()
 
 
-def _one_image(_client, _scan_id):
+def _one_image(_client, _scan_id, _limit=None):
     return [{"object_path": "a", "frame_number": 0}]
 
 
 def test_generate_scan_video_404_when_no_images(monkeypatch):
-    monkeypatch.setattr(video, "get_scan_images", lambda c, s: [])
+    monkeypatch.setattr(video, "get_scan_images", lambda c, s, limit=None: [])
     with pytest.raises(HTTPException) as ei:
         video.generate_scan_video(_StorageClient(), 5)
     assert ei.value.status_code == 404
@@ -209,6 +209,127 @@ def test_generate_scan_video_500_when_no_signed_url(monkeypatch):
     with pytest.raises(HTTPException) as ei:
         video.generate_scan_video(_UploadClient(), 5)
     assert ei.value.status_code == 500
+
+
+# --- I4 completeness signal + I5 re-encode guard (happy paths) ---------------
+
+class _GenQuery:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def select(self, *a, **k):
+        return self
+
+    def eq(self, *a, **k):
+        return self
+
+    def order(self, *a, **k):
+        return self
+
+    def limit(self, *a, **k):
+        return self
+
+    def execute(self):
+        class _R:
+            pass
+
+        r = _R()
+        r.data = self._rows
+        return r
+
+
+class _GenBucket:
+    def __init__(self, outer):
+        self._outer = outer
+
+    def download(self, _path):
+        return _png_bytes()
+
+    def upload(self, *a, **k):
+        self._outer.uploads += 1
+
+    def create_signed_url(self, *a, **k):
+        return "http://signed"
+
+
+class _GenClient:
+    """Table (cyl_images + cyl_scan_videos) + storage, for full generate runs."""
+
+    def __init__(self, images, recorded_frames=None):
+        self._images = images
+        self._recorded = [] if recorded_frames is None else [{"frames": recorded_frames}]
+        self.uploads = 0
+
+    def table(self, name):
+        if name == "cyl_images":
+            return _GenQuery(self._images)
+        if name == "cyl_scan_videos":
+            return _GenQuery(self._recorded)
+        return _GenQuery([])
+
+    @property
+    def storage(self):
+        outer = self
+
+        class _S:
+            def from_(self, _name):
+                return _GenBucket(outer)
+
+        return _S()
+
+
+class _FakeWriter:
+    def __init__(self, filename, fps=30.0):
+        self._filename = filename
+
+    def add(self, _arr):
+        pass
+
+    def close(self, timeout=120.0):
+        with open(self._filename, "wb") as fh:
+            fh.write(b"\x00\x01")
+
+
+def test_generate_scan_video_reports_completeness(monkeypatch):
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
+    client = _GenClient(images)
+
+    result = video.generate_scan_video(client, 5)
+
+    assert result["frames"] == 3
+    assert result["frames_expected"] == 3
+    assert result["truncated"] is False
+    assert result["regenerated"] is True
+    assert client.uploads == 1
+
+
+def test_generate_scan_video_flags_truncation(monkeypatch):
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [
+        {"object_path": f"o{i}", "frame_number": i}
+        for i in range(video.MAX_IMAGES + 5)
+    ]
+    client = _GenClient(images)
+
+    result = video.generate_scan_video(client, 5)
+
+    assert result["truncated"] is True
+    assert result["frames_expected"] == video.MAX_IMAGES
+    assert result["frames"] == video.MAX_IMAGES
+
+
+def test_generate_scan_video_keeps_better_existing(monkeypatch):
+    # A prior video has 72 frames; this run manages only 1 -> keep the old one.
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": "o0", "frame_number": 0}]
+    client = _GenClient(images, recorded_frames=72)
+
+    result = video.generate_scan_video(client, 5)
+
+    assert result["regenerated"] is False
+    assert result["frames"] == 72          # reports the kept video's count
+    assert client.uploads == 0             # did not overwrite
 
 
 def test_generate_scan_video_500_on_empty_output(monkeypatch):
