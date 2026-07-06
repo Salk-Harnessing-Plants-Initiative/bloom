@@ -16,17 +16,17 @@ repos:
     rev: c6755bb741b6481d6b3d3bb563c83fa060db96c9  # 26.3.1
     hooks:
       - id: black
-        files: ^(langchain|bloommcp)/
+        files: ^(langchain|bloommcp|services/workflows)/
         language_version: python3.11
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: 2c8dce6094fa2b4b668e74f694ca63ceffd38614  # v0.9.9
     hooks:
       - id: ruff
-        files: ^(langchain|bloommcp)/
+        files: ^(langchain|bloommcp|services/workflows)/
         args: [--fix]
       - id: ruff-format
-        files: ^(langchain|bloommcp)/
+        files: ^(langchain|bloommcp|services/workflows)/
 
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: ffb6a759a979008c0e6dff86e39f4745a2d9eac4  # v3.1.0
@@ -47,8 +47,8 @@ repos:
   - repo: local
     hooks:
       - id: uv-lock-check
-        name: uv lock --check (langchain, bloommcp, video-worker)
+        name: uv lock --check (langchain, bloommcp, video-worker, workflows)
         entry: python scripts/check-uv-locks.py
         language: python
-        files: ^(langchain|bloommcp|services/video-worker)/(pyproject\.toml|uv\.lock|\.python-version)$
+        files: ^(langchain|bloommcp|services/video-worker|services/workflows)/(pyproject\.toml|uv\.lock|\.python-version)$
         pass_filenames: false

@@ -150,7 +150,7 @@ requires-dist = [
     { name = "scikit-learn", specifier = ">=1.3.0" },
     { name = "scipy", specifier = ">=1.10.0" },
     { name = "seaborn", specifier = ">=0.12.0" },
-    { name = "sleap-roots-analyze", specifier = ">=0.1.0a3" },
+    { name = "sleap-roots-analyze", specifier = ">=0.1.0a4" },
     { name = "sleap-roots-contracts", extras = ["pandas"], specifier = ">=0.1.0a1" },
     { name = "starlette", specifier = ">=1.1.0" },
     { name = "supabase", specifier = ">=2.0.0" },
@@ -2421,7 +2421,7 @@ wheels = [
 
 [[package]]
 name = "sleap-roots-analyze"
-version = "0.1.0a3"
+version = "0.1.0a4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "adjusttext" },
@@ -2441,9 +2441,9 @@ dependencies = [
     { name = "statsmodels" },
     { name = "umap-learn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/21/8f/2902c9a251ba8030feacc6dd733af4c8ce31048bfc4046bfce565ae8d42b/sleap_roots_analyze-0.1.0a3.tar.gz", hash = "sha256:d3f935f8f14700928e8f23625818c50f05d4a6f949f44f715478136e1333115b", size = 305125, upload-time = "2026-06-25T17:04:48.766Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4a/d4/52d9e8b56aaf40a606e3ffac001ccd142213e65c5522f5bb3bc6fb00a82a/sleap_roots_analyze-0.1.0a4.tar.gz", hash = "sha256:128fb67cf247dac7b845e8b30eb292f970f1dd75dafbb66622698cbaa4aeea2a", size = 317344, upload-time = "2026-07-02T21:06:29.862Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/33/dc/44050b13fd2323380cdff1a2cc75b34da6b585c608caba1b445d1bd52ddd/sleap_roots_analyze-0.1.0a3-py3-none-any.whl", hash = "sha256:3b9e0113970a336fda985e3097fab03b697830d791673333c42a7d8a0eee7bb8", size = 360335, upload-time = "2026-06-25T17:04:47.17Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/92/3c749b3d53dbfb88cf15a1d3f5b709dd21a2871e02d3a07283f28e4a40db/sleap_roots_analyze-0.1.0a4-py3-none-any.whl", hash = "sha256:e5ac8efed6dac2963e4160c2d55370b3ae46623c56ba1cfd05b9cbf2a2308a90", size = 373483, upload-time = "2026-07-02T21:06:28.366Z" },
 ]
 
 [[package]]

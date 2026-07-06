@@ -1,0 +1,9 @@
+[project]
+name = "bloom-workflows"
+version = "0.1.0"
+description = "HTTP API service hosting Bloom workflow endpoints"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+]
