@@ -109,8 +109,12 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
                     continue
                 writer.add(arr)
                 frames_written += 1
-            except Exception:
-                # Skip unreadable/missing frames rather than fail the whole video.
+            except Exception as exc:
+                # Skip an unreadable/missing frame rather than fail the whole
+                # video — but log it so a half-missing scan isn't silent.
+                logger.warning(
+                    "scan %s: skipping frame %s: %s", scan_id, object_path, exc
+                )
                 continue
 
         if frames_written == 0:
@@ -140,10 +144,18 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
     key = f"{VIDEO_PATH_PREFIX}/{scan_id}.mp4"
     vids = client.storage.from_(VIDEOS_BUCKET)
     vids.upload(key, video_bytes, {"content-type": "video/mp4", "upsert": "true"})
+
+    download_url = _signed_url(vids, key)
+    if not download_url:
+        # The video is stored, but a response without a usable URL is a failure,
+        # not a success — surface it rather than returning download_url: null.
+        raise HTTPException(
+            status_code=500, detail=f"Could not create a download URL for scan {scan_id}"
+        )
     return {
         "frames": frames_written,
         "path": key,
-        "download_url": _signed_url(vids, key),
+        "download_url": download_url,
     }
 
 
@@ -156,9 +168,15 @@ def _record_video(client, scan_id: int, result: dict):
             {"scan_id": scan_id, "path": result["path"]},
             on_conflict="scan_id",
         ).execute()
-    except Exception:
-        # A failed record write shouldn't lose the already-generated video.
-        pass
+    except Exception as exc:
+        # A failed record write shouldn't lose the already-generated video, but
+        # log it — a stored video with no DB row is a divergence worth seeing.
+        logger.warning(
+            "scan %s: video stored at %s but recording the row failed: %s",
+            scan_id,
+            result.get("path"),
+            exc,
+        )
 
 
 def generate_experiment_scan_video(experiment_id: int, scan_id: int) -> dict:

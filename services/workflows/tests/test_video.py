@@ -170,6 +170,47 @@ def test_generate_scan_video_500_on_encode_failure(monkeypatch):
     assert ei.value.status_code == 500
 
 
+def test_generate_scan_video_500_when_no_signed_url(monkeypatch):
+    monkeypatch.setattr(video, "get_scan_images", _one_image)
+
+    class _W:  # writes a real, non-empty file so the empty-output guard passes
+        def __init__(self, filename, fps=30.0):
+            self._filename = filename
+
+        def add(self, _arr):
+            pass
+
+        def close(self, timeout=120.0):
+            with open(self._filename, "wb") as fh:
+                fh.write(b"\x00\x01")
+
+    class _UploadBucket:
+        def download(self, _path):
+            return _png_bytes()
+
+        def upload(self, *a, **k):
+            pass
+
+        def create_signed_url(self, *a, **k):
+            return None  # storage couldn't sign a URL
+
+    class _UploadClient:
+        @property
+        def storage(self):
+            bucket = _UploadBucket()
+
+            class _S:
+                def from_(self, _name):
+                    return bucket
+
+            return _S()
+
+    monkeypatch.setattr(video, "VideoWriter", _W)
+    with pytest.raises(HTTPException) as ei:
+        video.generate_scan_video(_UploadClient(), 5)
+    assert ei.value.status_code == 500
+
+
 def test_generate_scan_video_500_on_empty_output(monkeypatch):
     monkeypatch.setattr(video, "get_scan_images", _one_image)
 
