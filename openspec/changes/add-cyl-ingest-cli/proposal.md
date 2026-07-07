@@ -10,7 +10,7 @@ the roadmap's A2 "CLI" change and A4's write-back step (closes #397).
 
 ## What Changes
 
-- Add a **`bloomctl cyl ingest <envelope.json | ->`** command (new Click `cyl` group,
+- Add a **`bloomctl cyl ingest-result <envelope.json | ->`** command (new Click `cyl` group,
   matching the `@cli.group(...)` pattern introduced by the in-flight `list` command, PR #385):
   read a `ResultEnvelope` from a path or stdin, authenticate via an existing credentials
   profile, and call `client.rpc("insert_cyl_result_envelope", {"envelope": <dict>})`.
@@ -25,8 +25,10 @@ the roadmap's A2 "CLI" change and A4's write-back step (closes #397).
 - **`--json`** flag emits the RPC's return object (`{source_id, scan_id, trait_count,
   blob_count, was_noop}`) to stdout so the A4 write-back step can capture `source_id`.
 - Add `sleap-roots-contracts>=0.1.0a3` to `bloomcli/pyproject.toml` (no `[pandas]` extra).
-- **Blobs pass through** to the RPC as-is; the MinIO/Box blob byte-upload is deferred to a
-  tracked follow-up issue (filed with this PR; number backfilled here — see tasks 7.1/9.4).
+- **Blobs pass through** to the RPC as-is; the MinIO/Box blob byte-upload (uploading the `.slp`
+  bytes + populating the refs) is deferred to a tracked follow-up that will **extend this same
+  command** in a later slice (issue filed with this PR; number backfilled here — see tasks
+  7.1/9.4).
 - Implementation lands in the **same PR** as this proposal (bundled proposal + first phase).
 
 ## Impact

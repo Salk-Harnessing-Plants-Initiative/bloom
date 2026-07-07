@@ -1,4 +1,4 @@
-# Tasks — bloomctl cyl ingest (per-scan ResultEnvelope write-back)
+# Tasks — bloomctl cyl ingest-result (per-scan ResultEnvelope write-back)
 
 TDD throughout: write the failing test first, confirm RED, then implement to GREEN. This is a
 staging-first, protected repo — every pushed commit must keep CI green, so new tests and the
@@ -87,7 +87,7 @@ Write first; each must FAIL before `ingest.py` exists.
 
 - [ ] 4.1 `call_insert_envelope` builds exactly `client.rpc("insert_cyl_result_envelope",
   {"envelope": <dict>}).execute()` and returns `.data` (fake client captures the call args).
-- [ ] 4.2 CLI happy path: `CliRunner().invoke(cli, ["cyl", "ingest", <fixture>])` with
+- [ ] 4.2 CLI happy path: `CliRunner().invoke(cli, ["cyl", "ingest-result", <fixture>])` with
   `climod._authed_client` and `ingest.call_insert_envelope` monkeypatched → exit 0, ingested
   summary.
 - [ ] 4.3 CLI no-op: RPC result `was_noop=true` (null `scan_id`) → exit 0, "already ingested"
@@ -108,11 +108,11 @@ Write first; each must FAIL before `ingest.py` exists.
   captured by the fake `call_insert_envelope` contains the identical `blobs`, and no
   object-storage API is touched (fake client whose `.storage` raises if accessed); a **zero-length
   blobs** case is forwarded as `[]`, exit 0.
-- [ ] 4.10 CLI stdin end-to-end: `CliRunner().invoke(cli, ["cyl","ingest","-"],
+- [ ] 4.10 CLI stdin end-to-end: `CliRunner().invoke(cli, ["cyl","ingest-result","-"],
   input=<fixture bytes>)` with the RPC faked → exit 0 and ingested summary.
 - [ ] 4.11 CLI `--json` + no-op: `was_noop=true` with `--json` → stdout is parseable JSON with
   `"was_noop": true` and `source_id` (null `scan_id` tolerated) — the shape A4 consumes on re-run.
-- [ ] 4.12 CLI registration smoke test: `cyl` and `cyl ingest` appear in `--help`
+- [ ] 4.12 CLI registration smoke test: `cyl` and `cyl ingest-result` appear in `--help`
   (analogous to `test_cli.py`'s root-help test).
 
 ## 5. GREEN — implementation
@@ -121,7 +121,7 @@ Write first; each must FAIL before `ingest.py` exists.
   `validate_envelope`, `summarize_result`, `map_rpc_error`) above a
   `# --- supabase / storage I/O ---` marker; `call_insert_envelope(client, envelope)` below it.
 - [ ] 5.2 In `bloomcli/src/bloomctl/cli.py`: add the `_authed_client(profile)` helper
-  (byte-identical to #385's; see 8.2), a `@cli.group(name="cyl")` group, and a `cyl ingest`
+  (byte-identical to #385's; see 8.2), a `@cli.group(name="cyl")` group, and a `cyl ingest-result`
   subcommand (positional envelope arg accepting `-` for stdin, `-p/--profile`, `--json`). Wire:
   load envelope → validate → authed client → `call_insert_envelope` → summarize/print. Catch
   `EnvelopeValidationError`/`AuthError`/`postgrest.APIError` (import `from postgrest import
@@ -135,9 +135,9 @@ Write first; each must FAIL before `ingest.py` exists.
   / `pytest.importorskip`), mirroring `tests/integration/test_cyl_writeback_rpc.py`. No live
   client/staging import at module top before the guard (CI collects this file unfiltered unless
   2.4 lands — and even with 2.4, keep the guard robust). Use a real authed client.
-- [ ] 6.2 Happy path end-to-end: after `cyl ingest`, exactly one `cyl_trait_sources` row and the
+- [ ] 6.2 Happy path end-to-end: after `cyl ingest-result`, exactly one `cyl_trait_sources` row and the
   expected `cyl_scan_traits` rows exist for the resolved scan (`was_noop=false`).
-- [ ] 6.3 Idempotency: a **second** `cyl ingest` returns `was_noop=true` and creates **no**
+- [ ] 6.3 Idempotency: a **second** `cyl ingest-result` returns `was_noop=true` and creates **no**
   duplicate `cyl_trait_sources` row.
 - [ ] 6.4 Build the envelope **from the seeded numeric `cyl_images.id`s** so it satisfies both the
   model's full a3 provenance **and** the RPC's `^[0-9]+$` + single-scan resolution; do **not**
@@ -147,21 +147,22 @@ Write first; each must FAIL before `ingest.py` exists.
 ## 7. Blob byte-upload follow-up (tracking only — no standalone commit)
 
 - [ ] 7.1 At PR time, file a GitHub issue in `Salk-Harnessing-Plants-Initiative/bloom` tracking
-  the deferred **cyl blob (MinIO/Box) byte-upload** (upload `.slp`/intermediate bytes and populate
-  `blobs[].s3_location`/`box_link` before ingest — the "later slice"); reference #397 and this
+  the deferred **cyl blob (MinIO/Box) byte-upload as a future extension of
+  `bloomctl cyl ingest-result`**: upload the referenced `.slp`/intermediate bytes and populate
+  `blobs[].s3_location`/`box_link` before the RPC call (the "later slice"). Reference #397 and this
   change, and note the current pass-through behavior. The scaffold commit ships a placeholder
   ("issue TBD"); the final docs commit **backfills the real `#NNN`** into `proposal.md`/`design.md`
   (mirrors the repo's `link companion … issue` backfill precedent).
 
 ## 8. Docs & coordination
 
-- [ ] 8.1 Update `bloomcli/README.md` to document `bloomctl cyl ingest` (path/`-` stdin,
+- [ ] 8.1 Update `bloomcli/README.md` to document `bloomctl cyl ingest-result` (path/`-` stdin,
   `--profile`, `--json` output contract, interactive-auth requirement; link #398 for the
   non-interactive path) and add a short **command-layout** note (flat `login`/`download` vs
   grouped `cyl`/`list`) so the emerging convention reads coherently. Note that full `login`/
   `download` usage docs remain deferred (the README stub's existing promise) — do not regress
   them, but completing them is out of scope here. Add an `### Added` entry under `[Unreleased]`
-  in `bloomcli/CHANGELOG.md` for `bloomctl cyl ingest` (the `prepare-release-bloomctl` flow
+  in `bloomcli/CHANGELOG.md` for `bloomctl cyl ingest-result` (the `prepare-release-bloomctl` flow
   depends on it). Update the `--help` text (already added in 5.2).
 - [ ] 8.2 Note the `_authed_client` overlap with PR #385 in the PR description and request
   @blm3886's review. Whichever of #385/#397 merges second reconciles to a **single**

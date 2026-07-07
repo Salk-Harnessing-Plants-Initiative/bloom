@@ -2,7 +2,7 @@
 
 ### Requirement: Cyl ingest command reads an envelope from a path or stdin
 
-The `bloomctl` CLI SHALL provide a `cyl ingest` command that reads a single per-scan
+The `bloomctl` CLI SHALL provide a `cyl ingest-result` command that reads a single per-scan
 `ResultEnvelope` (JSON) from a filesystem path argument, or from standard input when the
 argument is `-`, and writes it to Bloom by calling the `insert_cyl_result_envelope(jsonb)` RPC
 (capability `cyl-trait-writeback`) as `client.rpc("insert_cyl_result_envelope", {"envelope":
@@ -11,14 +11,14 @@ commands) and authenticate through the existing credentials profile.
 
 #### Scenario: Ingest from a file path
 
-- **WHEN** the user runs `bloomctl cyl ingest path/to/scan.result.json` with a valid envelope
+- **WHEN** the user runs `bloomctl cyl ingest-result path/to/scan.result.json` with a valid envelope
   and a profile whose scan is resolvable
 - **THEN** the command reads and parses the file, calls the RPC with the envelope under the
   `envelope` argument, and exits zero
 
 #### Scenario: Ingest from stdin
 
-- **WHEN** the user runs `bloomctl cyl ingest -` and pipes a valid envelope on stdin
+- **WHEN** the user runs `bloomctl cyl ingest-result -` and pipes a valid envelope on stdin
 - **THEN** the command reads the envelope from stdin and ingests it identically to the file path
   case
 
@@ -155,8 +155,9 @@ RPC's return object.
 ### Requirement: Blobs pass through without upload
 
 The command SHALL forward the envelope's `blobs` array to the RPC unchanged, and SHALL NOT
-upload blob bytes to object storage (MinIO/Box) in this capability. The blob byte-upload is a
-tracked, separate follow-up.
+upload blob bytes to object storage (MinIO/Box) in this capability. The blob byte-upload —
+uploading the referenced `.slp` bytes and populating `blobs[].s3_location`/`box_link` before the
+RPC call — is a tracked follow-up that will **extend this command** in a later slice.
 
 #### Scenario: Envelope carrying blobs
 

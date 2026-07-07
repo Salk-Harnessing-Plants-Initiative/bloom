@@ -22,19 +22,20 @@ calling the RPC, and turning the RPC's return/errors into good CLI UX. It owns n
 
 ## Goals / Non-Goals
 
-- **Goals**: a `cyl ingest` command that (1) reads an envelope from a path or stdin,
+- **Goals**: a `cyl ingest-result` command that (1) reads an envelope from a path or stdin,
   (2) validates it against `sleap-roots-contracts` before any network call, (3) calls the RPC
   with the original JSON, (4) reports the first-writer-wins no-op as a benign success distinct
   from a real error, (5) maps RPC validation errors to actionable messages, (6) optionally emits
   the RPC result as JSON for A4. Pure helpers separated from Supabase I/O for unit-testability.
-- **Non-Goals**: non-interactive/scoped auth (#398); blob byte-upload to MinIO/Box (tracked
-  follow-up); batch/glob ingest (one envelope per invocation, matching A4's per-scan loop);
+- **Non-Goals**: non-interactive/scoped auth (#398); blob byte-upload to MinIO/Box (deferred to a
+  follow-up that will **extend this command** — upload the `.slp` bytes + populate the refs before
+  the RPC call); batch/glob ingest (one envelope per invocation, matching A4's per-scan loop);
   ledger/`source_id` recording (A4 Argo template's job — CLI just exposes it via `--json`);
   any RPC/schema change.
 
 ## Decisions
 
-- **Command surface: a `cyl` group.** `bloomctl cyl ingest <envelope>` rather than a flat
+- **Command surface: a `cyl` group.** `bloomctl cyl ingest-result <envelope>` rather than a flat
   `bloomctl ingest`. The write path is assay-specific, matches the legacy Node CLI's `bloom cyl`
   framing, and aligns with the `@cli.group(...)` pattern PR #385 introduces for `list`. `login`
   and `download` stay flat (non-breaking); they can migrate later.
@@ -66,8 +67,8 @@ calling the RPC, and turning the RPC's return/errors into good CLI UX. It owns n
 - **Module structure mirrors `download.py`.** New `ingest.py` splits pure helpers
   (`load_envelope`, `validate_envelope`, `summarize_result`, `map_rpc_error`) from Supabase I/O
   (`call_insert_envelope`) at the `# --- supabase / storage I/O ---` marker. `cli.py` gains a
-  `cyl` group + `ingest` subcommand and a shared `_authed_client(profile)` helper.
-- **Auth reuse + #385 overlap.** `ingest` uses the `_authed_client(profile)` helper that PR #385
+  `cyl` group + `ingest-result` subcommand and a shared `_authed_client(profile)` helper.
+- **Auth reuse + #385 overlap.** `ingest-result` uses the `_authed_client(profile)` helper that PR #385
   also introduces (and points `download` at). To keep this PR self-contained against `staging`
   (which lacks it), this change adds the identical helper; whichever of #385/#397 merges second
   drops its copy on a trivial rebase.
@@ -93,7 +94,7 @@ calling the RPC, and turning the RPC's return/errors into good CLI UX. It owns n
 ## Migration Plan
 
 No schema/RPC migration. Rollout: land command + tests in one PR on `staging`; after merge hand
-the working `bloomctl cyl ingest` invocation to the A4 write-back step (EPIC
+the working `bloomctl cyl ingest-result` invocation to the A4 write-back step (EPIC
 `talmolab/sleap-roots-pipeline#10`). Rollback is code-only (revert the PR); no data effects (the
 RPC is idempotent and unchanged).
 
