@@ -84,3 +84,36 @@ def test_list_experiments_empty_then_populated():
     assert summaries[0].experiment_name == "My Exp"
     assert summaries[0].trait_columns == 2
     assert summaries[0].genotype_col == "Genotype"
+
+
+# --- uploaded inputs (bloommcp_input/ analogue) --------------------------------
+
+
+def test_uploaded_input_loads_with_declared_roles():
+    reader = FakeReader()
+    reader.add_uploaded_input("counts.parquet", _raw())
+
+    frame = reader.load_experiment("counts.parquet")
+    assert frame.source == "uploaded"
+    assert set(frame.trait_cols) == {"trait_x", "trait_y"}
+    assert frame.genotype_col == "Genotype"
+
+
+def test_raw_shadows_uploaded_of_same_name():
+    reader = FakeReader()
+    reader.add_uploaded_input("exp.csv", _raw().iloc[:1])
+    reader.add_experiment("exp.csv", _raw())
+    assert reader.load_experiment("exp.csv").source == "raw"
+
+
+def test_uploaded_input_appears_in_list():
+    reader = FakeReader()
+    reader.add_uploaded_input("counts.parquet", _raw())
+    names = [s.filename for s in reader.list_experiments()]
+    assert "counts.parquet" in names
+
+
+def test_missing_uploaded_is_not_found():
+    reader = FakeReader()
+    with pytest.raises(ExperimentNotFoundError):
+        reader.load_experiment("counts.parquet")

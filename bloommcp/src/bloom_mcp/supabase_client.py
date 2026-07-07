@@ -6,16 +6,26 @@ prefix decisions in one place means future tools cannot accidentally
 upload to the wrong bucket, hit Supabase as service_role, or skip the
 required input/output prefix.
 
-Public surface (exactly three functions):
+Input read/write surface (all take a bare basename — the `bloommcp_input/`
+prefix is added here; a `name` containing `/` raises ValueError so a tool
+cannot cross prefixes or escape the bucket):
+
+    download_input(name)             → raw bytes of `bloommcp_input/{name}`,
+                                       ANY registered format. This is the
+                                       multi-format read the reader uses; the
+                                       bytes are turned into a DataFrame by
+                                       `bloom_mcp.input_formats.load_frame`
+                                       (CSV/TSV/Parquet/Feather/Excel/JSON).
+    read_input_csv(name)             → DataFrame from `bloommcp_input/{name}`,
+                                       CSV ONLY. Legacy convenience, superseded
+                                       by `download_input` + the format registry.
+    write_input(name, data)          → upload small input bytes (backend path).
+    create_signed_upload_url(name)   → scoped signed URL for a large, direct-to-
+                                       Storage upload (no backend buffering).
+    list_input_names()               → basenames under `bloommcp_input/`.
 
     get_postgrest_client()           → supabase.Client authenticated as
-                                       bloom_agent. Use for table reads
-                                       via PostgREST. Construct fresh per
-                                       call; do not cache.
-
-    read_input_csv(name)             → pd.DataFrame loaded from object
-                                       `bloommcp_input/{name}` in the
-                                       `bloommcp-data` bucket.
+                                       bloom_agent, for table reads via PostgREST.
 
 For tool outputs, use `AnalysisWriter` instead — it routes through the
 versioned `bloommcp_output/<tool_class>_<stem>/v<N>_<date>_<slug>/`
@@ -23,17 +33,13 @@ prefix and updates `manifest.json`. The generic storage helpers below
 (`upload_file`, `write_json`, etc.) take a fully-qualified `key` and are
 called by `AnalysisWriter.commit()`; they are not meant for direct use
 by tools.
-
-`name` for `read_input_csv` is always a basename (no slashes). The
-helper prepends the input prefix. Passing a key that contains `/` raises
-ValueError so a tool cannot accidentally cross prefixes or escape the
-bucket.
 """
 
 from __future__ import annotations
 
 import io
 import os
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -160,6 +166,28 @@ def create_signed_upload_url(name: str) -> dict:
     _validate_name(name)
     client = get_storage_client()
     return client.create_signed_upload_url(f"{INPUT_PREFIX}{name}")
+
+
+def download_input(name: str) -> bytes:
+    """Return the raw bytes of `bloommcp_input/{name}` (any registered format).
+
+    The multi-format read companion to `read_input_csv` / `write_input`, used by
+    the reader to resolve an uploaded input. Routes through the active storage
+    backend (so the `fake_supabase_storage` fixture covers it). Raises if the
+    object is missing.
+    """
+    _validate_name(name)
+    tmp = Path(tempfile.NamedTemporaryFile(delete=False).name)
+    try:
+        download_file(f"{INPUT_PREFIX}{name}", tmp)
+        return tmp.read_bytes()
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def list_input_names() -> list[str]:
+    """List basenames of objects directly under `bloommcp_input/`."""
+    return list_prefix(INPUT_PREFIX)
 
 
 # ─── Generic storage helpers ──────────────────────────────────────────────────

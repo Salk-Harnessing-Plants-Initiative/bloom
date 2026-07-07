@@ -50,3 +50,40 @@ def test_unknown_experiment_raises_not_found(
     reader = SupabaseReader()
     with pytest.raises(ExperimentNotFoundError):
         reader.load_experiment("nope.csv")
+
+
+def _seed_uploaded_parquet(store, name: str, df: pd.DataFrame) -> None:
+    import io
+
+    buf = io.BytesIO()
+    df.to_parquet(buf)
+    store.objects[f"bloommcp_input/{name}"] = buf.getvalue()
+
+
+def test_resolves_uploaded_input_multi_format(
+    fake_supabase_storage, tmp_path, monkeypatch
+):
+    import bloom_mcp.experiment_utils as eu
+
+    monkeypatch.setattr(eu, "TRAITS_DIR", tmp_path)  # empty local raw
+    df = pd.DataFrame({"Genotype": ["g0", "g1"], "trait_x": [1.0, 2.0]})
+    _seed_uploaded_parquet(fake_supabase_storage, "counts.parquet", df)
+
+    frame = SupabaseReader().load_experiment("counts.parquet")
+    assert frame.source == "uploaded"
+    assert "trait_x" in frame.trait_cols
+    assert list(frame.df.columns) == ["Genotype", "trait_x"]
+
+
+def test_lists_uploaded_inputs(fake_supabase_storage, tmp_path, monkeypatch):
+    import bloom_mcp.experiment_utils as eu
+
+    monkeypatch.setattr(eu, "TRAITS_DIR", tmp_path)
+    _seed_uploaded_parquet(
+        fake_supabase_storage,
+        "counts.parquet",
+        pd.DataFrame({"Genotype": ["g"], "trait": [1.0]}),
+    )
+
+    names = [s.filename for s in SupabaseReader().list_experiments()]
+    assert "counts.parquet" in names

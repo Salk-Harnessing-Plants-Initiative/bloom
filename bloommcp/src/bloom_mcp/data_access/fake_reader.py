@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -34,6 +35,8 @@ class FakeReader:
         self._latest: dict[str, str] = {}
         # name -> experiment_name label
         self._exp_name: dict[str, str] = {}
+        # name -> uploaded input frame (bloommcp_input/ analogue)
+        self._uploaded: dict[str, pd.DataFrame] = {}
 
     # --- seeding -----------------------------------------------------------
 
@@ -47,6 +50,18 @@ class FakeReader:
         """Register a raw experiment frame under ``name``."""
         self._raw[name] = df.copy()
         self._exp_name[name] = experiment_name or _stem(name)
+
+    def add_uploaded_input(
+        self,
+        name: str,
+        df: pd.DataFrame,
+        *,
+        experiment_name: Optional[str] = None,
+    ) -> None:
+        """Register an uploaded input frame under ``name`` (the ``bloommcp_input/``
+        analogue). Resolves with source ``"uploaded"`` when no raw/cleaned exists."""
+        self._uploaded[name] = df.copy()
+        self._exp_name.setdefault(name, experiment_name or _stem(name))
 
     def add_cleaned_version(
         self,
@@ -89,31 +104,41 @@ class FakeReader:
             )
 
         raw = self._raw.get(name)
-        if raw is None:
-            raise ExperimentNotFoundError(f"Experiment {name!r} not found.")
-        return _frame(raw, "raw")
+        if raw is not None:
+            return _frame(raw, "raw")
+
+        uploaded = self._uploaded.get(name)
+        if uploaded is not None:
+            return _frame(uploaded, "uploaded")
+
+        raise ExperimentNotFoundError(f"Experiment {name!r} not found.")
 
     def list_experiments(self) -> list[ExperimentSummary]:
         summaries: list[ExperimentSummary] = []
+        # Raw first, then uploaded inputs not shadowed by a raw of the same name.
         for name, df in sorted(self._raw.items()):
-            detected = detect_columns(df)
-            summaries.append(
-                ExperimentSummary(
-                    filename=name,
-                    stem=_stem(name),
-                    rows=len(df),
-                    total_columns=len(df.columns),
-                    trait_columns=len(detected["trait_cols"]),
-                    experiment_name=self._exp_name.get(name, _stem(name)),
-                    genotype_col=detected["genotype_col"],
-                    sample_id_col=detected["sample_id_col"],
-                )
-            )
+            summaries.append(self._summary(name, df))
+        for name, df in sorted(self._uploaded.items()):
+            if name not in self._raw:
+                summaries.append(self._summary(name, df))
         return summaries
+
+    def _summary(self, name: str, df: pd.DataFrame) -> ExperimentSummary:
+        detected = detect_columns(df)
+        return ExperimentSummary(
+            filename=name,
+            stem=_stem(name),
+            rows=len(df),
+            total_columns=len(df.columns),
+            trait_columns=len(detected["trait_cols"]),
+            experiment_name=self._exp_name.get(name, _stem(name)),
+            genotype_col=detected["genotype_col"],
+            sample_id_col=detected["sample_id_col"],
+        )
 
 
 def _stem(name: str) -> str:
-    return name[:-4] if name.endswith(".csv") else name
+    return Path(name).stem
 
 
 def _frame(df: pd.DataFrame, source: str) -> ExperimentFrame:
