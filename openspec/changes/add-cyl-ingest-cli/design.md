@@ -90,6 +90,14 @@ Y…` / `image_ids resolve to N scans, expected exactly 1` — names the offendi
   pre-empt gitleaks false-positives with a fixture-scoped `.gitleaksignore` if needed.
 - **New `--json` convention** could diverge from future commands. Mitigation: document it and
   coordinate naming with @blm3886.
+- **Idempotency identity ignores `image_ids` (contract foot-gun).** The envelope's
+  `idempotency_key` is derived from `inputs.images_checksum` (+scan_key/models/params), **not**
+  `inputs.image_ids`. So a hand-edited envelope that changes only `image_ids` (retargeting a
+  different scan) but keeps the hashed inputs unchanged passes validation with the original key
+  and the RPC treats it as an already-seen no-op — silently ignoring the new `image_ids`. This is
+  the contract's identity model, not a CLI bug; the CLI cannot detect it. Producers must not reuse
+  a key across genuinely different inputs. (An empty `idempotency_key` likewise passes the model
+  gate — the model derives+fills it — and is rejected only by the RPC.)
 
 ## Migration Plan
 

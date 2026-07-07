@@ -127,12 +127,14 @@ def map_rpc_error(message: str | None, *, profile: str | None = None) -> str:
         return (
             f"{msg}\nThe envelope's provenance.idempotency_key is empty — the producer must set it."
         )
-    if "scan_key" in msg:  # missing/ disagreeing scan_key
+    if "disagrees with provenance.scan_key" in msg:
         return (
             f"{msg}\n"
-            "The envelope's scan_key is inconsistent — check provenance.scan_key against the "
-            "traits/blobs scan_key."
+            "The envelope's scan_key is inconsistent — provenance.scan_key must match every "
+            "trait/blob scan_key."
         )
+    if "missing provenance.scan_key" in msg:
+        return f"{msg}\nThe envelope is missing provenance.scan_key."
     if "permission denied" in msg:
         return (
             f"{msg}\n"

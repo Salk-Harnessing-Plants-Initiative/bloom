@@ -2,6 +2,7 @@
 
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from bloomctl.cli import cli
 
 FIXTURE = Path(__file__).parent / "fixtures" / "scan0K9E8BI.result.json"
 ENVELOPE = json.loads(FIXTURE.read_text(encoding="utf-8"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 RESULT_OK = {"source_id": 55, "scan_id": 7, "trait_count": 2, "blob_count": 0, "was_noop": False}
 # The RPC returns a null scan_id on a no-op re-delivery (cyl-trait-writeback).
@@ -340,3 +342,120 @@ def test_cli_registration_in_help():
     assert "cyl" in res.output
     sub = CliRunner().invoke(cli, ["cyl", "--help"])
     assert "ingest-result" in sub.output
+
+
+# --- review follow-ups: spec-scenario gaps + robustness guards ---------------
+
+
+@pytest.mark.parametrize("payload", ["[1, 2, 3]", '"just a string"', "42", "null"])
+def test_load_envelope_rejects_non_object_json(payload):
+    with pytest.raises(ing.EnvelopeError) as excinfo:
+        ing.load_envelope("-", stdin=io.StringIO(payload))
+    assert "object" in str(excinfo.value).lower()
+
+
+def test_cli_non_object_json_makes_no_call(monkeypatch):
+    called = {"auth": False, "rpc": False}
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
+    )
+    monkeypatch.setattr(
+        ing, "call_insert_envelope", lambda c, e: called.__setitem__("rpc", True) or RESULT_OK
+    )
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", "-"], input="[1, 2, 3]")
+    assert res.exit_code != 0
+    assert not called["auth"]
+    assert not called["rpc"]
+
+
+def test_cli_source_only_envelope_reports_zero_counts(monkeypatch):
+    _patch_authed(monkeypatch)
+    source_only = {
+        "source_id": 9,
+        "scan_id": 7,
+        "trait_count": 0,
+        "blob_count": 0,
+        "was_noop": False,
+    }
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda c, e: source_only)
+    env = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    env["traits"] = []
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", "-"], input=json.dumps(env))
+    assert res.exit_code == 0, res.output
+    assert "traits=0" in res.output
+    assert "blobs=0" in res.output
+
+
+def test_cli_unknown_rpc_error_surfaced_verbatim(monkeypatch):
+    _patch_authed(monkeypatch)
+
+    def boom(client, env):
+        raise _api_error("some brand new server error not in the match table")
+
+    monkeypatch.setattr(ing, "call_insert_envelope", boom)
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
+    assert res.exit_code != 0
+    assert "some brand new server error not in the match table" in res.output
+
+
+def test_cli_contract_version_mismatch_reports_both_versions(monkeypatch):
+    _patch_authed(monkeypatch)
+
+    def boom(client, env):
+        raise _api_error(
+            "contract_version mismatch: got 0.0.0, pinned 0.1.0a3 (single leading v ignored)"
+        )
+
+    monkeypatch.setattr(ing, "call_insert_envelope", boom)
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
+    assert res.exit_code != 0
+    assert "0.0.0" in res.output
+    assert "0.1.0a3" in res.output
+
+
+def test_cli_non_dict_rpc_response_errors(monkeypatch):
+    # If the RPC ever returns a non-object, fail cleanly (not a bare AttributeError).
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda c, e: None)
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
+    assert res.exit_code != 0
+    assert "unexpected rpc response" in res.output.lower()
+
+
+def _current_migration_sql():
+    """Read the current cyl write-back migration (highest timestamp wins)."""
+    migrations = sorted((REPO_ROOT / "supabase" / "migrations").glob("*cyl_writeback*.sql"))
+    if not migrations:
+        pytest.skip("cyl write-back migration not found from this checkout")
+    return migrations[-1].read_text(encoding="utf-8")
+
+
+# The exact substrings map_rpc_error keys on to append an actionable hint. If the
+# RPC reworded one of these, the hint would silently stop firing (the message
+# still surfaces verbatim, but the actionable guidance is lost) — this test fails
+# instead, forcing the two to be re-synced.
+_MAP_RPC_ERROR_MARKERS = [
+    "no image_ids",
+    "unresolvable image_ids",
+    "image_ids resolve to",
+    "non-numeric image_id",
+    "contract_version mismatch",
+    "empty or absent idempotency_key",
+    "disagrees with provenance.scan_key",
+    "missing provenance.scan_key",
+    "permission denied",
+]
+
+
+def test_map_rpc_error_markers_still_present_in_migration():
+    sql = _current_migration_sql()
+    # "permission denied" is a Postgres system error, not a RAISE in the migration.
+    missing = [m for m in _MAP_RPC_ERROR_MARKERS if m != "permission denied" and m not in sql]
+    assert not missing, f"map_rpc_error markers have drifted from the RPC migration: {missing}"
+
+
+def test_map_rpc_error_raise_strings_are_never_swallowed():
+    """Every literal RAISE EXCEPTION message in the migration round-trips verbatim."""
+    for raw in re.findall(r"RAISE EXCEPTION\s+'([^']+)'", _current_migration_sql()):
+        msg = raw.replace("%", "X")  # interpolate placeholders as Postgres would
+        assert msg in ing.map_rpc_error(msg), f"RPC message swallowed: {raw!r}"

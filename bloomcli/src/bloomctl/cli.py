@@ -187,6 +187,8 @@ def download(
     if (experiment_id is None) == (scan_id is None):
         raise click.UsageError("Pass exactly one of --experiment-id or --scan-id.")
 
+    # NOTE: this inlines what `_authed_client(profile)` does; kept inline here to
+    # avoid overlapping PR #385, which migrates `download` to the shared helper.
     try:
         creds = load_credentials(profile)
     except (FileNotFoundError, ValueError) as exc:
@@ -264,8 +266,10 @@ def cyl_ingest_result(envelope: str, profile: str, as_json: bool) -> None:
     """
     from . import ingest as ing
 
-    # Read + validate before any network call (the model gate is stricter than
-    # the RPC, so this fails fast without authenticating).
+    # Read + validate before any network call: the model gate catches shape and
+    # missing-provenance errors up front (fails fast without authenticating). Some
+    # value-level checks (e.g. an empty idempotency_key) are enforced only by the
+    # RPC and surface below.
     try:
         data = ing.load_envelope(envelope)
         ing.validate_envelope(data)
@@ -282,6 +286,11 @@ def cyl_ingest_result(envelope: str, profile: str, as_json: bool) -> None:
         raise click.ClickException(
             ing.map_rpc_error(getattr(exc, "message", None), profile=profile)
         ) from exc
+
+    # The RPC RETURNS jsonb (an object) on every path; guard so any future
+    # shape change surfaces as a clean error, not a bare AttributeError.
+    if not isinstance(result, dict):
+        raise click.ClickException(f"unexpected RPC response shape: {result!r}")
 
     if as_json:
         click.echo(json.dumps(result))
