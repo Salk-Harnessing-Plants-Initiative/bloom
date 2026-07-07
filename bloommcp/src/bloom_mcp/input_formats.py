@@ -24,9 +24,11 @@ PEEK_ROWS = 50
 
 _MB = 1024 * 1024
 _GB = 1024 * _MB
-# Counts matrices reach ~1-2 GB; the default cap targets them. Row-oriented,
-# non-columnar formats (Excel/JSON) are never that large, so they cap lower.
-DEFAULT_MAX_SIZE = 2 * _GB
+# Counts matrices (CSV/TSV/Parquet/Feather) can be GB-scale, so those cap at
+# 5 GB — matching the bloommcp-data bucket's storage ceiling. Excel and JSON
+# aren't used for bulk matrices (Excel tops out near ~1M rows, JSON is too
+# verbose at that scale), so they cap lower.
+DEFAULT_MAX_SIZE = 5 * _GB
 DOCUMENT_MAX_SIZE = 200 * _MB
 
 # Size limit for the simple ``/uploads`` endpoint, which loads the whole file into
