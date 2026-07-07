@@ -34,14 +34,17 @@ Sections (per-package sub-servers, see bloom_mcp/sections/):
   - phenotyping_segmentation: Lin's segmentation tools (empty scaffold today)
 """
 
+import hmac
 import logging
 
 from fastmcp import FastMCP
 from fastmcp.utilities.lifespan import combine_lifespans
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Mount
+
+from bloom_mcp import input_formats, uploads
 
 # Env validation is lazy (see supabase_client / experiment_utils validate_env):
 # importing this module no longer requires Supabase or the BLOOM_*_DIR env, so
@@ -131,6 +134,85 @@ def build_app() -> Starlette:
 
     lifespans = [combined_app.lifespan, *(a.lifespan for a in section_apps.values())]
     return Starlette(routes=routes, lifespan=combine_lifespans(*lifespans))
+
+
+# --- File upload surface ---
+# Plain HTTP routes (not MCP tools — tool calls can't carry file bytes), gated by
+# the same BLOOMMCP_API_KEY bearer as the MCP transport. Files land flat in
+# bloommcp_input/ under bloom_agent; per-user identity/namespacing is deferred (#406).
+
+
+def _authorized(request: Request) -> bool:
+    """Constant-time Bearer check against BLOOMMCP_API_KEY.
+
+    Mirrors the MCP transport's ApiKeyVerifier. When no API key is configured
+    (dev mode) the routes are open, matching the server's existing dev behavior.
+    """
+    if not API_KEY:
+        return True
+    header = request.headers.get("authorization", "")
+    prefix = "bearer "
+    token = header[len(prefix):] if header.lower().startswith(prefix) else ""
+    return bool(token) and hmac.compare_digest(token, API_KEY)
+
+
+@mcp.custom_route("/uploads", methods=["POST"])
+async def upload_input(request: Request) -> JSONResponse:
+    """Receive a small/moderate input file (multipart `file`), validate it, and
+    store it in bloommcp_input/. Large files should use `/uploads/sign` instead."""
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    # Reject an oversized upload from its Content-Length before buffering the body
+    # into memory; direct it to the signed direct-to-Storage route instead.
+    oversized = uploads.buffered_limit_exceeded(request.headers.get("content-length"))
+    if oversized is not None:
+        return JSONResponse(
+            {
+                "error": (
+                    f"upload of {oversized} bytes exceeds the "
+                    f"{input_formats.MAX_BUFFERED_UPLOAD_SIZE}-byte limit for this "
+                    f"endpoint; use POST /uploads/sign for large files"
+                ),
+                "use": "/uploads/sign",
+            },
+            status_code=413,
+        )
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "filename"):
+        return JSONResponse({"error": "missing file"}, status_code=400)
+    data = await upload.read()
+    try:
+        result = uploads.receive_upload(upload.filename, data)
+    except input_formats.FileTooLargeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=413)
+    except input_formats.FormatError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception:  # noqa: BLE001 - never leak internals to the caller
+        logger.exception("input upload failed")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    return JSONResponse(result, status_code=201)
+
+
+@mcp.custom_route("/uploads/sign", methods=["POST"])
+async def sign_input_upload(request: Request) -> JSONResponse:
+    """Mint a scoped signed upload URL for a large input so the client streams
+    directly to Storage. Body: `{"filename": "<name.ext>"}`."""
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - malformed body
+        body = {}
+    filename = (body or {}).get("filename", "")
+    try:
+        result = uploads.signed_input_upload(filename)
+    except input_formats.FormatError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception:  # noqa: BLE001 - never leak internals to the caller
+        logger.exception("signed upload url failed")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    return JSONResponse(result, status_code=200)
 
 
 # --- Entry Point ---

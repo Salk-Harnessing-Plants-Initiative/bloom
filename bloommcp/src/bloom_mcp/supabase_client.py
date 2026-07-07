@@ -127,6 +127,41 @@ def read_input_csv(name: str) -> pd.DataFrame:
     return pd.read_csv(io.BytesIO(payload))
 
 
+def write_input(name: str, data: bytes) -> str:
+    """Upload input `data` to `bloommcp_input/{name}` in `bloommcp-data`.
+
+    The write twin of `read_input_csv`, used by the upload surface for small
+    files that pass through the backend. `name` is a bare basename (no slashes);
+    the input prefix is added here. Overwrites if it exists (flat, shared
+    namespace — per-user isolation is deferred). Returns `name` as the input
+    reference the analysis tools use.
+    """
+    _validate_name(name)
+    client = get_storage_client()
+    client.upload(
+        path=f"{INPUT_PREFIX}{name}",
+        file=data,
+        file_options={
+            "content-type": _guess_content_type(Path(name)),
+            "upsert": "true",
+        },
+    )
+    return name
+
+
+def create_signed_upload_url(name: str) -> dict:
+    """Mint a scoped signed upload URL for `bloommcp_input/{name}`.
+
+    Lets a client upload bytes **directly to Storage** (no backend buffering) to
+    exactly this one key, without holding the `bloom_agent` credential. `name` is
+    a bare basename (no slashes). Returns the storage client's response (the
+    signed URL, its token, and the path).
+    """
+    _validate_name(name)
+    client = get_storage_client()
+    return client.create_signed_upload_url(f"{INPUT_PREFIX}{name}")
+
+
 # ─── Generic storage helpers ──────────────────────────────────────────────────
 #
 # These six helpers are the storage primitives AnalysisWriter uses to store
