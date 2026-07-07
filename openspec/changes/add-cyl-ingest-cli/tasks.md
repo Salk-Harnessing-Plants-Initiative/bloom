@@ -164,7 +164,7 @@ APIError`) as `click.ClickException`; extract `exc.message` for `map_rpc_error`,
       them, but completing them is out of scope here. Add an `### Added` entry under `[Unreleased]`
       in `bloomcli/CHANGELOG.md` for `bloomctl cyl ingest-result` (the `prepare-release-bloomctl` flow
       depends on it). Update the `--help` text (already added in 5.2).
-- [ ] 8.2 Note the `_authed_client` overlap with PR #385 in the PR description and request
+- [x] 8.2 Note the `_authed_client` overlap with PR #385 in the PR description and request
       @blm3886's review. Whichever of #385/#397 merges second reconciles to a **single**
       `_authed_client` definition on rebase (drop the duplicate if identical; unify the signature
       otherwise), then re-runs `openspec validate --strict` + the bloomcli unit suite before the
