@@ -1,0 +1,61 @@
+[project]
+name = "bloomctl"
+version = "0.1.0a1"
+description = "Bloom command-line tool for Bloom Database"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "BSD-2-Clause"
+authors = [{ name = "Salk Harnessing Plants Initiative" }]
+keywords = ["bloom", "cli", "plant-phenotyping","cylinder"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    # /client-info bootstrap fetch (login).
+    "httpx>=0.27",
+    # Supabase PostgREST + Storage client (auth, metadata query, image signing).
+    "supabase>=2.0.0",
+    "python-dotenv>=1.0.0",
+    # Security floor for the supabase auth/JWT transitive dep, per repo convention
+    # (open floor past the upstream CVE fix; see bloommcp/pyproject.toml).
+    "cryptography>=48.0.1",
+]
+
+[project.scripts]
+bloomctl = "bloomctl.cli:cli"
+
+# Test stack lives in the `test` extra (not a dev dependency-group) so CI invokes
+# it as `uv run --extra test pytest` — the repo-wide convention enforced by
+# tests/unit/test_ci_workflow_uv_conventions.py.
+[project.optional-dependencies]
+test = [
+    "pytest>=8.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "bloomctl"
+module-root = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+# Lint config lives here (matching bloommcp); CI runs ruff via `uvx ruff`
+# pinned to the repo's .pre-commit-config.yaml version, so ruff is not a
+# project dependency.
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+# Line length is owned by the formatter (black), per ruff's guidance for
+# formatter-managed projects — so E501 is not linted here.
+ignore = ["E501"]

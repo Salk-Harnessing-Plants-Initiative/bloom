@@ -28,6 +28,17 @@ real `SupabaseResultStore`/`SupabaseReader` round-trip rather than in-memory fak
   * ``get_run("latest")`` reads the committed run back, and a second commit advances
     ``latest`` from ``v1`` to ``v2``.
 
+A second, **Tier-3 ``qc_clean``** leg (#338) drives the granular cleanup tool through the
+same real ports against the raw ``turface`` input:
+
+  * ``qc_clean(experiment="turface_raw.csv", max_nans_per_trait=0.1)`` commits a versioned
+    ``qc`` run whose committed outputs include ``_cleaned.csv`` and ``cleanup_log.json``;
+  * that run's manifest is schema v3 and every recorded ``output_sha256`` matches the bytes
+    actually stored for **both** artifacts;
+  * a fresh ``SupabaseReader().load_experiment("turface_raw.csv", require_clean=True)`` then
+    resolves the committed **cleaned** version (source ``v<N>_cleaned``, not ``raw``) and that
+    frame has zero NaN cells in its trait columns — the qc_clean → pca_analysis contract.
+
 Every failure mode (workflow error, hash mismatch, read-after-write timeout, import leak)
 routes through the per-check summary and a non-zero exit — never an unlabelled traceback.
 
@@ -59,6 +70,22 @@ EXPECTED_AGENT = "bloom_agent"
 _HERE = Path(__file__).resolve().parent
 FIXTURE = _HERE.parent / "tests" / "fixtures" / "turface_19_final_data.csv"
 
+# --- Tier-3 qc_clean leg constants --------------------------------------------
+# A SECOND experiment, cleaned through the granular ``qc_clean`` tool (#338). Its
+# input is the *raw* (un-QC'd) turface table; ``qc_clean`` persists a versioned
+# ``qc`` run whose ``_cleaned.csv`` a later ``require_clean`` read must resolve.
+# The raw input is seeded into ``BLOOM_TRAITS_DIR`` (the deployed read path —
+# inputs have not yet migrated to ``bloommcp_input/``), matching the existing
+# fixture-upload pattern in ``_configure_live_env``.
+QC_EXPERIMENT = "turface_raw.csv"
+QC_TOOL_CLASS = "qc"
+QC_MAX_NANS_PER_TRAIT = 0.1
+QC_FIXTURE = _HERE.parent / "tests" / "fixtures" / "turface_19_raw_data.csv"
+CLEANED_CSV_NAME = (
+    "_cleaned.csv"  # logical key qc_clean commits (and the reader resolves)
+)
+CLEANUP_LOG_NAME = "cleanup_log.json"  # logical key for the cleanup audit log
+
 # Read-after-write can lag the storage-api; bound the wait so a real regression
 # still fails fast (5 attempts, 1s apart, ≤5s ceiling) rather than hanging.
 RETRY_ATTEMPTS = 5
@@ -87,7 +114,8 @@ def summarize(checks: list[Check]) -> tuple[str, int]:
         lines.append(f"SMOKE FAILED: {failed}")
         return "\n".join(lines), 1
     lines.append(
-        "SMOKE PASSED ✅ — real write path persists full v3 provenance with a real seed."
+        "SMOKE PASSED ✅ — clustering(kmeans) seed-bearing run AND qc_clean (Tier 3) "
+        "cleaned run both persist full v3 provenance through the real ports."
     )
     return "\n".join(lines), 0
 
@@ -156,6 +184,60 @@ def hash_checks(
             )
         )
     return checks
+
+
+def qc_persist_checks(
+    *,
+    schema_version: object,
+    output_keys: dict,
+    output_sha256: dict,
+    expected_outputs: set,
+) -> list[Check]:
+    """Assert the persisted ``qc_clean`` run: v3 manifest + the cleaned-output catalog.
+
+    The Tier-3 analogue of :func:`provenance_checks`. ``qc_clean`` is deterministic
+    (threshold filters, no ``random_state``), so it records ``seed=None`` — there is
+    no seed assertion here; what matters is a schema-v3 manifest whose committed
+    outputs expose **both** cleaned artifacts under one key-set.
+    """
+    return [
+        Check(
+            "qc_clean: manifest schema == 3",
+            schema_version == 3,
+            f"schema_version={schema_version!r}",
+        ),
+        Check(
+            "qc_clean: committed outputs include _cleaned.csv + cleanup_log.json",
+            expected_outputs <= set(output_keys),
+            f"output_keys={sorted(output_keys)}",
+        ),
+        Check(
+            "qc_clean: output_keys / output_sha256 share one key-set",
+            set(output_keys) == set(output_sha256),
+            f"keys={sorted(output_keys)} sha={sorted(output_sha256)}",
+        ),
+    ]
+
+
+def qc_cleaned_read_checks(source: object, trait_nan_cells: object) -> list[Check]:
+    """Assert a ``require_clean`` read resolves the CLEANED artifact with zero NaNs.
+
+    This is the ``qc_clean`` → ``pca_analysis(require_clean=True)`` contract: the
+    reader must resolve the committed ``v<N>_cleaned`` version (never the ``raw``
+    input), and that cleaned frame must carry no NaN cells in its trait columns.
+    """
+    return [
+        Check(
+            "qc_clean: require_clean read resolves the cleaned artifact (not raw)",
+            isinstance(source, str) and source != "raw" and source.endswith("_cleaned"),
+            f"source={source!r}",
+        ),
+        Check(
+            "qc_clean: cleaned frame has zero NaN trait cells",
+            trait_nan_cells == 0,
+            f"trait_nan_cells={trait_nan_cells!r}",
+        ),
+    ]
 
 
 def _version_num(ref: str) -> Optional[int]:
@@ -239,14 +321,19 @@ def _configure_live_env() -> None:
     no host litter. Env is set here *before* the first ``import bloom_mcp`` in
     ``main`` because ``experiment_utils`` captures the dir globals at import time.
     """
-    if not FIXTURE.exists():
-        raise FileNotFoundError(f"fixture not found: {FIXTURE}")
+    for fx in (FIXTURE, QC_FIXTURE):
+        if not fx.exists():
+            raise FileNotFoundError(f"fixture not found: {fx}")
     traits = Path(tempfile.mkdtemp(prefix="smoke_traits_"))
     out = Path(tempfile.mkdtemp(prefix="smoke_out_"))
     plots = Path(tempfile.mkdtemp(prefix="smoke_plots_"))
     for d in (traits, out, plots):
         atexit.register(shutil.rmtree, d, ignore_errors=True)
     shutil.copy(FIXTURE, traits / EXPERIMENT)
+    # Seed the raw qc_clean input as turface_raw.csv. The deployed reader resolves
+    # raw inputs from BLOOM_TRAITS_DIR (inputs have not yet moved to the
+    # bloommcp_input/ bucket), so the qc_clean leg uploads its fixture here.
+    shutil.copy(QC_FIXTURE, traits / QC_EXPERIMENT)
     os.environ["BLOOM_TRAITS_DIR"] = str(traits)
     os.environ["BLOOM_OUTPUT_DIR"] = str(out)
     os.environ["BLOOM_PLOTS_DIR"] = str(plots)
@@ -349,6 +436,67 @@ def main() -> int:
                 f"first_ref={first_ref!r} resolved={prior.run_ref!r}",
             )
         )
+
+    # === Tier-3 qc_clean leg ==================================================
+    # Drive the granular qc_clean tool (#338) through the SAME real ports: clean
+    # the raw turface input, persist a versioned `qc` run, then prove a
+    # require_clean read resolves the committed *cleaned* artifact rather than the
+    # raw input — the qc_clean -> pca_analysis(require_clean=True) composition.
+    from bloom_mcp.contract import BloomMCPError  # noqa: E402
+    from bloom_mcp.tools.qc_clean_tool import QCCleanParams, qc_clean  # noqa: E402
+
+    print(
+        f">>> running qc_clean on {QC_EXPERIMENT} "
+        f"(max_nans_per_trait={QC_MAX_NANS_PER_TRAIT}) through real ports ..."
+    )
+    qc_committed = False
+    try:
+        qc_clean(
+            QCCleanParams(
+                experiment=QC_EXPERIMENT,
+                max_nans_per_trait=QC_MAX_NANS_PER_TRAIT,
+            )
+        )
+        qc_committed = True
+        checks.append(Check("qc_clean commits a cleaned run", True))
+    except BloomMCPError as exc:
+        checks.append(Check("qc_clean commits a cleaned run", False, f"error={exc!r}"))
+
+    if qc_committed:
+        # Read the committed qc run back through the port, then assert the v3
+        # manifest + the cleaned-output catalog.
+        qc_stored = retry(
+            lambda: _ports.store().get_run(QC_EXPERIMENT, QC_TOOL_CLASS, "latest")
+        )
+        qc_manifest = retry(lambda: sc.read_json(qc_stored.manifest_path))
+        checks.extend(
+            qc_persist_checks(
+                schema_version=qc_manifest.get("manifest_schema_version"),
+                output_keys=qc_stored.output_keys,
+                output_sha256=qc_stored.output_sha256,
+                expected_outputs={CLEANED_CSV_NAME, CLEANUP_LOG_NAME},
+            )
+        )
+        # Hash BOTH stored artifacts (_cleaned.csv + cleanup_log.json) and compare
+        # to the manifest's recorded sha256 — the real-bytes integrity check.
+        checks.extend(
+            hash_checks(qc_stored.output_keys, qc_stored.output_sha256, read_bytes)
+        )
+
+        # The payoff: a fresh SupabaseReader().load_experiment(require_clean=True)
+        # must now resolve the committed CLEANED version (not raw), and that frame
+        # must be NaN-free across its trait columns.
+        print(
+            f">>> reading {QC_EXPERIMENT} back with require_clean=True "
+            "(must resolve the cleaned run, not raw input) ..."
+        )
+        cleaned_frame = retry(
+            lambda: SupabaseReader().load_experiment(QC_EXPERIMENT, require_clean=True)
+        )
+        qc_trait_nans = int(
+            cleaned_frame.df[cleaned_frame.trait_cols].isna().sum().sum()
+        )
+        checks.extend(qc_cleaned_read_checks(cleaned_frame.source, qc_trait_nans))
 
     text, code = summarize(checks)
     print(text)

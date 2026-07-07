@@ -7,7 +7,7 @@ What bloommcp is
 A Python-based [Model Context Protocol](https://modelcontextprotocol.io) server, implemented on top of [FastMCP](https://github.com/jlowin/fastmcp).
 It exposes plant-phenotyping analysis tools to LLM clients (today: the Langchain-agent running in this same stack) over MCP's streamable-HTTP transport on port 8811.
 
-Concretely it ports analysis routines from Elizabeth Berrigan's  `sleap-roots-analyze` workflow into MCP tools (QC, outlier detection, descriptive stats, PCA/UMAP, clustering, correlation, heritability, ANOVA).
+Concretely it ports analysis routines from Elizabeth Berrigan's `sleap-roots-analyze` workflow into MCP tools (QC, outlier detection, descriptive stats, PCA/UMAP, clustering, correlation, heritability, ANOVA).
 
 The LLM picks a workflow tool, bloommcp runs the analysis, and returns a structured payload — manifest path, summary stats, and a plot URL when applicable.
 
@@ -36,8 +36,8 @@ bloommcp/
 │   ├── cross_experiment_correlations.py
 │   ├── visualization.py
 │   ├── experiment_utils.py
-│   └── supabase_client.py   
-├── storage/   
+│   └── supabase_client.py
+├── storage/
 └── tools/
     ├── qc_tools.py
     ├── viz_tools.py
@@ -64,6 +64,22 @@ bloommcp-data/
 ```
 
 Any new tool that reads or writes a CSV should use this bucket.
+
+### Storage backend (`local` opt-in)
+
+Analysis **outputs** go to Supabase Storage by default — in local dev that means
+MinIO, not files under `./bloommcp/data/ANALYSIS_OUTPUT`. Two env vars control an
+opt-in local-filesystem backend:
+
+- `BLOOM_STORAGE_BACKEND` — `supabase` (default) or `local`. `local` writes outputs
+  as real files laid out by storage key.
+- `BLOOM_STORAGE_LOCAL_ROOT` — the local root when `local`; defaults to
+  `BLOOM_OUTPUT_DIR` when unset.
+
+Note `BLOOM_OUTPUT_DIR` / `BLOOM_USE_LOCAL` do **not** by themselves write local
+CSVs. Do not mix backends for one experiment. Full details:
+[storage-backends.md](../../bloommcp/docs/storage-backends.md). (This is the same
+`supabase_client.py` boundary that #388's user-facing downloads build on.)
 
 ## File reading and writing
 
@@ -100,8 +116,32 @@ client = get_postgrest_client()
 # Read any public.* table
 species = client.table("species").select("*").execute()
 plants = client.table("plants").select("id, accession_id, sown_at").eq("experiment_id", 42).execute()
-traits = client.table("cyl_scan_traits").select("trait_id, value").limit(1000).execute()
 ```
+
+**Source-aware cyl trait reads.** A scan can carry multiple `cyl_trait_sources`
+(one per pipeline run — reprocessing mints a new `source_id`), so reading
+`cyl_scan_traits` **directly returns duplicate/cross-source rows**. Read the
+source-disambiguated views instead:
+
+```python
+# Latest source per scan (the default you almost always want)
+traits = client.table("cyl_scan_traits_latest").select("scan_id, trait_name, value").limit(1000).execute()
+
+# Full source/run dimension when you need it: source_id, source_name,
+# pipeline_run_id (the batch key), and an is_latest flag. Group/filter by
+# pipeline_run_id for experiment-level "as of run X" analyses.
+runs = (
+    client.table("cyl_scan_traits_source")
+    .select("scan_id, trait_name, value, source_id, pipeline_run_id, is_latest")
+    .execute()
+)
+```
+
+The `get_scan_traits(experiment_id_, trait_name_, source_id_, run_id_)` RPC
+exposes the same selection (latest by default; pin a `source_id_`; group by
+`run_id_`). "Latest" = `max(source_id)` per scan; the rule lives once in
+`cyl_scan_traits_source` — see the `cyl-trait-read` spec and its migration for
+the definition (not restated here).
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.
@@ -114,8 +154,8 @@ role / RLS picture.
 class** (from [`bloommcp/src/bloom_mcp/storage/writer.py`](../../bloommcp/src/bloom_mcp/storage/writer.py)), constructed via the `build_writer` factory in
 [`_helpers.py`](../../bloommcp/src/bloom_mcp/tools/workflows/_helpers.py).
 
-`AnalysisWriter` implements a versioned write contract: each  `(experiment, tool_class)` pair gets one folder in the `bloommcp-data` bucket containing a `manifest.json` that catalogs every run for that
-pair. 
+`AnalysisWriter` implements a versioned write contract: each `(experiment, tool_class)` pair gets one folder in the `bloommcp-data` bucket containing a `manifest.json` that catalogs every run for that
+pair.
 
 Each tool call appends a new `VersionEntry` to the same manifest and a new `v<N>_<date>_<slug>/` subfolder for its outputs.
 
