@@ -27,8 +27,7 @@ blob_count, was_noop}`) to stdout so the A4 write-back step can capture `source_
 - Add `sleap-roots-contracts>=0.1.0a3` to `bloomcli/pyproject.toml` (no `[pandas]` extra).
 - **Blobs pass through** to the RPC as-is; the MinIO/Box blob byte-upload (uploading the `.slp`
   bytes + populating the refs) is deferred to a tracked follow-up that will **extend this same
-  command** in a later slice (issue filed with this PR; number backfilled here — see tasks
-  7.1/9.4).
+  command** in a later slice (#407).
 - Implementation lands in the **same PR** as this proposal (bundled proposal + first phase).
 
 ## Impact

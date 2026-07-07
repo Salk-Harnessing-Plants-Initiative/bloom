@@ -146,7 +146,7 @@ APIError`) as `click.ClickException`; extract `exc.message` for `map_rpc_error`,
 
 ## 7. Blob byte-upload follow-up (tracking only — no standalone commit)
 
-- [ ] 7.1 At PR time, file a GitHub issue in `Salk-Harnessing-Plants-Initiative/bloom` tracking
+- [x] 7.1 At PR time, file a GitHub issue in `Salk-Harnessing-Plants-Initiative/bloom` tracking
       the deferred **cyl blob (MinIO/Box) byte-upload as a future extension of
       `bloomctl cyl ingest-result`**: upload the referenced `.slp`/intermediate bytes and populate
       `blobs[].s3_location`/`box_link` before the RPC call (the "later slice"). Reference #397 and this
@@ -181,5 +181,5 @@ bloomcli`. Run `pre-commit run --files` over the new `.py`/`.md`/fixture and con
       leaves the fixture byte-stable and gitleaks is clean.
 - [ ] 9.3 Run the integration test against staging locally (creds present) → happy-path + no-op
       assertions pass; confirm it **skips** cleanly (not errors) when creds are absent.
-- [ ] 9.4 Confirm the blob-upload follow-up issue number is filled into `proposal.md`/`design.md`
+- [x] 9.4 Confirm the blob-upload follow-up issue number is filled into `proposal.md`/`design.md`
       (no `TBD`/placeholder remains).

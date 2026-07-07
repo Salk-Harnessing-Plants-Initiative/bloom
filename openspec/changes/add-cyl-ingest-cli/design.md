@@ -27,8 +27,8 @@ calling the RPC, and turning the RPC's return/errors into good CLI UX. It owns n
   with the original JSON, (4) reports the first-writer-wins no-op as a benign success distinct
   from a real error, (5) maps RPC validation errors to actionable messages, (6) optionally emits
   the RPC result as JSON for A4. Pure helpers separated from Supabase I/O for unit-testability.
-- **Non-Goals**: non-interactive/scoped auth (#398); blob byte-upload to MinIO/Box (deferred to a
-  follow-up that will **extend this command** — upload the `.slp` bytes + populate the refs before
+- **Non-Goals**: non-interactive/scoped auth (#398); blob byte-upload to MinIO/Box (deferred to
+  #407, which will **extend this command** — upload the `.slp` bytes + populate the refs before
   the RPC call); batch/glob ingest (one envelope per invocation, matching A4's per-scan loop);
   ledger/`source_id` recording (A4 Argo template's job — CLI just exposes it via `--json`);
   any RPC/schema change.
