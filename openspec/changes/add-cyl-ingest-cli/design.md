@@ -58,7 +58,7 @@ calling the RPC, and turning the RPC's return/errors into good CLI UX. It owns n
 - **Error mapping is table-driven.** A pure `map_rpc_error(message)` maps each known RPC
   `RAISE EXCEPTION` substring to actionable text and passes unknown messages through verbatim
   (never swallowed). The headline case — `no image_ids…` / `unresolvable image_ids: matched X of
-  Y…` / `image_ids resolve to N scans, expected exactly 1` — names the offending ids and points
+Y…` / `image_ids resolve to N scans, expected exactly 1` — names the offending ids and points
   at the profile/server: the scan's `cyl_images` must already exist on **this** Bloom.
 - **`--json` output.** bloomctl's first machine-readable output (existing commands print
   human/`rich` text). Justified by A4's need for `source_id`; `--json` → result object on stdout,

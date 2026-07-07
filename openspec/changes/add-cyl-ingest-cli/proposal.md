@@ -23,7 +23,7 @@ the roadmap's A2 "CLI" change and A4's write-back step (closes #397).
   especially the most likely real-world failure, `inputs.image_ids` not resolving to exactly one
   scan on this server/profile.
 - **`--json`** flag emits the RPC's return object (`{source_id, scan_id, trait_count,
-  blob_count, was_noop}`) to stdout so the A4 write-back step can capture `source_id`.
+blob_count, was_noop}`) to stdout so the A4 write-back step can capture `source_id`.
 - Add `sleap-roots-contracts>=0.1.0a3` to `bloomcli/pyproject.toml` (no `[pandas]` extra).
 - **Blobs pass through** to the RPC as-is; the MinIO/Box blob byte-upload (uploading the `.slp`
   bytes + populating the refs) is deferred to a tracked follow-up that will **extend this same
