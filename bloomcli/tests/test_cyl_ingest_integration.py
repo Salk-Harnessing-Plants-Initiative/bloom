@@ -17,7 +17,6 @@ Required env (all must be set):
 
 import json
 import os
-import uuid
 from pathlib import Path
 
 import pytest
@@ -43,6 +42,8 @@ if not all(_ENV.values()):
         allow_module_level=True,
     )
 
+from cyl_it_helpers import cleanup, envelope_for, seed_scan  # noqa: E402  (shared harness)
+
 import bloomctl.cli as climod  # noqa: E402  (imported after the skip guard)
 from bloomctl.auth import make_authed_client  # noqa: E402
 from bloomctl.cli import cli  # noqa: E402
@@ -53,32 +54,15 @@ FIXTURE = Path(__file__).parent / "fixtures" / "scan0K9E8BI.result.json"
 
 @pytest.fixture
 def seeded():
-    """Seed one scan with two images; yield ids; delete everything on teardown."""
+    """Seed one scan with two images; yield ids + a model-valid envelope; clean up."""
     conn = psycopg.connect(_ENV["BLOOMCTL_IT_DSN"], autocommit=True)
     cur = conn.cursor()
-    cur.execute("INSERT INTO cyl_scans DEFAULT VALUES RETURNING id")
-    scan_id = cur.fetchone()[0]
-    img_ids = []
-    for _ in range(2):
-        cur.execute("INSERT INTO cyl_images (scan_id) VALUES (%s) RETURNING id", (scan_id,))
-        img_ids.append(cur.fetchone()[0])
-    envelope, idem = _envelope_for(img_ids)
+    scan_id, img_ids = seed_scan(cur)
+    envelope, idem = envelope_for(FIXTURE, img_ids)
     try:
         yield scan_id, envelope, idem, cur
     finally:
-        cur.execute(
-            "DELETE FROM cyl_scan_traits WHERE source_id IN "
-            "(SELECT id FROM cyl_trait_sources WHERE idempotency_key = %s)",
-            (idem,),
-        )
-        cur.execute(
-            "DELETE FROM cyl_scan_intermediates WHERE source_id IN "
-            "(SELECT id FROM cyl_trait_sources WHERE idempotency_key = %s)",
-            (idem,),
-        )
-        cur.execute("DELETE FROM cyl_trait_sources WHERE idempotency_key = %s", (idem,))
-        cur.execute("DELETE FROM cyl_images WHERE scan_id = %s", (scan_id,))
-        cur.execute("DELETE FROM cyl_scans WHERE id = %s", (scan_id,))
+        cleanup(cur, scan_id, idem)
         conn.close()
 
 
@@ -94,26 +78,6 @@ def authed_cli(monkeypatch):
     client = make_authed_client(creds)
     monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
     return client
-
-
-def _envelope_for(img_ids):
-    """The committed fixture, retargeted to the seeded scan with a fresh derived key.
-
-    Point inputs.image_ids at the seeded rows and give inputs.images_checksum a
-    unique value so the model-derived idempotency_key is fresh per run — the key
-    hashes the checksum (+scan_key/models/params), NOT image_ids, and the model
-    *rejects* a mismatching key. Let the model compute it, then bake it back in;
-    the CLI still sends this original dict. Returns (envelope, idempotency_key).
-    """
-    from sleap_roots_contracts import ResultEnvelope
-
-    env = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    env["provenance"]["inputs"]["image_ids"] = [str(i) for i in img_ids]
-    env["provenance"]["inputs"]["images_checksum"] = f"sha256:{uuid.uuid4().hex}{uuid.uuid4().hex}"
-    env["provenance"].pop("idempotency_key", None)
-    idem = ResultEnvelope.model_validate(env).provenance.idempotency_key
-    env["provenance"]["idempotency_key"] = idem
-    return env, idem
 
 
 def test_ingest_writes_source_and_traits_then_noop(seeded, authed_cli, tmp_path):

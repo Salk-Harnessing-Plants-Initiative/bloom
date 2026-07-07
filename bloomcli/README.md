@@ -49,3 +49,17 @@ Examples:
 bloomctl cyl ingest-result path/to/scan.result.json
 cat scan.result.json | bloomctl cyl ingest-result - --json
 ```
+
+## Dev-stack smoke test
+
+`tests/test_dev_stack_smoke.py` verifies the local Supabase stack is serving and
+that `bloomctl cyl ingest-result` can round-trip against it (gateway `/rest`+`/auth`
+= 200, the write-back RPC is migrated, and a seed → ingest → no-op → cleanup cycle
+succeeds). It self-skips unless `BLOOMCTL_DEV_SMOKE` is set, and is marked
+`integration` so the default suite and CI never run it. After `make dev-up`:
+
+```
+set -a; . ./.env.dev; set +a
+BLOOMCTL_DEV_SMOKE=1 uv run --extra test --with psycopg \
+  --project bloomcli pytest bloomcli/tests/test_dev_stack_smoke.py -v
+```
