@@ -104,8 +104,10 @@ threshold-aware EDA visualization its `exploratory_analysis` pipeline step uses.
 - **Affected code:**
   - new `bloommcp/src/bloom_mcp/tools/qc_inspect_tool.py` (tool + I/O models + `register`);
   - new shared helper module (e.g. `bloommcp/src/bloom_mcp/tools/_qc_shared.py`) holding
-    `_role_kwargs` + `_validate_trait_subset`, with `qc_clean_tool.py` updated to import them
-    (no behavior change to `qc_clean`);
+    `_role_kwargs` + `_validate_trait_subset` + the canonical `_CANONICAL_*` thresholds, with
+    `qc_clean_tool.py` updated to import them (behaviour-preserving — two `qc_clean` remedy
+    strings were reworded "clean" → "use" now that the helper serves both tools; no runtime
+    behaviour or tested-string change);
   - `bloommcp/src/bloom_mcp/server.py` (register the tool; update the module docstring);
   - new `bloommcp/tests/tools/test_qc_inspect_tool.py` (oracle + 5 patterns + read-only +
     figure round-trip);

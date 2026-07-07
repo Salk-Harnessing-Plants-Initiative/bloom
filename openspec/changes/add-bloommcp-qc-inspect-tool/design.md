@@ -78,13 +78,14 @@ thresholds. The constraints are fixed by the shipped code:
   deterministic (fraction thresholds, no `random_state`). The thresholds + trait selection are
   the determinism-governing params captured in provenance.
 - **Decision: reuse `qc_clean`'s role-forwarding + trait-validation via a shared `_qc_shared`
-  module, with the extraction landing in #356.** Both tools forward detected roles (omitting
-  `None`) and reject unknown / non-numeric `trait_columns` identically; a single `_qc_shared`
-  module both import keeps them in lockstep rather than drifting as two copies. The pure move
-  **should land in #356** (which already owns and tests `qc_clean_tool.py`), so qc_inspect only
-  *imports* `_qc_shared` — avoiding a guaranteed `qc_clean_tool.py` merge conflict between two
-  open PRs editing the same hunks. If #356 declines, qc_inspect's branch carries the move as a
-  separate `refactor(#360)` commit, keeping `qc_clean`'s suite green.
+  module.** Both tools forward detected roles (omitting `None`) and reject unknown / non-numeric
+  `trait_columns` identically; a single `_qc_shared` module both import keeps them in lockstep
+  rather than drifting as two copies. The canonical cleanup thresholds (`_CANONICAL_*`) are
+  single-sourced there too, so the two tools cannot silently desync. #356 merged without taking
+  the extraction, so **this branch carries the move** as a `refactor(#360)` commit; `qc_clean`'s
+  suite stays green. Note this is *behaviour-preserving*, not a byte-for-byte pure move: two
+  `qc_clean` `trait_columns` remedy strings were reworded ("clean" → "use") since the helper now
+  serves both tools — no test asserts the old wording, and no runtime behaviour changes.
 - **Decision: set the Agg matplotlib backend at module top, before importing the analyze viz
   functions, and close every figure.** analyze's `visualization.py` does a bare
   `import matplotlib.pyplot` with **no** `use("Agg")`, so whichever backend is active at first
@@ -133,9 +134,10 @@ thresholds. The constraints are fixed by the shipped code:
 
 ## Migration Plan
 
-Additive only — a new read-only tool + one registration line + a pure-move refactor of two
-helpers. No schema, data, or dependency change; existing manifests are unaffected. Rollback =
-unregister the tool (the helper extraction is independently safe).
+Additive only — a new read-only tool + one registration line + a behaviour-preserving
+extraction of the shared helpers/thresholds into `_qc_shared` (two `qc_clean` remedy strings
+reworded, no runtime change). No schema, data, or dependency change; existing manifests are
+unaffected. Rollback = unregister the tool (the helper extraction is independently safe).
 
 ## Open Questions
 

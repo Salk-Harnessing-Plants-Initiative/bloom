@@ -19,14 +19,21 @@ a cleaned version: ``qc_inspect`` is read-only and produces no cleaned table. Th
 returns a small inline summary + a structured **recommendation** (which traits to drop
 and the sample loss avoided) + links to the persisted figures / CSV / recommendation
 JSON — never inline blobs.
+
+Caveat: missingness is measured with ``pandas.isna`` (matching the delegate), so ``inf`` /
+``-inf`` are **not** counted as missing — an all-``inf`` trait reports ``nan_fraction=0.0``
+and is kept. Genuine infinities in a trait are a data-quality concern this tool does not flag.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import math
+from shutil import rmtree
 from typing import Optional
 
+import pandas as pd
 from pydantic import BaseModel, Field
 
 import matplotlib
@@ -40,25 +47,30 @@ from sleap_roots_analyze import (
     inspect_nan_samples,
 )
 
-from bloom_mcp.contract import Provenance, as_mcp_tool
+from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
 from bloom_mcp.contract import register as _contract_register
 from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import TRAITS_DIR
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._qc_shared import _role_kwargs, _validate_trait_subset
+
+# Canonical thresholds + shared helpers are single-sourced in _qc_shared so qc_inspect's
+# overlays/recommendation cannot silently desync from the clean qc_clean would apply.
+from bloom_mcp.tools._qc_shared import (
+    _CANONICAL_MAX_NANS_PER_SAMPLE,
+    _CANONICAL_MAX_NANS_PER_TRAIT,
+    _CANONICAL_MAX_ZEROS_PER_TRAIT,
+    _CANONICAL_MIN_SAMPLES_PER_TRAIT,
+    _role_kwargs,
+    _validate_trait_subset,
+)
+
+logger = logging.getLogger(__name__)
 
 _TOOL_CLASS = "qc_inspect"
 _NAN_SAMPLES_CSV = "nan_samples.csv"
 _RECOMMENDATION_JSON = "recommendation.json"
 _HEATMAP_PNG = "missing_data_pattern.png"
-
-# Canonical QC-pipeline defaults — identical to qc_clean's, so qc_inspect's overlay
-# lines and recommendation reflect the clean a default qc_clean would actually apply.
-_CANONICAL_MAX_ZEROS_PER_TRAIT = 0.5
-_CANONICAL_MAX_NANS_PER_TRAIT = 0.2
-_CANONICAL_MAX_NANS_PER_SAMPLE = 0.0
-_CANONICAL_MIN_SAMPLES_PER_TRAIT = 10
 
 
 class QCInspectParams(BaseModel):
@@ -102,11 +114,24 @@ class QCInspectParams(BaseModel):
 
 
 class QCInspectRecommendation(BaseModel):
-    """A threshold recommendation derived from the supplied params (delegate-driven)."""
+    """A threshold recommendation derived from the supplied params (delegate-driven).
+
+    ``no_change_needed`` is ``True`` whenever lowering ``max_nans_per_trait`` would not
+    reduce sample loss below the current settings — either because no NaN-bearing trait
+    survives the current thresholds, or because the current per-sample threshold already
+    tolerates the missingness so dropping the trait buys no samples. In that case
+    ``recommended_max_nans_per_trait`` is ``None`` and ``would_remove_traits`` is empty.
+    """
 
     no_change_needed: bool
     recommended_max_nans_per_trait: Optional[float]
     would_remove_traits: list[str]
+    # The recommended threshold drops EVERY kept NaN-bearing trait at once (it is derived
+    # from the smallest offending NaN fraction). This maps each such trait to the number
+    # of samples that carry a NaN in it — its individual missingness footprint — so the
+    # agent can weigh keeping a low-missingness trait instead of accepting the all-or-nothing
+    # drop. Empty when no change is recommended.
+    offending_trait_nan_counts: dict[str, int]
     samples_lost_at_recommendation: int
     samples_lost_at_current_params: int
     naive_dropna_samples_lost: int
@@ -121,8 +146,13 @@ class QCInspectResult(BaseModel):
     n_samples: int
     n_traits: int
     per_trait_nan_fraction: dict[str, float]
+    # NaN-only view: traits whose NaN fraction alone exceeds max_nans_per_trait. This can
+    # differ from ``traits_would_be_removed`` below, which is the delegate's FULL removal
+    # set — it also drops traits for too-many-zeros or too-few-samples. ``removed_trait_reasons``
+    # explains each removal so the two fields never look contradictory without cause.
     traits_exceeding_thresholds: list[str]
     traits_would_be_removed: list[str]
+    removed_trait_reasons: dict[str, str]
     samples_lost_at_current_params: int
     residual_nan_cells_at_current_params: int
     recommendation: QCInspectRecommendation
@@ -132,7 +162,14 @@ class QCInspectResult(BaseModel):
     outputs: dict[str, str]
 
 
-def _filter(df, trait_cols, params, role_kwargs, *, max_nans_per_trait):
+def _filter(
+    df: pd.DataFrame,
+    trait_cols: list[str],
+    params: "QCInspectParams",
+    role_kwargs: dict[str, str],
+    *,
+    max_nans_per_trait: float,
+) -> tuple:
     """Run the analyze cleanup filter at the given NaN-per-trait threshold."""
     return apply_data_cleanup_filters(
         df,
@@ -149,20 +186,37 @@ def _removed_traits(log: dict) -> list[str]:
     return [t["trait"] for t in log.get("removed_traits", []) if isinstance(t, dict)]
 
 
+def _removed_reasons(log: dict) -> dict[str, str]:
+    """Map each delegate-removed trait to the delegate's removal reason.
+
+    The delegate log tags every removed trait with why (``too_many_nans`` /
+    ``too_many_zeros`` / ``too_few_samples``). Surfacing it explains why a trait can be in
+    ``traits_would_be_removed`` yet absent from the NaN-only ``traits_exceeding_thresholds``.
+    """
+    return {
+        t["trait"]: str(t.get("reason", "removed"))
+        for t in log.get("removed_traits", [])
+        if isinstance(t, dict)
+    }
+
+
 def _build_recommendation(
-    df,
-    trait_cols,
-    params,
-    role_kwargs,
-    nan_frac,
-    current_log,
+    df: pd.DataFrame,
+    trait_cols: list[str],
+    params: "QCInspectParams",
+    role_kwargs: dict[str, str],
+    nan_frac: "pd.Series",
+    current_log: dict,
     naive_dropna_lost: int,
 ) -> QCInspectRecommendation:
     """Recommend a ``max_nans_per_trait`` that drops NaN-bearing traits to cut sample loss.
 
-    Delegate-driven: the consequence of the recommended threshold is measured by
-    re-running ``apply_data_cleanup_filters`` at that threshold — no filtering logic
-    is re-implemented here.
+    Delegate-driven: the consequence of any threshold is measured by re-running
+    ``apply_data_cleanup_filters`` at it — no filtering logic is re-implemented here. A
+    change is recommended ONLY when it strictly reduces sample loss; if the current
+    per-sample threshold already tolerates the missingness (so dropping the trait would
+    save no samples), the honest answer is ``no_change_needed`` rather than advising a drop
+    that buys nothing on the metric this tool optimizes.
     """
     samples_lost_current = int(
         current_log.get("original_samples", len(df))
@@ -176,12 +230,16 @@ def _build_recommendation(
         for t in trait_cols
         if t not in removed_now and nan_frac[t] > 0
     }
+    # Per-offending-trait missingness footprint: how many samples carry a NaN in each.
+    # Lets the agent weigh keeping a low-footprint trait vs the all-or-nothing drop below.
+    offending_counts = {t: int(df[t].isna().sum()) for t in offending}
 
     if not offending:
         return QCInspectRecommendation(
             no_change_needed=True,
             recommended_max_nans_per_trait=None,
             would_remove_traits=[],
+            offending_trait_nan_counts={},
             samples_lost_at_recommendation=samples_lost_current,
             samples_lost_at_current_params=samples_lost_current,
             naive_dropna_samples_lost=naive_dropna_lost,
@@ -204,10 +262,35 @@ def _build_recommendation(
     samples_lost_rec = int(
         rec_log.get("original_samples", len(df)) - rec_log.get("final_samples", len(df))
     )
+
+    # Benefit gate: recommend a change only if it strictly reduces sample loss. When the
+    # current max_nans_per_sample already tolerates the missingness, lowering
+    # max_nans_per_trait drops the trait but frees no samples — so do not advise it.
+    if samples_lost_rec >= samples_lost_current:
+        return QCInspectRecommendation(
+            no_change_needed=True,
+            recommended_max_nans_per_trait=None,
+            would_remove_traits=[],
+            offending_trait_nan_counts=offending_counts,
+            samples_lost_at_recommendation=samples_lost_current,
+            samples_lost_at_current_params=samples_lost_current,
+            naive_dropna_samples_lost=naive_dropna_lost,
+            rationale=(
+                f"The NaN-bearing trait(s) {sorted(offending)} are kept, but the current "
+                f"max_nans_per_sample={params.max_nans_per_sample} already tolerates their "
+                f"missingness — only {samples_lost_current} sample(s) are lost and lowering "
+                f"max_nans_per_trait would not reduce that. No change recommended for sample "
+                f"loss; tighten max_nans_per_sample if you instead want those NaN-bearing "
+                f"samples (or traits) removed. See offending_trait_nan_counts for each trait's "
+                f"missingness footprint."
+            ),
+        )
+
     return QCInspectRecommendation(
         no_change_needed=False,
         recommended_max_nans_per_trait=rec,
         would_remove_traits=would_remove,
+        offending_trait_nan_counts=offending_counts,
         samples_lost_at_recommendation=samples_lost_rec,
         samples_lost_at_current_params=samples_lost_current,
         naive_dropna_samples_lost=naive_dropna_lost,
@@ -215,17 +298,28 @@ def _build_recommendation(
             f"At the current max_nans_per_trait={params.max_nans_per_trait}, the "
             f"NaN-heavy trait(s) {sorted(offending)} are kept and {samples_lost_current} "
             f"sample(s) are lost. Lowering max_nans_per_trait to {rec} drops "
-            f"{would_remove or 'them'} instead, leaving {samples_lost_rec} sample(s) lost."
+            f"{would_remove or 'them'} instead, leaving {samples_lost_rec} sample(s) lost. "
+            f"The recommended threshold drops EVERY trait above it at once; weigh "
+            f"offending_trait_nan_counts before keeping a low-missingness trait."
         ),
     )
 
 
-def _render_report(df, trait_cols, params, current_log, role_kwargs, staging_dir):
+def _render_report(
+    df: pd.DataFrame,
+    trait_cols: list[str],
+    params: "QCInspectParams",
+    current_log: dict,
+    role_kwargs: dict[str, str],
+    staging_dir,
+) -> dict[str, str]:
     """Render + persist the delegated EDA figures and the NaN-samples table.
 
     Returns the ``{logical_name: relative_path}`` map for the figures/CSV. All
     matplotlib figures the delegates create are closed before returning (no handle
-    leak in a long-lived server process).
+    leak in a long-lived server process). The missingness heatmap is best-effort: on
+    a degenerate frame it may be absent from the output set (logged, never raised), so
+    consumers must treat ``missing_data_pattern.png`` as optional.
     """
     outputs: dict[str, str] = {}
 
@@ -256,13 +350,25 @@ def _render_report(df, trait_cols, params, current_log, role_kwargs, staging_dir
         summary_figs = create_exploratory_summary_plots(
             df, trait_cols, genotype_col=role_kwargs.get("genotype_col", "geno")
         )
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "qc_inspect: missingness heatmap unavailable (create_exploratory_summary_plots "
+            "failed on this frame: %s); the report omits %s.",
+            exc,
+            _HEATMAP_PNG,
+        )
         summary_figs = {}
     try:
         heatmap = summary_figs.get("missing_data_pattern")
         if heatmap is not None:
             heatmap.savefig(staging_dir / _HEATMAP_PNG, dpi=120, bbox_inches="tight")
             outputs[_HEATMAP_PNG] = _HEATMAP_PNG
+        else:
+            logger.warning(
+                "qc_inspect: missingness heatmap not produced for this frame; "
+                "the report omits %s.",
+                _HEATMAP_PNG,
+            )
     finally:
         for fig in summary_figs.values():
             plt.close(fig)
@@ -288,6 +394,14 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
     # Read the RAW frame — qc_inspect inspects the raw missingness (no require_clean).
     frame = reader.load_experiment(params.experiment)
     if params.trait_columns is not None:
+        # An empty list is a caller mistake, not "inspect everything" — reject it
+        # explicitly rather than silently falling through to all traits.
+        if not params.trait_columns:
+            raise BloomMCPError(
+                code="invalid_input",
+                message="trait_columns was an empty list.",
+                remedy="Omit trait_columns to inspect all detected traits, or name at least one trait column.",
+            )
         _validate_trait_subset(frame, params.trait_columns, params.experiment)
     trait_cols = list(params.trait_columns or frame.trait_cols)
     role_kwargs = _role_kwargs(frame)
@@ -309,6 +423,7 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
         max_nans_per_trait=params.max_nans_per_trait,
     )
     removed_now = _removed_traits(current_log)
+    removed_reasons = _removed_reasons(current_log)
     kept_now = [c for c in trait_cols if c not in set(removed_now)]
     residual_now = int(cleaned_current[kept_now].isna().sum().sum()) if kept_now else 0
     samples_lost_now = int(
@@ -336,15 +451,22 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
         user_label=params.user_label,
         source_csv=local_src if local_src.exists() else None,
     )
-    outputs = _render_report(
-        frame.df, trait_cols, params, current_log, role_kwargs, run.staging_dir
-    )
-    (run.staging_dir / _RECOMMENDATION_JSON).write_text(
-        json.dumps(convert_to_json_serializable(recommendation.model_dump()), indent=2)
-    )
-    outputs[_RECOMMENDATION_JSON] = _RECOMMENDATION_JSON
-
-    stored = store.commit(run, outputs)
+    # Render + persist under the run's staging dir; on any partial failure remove the
+    # staging dir so a long-lived server does not leak a half-written temp run.
+    try:
+        outputs = _render_report(
+            frame.df, trait_cols, params, current_log, role_kwargs, run.staging_dir
+        )
+        (run.staging_dir / _RECOMMENDATION_JSON).write_text(
+            json.dumps(
+                convert_to_json_serializable(recommendation.model_dump()), indent=2
+            )
+        )
+        outputs[_RECOMMENDATION_JSON] = _RECOMMENDATION_JSON
+        stored = store.commit(run, outputs)
+    except Exception:
+        rmtree(run.staging_dir, ignore_errors=True)
+        raise
 
     return QCInspectResult(
         experiment=params.experiment,
@@ -354,6 +476,7 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
         per_trait_nan_fraction=per_trait_nan,
         traits_exceeding_thresholds=traits_exceeding,
         traits_would_be_removed=removed_now,
+        removed_trait_reasons=removed_reasons,
         samples_lost_at_current_params=samples_lost_now,
         residual_nan_cells_at_current_params=residual_now,
         recommendation=recommendation,

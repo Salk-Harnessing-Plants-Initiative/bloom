@@ -49,30 +49,21 @@ from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, TRAITS_DIR
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._qc_shared import _role_kwargs, _validate_trait_subset
+from bloom_mcp.tools._qc_shared import (
+    _CANONICAL_MAX_NANS_PER_SAMPLE,
+    _CANONICAL_MAX_NANS_PER_TRAIT,
+    _CANONICAL_MAX_ZEROS_PER_TRAIT,
+    _CANONICAL_MIN_SAMPLES_PER_TRAIT,
+    _role_kwargs,
+    _validate_trait_subset,
+)
 
 _TOOL_CLASS = "qc"
 _LOG_NAME = "cleanup_log.json"
 
-# Default cleanup thresholds mirror the **canonical QC pipeline** defaults — the
-# values ``sleap_roots_analyze``'s QC pipeline actually cleans with
-# (``CleanupConfig`` in ``pipeline/config/components.py``, and the ``_QC_DEFAULTS``
-# that ``clean_traits_for_analysis`` injects) — NOT the looser
-# ``apply_data_cleanup_filters`` *signature* defaults
-# (``max_nans_per_trait=0.3`` / ``max_nans_per_sample=0.2``). Two values differ:
-# the pipeline is stricter — ``max_nans_per_trait=0.2`` drops NaN-heavier traits
-# sooner, and ``max_nans_per_sample=0.0`` drops any sample that still carries a NaN
-# in a kept trait. Mirroring the pipeline means a default ``qc_clean`` reproduces
-# the QC pipeline's clean rather than shipping a looser one. Because ``qc_clean``
-# forwards all four thresholds *explicitly*, they must carry the canonical values
-# here — otherwise our looser defaults would override the delegate's own canonical
-# injection. Source of truth: talmolab/sleap-roots-analyze#167 +
-# ``CleanupConfig`` (max_nan_fraction=0.0, max_zeros_per_trait=0.5,
-# max_nans_per_trait=0.2, min_samples_per_trait=10).
-_CANONICAL_MAX_ZEROS_PER_TRAIT = 0.5
-_CANONICAL_MAX_NANS_PER_TRAIT = 0.2
-_CANONICAL_MAX_NANS_PER_SAMPLE = 0.0
-_CANONICAL_MIN_SAMPLES_PER_TRAIT = 10
+# Default cleanup thresholds mirror the **canonical QC pipeline** defaults, shared with
+# qc_inspect and single-sourced in ``_qc_shared`` (``_CANONICAL_*``) so the two tools
+# cannot silently desync — see that module for the full rationale.
 
 
 class QCCleanParams(BaseModel):

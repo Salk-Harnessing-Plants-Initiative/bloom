@@ -92,6 +92,17 @@ def test_recommendation_oracle_at_default_params(injected_ports):
     assert (
         rec.recommended_max_nans_per_trait < 0.1551
     )  # strictly below the trait NaN fraction
+    # Pin the golden's headline value exactly (floor of 15.51% to the 0.01 step below).
+    assert (
+        rec.recommended_max_nans_per_trait
+        == _GOLDEN["recommendation"]["recommended_max_nans_per_trait"]
+        == 0.15
+    )
+    # Per-offending-trait missingness footprint: each 15.5%-NaN trait touches 29 samples.
+    assert rec.offending_trait_nan_counts == {
+        "Root_Biomass_mg": 29,
+        "Root_Shoot_Ratio": 29,
+    }
     assert rec.naive_dropna_samples_lost == _GOLDEN["naive_dropna_samples_lost"] == 29
 
 
@@ -203,12 +214,17 @@ def test_invalid_threshold_is_input_validation_error(injected_ports):
 
 def test_default_thresholds_mirror_qc_clean_canonical():
     """qc_inspect's defaults must match qc_clean's canonical QC-pipeline defaults so the
-    overlays/recommendation reflect the clean a default qc_clean would apply."""
-    p = QCInspectParams(experiment="x.csv")
-    assert p.max_zeros_per_trait == 0.5
-    assert p.max_nans_per_trait == 0.2
-    assert p.max_nans_per_sample == 0.0
-    assert p.min_samples_per_trait == 10
+    overlays/recommendation reflect the clean a default qc_clean would apply. Compared
+    field-by-field against QCCleanParams (not just literals) so a future qc_clean bump that
+    isn't mirrored here fails — the thresholds are single-sourced in _qc_shared."""
+    from bloom_mcp.tools.qc_clean_tool import QCCleanParams
+
+    qi = QCInspectParams(experiment="x.csv")
+    qc = QCCleanParams(experiment="x.csv")
+    assert qi.max_zeros_per_trait == qc.max_zeros_per_trait == 0.5
+    assert qi.max_nans_per_trait == qc.max_nans_per_trait == 0.2
+    assert qi.max_nans_per_sample == qc.max_nans_per_sample == 0.0
+    assert qi.min_samples_per_trait == qc.min_samples_per_trait == 10
 
 
 # ── 3.3 provenance + links (not blobs) ──────────────────────────────────────
@@ -221,18 +237,22 @@ def test_provenance_stamped_seed_none_and_links_returned(injected_ports):
     stored = store.get_run(_EXPERIMENT, "qc_inspect", "latest")
     assert stored.tool == "qc_inspect"
     assert stored.seed is None  # QC inspection is deterministic — no random_state
-    expected = {
+    # Load-bearing outputs the report always commits (the recommendation + the per-trait
+    # overlay + the NaN-samples table). The missingness heatmap is best-effort (it can be
+    # absent on a degenerate frame — see _render_report), so it is NOT asserted here.
+    load_bearing = {
         "trait_eda_overview.png",
         "variance_distribution.png",
-        "missing_data_pattern.png",
         "nan_samples.csv",
         "recommendation.json",
     }
-    assert set(stored.output_keys) == expected
+    assert load_bearing <= set(stored.output_keys)
+    # On this (non-degenerate) fixture the heatmap IS produced.
+    assert "missing_data_pattern.png" in stored.output_keys
 
     assert result.run_ref == stored.run_ref
     assert result.manifest_path == stored.manifest_path
-    assert set(result.outputs) == expected
+    assert load_bearing <= set(result.outputs)
     # Links, not blobs: no inline field carries a large payload.
     dumped = result.model_dump()
     assert not any(
@@ -447,3 +467,167 @@ def test_second_run_increments_version(injected_ports):
         "v2",
     ]
     assert store.get_run(_EXPERIMENT, "qc_inspect", "latest").run_ref == "v2"
+
+
+# ── recommendation is benefit-aware: no drop advised when it frees no samples ───
+
+
+def test_no_drop_recommended_when_it_would_save_no_samples():
+    """Blocking regression: a kept NaN-bearing trait under a LOOSE max_nans_per_sample
+    loses zero samples, so lowering max_nans_per_trait to drop it buys nothing on sample
+    loss. The recommendation must say no_change_needed (not advise a 0→0 drop), while still
+    reporting the trait's missingness footprint so the agent isn't blind to it."""
+    n = 50
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(n)],
+            "geno": ["g1", "g2"] * (n // 2),
+            "rep": list(range(n)),
+            "t_ok": [float(i + 1) for i in range(n)],
+            "t_nan": [float(i + 1) for i in range(n)],
+        }
+    )
+    df.loc[[3, 17], "t_nan"] = float("nan")  # 2/50 = 0.04 NaN, kept at default 0.2
+
+    reader = FakeReader()
+    reader.add_experiment("loose.csv", df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+        result = qc_inspect(
+            QCInspectParams(
+                experiment="loose.csv",
+                max_nans_per_sample=0.5,  # tolerates the missingness → 0 samples lost
+                trait_columns=["t_ok", "t_nan"],
+            )
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert result.samples_lost_at_current_params == 0
+    rec = result.recommendation
+    assert rec.no_change_needed is True
+    assert rec.recommended_max_nans_per_trait is None
+    assert rec.would_remove_traits == []
+    assert rec.samples_lost_at_recommendation == 0
+    # The offending trait's footprint is still surfaced (2 samples carry its NaN).
+    assert rec.offending_trait_nan_counts == {"t_nan": 2}
+
+
+# ── traits_would_be_removed carries a per-trait removal reason (NaN vs zeros/min) ──
+
+
+def test_removed_trait_reasons_explains_non_nan_removals():
+    """A trait removed by the ZERO filter is in traits_would_be_removed but NOT in the
+    NaN-only traits_exceeding_thresholds; removed_trait_reasons explains the difference so
+    the two fields never look contradictory without cause."""
+    n = 50
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(n)],
+            "geno": ["g1", "g2"] * (n // 2),
+            "rep": list(range(n)),
+            "t_ok": [float(i + 1) for i in range(n)],
+            "t_zeros": [0.0] * 30
+            + [float(i + 1) for i in range(20)],  # 60% zeros > 0.5
+        }
+    )
+    reader = FakeReader()
+    reader.add_experiment("zeros.csv", df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+        result = qc_inspect(
+            QCInspectParams(experiment="zeros.csv", trait_columns=["t_ok", "t_zeros"])
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert result.per_trait_nan_fraction["t_zeros"] == 0.0  # no NaN...
+    assert "t_zeros" not in result.traits_exceeding_thresholds  # ...so not NaN-flagged
+    assert "t_zeros" in result.traits_would_be_removed  # ...but the delegate drops it
+    assert result.removed_trait_reasons["t_zeros"] == "too_many_zeros"
+
+
+# ── detected roles are forwarded (proven with non-default capitalized roles) ────
+
+
+def test_detected_roles_are_forwarded_overriding_delegate_defaults(monkeypatch):
+    """Capitalized Genotype/Replicate differ from the delegate defaults geno/rep, so this
+    distinguishes 'forwards detected roles' from 'delegate applied its own defaults' — the
+    same guard qc_clean's suite uses (the geno/rep/Barcode spy alone cannot prove it).
+    """
+    df = pd.DataFrame(
+        {
+            "Genotype": (["g1", "g2"] * 8),
+            "Replicate": list(range(16)),
+            "tA": [float(i) for i in range(16)],
+            "tB": [float(2 * i) for i in range(16)],
+        }
+    )
+    reader = FakeReader()
+    reader.add_experiment("caps.csv", df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+
+    captured = {}
+    real_filter = qc_inspect_tool.apply_data_cleanup_filters
+
+    def _spy(df_, trait_cols=None, **kwargs):
+        captured["kwargs"] = kwargs
+        return real_filter(df_, trait_cols, **kwargs)
+
+    monkeypatch.setattr(qc_inspect_tool, "apply_data_cleanup_filters", _spy)
+    try:
+        qc_inspect(QCInspectParams(experiment="caps.csv"))
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert captured["kwargs"]["genotype_col"] == "Genotype"
+    assert captured["kwargs"]["replicate_col"] == "Replicate"
+    # sample_id undetected here → barcode_col omitted (not forwarded as a wrong default).
+    assert captured["kwargs"].get("barcode_col") != "Genotype"
+
+
+# ── recommendation threshold: exact 0.01-boundary branch ────────────────────────
+
+
+def test_recommendation_at_exact_hundredth_boundary_steps_down_one():
+    """When the smallest offending NaN fraction lands exactly on a 0.01 step (0.15), the
+    floor equals the fraction, so the recommendation must step one 0.01 below it (0.14) to
+    strictly drop the trait — exercising the round(min_frac - 0.01) branch."""
+    n = 20
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(n)],
+            "geno": ["g1", "g2"] * (n // 2),
+            "rep": list(range(n)),
+            "t_ok": [float(i + 1) for i in range(n)],
+            "t_nan": [float(i + 1) for i in range(n)],
+        }
+    )
+    df.loc[[1, 5, 9], "t_nan"] = float(
+        "nan"
+    )  # 3/20 = 0.15 exactly, kept at default 0.2
+
+    reader = FakeReader()
+    reader.add_experiment("boundary.csv", df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+        result = qc_inspect(
+            QCInspectParams(experiment="boundary.csv", trait_columns=["t_ok", "t_nan"])
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert result.per_trait_nan_fraction["t_nan"] == 0.15
+    rec = result.recommendation
+    assert rec.no_change_needed is False
+    assert rec.recommended_max_nans_per_trait == 0.14  # one 0.01 step below 0.15
+    assert "t_nan" in rec.would_remove_traits
+
+
+# ── empty trait_columns is a caller mistake, not "inspect everything" ────────────
+
+
+def test_empty_trait_columns_is_invalid_input(injected_ports):
+    with pytest.raises(BloomMCPError) as exc:
+        qc_inspect(QCInspectParams(experiment=_EXPERIMENT, trait_columns=[]))
+    assert exc.value.code == "invalid_input"

@@ -111,11 +111,23 @@ reflect `max_nans_per_trait` / `max_zeros_per_trait`; `max_nans_per_sample` and
 ### Requirement: QC Inspect Produces a Threshold-Aware Missingness Recommendation
 
 The `qc_inspect` tool SHALL return, inline, a structured recommendation that reports per-trait
-NaN fractions, the traits that exceed the supplied thresholds, the traits a `qc_clean` at
-those thresholds would remove (from the cleanup log), and a recommended `max_nans_per_trait`
-together with its consequence — which traits it would drop, the samples it would lose, and the
-samples a naive row-wise `dropna()` would lose instead — so the agent can pick a threshold
-before committing a `qc_clean` run.
+NaN fractions, the traits whose NaN fraction alone exceeds the supplied threshold
+(`traits_exceeding_thresholds`), the traits a `qc_clean` at those thresholds would remove (from
+the cleanup log, `traits_would_be_removed`) each with the delegate's removal reason
+(`removed_trait_reasons`, e.g. `too_many_nans` / `too_many_zeros` / `too_few_samples`, so the
+NaN-only and full-removal views never look contradictory without cause), and a recommended
+`max_nans_per_trait` together with its consequence — which traits it would drop, the samples it
+would lose, and the samples a naive row-wise `dropna()` would lose instead — so the agent can
+pick a threshold before committing a `qc_clean` run.
+
+The recommendation SHALL be **benefit-aware**: it recommends lowering `max_nans_per_trait` only
+when doing so strictly reduces sample loss below the current settings. When the current
+`max_nans_per_sample` already tolerates the missingness (so a drop would free no samples), it
+SHALL report `no_change_needed = True` with `recommended_max_nans_per_trait = None` rather than
+advise a drop that buys nothing. The recommended threshold drops **every** kept NaN-bearing
+trait above it at once; the recommendation SHALL therefore also report each such trait's
+individual missingness footprint (`offending_trait_nan_counts`) so the agent can weigh keeping a
+low-missingness trait instead of accepting the all-or-nothing drop.
 
 #### Scenario: Recommendation flags the NaN-heavy traits and minimizes sample loss (turface_19 oracle)
 
@@ -142,6 +154,16 @@ before committing a `qc_clean` run.
   supplied thresholds would leave behind
 - **THEN** the recommendation reports "no change recommended" — `would_remove_traits` is empty
   and `samples_lost_at_recommendation == 0` — rather than proposing a spurious lower threshold
+
+#### Scenario: A drop that frees no samples is not recommended
+
+- **WHEN** a kept trait still carries NaN but the supplied `max_nans_per_sample` is loose enough
+  that no sample is dropped (`samples_lost_at_current_params == 0`)
+- **THEN** the recommendation reports `no_change_needed = True` with
+  `recommended_max_nans_per_trait = None` and empty `would_remove_traits` — it does **not** advise
+  lowering `max_nans_per_trait` to drop the trait, because that would not reduce sample loss
+- **AND** it still reports the trait's `offending_trait_nan_counts` so the agent can see the
+  missingness it is choosing to keep
 
 #### Scenario: An all-NaN trait is reported, not rejected
 

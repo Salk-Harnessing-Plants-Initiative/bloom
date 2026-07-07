@@ -13,6 +13,24 @@ import pandas as pd
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import ExperimentFrame
 
+# Canonical cleanup-threshold defaults shared by qc_clean and qc_inspect — the values
+# ``sleap_roots_analyze``'s QC pipeline actually cleans with (``CleanupConfig`` in
+# ``pipeline/config/components.py``, and the ``_QC_DEFAULTS`` that
+# ``clean_traits_for_analysis`` injects) — NOT the looser ``apply_data_cleanup_filters``
+# *signature* defaults (``max_nans_per_trait=0.3`` / ``max_nans_per_sample=0.2``). Two
+# values differ: the pipeline is stricter — ``max_nans_per_trait=0.2`` drops NaN-heavier
+# traits sooner, and ``max_nans_per_sample=0.0`` drops any sample that still carries a NaN
+# in a kept trait. Both tools forward all four thresholds *explicitly*, so they must carry
+# the canonical values here — a default ``qc_clean`` reproduces the pipeline's clean, and
+# ``qc_inspect``'s overlays/recommendation reflect that same clean. Single-sourcing them
+# here keeps the two tools from silently desyncing. Source of truth:
+# talmolab/sleap-roots-analyze#167 + ``CleanupConfig`` (max_nan_fraction=0.0,
+# max_zeros_per_trait=0.5, max_nans_per_trait=0.2, min_samples_per_trait=10).
+_CANONICAL_MAX_ZEROS_PER_TRAIT = 0.5
+_CANONICAL_MAX_NANS_PER_TRAIT = 0.2
+_CANONICAL_MAX_NANS_PER_SAMPLE = 0.0
+_CANONICAL_MIN_SAMPLES_PER_TRAIT = 10
+
 
 def _role_kwargs(frame: ExperimentFrame) -> dict[str, str]:
     """Forward the adapter-detected role columns to a cleanup/EDA delegate.
