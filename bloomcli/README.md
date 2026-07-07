@@ -1,7 +1,51 @@
 # bloomctl
 
 Python command-line tool for the Bloom server — download cylinder experiments
-(metadata + images) and manage credentials. Successor to the Node
-`@salk-hpi/bloom-cli`. Tracked by issue #347.
+(metadata + images), write per-scan pipeline results back, and manage
+credentials. Successor to the Node `@salk-hpi/bloom-cli`. Tracked by issue #347.
 
-Full install + usage docs land with the `download` command.
+## Commands
+
+Core commands are flat; assay-specific write-back is grouped under `cyl`:
+
+- `bloomctl login` — bootstrap client config from the Bloom server and store
+  credentials per profile.
+- `bloomctl download <out_dir> …` — download a cylinder experiment or single scan
+  (metadata `scans.csv` + per-frame images).
+- `bloomctl cyl ingest-result <envelope>` — write a per-scan pipeline
+  `ResultEnvelope` back to Bloom (see below).
+
+(Full `login`/`download` usage docs are still forthcoming; run any command with
+`--help` in the meantime.)
+
+## `bloomctl cyl ingest-result`
+
+Ingest one per-scan `ResultEnvelope` (emitted by the sleap-roots trait extractor)
+into Bloom by calling the `insert_cyl_result_envelope` RPC.
+
+```
+bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
+```
+
+- Reads the envelope from a file path, or from **stdin** when the argument is `-`.
+- **Validates** it against `sleap-roots-contracts` before the call (fails fast with
+  a readable message) and sends the original JSON unchanged.
+- **Idempotent:** re-ingesting the same envelope is a no-op (first-writer-wins on
+  the envelope's `idempotency_key`), reported as "already ingested" — not an error.
+- `--json` prints the RPC's result object (including `source_id`) to stdout for
+  scripting; without it, a human-readable summary line.
+
+The most common real-world error is `inputs.image_ids` not resolving to exactly
+one scan on the target server — the command explains that the scan's images must
+already exist in `cyl_images` on the Bloom you're pointed at.
+
+Auth: uses your saved login profile, which must have write access
+(`bloom_writer` / `bloom_admin`). Non-interactive / scoped credentials for
+cluster/CI use are tracked separately (#398).
+
+Examples:
+
+```
+bloomctl cyl ingest-result path/to/scan.result.json
+cat scan.result.json | bloomctl cyl ingest-result - --json
+```
