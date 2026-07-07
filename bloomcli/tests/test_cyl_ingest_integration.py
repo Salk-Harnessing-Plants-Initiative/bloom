@@ -62,9 +62,9 @@ def seeded():
     for _ in range(2):
         cur.execute("INSERT INTO cyl_images (scan_id) VALUES (%s) RETURNING id", (scan_id,))
         img_ids.append(cur.fetchone()[0])
-    idem = f"bloomctl-it-{uuid.uuid4()}"
+    envelope, idem = _envelope_for(img_ids)
     try:
-        yield scan_id, img_ids, idem, cur
+        yield scan_id, envelope, idem, cur
     finally:
         cur.execute(
             "DELETE FROM cyl_scan_traits WHERE source_id IN "
@@ -96,24 +96,30 @@ def authed_cli(monkeypatch):
     return client
 
 
-def _envelope_for(img_ids, idem):
-    """The committed fixture, retargeted to the seeded numeric image ids + a unique key.
+def _envelope_for(img_ids):
+    """The committed fixture, retargeted to the seeded scan with a fresh derived key.
 
-    Only inputs.image_ids and idempotency_key change; the rest of the a3 provenance
-    stays intact so it still passes ResultEnvelope validation. (idempotency_key is
-    derived from scan_key/images_checksum/params, not image_ids, so a per-run
-    override is needed to exercise the first-insert path cleanly.)
+    Point inputs.image_ids at the seeded rows and give inputs.images_checksum a
+    unique value so the model-derived idempotency_key is fresh per run — the key
+    hashes the checksum (+scan_key/models/params), NOT image_ids, and the model
+    *rejects* a mismatching key. Let the model compute it, then bake it back in;
+    the CLI still sends this original dict. Returns (envelope, idempotency_key).
     """
+    from sleap_roots_contracts import ResultEnvelope
+
     env = json.loads(FIXTURE.read_text(encoding="utf-8"))
     env["provenance"]["inputs"]["image_ids"] = [str(i) for i in img_ids]
+    env["provenance"]["inputs"]["images_checksum"] = f"sha256:{uuid.uuid4().hex}{uuid.uuid4().hex}"
+    env["provenance"].pop("idempotency_key", None)
+    idem = ResultEnvelope.model_validate(env).provenance.idempotency_key
     env["provenance"]["idempotency_key"] = idem
-    return env
+    return env, idem
 
 
 def test_ingest_writes_source_and_traits_then_noop(seeded, authed_cli, tmp_path):
-    scan_id, img_ids, idem, cur = seeded
+    scan_id, envelope, idem, cur = seeded
     path = tmp_path / "env.json"
-    path.write_text(json.dumps(_envelope_for(img_ids, idem)), encoding="utf-8")
+    path.write_text(json.dumps(envelope), encoding="utf-8")
 
     # First ingest resolves the seeded scan and writes.
     r1 = CliRunner().invoke(cli, ["cyl", "ingest-result", str(path), "--json"])
