@@ -21,6 +21,15 @@ with no reader change. The reader resolves "latest cleaned" as whichever ``qc`` 
 committed most recently, so — as with ``qc_clean`` vs ``run_qc_workflow`` — prefer the
 natural clean→trim order once per experiment.
 
+**Order-dependence caveat (inherited).** Because the trim shares the ``qc`` class +
+``CLEANED_CSV_NAME``, "latest cleaned" is *order-dependent*: re-running ``qc_clean``
+after ``remove_outliers`` commits a newer un-trimmed clean, silently reverting "latest"
+so a later ``require_clean=True`` consumer reads the *un-trimmed* frame — no error or
+warning fires. This is the same caveat ``qc_clean`` documents for the shared class, and
+a dedicated ``outliers`` tool class is the tracked real fix (tasks 7.2). Until then each
+run records ``based_on_version = <cleaned source>`` in its provenance, so an un-trim is
+at least **auditable** from the manifest; the natural clean→trim order stays monotonic.
+
 **Structured errors, body-mapped.** ``require_clean`` with no cleaned version, a
 degenerate trim (the delegate raises ``ValueError``/``OutlierRemovalError`` when the
 trim leaves too few samples or no non-constant trait), a non-unique index, a
@@ -39,11 +48,12 @@ data fit the χ² assumption; the returned ``goodness_of_fit`` dict carries a
 from __future__ import annotations
 
 import json
-from typing import Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 import pandas as pd
 from pydantic import BaseModel, Field
 from sleap_roots_analyze import plot_outlier_analysis, remove_outlier_samples
+from sleap_roots_analyze.outlier_removal import OutlierRemovalError
 
 from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
 from bloom_mcp.contract import register as _contract_register
@@ -56,10 +66,19 @@ from bloom_mcp.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME
 from bloom_mcp.tools import _ports
 
+if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph (Tier-0)
+    from matplotlib.figure import Figure
+
 _TOOL_CLASS = "qc"
 _REPORT_NAME = "outlier_report.json"
 
 _METHODS = ("mahalanobis", "isolation_forest")
+
+# ``goodness_of_fit.fit_quality`` values (mahalanobis chi-squared fit) whose flagged
+# set should NOT be trusted as-is — mirrors the delegate's own ✗ tiering
+# (outlier_detection: excellent/good ✓, acceptable ⚠, poor/very_poor ✗). Surfaced as
+# the machine-visible ``fit_is_trustworthy`` so a downstream tool need not parse prose.
+_UNTRUSTWORTHY_FIT = frozenset({"poor", "very_poor", "unknown"})
 
 
 class RemoveOutliersParams(BaseModel):
@@ -133,6 +152,12 @@ class RemoveOutliersResult(BaseModel):
     threshold_type: Optional[str] = None
     threshold_value: Optional[float] = None
     goodness_of_fit: Optional[dict] = None
+    # Machine-visible trust flag derived from goodness_of_fit.fit_quality: False when
+    # the mahalanobis chi-squared fit is poor/very_poor (the flagged set is unreliable —
+    # prefer isolation_forest), True when acceptable+, None when there is no fit report
+    # (isolation_forest has no chi-squared assumption). Lets the next tool gate on the
+    # threshold's trustworthiness without re-parsing the goodness_of_fit dict / prose.
+    fit_is_trustworthy: Optional[bool] = None
     outlier_barcodes: list[str]
     run_ref: str
     version_dir: str
@@ -205,6 +230,42 @@ _RELAX_REMEDY = (
     "contamination for isolation_forest) so more samples survive, and retry."
 )
 
+# A structural precondition failure (non-unique index / duplicate columns) is NOT a
+# too-aggressive trim, so "relax the threshold" would mislead. The cleaned frame is
+# malformed; re-cleaning is the fix.
+_STRUCTURAL_REMEDY = (
+    "The cleaned input violates a detector precondition (e.g. a non-unique index or "
+    "duplicate column names) that relaxing the threshold cannot fix. Re-run qc_clean "
+    "to produce a well-formed cleaned table, then retry."
+)
+
+
+def _rows_subset(frame: ExperimentFrame, trimmed_df: pd.DataFrame) -> bool:
+    """True when the trimmed rows are a subset of the cleaned input's rows.
+
+    Prefer the detected sample-id column — it is the row identity that survives
+    ``to_csv(index=False)`` and that a downstream reader keys on; fall back to the
+    frame index when no id column is detected (a barcode-less cleaned frame). Outlier
+    removal only drops rows, so this always holds against the real delegate — the
+    check is defense-in-depth against a delegate that *returns* a mutated frame.
+    """
+    id_col = frame.sample_id_col
+    if id_col and id_col in trimmed_df.columns and id_col in frame.df.columns:
+        return set(trimmed_df[id_col]) <= set(frame.df[id_col])
+    return set(trimmed_df.index) <= set(frame.df.index)
+
+
+def _fit_is_trustworthy(goodness_of_fit: Optional[dict]) -> Optional[bool]:
+    """Derive the machine-visible trust flag from the delegate's fit report.
+
+    ``None`` when there is no fit report (isolation_forest — no chi-squared assumption
+    to trust); otherwise ``False`` for a poor/very_poor/unknown ``fit_quality`` and
+    ``True`` for acceptable-or-better. See :data:`_UNTRUSTWORTHY_FIT`.
+    """
+    if not isinstance(goodness_of_fit, dict):
+        return None
+    return goodness_of_fit.get("fit_quality") not in _UNTRUSTWORTHY_FIT
+
 
 @as_mcp_tool(
     input_model=RemoveOutliersParams,
@@ -214,7 +275,15 @@ _RELAX_REMEDY = (
 def remove_outliers(
     params: RemoveOutliersParams, *, random_state: int, provenance: Provenance
 ) -> RemoveOutliersResult:
-    """Trim outlier samples from ``experiment``'s cleaned table and persist the result."""
+    """Trim outlier samples from a cleaned experiment and persist the trimmed run.
+
+    Returns a numeric outlier report by default (no table inline). Read
+    ``fit_is_trustworthy`` / ``goodness_of_fit.fit_quality``: when the mahalanobis
+    chi-squared fit is poor (``fit_is_trustworthy=false``, as on turface_19), the
+    flagged set is unreliable — prefer ``method="isolation_forest"`` with an explicit
+    ``contamination``. Set ``include_plots=true`` when the user wants to see or inspect
+    the flagged outliers; the figures are persisted and returned as resource links.
+    """
     reader = _ports.reader()
     store = _ports.store()
 
@@ -230,16 +299,28 @@ def remove_outliers(
             remedy="Run qc_clean on this experiment first, then remove_outliers.",
         ) from None
 
+    # This run derives from the cleaned version it trims, not from raw — record that in
+    # provenance so the manifest lineage is honest (the Provenance default is "raw",
+    # correct for qc_clean the raw-producer, wrong for this cleaned-consumer). Also what
+    # makes an order-dependent un-trim (a later qc_clean re-run reverting "latest
+    # cleaned") auditable after the fact.
+    provenance.based_on_version = frame.source
+
     if params.trait_columns is not None:
         _validate_trait_subset(frame, params.trait_columns, params.experiment)
     trait_cols = params.trait_columns or frame.trait_cols
     detect_kwargs = _detect_kwargs(params)
 
     # Delegate ALL detection + removal. No outlier logic lives here. The delegate
-    # *raises* ValueError (OutlierRemovalError is a ValueError subclass) on a degenerate
-    # trim (too few survivors / no non-constant trait), a non-unique index, or a bad
-    # detect kwarg — the common real-world misuse. Map it to a structured, self-correctable
+    # *raises* on the common real-world misuse — mapped to a structured, self-correctable
     # error in the body (errors= would only yield tool_error, never assumption_violated).
+    # Distinguish the two raise families so the remedy is not misleading:
+    #   * OutlierRemovalError (a ValueError subclass) — the trim itself was too
+    #     aggressive (below min survivors / no non-constant trait) → relax the threshold.
+    #   * a bare ValueError — a structural precondition failed (non-unique index /
+    #     duplicate columns), which relaxing the threshold cannot fix → re-clean.
+    # (Cross-method detect kwargs are pre-empted by _detect_kwargs above; the cleaned
+    # input is NaN-free, so the NaN precondition path is unreachable here.)
     try:
         trimmed_df, report = remove_outlier_samples(
             frame.df,
@@ -249,11 +330,17 @@ def remove_outliers(
             **_role_kwargs(frame),
             **detect_kwargs,
         )
-    except ValueError as exc:
+    except OutlierRemovalError as exc:
         raise BloomMCPError(
             code="assumption_violated",
             message=f"Outlier removal could not produce an analysis-ready table: {exc}",
             remedy=_RELAX_REMEDY,
+        ) from None
+    except ValueError as exc:
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=f"Outlier removal could not run on this cleaned table: {exc}",
+            remedy=_STRUCTURAL_REMEDY,
         ) from None
 
     n_input = int(report["n_input_samples"])
@@ -261,19 +348,46 @@ def remove_outliers(
     n_output = int(report["n_output_samples"])
 
     # Defense-in-depth guard before any commit — for a delegate that *returns* (rather
-    # than raises on) a degenerate frame. Trimming only drops rows and the input is
-    # already NaN-free, so a NaN-bearing or empty trimmed table is not reachable in
-    # principle; this makes that guarantee explicit and version-independent, so no
-    # corrupt "cleaned" artifact can be resolved by a downstream require_clean consumer.
-    residual_nans = int(trimmed_df[trait_cols].isna().sum().sum())
-    if n_output <= 0 or n_output > n_input or residual_nans > 0:
+    # than raises on) a degenerate frame. Trimming only drops rows from an already
+    # NaN-free input, so a NaN-bearing, empty, grown, row-foreign, or trait-column-
+    # mutated table is not reachable in principle; asserting it here makes the spec's
+    # guarantee ("a row-subset of the cleaned input with its trait columns unchanged,
+    # no NaNs, at least one sample") explicit and version-independent, so no corrupt
+    # "cleaned" artifact can be resolved by a downstream require_clean consumer. The
+    # row-subset / trait-identity checks inspect the returned frame itself — not the
+    # delegate's self-reported n_input/n_output counts, which would only validate the
+    # delegate against itself. (n_output > n_input cannot fire against the real
+    # row-dropping delegate; it is retained as defense-in-depth parity with qc_clean.)
+    # Compute missing_traits first and scope the NaN scan to present columns so a
+    # dropped trait column surfaces as a structured guard failure, not a KeyError.
+    missing_traits = [c for c in trait_cols if c not in trimmed_df.columns]
+    present_traits = [c for c in trait_cols if c in trimmed_df.columns]
+    residual_nans = (
+        int(trimmed_df[present_traits].isna().sum().sum()) if present_traits else 0
+    )
+    rows_are_subset = _rows_subset(frame, trimmed_df)
+    if (
+        n_output <= 0
+        or n_output > n_input
+        or residual_nans > 0
+        or missing_traits
+        or not rows_are_subset
+    ):
         reason = (
             "removed every sample"
             if n_output <= 0
             else (
                 "returned more samples than it received"
                 if n_output > n_input
-                else f"left {residual_nans} NaN cell(s) in the trait columns"
+                else (
+                    f"left {residual_nans} NaN cell(s) in the trait columns"
+                    if residual_nans > 0
+                    else (
+                        f"dropped or renamed the trait column(s) {missing_traits}"
+                        if missing_traits
+                        else "returned rows that are not a subset of the cleaned input"
+                    )
+                )
             )
         )
         raise BloomMCPError(
@@ -284,10 +398,13 @@ def remove_outliers(
 
     # Optional plots — persistence only, no plotting logic. Generate before persisting so
     # an unknown requested key fails as invalid_input with no run committed.
-    figures: dict[str, "object"] = {}
+    figures: dict[str, "Figure"] = {}
     if params.include_plots:
         figures = _make_figures(frame, trait_cols, params, random_state, detect_kwargs)
 
+    # No source_csv= (unlike qc_clean): remove_outliers reads a persisted *cleaned*
+    # version, not a raw CSV on the local FS, so there is no local input file to
+    # content-address the run to.
     run = store.create_run(
         experiment=params.experiment,
         tool_class=_TOOL_CLASS,
@@ -302,14 +419,20 @@ def remove_outliers(
     (run.staging_dir / _REPORT_NAME).write_text(
         json.dumps(convert_to_json_serializable(report), indent=2)
     )
-    for name, fig in figures.items():
-        rel = f"{name}.png"
-        fig.savefig(run.staging_dir / rel, bbox_inches="tight")
-        _close_figure(fig)
-        outputs[rel] = rel
+    # try/finally so a mid-loop savefig failure still closes every remaining figure
+    # (the create_run staging dir is cleaned only by commit / the store's teardown).
+    try:
+        for name, fig in figures.items():
+            rel = f"{name}.png"
+            fig.savefig(run.staging_dir / rel, bbox_inches="tight")
+            outputs[rel] = rel
+    finally:
+        for fig in figures.values():
+            _close_figure(fig)
 
     stored = store.commit(run, outputs)
 
+    goodness_of_fit = convert_to_json_serializable(report.get("goodness_of_fit"))
     return RemoveOutliersResult(
         experiment=params.experiment,
         source=frame.source,
@@ -324,8 +447,13 @@ def remove_outliers(
             if report.get("threshold_value") is not None
             else None
         ),
-        goodness_of_fit=convert_to_json_serializable(report.get("goodness_of_fit")),
-        outlier_barcodes=[str(b) for b in report.get("outlier_barcodes", [])],
+        goodness_of_fit=goodness_of_fit,
+        fit_is_trustworthy=_fit_is_trustworthy(goodness_of_fit),
+        # The delegate sets outlier_barcodes to None (not []) when the frame has no
+        # barcode column, and the key is always present — so `.get(..., [])` returns
+        # None and `for b in None` would crash into an opaque internal_error. `or []`
+        # coerces that valid barcode-less return to an empty list.
+        outlier_barcodes=[str(b) for b in (report.get("outlier_barcodes") or [])],
         run_ref=stored.run_ref,
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,
@@ -339,13 +467,16 @@ def _make_figures(
     params: RemoveOutliersParams,
     random_state: int,
     detect_kwargs: dict[str, float],
-) -> dict[str, "object"]:
+) -> dict[str, "Figure"]:
     """Delegate figure generation to plot_outlier_analysis; validate a requested subset.
 
     The MCP owns no plotting logic: it persists what the delegate returns. An explicit
     ``plots`` subset is validated against the method's available figure keys (unknown →
     invalid_input) rather than surfacing the delegate's opaque ValueError.
     """
+    # Import matplotlib lazily and select the headless Agg backend only on the plots
+    # path — this preserves the Tier-0 import-clean guarantee (matplotlib stays out of
+    # the module's runtime import graph), unlike the top-level viz_tools/correlation_tools.
     import matplotlib
 
     matplotlib.use("Agg")
@@ -378,7 +509,7 @@ def _make_figures(
     return selected
 
 
-def _close_figure(fig: "object") -> None:
+def _close_figure(fig: "Figure") -> None:
     try:
         import matplotlib.pyplot as plt
 

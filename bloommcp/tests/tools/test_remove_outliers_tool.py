@@ -114,6 +114,9 @@ def test_goodness_of_fit_is_dict_with_fit_quality_and_optional_types(injected_po
     assert result.goodness_of_fit["fit_quality"] == "very_poor"
     assert result.threshold_type == "chi_squared"
     assert isinstance(result.threshold_value, float)
+    # I6 — the machine-visible trust flag mirrors the poor fit so a downstream tool
+    # need not parse the goodness_of_fit dict / the description prose.
+    assert result.fit_is_trustworthy is False
 
 
 # ── 3.1 tools/list presence ─────────────────────────────────────────────────
@@ -428,6 +431,8 @@ def test_isolation_forest_happy_path_has_null_threshold_and_fit(injected_ports):
     assert result.threshold_type is None
     assert result.threshold_value is None
     assert result.goodness_of_fit is None
+    # I6 — no chi-squared assumption, so trustworthiness is not applicable (None).
+    assert result.fit_is_trustworthy is None
     assert result.n_output_samples > 0
 
 
@@ -491,3 +496,175 @@ def test_second_run_increments_version_and_supersedes_latest(injected_ports):
     _run()
     assert [r.run_ref for r in store.list_runs(_EXPERIMENT, "qc")] == ["v1", "v2"]
     assert store.get_run(_EXPERIMENT, "qc", "latest").run_ref == "v2"
+
+
+# ── B1: a barcode-less cleaned frame must not crash on None outlier_barcodes ──
+
+
+def _barcodeless_cleaned_df() -> pd.DataFrame:
+    """A NaN-free, unique-indexed cleaned frame with NO barcode/sample-id column.
+
+    ``detect_columns`` reports ``sample_id_col=None``, so ``_role_kwargs`` omits
+    ``barcode_col`` and the delegate defaults to ``"Barcode"`` — absent here — making
+    ``remove_outlier_samples`` return ``outlier_barcodes=None`` (a *valid* barcode-less
+    result), which is the B1 crash trigger before the ``or []`` coercion.
+    """
+    return pd.DataFrame(
+        {
+            "featA": [float((i * 7) % 13) + 0.01 * i for i in range(60)],
+            "featB": [float((i * 3) % 11) + 0.02 * i for i in range(60)],
+            "featC": [float((i * 5) % 17) + 0.03 * i for i in range(60)],
+        }
+    )
+
+
+def test_barcodeless_cleaned_frame_returns_empty_barcodes_not_crash(monkeypatch):
+    """B1 (real delegate, no mock) — a cleaned frame with no barcode column makes the
+    delegate return ``outlier_barcodes=None``; the tool must coerce that to ``[]`` and
+    still persist, not crash into an opaque ``internal_error``. The role-less spy tests
+    mask this by returning ``[]``, and turface_19 has a Barcode column, so this path
+    is otherwise uncovered.
+    """
+    reader = FakeReader()
+    reader.add_cleaned_version(
+        "nobarcode.csv", "v1", _barcodeless_cleaned_df(), make_latest=True
+    )
+    store = FakeResultStore()
+    _ports.configure(reader=reader, store=store)
+    try:
+        result = remove_outliers(
+            RemoveOutliersParams(experiment="nobarcode.csv", method="isolation_forest")
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert result.outlier_barcodes == []  # None coerced to [] — no crash
+    assert 0 < result.n_output_samples <= result.n_input_samples
+    assert store.list_runs("nobarcode.csv", "qc")  # the trimmed run still persisted
+
+
+# ── I2: provenance records the cleaned source it derives from (not "raw") ─────
+
+
+def test_provenance_records_based_on_version_of_cleaned_source(
+    injected_ports, monkeypatch
+):
+    """I2 — remove_outliers trims a cleaned ``v<N>``, so ``based_on_version`` must be
+    that cleaned source, not the ``Provenance`` ``"raw"`` default (which would falsely
+    claim the trim derived from raw data). Captured at ``create_run``, where the value
+    is projected into the manifest's ``VersionEntry`` lineage.
+    """
+    _reader, store = injected_ports
+    captured: dict[str, object] = {}
+    real_create = store.create_run
+
+    def _spy_create(**kwargs):
+        captured["based_on_version"] = kwargs["provenance"].based_on_version
+        return real_create(**kwargs)
+
+    monkeypatch.setattr(store, "create_run", _spy_create)
+    result = _run()
+
+    assert captured["based_on_version"] == "v1_cleaned" == result.source
+
+
+# ── I1/I4(a): own pre-commit guard rejects a degenerate *returned* frame ─────
+
+
+@pytest.fixture
+def guard_ports():
+    """A cleaned synthetic frame + fakes so a monkeypatched delegate can *return*
+    (not raise) a degenerate frame and exercise the tool's own pre-commit guard."""
+    reader = FakeReader()
+    reader.add_cleaned_version(
+        "guard.csv", "v1", _clean_synthetic(["t1", "t2", "t3"]), make_latest=True
+    )
+    store = FakeResultStore()
+    _ports.configure(reader=reader, store=store)
+    try:
+        yield store
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def _degenerate_report(n_input: int, n_output: int) -> dict:
+    return {
+        "method": "mahalanobis",
+        "n_input_samples": n_input,
+        "n_outliers": n_input - n_output,
+        "n_output_samples": n_output,
+        "removal_fraction": (n_input - n_output) / n_input if n_input else 0.0,
+        "outlier_barcodes": [],
+        "threshold_type": None,
+        "threshold_value": None,
+        "goodness_of_fit": None,
+    }
+
+
+def test_own_guard_rejects_returned_frame_with_residual_nan(guard_ports, monkeypatch):
+    """I4(a) — a delegate that RETURNS (not raises) a NaN-bearing trimmed frame is
+    rejected before commit (the parity qc_clean tests explicitly, this masked here)."""
+
+    def _spy(frame_df, trait_cols=None, **kwargs):
+        keep = frame_df.iloc[:-1].copy()
+        keep.iloc[0, 0] = float("nan")  # residual NaN in a kept trait cell
+        return keep, _degenerate_report(len(frame_df), len(keep))
+
+    monkeypatch.setattr(remove_outliers_tool, "remove_outlier_samples", _spy)
+    with pytest.raises(BloomMCPError) as exc:
+        remove_outliers(RemoveOutliersParams(experiment="guard.csv"))
+    assert exc.value.code == "assumption_violated"
+    assert guard_ports.list_runs("guard.csv", "qc") == []
+
+
+def test_own_guard_rejects_returned_frame_dropping_all_samples(
+    guard_ports, monkeypatch
+):
+    """I4(a) — a delegate returning an empty trimmed frame is rejected, no run."""
+
+    def _spy(frame_df, trait_cols=None, **kwargs):
+        return frame_df.iloc[0:0].copy(), _degenerate_report(len(frame_df), 0)
+
+    monkeypatch.setattr(remove_outliers_tool, "remove_outlier_samples", _spy)
+    with pytest.raises(BloomMCPError) as exc:
+        remove_outliers(RemoveOutliersParams(experiment="guard.csv"))
+    assert exc.value.code == "assumption_violated"
+    assert guard_ports.list_runs("guard.csv", "qc") == []
+
+
+def test_own_guard_rejects_returned_rows_not_subset_of_input(guard_ports, monkeypatch):
+    """I1/I4(a) — a delegate returning rows that are NOT a subset of the cleaned input
+    (the spec's row-subset guarantee) is rejected before commit, so no row-foreign
+    "cleaned" artifact can be resolved downstream."""
+
+    def _spy(frame_df, trait_cols=None, **kwargs):
+        foreign = frame_df.copy()
+        foreign.index = range(10_000, 10_000 + len(foreign))  # foreign row labels
+        return foreign, _degenerate_report(len(frame_df), len(foreign))
+
+    monkeypatch.setattr(remove_outliers_tool, "remove_outlier_samples", _spy)
+    with pytest.raises(BloomMCPError) as exc:
+        remove_outliers(RemoveOutliersParams(experiment="guard.csv"))
+    assert exc.value.code == "assumption_violated"
+    assert guard_ports.list_runs("guard.csv", "qc") == []
+
+
+# ── I4(b): trait_columns subset validation (unknown / non-numeric) ───────────
+
+
+def test_unknown_trait_column_is_invalid_input(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        _run(trait_columns=["definitely_not_a_column"])
+    assert exc.value.code == "invalid_input"
+    assert "definitely_not_a_column" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "qc") == []
+
+
+def test_non_numeric_trait_column_is_invalid_input(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        _run(trait_columns=["Barcode"])  # a metadata/identifier column — non-numeric
+    assert exc.value.code == "invalid_input"
+    assert "Barcode" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "qc") == []

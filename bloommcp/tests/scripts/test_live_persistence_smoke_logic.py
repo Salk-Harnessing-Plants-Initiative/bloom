@@ -174,6 +174,7 @@ def _good_ro_kwargs():
     return dict(
         schema_version=3,
         seed=42,
+        tool="remove_outliers",
         output_keys={
             "_cleaned.csv": "bloommcp_output/qc_turface_raw/v2/_cleaned.csv",
             "outlier_report.json": "bloommcp_output/qc_turface_raw/v2/outlier_report.json",
@@ -186,6 +187,15 @@ def _good_ro_kwargs():
 def test_ro_persist_checks_all_pass_on_valid_v3_entry():
     checks = smoke.ro_persist_checks(**_good_ro_kwargs())
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_ro_persist_checks_flags_wrong_tool():
+    # The provenance-based composition anchor: if the latest qc run is not the trim
+    # (e.g. a stray qc_clean re-run clobbered latest), the composition did not compose.
+    kwargs = _good_ro_kwargs()
+    kwargs["tool"] = "qc_clean"
+    checks = smoke.ro_persist_checks(**kwargs)
+    assert any("latest qc run is the trim" in c.name and not c.ok for c in checks)
 
 
 def test_ro_persist_checks_flags_wrong_seed():
@@ -227,13 +237,30 @@ def test_ro_trimmed_read_checks_flags_raw_source():
     assert any("resolves the trimmed artifact" in c.name and not c.ok for c in checks)
 
 
-def test_ro_trimmed_read_checks_flags_no_rows_removed():
-    # If nothing was trimmed (n_output == n_pre_trim) the composition did not compose.
+def test_ro_trimmed_read_checks_pass_on_zero_flagged_no_op_trim():
+    # A no-op trim (n_output == n_pre_trim, e.g. mahalanobis flags 0 on the smoke's
+    # own cleaned frame) is NOT a regression — the relaxed <= bound must pass it. The
+    # trim's persistence is proven separately by the ro_persist_checks tool anchor.
     checks = smoke.ro_trimmed_read_checks(
         "v2_cleaned", trait_nan_cells=0, n_output=187, n_pre_trim=187
     )
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_ro_trimmed_read_checks_flags_grown_or_empty_frame():
+    # A trim that GREW the frame (n_output > n_pre_trim) or emptied it is a real
+    # regression the row-count bound still catches.
+    grown = smoke.ro_trimmed_read_checks(
+        "v2_cleaned", trait_nan_cells=0, n_output=200, n_pre_trim=187
+    )
     assert any(
-        "fewer rows than the pre-trim clean" in c.name and not c.ok for c in checks
+        "no more rows than the pre-trim clean" in c.name and not c.ok for c in grown
+    )
+    empty = smoke.ro_trimmed_read_checks(
+        "v2_cleaned", trait_nan_cells=0, n_output=0, n_pre_trim=187
+    )
+    assert any(
+        "no more rows than the pre-trim clean" in c.name and not c.ok for c in empty
     )
 
 

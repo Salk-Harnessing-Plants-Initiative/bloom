@@ -44,10 +44,14 @@ A third, ``remove_outliers`` leg (#378) trims the cleaned version through the sa
   * ``remove_outliers(experiment="turface_raw.csv", method="mahalanobis", seed=42)`` commits a
     versioned ``qc`` run (same class — its trimmed ``_cleaned.csv`` becomes the newest cleaned
     version) whose outputs include ``_cleaned.csv`` and ``outlier_report.json``, with a schema-v3
-    manifest recording the resolved ``seed`` and matching ``output_sha256`` for both artifacts;
+    manifest recording the resolved ``seed``, ``tool == "remove_outliers"`` (the composition
+    anchor), and matching ``output_sha256`` for both artifacts;
   * a fresh ``require_clean=True`` read then resolves the **trimmed** version (``v<N>_cleaned``)
-    with *fewer* rows than the pre-trim clean and zero NaN trait cells — proving
-    qc_clean → remove_outliers → require_clean end-to-end.
+    with *no more* rows than the pre-trim clean and zero NaN trait cells — proving
+    qc_clean → remove_outliers → require_clean end-to-end. (The row bound is ``<=``, not a
+    strict ``<``: the smoke cleans at its own threshold, so mahalanobis@seed42 may flag zero
+    outliers on that frame — a no-op trim, not a regression; the trim's persistence as the
+    resolvable latest is anchored on the ``tool`` provenance check above, not the row delta.)
 
 Every failure mode (workflow error, hash mismatch, read-after-write timeout, import leak)
 routes through the per-check summary and a non-zero exit — never an unlabelled traceback.
@@ -264,6 +268,7 @@ def ro_persist_checks(
     *,
     schema_version: object,
     seed: object,
+    tool: object,
     output_keys: dict,
     output_sha256: dict,
     expected_outputs: set,
@@ -273,7 +278,10 @@ def ro_persist_checks(
     The #378 analogue of :func:`qc_persist_checks`. Unlike ``qc_clean``, outlier
     detection is *stochastic*, so the run records the resolved integer ``seed`` — asserted
     here — and its committed outputs expose the trimmed ``_cleaned.csv`` + the
-    ``outlier_report.json`` under one key-set.
+    ``outlier_report.json`` under one key-set. The ``tool == "remove_outliers"`` check is
+    the *provenance-based composition anchor*: it proves the trim actually persisted and
+    became the newest ``qc`` run (the one a later ``require_clean`` read resolves),
+    independent of how many rows the trim happened to drop.
     """
     return [
         Check(
@@ -285,6 +293,11 @@ def ro_persist_checks(
             f"remove_outliers: seed == {RO_SEED}",
             seed == RO_SEED,
             f"seed={seed!r}",
+        ),
+        Check(
+            "remove_outliers: latest qc run is the trim (tool == 'remove_outliers')",
+            tool == "remove_outliers",
+            f"tool={tool!r}",
         ),
         Check(
             "remove_outliers: committed outputs include _cleaned.csv + outlier_report.json",
@@ -302,16 +315,24 @@ def ro_persist_checks(
 def ro_trimmed_read_checks(
     source: object, trait_nan_cells: object, n_output: object, n_pre_trim: object
 ) -> list[Check]:
-    """Assert a ``require_clean`` read resolves the TRIMMED artifact: fewer rows, no NaN.
+    """Assert a ``require_clean`` read resolves the TRIMMED artifact: no NaN, no growth.
 
     The payoff of the qc_clean -> remove_outliers chain: after the trim commits, the
     reader must resolve the committed ``v<N>_cleaned`` version (never ``raw``), and that
-    trimmed frame must have *fewer* rows than the pre-trim clean and no NaN trait cells.
+    trimmed frame must be non-empty, carry no NaN trait cells, and have **no more** rows
+    than the pre-trim clean.
+
+    The row-count bound is ``<=`` (not a strict ``<``) on purpose: the smoke cleans at
+    its own ``qc_clean`` threshold — a *different* frame than the unit golden's
+    canonical-default 158 — so mahalanobis@seed42 may legitimately flag **zero** outliers
+    on it. A strict ``<`` would false-fail that no-op trim as a regression. That the trim
+    actually persisted and became the resolvable latest is proven separately by the
+    provenance anchor in :func:`ro_persist_checks` (``tool == "remove_outliers"``).
     """
-    fewer = (
+    no_growth = (
         isinstance(n_output, int)
         and isinstance(n_pre_trim, int)
-        and 0 < n_output < n_pre_trim
+        and 0 < n_output <= n_pre_trim
     )
     return [
         Check(
@@ -320,8 +341,8 @@ def ro_trimmed_read_checks(
             f"source={source!r}",
         ),
         Check(
-            "remove_outliers: trimmed frame has fewer rows than the pre-trim clean",
-            fewer,
+            "remove_outliers: trimmed frame has no more rows than the pre-trim clean",
+            no_growth,
             f"n_output={n_output!r} n_pre_trim={n_pre_trim!r}",
         ),
         Check(
@@ -628,6 +649,7 @@ def main() -> int:
                 ro_persist_checks(
                     schema_version=ro_manifest.get("manifest_schema_version"),
                     seed=ro_stored.seed,
+                    tool=ro_stored.tool,
                     output_keys=ro_stored.output_keys,
                     output_sha256=ro_stored.output_sha256,
                     expected_outputs={CLEANED_CSV_NAME, RO_REPORT_NAME},

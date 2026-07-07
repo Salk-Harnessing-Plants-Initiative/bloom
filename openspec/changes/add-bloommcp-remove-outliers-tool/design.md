@@ -21,10 +21,14 @@ next QC step. The constraints are fixed by the shipped code and the shipped dele
   change marks `assumption_violated` (un-cleaned input, degenerate trim, non-unique index) MUST
   be body-mapped, not declared via `errors=`.
 - The degenerate-trim raise is `OutlierRemovalError`, a **`ValueError` subclass** living at
-  `sleap_roots_analyze.outlier_removal.OutlierRemovalError` (**not** importable top-level), so a
-  body-level `except ValueError` catches it without a submodule import. Cross-method
-  `**detect_kwargs`, a non-unique index, and an unknown plot `which=` also raise bare
-  `ValueError` from the delegate — all caught by the same body handling.
+  `sleap_roots_analyze.outlier_removal.OutlierRemovalError` (**not** importable top-level, but
+  importable from the submodule). A bare `except ValueError` alone would catch it, but the tool
+  imports `OutlierRemovalError` and splits the handler in two so the remedy is not misleading:
+  the `OutlierRemovalError` case (the trim was too aggressive) gets the relax-the-threshold
+  remedy, while a **bare** `ValueError` (a structural precondition — non-unique index / duplicate
+  columns, which relaxing cannot fix) gets a re-clean remedy. Cross-method `**detect_kwargs` are
+  pre-empted by the up-front validation, and the cleaned input is NaN-free, so those `ValueError`
+  paths are unreachable here; an unknown plot `which=` is likewise validated in the body first.
 - `ExperimentReader.load_experiment(name, *, version="latest", require_clean=False)` returns
   an `ExperimentFrame` exposing `df`, `trait_cols`, the detected
   `genotype_col`/`replicate_col`/`sample_id_col`, and a `source` label. With
@@ -126,32 +130,51 @@ next QC step. The constraints are fixed by the shipped code and the shipped dele
   upstream, unexposed.
 - **Decision 6: body-map the degenerate trim to `assumption_violated`, persist nothing.** The
   delegate raises `OutlierRemovalError` (a `ValueError` subclass) when the trim leaves
-  `< MIN_SAMPLES_FOR_ANALYSIS` survivors or no non-constant trait. The tool wraps the delegate
-  call in `except ValueError` and **explicitly raises `BloomMCPError(code="assumption_violated",
-  remedy="raise chi2_percentile / lower contamination")`** — it does **not** declare `ValueError`
-  in `errors=` (that would yield `tool_error`, not `assumption_violated`; see Context). As
-  defense-in-depth for a delegate that *returns* rather than raises a degenerate frame, the tool
-  also runs its **own pre-commit guard** (parity with `qc_clean`): assert `trimmed[trait_cols]`
-  is NaN-free, `0 < n_output_samples <= n_input_samples`, and rows ⊆ input rows before `commit`.
-  No run is persisted on any of these paths.
+  `< MIN_SAMPLES_FOR_ANALYSIS` survivors or no non-constant trait. The tool catches
+  `OutlierRemovalError` and **explicitly raises `BloomMCPError(code="assumption_violated",
+  remedy="raise chi2_percentile / lower contamination")`**, and a **separate** `except ValueError`
+  catches a structural precondition failure (non-unique index / duplicate columns) with a
+  re-clean remedy instead of the misleading relax-the-threshold one — it does **not** declare
+  `ValueError` in `errors=` (that would yield `tool_error`, not `assumption_violated`; see
+  Context). As defense-in-depth for a delegate that *returns* rather than raises a degenerate
+  frame, the tool also runs its **own pre-commit guard** (parity with `qc_clean`): assert
+  `trimmed[trait_cols]` is NaN-free, the trait columns are unchanged (none dropped/renamed),
+  `0 < n_output_samples <= n_input_samples`, and the returned rows are a subset of the cleaned
+  input (by the sample-id column when present, else the index) before `commit`. The row-subset /
+  trait-identity checks inspect the returned frame — not the delegate's self-reported counts. No
+  run is persisted on any of these paths.
 - **Decision 7: return the numeric report inline + links; never the table.** Inline: `method`,
   `n_input_samples`, `n_outliers`, `n_output_samples`, `removal_fraction`, and — typed to the
   delegate's real, method-dependent shape — `threshold_type: Optional[str]`,
   `threshold_value: Optional[float]`, `goodness_of_fit: Optional[dict]` (all three are `None`
   for `isolation_forest`; a non-Optional model would fail output validation on the iforest
-  path), plus the flagged `outlier_barcodes`. The trimmed CSV and `outlier_report.json` go to
-  `ResultStore` and come back as `resource_link`s (object keys + `manifest_path` + `run_ref`).
+  path), a machine-visible `fit_is_trustworthy: Optional[bool]` (Decision 8), plus the flagged
+  `outlier_barcodes` — coerced to `[]` when the delegate returns `None` (a barcode-less cleaned
+  frame: the delegate sets `outlier_barcodes=None` when no barcode column is present, and the key
+  is always present, so `.get(key, [])` would return `None` and crash `for b in None`; `or []`
+  guards it). The trimmed CSV and `outlier_report.json` go to `ResultStore` and come back as
+  `resource_link`s (object keys + `manifest_path` + `run_ref`). The stamped `Provenance` records
+  `based_on_version = frame.source` (the cleaned version trimmed, e.g. `v<N>_cleaned`) rather than
+  the `"raw"` default, so the manifest lineage is honest (contrast `qc_clean`, which legitimately
+  derives from raw).
 - **Decision 8: surface `goodness_of_fit` honestly and let it steer method choice.** On
   turface_19 the mahalanobis chi-squared assumption fits *poorly* and the delegate emits a
   `UserWarning`. `goodness_of_fit` is the delegate's **fit-report dict**
   (`{"test_type": …, "fit_quality": "very_poor", "p_value": …, "warning": …}`) — **not** a
   scalar string — so the tool returns the dict inline and steers on
-  `goodness_of_fit["fit_quality"]`. Its **description guides the agent**: *"Returns a numeric
-  outlier report by default. The `goodness_of_fit.fit_quality` field says whether the mahalanobis
-  chi-squared threshold is trustworthy; if it is poor, prefer `method='isolation_forest'` with an
-  explicit `contamination`. If the user wants to see or inspect the outliers or asks for a
-  figure, set `include_plots=true` — the figures are persisted and returned as resource links."*
-  No silent trust of a poorly-fit threshold.
+  `goodness_of_fit["fit_quality"]`. To make the steering **machine-visible** (not only prose an
+  agent may skip), the result also carries `fit_is_trustworthy: Optional[bool]`, derived from
+  `fit_quality`: `False` for poor/very_poor/unknown, `True` for acceptable-or-better, `None` for
+  `isolation_forest` (no chi-squared assumption). This mirrors the delegate's own ✓/⚠/✗ tiering
+  so a downstream tool can gate on it directly. The trim still commits (the field is advisory,
+  not a persistence gate — an aggressive but *analysis-ready* trim is not corrupt), but the next
+  tool can see the fit is untrustworthy without re-parsing the dict. Its **description guides the
+  agent**: *"Returns a numeric outlier report by default. Read `fit_is_trustworthy` /
+  `goodness_of_fit.fit_quality`: when the mahalanobis chi-squared fit is poor
+  (`fit_is_trustworthy=false`), prefer `method='isolation_forest'` with an explicit
+  `contamination`. Set `include_plots=true` when the user wants to see or inspect the outliers —
+  the figures are persisted and returned as resource links."* No silent trust of a poorly-fit
+  threshold.
 - **Decision 9: plots default off; `plots=None` persists all figures, an explicit `plots` maps
   1:1 to the delegate's `which=`.** With `include_plots=False` (default) the tool returns the
   report only — fast. With `include_plots=True` it calls `plot_outlier_analysis` (same

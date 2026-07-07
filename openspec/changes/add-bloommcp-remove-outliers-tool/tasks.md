@@ -241,3 +241,37 @@
 - [ ] 7.4 If `remove_outlier_samples` later exposes `return_detector_result=True` payloads worth
       persisting (e.g. per-sample distances), add them as an optional linked artifact — a
       localized mapping change, not duplicated logic.
+
+## 8. Review response (PR #400, 5-agent `/review-pr`) — reactive fixes
+
+- [x] 8.1 **B1 (blocking):** coerce the delegate's barcode-less `outlier_barcodes=None` return to
+      `[]` (`report.get("outlier_barcodes") or []`) so a cleaned frame with no barcode column no
+      longer crashes into an opaque `internal_error`. Add a real-delegate integration test on a
+      barcode-less cleaned frame (the role-less spy tests masked it by returning `[]`; turface_19
+      has a Barcode column so the golden never hits it).
+- [x] 8.2 **I1:** implement the spec's pre-commit guard fully — besides NaN-free + `0 <
+      n_output <= n_input`, verify the trait columns are unchanged (none dropped/renamed) and the
+      returned rows are a subset of the cleaned input (by the sample-id column when present, else
+      the index), inspecting the *returned frame* rather than the delegate's self-reported counts.
+      Add own-guard tests for a returned NaN frame, an all-dropped frame, and a row-foreign frame.
+- [x] 8.3 **I2:** set `provenance.based_on_version = frame.source` so the manifest records the
+      trim derived from the cleaned version (`v<N>_cleaned`), not the `"raw"` default; assert it
+      at `create_run`.
+- [x] 8.4 **I4:** add the two uncovered spec scenarios — the own-guard degenerate-return branch
+      (8.2) and the unknown/non-numeric `trait_columns` validator.
+- [x] 8.5 **I5:** relax the flaky live-smoke row-count leg from strict `<` to `<=` (a zero-outlier
+      no-op trim on the smoke's own cleaned frame is not a regression) and add a provenance-based
+      composition anchor (`tool == "remove_outliers"` on the latest `qc` run). Update the
+      smoke-logic unit tests.
+- [x] 8.6 **I6:** add a machine-visible `fit_is_trustworthy: Optional[bool]` to the result,
+      derived from `goodness_of_fit.fit_quality`, so a poor mahalanobis fit is visible to the next
+      tool without parsing the dict / description prose.
+- [x] 8.7 **Suggestions:** distinguish the structural (non-unique-index / duplicate-columns)
+      `ValueError` remedy from the degenerate-trim one (import `OutlierRemovalError`, split the
+      handler); type figures via a `TYPE_CHECKING` `matplotlib.figure.Figure` forward-ref instead
+      of `"object"`; wrap the plot-persist loop in `try/finally` so a mid-loop `savefig` failure
+      still closes every figure; add one-line comments for the deliberate `qc_clean` deviations
+      (lazy `matplotlib.use("Agg")`, omitted `source_csv=`) and the defense-in-depth
+      `n_output > n_input` branch.
+- [ ] 8.8 Re-run `/pre-merge` (black/ruff, full bloom-mcp suite, `uv lock --check`, server boot,
+      `openspec validate --strict`) — all green.

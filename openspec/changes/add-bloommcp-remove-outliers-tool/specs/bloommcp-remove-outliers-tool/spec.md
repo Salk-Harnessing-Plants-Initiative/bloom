@@ -113,6 +113,12 @@ the contract records the **resolved integer** seed (the given `seed`, or a fresh
 method-dependent, the output model SHALL type `threshold_type` as `Optional[str]`,
 `threshold_value` as `Optional[float]`, and `goodness_of_fit` as `Optional[dict]` (all `None`
 for `isolation_forest`), so a valid `isolation_forest` result does not fail output validation.
+The result SHALL also expose a machine-visible `fit_is_trustworthy: Optional[bool]` derived
+from `goodness_of_fit.fit_quality` — `False` when the mahalanobis chi-squared fit is
+poor/very_poor/unknown (the flagged set is unreliable), `True` when acceptable-or-better, and
+`None` for `isolation_forest` (no chi-squared assumption to trust) — so a downstream tool can
+gate on the threshold's trustworthiness without re-parsing the `goodness_of_fit` dict or the
+description prose.
 
 #### Scenario: Input/output schema round-trip
 
@@ -125,8 +131,8 @@ for `isolation_forest`), so a valid `isolation_forest` result does not fail outp
 #### Scenario: An isolation_forest result validates with null threshold and fit fields
 
 - **WHEN** `remove_outliers` runs with `method="isolation_forest"`
-- **THEN** the result validates with `threshold_type is None`, `threshold_value is None`, and
-  `goodness_of_fit is None`, and a run is persisted normally
+- **THEN** the result validates with `threshold_type is None`, `threshold_value is None`,
+  `goodness_of_fit is None`, and `fit_is_trustworthy is None`, and a run is persisted normally
 
 #### Scenario: An undeclared delegate failure surfaces scrubbed, without leaking internals
 
@@ -207,13 +213,19 @@ ground-truth outliers.
   fits poorly for the experiment
 - **THEN** the inline report includes `goodness_of_fit` as the delegate's fit-report dict, whose
   `fit_quality` reads `"very_poor"`, so the caller can judge the threshold's trustworthiness
+- **AND** the result's machine-visible `fit_is_trustworthy` is `False`, so a downstream tool can
+  gate on the fit without parsing the `goodness_of_fit` dict or the description prose
 
 ### Requirement: Remove Outliers Persists a Versioned Trimmed Cleaned Run and Returns Links
 
 The `remove_outliers` tool SHALL persist its outputs as a versioned run via the `ResultStore`
-port under tool class `qc`, carrying the contract-stamped `Provenance` into the manifest,
-writing the trimmed trait CSV under the shared `CLEANED_CSV_NAME` (`_cleaned.csv`) and the
-outlier report as `outlier_report.json`, and SHALL return the numeric report inline together
+port under tool class `qc`, carrying the contract-stamped `Provenance` into the manifest. It
+SHALL set that provenance's `based_on_version` to the cleaned source version it trimmed (e.g.
+`v<N>_cleaned`), not the `Provenance` `"raw"` default, so the manifest lineage honestly records
+that the trim derived from a cleaned version rather than from raw data (and so an order-dependent
+un-trim is auditable after the fact). It SHALL write the trimmed trait CSV under the shared
+`CLEANED_CSV_NAME` (`_cleaned.csv`) and the outlier report as `outlier_report.json`, and SHALL
+return the numeric report inline together
 with **`resource_link`s** to the persisted artifacts (the `run_ref`, the `manifest_path`, and
 the per-output object keys) — never the trimmed table inline. The persisted run SHALL be
 resolvable by the `ExperimentReader` as the newest **cleaned version** so any later
@@ -224,6 +236,8 @@ resolvable by the `ExperimentReader` as the newest **cleaned version** so any la
 - **WHEN** `remove_outliers` completes successfully
 - **THEN** a `StoredRun` is recorded for `(experiment, "qc")` with a `run_ref`, a manifest path,
   and the same `Provenance` (including the resolved integer `seed`) the contract stamped
+- **AND** the run's recorded `based_on_version` is the cleaned source it trimmed
+  (`v<N>_cleaned`), not `"raw"`
 - **AND** the committed outputs include the trimmed `_cleaned.csv` and `outlier_report.json`,
   and reloading `outlier_report.json` yields valid JSON carrying the report (`n_outliers`)
 
@@ -310,6 +324,8 @@ that are unit-testable with no live stack.
 
 - **WHEN** the smoke then calls `SupabaseReader().load_experiment(…, require_clean=True)` after
   the `remove_outliers` run commits
-- **THEN** the reader resolves the committed trimmed version (source `v<N>_cleaned`) with fewer
-  samples than the pre-trim clean
+- **THEN** the reader resolves the committed trimmed version (source `v<N>_cleaned`) with no more
+  samples than the pre-trim clean (a no-op trim — zero outliers flagged on the smoke's own
+  cleaned frame — is not a regression; the trim's persistence as the resolvable latest is
+  anchored on the run's `tool == "remove_outliers"` provenance, not the row delta)
 - **AND** the resolved frame's trait columns contain zero NaN cells
