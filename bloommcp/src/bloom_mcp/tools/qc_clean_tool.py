@@ -8,16 +8,29 @@ analyze#164): the MCP contains **no QC logic** — it does not run the full
 orchestration is analyze's, tested upstream), nor does it touch the vendored
 ``bloom_mcp.data_cleanup``.
 
+**Contract-valid, traceable inputs (#403).** ``qc_clean`` is the sole producer of
+the analysis-ready ``_cleaned.csv`` the downstream sleap-roots-analyze tools
+consume (``remove_outliers`` #378, ``pca_analysis`` #308). So it is the boundary
+that makes that artifact contract-valid + traceable: it resolves columns through
+the shared :func:`resolve_columns` (bloommcp role matching + upstream
+``get_trait_columns`` trait detection, so numeric metadata like
+``Computation.Time.s`` is never analyzed as a trait), **requires** a resolvable
+genotype **and** sample identifier (so every cleaned/flagged sample traces back to
+a real plant/scan — enforced at the bloommcp level, so it holds even when
+``sleap-roots-contracts`` is absent), and runs analyze's input contract in ``warn``
+mode via :func:`run_input_validation`. A missing required role returns a structured
+``BloomMCPError`` listing the available columns and naming the override
+(``sample_id_column`` / ``genotype_column``); no run is persisted.
+
 On each call it reads the **raw** frame via the :class:`ExperimentReader` port
 (qc_clean is the *producer* of cleaned data, so it never sets ``require_clean``),
-calls the one upstream entry point with the adapter-detected role columns, then
-persists a versioned run via the :class:`ResultStore` port — the cleaned CSV
-(``CLEANED_CSV_NAME``) + the cleanup log + provenance — under tool class ``qc``.
-That filename is what the reader resolves as a *cleaned version*, so a later
-``pca_analysis`` (``require_clean=True``) consumes this run: the
-qc_clean → pca_analysis composition. The result returns a small in/out summary +
-links to the persisted artifacts (run ref, manifest, object keys) — never the
-cleaned table inline.
+calls the one upstream entry point with the resolved role columns, then persists a
+versioned run via the :class:`ResultStore` port — the cleaned CSV
+(``CLEANED_CSV_NAME``) + the cleanup log + provenance (including an additive
+``input_validation`` manifest block) — under tool class ``qc``. That filename is
+what the reader resolves as a *cleaned version*, so a later ``pca_analysis``
+(``require_clean=True``) consumes this run. The result returns a small in/out
+summary + the resolved roles + validation warnings + links — never the table inline.
 
 **No-NaN guarantee.** Before persisting, the tool asserts the cleaned table has
 no NaNs in its kept trait columns and at least one surviving sample/trait — the
@@ -46,6 +59,7 @@ from sleap_roots_analyze import clean_traits_for_analysis
 from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
 from bloom_mcp.contract import register as _contract_register
 from bloom_mcp.data_access import ExperimentReadError
+from bloom_mcp.data_access.columns import resolve_columns, run_input_validation
 from bloom_mcp.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, TRAITS_DIR
 from bloom_mcp.tools import _ports
@@ -54,12 +68,12 @@ from bloom_mcp.tools._qc_shared import (
     _CANONICAL_MAX_NANS_PER_TRAIT,
     _CANONICAL_MAX_ZEROS_PER_TRAIT,
     _CANONICAL_MIN_SAMPLES_PER_TRAIT,
-    _role_kwargs,
     _validate_trait_subset,
 )
 
 _TOOL_CLASS = "qc"
 _LOG_NAME = "cleanup_log.json"
+_VALIDATION_MODE = "warn"
 
 # Default cleanup thresholds mirror the **canonical QC pipeline** defaults, shared with
 # qc_inspect and single-sourced in ``_qc_shared`` (``_CANONICAL_*``) so the two tools
@@ -72,6 +86,11 @@ class QCCleanParams(BaseModel):
     The four cleanup-threshold defaults are the **canonical QC pipeline** values
     (see ``_CANONICAL_*`` above), so an unparameterized ``qc_clean`` reproduces the
     pipeline's clean rather than a looser one.
+
+    A genotype **and** a sample identifier are **required** (auto-detected, or named
+    via ``genotype_column`` / ``sample_id_column``) so every cleaned sample is
+    traceable; if a required role can't be resolved the call fails with a structured
+    error listing the available columns.
     """
 
     experiment: str = Field(
@@ -79,7 +98,23 @@ class QCCleanParams(BaseModel):
     )
     trait_columns: Optional[list[str]] = Field(
         default=None,
-        description="Subset of trait columns to clean; omit to clean all detected traits.",
+        description="Subset of trait columns to clean; omit to clean all detected "
+        "traits. Wins over exclude_columns when a column appears in both.",
+    )
+    sample_id_column: Optional[str] = Field(
+        default=None,
+        description="Column that uniquely identifies each sample (barcode/plant id). "
+        "Omit to auto-detect; a sample identifier is REQUIRED for traceability.",
+    )
+    genotype_column: Optional[str] = Field(
+        default=None,
+        description="Genotype/accession column. Omit to auto-detect; a genotype is "
+        "REQUIRED.",
+    )
+    exclude_columns: Optional[list[str]] = Field(
+        default=None,
+        description="Metadata columns to exclude from the trait set (deny-list). "
+        "An explicit trait_columns allow-list wins over this.",
     )
     max_zeros_per_trait: float = Field(
         default=_CANONICAL_MAX_ZEROS_PER_TRAIT,
@@ -116,7 +151,7 @@ class QCCleanParams(BaseModel):
 
 
 class QCCleanResult(BaseModel):
-    """A small in/out summary + links to the persisted cleaned run (no table inline)."""
+    """A small in/out summary + resolved roles + validation findings + links."""
 
     experiment: str
     source: str
@@ -130,6 +165,15 @@ class QCCleanResult(BaseModel):
     trait_retention: float
     kept_trait_columns: list[str]
     removed_traits: list[str]
+    # Resolved role columns + the metadata excluded from the trait set (#403), so the
+    # agent/scientist sees exactly what was treated as genotype/sample_id/replicate and
+    # what numeric metadata (e.g. Computation.Time.s) was dropped from analysis.
+    genotype_column: str
+    sample_id_column: str
+    replicate_column: Optional[str]
+    excluded_columns: list[str]
+    # Advisory findings from analyze's input contract (warn mode); the run still commits.
+    validation_warnings: list[str]
     # NaN counts are scoped explicitly: the *input* (raw) frame vs the persisted
     # cleaned frame. `cleaned_nan_cells_remaining` is guaranteed 0 (see guard).
     input_nan_summary: dict[str, int]
@@ -163,11 +207,93 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     # re-run (after a cleaned version already exists) still reads raw rather than
     # the default "latest" resolution, which would resolve the newest _cleaned.csv.
     frame = reader.load_experiment(params.experiment, version="raw")
+
+    # A column override that names a column not in the frame is a fixable input error
+    # (rather than a downstream KeyError / opaque internal_error).
+    override_named = [
+        c for c in (params.sample_id_column, params.genotype_column) if c is not None
+    ] + list(params.exclude_columns or [])
+    unknown = [c for c in override_named if c not in frame.df.columns]
+    if unknown:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=f"Column override names columns not in {params.experiment!r}: "
+            f"{sorted(set(unknown))}.",
+            remedy="Use column names from list_available_experiments / "
+            "load_experiment_data.",
+        )
+
+    # Resolve roles (bloommcp matching, honoring overrides) + traits (delegated to
+    # get_trait_columns, so numeric metadata is excluded from analysis).
+    resolved = resolve_columns(
+        frame.df,
+        sample_id_column=params.sample_id_column,
+        genotype_column=params.genotype_column,
+        exclude_columns=params.exclude_columns,
+    )
+
+    # Traceability guard — a bloommcp policy enforced BEFORE the contract call, so it
+    # holds even when sleap-roots-contracts is absent (the warn-mode contract alone
+    # would not fail a missing sample_id). An untraceable cleaned frame is the root
+    # cause of the barcode-less remove_outliers crash (#403/#400).
+    missing = []
+    if resolved.genotype is None:
+        missing.append(("genotype", "genotype_column"))
+    if resolved.sample_id is None:
+        missing.append(("sample-identifier", "sample_id_column"))
+    if missing:
+        roles_txt = " and ".join(role for role, _ in missing)
+        params_txt = ", ".join(f"{p}=<name>" for _, p in missing)
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=(
+                f"No {roles_txt} column detected in {params.experiment!r}. "
+                f"Available columns: {list(frame.df.columns)}."
+            ),
+            remedy=(
+                f"Ask the user which column identifies each sample/genotype, then "
+                f"re-call with {params_txt}. A genotype and a sample identifier are "
+                f"required so every cleaned/flagged sample is traceable to a real "
+                f"plant/scan."
+            ),
+        )
+
     if params.trait_columns is not None:
         _validate_trait_subset(frame, params.trait_columns, params.experiment)
-    trait_cols = params.trait_columns or frame.trait_cols
+    trait_cols = params.trait_columns or resolved.trait_cols
+
+    # Run analyze's input contract in warn mode (delegated; no contract logic here).
+    # warn surfaces advisories without failing minor issues, but still RAISES on the
+    # universal structural errors — map that to a structured, self-correctable error.
+    try:
+        validation_warnings = run_input_validation(
+            frame.df,
+            resolved,
+            exclude_columns=params.exclude_columns,
+            mode=_VALIDATION_MODE,
+        )
+    except ValueError as exc:
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=f"Input failed the analysis contract: {exc}",
+            remedy=(
+                "Fix the flagged structural issue (e.g. ensure the genotype column "
+                "has no blank/NaN values and at least one numeric trait is present), "
+                "then retry."
+            ),
+        ) from None
+
     n_samples_in = len(frame.df)
     n_traits_in = len(trait_cols)
+
+    # Role kwargs from the RESOLVED columns (genotype + sample_id guaranteed present;
+    # replicate omitted when None so the delegate applies its own default).
+    role_kwargs = {
+        "barcode_col": resolved.sample_id,
+        "genotype_col": resolved.genotype,
+    }
+    if resolved.replicate is not None:
+        role_kwargs["replicate_col"] = resolved.replicate
 
     # Delegate ALL cleanup + validate. No QC logic lives here. The delegate
     # *raises* ValueError on its degenerate cases (too-strict thresholds leaving
@@ -183,7 +309,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
             max_nans_per_trait=params.max_nans_per_trait,
             max_nans_per_sample=params.max_nans_per_sample,
             min_samples_per_trait=params.min_samples_per_trait,
-            **_role_kwargs(frame),
+            **role_kwargs,
         )
     except ValueError as exc:
         raise BloomMCPError(
@@ -234,6 +360,25 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         "input_nan_cells": int(nan_mask.sum().sum()),
     }
 
+    # Additive manifest block: the resolved roles, excluded metadata, and warn-mode
+    # findings, stamped onto the provenance so it lands in the version entry. The
+    # contract_version is the provenance-recorded sleap-roots-contracts version (not
+    # a live read) so the record is reproducible.
+    input_validation_block = {
+        "mode": _VALIDATION_MODE,
+        "contract_version": provenance.code_versions.sleap_roots_contracts,
+        "resolved_roles": {
+            "genotype": resolved.genotype,
+            "sample_id": resolved.sample_id,
+            "replicate": resolved.replicate,
+        },
+        "excluded_columns": resolved.excluded_cols,
+        "warnings": validation_warnings,
+    }
+    provenance = provenance.model_copy(
+        update={"input_validation": input_validation_block}
+    )
+
     # Persist a versioned cleaned run via the ResultStore port; the contract-stamped
     # provenance is carried into the manifest (no re-stamp). source_csv (when the raw
     # is on the local FS) lets the manifest content-address the cleaned run to its input.
@@ -282,6 +427,11 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         trait_retention=round(n_traits_out / n_traits_in, 4) if n_traits_in else 0.0,
         kept_trait_columns=kept_cols,
         removed_traits=removed_traits,
+        genotype_column=resolved.genotype,
+        sample_id_column=resolved.sample_id,
+        replicate_column=resolved.replicate,
+        excluded_columns=resolved.excluded_cols,
+        validation_warnings=validation_warnings,
         input_nan_summary=input_nan_summary,
         cleaned_nan_cells_remaining=cleaned_nan_cells,
         run_ref=stored.run_ref,
