@@ -228,6 +228,37 @@ services:
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "2"]
 
   # -------------------
+  # Cyl Video Worker (async queue consumer)
+  # -------------------
+  # Drains the pgmq 'cyl_video_generation' queue and generates videos with the
+  # same code/image as the API (worker.py). CPU-capped so encoding can't starve
+  # the shared box; scale by replicas as queue depth grows.
+  cyl-video-worker:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: "2.0"
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+    networks:
+      - supanet
+    depends_on:
+      - kong
+      - db-prod
+    restart: unless-stopped
+    command: ["python", "worker.py"]
+
+  # -------------------
   # Bloom MCP Server
   # -------------------
   bloommcp:
