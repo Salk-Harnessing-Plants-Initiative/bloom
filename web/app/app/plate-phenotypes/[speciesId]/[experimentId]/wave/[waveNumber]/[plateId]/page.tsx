@@ -71,7 +71,7 @@ export default async function WavePlateDetail({
     getExperiment(Number(experimentId)),
     getPlateMetadata(decodedPlateId, wave),
     getPlateScans(Number(experimentId), decodedPlateId, wave),
-    getPlateVideo(Number(experimentId), decodedPlateId),
+    getPlateVideo(Number(experimentId), decodedPlateId, wave),
   ]);
 
   const trail = [
@@ -222,18 +222,23 @@ async function getPlateMetadata(
   return (data as MetadataRow | null) ?? null;
 }
 
+// Growth video for one plate IN ONE WAVE — gravi_plate_videos is keyed
+// (experiment, plate, wave), so filtering on wave_number returns this wave's
+// time-lapse, not another wave's.
 async function getPlateVideo(
   experimentId: number,
   plateId: string,
+  wave: number | null,
 ): Promise<{ object_path: string } | null> {
   const supabase = await createServerSupabaseClient();
-  // gravi_plate_videos has no wave_number column — videos are keyed by
-  // (experiment, plate) only, so a plate reused across waves shares one video.
-  const { data, error } = await (supabase as unknown as SupabaseClient<unknown>)
+  let query = (supabase as unknown as SupabaseClient<unknown>)
     .from("gravi_plate_videos")
     .select("object_path, generated_at")
     .eq("experiment_id", experimentId)
-    .eq("plate_id", plateId)
+    .eq("plate_id", plateId);
+  query = wave === null ? query.is("wave_number", null) : query.eq("wave_number", wave);
+
+  const { data, error } = await query
     .order("generated_at", { ascending: false })
     .limit(1)
     .maybeSingle();

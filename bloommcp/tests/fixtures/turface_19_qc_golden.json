@@ -1,0 +1,23 @@
+{
+  "_comment": "Characterization snapshot of sleap_roots_analyze.clean_traits_for_analysis (cleanup+validate only) on the raw turface_19 input, called with the reader-detected role + trait columns (exactly as the qc_clean tool calls it). NOT the #120 post-QC final table (that is the full QCPipeline). Demonstrates trait-first cleanup minimizing sample loss vs naive dropna.",
+  "_raw_source": "talmolab/sleap-roots-analyze@main:tests/fixtures/real/wheat_edpie/inputs/raw/turface_19/Turface_all_traits_2024_RSR_diameter_angle_traits_removed.csv",
+  "_reproduced_by_sleap_roots_analyze_version": "0.1.0a3",
+  "role_columns": {
+    "barcode_col": "Barcode",
+    "genotype_col": "geno",
+    "replicate_col": "rep"
+  },
+  "cleanup_params": {
+    "max_nans_per_trait": 0.1
+  },
+  "raw_samples": 187,
+  "raw_traits": 20,
+  "naive_dropna_samples": 158,
+  "cleaned_samples": 187,
+  "cleaned_traits": 18,
+  "cleaned_trait_nans": 0,
+  "removed_traits": [
+    "Root_Biomass_mg",
+    "Root_Shoot_Ratio"
+  ]
+}

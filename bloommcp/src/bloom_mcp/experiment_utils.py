@@ -67,6 +67,13 @@ def validate_env() -> None:
         )
     _validate_dirs()
 
+    # Fail fast on a misconfigured storage backend (invalid BLOOM_STORAGE_BACKEND,
+    # or BLOOM_STORAGE_BACKEND=local with an unusable resolved root). Imported here
+    # (not at module top) so importing this module stays side-effect-free.
+    from bloom_mcp.storage_backend import validate_storage_backend
+
+    validate_storage_backend()
+
 
 # metadata columns, matched case-insensitively
 KNOWN_METADATA_COLS = {
@@ -208,6 +215,13 @@ def _find_column(columns, patterns: list[str]) -> Optional[str]:
     return None
 
 
+# Logical output key + filename for the cleaned trait CSV. The producer
+# (`qc_clean`, `run_qc_workflow`) and the `require_clean` consumer
+# (`_resolve_versioned_cleaned`) MUST agree on this string, so it lives here and
+# is imported on both sides rather than repeated as a literal.
+CLEANED_CSV_NAME = "_cleaned.csv"
+
+
 def _resolve_versioned_cleaned(
     o_dir: Path,
     stem: str,
@@ -253,7 +267,7 @@ def _resolve_versioned_cleaned(
             ),
         )
 
-    rel = entry.outputs.get("_cleaned.csv")
+    rel = entry.outputs.get(CLEANED_CSV_NAME)
     if not rel:
         if version == "latest":
             return None, None, None
