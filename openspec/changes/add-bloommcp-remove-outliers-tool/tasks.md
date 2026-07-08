@@ -234,7 +234,17 @@
 - [ ] 7.2 Dedicated `tool_class="outliers"` + a `_resolve_versioned_cleaned` extension that
       prefers the newest cleaned across `{qc, outliers}` — only if a consumer later needs to read
       the un-trimmed clean after trimming (design Decision 1 alternative). A localized reader
-      change, tracked separately.
+      change, tracked separately. **Tracked as #420** (the order-dependent "latest cleaned" revert;
+      characterization test added in §9). Interim mitigation: `based_on_version` makes an un-trim
+      auditable + a start-of-run warning could be added cheaply.
+- [ ] 7.5 **#419 (owner decision):** the default `mahalanobis` can persist a trim from an
+      untrustworthy fit (`fit_is_trustworthy=false`) that then becomes PCA's `require_clean` input.
+      Options: gate the commit / don't advance "latest" / require an explicit override on a poor
+      fit; and reconsider `mahalanobis` as the default. `fit_is_trustworthy` (§8.6) is currently
+      advisory only — surfaced, not enforced. Decision owned outside this PR.
+- [ ] 7.6 **#421:** add a representative wide / high-sample cylinder-scan golden fixture so QC /
+      analysis behaviour (e.g. mahalanobis conditioning at real trait cardinality) generalizes
+      beyond the small, few-trait turface_19 pin. Cross-tier testing improvement.
 - [ ] 7.3 roadmap.md tier reshape (if outlier removal is ever promoted to a named tier) is **not**
       edited here — like `qc_clean`, this tool is added alongside the tiers and the roadmap
       reshape is owned separately, to avoid a conflict on `roadmap.md`.
@@ -275,3 +285,39 @@
       `n_output > n_input` branch.
 - [ ] 8.8 Re-run `/pre-merge` (black/ruff, full bloom-mcp suite, `uv lock --check`, server boot,
       `openspec validate --strict`) — all green.
+
+## 9. Review response (PR #400, second 5-lens pass — COMMENT verdict) — in-PR fixes
+
+Data-integrity/testing *decisions* filed as issues (not changed here): **#419** (default trims
+from an untrustworthy fit — see 7.5), **#420** (order-dependent revert — see 7.2), **#421**
+(cylinder fixture — see 7.6). The items below are the in-PR code fixes.
+
+- [x] 9.1 **Figure leak on a persistence failure (reproduced):** widen the `try` to start right
+      after `_make_figures`, wrapping `create_run` / `to_csv` / `write_text` / `savefig` / `commit`
+      so any failure in that region still closes every figure. Tests lock it: `get_fignums() == []`
+      after a successful plots run, after an unknown-plot-key failure, and after a monkeypatched
+      `commit` failure.
+- [x] 9.2 **Dead `_METHODS` constant:** deleted (the method surface is enforced by the `Literal`).
+- [x] 9.3 **Barcode-less traceability:** documented that a barcode-less trim is positional-only
+      (no stable row identity survives `to_csv(index=False)`), inherent to a barcode-less input;
+      requiring a sample-id at qc_clean (#403) removes the case upstream.
+- [x] 9.4 **`_rows_subset` multiset:** compare with `Counter` (multiset containment) so a returned
+      frame that duplicates/invents a repeated barcode no longer vacuously passes; unit-tested.
+- [x] 9.5 **Misleading structural remedy:** neutralized `_STRUCTURAL_REMEDY` to cover *both* a
+      structural fault (non-unique index / duplicate columns → re-clean) and a well-formed-but-
+      unfittable frame (too few / singular-covariance samples → narrow traits or isolation_forest),
+      so a detector-can't-fit case no longer loops the agent on a useless re-clean.
+- [x] 9.6 **Comment/DRY fixes:** correct the `n_output > n_input` branch comment (qc_clean has no
+      such branch — it is cheap defense-in-depth, not "parity"); add `# DUPLICATED … _qc_shared
+      (see #366)` markers on `_role_kwargs`/`_validate_trait_subset`; document the legacy
+      `run_outlier_workflow` coexistence (class `outliers` vs `qc`); note `based_on_version` is the
+      sole Provenance mutation and should become a first-class `create_run(based_on=…)` seam.
+- [x] 9.7 **Test gaps:** add live seed-recording (`seed=7`), the `missing_traits` guard branch, the
+      `plots=None` full-figure-set path, figure-cleanup (`get_fignums`), and a #420 order-dependence
+      characterization test.
+- [x] 9.8 **Smoke Leg 3:** the composition assertion (`source` ends `_cleaned`) is already made in
+      the same leg (`ro_trimmed_read_checks`) alongside the `tool == "remove_outliers"` anchor — no
+      change needed.
+- [ ] 9.9 Get a **green full CI run** (Docker Compose Health Check + bloommcp pytest) on the PR
+      head — the prior head only triggered CodeQL; the "165 passed" was local (Linux/WSL clean; the
+      reviewer's 10 `tests/` failures were env-specific — UMAP determinism / Windows encoding).

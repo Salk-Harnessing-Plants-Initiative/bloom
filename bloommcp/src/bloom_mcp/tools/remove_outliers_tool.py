@@ -7,6 +7,13 @@ public detectors + ``remove_outliers_from_data``): the MCP contains **no** outli
 detection or removal logic and never touches the vendored
 ``bloom_mcp.outlier_detection`` filters.
 
+**Coexists with the legacy ``run_outlier_workflow``.** That older tool persists under a
+distinct tool class ``outliers`` (writing ``<stem>_cleaned.csv``) using the vendored
+detector, whereas this tool persists under class ``qc`` (writing ``CLEANED_CSV_NAME``)
+using the ``sleap-roots-analyze`` delegate — silently *incompatible* persistence
+conventions, so the two never resolve each other's runs. The legacy path's retirement is
+tracked (tasks 7.1); until then prefer ``remove_outliers`` for the ``qc`` composition.
+
 On each call it reads the **cleaned** frame via the :class:`ExperimentReader` port
 with ``require_clean=True`` (outlier detection requires the NaN-free, unique-index
 table ``qc_clean`` produces), trims outlier samples with the chosen method
@@ -48,6 +55,7 @@ data fit the χ² assumption; the returned ``goodness_of_fit`` dict carries a
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import TYPE_CHECKING, Literal, Optional
 
 import pandas as pd
@@ -71,8 +79,6 @@ if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph (Tier-0)
 
 _TOOL_CLASS = "qc"
 _REPORT_NAME = "outlier_report.json"
-
-_METHODS = ("mahalanobis", "isolation_forest")
 
 # ``goodness_of_fit.fit_quality`` values (mahalanobis chi-squared fit) whose flagged
 # set should NOT be trusted as-is — mirrors the delegate's own ✗ tiering
@@ -166,7 +172,11 @@ class RemoveOutliersResult(BaseModel):
 
 
 def _role_kwargs(frame: ExperimentFrame) -> dict[str, str]:
-    """Forward the adapter-detected role columns, omitting any that are None."""
+    """Forward the adapter-detected role columns, omitting any that are None.
+
+    DUPLICATED: verbatim copy of qc_clean's ``_role_kwargs``; fold into a shared
+    ``_qc_shared`` helper (see #366). Whichever of #366/#400 merges second reconciles.
+    """
     roles = {
         "barcode_col": frame.sample_id_col,
         "genotype_col": frame.genotype_col,
@@ -178,7 +188,12 @@ def _role_kwargs(frame: ExperimentFrame) -> dict[str, str]:
 def _validate_trait_subset(
     frame: ExperimentFrame, requested: list[str], experiment: str
 ) -> None:
-    """Reject an unknown or non-numeric ``trait_columns`` subset as ``invalid_input``."""
+    """Reject an unknown or non-numeric ``trait_columns`` subset as ``invalid_input``.
+
+    DUPLICATED: verbatim copy of qc_clean's ``_validate_trait_subset``; fold into a
+    shared ``_qc_shared`` helper (see #366). Whichever of #366/#400 merges second
+    reconciles this file.
+    """
     missing = [c for c in requested if c not in frame.df.columns]
     if missing:
         raise BloomMCPError(
@@ -230,29 +245,40 @@ _RELAX_REMEDY = (
     "contamination for isolation_forest) so more samples survive, and retry."
 )
 
-# A structural precondition failure (non-unique index / duplicate columns) is NOT a
-# too-aggressive trim, so "relax the threshold" would mislead. The cleaned frame is
-# malformed; re-cleaning is the fix.
+# A bare ValueError here is NOT a too-aggressive trim, so "relax the threshold" would
+# mislead. But it also is not always a *malformed* frame — the same except catches both a
+# structural fault (non-unique index / duplicate columns, which re-cleaning fixes) and a
+# detector-cannot-fit fault on a well-formed frame (too few samples, or near-constant /
+# singular covariance, which re-cleaning does NOT fix). Distinguishing them from a bare
+# ValueError would mean fragile message-sniffing, so the remedy stays neutral and lists
+# the real options rather than prescribing a re-clean that may loop.
 _STRUCTURAL_REMEDY = (
-    "The cleaned input violates a detector precondition (e.g. a non-unique index or "
-    "duplicate column names) that relaxing the threshold cannot fix. Re-run qc_clean "
-    "to produce a well-formed cleaned table, then retry."
+    "The cleaned table could not be analyzed by the detector — either a structural "
+    "fault (a non-unique index or duplicate column names, which re-running qc_clean "
+    "fixes) or too few / near-constant (singular-covariance) samples for the chosen "
+    "method to fit. Check the cleaned input, narrow trait_columns, or try "
+    "method='isolation_forest', which is more robust to ill-conditioned covariance."
 )
 
 
 def _rows_subset(frame: ExperimentFrame, trimmed_df: pd.DataFrame) -> bool:
-    """True when the trimmed rows are a subset of the cleaned input's rows.
+    """True when the trimmed rows are a *multiset* subset of the cleaned input's rows.
 
     Prefer the detected sample-id column — it is the row identity that survives
     ``to_csv(index=False)`` and that a downstream reader keys on; fall back to the
     frame index when no id column is detected (a barcode-less cleaned frame). Outlier
     removal only drops rows, so this always holds against the real delegate — the
     check is defense-in-depth against a delegate that *returns* a mutated frame.
+
+    Uses multiset (``Counter``) containment, not plain set membership: a cleaned frame
+    is unique-indexed but its id *column* may repeat, and set membership would then
+    vacuously pass a returned frame that duplicated or invented rows. Multiset
+    containment requires each id to appear no more often than it does in the input.
     """
     id_col = frame.sample_id_col
     if id_col and id_col in trimmed_df.columns and id_col in frame.df.columns:
-        return set(trimmed_df[id_col]) <= set(frame.df[id_col])
-    return set(trimmed_df.index) <= set(frame.df.index)
+        return Counter(trimmed_df[id_col]) <= Counter(frame.df[id_col])
+    return Counter(trimmed_df.index) <= Counter(frame.df.index)
 
 
 def _fit_is_trustworthy(goodness_of_fit: Optional[dict]) -> Optional[bool]:
@@ -304,6 +330,10 @@ def remove_outliers(
     # correct for qc_clean the raw-producer, wrong for this cleaned-consumer). Also what
     # makes an order-dependent un-trim (a later qc_clean re-run reverting "latest
     # cleaned") auditable after the fact.
+    # NB: this is currently the *only* place a tool mutates the injected Provenance. It is
+    # correct and tested, but the pattern should not proliferate — if a third tool needs
+    # it, grow the contract a first-class `create_run(based_on=...)` seam rather than
+    # copying this mutation.
     provenance.based_on_version = frame.source
 
     if params.trait_columns is not None:
@@ -317,8 +347,9 @@ def remove_outliers(
     # Distinguish the two raise families so the remedy is not misleading:
     #   * OutlierRemovalError (a ValueError subclass) — the trim itself was too
     #     aggressive (below min survivors / no non-constant trait) → relax the threshold.
-    #   * a bare ValueError — a structural precondition failed (non-unique index /
-    #     duplicate columns), which relaxing the threshold cannot fix → re-clean.
+    #   * a bare ValueError — a detector precondition failed (a structural fault like a
+    #     non-unique index, or a well-formed-but-unfittable frame: too few / singular-
+    #     covariance samples) → the neutral _STRUCTURAL_REMEDY, not relax-the-threshold.
     # (Cross-method detect kwargs are pre-empted by _detect_kwargs above; the cleaned
     # input is NaN-free, so the NaN precondition path is unreachable here.)
     try:
@@ -356,8 +387,9 @@ def remove_outliers(
     # "cleaned" artifact can be resolved by a downstream require_clean consumer. The
     # row-subset / trait-identity checks inspect the returned frame itself — not the
     # delegate's self-reported n_input/n_output counts, which would only validate the
-    # delegate against itself. (n_output > n_input cannot fire against the real
-    # row-dropping delegate; it is retained as defense-in-depth parity with qc_clean.)
+    # delegate against itself. (The n_output > n_input branch cannot fire against the
+    # real row-dropping delegate; it is retained as cheap defense-in-depth against a
+    # future/misbehaving delegate that grew the frame.)
     # Compute missing_traits first and scope the NaN scan to present columns so a
     # dropped trait column surfaces as a structured guard failure, not a KeyError.
     missing_traits = [c for c in trait_cols if c not in trimmed_df.columns]
@@ -402,35 +434,42 @@ def remove_outliers(
     if params.include_plots:
         figures = _make_figures(frame, trait_cols, params, random_state, detect_kwargs)
 
-    # No source_csv= (unlike qc_clean): remove_outliers reads a persisted *cleaned*
-    # version, not a raw CSV on the local FS, so there is no local input file to
-    # content-address the run to.
-    run = store.create_run(
-        experiment=params.experiment,
-        tool_class=_TOOL_CLASS,
-        provenance=provenance,
-        user_label=params.user_label,
-    )
-    outputs: dict[str, str] = {
-        CLEANED_CSV_NAME: CLEANED_CSV_NAME,
-        _REPORT_NAME: _REPORT_NAME,
-    }
-    trimmed_df.to_csv(run.staging_dir / CLEANED_CSV_NAME, index=False)
-    (run.staging_dir / _REPORT_NAME).write_text(
-        json.dumps(convert_to_json_serializable(report), indent=2)
-    )
-    # try/finally so a mid-loop savefig failure still closes every remaining figure
-    # (the create_run staging dir is cleaned only by commit / the store's teardown).
+    # try/finally spanning the WHOLE persistence region: matplotlib figures are
+    # process-global, so any failure between figure creation and commit (create_run /
+    # to_csv / write_text / savefig) must still close every open figure or they leak.
     try:
+        # No source_csv= (unlike qc_clean): remove_outliers reads a persisted *cleaned*
+        # version, not a raw CSV on the local FS, so there is no local input file to
+        # content-address the run to.
+        run = store.create_run(
+            experiment=params.experiment,
+            tool_class=_TOOL_CLASS,
+            provenance=provenance,
+            user_label=params.user_label,
+        )
+        outputs: dict[str, str] = {
+            CLEANED_CSV_NAME: CLEANED_CSV_NAME,
+            _REPORT_NAME: _REPORT_NAME,
+        }
+        # index=False (parity with qc_clean, and what the reader's detect_columns expects
+        # on reload). NB: for a barcode-less cleaned frame (no sample-id column) the
+        # trimmed rows are then traceable only *positionally* — no stable id survives to
+        # map a retained row back to its scan/plant/wave. That is inherent to a
+        # barcode-less input (the identity was never present); requiring a sample-id at
+        # qc_clean (#403) removes the case upstream. (_rows_subset falls back to the index
+        # for the guard in exactly this case.)
+        trimmed_df.to_csv(run.staging_dir / CLEANED_CSV_NAME, index=False)
+        (run.staging_dir / _REPORT_NAME).write_text(
+            json.dumps(convert_to_json_serializable(report), indent=2)
+        )
         for name, fig in figures.items():
             rel = f"{name}.png"
             fig.savefig(run.staging_dir / rel, bbox_inches="tight")
             outputs[rel] = rel
+        stored = store.commit(run, outputs)
     finally:
         for fig in figures.values():
             _close_figure(fig)
-
-    stored = store.commit(run, outputs)
 
     goodness_of_fit = convert_to_json_serializable(report.get("goodness_of_fit"))
     return RemoveOutliersResult(

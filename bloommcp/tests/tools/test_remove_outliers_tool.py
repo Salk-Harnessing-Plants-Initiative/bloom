@@ -668,3 +668,149 @@ def test_non_numeric_trait_column_is_invalid_input(injected_ports):
     assert exc.value.code == "invalid_input"
     assert "Barcode" in exc.value.message
     assert store.list_runs(_EXPERIMENT, "qc") == []
+
+
+def test_own_guard_rejects_returned_frame_missing_trait_column(
+    guard_ports, monkeypatch
+):
+    """I4 — a delegate that RETURNS a frame with a trait column dropped/renamed is
+    rejected before commit (the 'trait columns unchanged' spec guarantee)."""
+
+    def _spy(frame_df, trait_cols=None, **kwargs):
+        keep = frame_df.iloc[:-1].drop(columns=[trait_cols[0]])  # drop a trait column
+        return keep, _degenerate_report(len(frame_df), len(keep))
+
+    monkeypatch.setattr(remove_outliers_tool, "remove_outlier_samples", _spy)
+    with pytest.raises(BloomMCPError) as exc:
+        remove_outliers(RemoveOutliersParams(experiment="guard.csv"))
+    assert exc.value.code == "assumption_violated"
+    assert guard_ports.list_runs("guard.csv", "qc") == []
+
+
+# ── seed is recorded live (provenance integrity) ────────────────────────────
+
+
+def test_provided_seed_is_recorded_in_provenance(injected_ports):
+    """A non-default seed is recorded in the persisted run's provenance (proves the
+    resolved integer is captured live, not hard-wired to 42). NB: the default
+    mahalanobis exact-SVD flagged set is seed-independent, so this asserts the *recorded*
+    seed, not a change in the flagged samples."""
+    _reader, store = injected_ports
+    _run(seed=7)
+    assert store.get_run(_EXPERIMENT, "qc", "latest").seed == 7
+
+
+# ── #420 characterization: order-dependent "latest cleaned" revert ──────────
+
+
+def test_qc_class_rerun_reverts_latest_cleaned_order_dependence(injected_ports):
+    """#420 (characterization, not a fix) — sharing tool_class='qc' + _cleaned.csv means
+    a later qc-class commit (a qc_clean re-run) silently supersedes an outlier-removed
+    run as 'latest cleaned', with NO runtime warning; based_on_version makes it auditable
+    only after the fact. The real fix is a dedicated 'outliers' class (design/tasks 7.2).
+    """
+    from bloom_mcp.contract import Provenance
+
+    _reader, store = injected_ports
+    ro = _run()  # remove_outliers commits qc v1 (tool == remove_outliers)
+    assert store.get_run(_EXPERIMENT, "qc", "latest").tool == "remove_outliers"
+
+    # Simulate a subsequent qc_clean re-run committing under the SAME qc class.
+    prov = Provenance.stamp(tool="qc_clean", params={}, seed=None)
+    run = store.create_run(experiment=_EXPERIMENT, tool_class="qc", provenance=prov)
+    (run.staging_dir / remove_outliers_tool.CLEANED_CSV_NAME).write_text("x\n1\n")
+    store.commit(
+        run,
+        {remove_outliers_tool.CLEANED_CSV_NAME: remove_outliers_tool.CLEANED_CSV_NAME},
+    )
+
+    latest = store.get_run(_EXPERIMENT, "qc", "latest")
+    assert (
+        latest.tool == "qc_clean"
+    )  # the trim was silently superseded — the #420 hazard
+    assert latest.run_ref != ro.run_ref
+
+
+# ── plots=None full figure set + figure-cleanup (no leaks) ──────────────────
+
+_MAHALANOBIS_FIGS = {
+    "mahalanobis_outlier_detection.png",
+    "mahalanobis_pc_analysis.png",
+    "mahalanobis_threshold_analysis.png",
+    "outliers_per_genotype.png",  # genotype column present in turface_19
+}
+
+
+def test_include_plots_none_persists_full_mahalanobis_figure_set(injected_ports):
+    """plots=None persists EVERY figure the method produces (the delegate's full set)."""
+    result = _run(include_plots=True)  # plots defaults to None
+    assert _MAHALANOBIS_FIGS <= set(result.outputs)
+
+
+def test_include_plots_success_closes_all_figures(injected_ports):
+    """Figure-cleanup: a successful include_plots run leaks no matplotlib figures."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+    _run(include_plots=True)
+    assert plt.get_fignums() == []
+
+
+def test_unknown_plot_key_failure_closes_all_figures(injected_ports):
+    """Figure-cleanup on the validation-failure path (unknown plot key)."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+    with pytest.raises(BloomMCPError):
+        _run(include_plots=True, plots=["not_a_real_figure"])
+    assert plt.get_fignums() == []
+
+
+def test_persistence_failure_closes_all_figures(injected_ports, monkeypatch):
+    """The reproduced leak — a failure in the persistence region (create_run/commit)
+    AFTER figures are made still closes every figure via the widened try/finally."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    _reader, store = injected_ports
+
+    def _boom(*a, **k):
+        raise RuntimeError("commit blew up")
+
+    monkeypatch.setattr(store, "commit", _boom)
+    plt.close("all")
+    with pytest.raises(BloomMCPError):
+        _run(include_plots=True)
+    assert plt.get_fignums() == []
+
+
+# ── _rows_subset multiset containment (repeated-barcode caveat) ─────────────
+
+
+def test_rows_subset_uses_multiset_containment_under_repeated_barcodes():
+    """_rows_subset compares on a multiset basis, so a returned frame that duplicates a
+    barcode (which plain set membership would vacuously pass) is rejected."""
+    from bloom_mcp.data_access import ExperimentFrame
+
+    input_df = pd.DataFrame({"Barcode": ["a", "b", "c"], "t1": [1.0, 2.0, 3.0]})
+    frame = ExperimentFrame(
+        df=input_df,
+        trait_cols=["t1"],
+        metadata_cols=["Barcode"],
+        genotype_col=None,
+        replicate_col=None,
+        sample_id_col="Barcode",
+        source="v1_cleaned",
+    )
+    dup = pd.DataFrame({"Barcode": ["a", "a", "b"], "t1": [1.0, 1.0, 2.0]})
+    assert remove_outliers_tool._rows_subset(frame, dup) is False
+    sub = pd.DataFrame({"Barcode": ["a", "c"], "t1": [1.0, 3.0]})
+    assert remove_outliers_tool._rows_subset(frame, sub) is True
