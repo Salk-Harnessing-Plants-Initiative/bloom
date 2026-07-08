@@ -33,7 +33,9 @@ repos:
     hooks:
       - id: prettier
         files: \.(js|jsx|ts|tsx|json|md)$
-        exclude: ^web/package-lock\.json$
+        # Keep the bloomctl envelope fixtures byte-stable (real emitter output) —
+        # prettier would reformat their JSON and break the byte-for-byte contract.
+        exclude: ^(web/package-lock\.json|bloomcli/tests/fixtures/.*\.result\.json)$
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: 6efcfbaae240618685d847c17ab0ba9f6c46ed5c  # v8.9.0

@@ -131,7 +131,9 @@ jobs:
           BLOOM_AGENT_KEY: ""
 
       - name: Run bloomctl package tests
-        run: cd bloomcli && uv run --extra test pytest tests/ -v --tb=short
+        # Exclude the env-gated integration test (needs live staging creds); it
+        # also self-skips at collection time, so this is defense-in-depth.
+        run: cd bloomcli && uv run --extra test pytest tests/ -m "not integration" -v --tb=short
 
       - name: Build bloom_mcp wheel and import in a clean env
         run: |
