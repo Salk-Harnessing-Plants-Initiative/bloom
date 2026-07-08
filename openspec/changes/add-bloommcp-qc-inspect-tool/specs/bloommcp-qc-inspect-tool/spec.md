@@ -70,6 +70,13 @@ rather than a raw backend message.
 - **WHEN** the requested experiment cannot be resolved by the reader
 - **THEN** the tool returns a `BloomMCPError` with a code and remedy, and no run is produced
 
+#### Scenario: Experiment must be a bare filename
+
+- **WHEN** `experiment` contains a path separator, a `..` segment, or is absolute/empty
+- **THEN** the tool rejects it with an `invalid_input` `BloomMCPError` **before any file read**,
+  so this read-and-persist tool cannot be turned into an arbitrary-file read whose contents
+  surface in committed artifacts
+
 ### Requirement: QC Inspect Honors the Contract Envelope
 
 The `qc_inspect` tool SHALL be wrapped by `@as_mcp_tool` so that inputs and outputs are
@@ -171,6 +178,14 @@ low-missingness trait instead of accepting the all-or-nothing drop.
 - **THEN** the report lists that trait with a NaN fraction of 1.0 and includes it in
   `traits_would_be_removed`, and the tool returns a report (it does not raise), because
   `qc_inspect` inspects missingness rather than gating on it
+
+#### Scenario: Non-finite values are surfaced, not silently read as complete
+
+- **WHEN** a trait carries `inf` / `-inf` values (which `isna` does not count as missing, so the
+  trait reads as ~0% NaN and would be kept)
+- **THEN** the result reports `per_trait_inf_count` for the affected traits and prepends an
+  explicit non-finite-values warning to the recommendation `rationale`, so the silent bias is
+  visible before it flows into a downstream analysis
 
 ### Requirement: QC Inspect Persists a Versioned Report Run and Returns Links
 

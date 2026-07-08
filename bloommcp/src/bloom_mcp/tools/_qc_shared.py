@@ -8,28 +8,45 @@ two tools in lockstep rather than drifting as two copies.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import ExperimentFrame
 
 # Canonical cleanup-threshold defaults shared by qc_clean and qc_inspect — the values
-# ``sleap_roots_analyze``'s QC pipeline actually cleans with (``CleanupConfig`` in
-# ``pipeline/config/components.py``, and the ``_QC_DEFAULTS`` that
-# ``clean_traits_for_analysis`` injects) — NOT the looser ``apply_data_cleanup_filters``
-# *signature* defaults (``max_nans_per_trait=0.3`` / ``max_nans_per_sample=0.2``). Two
-# values differ: the pipeline is stricter — ``max_nans_per_trait=0.2`` drops NaN-heavier
-# traits sooner, and ``max_nans_per_sample=0.0`` drops any sample that still carries a NaN
-# in a kept trait. Both tools forward all four thresholds *explicitly*, so they must carry
-# the canonical values here — a default ``qc_clean`` reproduces the pipeline's clean, and
-# ``qc_inspect``'s overlays/recommendation reflect that same clean. Single-sourcing them
-# here keeps the two tools from silently desyncing. Source of truth:
-# talmolab/sleap-roots-analyze#167 + ``CleanupConfig`` (max_nan_fraction=0.0,
-# max_zeros_per_trait=0.5, max_nans_per_trait=0.2, min_samples_per_trait=10).
+# ``sleap_roots_analyze``'s QC pipeline cleans with (``CleanupConfig`` / the ``_QC_DEFAULTS``
+# that ``clean_traits_for_analysis`` injects). On the pinned analyze version these coincide
+# with ``apply_data_cleanup_filters``'s own signature defaults (0.5 / 0.2 / 0.0 / 10) — a
+# `test_canonical_thresholds_match_upstream_delegate_defaults` tripwire pins that so an
+# upstream change to the delegate defaults trips CI (re-verify against the QC pipeline
+# canonical; earlier analyze versions shipped looser signature defaults, which is why both
+# tools still forward all four thresholds *explicitly*). Both tools import these so a default
+# ``qc_clean`` reproduces the pipeline's clean and ``qc_inspect``'s overlays/recommendation
+# reflect that same clean; single-sourcing here keeps them from silently desyncing.
+# Source of truth: talmolab/sleap-roots-analyze#167 + ``CleanupConfig``.
 _CANONICAL_MAX_ZEROS_PER_TRAIT = 0.5
 _CANONICAL_MAX_NANS_PER_TRAIT = 0.2
 _CANONICAL_MAX_NANS_PER_SAMPLE = 0.0
 _CANONICAL_MIN_SAMPLES_PER_TRAIT = 10
+
+
+def _validate_experiment_name(experiment: str) -> None:
+    """Reject an ``experiment`` that is anything but a bare filename.
+
+    ``experiment`` flows into ``TRAITS_DIR / experiment`` + ``pd.read_csv``, so a path with
+    separators or ``..`` (or an absolute path) would read outside ``TRAITS_DIR`` — and for a
+    read-and-persist tool like ``qc_inspect`` the contents could then surface in committed
+    artifacts. Require a bare basename. (The cross-tool fix is to centralize this in
+    ``load_experiment_data`` so the whole tool family is covered; this guards the QC tools now.)
+    """
+    if experiment in ("", ".", "..") or Path(experiment).name != experiment:
+        raise BloomMCPError(
+            code="invalid_input",
+            message="experiment must be a bare CSV filename (no path separators).",
+            remedy="Pass a filename from list_available_experiments, e.g. 'my_experiment.csv'.",
+        )
 
 
 def _role_kwargs(frame: ExperimentFrame) -> dict[str, str]:

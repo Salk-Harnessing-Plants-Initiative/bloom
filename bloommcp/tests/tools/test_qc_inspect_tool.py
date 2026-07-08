@@ -81,6 +81,13 @@ def test_recommendation_oracle_at_default_params(injected_ports):
         == _GOLDEN["at_default_params"]["samples_lost"]
     )
     assert result.samples_lost_at_current_params == 29
+    # No non-finite values in turface; residual NaN in kept cols is 0 at the defaults.
+    assert result.per_trait_inf_count == {}
+    assert (
+        result.residual_nan_cells_at_current_params
+        == _GOLDEN["at_default_params"]["residual_nan_cells"]
+        == 0
+    )
 
     rec = result.recommendation
     assert rec.no_change_needed is False
@@ -225,6 +232,30 @@ def test_default_thresholds_mirror_qc_clean_canonical():
     assert qi.max_nans_per_trait == qc.max_nans_per_trait == 0.2
     assert qi.max_nans_per_sample == qc.max_nans_per_sample == 0.0
     assert qi.min_samples_per_trait == qc.min_samples_per_trait == 10
+
+
+def test_canonical_thresholds_match_upstream_delegate_defaults():
+    """Drift tripwire pinning the hardcoded _CANONICAL_* constants to the LIVE upstream
+    delegate rather than to each other (the mirror test above only proves lockstep). On the
+    pinned analyze version the delegate's own signature defaults coincide with the canonical
+    QC-pipeline values; if a future bump changes them this fails, prompting a re-verify against
+    the pipeline canonical instead of a silent desync."""
+    import inspect
+
+    from bloom_mcp.tools import _qc_shared
+
+    sig = inspect.signature(qc_inspect_tool.apply_data_cleanup_filters).parameters
+    assert (
+        _qc_shared._CANONICAL_MAX_ZEROS_PER_TRAIT == sig["max_zeros_per_trait"].default
+    )
+    assert _qc_shared._CANONICAL_MAX_NANS_PER_TRAIT == sig["max_nans_per_trait"].default
+    assert (
+        _qc_shared._CANONICAL_MAX_NANS_PER_SAMPLE == sig["max_nans_per_sample"].default
+    )
+    assert (
+        _qc_shared._CANONICAL_MIN_SAMPLES_PER_TRAIT
+        == sig["min_samples_per_trait"].default
+    )
 
 
 # ── 3.3 provenance + links (not blobs) ──────────────────────────────────────
@@ -631,3 +662,146 @@ def test_empty_trait_columns_is_invalid_input(injected_ports):
     with pytest.raises(BloomMCPError) as exc:
         qc_inspect(QCInspectParams(experiment=_EXPERIMENT, trait_columns=[]))
     assert exc.value.code == "invalid_input"
+
+
+def test_metadata_only_frame_with_no_traits_is_invalid_input():
+    """An auto-detected empty trait set (no numeric traits) is rejected up front, not
+    committed as a useless empty report run."""
+    df = pd.DataFrame(
+        {"Barcode": ["b0", "b1"], "geno": ["g1", "g2"], "note": ["x", "y"]}
+    )
+    reader = FakeReader()
+    reader.add_experiment("meta_only.csv", df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+        with pytest.raises(BloomMCPError) as exc:
+            qc_inspect(QCInspectParams(experiment="meta_only.csv"))
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    assert exc.value.code == "invalid_input"
+
+
+# ── experiment must be a bare filename (path-traversal guard) ────────────────────
+
+
+@pytest.mark.parametrize(
+    "bad", ["../../app/.env", "/etc/passwd", "sub/dir/x.csv", "..", ".", ""]
+)
+def test_experiment_path_traversal_is_rejected(injected_ports, bad):
+    """A non-bare experiment (separators / .. / absolute / empty) is rejected before any
+    read, so this read-and-persist tool can't be turned into an arbitrary-file exfil path.
+    """
+    with pytest.raises(BloomMCPError) as exc:
+        qc_inspect(QCInspectParams(experiment=bad))
+    assert exc.value.code == "invalid_input"
+
+
+# ── inf / -inf is surfaced, not silently read as 0% missing ─────────────────────
+
+
+def test_infinite_values_are_flagged_not_counted_as_missing():
+    """A trait that is 40% inf reads as ~0% NaN (isna ignores inf) and is kept — the result
+    must surface per_trait_inf_count and prepend an inf warning to the recommendation
+    rationale, since this is exactly the silent bias the tool exists to catch."""
+    n = 20
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(n)],
+            "geno": ["g1", "g2"] * (n // 2),
+            "rep": list(range(n)),
+            "t_ok": [float(i + 1) for i in range(n)],
+            "t_inf": [float(i + 1) for i in range(n)],
+        }
+    )
+    df.loc[list(range(8)), "t_inf"] = float("inf")  # 8/20 = 40% inf, 0% NaN
+
+    reader = FakeReader()
+    reader.add_experiment("inf.csv", df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+        result = qc_inspect(
+            QCInspectParams(experiment="inf.csv", trait_columns=["t_ok", "t_inf"])
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert result.per_trait_nan_fraction["t_inf"] == 0.0  # isna ignores inf
+    assert result.per_trait_inf_count == {"t_inf": 8}
+    assert "inf" in result.recommendation.rationale.lower()
+
+
+# ── delegate cleanup-log contract drift surfaces structurally, not as silent 0 ──
+
+
+def test_cleanup_log_missing_keys_is_structured_internal_error(
+    injected_ports, monkeypatch
+):
+    """If the delegate log ever drops original_samples/final_samples, samples-lost must NOT
+    silently become 0 (which would flip every recommendation to no_change_needed) — it
+    surfaces as a structured internal_error."""
+
+    def _bad_log(df, trait_cols=None, **kwargs):
+        return df[list(trait_cols or [])].copy(), {
+            "removed_traits": []
+        }  # no sample keys
+
+    monkeypatch.setattr(qc_inspect_tool, "apply_data_cleanup_filters", _bad_log)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
+
+
+# ── render/commit failure cleans up its staging dir (no leaked temp run) ────────
+
+
+def test_render_failure_cleans_staging_and_commits_nothing(injected_ports, monkeypatch):
+    """A failure AFTER create_run (inside _render_report) must remove the staging dir and
+    commit no run — the existing delegate-raise test injects BEFORE create_run, so this path
+    was untested."""
+    _reader, store = injected_ports
+
+    captured = {}
+    real_create = store.create_run
+
+    def _spy_create(*a, **k):
+        run = real_create(*a, **k)
+        captured["staging_dir"] = run.staging_dir
+        return run
+
+    monkeypatch.setattr(store, "create_run", _spy_create)
+
+    def _boom_eda(*a, **k):
+        raise RuntimeError("render failed after the run dir was created")
+
+    monkeypatch.setattr(qc_inspect_tool, "create_trait_eda_plots", _boom_eda)
+
+    with pytest.raises(BloomMCPError):
+        _run()
+    assert store.list_runs(_EXPERIMENT, "qc_inspect") == []  # nothing committed
+    assert not captured["staging_dir"].exists()  # staging dir removed
+
+
+# ── heatmap is best-effort: run still commits when it can't be produced ─────────
+
+
+def test_run_commits_without_heatmap_when_summary_plots_fail(
+    injected_ports, monkeypatch
+):
+    """When create_exploratory_summary_plots raises, the report still commits its
+    load-bearing outputs, just without missing_data_pattern.png (best-effort heatmap).
+    """
+    _reader, store = injected_ports
+
+    def _boom_summary(*a, **k):
+        raise RuntimeError("degenerate frame: heatmap unavailable")
+
+    monkeypatch.setattr(
+        qc_inspect_tool, "create_exploratory_summary_plots", _boom_summary
+    )
+
+    result = _run()
+    assert "missing_data_pattern.png" not in result.outputs
+    assert {"trait_eda_overview.png", "nan_samples.csv", "recommendation.json"} <= set(
+        result.outputs
+    )
+    assert store.get_run(_EXPERIMENT, "qc_inspect", "latest").run_ref == "v1"

@@ -21,8 +21,10 @@ and the sample loss avoided) + links to the persisted figures / CSV / recommenda
 JSON — never inline blobs.
 
 Caveat: missingness is measured with ``pandas.isna`` (matching the delegate), so ``inf`` /
-``-inf`` are **not** counted as missing — an all-``inf`` trait reports ``nan_fraction=0.0``
-and is kept. Genuine infinities in a trait are a data-quality concern this tool does not flag.
+``-inf`` are **not** counted as missing — an all-``inf`` trait reports ``nan_fraction=0.0`` and
+is kept, which would otherwise pass silently into a downstream PCA. Because that is exactly the
+silent-bias class this tool exists to surface, the result reports ``per_trait_inf_count`` and
+prepends a warning to the recommendation rationale whenever a trait carries non-finite values.
 """
 
 from __future__ import annotations
@@ -30,15 +32,23 @@ from __future__ import annotations
 import json
 import logging
 import math
+from pathlib import Path
 from shutil import rmtree
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
 
 import matplotlib
 
-matplotlib.use("Agg")  # headless: pin Agg before importing the analyze viz funcs below
+# Headless: pin Agg before importing the analyze viz funcs below. NOTE: the analyze
+# delegates render on matplotlib's *global* pyplot state (`plt.subplots`), so figure
+# handling here (and the no-leak test's global `get_fignums()` baseline) assumes a
+# single in-flight render — i.e. one bloom-mcp writer at a time. Concurrent qc_inspect
+# calls in one process share that global registry; that is the same single-writer
+# assumption the versioned ResultStore already makes (see qc_clean).
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sleap_roots_analyze import (
     apply_data_cleanup_filters,
@@ -62,6 +72,7 @@ from bloom_mcp.tools._qc_shared import (
     _CANONICAL_MAX_ZEROS_PER_TRAIT,
     _CANONICAL_MIN_SAMPLES_PER_TRAIT,
     _role_kwargs,
+    _validate_experiment_name,
     _validate_trait_subset,
 )
 
@@ -146,6 +157,10 @@ class QCInspectResult(BaseModel):
     n_samples: int
     n_traits: int
     per_trait_nan_fraction: dict[str, float]
+    # Non-finite (inf/-inf) counts per trait, restricted to traits that carry any (empty =
+    # all finite). isna() treats inf as present, so an inf-heavy trait reports nan_fraction≈0
+    # and would be kept — this surfaces that silent bias before it flows into a PCA.
+    per_trait_inf_count: dict[str, int]
     # NaN-only view: traits whose NaN fraction alone exceeds max_nans_per_trait. This can
     # differ from ``traits_would_be_removed`` below, which is the delegate's FULL removal
     # set — it also drops traits for too-many-zeros or too-few-samples. ``removed_trait_reasons``
@@ -169,7 +184,7 @@ def _filter(
     role_kwargs: dict[str, str],
     *,
     max_nans_per_trait: float,
-) -> tuple:
+) -> tuple[pd.DataFrame, dict]:
     """Run the analyze cleanup filter at the given NaN-per-trait threshold."""
     return apply_data_cleanup_filters(
         df,
@@ -180,6 +195,23 @@ def _filter(
         min_samples_per_trait=params.min_samples_per_trait,
         **role_kwargs,
     )
+
+
+def _samples_lost(log: dict) -> int:
+    """Samples the delegate dropped = ``original_samples - final_samples``.
+
+    Requires both keys rather than falling back to ``len(df) - len(df) == 0``: a silent 0
+    would flip the benefit gate to ``no_change_needed`` on every input if the upstream log
+    ever renamed these keys. A missing key is delegate contract-drift, surfaced structurally.
+    """
+    try:
+        return int(log["original_samples"] - log["final_samples"])
+    except (KeyError, TypeError) as exc:
+        raise BloomMCPError(
+            code="internal_error",
+            message="Cleanup log is missing expected sample-count keys.",
+            remedy="Verify the pinned sleap-roots-analyze version; its cleanup-log shape changed.",
+        ) from exc
 
 
 def _removed_traits(log: dict) -> list[str]:
@@ -218,10 +250,7 @@ def _build_recommendation(
     save no samples), the honest answer is ``no_change_needed`` rather than advising a drop
     that buys nothing on the metric this tool optimizes.
     """
-    samples_lost_current = int(
-        current_log.get("original_samples", len(df))
-        - current_log.get("final_samples", len(df))
-    )
+    samples_lost_current = _samples_lost(current_log)
     removed_now = set(_removed_traits(current_log))
     # Traits the current params KEEP but that still carry NaN — these are what force
     # the sample loss (or leave residual NaN at a looser max_nans_per_sample).
@@ -259,9 +288,7 @@ def _build_recommendation(
 
     _, rec_log = _filter(df, trait_cols, params, role_kwargs, max_nans_per_trait=rec)
     would_remove = _removed_traits(rec_log)
-    samples_lost_rec = int(
-        rec_log.get("original_samples", len(df)) - rec_log.get("final_samples", len(df))
-    )
+    samples_lost_rec = _samples_lost(rec_log)
 
     # Benefit gate: recommend a change only if it strictly reduces sample loss. When the
     # current max_nans_per_sample already tolerates the missingness, lowering
@@ -311,7 +338,7 @@ def _render_report(
     params: "QCInspectParams",
     current_log: dict,
     role_kwargs: dict[str, str],
-    staging_dir,
+    staging_dir: Path,
 ) -> dict[str, str]:
     """Render + persist the delegated EDA figures and the NaN-samples table.
 
@@ -391,6 +418,9 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
     reader = _ports.reader()
     store = _ports.store()
 
+    # Bare-filename guard before any read — experiment flows into TRAITS_DIR / experiment.
+    _validate_experiment_name(params.experiment)
+
     # Read the RAW frame — qc_inspect inspects the raw missingness (no require_clean).
     frame = reader.load_experiment(params.experiment)
     if params.trait_columns is not None:
@@ -404,10 +434,27 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
             )
         _validate_trait_subset(frame, params.trait_columns, params.experiment)
     trait_cols = list(params.trait_columns or frame.trait_cols)
+    if not trait_cols:
+        # No caller subset and the adapter detected no numeric traits (metadata-only frame,
+        # or duplicate columns collapsing) — there is nothing to inspect; don't commit an
+        # empty report run.
+        raise BloomMCPError(
+            code="invalid_input",
+            message=f"No numeric trait columns detected in {params.experiment!r}.",
+            remedy="Check the experiment has numeric trait columns, or pass trait_columns explicitly.",
+        )
     role_kwargs = _role_kwargs(frame)
 
     nan_frac = frame.df[trait_cols].isna().mean()
     per_trait_nan = {c: round(float(nan_frac[c]), 4) for c in trait_cols}
+    # Non-finite (inf/-inf) footprint — isna() ignores inf, so this surfaces the silent bias
+    # of an inf-heavy trait reading as ~0% missing (restricted to traits that carry any).
+    inf_by_trait = np.isinf(
+        frame.df[trait_cols].to_numpy(dtype="float64", na_value=np.nan)
+    )
+    per_trait_inf = {
+        c: int(n) for c, n in zip(trait_cols, inf_by_trait.sum(axis=0)) if n
+    }
     traits_exceeding = [
         c for c in trait_cols if nan_frac[c] > params.max_nans_per_trait
     ]
@@ -426,10 +473,7 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
     removed_reasons = _removed_reasons(current_log)
     kept_now = [c for c in trait_cols if c not in set(removed_now)]
     residual_now = int(cleaned_current[kept_now].isna().sum().sum()) if kept_now else 0
-    samples_lost_now = int(
-        current_log.get("original_samples", len(frame.df))
-        - current_log.get("final_samples", len(frame.df))
-    )
+    samples_lost_now = _samples_lost(current_log)
 
     recommendation = _build_recommendation(
         frame.df,
@@ -440,6 +484,19 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
         current_log,
         naive_dropna_lost,
     )
+    # Non-finite values defeat the NaN-based recommendation (they read as ~0% missing and are
+    # kept); warn loudly and stamp the caveat into the rationale the agent will act on.
+    if per_trait_inf:
+        logger.warning(
+            "qc_inspect: %s trait(s) carry non-finite (inf) values not counted as missing: %s",
+            len(per_trait_inf),
+            per_trait_inf,
+        )
+        recommendation.rationale = (
+            f"⚠️ Non-finite (inf) values present in {sorted(per_trait_inf)} "
+            f"(counts {per_trait_inf}); these are NOT counted as missing, so the "
+            f"missingness recommendation below understates their data-quality risk. "
+        ) + recommendation.rationale
 
     # Persist a versioned REPORT run under tool class `qc_inspect` (never `qc`, never
     # CLEANED_CSV_NAME) so the reader cannot resolve it as a cleaned version.
@@ -474,6 +531,7 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
         n_samples=len(frame.df),
         n_traits=len(trait_cols),
         per_trait_nan_fraction=per_trait_nan,
+        per_trait_inf_count=per_trait_inf,
         traits_exceeding_thresholds=traits_exceeding,
         traits_would_be_removed=removed_now,
         removed_trait_reasons=removed_reasons,
