@@ -85,27 +85,30 @@ Only needed for specific features / conflicts:
 
 ## MinIO Storage Setup
 
-### Step 1: Create Storage Directory
+MinIO (S3-compatible object storage) needs **no manual setup** in the default
+flow — `make init` and `make dev-up` provision everything:
 
-```bash
-# Create directory (adjust path to match MINIO_DATA_PATH)
-mkdir -p ~/minio
+- **Data directory:** `make init` sets `MINIO_DATA_PATH=./volumes/minio-dev` (a
+  gitignored, repo-relative path) in `.env.dev`. Docker creates that directory
+  the first time the stack starts, so you do **not** need to create it yourself.
+- **Buckets:** the `minio-init` service (see `docker-compose.dev.yml`) runs
+  `minio/init/create-buckets.sh` automatically on `make dev-up`, creating the
+  `bloom-storage` bucket and applying its access policies.
 
-# Set permissions
-chmod 755 ~/minio
-```
+Leave the `MINIO_*` values in `.env.dev` at their generated defaults.
 
-### Step 2: Verify Path Configuration
+### Optional: custom data path or a native-Linux permission fix
 
-Ensure `MINIO_DATA_PATH` in `.env.dev` matches your created directory:
-
-```bash
-# Example for macOS/Linux
-MINIO_DATA_PATH=/Users/yourusername/minio
-
-# Or use full path
-MINIO_DATA_PATH=$(pwd)/minio
-```
+- **Custom location:** to store MinIO data elsewhere, set `MINIO_DATA_PATH` in
+  `.env.dev` to any absolute or repo-relative path before `make dev-up`.
+- **Native Linux only** (not Docker Desktop on macOS / Windows-WSL2): a
+  bind-mount source directory that Docker auto-creates is owned by `root`, which
+  can stop the MinIO container from writing to it. If you hit a MinIO permission
+  error, pre-create the directory yourself before starting the stack:
+  ```bash
+  mkdir -p ./volumes/minio-dev   # or your custom MINIO_DATA_PATH
+  chmod 777 ./volumes/minio-dev  # if MinIO still can't write
+  ```
 
 ---
 
