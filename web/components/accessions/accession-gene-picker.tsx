@@ -22,6 +22,10 @@ export type AccessionGeneRow = {
 };
 
 type Props = {
+  // Controlled input text — the parent owns it so a programmatic change
+  // (e.g. a neighbor-click pivot) stays in sync with what is actually searched.
+  value: string;
+  onValueChange: (text: string) => void;
   onSelect: (row: AccessionGeneRow) => void;
   placeholder?: string;
   // Gene-level search: collapse the per-accession rows to one row per gene_id
@@ -30,19 +34,25 @@ type Props = {
 };
 
 /**
- * Debounced autocomplete over `search_accession_genes(partial, max_results)`.
+ * Controlled, debounced autocomplete over `search_accession_genes(partial,
+ * max_results)`.
  *
- * Scoped to accession proteins only. Every request is tagged with a sequence
- * number so a slow response can't overwrite a fresher one. With `dedupeByGene`
- * the dropdown shows one entry per gene_id (locus-level); otherwise it shows
- * each accession's protein separately (protein-level).
+ * The input text is owned by the parent (`value` / `onValueChange`) so the box
+ * always reflects the current selection — including when the parent changes it
+ * programmatically (a neighbor-click pivot). Autocomplete only runs on genuine
+ * keystrokes: a programmatic `value` change neither opens the dropdown nor
+ * fires a search. Every request is tagged with a sequence number so a slow
+ * response can't overwrite a fresher one, and clearing the box discards any
+ * in-flight response. With `dedupeByGene` the dropdown shows one entry per
+ * gene_id (locus-level); otherwise each accession's protein separately.
  */
 export function AccessionGenePicker({
+  value,
+  onValueChange,
   onSelect,
   placeholder = "Search accession gene (e.g. AT1G01010)…",
   dedupeByGene = false,
 }: Props) {
-  const [query, setQuery] = useState("");
   const [rows, setRows] = useState<AccessionGeneRow[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -51,6 +61,10 @@ export function AccessionGenePicker({
   const supabase = createClientSupabaseClient();
   const seqRef = useRef(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True only for the value change caused by the user's own keystroke. A
+  // programmatic value change (pivot / selection) leaves it false, so the
+  // effect below skips searching and opening the dropdown.
+  const typedRef = useRef(false);
 
   const runSearch = useCallback(
     async (partial: string, seq: number) => {
@@ -83,8 +97,13 @@ export function AccessionGenePicker({
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    const trimmed = query.trim();
+    // Consume the keystroke flag; only search when the change was typed.
+    const typed = typedRef.current;
+    typedRef.current = false;
+    if (!typed) return;
+    const trimmed = value.trim();
     if (trimmed.length < 1) {
+      seqRef.current++; // discard any in-flight response
       setRows([]);
       return;
     }
@@ -93,11 +112,12 @@ export function AccessionGenePicker({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query, runSearch]);
+  }, [value, runSearch]);
 
   const choose = useCallback(
     (row: AccessionGeneRow) => {
-      setQuery(
+      typedRef.current = false;
+      onValueChange(
         dedupeByGene
           ? (row.gene_id ?? row.uid)
           : `${row.gene_id ?? row.uid} · ${row.accession_name ?? ""}`.trim(),
@@ -105,7 +125,7 @@ export function AccessionGenePicker({
       setOpen(false);
       onSelect(row);
     },
-    [onSelect, dedupeByGene],
+    [onSelect, onValueChange, dedupeByGene],
   );
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -128,13 +148,15 @@ export function AccessionGenePicker({
     <div className="relative w-96">
       <input
         type="text"
-        value={query}
+        value={value}
         placeholder={placeholder}
         onChange={(e) => {
-          setQuery(e.target.value);
+          typedRef.current = true;
+          onValueChange(e.target.value);
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
         onKeyDown={onKeyDown}
         className="w-full rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm shadow-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
       />

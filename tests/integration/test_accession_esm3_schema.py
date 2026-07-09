@@ -273,13 +273,33 @@ def test_embedding_dimension_guardrail(pg_conn, accession_seed):
 
 
 def test_embedding_zero_vector_rejected(pg_conn, accession_seed):
+    """The non-zero CHECK (not the FK) rejects an all-zeros vector. Uses a
+    fresh, valid protein uid so the only constraint that can fire is the CHECK
+    — asserting the exact SQLSTATE 23514 so removing the CHECK is detectable."""
+    import psycopg
+
     zero = _to_pgvector(_make_vec(ESM3_DIM, {}))
-    _expect_violation(
-        pg_conn,
-        "INSERT INTO public.protein_embeddings_esm3 (uid, embedding, run_id) "
-        "VALUES ('atest:zero', %s::vector(1536), %s)",
-        (zero, accession_seed["run_id"]),
-        sqlstate_prefix="23",  # check_violation
+    with pg_conn.cursor() as cur:
+        cur.execute("SAVEPOINT sp")
+        cur.execute(
+            "INSERT INTO public.proteins (uid, gene_id, accession_id) "
+            "VALUES ('atest:zerop', 'ATZERO', %s)",
+            (accession_seed["col0_id"],),
+        )
+        raised = None
+        try:
+            cur.execute(
+                "INSERT INTO public.protein_embeddings_esm3 (uid, embedding, run_id) "
+                "VALUES ('atest:zerop', %s::vector(1536), %s)",
+                (zero, accession_seed["run_id"]),
+            )
+        except psycopg.Error as exc:
+            raised = exc
+        cur.execute("ROLLBACK TO SAVEPOINT sp")
+    assert raised is not None, "zero vector was accepted"
+    assert raised.sqlstate == "23514", (
+        f"expected check_violation 23514 (the non-zero CHECK), got "
+        f"{raised.sqlstate}: {raised}"
     )
 
 
@@ -331,7 +351,7 @@ def test_hnsw_index_present_no_ivfflat(pg_conn):
 # 5. RPCs
 # ---------------------------------------------------------------------------
 
-def test_knn_search_esm3_ordering_and_scope(pg_conn, accession_seed):
+def test_knn_search_esm3_excludes_self_and_orders(pg_conn, accession_seed):
     with pg_conn.cursor() as cur:
         cur.execute(
             "SELECT uid, accession_name, gene_id, similarity "
@@ -340,11 +360,23 @@ def test_knn_search_esm3_ordering_and_scope(pg_conn, accession_seed):
         )
         rows = cur.fetchall()
     uids = [r[0] for r in rows]
-    assert uids == [REF_UID, ALT_UID, SOLO_UID], f"unexpected KNN order: {uids}"
-    assert abs(rows[0][3] - 1.0) < 1e-6
-    assert rows[0][3] > rows[1][3] > rows[2][3]
-    assert rows[0][1] == "atest-Col-0"  # accession_name joined
+    # The query protein is excluded; only the two other accession proteins
+    # remain, nearest-first (ALT cosine ~0.9, SOLO ~0).
+    assert uids == [ALT_UID, SOLO_UID], f"unexpected KNN result: {uids}"
+    assert REF_UID not in uids  # query itself is never returned
     assert XSPEC_UID not in uids  # accession-only scope
+    assert rows[0][1] == "atest-Ler-0"  # nearest neighbor's accession_name
+    assert rows[0][3] > rows[1][3]  # descending similarity
+
+
+def test_knn_search_esm3_match_count_is_neighbor_count(pg_conn, accession_seed):
+    """match_count = number of NEIGHBORS returned (query excluded), so a
+    request for K yields K real neighbors, not K-1."""
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT uid FROM public.knn_search_esm3(%s, 1)", (REF_UID,))
+        rows = cur.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == ALT_UID  # the single nearest neighbor, not self
 
 
 def test_knn_search_esm3_missing_query_returns_empty(pg_conn, accession_seed):
@@ -478,7 +510,10 @@ def test_read_only_roles_cannot_insert(pg_conn, accession_seed, role):
 
 
 def test_writer_role_can_ingest(pg_conn):
-    """bloom_writer can insert an accession, a run, and an embedding."""
+    """bloom_writer can insert an accession, a run, a protein, and an ESM-3
+    embedding — the full ingest path, including the one table with the vector
+    CHECK and a writer_insert policy."""
+    vec = _to_pgvector(_make_vec(ESM3_DIM, {0: 1.0}))
     with pg_conn.cursor() as cur:
         cur.execute("BEGIN")
         try:
@@ -487,15 +522,74 @@ def test_writer_role_can_ingest(pg_conn):
                 "INSERT INTO public.arabidopsis_accessions (common_name, external_id, id_source) "
                 "VALUES ('atest-writer', 'atest-w', 'atest-wsrc') RETURNING id"
             )
-            assert cur.fetchone()[0] is not None
+            acc_id = cur.fetchone()[0]
+            assert acc_id is not None
             cur.execute(
                 "INSERT INTO public.protein_embedding_runs "
                 "  (model_id, checkpoint_hash, pooling, sequence_source) "
                 "VALUES ('esm3_open_small_1p4B', 'atest-wh', 'mean', 'src') RETURNING id"
             )
-            assert cur.fetchone()[0] is not None
+            run_id = cur.fetchone()[0]
+            assert run_id is not None
+            cur.execute(
+                "INSERT INTO public.proteins (uid, gene_id, accession_id) "
+                "VALUES ('atest:writer:G', 'GW', %s)",
+                (acc_id,),
+            )
+            cur.execute(
+                "INSERT INTO public.protein_embeddings_esm3 (uid, embedding, run_id) "
+                "VALUES ('atest:writer:G', %s::vector(1536), %s)",
+                (vec, run_id),
+            )  # succeeds → writer can ingest embeddings
         finally:
             cur.execute("ROLLBACK")  # never persist writer test rows
+
+
+def test_embedding_run_model_id_fk(pg_conn):
+    """protein_embedding_runs.model_id FKs to protein_embedding_models — a run
+    naming an unregistered model is rejected."""
+    _expect_violation(
+        pg_conn,
+        "INSERT INTO public.protein_embedding_runs "
+        "  (model_id, checkpoint_hash, pooling, sequence_source) "
+        "VALUES ('no_such_model', 'h', 'mean', 'src')",
+        sqlstate_prefix="23",  # 23503 foreign_key_violation
+    )
+
+
+def test_rpc_match_count_bounds_do_not_crash(pg_conn, accession_seed):
+    """Negative match_count clamps to >=1 (no LIMIT -n error); huge caps at 1000."""
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM public.knn_search_esm3(%s, -5)", (REF_UID,))
+        assert cur.fetchone()[0] >= 1  # clamped, no runtime error
+        cur.execute("SELECT count(*) FROM public.knn_search_esm3(%s, 100000)", (REF_UID,))
+        assert cur.fetchone()[0] <= 1000
+        cur.execute(
+            "SELECT count(*) FROM public.compare_gene_across_accessions('AT1G01010', NULL, -1)"
+        )
+        assert cur.fetchone()[0] >= 1
+
+
+def test_compare_reference_survives_truncation(pg_conn, accession_seed):
+    """AT1G01010 has 2 accession variants; match_count=1 must still return the
+    reference (it sorts first), not merely the most-similar non-reference."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT uid, is_reference "
+            "FROM public.compare_gene_across_accessions('AT1G01010', NULL, 1)"
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == REF_UID and rows[0][1] is True
+
+
+def test_compare_empty_gene_returns_empty(pg_conn, accession_seed):
+    with pg_conn.cursor() as cur:
+        for g in ("", "   "):
+            cur.execute(
+                "SELECT count(*) FROM public.compare_gene_across_accessions(%s)", (g,)
+            )
+            assert cur.fetchone()[0] == 0, f"empty gene {g!r} should return no rows"
 
 
 EXPECTED_POLICY_PREFIXES = (

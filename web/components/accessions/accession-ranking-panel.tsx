@@ -60,10 +60,17 @@ export function AccessionRankingPanel({ geneId, referenceUid }: Props) {
     };
   }, [supabase, geneId, referenceUid ?? null]);
 
-  // Ordering is within noise if every similarity sits within EPSILON of the top.
+  // The actual reference accession (RPC precedence: is_reference → fallback),
+  // read from the returned rows rather than assumed to be Col-0.
+  const referenceName = rows.find((r) => r.is_reference)?.accession_name ?? null;
+
+  // Ordering is within noise if the RANKED (non-reference) variants are all
+  // within EPSILON of each other — measure their pairwise spread, not their
+  // distance to the reference (which is ~1.0 and would mask a tight cluster
+  // sitting well below the reference).
+  const ranked = rows.filter((r) => !r.is_reference).map((r) => r.similarity);
   const withinNoise =
-    rows.length > 1 &&
-    rows.every((r) => Math.abs(rows[0].similarity - r.similarity) <= NOISE_EPSILON);
+    ranked.length > 1 && Math.max(...ranked) - Math.min(...ranked) <= NOISE_EPSILON;
 
   const handleDownload = () => {
     const csv = toCsv(
@@ -86,6 +93,11 @@ export function AccessionRankingPanel({ geneId, referenceUid }: Props) {
       <div className="flex items-center justify-between border-b border-stone-200 px-3 py-2">
         <span className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
           {geneId} across accessions
+          {referenceName && (
+            <span className="ml-2 normal-case font-normal tracking-normal text-neutral-400">
+              vs. {referenceName}
+            </span>
+          )}
         </span>
         <div className="flex items-center gap-3">
           {loading && <span className="text-xs text-neutral-500">Loading…</span>}

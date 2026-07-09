@@ -53,8 +53,9 @@ export function AccessionKnn({ queryUid, queryLabel, k, onSelectNeighbor }: Prop
         setNeighbors([]);
         return;
       }
-      // Drop the query's own row (self-match, similarity 1.0).
-      setNeighbors(((data ?? []) as AccessionNeighbor[]).filter((n) => n.uid !== queryUid));
+      // knn_search_esm3 already excludes the query itself, so match_count rows
+      // are all genuine neighbors.
+      setNeighbors((data ?? []) as AccessionNeighbor[]);
     })();
     return () => {
       cancelled = true;

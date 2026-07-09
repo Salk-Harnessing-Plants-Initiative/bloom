@@ -9,11 +9,17 @@ import { ACCESSION_DISCLAIMER, DEFAULT_K, K_MAX, K_MIN } from "./constants";
 
 type Tab = "pergene" | "neighborhood";
 
-// Loose table type until web/lib/database.types.ts is regenerated to know the
-// accession tables.
-type LooseFrom = (table: string) => {
-  select: (cols: string) => any;
-};
+// Loose PostgREST builder type until web/lib/database.types.ts is regenerated
+// to know the accession tables. Chain methods return the builder; awaiting it
+// yields { data, error } (no `any`).
+type LooseResult = { data: unknown; error: { message?: string } | null };
+interface LooseQuery extends PromiseLike<LooseResult> {
+  select: (cols: string) => LooseQuery;
+  order: (col: string) => LooseQuery;
+  eq: (col: string, val: unknown) => LooseQuery;
+  limit: (n: number) => LooseQuery;
+}
+type LooseFrom = (table: string) => LooseQuery;
 
 type Accession = { id: number; common_name: string };
 
@@ -85,28 +91,39 @@ export function AccessionPage() {
   const supabase = createClientSupabaseClient();
   const [tab, setTab] = useState<Tab>("pergene");
 
-  // Surface A — `gene` is the picked suggestion; `submittedGene` is what the
+  // Surface A — `geneText` is the picker box; `gene` is the committed
+  // selection (only set by picking a suggestion); `submittedGene` is what the
   // panel actually queries (set on Search).
+  const [geneText, setGeneText] = useState("");
   const [gene, setGene] = useState<string | null>(null);
   const [submittedGene, setSubmittedGene] = useState<string | null>(null);
 
   // Surface B — accession + gene selections; `query` is committed on Search.
   const [accessions, setAccessions] = useState<Accession[]>([]);
   const [accId, setAccId] = useState<number | null>(null);
+  const [nbhdGeneText, setNbhdGeneText] = useState("");
   const [nbhdGene, setNbhdGene] = useState<string | null>(null);
   const [k, setK] = useState(DEFAULT_K);
   const [query, setQuery] = useState<{ uid: string; label: string; k: number } | null>(null);
-  const [resolveMsg, setResolveMsg] = useState<string | null>(null);
+  const [resolveMsg, setResolveMsg] = useState<string | null>(null); // benign "no variant"
+  const [searchError, setSearchError] = useState<string | null>(null); // actual failure
+  const [accListError, setAccListError] = useState<string | null>(null);
   const [resolving, setResolving] = useState(false);
 
   // Load the accession list once for the Surface B dropdown.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const { data } = await (supabase.from as unknown as LooseFrom)("arabidopsis_accessions")
+      const { data, error } = await (supabase.from as unknown as LooseFrom)("arabidopsis_accessions")
         .select("id, common_name")
         .order("common_name");
-      if (!cancelled) setAccessions((data ?? []) as Accession[]);
+      if (cancelled) return;
+      if (error) {
+        setAccListError(error.message ?? "Failed to load accessions.");
+        return;
+      }
+      setAccListError(null);
+      setAccessions((data ?? []) as Accession[]);
     })();
     return () => {
       cancelled = true;
@@ -123,12 +140,20 @@ export function AccessionPage() {
     if (accId == null || !nbhdGene) return;
     setResolving(true);
     setResolveMsg(null);
-    const { data } = await (supabase.from as unknown as LooseFrom)("proteins")
+    setSearchError(null);
+    // limit(1) is safe: UNIQUE (accession_id, gene_id) allows at most one row.
+    const { data, error } = await (supabase.from as unknown as LooseFrom)("proteins")
       .select("uid")
       .eq("accession_id", accId)
       .eq("gene_id", nbhdGene)
       .limit(1);
     setResolving(false);
+    if (error) {
+      // A real failure — do NOT claim the variant is missing.
+      setQuery(null);
+      setSearchError(error.message ?? "Lookup failed. Please try again.");
+      return;
+    }
     const rows = (data ?? []) as { uid: string }[];
     if (rows.length === 0) {
       setQuery(null);
@@ -152,7 +177,7 @@ export function AccessionPage() {
           active={tab === "pergene"}
           label="Compare a gene across accessions"
           hint="How one gene's protein varies between accessions"
-          info="Pick one gene. Every accession's version of that gene is ranked by how similar its protein is to the reference (Col-0). A score near 1.00 means nearly identical; lower means more divergent — so you can see which accessions vary most at that gene."
+          info="Pick one gene. Every accession's version of that gene is ranked by how similar its protein is to the reference accession (Col-0 by default). A score near 1.00 means nearly identical; lower means more divergent — so you can see which accessions vary most at that gene."
           onClick={() => setTab("pergene")}
         />
         <TabButton
@@ -168,6 +193,11 @@ export function AccessionPage() {
         <section className="flex flex-1 flex-col gap-4 overflow-y-auto">
           <div className="flex flex-wrap items-center gap-3">
             <AccessionGenePicker
+              value={geneText}
+              onValueChange={(t) => {
+                setGeneText(t);
+                setGene(null); // typing invalidates the committed selection
+              }}
               onSelect={handleGene}
               placeholder="Search a gene (e.g. AT1G01010)…"
               dedupeByGene
@@ -181,7 +211,8 @@ export function AccessionPage() {
               Search
             </button>
             <span className="text-xs text-neutral-500">
-              Ranks every accession&apos;s variant of the gene vs. the reference (Col-0).
+              Ranks every accession&apos;s variant against the reference accession
+              (Col-0 by default; marked below).
             </span>
           </div>
           {submittedGene ? (
@@ -211,6 +242,11 @@ export function AccessionPage() {
             <label className="flex flex-col gap-1 text-xs text-neutral-500">
               Gene
               <AccessionGenePicker
+                value={nbhdGeneText}
+                onValueChange={(t) => {
+                  setNbhdGeneText(t);
+                  setNbhdGene(null); // typing invalidates the committed selection
+                }}
                 onSelect={handleNbhdGene}
                 placeholder="Search a gene (e.g. AT1G01010)…"
                 dedupeByGene
@@ -238,6 +274,10 @@ export function AccessionPage() {
               {resolving ? "Searching…" : "Search"}
             </button>
           </div>
+          {accListError && (
+            <p className="text-xs text-red-600">Couldn&apos;t load accessions: {accListError}</p>
+          )}
+          {searchError && <p className="text-xs text-red-600">{searchError}</p>}
           {resolveMsg && <p className="text-xs text-amber-700">{resolveMsg}</p>}
           {query ? (
             <AccessionKnn
@@ -245,8 +285,11 @@ export function AccessionPage() {
               queryLabel={query.label}
               k={query.k}
               onSelectNeighbor={(n) => {
+                // Pivot every input to the clicked neighbor so the box, the
+                // committed gene, the dropdown, and the results all agree.
                 setAccId(n.accession_id);
                 setNbhdGene(n.gene_id);
+                setNbhdGeneText(n.gene_id ?? "");
                 setQuery({
                   uid: n.uid,
                   label: `${n.gene_id ?? n.uid} · ${n.accession_name ?? ""}`.trim(),

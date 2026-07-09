@@ -8,10 +8,14 @@ export const DEFAULT_K = 20;
 export const K_MIN = 5;
 export const K_MAX = 50;
 
-// If every similarity in a per-gene ranking falls within this band of the
-// top value, the ordering is within numerical noise (accession variants that
-// differ by few/no residues) and the UI says so rather than implying a
-// confident ranking.
+// If the ranked (non-reference) variants in a per-gene comparison all fall
+// within this cosine band of each other, the ordering is within numerical
+// noise (accession variants that differ by few/no residues) and the UI says so
+// rather than implying a confident ranking.
+// PROVISIONAL: 0.001 is a placeholder until we can calibrate it against real
+// ESM-3 pooled embeddings of near-identical accession variants; mean-pooled
+// ESM cosine between single-residue variants often sits at 0.99–0.999, so this
+// threshold should be revisited once data is loaded.
 export const NOISE_EPSILON = 0.001;
 
 // Deterministic HSL color for an accession, keyed on its numeric id so the

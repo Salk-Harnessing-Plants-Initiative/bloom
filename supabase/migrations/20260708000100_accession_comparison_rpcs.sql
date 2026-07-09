@@ -64,7 +64,10 @@ BEGIN
   END IF;
 
   -- accession_id IS NOT NULL keeps Surface B scoped to accession proteins even
-  -- if ESM-3 rows are ever loaded for a cross-species protein. Hard cap 1000.
+  -- if ESM-3 rows are ever loaded for a cross-species protein. The query
+  -- protein is excluded (e.uid <> query_uid) so match_count returns exactly
+  -- that many NEIGHBORS (the self-match at distance 0 would otherwise consume
+  -- one slot). Hard cap 1000.
   RETURN QUERY
     SELECT p.uid,
            p.accession_id,
@@ -75,13 +78,14 @@ BEGIN
       JOIN public.proteins p               ON p.uid = e.uid
       JOIN public.arabidopsis_accessions a ON a.id  = p.accession_id
      WHERE p.accession_id IS NOT NULL
+       AND e.uid <> query_uid
      ORDER BY e.embedding <=> query_vec
-     LIMIT LEAST(match_count, 1000);
+     LIMIT GREATEST(1, LEAST(match_count, 1000));
 END;
 $$;
 
 COMMENT ON FUNCTION public.knn_search_esm3(text, int) IS
-  'Surface B. Returns the match_count nearest accession proteins to query_uid by ESM-3 cosine similarity, most-similar-first. Restricted to accession_id IS NOT NULL. similarity = 1 - cosine_distance. match_count hard-capped at 1000.';
+  'Surface B. Returns the match_count nearest accession proteins to query_uid by ESM-3 cosine similarity, most-similar-first, EXCLUDING query_uid itself so match_count = number of neighbors. Restricted to accession_id IS NOT NULL. similarity = 1 - cosine_distance. match_count hard-capped at 1000.';
 
 -- ─── compare_gene_across_accessions (Surface A) ───────────────────────────
 DROP FUNCTION IF EXISTS public.compare_gene_across_accessions(text, text, int);
@@ -157,7 +161,7 @@ BEGIN
      WHERE p.gene_id      = target_gene_id
        AND p.accession_id IS NOT NULL
      ORDER BY (p.uid = ref_uid) DESC, similarity DESC, p.uid ASC
-     LIMIT LEAST(match_count, 1000);
+     LIMIT GREATEST(1, LEAST(match_count, 1000));
 END;
 $$;
 
@@ -189,7 +193,7 @@ AS $$
      AND ( p.uid     ILIKE '%' || partial_id || '%'
         OR p.gene_id ILIKE '%' || partial_id || '%' )
    ORDER BY p.uid
-   LIMIT LEAST(max_results, 1000);
+   LIMIT GREATEST(1, LEAST(max_results, 1000));
 $$;
 
 COMMENT ON FUNCTION public.search_accession_genes(text, int) IS
@@ -218,7 +222,7 @@ AS $$
      AND ( uid     ILIKE '%' || partial_id || '%'
         OR gene_id ILIKE '%' || partial_id || '%' )
    ORDER BY uid
-   LIMIT LEAST(max_results, 1000);
+   LIMIT GREATEST(1, LEAST(max_results, 1000));
 $$;
 
 COMMENT ON FUNCTION public.search_genes(text, int) IS
