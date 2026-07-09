@@ -24,6 +24,28 @@ code under test — so the oracle is a genuine cross-tier regression check.
   naive `dropna()` that would discard 29 samples (158 left). This is the tool's oracle:
   no-NaN output with strictly less sample loss than `dropna()`. Reproduced-by version is
   recorded in the `_reproduced_by_sleap_roots_analyze_version` key.
+- `turface_19_outlier_golden.json` — characterization snapshot of the `remove_outliers` tool
+  (#378) driving `sleap_roots_analyze.remove_outlier_samples` (`method="mahalanobis"`, `seed=42`)
+  on the turface_19 frame cleaned at `clean_traits_for_analysis`'s **canonical defaults**
+  (`max_nans_per_trait=0.2` → **158 samples**, recorded in the `cleaning_params` /
+  `cleaned_samples` keys). Recorded via the **exact tool path** (`detect_columns` on the cleaned
+  frame → `remove_outlier_samples`): it flags **8 outliers → 150 retained**
+  (`outlier_barcodes` listed). **NB the 158 here is the canonical-default *cleaned* count** —
+  distinct from `turface_19_qc_golden.json`'s 187 (that snapshot uses `max_nans_per_trait=0.1`)
+  and **not** the naive-`dropna` number. turface_19's mahalanobis chi-squared fit is poor
+  (`goodness_of_fit_fit_quality == "very_poor"`; the delegate warns), so this is a **method+seed
+  characterization pin**, not a claim that the 8 flagged samples are ground-truth outliers.
+- `turface_19_qc_inspect_golden.json` — independently-computed oracle for the **read-only
+  `qc_inspect`** tool (#360), using `sleap_roots_analyze.apply_data_cleanup_filters` (the
+  delegate `qc_inspect` wraps) on `turface_19_raw_data.csv` at the **canonical defaults**
+  (`max_zeros=0.5, max_nans_per_trait=0.2, max_nans_per_sample=0.0, min_samples=10`, i.e.
+  `qc_clean`'s defaults). It records the consequence the agent must see: at the defaults the
+  two NaN-heavy traits (see the `turface_19_raw_data.csv` entry above for the shared 187×20 /
+  58-NaN / 29-sample facts) are **kept** and, because `max_nans_per_sample=0.0`, their 29
+  NaN-bearing samples are **dropped** — whereas lowering `max_nans_per_trait` to `≤0.15`
+  drops the two traits instead and **retains all 187 samples (0 lost)**. The recommendation
+  block pins `recommended_max_nans_per_trait=0.15`, `would_remove_traits=[Root_Biomass_mg,
+  Root_Shoot_Ratio]`, `samples_lost_at_recommendation=0`. **Not** re-derived from the tool.
 - `turface_19_pca_golden.json` — recorded golden + drift snapshots for that table.
   The keys carry **distinct provenance** (see the `_*_source` fields):
 
