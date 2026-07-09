@@ -30,6 +30,7 @@ const navSections = [
     items: [
       { name: "Bloom Assistant", href: "/chat" },
       { name: "OrthoBrowser", href: "/app/orthofinder" },
+      { name: "OrthoVec", href: "/app/embedtree" },
     ],
   },
   {

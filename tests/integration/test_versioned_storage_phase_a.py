@@ -31,7 +31,7 @@ import pytest
 # packages (`source`, `tools`, `storage`) directly under bloommcp/ rather
 # than nested under a top-level `bloommcp` namespace, so tests must add
 # that directory to sys.path before importing.
-_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp"
+_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp" / "src"
 if str(_BLOOMMCP_DIR) not in sys.path:
     sys.path.insert(0, str(_BLOOMMCP_DIR))
 
@@ -46,7 +46,7 @@ os.environ.setdefault("BLOOM_PLOTS_URL", "http://test.invalid")
 
 from pydantic import ValidationError  # noqa: E402
 
-from storage import (  # noqa: E402
+from bloom_mcp.storage import (  # noqa: E402
     AnalysisDir,
     CodeVersions,
     ExperimentBlock,
@@ -259,7 +259,7 @@ def test_analysis_dir_input_sha256_caches_after_first_call(tmp_path):
 def _import_loader():
     """Importing experiment_utils triggers env-var validation; defer to test time
     so the test file's import phase stays fast and deterministic."""
-    from source.experiment_utils import load_experiment_data
+    from bloom_mcp.experiment_utils import load_experiment_data
     return load_experiment_data
 
 
@@ -354,11 +354,11 @@ def test_list_existing_analyses_empty_when_no_dirs(tmp_path, monkeypatch):
     output_dir.mkdir()
 
     # Storage tool reads OUTPUT_DIR / TRAITS_DIR from experiment_utils module-globals
-    import source.experiment_utils as eu
+    import bloom_mcp.experiment_utils as eu
     monkeypatch.setattr(eu, "OUTPUT_DIR", output_dir)
     monkeypatch.setattr(eu, "TRAITS_DIR", traits_dir)
 
-    from tools.storage_tools import list_existing_analyses
+    from bloom_mcp.tools.storage_tools import list_existing_analyses
     payload = json.loads(list_existing_analyses("bar.csv"))
 
     assert payload["experiment_filename"] == "bar.csv"
@@ -384,11 +384,11 @@ def test_list_existing_analyses_reports_qc_versions(tmp_path, monkeypatch):
     )
     _seed_qc_dir(output_dir, "bar", qc_manifest)
 
-    import source.experiment_utils as eu
+    import bloom_mcp.experiment_utils as eu
     monkeypatch.setattr(eu, "OUTPUT_DIR", output_dir)
     monkeypatch.setattr(eu, "TRAITS_DIR", traits_dir)
 
-    from tools.storage_tools import list_existing_analyses
+    from bloom_mcp.tools.storage_tools import list_existing_analyses
     payload = json.loads(list_existing_analyses("bar.csv"))
 
     assert "qc" in payload["analyses"]
@@ -406,11 +406,11 @@ def test_list_existing_analyses_unknown_experiment_returns_error(tmp_path, monke
     traits_dir.mkdir()
     output_dir.mkdir()
 
-    import source.experiment_utils as eu
+    import bloom_mcp.experiment_utils as eu
     monkeypatch.setattr(eu, "OUTPUT_DIR", output_dir)
     monkeypatch.setattr(eu, "TRAITS_DIR", traits_dir)
 
-    from tools.storage_tools import list_existing_analyses
+    from bloom_mcp.tools.storage_tools import list_existing_analyses
     payload = json.loads(list_existing_analyses("missing.csv"))
 
     assert "error" in payload

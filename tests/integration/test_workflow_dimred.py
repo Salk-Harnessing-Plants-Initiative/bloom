@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp"
+_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp" / "src"
 if str(_BLOOMMCP_DIR) not in sys.path:
     sys.path.insert(0, str(_BLOOMMCP_DIR))
 
@@ -31,7 +31,7 @@ os.environ.setdefault("BLOOM_OUTPUT_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_URL", "http://test.invalid/plots")
 
-from storage import read_manifest  # noqa: E402
+from bloom_mcp.storage import read_manifest  # noqa: E402
 
 
 def _seed_experiment(traits_dir: Path, name: str = "bar.csv", n_samples: int = 60, n_traits: int = 6):
@@ -59,7 +59,7 @@ def _setup_dirs(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]:
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(output_dir))
     monkeypatch.setenv("BLOOM_PLOTS_DIR", str(plots_dir))
 
-    import source.experiment_utils as eu
+    import bloom_mcp.experiment_utils as eu
     monkeypatch.setattr(eu, "TRAITS_DIR", traits_dir)
     monkeypatch.setattr(eu, "OUTPUT_DIR", output_dir)
     monkeypatch.setattr(eu, "PLOTS_DIR", plots_dir)
@@ -75,7 +75,7 @@ def test_run_dimred_pca_returns_workflow_response_shape(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.dimred import run_dimensionality_reduction_workflow
+    from bloom_mcp.tools.workflows.dimred import run_dimensionality_reduction_workflow
 
     result = run_dimensionality_reduction_workflow("bar.csv", method="pca")
 
@@ -95,7 +95,7 @@ def test_run_dimred_pca_writes_loadings_and_scores_csvs(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.dimred import run_dimensionality_reduction_workflow
+    from bloom_mcp.tools.workflows.dimred import run_dimensionality_reduction_workflow
 
     result = run_dimensionality_reduction_workflow("bar.csv", method="pca")
     version_dir = Path(result["version_dir"])
@@ -118,7 +118,7 @@ def test_run_dimred_pca_scree_plot_exists_at_url_path(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.dimred import run_dimensionality_reduction_workflow
+    from bloom_mcp.tools.workflows.dimred import run_dimensionality_reduction_workflow
 
     result = run_dimensionality_reduction_workflow("bar.csv", method="pca")
     assert result["plot_url"].endswith(".png")
@@ -132,7 +132,7 @@ def test_run_dimred_pca_explicit_n_components(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir, n_traits=10)
 
-    from tools.workflows.dimred import run_dimensionality_reduction_workflow
+    from bloom_mcp.tools.workflows.dimred import run_dimensionality_reduction_workflow
 
     result = run_dimensionality_reduction_workflow("bar.csv", method="pca", n_components=3)
     assert result["summary"]["n_components_used"] == 3
@@ -144,7 +144,7 @@ def test_run_dimred_pca_writes_versioned_manifest_entry(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.dimred import run_dimensionality_reduction_workflow
+    from bloom_mcp.tools.workflows.dimred import run_dimensionality_reduction_workflow
 
     run_dimensionality_reduction_workflow("bar.csv", method="pca")
     dimred_dir = output_dir / "dimred_bar"
@@ -164,7 +164,7 @@ def test_run_dimred_umap_returns_workflow_response_shape(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir, n_samples=80)
 
-    from tools.workflows.dimred import run_dimensionality_reduction_workflow
+    from bloom_mcp.tools.workflows.dimred import run_dimensionality_reduction_workflow
 
     result = run_dimensionality_reduction_workflow("bar.csv", method="umap")
 
@@ -181,7 +181,7 @@ def test_run_dimred_umap_writes_embedding_csv(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir, n_samples=80)
 
-    from tools.workflows.dimred import run_dimensionality_reduction_workflow
+    from bloom_mcp.tools.workflows.dimred import run_dimensionality_reduction_workflow
 
     result = run_dimensionality_reduction_workflow("bar.csv", method="umap")
     version_dir = Path(result["version_dir"])
@@ -200,7 +200,7 @@ def test_run_dimred_umap_param_passthrough(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir, n_samples=60)
 
-    from tools.workflows.dimred import run_dimensionality_reduction_workflow
+    from bloom_mcp.tools.workflows.dimred import run_dimensionality_reduction_workflow
 
     result = run_dimensionality_reduction_workflow(
         "bar.csv", method="umap", n_neighbors=10, min_dist=0.25,
@@ -220,7 +220,7 @@ def test_run_dimred_invalid_method_returns_error(tmp_path, monkeypatch):
     pytest.importorskip("pandas")
     _setup_dirs(tmp_path, monkeypatch)
 
-    from tools.workflows.dimred import run_dimensionality_reduction_workflow
+    from bloom_mcp.tools.workflows.dimred import run_dimensionality_reduction_workflow
 
     result = run_dimensionality_reduction_workflow("bar.csv", method="tsne")
     assert "error" in result
@@ -232,7 +232,7 @@ def test_run_dimred_missing_file_returns_error(tmp_path, monkeypatch):
     pytest.importorskip("pandas")
     _setup_dirs(tmp_path, monkeypatch)
 
-    from tools.workflows.dimred import run_dimensionality_reduction_workflow
+    from bloom_mcp.tools.workflows.dimred import run_dimensionality_reduction_workflow
 
     result = run_dimensionality_reduction_workflow("does_not_exist.csv", method="pca")
     assert "error" in result
@@ -245,7 +245,7 @@ def test_run_dimred_pca_second_run_creates_v2(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.dimred import run_dimensionality_reduction_workflow
+    from bloom_mcp.tools.workflows.dimred import run_dimensionality_reduction_workflow
 
     r1 = run_dimensionality_reduction_workflow("bar.csv", method="pca")
     r2 = run_dimensionality_reduction_workflow("bar.csv", method="pca", n_components=2)

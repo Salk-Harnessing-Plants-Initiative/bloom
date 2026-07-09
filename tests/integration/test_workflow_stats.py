@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp"
+_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp" / "src"
 if str(_BLOOMMCP_DIR) not in sys.path:
     sys.path.insert(0, str(_BLOOMMCP_DIR))
 
@@ -32,7 +32,7 @@ os.environ.setdefault("BLOOM_OUTPUT_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_URL", "http://test.invalid")
 
-from storage import read_manifest  # noqa: E402
+from bloom_mcp.storage import read_manifest  # noqa: E402
 
 
 def _seed_experiment(traits_dir: Path, name: str = "bar.csv", n_traits: int = 5):
@@ -58,7 +58,7 @@ def _setup_dirs(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
     output_dir.mkdir()
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(output_dir))
 
-    import source.experiment_utils as eu
+    import bloom_mcp.experiment_utils as eu
     monkeypatch.setattr(eu, "TRAITS_DIR", traits_dir)
     monkeypatch.setattr(eu, "OUTPUT_DIR", output_dir)
     return traits_dir, output_dir
@@ -69,7 +69,7 @@ def test_run_descriptive_stats_returns_workflow_response_shape(tmp_path, monkeyp
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.stats import run_descriptive_stats_workflow
+    from bloom_mcp.tools.workflows.stats import run_descriptive_stats_workflow
 
     result = run_descriptive_stats_workflow("bar.csv")
 
@@ -87,7 +87,7 @@ def test_run_descriptive_stats_writes_full_csv_to_disk(tmp_path, monkeypatch):
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir, n_traits=8)
 
-    from tools.workflows.stats import run_descriptive_stats_workflow
+    from bloom_mcp.tools.workflows.stats import run_descriptive_stats_workflow
 
     result = run_descriptive_stats_workflow("bar.csv")
     stats_path = Path(result["version_dir"]) / "stats.csv"
@@ -106,7 +106,7 @@ def test_run_descriptive_stats_per_trait_summary_cap_at_50(tmp_path, monkeypatch
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir, n_traits=75)
 
-    from tools.workflows.stats import run_descriptive_stats_workflow
+    from bloom_mcp.tools.workflows.stats import run_descriptive_stats_workflow
 
     result = run_descriptive_stats_workflow("bar.csv")
     assert result["summary"]["n_traits"] == 75
@@ -125,7 +125,7 @@ def test_run_descriptive_stats_response_payload_bounded(tmp_path, monkeypatch):
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir, n_traits=200)
 
-    from tools.workflows.stats import run_descriptive_stats_workflow
+    from bloom_mcp.tools.workflows.stats import run_descriptive_stats_workflow
 
     result = run_descriptive_stats_workflow("bar.csv")
     # Even with 200 traits, the response payload should stay well under 50 KB
@@ -137,7 +137,7 @@ def test_run_descriptive_stats_writes_versioned_dir_and_manifest(tmp_path, monke
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.stats import run_descriptive_stats_workflow
+    from bloom_mcp.tools.workflows.stats import run_descriptive_stats_workflow
 
     run_descriptive_stats_workflow("bar.csv")
 
@@ -154,7 +154,7 @@ def test_run_descriptive_stats_second_run_creates_v2(tmp_path, monkeypatch):
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.stats import run_descriptive_stats_workflow
+    from bloom_mcp.tools.workflows.stats import run_descriptive_stats_workflow
 
     r1 = run_descriptive_stats_workflow("bar.csv")
     r2 = run_descriptive_stats_workflow("bar.csv")
@@ -167,7 +167,7 @@ def test_run_descriptive_stats_with_explicit_traits_filter(tmp_path, monkeypatch
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir, n_traits=5)
 
-    from tools.workflows.stats import run_descriptive_stats_workflow
+    from bloom_mcp.tools.workflows.stats import run_descriptive_stats_workflow
 
     result = run_descriptive_stats_workflow("bar.csv", traits="trait_0,trait_2")
     assert result["summary"]["n_traits"] == 2
@@ -181,7 +181,7 @@ def test_run_descriptive_stats_invalid_traits_returns_error(tmp_path, monkeypatc
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir, n_traits=3)
 
-    from tools.workflows.stats import run_descriptive_stats_workflow
+    from bloom_mcp.tools.workflows.stats import run_descriptive_stats_workflow
 
     result = run_descriptive_stats_workflow("bar.csv", traits="nope_a,nope_b")
     assert "error" in result
@@ -192,7 +192,7 @@ def test_run_descriptive_stats_missing_file_returns_error(tmp_path, monkeypatch)
     pytest.importorskip("pandas")
     _setup_dirs(tmp_path, monkeypatch)
 
-    from tools.workflows.stats import run_descriptive_stats_workflow
+    from bloom_mcp.tools.workflows.stats import run_descriptive_stats_workflow
 
     result = run_descriptive_stats_workflow("does_not_exist.csv")
     assert "error" in result

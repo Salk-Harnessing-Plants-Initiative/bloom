@@ -121,19 +121,33 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
-      # Fast feedback on pure-Python utility scripts. Placed in python-audit
-      # (not compose-health-check) because this job runs in parallel, has no
-      # continue-on-error, and already has uv installed. The `test` extra is
-      # pinned in the root pyproject.toml — one source of truth for both
-      # unit + integration test runs.
       - name: Run Python unit tests
         run: uv run --extra test pytest tests/unit/ -v --tb=short
 
-      # Enforce lockfile-pyproject sync on the server side. Pre-commit catches
-      # this locally but can be bypassed (--no-verify, web-UI merge, Dependabot
-      # auto-merge). `uv export --frozen` (used by the audit steps below) exits
-      # 0 even on drift — `uv lock --check` is the actual detector, invoked
-      # per-service by scripts/check-uv-locks.py.
+      - name: Run bloom_mcp package tests
+        run: cd bloommcp && uv run --frozen --extra test pytest tests/ -v --tb=short
+        env:
+          SUPABASE_URL: ""
+          BLOOM_AGENT_KEY: ""
+
+      - name: Run bloomctl package tests
+        # Exclude the env-gated integration test (needs live staging creds); it
+        # also self-skips at collection time, so this is defense-in-depth.
+        run: cd bloomcli && uv run --extra test pytest tests/ -m "not integration" -v --tb=short
+
+      - name: Build bloom_mcp wheel and import in a clean env
+        run: |
+          cd bloommcp
+          rm -rf dist
+          uv build --wheel
+          wheel=$(echo dist/bloommcp-*.whl)
+          test -f "$wheel" || { echo "expected exactly one wheel, got: $wheel"; exit 1; }
+          uv run --no-project --with "$wheel" \
+            python -c "import bloom_mcp, bloom_mcp.tools, bloom_mcp.storage, bloom_mcp.server; assert 'site-packages' in bloom_mcp.__file__, bloom_mcp.__file__"
+        env:
+          SUPABASE_URL: ""
+          BLOOM_AGENT_KEY: ""
+
       - name: Verify uv lockfiles are synced
         run: python scripts/check-uv-locks.py
 
@@ -148,12 +162,27 @@ jobs:
       - name: Audit video-worker dependencies
         run: cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
+      # Checks workflows Python packages for vulnerabilities
+      - name: Audit workflows dependencies
+        run: cd services/workflows && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+
   docker-build:
     name: Build Docker Images & Scan for CVEs
     runs-on: ubuntu-latest
+    # compose-health-check `needs: docker-build`, and this job builds all four
+    # images (bloom-web/langchain/bloommcp/caddy) + Trivy-scans them on the same
+    # ~14 GB-free runner — the same disk-heavy pattern as compose-health-check
+    # (issue #334). Protect it too: a disk-out here would skip the very job the
+    # cleanup is meant to guard. Cap the runtime so a wedge can't hang for 6h.
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Free up disk space
+        uses: ./.github/actions/free-disk-space
+        with:
+          min-free-gb: "20"
 
       - name: Build bloom-web image
         # NEXT_PUBLIC_* build args are still REQUIRED until PR-3 §6 of the
@@ -180,6 +209,9 @@ jobs:
 
       - name: Build caddy image
         run: docker build --provenance=false -f caddy/Dockerfile -t caddy:ci ./caddy
+
+      - name: Build workflows image
+        run: docker build --provenance=false -f services/workflows/Dockerfile -t workflows:ci ./services/workflows
 
       # Scan built images for CVEs and generate markdown report
       - name: Scan bloom-web image
@@ -222,6 +254,16 @@ jobs:
           output: 'trivy-caddy.txt'
           trivyignores: '.trivyignore'
 
+      - name: Scan workflows image
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'workflows:ci'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-workflows.txt'
+          trivyignores: '.trivyignore'
+
       - name: Generate Trivy report
         if: always()
         run: |
@@ -230,7 +272,7 @@ jobs:
             echo ""
             echo "| Image | Critical | High |"
             echo "|-------|----------|------|"
-            for img in bloom-web langchain bloommcp caddy; do
+            for img in bloom-web langchain bloommcp caddy workflows; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
                 crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || echo 0)
@@ -239,7 +281,7 @@ jobs:
               fi
             done
             echo ""
-            for img in bloom-web langchain bloommcp caddy; do
+            for img in bloom-web langchain bloommcp caddy workflows; do
               file="trivy-${img}.txt"
               if [ -f "$file" ] && [ -s "$file" ]; then
                 cves=$(grep -oP 'CVE-\d+-\d+' "$file" | sort -u | tr '\n' ', ' | sed 's/,$//')
@@ -299,6 +341,14 @@ jobs:
           exit-code: '1'
           trivyignores: '.trivyignore'
 
+      - name: Check workflows for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'workflows:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+
   lint-migrations:
     name: Lint new migration filenames + timestamps
     runs-on: ubuntu-latest
@@ -311,6 +361,21 @@ jobs:
 
       - name: Run migration lint
         run: ./scripts/lint_migrations.sh origin/${{ github.base_ref }}
+
+  lint-cve-isolation:
+    name: Lint CVE changes are isolated
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Need history on both sides so the lint can diff against the base ref
+          fetch-depth: 0
+
+      # Fails if a PR folds a .trivyignore (CVE-suppression) change into
+      # unrelated work — CVE/security changes must ship in their own PR.
+      - name: Enforce CVE-change PR isolation
+        run: ./scripts/lint_cve_isolation.sh origin/${{ github.base_ref }}
 
   # Runs the new web/ Vitest suite added by the openspec change
   # add-ghcr-image-publishing (proposal/tasks/specs already on this branch).
@@ -339,6 +404,10 @@ jobs:
     name: Docker Compose Health Check
     needs: docker-build
     runs-on: ubuntu-latest
+    # Cap the job. The GitHub default is 6h; a "No space left on device" fill
+    # once left this job hanging for the full 6h before failing (issue #334).
+    # Normal runtime is ~8-15 min, so 30 fails fast on any future hang.
+    timeout-minutes: 30
     env:
       # Single source of truth for the compose file pair. Hoisted here so
       # the 6+ docker compose commands below don't drift apart. The CI
@@ -347,8 +416,41 @@ jobs:
       # docker-compose.prod.yml to `image: ghcr.io/...` refs.
       COMPOSE_FILES: -f docker-compose.prod.yml -f docker-compose.ci.yml
     steps:
+      # Reclaim ~25 GB before anything runs. ubuntu-latest ships only ~14 GB
+      # free on /, and this job builds the full prod compose stack
+      # (web/langchain/bloommcp/caddy) AND installs the Supabase CLI .deb AND
+      # Playwright+Chromium on top — which overflowed the disk on PR #323
+      # ("No space left on device", then a 6h hang). These language SDKs are
+      # preinstalled on the runner but never used by this job. Inline rm (no
+      # third-party action) keeps it under our control and consistent with the
+      # SHA-pinning posture of the other steps. hostedtoolcache is left intact
+      # so setup-uv / setup-node still resolve their runtimes.
+      - name: Free up disk space
+        run: |
+          echo "Disk before cleanup:"; df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc /usr/local/.ghcup \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean || true
+          echo "Disk after cleanup:"; df -h /
+
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # This job builds the full prod compose stack (web/langchain/bloommcp/
+      # caddy) AND installs the Supabase CLI + Playwright/Chromium — which
+      # overflowed the runner's ~14 GB free on / (issue #334). Reclaim ~25 GB
+      # right after checkout (the local composite action needs the repo
+      # present), well before any heavy disk use. The 20 GB floor fails fast if
+      # the runner layout ever stops yielding the expected headroom.
+      - name: Free up disk space
+        uses: ./.github/actions/free-disk-space
+        with:
+          min-free-gb: "20"
 
       # Setup uv BEFORE compose starts — the compose stack creates
       # root-owned `volumes/db/data/` (postgres bind mount), and setup-uv's
@@ -558,6 +660,20 @@ jobs:
             exit 1
           }
 
+      # bloom_* schema-USAGE grants (issue #333). `supabase db push` applies
+      # migrations as the downgraded `postgres`, which cannot grant on the
+      # supabase_admin-owned storage/auth schemas (a raw grant there silently
+      # no-ops). Apply the single-source grants file as supabase_admin, AFTER db
+      # push has created the bloom_* roles. Same file `make migrate-local` applies.
+      - name: Apply bloom_* schema-USAGE grants
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+        run: |
+          docker compose $COMPOSE_FILES --env-file .env.ci exec -T \
+            -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
+            psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+            < supabase/grants/schema_grants.sql
+
       # Layer B — runs only on failure. Prints applied-vs-pending state so an
       # on-call engineer can see which migration broke without digging through
       # step logs. `|| true` stops a diagnostic-fetch failure from masking
@@ -717,9 +833,20 @@ jobs:
   dev-stack-smoke:
     name: Dev stack smoke (init -> dev-up -> migrate-local -> check)
     runs-on: ubuntu-latest
+    # Parity with compose-health-check: cap the job so a wedged build/health
+    # wait fails fast instead of running to the 6h default (issue #334).
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # Parity / defense-in-depth: this job builds the dev compose stack, which
+      # is lighter than compose-health-check (no Playwright) but shares the same
+      # ~14 GB-free runner. Reclaim the unused SDKs and log headroom so a future
+      # regression is visible (issue #334). Log-only floor — this job has slack
+      # today, so no hard minimum that could flake.
+      - name: Free up disk space
+        uses: ./.github/actions/free-disk-space
 
       # Setup uv BEFORE compose starts (the dev stack creates a root-owned
       # volumes/db/data bind mount; setup-uv's lockfile glob would EACCES on it).
@@ -753,6 +880,18 @@ jobs:
       - name: make check (verify services, roles, schemas, migrations)
         run: make check
 
+      # Live persistence smoke (issue #326): drive a workflow end-to-end through
+      # the REAL SupabaseReader/SupabaseResultStore and assert the committed run
+      # is a v3 manifest with real provenance whose output_sha256 == the bytes
+      # actually stored. MUST run after `make migrate-local` — that step creates
+      # the bloommcp-data bucket and applies the storage-schema grants the write
+      # path needs. `make bloommcp-smoke` is the same target developers run
+      # locally (pre-merge), so local and CI never drift. The make target sources
+      # BLOOM_AGENT_KEY from the `make init`-generated .env.dev and derives the
+      # host gateway from KONG_HTTP_PORT; no repo secrets are needed.
+      - name: make bloommcp-smoke (live persistence smoke through real ports)
+        run: make bloommcp-smoke
+
       - name: Debug logs on failure
         if: failure()
         run: |
@@ -762,6 +901,10 @@ jobs:
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs db-dev --tail=100
           echo "=== storage logs ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs storage --tail=80
+          echo "=== supabase-minio logs ==="
+          docker compose -f docker-compose.dev.yml --env-file .env.dev logs supabase-minio --tail=50
+          echo "=== kong logs ==="
+          docker compose -f docker-compose.dev.yml --env-file .env.dev logs kong --tail=50
           echo "=== bloommcp logs ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs bloommcp --tail=50
           echo "=== langchain-agent logs ==="

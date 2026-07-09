@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp"
+_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp" / "src"
 if str(_BLOOMMCP_DIR) not in sys.path:
     sys.path.insert(0, str(_BLOOMMCP_DIR))
 
@@ -37,7 +37,7 @@ os.environ.setdefault("BLOOM_OUTPUT_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_URL", "http://test.invalid")
 
-from storage import (  # noqa: E402
+from bloom_mcp.storage import (  # noqa: E402
     AnalysisDir,
     AnalysisWriter,
     Manifest,

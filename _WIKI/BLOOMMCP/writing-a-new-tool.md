@@ -1,6 +1,12 @@
 # Writing a new workflow tool
 
-This doc is the guide for adding a new MCP workflow tool to bloommcp.
+> **Adding a tool to a section (e.g. phenotyping)?** Use
+> [adding-a-section-tool.md](./adding-a-section-tool.md) instead — that's the
+> current pattern (`@as_mcp_tool` + Pydantic input/output). This doc is the
+> older **workflow-tool** style (read CSV → write a versioned output folder,
+> registered with `mcp.tool()`).
+
+This doc is the guide for adding a new MCP workflow tool to the bloommcp.(sleap-trait-analyze)
 
 If you're trying to understand how the storage layer works under the
 hood, read [storage-workflow.md](./storage-workflow.md) first.
@@ -26,15 +32,15 @@ Input and output both live in the same
 `bloommcp-data` bucket — `bloommcp_input/<file>.csv` goes in, and the
 tool's writes land under `bloommcp_output/<tool_class>_<stem>/v<N>_*/`.
 
-The five existing workflow tools are all in [bloommcp/tools/workflows/](../../bloommcp/tools/workflows/):
+The five existing workflow tools are all in [bloommcp/src/bloom_mcp/tools/workflows/](../../bloommcp/src/bloom_mcp/tools/workflows/):
 
-- [`qc.py`](../../bloommcp/tools/workflows/qc.py) — clean a CSV (legacy: bind-mount input)
-- [`stats.py`](../../bloommcp/tools/workflows/stats.py) — descriptive
+- [`qc.py`](../../bloommcp/src/bloom_mcp/tools/workflows/qc.py) — clean a CSV (legacy: bind-mount input)
+- [`stats.py`](../../bloommcp/src/bloom_mcp/tools/workflows/stats.py) — descriptive
   statistics (legacy: bind-mount input)
-- [`dimred.py`](../../bloommcp/tools/workflows/dimred.py) — PCA / UMAP (legacy: bind-mount input)
-- [`clustering.py`](../../bloommcp/tools/workflows/clustering.py) —
+- [`dimred.py`](../../bloommcp/src/bloom_mcp/tools/workflows/dimred.py) — PCA / UMAP (legacy: bind-mount input)
+- [`clustering.py`](../../bloommcp/src/bloom_mcp/tools/workflows/clustering.py) —
   k-means / GMM (legacy: bind-mount input)
-- [`outlier.py`](../../bloommcp/tools/workflows/outlier.py) — outlier
+- [`outlier.py`](../../bloommcp/src/bloom_mcp/tools/workflows/outlier.py) — outlier
   detection across five methods (legacy: bind-mount input)
 
 These five still read CSVs from the `BLOOM_TRAITS_DIR` bind mount
@@ -60,7 +66,7 @@ Step 1: Pick a tool_class
 It controls **where the output lands** in the bucket and **which folder
 the agent reads from** when asking about prior runs.
 
-The canonical set lives in [`bloommcp/storage/__init__.py`](../../bloommcp/storage/__init__.py)
+The canonical set lives in [`bloommcp/src/bloom_mcp/storage/__init__.py`](../../bloommcp/src/bloom_mcp/storage/__init__.py)
 as `CANONICAL_TOOL_CLASSES`:
 
 ```python
@@ -88,17 +94,17 @@ Rule of thumb:
 - Your tool is a genuinely new analysis kind → add a new class and
   open a PR that updates both `CANONICAL_TOOL_CLASSES` AND the
   `TOOL_CLASSES` tuple in
-  [`bloommcp/tools/storage_tools.py`](../../bloommcp/tools/storage_tools.py)
+  [`bloommcp/src/bloom_mcp/tools/storage_tools.py`](../../bloommcp/src/bloom_mcp/tools/storage_tools.py)
 
 ## Step 2: Create the file
 
 Workflow tools live in
-[`bloommcp/tools/workflows/`](../../bloommcp/tools/workflows/), one
+[`bloommcp/src/bloom_mcp/tools/workflows/`](../../bloommcp/src/bloom_mcp/tools/workflows/), one
 file per tool. The filename is the tool class (no `_` prefix), and
 the function inside has a `run_*_workflow` name.
 
 ```
-bloommcp/tools/workflows/<your_class>.py
+bloommcp/src/bloom_mcp/tools/workflows/<your_class>.py
 ```
 
 So a clustering tool lives in `clustering.py` and exports `run_clustering_workflow`.
@@ -114,8 +120,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from source.supabase_client import read_input_csv
-from source.experiment_utils import detect_columns
+from bloom_mcp.supabase_client import read_input_csv
+from bloom_mcp.experiment_utils import detect_columns
 from ._helpers import build_writer
 
 _TOOL_NAME = "run_my_workflow"
@@ -249,7 +255,7 @@ def register(mcp):
     mcp.tool()(run_my_workflow)
 ```
 
-Then open [`bloommcp/tools/workflows/__init__.py`](../../bloommcp/tools/workflows/__init__.py) and add an import + call so the server picks up your tool at startup:
+Then open [`bloommcp/src/bloom_mcp/tools/workflows/__init__.py`](../../bloommcp/src/bloom_mcp/tools/workflows/__init__.py) and add an import + call so the server picks up your tool at startup:
 
 ```python
 from . import my_workflow
@@ -303,7 +309,7 @@ Two things:
 2. If your tool produces a NEW kind of output file the storage layer
    needs to know about (e.g., a `.parquet` instead of `.csv`), add the
    extension to `_CONTENT_TYPES` in
-   [`bloommcp/source/supabase_client.py`](../../bloommcp/source/supabase_client.py)
+   [`bloommcp/src/bloom_mcp/supabase_client.py`](../../bloommcp/src/bloom_mcp/supabase_client.py)
    so it gets the right MIME type on upload.
 
 If your tool just does another CSV-in-CSV-out kind of analysis, no

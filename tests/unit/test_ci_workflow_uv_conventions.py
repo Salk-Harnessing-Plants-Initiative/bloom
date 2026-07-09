@@ -34,6 +34,13 @@ from typing import Iterator, NamedTuple
 import pytest
 import yaml
 
+from tests.unit._workflow_helpers import _logical_lines, _strip_line_comment
+
+# Re-exported for backwards compatibility — these helpers now live in
+# tests/unit/_workflow_helpers.py so sibling workflow-shape guards can reuse
+# them without importing this test module.
+__all__ = ["_logical_lines", "_strip_line_comment"]
+
 REPO_ROOT = Path(__file__).parent.parent.parent
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
@@ -51,56 +58,6 @@ class Step(NamedTuple):
     name: str  # step `name:` or "<unnamed>"
     run: str  # `run:` body or ""
     uses: str  # `uses:` value or ""
-
-
-def _strip_line_comment(line: str) -> str:
-    """Return the line with anything from an unquoted `#` onward removed.
-
-    Quoting in shell is permissive — we only care about defeating trivial
-    comment-out patterns like `# pip install uv`. A character-by-character
-    scan that respects single/double quotes is sufficient for the workflow
-    files we audit.
-    """
-    out: list[str] = []
-    quote: str | None = None
-    for ch in line:
-        if quote is None:
-            if ch == "#":
-                break
-            if ch in ("'", '"'):
-                quote = ch
-        elif ch == quote:
-            quote = None
-        out.append(ch)
-    return "".join(out)
-
-
-def _logical_lines(run_block: str) -> Iterator[tuple[int, str]]:
-    """Yield (starting-physical-line-number, joined-logical-line) pairs.
-
-    Physical lines connected by a trailing backslash (`\\`) are joined into one
-    logical line, matching shell continuation semantics. Comments are stripped
-    before the backslash check, so `cmd \\  # comment` continues correctly.
-    The starting physical line number is preserved so failure messages still
-    point at the right place.
-    """
-    physical = run_block.splitlines()
-    i = 0
-    while i < len(physical):
-        start = i + 1  # 1-based for human-readable error messages
-        accumulated: list[str] = []
-        while i < len(physical):
-            stripped = _strip_line_comment(physical[i]).rstrip()
-            if stripped.endswith("\\"):
-                accumulated.append(stripped[:-1].rstrip())
-                i += 1
-                continue
-            accumulated.append(stripped)
-            i += 1
-            break
-        joined = " ".join(seg.strip() for seg in accumulated if seg.strip())
-        if joined:
-            yield start, joined
 
 
 def _iter_steps() -> Iterator[Step]:
@@ -289,7 +246,9 @@ def test_pytest_uses_extra_test_not_with() -> None:
             if "--extra test" not in line:
                 problems.append("missing `--extra test`")
             if "--with" in line:
-                problems.append("uses forbidden `--with` (test deps come from the test extra)")
+                problems.append(
+                    "uses forbidden `--with` (test deps come from the test extra)"
+                )
             if problems:
                 violations.append(
                     f"{_step_label(step)}: line {line_no}: {', '.join(problems)}: "

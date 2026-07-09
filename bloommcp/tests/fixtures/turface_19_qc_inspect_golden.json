@@ -1,0 +1,34 @@
+{
+  "_comment": "Independently-computed oracle for qc_inspect on the RAW turface_19 input, using sleap_roots_analyze.apply_data_cleanup_filters (the same delegate the tool wraps) at qc_inspect's CANONICAL defaults — identical to qc_clean's: max_zeros_per_trait=0.5, max_nans_per_trait=0.2, max_nans_per_sample=0.0, min_samples_per_trait=10. Demonstrates the uncontrolled sample loss qc_inspect helps the agent avoid: at the defaults the two NaN-heavy traits (each 15.5% NaN) are KEPT (0.155 < 0.2) and, because max_nans_per_sample=0.0, their 29 NaN-bearing samples are DROPPED (final 158x20). Lowering max_nans_per_trait to <=0.15 instead DROPS the two traits, retaining all 187 samples (final 187x18) with ZERO sample loss. NOT re-derived from the qc_inspect tool. Cross-references turface_19_qc_golden.json for the shared raw-fixture facts (187x20 raw, naive dropna 158).",
+  "_raw_source": "see turface_19_qc_golden.json (talmolab/sleap-roots-analyze turface_19 raw input)",
+  "_reproduced_by_sleap_roots_analyze_version": "0.1.0a3",
+  "role_columns": {
+    "barcode_col": "Barcode",
+    "genotype_col": "geno",
+    "replicate_col": "rep"
+  },
+  "raw_samples": 187,
+  "raw_traits": 20,
+  "naive_dropna_samples": 158,
+  "naive_dropna_samples_lost": 29,
+  "nan_traits": {
+    "Root_Biomass_mg": 0.1551,
+    "Root_Shoot_Ratio": 0.1551
+  },
+  "default_params": {
+    "max_zeros_per_trait": 0.5,
+    "max_nans_per_trait": 0.2,
+    "max_nans_per_sample": 0.0,
+    "min_samples_per_trait": 10
+  },
+  "at_default_params": {
+    "traits_would_be_removed": [],
+    "samples_lost": 29,
+    "residual_nan_cells": 0
+  },
+  "recommendation": {
+    "recommended_max_nans_per_trait": 0.15,
+    "would_remove_traits": ["Root_Biomass_mg", "Root_Shoot_Ratio"],
+    "samples_lost_at_recommendation": 0
+  }
+}

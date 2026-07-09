@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp"
+_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp" / "src"
 if str(_BLOOMMCP_DIR) not in sys.path:
     sys.path.insert(0, str(_BLOOMMCP_DIR))
 
@@ -33,7 +33,7 @@ os.environ.setdefault("BLOOM_OUTPUT_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_URL", "http://test.invalid")
 
-from storage import read_manifest  # noqa: E402
+from bloom_mcp.storage import read_manifest  # noqa: E402
 
 
 def _seed_experiment(traits_dir: Path, name: str = "bar.csv", n: int = 50):
@@ -62,7 +62,7 @@ def _setup_dirs(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
     output_dir.mkdir()
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(output_dir))
 
-    import source.experiment_utils as eu
+    import bloom_mcp.experiment_utils as eu
     monkeypatch.setattr(eu, "TRAITS_DIR", traits_dir)
     monkeypatch.setattr(eu, "OUTPUT_DIR", output_dir)
     return traits_dir, output_dir
@@ -73,7 +73,7 @@ def test_run_outlier_workflow_pca_returns_workflow_response_shape(tmp_path, monk
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.outlier import run_outlier_workflow
+    from bloom_mcp.tools.workflows.outlier import run_outlier_workflow
 
     result = run_outlier_workflow("bar.csv", method="pca")
 
@@ -91,7 +91,7 @@ def test_run_outlier_workflow_mahalanobis_writes_versioned(tmp_path, monkeypatch
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.outlier import run_outlier_workflow
+    from bloom_mcp.tools.workflows.outlier import run_outlier_workflow
 
     result = run_outlier_workflow("bar.csv", method="mahalanobis")
     outlier_dir = output_dir / "outlier_bar"
@@ -109,7 +109,7 @@ def test_run_outlier_workflow_all_then_consensus_produces_single_version(tmp_pat
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.outlier import run_outlier_workflow
+    from bloom_mcp.tools.workflows.outlier import run_outlier_workflow
 
     result = run_outlier_workflow("bar.csv", method="all_then_consensus", remove_outliers=False)
     outlier_dir = output_dir / "outlier_bar"
@@ -134,7 +134,7 @@ def test_run_outlier_workflow_consensus_default_keeps_only_consensus_json(tmp_pa
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.outlier import run_outlier_workflow
+    from bloom_mcp.tools.workflows.outlier import run_outlier_workflow
 
     result = run_outlier_workflow("bar.csv", method="consensus", remove_outliers=False)
     assert "consensus_outliers.json" in result["outputs"]
@@ -148,7 +148,7 @@ def test_run_outlier_workflow_remove_outliers_writes_cleaned_csv(tmp_path, monke
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir, n=100)  # bigger sample so detectors find at least 1
 
-    from tools.workflows.outlier import run_outlier_workflow
+    from bloom_mcp.tools.workflows.outlier import run_outlier_workflow
 
     result = run_outlier_workflow(
         "bar.csv", method="mahalanobis", chi2_percentile=80.0, remove_outliers=True,
@@ -168,7 +168,7 @@ def test_run_outlier_workflow_remove_outliers_false_skips_cleaned_csv(tmp_path, 
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.outlier import run_outlier_workflow
+    from bloom_mcp.tools.workflows.outlier import run_outlier_workflow
 
     result = run_outlier_workflow("bar.csv", method="pca", remove_outliers=False)
     assert "bar_cleaned.csv" not in result["outputs"]
@@ -179,7 +179,7 @@ def test_run_outlier_workflow_invalid_method_returns_error(tmp_path, monkeypatch
     pytest.importorskip("pandas")
     _setup_dirs(tmp_path, monkeypatch)
 
-    from tools.workflows.outlier import run_outlier_workflow
+    from bloom_mcp.tools.workflows.outlier import run_outlier_workflow
 
     result = run_outlier_workflow("bar.csv", method="bogus")
     assert "error" in result
@@ -191,7 +191,7 @@ def test_run_outlier_workflow_missing_file_returns_error(tmp_path, monkeypatch):
     pytest.importorskip("pandas")
     _setup_dirs(tmp_path, monkeypatch)
 
-    from tools.workflows.outlier import run_outlier_workflow
+    from bloom_mcp.tools.workflows.outlier import run_outlier_workflow
 
     result = run_outlier_workflow("does_not_exist.csv", method="pca")
     assert "error" in result
@@ -203,7 +203,7 @@ def test_run_outlier_workflow_second_run_creates_v2(tmp_path, monkeypatch):
     traits_dir, output_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.outlier import run_outlier_workflow
+    from bloom_mcp.tools.workflows.outlier import run_outlier_workflow
 
     r1 = run_outlier_workflow("bar.csv", method="pca", remove_outliers=False)
     r2 = run_outlier_workflow("bar.csv", method="mahalanobis", remove_outliers=False)

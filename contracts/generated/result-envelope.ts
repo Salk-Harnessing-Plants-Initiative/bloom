@@ -32,12 +32,18 @@ export type ParamHash = string;
 export type PipelineRunId = string | null;
 export type PredictCodeSha = string;
 export type PredictContainerDigest = string;
+export type PredictInferenceConfig = {
+  [k: string]: unknown;
+} | null;
 export type RegistryId = string;
 export type RootType = string | null;
 export type SleapNnVersion = string;
 export type Version = string;
 export type WeightsChecksum = string | null;
 export type PredictModels = ModelRef[];
+export type PredictOutputParams = {
+  [k: string]: unknown;
+} | null;
 export type ProducedAt = string | null;
 export type ScanKey = string;
 export type TraitsCodeSha = string;
@@ -72,7 +78,9 @@ export interface Provenance {
   pipeline_run_id?: PipelineRunId;
   predict_code_sha: PredictCodeSha;
   predict_container_digest: PredictContainerDigest;
+  predict_inference_config?: PredictInferenceConfig;
   predict_models: PredictModels;
+  predict_output_params?: PredictOutputParams;
   produced_at?: ProducedAt;
   scan_key: ScanKey;
   traits_code_sha: TraitsCodeSha;

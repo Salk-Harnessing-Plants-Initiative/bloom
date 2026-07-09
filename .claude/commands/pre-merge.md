@@ -76,6 +76,18 @@ uv run --extra test pytest tests/integration/ -v --tb=short
 make prod-down
 ```
 
+### Step 4b: bloommcp live-persistence smoke (bloommcp PRs only — matches the `dev-stack-smoke` job)
+
+Drives a workflow end-to-end through the **real** `SupabaseReader`/`SupabaseResultStore`
+against the dev stack and asserts the committed run is a v3 manifest whose
+`output_sha256` matches the bytes actually stored (issue #326). Same `make bloommcp-smoke`
+target CI runs, so local and CI never drift.
+
+```bash
+make dev-up && make migrate-local && make check && make bloommcp-smoke
+make dev-down
+```
+
 ## Step 5: PR Status on GitHub
 
 ```bash
@@ -88,6 +100,7 @@ Verify these jobs pass:
 - `python-audit`
 - `docker-build`
 - `compose-health-check`
+- `dev-stack-smoke` (includes the bloommcp live-persistence smoke)
 
 ## Step 6: Review Feedback
 

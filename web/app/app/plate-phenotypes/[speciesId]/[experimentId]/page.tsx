@@ -1,57 +1,21 @@
 import Link from "next/link";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import {
-  createServerSupabaseClient,
   getUser,
 } from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
-import { PlateImage } from "@/components/recent-phenotypes-by-plate-scanner/PlateImage";
-
-interface MetadataPlant {
-  plant_qr: string;
-}
-
-interface MetadataSection {
-  plate_section_id: string;
-  medium: string | null;
-  gravi_scan_metadata_section_plants: MetadataPlant[];
-}
-
-interface MetadataAccession {
-  plate_id: string;
-  accession_name: string;
-  wave_number: number | null;
-  gravi_scan_metadata_sections: MetadataSection[];
-}
-
-interface ScanRow {
-  id: number;
-  plate_id: string | null;
-  plate_index: string | null;
-  wave_number: number | null;
-  capture_date: string;
-  gravi_images: { object_path: string } | null;
-  gravi_scan_metadata_accession: MetadataAccession | null;
-}
-
-interface ExperimentRow {
-  id: number;
-  name: string;
-  system_name: string | null;
-  species: { id: number; common_name: string | null } | null;
-  cyl_scientists: { scientist_name: string | null; email: string | null } | null;
-  accessions: { name: string | null } | null;
-  gravi_scans: ScanRow[];
-}
-
-interface PlateGroup {
-  plate_id: string;
-  latestScan: ScanRow;
-  scans: ScanRow[];
-  accessionName: string | null;
-  waveNumber: number | null;
-  sections: MetadataSection[];
-}
+import { getExperiment } from "./getExperiment";
+import {
+  groupByWave,
+  waveKey,
+  waveLabel,
+  waveScanDateRange,
+} from "./plateGrouping";
+import { PlateList } from "./PlateList";
+import {
+  Breadcrumb,
+  formatExperimentName,
+  formatScanDateRange,
+} from "./ui";
 
 export default async function PlateExperiment({
   params,
@@ -73,257 +37,138 @@ export default async function PlateExperiment({
   if (!experiment) {
     return (
       <div>
-        <Breadcrumb speciesId={speciesId} speciesName="" experimentName="" />
+        <Breadcrumb
+          trail={[
+            { label: "All species", href: "/app/plate-phenotypes" },
+            { label: "Species", href: `/app/plate-phenotypes/${speciesId}` },
+            { label: "Experiment" },
+          ]}
+        />
         <div className="text-neutral-500 italic">Experiment not found.</div>
       </div>
     );
   }
 
-  const plates = groupByPlate(experiment.gravi_scans ?? []);
-  // Per-plate timepoint count. Plates in the same experiment typically share
-  // a cadence, so showing the max is honest ("up to N"); falls back to 0 when
-  // there are no scans.
-  const perPlateTimepoints = plates.length
-    ? Math.max(...plates.map((p) => p.scans.length))
-    : 0;
+  const waves = groupByWave(experiment.gravi_scans ?? []);
+  const allPlates = waves.flatMap((w) => w.plates);
 
   return (
     <div>
       <Breadcrumb
-        speciesId={speciesId}
-        speciesName={experiment.species?.common_name ?? ""}
-        experimentName={experiment.name}
+        trail={[
+          { label: "All species", href: "/app/plate-phenotypes" },
+          {
+            label: experiment.species?.common_name || "Species",
+            href: `/app/plate-phenotypes/${speciesId}`,
+            capitalize: true,
+          },
+          { label: formatExperimentName(experiment.name) },
+        ]}
       />
 
-      <div className="mb-6">
-        <div className="text-3xl font-serif italic mb-1 select-none">
-          {capitalizeFirstLetter(experiment.name.replaceAll("-", " "))}
-        </div>
-        <div className="text-sm text-stone-500">
-          {[
-            experiment.system_name,
-            experiment.accessions?.name ?? null,
-            experiment.cyl_scientists?.scientist_name
-              ? `Led by ${experiment.cyl_scientists.scientist_name}`
-              : null,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </div>
-        <div className="mt-2 text-lg font-medium text-stone-700">
-          {plates.length} plate{plates.length === 1 ? "" : "s"} ·{" "}
-          {perPlateTimepoints} time point
-          {perPlateTimepoints === 1 ? "" : "s"}
-        </div>
-      </div>
+      <ExperimentHeader
+        name={experiment.name}
+        systemName={experiment.system_name}
+        accessionName={experiment.accessions?.name ?? null}
+        scientistName={experiment.cyl_scientists?.scientist_name ?? null}
+        waveCount={waves.length}
+        plateCount={allPlates.length}
+      />
 
-      {plates.length === 0 ? (
+      {allPlates.length === 0 ? (
         <div className="text-neutral-500 italic">
           No plate scans uploaded yet.
         </div>
+      ) : waves.length === 1 && waves[0].waveNumber === null ? (
+        // No wave structure (legacy / unassigned) — skip the wave list.
+        <PlateList
+          plates={waves[0].plates}
+          speciesId={speciesId}
+          experimentId={experimentId}
+          waveParam={waveKey(waves[0].waveNumber)}
+        />
       ) : (
-        <ul className="space-y-4">
-          {plates.map((plate) => (
-            <li
-              key={plate.plate_id}
-              className="rounded-lg border border-stone-200 bg-white p-4"
-            >
-              <div className="flex gap-5">
-                <PlateImage
-                  path={plate.latestScan.gravi_images?.object_path ?? null}
-                  alt={plate.plate_id}
-                  className="w-[160px] h-[160px] shrink-0"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-3 flex-wrap">
-                    <Link
-                      href={`/app/plate-phenotypes/${speciesId}/${experimentId}/${encodeURIComponent(plate.plate_id)}`}
-                      className="text-xl text-lime-700 hover:underline"
-                    >
-                      {plate.plate_id}
-                    </Link>
-                    {plate.accessionName && (
-                      <span className="text-sm text-stone-500">
-                        Accession {plate.accessionName}
-                      </span>
-                    )}
-                    {plate.waveNumber !== null && (
-                      <span className="text-sm text-stone-500">
-                        · Wave {plate.waveNumber}
-                      </span>
-                    )}
-                    <span className="text-sm text-stone-400">
-                      · {plate.scans.length} time point
-                      {plate.scans.length === 1 ? "" : "s"}
-                    </span>
-                  </div>
+        <>
+          <p className="mb-4 text-sm text-stone-500">
+            Select a wave to view its plates.
+          </p>
+          <div className="table-auto select-none">
+            {waves.map((wave) => {
+              const timepoints = wave.plates.length
+                ? Math.max(...wave.plates.map((p) => p.scans.length))
+                : 0;
+              const { first, last } = waveScanDateRange(wave.plates);
+              const range = formatScanDateRange(first, last);
+              const stats = [
+                range ? `Scanned ${range}` : null,
+                `${wave.plates.length} plate${wave.plates.length === 1 ? "" : "s"}`,
+                timepoints > 0
+                  ? `${timepoints} time point${timepoints === 1 ? "" : "s"}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ");
 
-                  <div className="mt-1 text-xs text-stone-500">
-                    Latest scan {formatDateTime(plate.latestScan.capture_date)}
-                  </div>
-
-                  {plate.sections.length > 0 ? (
-                    <div className="mt-3 space-y-1">
-                      {plate.sections.map((section) => (
-                        <div
-                          key={section.plate_section_id}
-                          className="text-sm text-stone-700"
-                        >
-                          <span className="font-medium">
-                            {section.plate_section_id}
-                          </span>
-                          {section.medium && (
-                            <span className="ml-2 text-xs text-stone-400">
-                              ({section.medium})
-                            </span>
-                          )}
-                          <span className="ml-3 text-stone-500">
-                            {section.gravi_scan_metadata_section_plants
-                              .map((p) => p.plant_qr)
-                              .join(", ") || (
-                              <span className="italic text-stone-400">
-                                no plants registered
-                              </span>
-                            )}
-                          </span>
-                        </div>
-                      ))}
+              return (
+                <div className="table-row" key={waveKey(wave.waveNumber)}>
+                  <div className="table-cell align-middle p-4">
+                    <div className="text-lg align-middle">
+                      <Link
+                        href={`/app/plate-phenotypes/${speciesId}/${experimentId}/wave/${waveKey(wave.waveNumber)}`}
+                        className="text-lime-700 hover:underline"
+                      >
+                        {waveLabel(wave.waveNumber)}
+                      </Link>
                     </div>
-                  ) : (
-                    <div className="mt-3 text-xs italic text-stone-400">
-                      No section metadata registered
-                    </div>
-                  )}
-
-                  <div className="mt-3">
-                    <Link
-                      href={`/app/plate-phenotypes/${speciesId}/${experimentId}/${encodeURIComponent(plate.plate_id)}`}
-                      className="inline-flex items-center gap-1 rounded-md border border-stone-300 px-2 py-0.5 text-xs font-medium text-stone-700 hover:border-lime-700 hover:bg-lime-50 hover:text-lime-800"
-                    >
-                      Time series
-                      <span aria-hidden="true">→</span>
-                    </Link>
+                    {stats && (
+                      <div className="mt-2 text-sm text-neutral-400">
+                        {stats}
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
-            </li>
-          ))}
-        </ul>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );
 }
 
-function Breadcrumb({
-  speciesId,
-  speciesName,
-  experimentName,
+export function ExperimentHeader({
+  name,
+  systemName,
+  accessionName,
+  scientistName,
+  waveCount,
+  plateCount,
 }: {
-  speciesId: string;
-  speciesName: string;
-  experimentName: string;
+  name: string;
+  systemName: string | null;
+  accessionName: string | null;
+  scientistName: string | null;
+  waveCount: number;
+  plateCount: number;
 }) {
   return (
-    <div className="text-xl mb-6 select-none">
-      <span className="text-stone-400">
-        <span className="hover:underline">
-          <Link href="/app/plate-phenotypes">All species</Link>
-        </span>
-        &nbsp;▸&nbsp;
-        <span className="hover:underline">
-          <Link href={`/app/plate-phenotypes/${speciesId}`}>
-            <span className="capitalize">
-              {speciesName || "Species"}
-            </span>
-          </Link>
-        </span>
-        &nbsp;▸&nbsp;
-      </span>
-      <span>
-        {experimentName
-          ? capitalizeFirstLetter(experimentName.replaceAll("-", " "))
-          : "Experiment"}
-      </span>
+    <div className="mb-6">
+      <div className="text-3xl font-serif italic mb-1 select-none">
+        {formatExperimentName(name)}
+      </div>
+      <div className="text-sm text-stone-500">
+        {[
+          systemName,
+          accessionName,
+          scientistName ? `Led by ${scientistName}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </div>
+      <div className="mt-2 text-lg font-medium text-stone-700">
+        {waveCount > 1 && `${waveCount} waves · `}
+        {plateCount} plate{plateCount === 1 ? "" : "s"}
+      </div>
     </div>
   );
-}
-
-function capitalizeFirstLetter(s: string) {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-function groupByPlate(scans: ScanRow[]): PlateGroup[] {
-  const map = new Map<string, ScanRow[]>();
-  for (const scan of scans) {
-    if (!scan.plate_id) continue;
-    const list = map.get(scan.plate_id) ?? [];
-    list.push(scan);
-    map.set(scan.plate_id, list);
-  }
-
-  const groups: PlateGroup[] = [];
-  for (const [plate_id, list] of map) {
-    list.sort((a, b) => b.capture_date.localeCompare(a.capture_date));
-    const latest = list[0];
-    const meta = latest.gravi_scan_metadata_accession;
-    groups.push({
-      plate_id,
-      latestScan: latest,
-      scans: list,
-      accessionName: meta?.accession_name ?? null,
-      waveNumber: meta?.wave_number ?? latest.wave_number ?? null,
-      sections: meta?.gravi_scan_metadata_sections ?? [],
-    });
-  }
-
-  // Natural sort: extract the trailing integer so Plate_2 < Plate_10.
-  // Lex tiebreak keeps order stable when plate_ids share the same suffix.
-  groups.sort((a, b) => {
-    const an = plateSortKey(a.plate_id);
-    const bn = plateSortKey(b.plate_id);
-    if (an !== bn) return an - bn;
-    return a.plate_id.localeCompare(b.plate_id);
-  });
-  return groups;
-}
-
-function plateSortKey(plate_id: string): number {
-  const match = plate_id.match(/(\d+)$/);
-  return match ? parseInt(match[1], 10) : Number.POSITIVE_INFINITY;
-}
-
-async function getExperiment(
-  experimentId: number,
-): Promise<ExperimentRow | null> {
-  const supabase = await createServerSupabaseClient();
-
-  const { data, error } = await (supabase as unknown as SupabaseClient<unknown>)
-    .from("gravi_experiments")
-    .select(
-      "id, name, system_name, species(id, common_name), cyl_scientists(scientist_name, email), accessions(name), gravi_scans(id, plate_id, plate_index, wave_number, capture_date, gravi_images(object_path), gravi_scan_metadata_accession(plate_id, accession_name, wave_number, gravi_scan_metadata_sections(plate_section_id, medium, gravi_scan_metadata_section_plants(plant_qr))))",
-    )
-    .eq("id", experimentId)
-    .single();
-
-  if (error) {
-    console.error(
-      "[plate-phenotypes/[speciesId]/[experimentId]] supabase error:",
-      error,
-    );
-  }
-
-  return (data as ExperimentRow | null) ?? null;
 }

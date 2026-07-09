@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp"
+_BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp" / "src"
 if str(_BLOOMMCP_DIR) not in sys.path:
     sys.path.insert(0, str(_BLOOMMCP_DIR))
 
@@ -31,7 +31,7 @@ os.environ.setdefault("BLOOM_OUTPUT_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_URL", "http://test.invalid/plots")
 
-from storage import read_manifest  # noqa: E402
+from bloom_mcp.storage import read_manifest  # noqa: E402
 
 
 def _seed_experiment(traits_dir: Path, name: str = "bar.csv", n_samples: int = 60, n_traits: int = 4):
@@ -62,7 +62,7 @@ def _setup_dirs(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]:
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(output_dir))
     monkeypatch.setenv("BLOOM_PLOTS_DIR", str(plots_dir))
 
-    import source.experiment_utils as eu
+    import bloom_mcp.experiment_utils as eu
     monkeypatch.setattr(eu, "TRAITS_DIR", traits_dir)
     monkeypatch.setattr(eu, "OUTPUT_DIR", output_dir)
     monkeypatch.setattr(eu, "PLOTS_DIR", plots_dir)
@@ -77,7 +77,7 @@ def test_run_clustering_kmeans_returns_workflow_response_shape(tmp_path, monkeyp
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.clustering import run_clustering_workflow
+    from bloom_mcp.tools.workflows.clustering import run_clustering_workflow
 
     result = run_clustering_workflow("bar.csv", algorithm="kmeans", k=3)
 
@@ -95,7 +95,7 @@ def test_run_clustering_kmeans_auto_selects_k_when_none(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.clustering import run_clustering_workflow
+    from bloom_mcp.tools.workflows.clustering import run_clustering_workflow
 
     result = run_clustering_workflow("bar.csv", algorithm="kmeans", k=None, max_k=6)
     assert result["summary"]["auto_selected_k"] is True
@@ -107,7 +107,7 @@ def test_run_clustering_kmeans_writes_versioned_manifest(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.clustering import run_clustering_workflow
+    from bloom_mcp.tools.workflows.clustering import run_clustering_workflow
 
     run_clustering_workflow("bar.csv", algorithm="kmeans", k=3)
     clust_dir = output_dir / "clustering_bar"
@@ -123,7 +123,7 @@ def test_run_clustering_kmeans_cluster_labels_csv_has_one_row_per_sample(tmp_pat
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.clustering import run_clustering_workflow
+    from bloom_mcp.tools.workflows.clustering import run_clustering_workflow
 
     result = run_clustering_workflow("bar.csv", algorithm="kmeans", k=3)
     labels_path = Path(result["version_dir"]) / "cluster_labels.csv"
@@ -144,7 +144,7 @@ def test_run_clustering_gmm_happy_path(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.clustering import run_clustering_workflow
+    from bloom_mcp.tools.workflows.clustering import run_clustering_workflow
 
     result = run_clustering_workflow("bar.csv", algorithm="gmm", k=3)
     assert result["summary"]["algorithm"] == "gmm"
@@ -161,7 +161,7 @@ def test_run_clustering_hierarchical_happy_path(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.clustering import run_clustering_workflow
+    from bloom_mcp.tools.workflows.clustering import run_clustering_workflow
 
     result = run_clustering_workflow("bar.csv", algorithm="hierarchical", k=3)
     assert result["summary"]["algorithm"] == "hierarchical"
@@ -177,7 +177,7 @@ def test_run_clustering_hierarchical_default_k_is_three(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.clustering import run_clustering_workflow
+    from bloom_mcp.tools.workflows.clustering import run_clustering_workflow
 
     result = run_clustering_workflow("bar.csv", algorithm="hierarchical", k=None)
     assert result["summary"]["k_used"] == 3
@@ -190,7 +190,7 @@ def test_run_clustering_invalid_algorithm_returns_error(tmp_path, monkeypatch):
     pytest.importorskip("pandas")
     _setup_dirs(tmp_path, monkeypatch)
 
-    from tools.workflows.clustering import run_clustering_workflow
+    from bloom_mcp.tools.workflows.clustering import run_clustering_workflow
 
     result = run_clustering_workflow("bar.csv", algorithm="spectral")
     assert "error" in result
@@ -202,7 +202,7 @@ def test_run_clustering_k_below_two_rejected(tmp_path, monkeypatch):
     pytest.importorskip("pandas")
     _setup_dirs(tmp_path, monkeypatch)
 
-    from tools.workflows.clustering import run_clustering_workflow
+    from bloom_mcp.tools.workflows.clustering import run_clustering_workflow
 
     result = run_clustering_workflow("bar.csv", algorithm="kmeans", k=1)
     assert "error" in result
@@ -214,7 +214,7 @@ def test_run_clustering_missing_file_returns_error(tmp_path, monkeypatch):
     pytest.importorskip("pandas")
     _setup_dirs(tmp_path, monkeypatch)
 
-    from tools.workflows.clustering import run_clustering_workflow
+    from bloom_mcp.tools.workflows.clustering import run_clustering_workflow
 
     result = run_clustering_workflow("does_not_exist.csv", algorithm="kmeans", k=3)
     assert "error" in result
@@ -226,7 +226,7 @@ def test_run_clustering_second_run_creates_v2(tmp_path, monkeypatch):
     traits_dir, output_dir, plots_dir = _setup_dirs(tmp_path, monkeypatch)
     _seed_experiment(traits_dir)
 
-    from tools.workflows.clustering import run_clustering_workflow
+    from bloom_mcp.tools.workflows.clustering import run_clustering_workflow
 
     r1 = run_clustering_workflow("bar.csv", algorithm="kmeans", k=3)
     r2 = run_clustering_workflow("bar.csv", algorithm="gmm", k=3)

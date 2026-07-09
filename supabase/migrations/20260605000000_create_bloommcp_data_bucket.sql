@@ -1,7 +1,7 @@
 -- Storage bucket + RLS for the bloommcp ↔ Supabase CSV exchange contract.
 --
 -- A new bucket : `bloommcp-data`. 
--- The bucket has input/output split inside expected by the bloommcp/source/supabase_client.py (`bloommcp_input/`, `bloommcp_output/`)
+-- The bucket has input/output split inside expected by bloom_mcp/supabase_client.py (`bloommcp_input/`, `bloommcp_output/`)
 -- They are NOT separately RLS-scoped: 
 -- any object in this bucket is covered by the same two policies  as BLOOM AGENT. 
 -- bloom_agent cannot INSERT or UPDATE on any other bucket via these policies.
