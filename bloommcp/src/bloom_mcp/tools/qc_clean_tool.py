@@ -265,6 +265,9 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     # Run analyze's input contract in warn mode (delegated; no contract logic here).
     # warn surfaces advisories without failing minor issues, but still RAISES on the
     # universal structural errors — map that to a structured, self-correctable error.
+    # Note: this validates the *input frame*, not the (possibly narrowed) trait_columns
+    # selection, so a caller who narrows the analysis may still see advisories about
+    # columns they excluded — intentional (the contract is about the input, not the pick).
     try:
         validation_warnings = run_input_validation(
             frame.df,

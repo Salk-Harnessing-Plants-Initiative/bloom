@@ -144,13 +144,30 @@ tiers, not a tier itself.
 - **Dependencies:** `sleap_roots_analyze.validation.validate_entry_input` and
   `sleap_roots_analyze.get_trait_columns` are **already available** in the pinned `0.1.0a4`;
   `sleap-roots-contracts` `0.1.0a1` is already a dependency. **No pin change, no re-lock.**
-- **Relationship to #378 / #400 and sequencing:** guaranteeing a `sample_id` on every cleaned
-  frame **structurally prevents** #400's barcode-less `remove_outliers` crash on the
-  `require_clean` path (the tool-local guard in #400 becomes defense-in-depth). This change
-  re-records **only** the `qc_clean` golden (`turface_19` **20 → 19 detected** trait columns,
-  **18 → 17 cleaned**, since `get_trait_columns` drops `Computation.Time.s`). The `remove_outliers`
-  golden also shifts under the new 19/17 trait set, but that fixture lives on the #378/#400 branch
-  and is **not** on this change's base — so its re-record is **decoupled to a follow-up** once #400
-  merges (tracked with the #400 owner), **not** done here.
+- **Relationship to #378 / #400:** guaranteeing a `sample_id` on every cleaned frame
+  **structurally prevents** #400's barcode-less `remove_outliers` crash on the `require_clean` path
+  (the tool-local guard in #400 becomes defense-in-depth). This change re-records the `qc_clean`
+  golden (`turface_19` **20 → 19 detected**, **18 → 17 cleaned**, since `get_trait_columns` drops
+  `Computation.Time.s`). #400 merged before implementation, so its fixtures are on the base — but
+  the `remove_outliers` golden is **verified UNAFFECTED**: its tests inject a fixed cleaned frame
+  disjoint from the detection path, so `Computation.Time.s` never entered them and the full
+  `test_remove_outliers_tool.py` suite passes untouched. **No `remove_outliers` re-record is needed**
+  (the #403 checklist item is moot, not undone).
+- **Behavior changes (heads-up):**
+  1. **Required roles use exact-match name detection.** `qc_clean` now hard-requires a genotype
+     **and** a sample identifier, matched by exact (case-insensitive) column name against
+     `geno`/`genotype`/`accession`/`species_name` and
+     `barcode`/`plant_qr_code`/`scan_id`/`plant_id`/`plant_name`. An experiment whose identifier is
+     spelled differently (e.g. `Genotype_ID`, `sample_barcode`, `QR_code`) now returns a guided
+     `assumption_violated` (lists the columns, names the override) where it previously fell back to
+     the delegate default. The `sample_id_column` / `genotype_column` overrides are the escape
+     hatch; growing the pattern lists with common variants is a possible follow-up.
+  2. **The reader-detection change ripples to every consumer.** Because `detect_columns` is now a
+     shim over `resolve_columns`, *all* reader consumers (`qc_inspect`, `pca_analysis`, `clustering`,
+     `remove_outliers`, `correlation`, discovery) switch to `get_trait_columns` detection, and
+     `metadata_cols` now includes numeric metadata like `Computation.Time.s` — which flows into
+     e.g. pca `scores.csv` / clustering `labels.csv` identity columns. The full suite is green (only
+     the qc golden + one pca layout assertion needed updating), but the blast radius extends past
+     `qc_clean`; a future upstream `get_trait_columns` change would ripple everywhere at once.
 - **Branch/PR:** branches off `origin/staging`; PR targets `staging` (link #403 + the roadmap).
   One OpenSpec change + PR.
