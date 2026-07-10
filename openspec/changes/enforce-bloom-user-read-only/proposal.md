@@ -71,15 +71,15 @@ the maintainer).
   `fix-bloom-schema-usage-grants`; this delta extends it.
 - **Merge/archive order:** #333 (`fix-bloom-schema-usage-grants`) is **merged** to
   `staging` (its raw-schema-grant guard is present); this branch is rebased onto it.
-  Migration timestamp `20260624000000` sorts after staging's latest
-  (`20260622180000`). The two are runtime-independent (this migration needs neither
+  Migration timestamp `20260710000000` sorts after staging's latest
+  (`20260708000200`). The two are runtime-independent (this migration needs neither
   `schema_grants.sql` nor the #333 guard to apply). **Archive ordering:** the
   `database-role-grants` base requirements are founded by #333 and are not yet in
   `openspec/specs/` (PR #355 archives the deployed changes and lands that spec).
   Archive #355 (or #333) **before** archiving this change, so this delta extends the
   existing capability rather than creating it from only its own requirements.
 - Affected code:
-  - `supabase/migrations/20260624000000_bloom_user_read_only_cleanup.sql` (new,
+  - `supabase/migrations/20260710000000_bloom_user_read_only_cleanup.sql` (new,
     idempotent; header documents #341 + that it supersedes the now-stale
     `bloom_user: SELECT, INSERT, UPDATE` description in the immutable
     `20260414002000_security_groups.sql`)

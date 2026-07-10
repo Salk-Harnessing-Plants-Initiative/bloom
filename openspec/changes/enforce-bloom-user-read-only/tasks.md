@@ -3,8 +3,8 @@
 - [x] 0.1 #333 (`fix-bloom-schema-usage-grants`) merged to `staging` (the
       `test_schema_usage_grants.py` guard is present; capability archives separately).
       Rebased this branch onto the updated `staging`.
-- [x] 0.2 Pick the migration timestamp `> 20260622180000` (the latest on staging).
-      Use `20260624000000` (today is 2026-06-24).
+- [x] 0.2 Pick the migration timestamp `> 20260708000200` (the latest on staging).
+      Use `20260710000000` (today is 2026-07-10).
 
 ## 1. Confirm scope (BREAKING-change due diligence, no code)
 
@@ -54,7 +54,7 @@
 
 ## 3. Migration (green)
 
-- [x] 3.1 Add `supabase/migrations/20260624000000_bloom_user_read_only_cleanup.sql`
+- [x] 3.1 Add `supabase/migrations/20260710000000_bloom_user_read_only_cleanup.sql`
       (single `BEGIN; … COMMIT;`, idempotent):
   - `REVOKE UPDATE ON ALL TABLES IN SCHEMA public FROM bloom_user;`
   - `ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public REVOKE UPDATE ON TABLES FROM bloom_user;`

@@ -7,7 +7,7 @@ every `public` table EXCEPT `public.experiment_progress_logs` (the gene-page
 "Progress" panel writes there via a `USING (true)` RLS policy that never touches
 the `auth` schema). DELETE was never granted.
 
-Migration `20260624000000_bloom_user_read_only_cleanup.sql` enforces this by
+Migration `20260710000000_bloom_user_read_only_cleanup.sql` enforces this by
 revoking the blanket table-level UPDATE grant (so a non-exempt UPDATE is rejected
 at the privilege check, SQLSTATE 42501 — *before* RLS is evaluated) and dropping
 the five now-dead `user_update_*` policies (four gated on the unreachable

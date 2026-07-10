@@ -75,8 +75,8 @@ hence this design note.
 
 ## Migration Plan
 
-- New migration `20260624000000_bloom_user_read_only_cleanup.sql` (timestamp >
-  #333's `20260622180000`). Merge #333 to `staging` first (founds the
+- New migration `20260710000000_bloom_user_read_only_cleanup.sql` (timestamp >
+  staging's latest `20260708000200`). Merge #333 to `staging` first (founds the
   `database-role-grants` capability in `specs/`).
 - **Rollback = forward-fix** (repo ships no down-migrations). Reverse DDL, to keep in
   the migration header / PR body for on-call use:
