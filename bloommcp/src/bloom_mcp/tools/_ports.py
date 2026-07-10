@@ -8,12 +8,14 @@ is the one place that knows the concrete adapters (the composition root).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from bloom_mcp.contract import Provenance
 from bloom_mcp.data_access import (
     ExperimentReader,
     ExperimentReadError,
+    RawSourced,
     SupabaseReader,
 )
 from bloom_mcp.result_store import ResultStore, RunHandle, SupabaseResultStore
@@ -43,6 +45,21 @@ def reader() -> ExperimentReader:
 def store() -> ResultStore:
     """The injected result store."""
     return _store
+
+
+def raw_source_for(filename: str) -> Optional[Path]:
+    """The active reader's on-disk raw source CSV for ``filename``, or ``None``.
+
+    Provenance sourcing routes through the reader so the active adapter's input
+    root is honoured (e.g. a custom ``BLOOM_EXPERIMENT_LOCAL_ROOT``) rather than a
+    hard-coded ``TRAITS_DIR``. Adapters that expose a concrete on-disk input
+    satisfy :class:`RawSourced`; a path-less adapter yields ``None`` so the run
+    records no input hash rather than a fabricated path. Shared by
+    :func:`start_run` and the ``qc_clean`` producer, which self-stamps provenance.
+    """
+    return (
+        _reader.raw_source_path(filename) if isinstance(_reader, RawSourced) else None
+    )
 
 
 def load_frame(filename: str) -> tuple:
@@ -81,12 +98,10 @@ def start_run(
     ``store().commit(run, outputs)``.
     """
     # Source-CSV provenance goes through the active reader so the local adapter's
-    # input root is honoured rather than a hard-coded TRAITS_DIR. Adapters that
-    # expose a concrete on-disk input implement ``raw_source_path``; a path-less
-    # adapter omits it and the run records no input hash (source_csv=None) rather
-    # than a fabricated path.
-    raw_source_path = getattr(_reader, "raw_source_path", None)
-    src = raw_source_path(filename) if raw_source_path is not None else None
+    # input root is honoured rather than a hard-coded TRAITS_DIR (see
+    # ``raw_source_for``). A path-less adapter yields None and the run records no
+    # input hash (source_csv=None) rather than a fabricated path.
+    src = raw_source_for(filename)
     provenance = Provenance.stamp(tool=tool_name, params=params, seed=seed)
     return _store.create_run(
         experiment=filename,

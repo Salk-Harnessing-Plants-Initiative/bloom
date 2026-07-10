@@ -178,6 +178,10 @@ def main() -> None:
     # Tools depend on the ports (bloom_mcp.tools._ports), never on Supabase /
     # AnalysisWriter directly. The reader is coupled to the object-storage backend
     # (both local in fully-local mode) so inputs and outputs never split stores.
+    # NOTE: the store is SupabaseResultStore() in *both* branches on purpose — in
+    # fully-local mode its object-storage ops route through the active local backend
+    # (per #389), so it makes no Supabase call; the local-ness lives in the backend
+    # beneath the store, not in a separate store class.
     from bloom_mcp.result_store import SupabaseResultStore
     from bloom_mcp.tools import _ports
 

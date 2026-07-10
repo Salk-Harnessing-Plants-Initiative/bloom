@@ -9,6 +9,7 @@ from .ports import (
     ExperimentReader,
     ExperimentReadError,
     ExperimentSummary,
+    RawSourced,
 )
 from .supabase_reader import SupabaseReader
 
@@ -21,5 +22,6 @@ __all__ = [
     "ExperimentSummary",
     "FakeReader",
     "LocalReader",
+    "RawSourced",
     "SupabaseReader",
 ]

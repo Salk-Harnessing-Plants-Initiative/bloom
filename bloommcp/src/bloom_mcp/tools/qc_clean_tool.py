@@ -47,7 +47,7 @@ from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
 from bloom_mcp.contract import register as _contract_register
 from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.data_utils import convert_to_json_serializable
-from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, TRAITS_DIR
+from bloom_mcp.experiment_utils import CLEANED_CSV_NAME
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._qc_shared import (
     _CANONICAL_MAX_NANS_PER_SAMPLE,
@@ -236,14 +236,15 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
 
     # Persist a versioned cleaned run via the ResultStore port; the contract-stamped
     # provenance is carried into the manifest (no re-stamp). source_csv (when the raw
-    # is on the local FS) lets the manifest content-address the cleaned run to its input.
-    local_src = TRAITS_DIR / params.experiment
+    # is on the local FS) lets the manifest content-address the cleaned run to its
+    # input — sourced through the active reader so a custom BLOOM_EXPERIMENT_LOCAL_ROOT
+    # is honoured rather than a hard-coded TRAITS_DIR (mirrors _ports.start_run).
     run = store.create_run(
         experiment=params.experiment,
         tool_class=_TOOL_CLASS,
         provenance=provenance,
         user_label=params.user_label,
-        source_csv=local_src if local_src.exists() else None,
+        source_csv=_ports.raw_source_for(params.experiment),
     )
     cleaned_df.to_csv(run.staging_dir / CLEANED_CSV_NAME, index=False)
     (run.staging_dir / _LOG_NAME).write_text(

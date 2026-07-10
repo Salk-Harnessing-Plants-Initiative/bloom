@@ -100,3 +100,45 @@ def test_start_run_records_input_hash_via_reader(monkeypatch, tmp_path):
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
         sb.reset_backend_for_tests()
+
+
+def test_qc_clean_sources_provenance_from_experiment_local_root(monkeypatch, tmp_path):
+    """qc_clean self-stamps provenance and now sources source_csv through the active
+    reader (``_ports.raw_source_for``), so a custom ``BLOOM_EXPERIMENT_LOCAL_ROOT``
+    distinct from ``TRAITS_DIR`` is honoured — the committed manifest content-addresses
+    the real input instead of silently recording an empty ``input_sha256``.
+
+    Regression for the pre-fix hard-code (``local_src = TRAITS_DIR / experiment``):
+    with the two roots divergent, that path resolved under the *empty* TRAITS_DIR,
+    found nothing, and dropped the hash. TRAITS_DIR is monkeypatched to an empty dir
+    so a reintroduced hard-code fails here.
+    """
+    from bloom_mcp.data_access import LocalReader
+    from bloom_mcp.tools.qc_clean_tool import QCCleanParams, qc_clean
+
+    exp_root = tmp_path / "experiments"  # BLOOM_EXPERIMENT_LOCAL_ROOT
+    exp_root.mkdir()
+    traits_dir = tmp_path / "traits"  # TRAITS_DIR — deliberately empty + divergent
+    traits_dir.mkdir()
+    store = tmp_path / "store"
+    store.mkdir()
+    rows = "".join(f"g{i},{float(i)},{float(i + 1)}\n" for i in range(12))
+    (exp_root / "exp.csv").write_text("Genotype,trait_a,trait_b\n" + rows)
+
+    monkeypatch.setattr(eu, "TRAITS_DIR", traits_dir)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(store))
+    monkeypatch.setenv("BLOOM_EXPERIMENT_LOCAL_ROOT", str(exp_root))
+    sb.reset_backend_for_tests()
+    _ports.configure(reader=LocalReader(), store=SupabaseResultStore())
+    try:
+        qc_clean(QCCleanParams(experiment="exp.csv"))
+
+        manifest = json.loads(
+            (store / "bloommcp_output" / "qc_exp" / "manifest.json").read_bytes()
+        )
+        expected = hashlib.sha256((exp_root / "exp.csv").read_bytes()).hexdigest()
+        assert manifest["experiment"]["input_sha256"] == expected
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+        sb.reset_backend_for_tests()
