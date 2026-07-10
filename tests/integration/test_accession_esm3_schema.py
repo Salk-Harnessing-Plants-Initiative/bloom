@@ -4,8 +4,9 @@ registry row, protein_embedding_runs provenance, arabidopsis_accessions
 (natural key + one-reference + NOT NULLs), proteins.accession_id (FK, one
 locus per accession, cross-species rows stay NULL), protein_embeddings_esm3
 (vector(1536) dimension guardrail, zero-vector CHECK, run FK, ON DELETE
-CASCADE, HNSW index / no ivfflat), the three comparison RPCs (knn_search_esm3,
-compare_gene_across_accessions, search_accession_genes) and the search_genes
+CASCADE, HNSW index / no ivfflat), the comparison RPCs (knn_search_esm3,
+compare_gene_across_accessions, best_match_per_accession, and search_accession_genes
+incl. accession scoping + empty-query browse) and the search_genes
 scoping change, plus RLS (anon blocked via REST; read matrix for every bloom_*
 role; write-denial for user/agent; writer can ingest) and a six-policy drift
 detector.
@@ -453,6 +454,82 @@ def test_search_genes_excludes_accession_proteins(pg_conn, accession_seed):
         uids = {r[0] for r in cur.fetchall()}
     assert XSPEC_UID in uids
     assert not (uids & set(ACCESSION_UIDS)), f"accession proteins leaked into search_genes: {uids}"
+
+
+def test_search_accession_genes_scoped_to_one_accession(pg_conn, accession_seed):
+    """filter_accession_id restricts suggestions to a single accession's genes."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT uid FROM public.search_accession_genes('AT1G01010', 20, %s)",
+            (accession_seed["col0_id"],),
+        )
+        uids = {r[0] for r in cur.fetchall()}
+    assert uids == {REF_UID}  # Col-0's variant only — Ler-0's ALT_UID excluded
+
+
+def test_search_accession_genes_empty_lists_scoped_accession(pg_conn, accession_seed):
+    """Empty query lists the scoped accession's genes (browse without knowing the
+    ID format); empty with no accession filter still returns nothing."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT uid FROM public.search_accession_genes('', 20, %s)",
+            (accession_seed["ler0_id"],),
+        )
+        assert {r[0] for r in cur.fetchall()} == {ALT_UID, SOLO_UID}  # both Ler-0 genes
+        cur.execute("SELECT count(*) FROM public.search_accession_genes('', 20, NULL)")
+        assert cur.fetchone()[0] == 0  # empty + unscoped lists nothing (never all accessions)
+
+
+# ---------------------------------------------------------------------------
+# 5b. best_match_per_accession (embedding comparison across accessions)
+# ---------------------------------------------------------------------------
+
+def test_best_match_per_accession_picks_best_in_each_other_accession(pg_conn, accession_seed):
+    """For the query protein, one row per OTHER accession, each that accession's
+    single closest protein by ESM-3 cosine. Query = Col-0's AT1G01010; the only
+    other accession is Ler-0, whose closest protein is ALT (~0.9), not SOLO (~0)."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT accession_id, accession_name, uid, gene_id, similarity "
+            "FROM public.best_match_per_accession(%s, 20)",
+            (REF_UID,),
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1, f"expected one row (Ler-0 only), got {rows}"
+    accession_id, accession_name, uid, gene_id, similarity = rows[0]
+    assert accession_id == accession_seed["ler0_id"]
+    assert accession_name == "atest-Ler-0"
+    assert uid == ALT_UID  # ALT (~0.9) beats SOLO (~0) within Ler-0
+    assert gene_id == "AT1G01010"
+    assert abs(similarity - _NEAR_X) < 0.02  # cosine ≈ 0.9
+
+
+def test_best_match_excludes_query_own_accession(pg_conn, accession_seed):
+    """'Best match in OTHER accessions' — the query's own accession never appears."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT accession_id, uid FROM public.best_match_per_accession(%s, 20)",
+            (REF_UID,),
+        )
+        rows = cur.fetchall()
+    assert all(r[0] != accession_seed["col0_id"] for r in rows), "query's own accession leaked in"
+    assert REF_UID not in [r[1] for r in rows]
+
+
+def test_best_match_missing_query_returns_empty(pg_conn, accession_seed):
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM public.best_match_per_accession('atest:nope', 20)")
+        assert cur.fetchone()[0] == 0
+
+
+def test_best_match_match_count_bounds_do_not_crash(pg_conn, accession_seed):
+    """Negative match_count clamps to LIMIT >=1 (no 'LIMIT -n' error); huge caps
+    at 1000. With one other accession seeded, both return exactly that row."""
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM public.best_match_per_accession(%s, -5)", (REF_UID,))
+        assert cur.fetchone()[0] == 1  # clamped, no runtime error
+        cur.execute("SELECT count(*) FROM public.best_match_per_accession(%s, 100000)", (REF_UID,))
+        assert cur.fetchone()[0] <= 1000  # capped
 
 
 # ---------------------------------------------------------------------------
