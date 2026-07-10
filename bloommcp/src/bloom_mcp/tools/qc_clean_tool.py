@@ -258,8 +258,9 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     # the caller to inspect the missingness that drove the loss. Kept out of the
     # cleanup logic (no behavior change) — it is purely advisory on the summary.
     n_samples_dropped = n_samples_in - n_samples_out
+    sample_word = "sample" if n_samples_in == 1 else "samples"
     next_step = (
-        f"Cleaning dropped {n_samples_dropped} of {n_samples_in} sample(s). Run "
+        f"Cleaning dropped {n_samples_dropped} of {n_samples_in} {sample_word}. Run "
         f"qc_inspect on {params.experiment!r} to see which traits drove the loss "
         f"and get a max_nans_per_trait recommendation that retains more samples."
         if n_samples_dropped > 0
