@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import click
@@ -15,6 +16,21 @@ from .credentials import DEFAULT_PROFILE
 @click.version_option(version=__version__, prog_name="bloomctl")
 def cli() -> None:
     """Bloom command-line tool"""
+
+
+def _authed_client(profile: str):
+    """Load a profile's credentials and return a signed-in Supabase client."""
+    from . import auth
+    from .credentials import load_credentials
+
+    try:
+        creds = load_credentials(profile)
+    except (FileNotFoundError, ValueError) as exc:
+        raise click.ClickException(f"{exc} — run `bloomctl login`.") from exc
+    try:
+        return auth.make_authed_client(creds)
+    except auth.AuthError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @cli.command()
@@ -171,6 +187,8 @@ def download(
     if (experiment_id is None) == (scan_id is None):
         raise click.UsageError("Pass exactly one of --experiment-id or --scan-id.")
 
+    # NOTE: this inlines what `_authed_client(profile)` does; kept inline here to
+    # avoid overlapping PR #385, which migrates `download` to the shared helper.
     try:
         creds = load_credentials(profile)
     except (FileNotFoundError, ValueError) as exc:
@@ -217,3 +235,64 @@ def download(
         raise click.ClickException(
             f"{result.failed} of {result.total} frames failed to download — see {log_path}"
         )
+
+
+@cli.group(name="cyl")
+def cyl() -> None:
+    """Cylinder-scan write-back commands."""
+
+
+@cyl.command(name="ingest-result")
+@click.argument("envelope")
+@click.option(
+    "-p",
+    "--profile",
+    default=DEFAULT_PROFILE,
+    show_default=True,
+    help="Credentials profile to use (must have write access to the RPC).",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the RPC result object as JSON on stdout (e.g. to capture source_id).",
+)
+def cyl_ingest_result(envelope: str, profile: str, as_json: bool) -> None:
+    """Ingest a per-scan ResultEnvelope (a path, or - for stdin) into Bloom.
+
+    Validates the envelope against sleap-roots-contracts, then calls the
+    insert_cyl_result_envelope RPC. Re-ingesting an already-ingested envelope is a
+    benign no-op (first-writer-wins), reported distinctly from a real error.
+    """
+    from . import ingest as ing
+
+    # Read + validate before any network call: the model gate catches shape and
+    # missing-provenance errors up front (fails fast without authenticating). Some
+    # value-level checks (e.g. an empty idempotency_key) are enforced only by the
+    # RPC and surface below.
+    try:
+        data = ing.load_envelope(envelope)
+        ing.validate_envelope(data)
+    except ing.EnvelopeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    client = _authed_client(profile)
+
+    from postgrest import APIError
+
+    try:
+        result = ing.call_insert_envelope(client, data)
+    except APIError as exc:
+        raise click.ClickException(
+            ing.map_rpc_error(getattr(exc, "message", None), profile=profile)
+        ) from exc
+
+    # The RPC RETURNS jsonb (an object) on every path; guard so any future
+    # shape change surfaces as a clean error, not a bare AttributeError.
+    if not isinstance(result, dict):
+        raise click.ClickException(f"unexpected RPC response shape: {result!r}")
+
+    if as_json:
+        click.echo(json.dumps(result))
+    else:
+        click.echo(ing.summarize_result(result))

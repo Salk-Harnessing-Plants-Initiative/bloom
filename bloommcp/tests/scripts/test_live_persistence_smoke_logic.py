@@ -169,6 +169,108 @@ def test_qc_cleaned_read_checks_flags_residual_nans():
     assert any("zero NaN trait cells" in c.name and not c.ok for c in checks)
 
 
+# --- remove_outliers leg checks (#378) ----------------------------------------
+def _good_ro_kwargs():
+    return dict(
+        schema_version=3,
+        seed=42,
+        tool="remove_outliers",
+        output_keys={
+            "_cleaned.csv": "bloommcp_output/qc_turface_raw/v2/_cleaned.csv",
+            "outlier_report.json": "bloommcp_output/qc_turface_raw/v2/outlier_report.json",
+        },
+        output_sha256={"_cleaned.csv": "dead", "outlier_report.json": "beef"},
+        expected_outputs={"_cleaned.csv", "outlier_report.json"},
+    )
+
+
+def test_ro_persist_checks_all_pass_on_valid_v3_entry():
+    checks = smoke.ro_persist_checks(**_good_ro_kwargs())
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_ro_persist_checks_flags_wrong_tool():
+    # The provenance-based composition anchor: if the latest qc run is not the trim
+    # (e.g. a stray qc_clean re-run clobbered latest), the composition did not compose.
+    kwargs = _good_ro_kwargs()
+    kwargs["tool"] = "qc_clean"
+    checks = smoke.ro_persist_checks(**kwargs)
+    assert any("latest qc run is the trim" in c.name and not c.ok for c in checks)
+
+
+def test_ro_persist_checks_flags_wrong_seed():
+    # remove_outliers is stochastic — a seed != 42 is a reproducibility regression.
+    kwargs = _good_ro_kwargs()
+    kwargs["seed"] = 7
+    checks = smoke.ro_persist_checks(**kwargs)
+    assert any("seed == 42" in c.name and not c.ok for c in checks)
+
+
+def test_ro_persist_checks_flags_null_seed():
+    kwargs = _good_ro_kwargs()
+    kwargs["seed"] = None
+    checks = smoke.ro_persist_checks(**kwargs)
+    assert any("seed == 42" in c.name and not c.ok for c in checks)
+
+
+def test_ro_persist_checks_flags_missing_report_artifact():
+    kwargs = _good_ro_kwargs()
+    kwargs["output_keys"] = {
+        k: v for k, v in kwargs["output_keys"].items() if k == "_cleaned.csv"
+    }
+    kwargs["output_sha256"] = {"_cleaned.csv": "dead"}
+    checks = smoke.ro_persist_checks(**kwargs)
+    assert any("committed outputs include" in c.name and not c.ok for c in checks)
+
+
+def test_ro_trimmed_read_checks_pass_on_fewer_rows_no_nans():
+    checks = smoke.ro_trimmed_read_checks(
+        "v2_cleaned", trait_nan_cells=0, n_output=150, n_pre_trim=187
+    )
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_ro_trimmed_read_checks_flags_raw_source():
+    checks = smoke.ro_trimmed_read_checks(
+        "raw", trait_nan_cells=0, n_output=150, n_pre_trim=187
+    )
+    assert any("resolves the trimmed artifact" in c.name and not c.ok for c in checks)
+
+
+def test_ro_trimmed_read_checks_pass_on_zero_flagged_no_op_trim():
+    # A no-op trim (n_output == n_pre_trim, e.g. mahalanobis flags 0 on the smoke's
+    # own cleaned frame) is NOT a regression — the relaxed <= bound must pass it. The
+    # trim's persistence is proven separately by the ro_persist_checks tool anchor.
+    checks = smoke.ro_trimmed_read_checks(
+        "v2_cleaned", trait_nan_cells=0, n_output=187, n_pre_trim=187
+    )
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_ro_trimmed_read_checks_flags_grown_or_empty_frame():
+    # A trim that GREW the frame (n_output > n_pre_trim) or emptied it is a real
+    # regression the row-count bound still catches.
+    grown = smoke.ro_trimmed_read_checks(
+        "v2_cleaned", trait_nan_cells=0, n_output=200, n_pre_trim=187
+    )
+    assert any(
+        "no more rows than the pre-trim clean" in c.name and not c.ok for c in grown
+    )
+    empty = smoke.ro_trimmed_read_checks(
+        "v2_cleaned", trait_nan_cells=0, n_output=0, n_pre_trim=187
+    )
+    assert any(
+        "no more rows than the pre-trim clean" in c.name and not c.ok for c in empty
+    )
+
+
+def test_ro_trimmed_read_checks_flags_residual_nans():
+    checks = smoke.ro_trimmed_read_checks(
+        "v2_cleaned", trait_nan_cells=3, n_output=150, n_pre_trim=187
+    )
+    assert any("zero NaN trait cells" in c.name and not c.ok for c in checks)
+
+
 # --- hash-compare loop (against the fake storage boundary) --------------------
 def test_hash_checks_pass_when_bytes_match(fake_supabase_storage):
     store = fake_supabase_storage

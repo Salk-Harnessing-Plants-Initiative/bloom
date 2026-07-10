@@ -32,7 +32,7 @@ psycopg = pytest.importorskip("psycopg")
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 RPC = "public.insert_cyl_result_envelope"
-PINNED_VERSION = "v0.1.0a2"
+PINNED_VERSION = "0.1.0a3"
 
 _TS = "20260701000000_cyl_trait_read_source_aware"
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TS}.sql"
