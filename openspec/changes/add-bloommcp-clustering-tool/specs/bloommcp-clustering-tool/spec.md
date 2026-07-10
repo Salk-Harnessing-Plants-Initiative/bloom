@@ -182,10 +182,13 @@ stamped per call.
 
 #### Scenario: A cluster-count control set for the wrong method is rejected
 
-- **WHEN** a request supplies `n_components` (or `covariance_type`) with `method = "kmeans"`, or
-  `n_clusters` with `method = "gmm"`
+- **WHEN** a request supplies a gmm-only control (`n_components`, `max_components`, or
+  `covariance_type`) with `method = "kmeans"`, or a kmeans-only control (`n_clusters` or
+  `max_clusters`) with `method = "gmm"`
 - **THEN** the tool returns a `BloomMCPError` with code `invalid_input` naming the mismatched control,
-  rather than silently ignoring it
+  rather than silently ignoring it (which would also leave it mis-recorded in the run's provenance
+  params). Every per-method control — including the `max_*` auto-selection bounds — is optional and
+  resolved to its delegate default internally, so a cross-method control is always detectable
 
 #### Scenario: A caller-supplied trait column that is unknown, non-numeric, empty, or duplicated is rejected
 

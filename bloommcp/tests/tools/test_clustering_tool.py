@@ -307,7 +307,13 @@ def test_n_components_below_one_is_invalid_input(injected_ports):
 
 
 def test_gmm_control_on_kmeans_is_rejected(injected_ports):
-    for bad in ({"n_components": 3}, {"covariance_type": "full"}):
+    # Every gmm-only control — including the max_components bound — is rejected on a kmeans
+    # call rather than silently ignored (and left mis-recorded in provenance.params).
+    for bad in (
+        {"n_components": 3},
+        {"max_components": 8},
+        {"covariance_type": "full"},
+    ):
         with pytest.raises(BloomMCPError) as exc:
             _run(method="kmeans", **bad)
         assert exc.value.code == "invalid_input"
@@ -315,10 +321,42 @@ def test_gmm_control_on_kmeans_is_rejected(injected_ports):
 
 
 def test_kmeans_control_on_gmm_is_rejected(injected_ports):
-    with pytest.raises(BloomMCPError) as exc:
-        _run(method="gmm", n_clusters=3)
-    assert exc.value.code == "invalid_input"
-    assert "n_clusters" in exc.value.message
+    # Every kmeans-only control — including the max_clusters bound — is rejected on a gmm call.
+    for bad in ({"n_clusters": 3}, {"max_clusters": 8}):
+        with pytest.raises(BloomMCPError) as exc:
+            _run(method="gmm", **bad)
+        assert exc.value.code == "invalid_input"
+        assert list(bad)[0] in exc.value.message
+
+
+def test_max_bounds_forwarded_to_the_right_delegate(injected_ports, monkeypatch):
+    """max_clusters / max_components take effect when set on their own method, and resolve
+    to the delegate defaults (10 / 5) when omitted — never silently dropped."""
+    km_kwargs: dict = {}
+    real_km = clustering_tool.perform_kmeans_clustering
+
+    def _spy_km(data, **kwargs):
+        km_kwargs.update(kwargs)
+        return real_km(data, **kwargs)
+
+    monkeypatch.setattr(clustering_tool, "perform_kmeans_clustering", _spy_km)
+    _run(method="kmeans", n_clusters=None, max_clusters=4)
+    assert km_kwargs["max_clusters"] == 4
+    _run(method="kmeans", n_clusters=None)  # omitted → default
+    assert km_kwargs["max_clusters"] == 10
+
+    gm_kwargs: dict = {}
+    real_gm = clustering_tool.perform_gmm_clustering
+
+    def _spy_gm(data, **kwargs):
+        gm_kwargs.update(kwargs)
+        return real_gm(data, **kwargs)
+
+    monkeypatch.setattr(clustering_tool, "perform_gmm_clustering", _spy_gm)
+    _run(method="gmm", n_components=None, max_components=4)
+    assert gm_kwargs["max_components"] == 4
+    _run(method="gmm", n_components=None)  # omitted → default
+    assert gm_kwargs["max_components"] == 5
 
 
 # ── 3.8 trait-column validation (via _qc_shared require_certified=True) ─────
@@ -416,6 +454,28 @@ def test_non_finite_certified_trait_is_rejected(injected_ports, monkeypatch):
         )
     assert exc.value.code == "assumption_violated"
     assert store.list_runs("inf.csv", "clustering") == []
+
+
+def test_reordered_rows_are_assumption_violated(injected_ports, monkeypatch):
+    """A delegate that reordered rows (without dropping any) would mis-map labels to plants;
+    the data_indices identity guard catches it before persisting, not just a length mismatch.
+    """
+    _reader, store = injected_ports
+    real = clustering_tool.perform_kmeans_clustering
+
+    def _reorder(data, **kwargs):
+        d = real(data, **kwargs)
+        d["data_indices"] = list(
+            reversed(list(d["data_indices"]))
+        )  # reordered, same count
+        return d
+
+    monkeypatch.setattr(clustering_tool, "perform_kmeans_clustering", _reorder)
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="kmeans", n_clusters=3)
+    assert exc.value.code == "assumption_violated"
+    assert "reordered" in exc.value.message.lower()
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
 
 
 # ── 3.11 require_clean consumption (property / invariant) ───────────────────

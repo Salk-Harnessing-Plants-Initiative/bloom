@@ -108,10 +108,11 @@ class ClusteringParams(BaseModel):
         description="kmeans only: fixed number of clusters; omit to auto-select up to "
         "max_clusters by silhouette. Do not set for gmm.",
     )
-    max_clusters: int = Field(
-        default=10,
+    max_clusters: int | None = Field(
+        default=None,
         ge=2,
-        description="kmeans only: upper bound for automatic cluster-count selection.",
+        description="kmeans only: upper bound for automatic cluster-count selection "
+        "(default 10). Do not set for gmm.",
     )
     n_components: int | None = Field(
         default=None,
@@ -119,10 +120,11 @@ class ClusteringParams(BaseModel):
         description="gmm only: fixed number of mixture components; omit to auto-select up to "
         "max_components by BIC (may select 1 on weakly-clustered data). Do not set for kmeans.",
     )
-    max_components: int = Field(
-        default=5,
+    max_components: int | None = Field(
+        default=None,
         ge=1,
-        description="gmm only: upper bound for automatic component-count selection.",
+        description="gmm only: upper bound for automatic component-count selection "
+        "(default 5). Do not set for kmeans.",
     )
     covariance_type: Literal["full", "tied", "diag", "spherical"] | None = Field(
         default=None,
@@ -168,21 +170,33 @@ class ClusteringResult(BaseModel):
 def _reject_wrong_method_controls(params: ClusteringParams) -> None:
     """Reject a cluster-count control set for the other method (mirrors remove_outliers).
 
-    Silently ignoring ``n_components`` on a k-means call (or ``n_clusters`` on GMM) would let
-    a caller think a control took effect when it did not — a reproducibility hazard. Surface
-    it as a fixable ``invalid_input`` naming the mismatch.
+    Silently ignoring the other method's control (``n_components``/``max_components``/
+    ``covariance_type`` on a k-means call, or ``n_clusters``/``max_clusters`` on GMM) would let
+    a caller think a control took effect when it did not — and it would still land in
+    ``provenance.params``, so the recorded run would claim a control that had no effect. Every
+    per-method control (including the ``max_*`` bounds) is ``None``-defaulted and resolved
+    internally, so an explicitly-set cross-method control is detectable here and surfaces as a
+    fixable ``invalid_input`` naming the mismatch.
     """
     if params.method == "kmeans":
         wrong = [
             name
             for name, val in (
                 ("n_components", params.n_components),
+                ("max_components", params.max_components),
                 ("covariance_type", params.covariance_type),
             )
             if val is not None
         ]
     else:  # gmm
-        wrong = ["n_clusters"] if params.n_clusters is not None else []
+        wrong = [
+            name
+            for name, val in (
+                ("n_clusters", params.n_clusters),
+                ("max_clusters", params.max_clusters),
+            )
+            if val is not None
+        ]
     if wrong:
         raise BloomMCPError(
             code="invalid_input",
@@ -275,7 +289,7 @@ def clustering(
             result_dict = perform_kmeans_clustering(
                 selected,
                 n_clusters=params.n_clusters,
-                max_clusters=params.max_clusters,
+                max_clusters=params.max_clusters or 10,
                 standardize=params.standardize,
                 random_state=random_state,
             )
@@ -286,7 +300,7 @@ def clustering(
             result_dict = perform_gmm_clustering(
                 selected,
                 n_components=params.n_components,
-                max_components=params.max_components,
+                max_components=params.max_components or 5,
                 covariance_type=params.covariance_type or "full",
                 standardize=params.standardize,
                 random_state=random_state,
@@ -307,13 +321,22 @@ def clustering(
         ) from None
 
     # The finite-guard makes the delegate's dropna() a no-op, so labels are row-aligned with
-    # the cleaned frame — assert it before stitching identity, so a future delegate that drops
-    # rows surfaces here rather than mis-mapping labels to plants.
-    if len(result.cluster_labels) != len(frame.df):
+    # the cleaned frame — but the labels.csv identity stitch is positional, so a delegate that
+    # *reordered* (not just dropped) rows would mis-map labels to plants without shrinking the
+    # count. Assert the delegate preserved row order via data_indices (identity == range(n))
+    # when it reports them, falling back to the length floor otherwise, so both a drop and a
+    # reorder surface here rather than silently corrupting traceability.
+    n_rows = len(frame.df)
+    data_indices = result_dict.get("data_indices")
+    if data_indices is not None:
+        row_aligned = list(data_indices) == list(range(n_rows))
+    else:
+        row_aligned = len(result.cluster_labels) == n_rows
+    if not row_aligned:
         raise BloomMCPError(
             code="assumption_violated",
             message=(
-                "Clustering returned fewer labels than samples in the certified-clean input; "
+                "Clustering dropped or reordered samples from the certified-clean input; "
                 "labels cannot be traced back to plants."
             ),
             remedy="Re-run qc_clean to produce a finite-valued cleaned version, then retry.",
