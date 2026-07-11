@@ -275,8 +275,10 @@ jobs:
             for img in bloom-web langchain bloommcp caddy workflows; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
-                crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || echo 0)
-                high=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "HIGH" || echo 0)
+                # grep -c already emits 0 and exits 1 on no match; `|| true`
+                # keeps the count clean (`|| echo 0` would append a second 0).
+                crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || true)
+                high=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "HIGH" || true)
                 echo "| ${img} | ${crit} | ${high} |"
               fi
             done
@@ -957,8 +959,10 @@ jobs:
       - name: Generate summary
         if: always()
         run: |
-          crit=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "CRITICAL" || echo 0)
-          high=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "HIGH" || echo 0)
+          # grep -c already emits 0 and exits 1 on no match; `|| true` keeps
+          # the count clean (`|| echo 0` would append a second 0).
+          crit=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "CRITICAL" || true)
+          high=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "HIGH" || true)
           cves=$(grep -oP 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | sort -u | tr '\n' ',' | sed 's/,$//' || echo "")
           echo "${{ matrix.image }}|${crit}|${high}|${cves}" > summary.txt
 
