@@ -8,6 +8,10 @@ export const DEFAULT_K = 20;
 export const K_MIN = 5;
 export const K_MAX = 50;
 
+// Best-match-per-accession shows every accession (one row each), so it requests
+// the RPC's hard cap rather than a user-chosen K. ~458 accessions exist today.
+export const ALL_ACCESSION_MATCHES = 1000;
+
 // If the ranked (non-reference) variants in a per-gene comparison all fall
 // within this cosine band of each other, the ordering is within numerical
 // noise (accession variants that differ by few/no residues) and the UI says so

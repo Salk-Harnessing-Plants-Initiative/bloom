@@ -31,6 +31,12 @@ type Props = {
   // Gene-level search: collapse the per-accession rows to one row per gene_id
   // (Per-gene surface picks a locus, not a specific accession's protein).
   dedupeByGene?: boolean;
+  // Scope suggestions to one accession's genes. Undefined/null searches every
+  // accession. A Helixer gene_id belongs to exactly one accession, so scoping
+  // guarantees the picked gene exists in the selected accession.
+  accessionId?: number | null;
+  // Greys out the box (e.g. until an accession is selected).
+  disabled?: boolean;
 };
 
 /**
@@ -52,6 +58,8 @@ export function AccessionGenePicker({
   onSelect,
   placeholder = "Search accession gene (e.g. AT1G01010)…",
   dedupeByGene = false,
+  accessionId,
+  disabled = false,
 }: Props) {
   const [rows, setRows] = useState<AccessionGeneRow[]>([]);
   const [open, setOpen] = useState(false);
@@ -71,7 +79,7 @@ export function AccessionGenePicker({
       setLoading(true);
       const { data, error } = await (supabase.rpc as unknown as RpcCall)(
         "search_accession_genes",
-        { partial_id: partial, max_results: PAGE_SIZE },
+        { partial_id: partial, max_results: PAGE_SIZE, filter_accession_id: accessionId ?? null },
       );
       if (seq !== seqRef.current) return; // stale
       setLoading(false);
@@ -92,7 +100,7 @@ export function AccessionGenePicker({
       setRows(next);
       setHoverIdx(0);
     },
-    [supabase, dedupeByGene],
+    [supabase, dedupeByGene, accessionId],
   );
 
   useEffect(() => {
@@ -102,7 +110,9 @@ export function AccessionGenePicker({
     typedRef.current = false;
     if (!typed) return;
     const trimmed = value.trim();
-    if (trimmed.length < 1) {
+    // Empty box: when scoped to an accession, still search (lists that
+    // accession's genes to browse); when unscoped, clear.
+    if (trimmed.length < 1 && accessionId == null) {
       seqRef.current++; // discard any in-flight response
       setRows([]);
       return;
@@ -112,7 +122,14 @@ export function AccessionGenePicker({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [value, runSearch]);
+  }, [value, runSearch, accessionId]);
+
+  // Dropping to a different accession invalidates cached suggestions.
+  useEffect(() => {
+    seqRef.current++;
+    setRows([]);
+    setOpen(false);
+  }, [accessionId]);
 
   const choose = useCallback(
     (row: AccessionGeneRow) => {
@@ -150,15 +167,24 @@ export function AccessionGenePicker({
         type="text"
         value={value}
         placeholder={placeholder}
+        disabled={disabled}
         onChange={(e) => {
           typedRef.current = true;
           onValueChange(e.target.value);
           setOpen(true);
         }}
-        onFocus={() => setOpen(true)}
+        onFocus={() => {
+          setOpen(true);
+          // Show the accession's genes right away so users can browse the ID
+          // format without knowing it. Only when scoped and nothing loaded yet.
+          if (accessionId != null && rows.length === 0 && !loading) {
+            const seq = ++seqRef.current;
+            void runSearch(value.trim(), seq);
+          }
+        }}
         onBlur={() => setOpen(false)}
         onKeyDown={onKeyDown}
-        className="w-full rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm shadow-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+        className="w-full rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm shadow-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-neutral-400"
       />
       {loading && (
         <span className="absolute right-3 top-2 text-xs text-neutral-400">…</span>
