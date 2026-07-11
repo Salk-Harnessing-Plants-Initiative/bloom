@@ -224,7 +224,7 @@ export function AccessionPage() {
           active={tab === "bestmatch"}
           label="Best match per accession"
           hint="Your gene's closest match in each accession"
-          info="Pick a protein (accession + gene). For each accession, it retrieves the protein nearest your query in ESM-3 embedding space — the likely counterpart of your gene — ranked by cosine similarity, no sequence alignment. 'Per accession' returns the top-N nearest."
+          info="Pick a protein (accession + gene). Retrieves the proteins nearest your query in ESM-3 embedding space and shows each accession's closest one — the likely counterpart of your gene — by cosine similarity. Fast approximate (nearest-neighbour) search over the closest matches, so it surfaces the accessions nearest your gene, not necessarily all ~458. 'Per accession' returns the top-N."
           onClick={() => setTab("bestmatch")}
         />
         <TabButton
@@ -260,8 +260,8 @@ export function AccessionPage() {
             kMax={PER_ACCESSION_MAX}
           />
           <span className="text-xs text-neutral-500">
-            Each accession&apos;s closest protein to your gene, most similar first. Click a
-            column to sort.
+            Each accession&apos;s closest protein to your gene (among your query&apos;s nearest
+            matches), most similar first. Click a column to sort.
           </span>
           {bm.searchError && <p className="text-xs text-red-600">{bm.searchError}</p>}
           {bm.resolveMsg && <p className="text-xs text-amber-700">{bm.resolveMsg}</p>}

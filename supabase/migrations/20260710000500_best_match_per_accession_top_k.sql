@@ -2,12 +2,20 @@
 --
 -- Supersedes the top-1 best_match_per_accession from 20260710000400 (already
 -- applied on staging, so it must not be edited in place). Adds a per_accession
--- argument: instead of only the single closest protein per accession, return
--- that accession's top-N nearest to the query (rank_in_accession 1..N) via a
--- window rank over the same 1000-candidate HNSW pool. per_accession = 1 is the
--- previous behaviour; raising it adds depth without dropping accession coverage.
+-- argument: for each accession, return its top-N nearest proteins to the query
+-- (rank_in_accession 1..N) via a window rank.
 --
 --   best_match_per_accession(query_uid, per_accession, match_count)
+--
+-- APPROXIMATE (fast). The candidate set is the query's ~1000 globally-nearest
+-- proteins from the HNSW index (hnsw.ef_search caps at 1000), then partitioned by
+-- accession. This is index-speed (milliseconds), but coverage is emergent: only
+-- accessions represented among those 1000 nearest proteins appear, so a divergent
+-- query can surface fewer than the full panel. The UI states this ("among your
+-- query's nearest matches") and shows the returned accession count. An EXACT scan
+-- over all ~12.4M embeddings is complete but ~3 minutes single-threaded — not
+-- viable on demand; fast+complete needs a per-accession (partitioned) vector
+-- index, tracked as a follow-up.
 --
 -- Signature changes (adds a third argument), so the 2-arg function is dropped
 -- and replaced; 2-arg callers resolve to the new function via the defaults.
@@ -77,7 +85,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.best_match_per_accession(text, int, int) IS
-  'For query_uid, returns the top per_accession nearest proteins in each OTHER accession by ESM-3 cosine (rank_in_accession 1..per_accession; query''s own accession excluded), ordered most-similar-first, total rows capped at match_count. per_accession=1 is one best row per accession. HNSW-backed 1000-candidate pool (index-speed); per_accession clamped to 25, match_count to 1000.';
+  'For query_uid, returns the top per_accession nearest proteins per accession by ESM-3 cosine (rank_in_accession 1..per_accession; query''s own accession excluded), most-similar first. APPROXIMATE: candidate pool is the query''s 1000 nearest proteins from the HNSW index, so coverage is limited to accessions among those nearest matches (index-speed). per_accession clamped to 25, match_count to 1000.';
 
 GRANT EXECUTE ON FUNCTION public.best_match_per_accession(text, int, int)
   TO bloom_user, bloom_agent, bloom_admin;
