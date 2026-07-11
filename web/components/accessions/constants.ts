@@ -6,7 +6,9 @@
 
 export const DEFAULT_K = 20;
 export const K_MIN = 5;
-export const K_MAX = 50;
+// 1000 is pgvector's hnsw.ef_search ceiling — the most neighbours the index can
+// return. Larger would need an exact scan (impractical at ~12.4M vectors).
+export const K_MAX = 1000;
 
 // Best-match-per-accession returns the top-N nearest proteins PER accession
 // (N=1 = one best row each). Separate from the neighbourhood K above.
