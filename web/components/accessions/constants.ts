@@ -8,6 +8,12 @@ export const DEFAULT_K = 20;
 export const K_MIN = 5;
 export const K_MAX = 50;
 
+// Best-match-per-accession returns the top-N nearest proteins PER accession
+// (N=1 = one best row each). Separate from the neighbourhood K above.
+export const PER_ACCESSION_DEFAULT = 1;
+export const PER_ACCESSION_MIN = 1;
+export const PER_ACCESSION_MAX = 10;
+
 // Best-match-per-accession shows every accession (one row each), so it requests
 // the RPC's hard cap rather than a user-chosen K. ~458 accessions exist today.
 export const ALL_ACCESSION_MATCHES = 1000;

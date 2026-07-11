@@ -6,7 +6,13 @@ import { type AccessionGeneRow } from "./accession-gene-picker";
 import { AccessionProteinPicker, type Accession } from "./accession-protein-picker";
 import { BestMatchPanel } from "./best-match-panel";
 import { AccessionKnn } from "./accession-knn";
-import { ACCESSION_DISCLAIMER, ALL_ACCESSION_MATCHES, DEFAULT_K } from "./constants";
+import {
+  ACCESSION_DISCLAIMER,
+  DEFAULT_K,
+  PER_ACCESSION_DEFAULT,
+  PER_ACCESSION_MAX,
+  PER_ACCESSION_MIN,
+} from "./constants";
 
 type Tab = "bestmatch" | "neighborhood";
 
@@ -201,7 +207,7 @@ export function AccessionPage() {
   }, [supabase]);
 
   // Best-match shows every accession (sortable table); neighbourhood uses a K.
-  const bm = useProteinQuery(accessions, ALL_ACCESSION_MATCHES);
+  const bm = useProteinQuery(accessions, PER_ACCESSION_DEFAULT);
   const nb = useProteinQuery(accessions);
 
   return (
@@ -249,11 +255,14 @@ export function AccessionPage() {
             searchDisabled={bm.accId == null || !bm.gene || bm.resolving}
             searching={bm.resolving}
             accName={bm.accName}
-            showK={false}
+            kLabel="Per accession"
+            kMin={PER_ACCESSION_MIN}
+            kMax={PER_ACCESSION_MAX}
           />
           <span className="text-xs text-neutral-500">
-            For your gene, the closest protein in each other accession by ESM-3 similarity,
-            nearest first. Click a column header to sort.
+            For your gene, the nearest protein(s) in each other accession by ESM-3 similarity,
+            nearest first. &ldquo;Per accession&rdquo; sets how many closest to show for each.
+            Click a column header to sort.
           </span>
           {bm.searchError && <p className="text-xs text-red-600">{bm.searchError}</p>}
           {bm.resolveMsg && <p className="text-xs text-amber-700">{bm.resolveMsg}</p>}
@@ -261,7 +270,7 @@ export function AccessionPage() {
             <BestMatchPanel
               queryUid={bm.query.uid}
               queryLabel={bm.query.label}
-              k={bm.query.k}
+              perAccession={bm.query.k}
               onSelectMatch={(r) =>
                 bm.pivot({
                   uid: r.uid,

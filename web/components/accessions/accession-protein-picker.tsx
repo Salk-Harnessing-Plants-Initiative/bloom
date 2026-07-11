@@ -21,9 +21,12 @@ type Props = {
   searchDisabled: boolean;
   searching: boolean;
   accName: string | null;
-  // Show the K input (nearest-neighbour count). Off for best-match, which
-  // returns every accession.
+  // Show the K numeric input, and its label/bounds. Best-match uses it for
+  // nearest-per-accession (1–10); the neighbourhood tab for K neighbours (5–50).
   showK?: boolean;
+  kLabel?: string;
+  kMin?: number;
+  kMax?: number;
 };
 
 /**
@@ -45,6 +48,9 @@ export function AccessionProteinPicker({
   searching,
   accName,
   showK = true,
+  kLabel = "K",
+  kMin = K_MIN,
+  kMax = K_MAX,
 }: Props) {
   return (
     <div className="flex flex-wrap items-end gap-3">
@@ -81,14 +87,14 @@ export function AccessionProteinPicker({
       </label>
       {showK && (
         <label className="flex items-center gap-2 text-sm text-neutral-700">
-          K
+          {kLabel}
           <input
             type="number"
-            min={K_MIN}
-            max={K_MAX}
+            min={kMin}
+            max={kMax}
             value={k}
             onChange={(e) =>
-              onKChange(Math.max(K_MIN, Math.min(K_MAX, Math.round(Number(e.target.value)))))
+              onKChange(Math.max(kMin, Math.min(kMax, Math.round(Number(e.target.value)))))
             }
             className="w-16 rounded-md border border-stone-300 bg-white px-2 py-1 text-sm shadow-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
           />
