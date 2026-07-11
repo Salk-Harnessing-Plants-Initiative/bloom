@@ -8,7 +8,7 @@
 --
 -- filter_accession_id defaults to NULL (search every accession), so existing
 -- 2-argument callers are unaffected. Keeps the plpgsql + force_custom_plan shape
--- from 20260708000400 (a common prefix over millions of rows must re-plan to the
+-- from 20260710000200 (a common prefix over millions of rows must re-plan to the
 -- uid-index walk, not a generic Bitmap->Sort).
 --
 -- Signature changes (adds a third argument) so the 2-arg function is dropped and
