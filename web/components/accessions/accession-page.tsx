@@ -263,6 +263,12 @@ export function AccessionPage() {
             Each accession&apos;s closest protein to your gene (among your query&apos;s nearest
             matches), most similar first. Click a column to sort.
           </span>
+          {bm.query && bm.k !== bm.query.k && (
+            <p className="text-xs text-blue-600">
+              Per accession set to {bm.k} — press Search to apply (table below shows{" "}
+              {bm.query.k}).
+            </p>
+          )}
           {bm.searchError && <p className="text-xs text-red-600">{bm.searchError}</p>}
           {bm.resolveMsg && <p className="text-xs text-amber-700">{bm.resolveMsg}</p>}
           {bm.query ? (
