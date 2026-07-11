@@ -10,6 +10,13 @@ permissions:
   contents: read
   pull-requests: write
 
+# Cancel superseded runs — a new push to a PR aborts the in-flight run for the
+# same ref instead of building all Docker images + the compose stack to
+# completion for a commit that's already been replaced.
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Supabase CLI version — matched to what's installed on the Salk deploy
   # server (documented in #135). Change here + on the server together.
