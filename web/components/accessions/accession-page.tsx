@@ -252,8 +252,8 @@ export function AccessionPage() {
             showK={false}
           />
           <span className="text-xs text-neutral-500">
-            For your gene, the closest protein in every other accession by ESM-3 similarity.
-            Click a column header to sort.
+            For your gene, the closest protein in each other accession by ESM-3 similarity,
+            nearest first. Click a column header to sort.
           </span>
           {bm.searchError && <p className="text-xs text-red-600">{bm.searchError}</p>}
           {bm.resolveMsg && <p className="text-xs text-amber-700">{bm.resolveMsg}</p>}

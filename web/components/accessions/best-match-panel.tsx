@@ -97,7 +97,7 @@ export function BestMatchPanel({ queryUid, queryLabel, k, onSelectMatch }: Props
         <span className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
           Closest protein per accession
           <span className="ml-2 normal-case font-normal tracking-normal text-neutral-400">
-            vs. {queryLabel}
+            {rows.length > 0 ? `${rows.length} accessions · ` : ""}vs. {queryLabel}
           </span>
         </span>
         <div className="flex items-center gap-3">

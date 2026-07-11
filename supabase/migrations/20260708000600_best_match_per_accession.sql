@@ -12,12 +12,12 @@
 --     accession's closest protein to query_uid by ESM-3 cosine. Ordered
 --     most-similar-first, capped at match_count (the top-K nearest accessions).
 --
--- Implementation: pull the query's globally-nearest proteins from the HNSW index
--- (bounded candidate pool sized to cover the top match_count accessions), then
--- keep the best per accession. Index-speed — no per-accession full scan. This is
--- exact for the closest accessions (their best match is among the query's
--- nearest neighbours) and approximate only for the far tail, which top-K never
--- surfaces anyway.
+-- Implementation: pull the query's ~1000 globally-nearest proteins from the HNSW
+-- index (hnsw.ef_search caps at 1000), then keep the best per accession. Index-
+-- speed — no per-accession full scan. Exact for the closest accessions (their
+-- best match is among the query's nearest neighbours); a divergent gene whose
+-- ortholog sits beyond the 1000 nearest may not surface every accession, so the
+-- caller shows how many accessions came back.
 --
 -- Depends on protein_embeddings_esm3 / proteins.accession_id / the HNSW index
 -- from 20260708000000. STABLE, read-only.
@@ -42,7 +42,6 @@ AS $$
 DECLARE
   query_vec vector(1536);
   query_acc bigint;
-  pool      int;
 BEGIN
   SELECT e.embedding, p.accession_id
     INTO query_vec, query_acc
@@ -54,12 +53,13 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Candidate pool: enough of the query's globally-nearest proteins that the top
-  -- match_count accessions each have their best match represented. Bounded so a
-  -- large match_count cannot search unbounded. ef_search must reach the LIMIT
-  -- for HNSW to return that many rows.
-  pool := LEAST(GREATEST(match_count * 50, 3000), 20000);
-  PERFORM set_config('hnsw.ef_search', pool::text, true);
+  -- Candidate pool = the query's globally-nearest proteins, deduped to the best
+  -- per accession below. hnsw.ef_search is capped by pgvector at 1000 and must be
+  -- >= the candidate LIMIT for HNSW to return that many rows, so pull the max
+  -- 1000 nearest (spans up to ~1000 distinct accessions; ~458 exist today). A
+  -- divergent gene whose ortholog sits beyond the 1000 nearest may not surface
+  -- every accession — the UI shows the returned count so coverage is visible.
+  PERFORM set_config('hnsw.ef_search', '1000', true);
 
   RETURN QUERY
     WITH near AS (
@@ -70,7 +70,7 @@ BEGIN
        WHERE p.accession_id IS NOT NULL
          AND p.accession_id <> query_acc
        ORDER BY e.embedding <=> query_vec
-       LIMIT pool
+       LIMIT 1000
     ),
     best AS (
       SELECT DISTINCT ON (near.acc)
