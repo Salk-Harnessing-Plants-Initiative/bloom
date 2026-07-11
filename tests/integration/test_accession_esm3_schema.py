@@ -554,6 +554,67 @@ def test_best_match_bounds_do_not_crash(pg_conn, accession_seed):
         assert cur.fetchone()[0] == 1
 
 
+def test_best_match_partitions_across_multiple_accessions(pg_conn, accession_seed):
+    """The result must be grouped BY accession: with more than one OTHER
+    accession, each contributes its OWN nearest protein(s), not the globally
+    nearest. The 2-accession fixture can't show this (one partition == global),
+    so seed a 3rd accession in a savepoint and verify the partitioning.
+
+    Query = Col-0's REF (e0). Ler-0 has ALT(cos .9)/SOLO(cos 0); Bur-0 gets
+    BURA(cos .95)/BURB(cos .5). Globally the two nearest are BURA then ALT — a
+    global top-1 would return only Bur-0. Correct per-accession grouping returns
+    Ler-0's ALT AND Bur-0's BURA, each rank 1."""
+    bura_x, burb_x = 0.95, 0.5
+    bura = _make_vec(ESM3_DIM, {0: bura_x, 1: (1 - bura_x * bura_x) ** 0.5})
+    burb = _make_vec(ESM3_DIM, {0: burb_x, 1: (1 - burb_x * burb_x) ** 0.5})
+    with pg_conn.cursor() as cur:
+        cur.execute("SAVEPOINT sp3")
+        cur.execute(
+            "INSERT INTO public.arabidopsis_accessions (common_name, external_id, id_source) "
+            "VALUES ('atest-Bur-0', 'atest-bur', '1001 Genomes') RETURNING id"
+        )
+        bur_id = cur.fetchone()[0]
+        for uid, gene, vec in (
+            ("atest:bur:G1", "ATBUR1", bura),
+            ("atest:bur:G2", "ATBUR2", burb),
+        ):
+            cur.execute(
+                "INSERT INTO public.proteins (uid, species, gene_id, accession_id) "
+                "VALUES (%s, 'arabidopsis', %s, %s)",
+                (uid, gene, bur_id),
+            )
+            cur.execute(
+                "INSERT INTO public.protein_embeddings_esm3 (uid, embedding, run_id) "
+                "VALUES (%s, %s::vector(1536), %s)",
+                (uid, _to_pgvector(vec), accession_seed["run_id"]),
+            )
+
+        # per_accession = 1: BOTH other accessions appear, each its own best.
+        cur.execute(
+            "SELECT accession_id, uid, rank_in_accession "
+            "FROM public.best_match_per_accession(%s, 1)",
+            (REF_UID,),
+        )
+        by_acc = {r[0]: r for r in cur.fetchall()}
+        assert accession_seed["ler0_id"] in by_acc, "Ler-0 dropped — not grouped per accession"
+        assert bur_id in by_acc, "Bur-0 dropped — not grouped per accession"
+        assert by_acc[accession_seed["ler0_id"]][1] == ALT_UID  # Ler-0's own nearest
+        assert by_acc[bur_id][1] == "atest:bur:G1"              # Bur-0's own nearest, not global
+        assert all(r[2] == 1 for r in by_acc.values())
+
+        # per_accession = 2: Bur-0 shows both its proteins, ranked within itself.
+        cur.execute(
+            "SELECT uid, rank_in_accession FROM public.best_match_per_accession(%s, 2) "
+            "WHERE accession_id = %s ORDER BY rank_in_accession",
+            (REF_UID, bur_id),
+        )
+        bur_rows = cur.fetchall()
+        assert [r[0] for r in bur_rows] == ["atest:bur:G1", "atest:bur:G2"]
+        assert [r[1] for r in bur_rows] == [1, 2]
+
+        cur.execute("ROLLBACK TO SAVEPOINT sp3")  # undo the 3rd accession
+
+
 # ---------------------------------------------------------------------------
 # 6. RLS: anon blocked, read matrix, write-denial, drift
 # ---------------------------------------------------------------------------
