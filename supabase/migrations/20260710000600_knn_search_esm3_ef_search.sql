@@ -38,22 +38,32 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Widen the index search to the requested neighbour count (+ margin for the
-  -- self-exclusion), clamped to pgvector's [1, 1000] ef_search range.
+  -- Widen the index search to the requested count + margin, clamped to
+  -- pgvector's [1, 1000] ef_search range.
   PERFORM set_config('hnsw.ef_search', LEAST(capped + 10, 1000)::text, true);
 
+  -- Fetch capped+1 nearest (self is always nearest, distance 0), THEN exclude
+  -- self and take capped. Excluding self inside the ORDER BY..LIMIT would let the
+  -- HNSW index push the LIMIT below the filter and silently drop a real
+  -- neighbour to the query protein's own slot.
   RETURN QUERY
-    SELECT p.uid,
-           p.accession_id,
-           a.common_name AS accession_name,
-           p.gene_id,
-           (1 - (e.embedding <=> query_vec))::float AS similarity
-      FROM public.protein_embeddings_esm3 e
-      JOIN public.proteins p               ON p.uid = e.uid
-      JOIN public.arabidopsis_accessions a ON a.id  = p.accession_id
-     WHERE p.accession_id IS NOT NULL
-       AND e.uid <> query_uid
-     ORDER BY e.embedding <=> query_vec
+    SELECT t.uid, t.accession_id, t.accession_name, t.gene_id, t.similarity
+      FROM (
+        SELECT p.uid,
+               p.accession_id,
+               a.common_name AS accession_name,
+               p.gene_id,
+               (1 - (e.embedding <=> query_vec))::float AS similarity,
+               (e.embedding <=> query_vec) AS dist
+          FROM public.protein_embeddings_esm3 e
+          JOIN public.proteins p               ON p.uid = e.uid
+          JOIN public.arabidopsis_accessions a ON a.id  = p.accession_id
+         WHERE p.accession_id IS NOT NULL
+         ORDER BY e.embedding <=> query_vec
+         LIMIT capped + 1
+      ) t
+     WHERE t.uid <> query_uid
+     ORDER BY t.dist
      LIMIT capped;
 END;
 $$;
