@@ -176,11 +176,10 @@ jobs:
   docker-build:
     name: Build Docker Images & Scan for CVEs
     runs-on: ubuntu-latest
-    # compose-health-check `needs: docker-build`, and this job builds all four
-    # images (bloom-web/langchain/bloommcp/caddy) + Trivy-scans them on the same
-    # ~14 GB-free runner — the same disk-heavy pattern as compose-health-check
-    # (issue #334). Protect it too: a disk-out here would skip the very job the
-    # cleanup is meant to guard. Cap the runtime so a wedge can't hang for 6h.
+    # This job builds all five images (bloom-web/langchain/bloommcp/caddy/
+    # workflows) + Trivy-scans them on the same ~14 GB-free runner — the same
+    # disk-heavy pattern as compose-health-check (issue #334). Protect it too:
+    # free disk before building. Cap the runtime so a wedge can't hang for 6h.
     timeout-minutes: 30
     steps:
       - name: Checkout code
@@ -409,7 +408,10 @@ jobs:
 
   compose-health-check:
     name: Docker Compose Health Check
-    needs: docker-build
+    # Runs in parallel with docker-build (separate runners, no shared images).
+    # It formerly `needs: docker-build`, which serialized the two jobs and gave
+    # fail-fast — a failing CVE build skipped this expensive job. Dropping it
+    # trades that saving for parallelism (both build their own stacks anyway).
     runs-on: ubuntu-latest
     # Cap the job. The GitHub default is 6h; a "No space left on device" fill
     # once left this job hanging for the full 6h before failing (issue #334).
