@@ -485,30 +485,47 @@ def test_search_accession_genes_empty_lists_scoped_accession(pg_conn, accession_
 # ---------------------------------------------------------------------------
 
 def test_best_match_per_accession_picks_best_in_each_other_accession(pg_conn, accession_seed):
-    """For the query protein, one row per OTHER accession, each that accession's
-    single closest protein by ESM-3 cosine. Query = Col-0's AT1G01010; the only
-    other accession is Ler-0, whose closest protein is ALT (~0.9), not SOLO (~0)."""
+    """Default (per_accession=1): one row per OTHER accession, each that
+    accession's single closest protein by ESM-3 cosine. Query = Col-0's
+    AT1G01010; the only other accession is Ler-0, whose closest is ALT (~0.9),
+    not SOLO (~0)."""
     with pg_conn.cursor() as cur:
         cur.execute(
-            "SELECT accession_id, accession_name, uid, gene_id, similarity "
-            "FROM public.best_match_per_accession(%s, 20)",
+            "SELECT accession_id, accession_name, uid, gene_id, similarity, rank_in_accession "
+            "FROM public.best_match_per_accession(%s)",
             (REF_UID,),
         )
         rows = cur.fetchall()
     assert len(rows) == 1, f"expected one row (Ler-0 only), got {rows}"
-    accession_id, accession_name, uid, gene_id, similarity = rows[0]
+    accession_id, accession_name, uid, gene_id, similarity, rank_in_acc = rows[0]
     assert accession_id == accession_seed["ler0_id"]
     assert accession_name == "atest-Ler-0"
     assert uid == ALT_UID  # ALT (~0.9) beats SOLO (~0) within Ler-0
     assert gene_id == "AT1G01010"
     assert abs(similarity - _NEAR_X) < 0.02  # cosine ≈ 0.9
+    assert rank_in_acc == 1
+
+
+def test_best_match_top_k_per_accession(pg_conn, accession_seed):
+    """per_accession=2 returns Ler-0's two nearest to the query (ALT then SOLO),
+    with rank_in_accession 1 and 2, ordered most-similar-first."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT uid, rank_in_accession, similarity "
+            "FROM public.best_match_per_accession(%s, 2)",
+            (REF_UID,),
+        )
+        rows = cur.fetchall()
+    assert [r[0] for r in rows] == [ALT_UID, SOLO_UID]  # nearest first
+    assert [r[1] for r in rows] == [1, 2]  # within-accession rank
+    assert rows[0][2] > rows[1][2]  # ALT more similar than SOLO
 
 
 def test_best_match_excludes_query_own_accession(pg_conn, accession_seed):
     """'Best match in OTHER accessions' — the query's own accession never appears."""
     with pg_conn.cursor() as cur:
         cur.execute(
-            "SELECT accession_id, uid FROM public.best_match_per_accession(%s, 20)",
+            "SELECT accession_id, uid FROM public.best_match_per_accession(%s)",
             (REF_UID,),
         )
         rows = cur.fetchall()
@@ -518,18 +535,23 @@ def test_best_match_excludes_query_own_accession(pg_conn, accession_seed):
 
 def test_best_match_missing_query_returns_empty(pg_conn, accession_seed):
     with pg_conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM public.best_match_per_accession('atest:nope', 20)")
+        cur.execute("SELECT count(*) FROM public.best_match_per_accession('atest:nope')")
         assert cur.fetchone()[0] == 0
 
 
-def test_best_match_match_count_bounds_do_not_crash(pg_conn, accession_seed):
-    """Negative match_count clamps to LIMIT >=1 (no 'LIMIT -n' error); huge caps
-    at 1000. With one other accession seeded, both return exactly that row."""
+def test_best_match_bounds_do_not_crash(pg_conn, accession_seed):
+    """per_accession clamps to >=1 (negative) and <=25 (huge); match_count
+    clamps to LIMIT >=1 (no 'LIMIT -n' error)."""
     with pg_conn.cursor() as cur:
+        # per_accession = -5 -> clamped to 1 -> Ler-0's single best
         cur.execute("SELECT count(*) FROM public.best_match_per_accession(%s, -5)", (REF_UID,))
-        assert cur.fetchone()[0] == 1  # clamped, no runtime error
+        assert cur.fetchone()[0] == 1
+        # per_accession huge -> clamped to 25 -> Ler-0 has 2 proteins in the pool
         cur.execute("SELECT count(*) FROM public.best_match_per_accession(%s, 100000)", (REF_UID,))
-        assert cur.fetchone()[0] <= 1000  # capped
+        assert cur.fetchone()[0] == 2
+        # match_count = -1 -> clamped to LIMIT 1
+        cur.execute("SELECT count(*) FROM public.best_match_per_accession(%s, 2, -1)", (REF_UID,))
+        assert cur.fetchone()[0] == 1
 
 
 # ---------------------------------------------------------------------------
