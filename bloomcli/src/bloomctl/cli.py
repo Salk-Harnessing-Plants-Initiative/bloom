@@ -99,8 +99,7 @@ def login(
     click.echo(f"Logged in as {email}. Credentials saved to {path}.")
 
 
-# Data-type command groups. Each group lives in its own package (one file per
-# command) so commands are organized by assay, mirroring the legacy CLI's layout.
+# Data-type command groups, one file per command (see bloomctl/cyl).
 from .cyl import cyl  # noqa: E402  (registered after `cli` is defined)
 
 cli.add_command(cyl)

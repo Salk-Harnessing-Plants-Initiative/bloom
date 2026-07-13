@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import click
 
-# Alias the command objects so they don't shadow the submodules of the same
-# name on the package (`bloomctl.cyl.download` must stay the module).
+# Alias so the command objects don't shadow the same-named submodules.
 from .download import download as download_cmd
 from .ingest import ingest_result as ingest_result_cmd
 
