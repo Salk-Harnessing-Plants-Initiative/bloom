@@ -8,6 +8,12 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Changed
+
+- Commands are now grouped by data type: `bloomctl download` moved under the
+  `cyl` group as `bloomctl cyl download` (both cylinder commands now live in
+  `bloomctl.cyl`, one file per command), matching the legacy CLI's layout.
+
 ### Added
 
 - `bloomctl cyl ingest-result <envelope>` — write a per-scan `ResultEnvelope`

@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 import bloomctl.cli as climod
-import bloomctl.ingest as ing
+import bloomctl.cyl.ingest as ing
 from bloomctl.cli import cli
 
 FIXTURE = Path(__file__).parent / "fixtures" / "scan0K9E8BI.result.json"
@@ -342,6 +342,9 @@ def test_cli_registration_in_help():
     assert "cyl" in res.output
     sub = CliRunner().invoke(cli, ["cyl", "--help"])
     assert "ingest-result" in sub.output
+    # download is grouped by data type under `cyl`, not at the top level.
+    assert "download" in sub.output
+    assert "download" not in res.output
 
 
 # --- review follow-ups: spec-scenario gaps + robustness guards ---------------
