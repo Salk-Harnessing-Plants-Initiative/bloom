@@ -16,9 +16,23 @@ import pandas as pd
 
 import bloom_mcp.experiment_utils as eu
 import bloom_mcp.storage_backend as sb
-from bloom_mcp.data_access import FakeReader, SupabaseReader
+import pytest
+
+from bloom_mcp.data_access import FakeReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports, correlation_tools
+
+
+@pytest.fixture
+def reset_ports():
+    """Restore _ports reader/store after a test — avoids constructing new
+    SupabaseReader() in teardown (which could raise if validation tightens).
+    Also resets the memoized storage backend so the next test starts clean."""
+    prev_reader = _ports.reader()
+    prev_store = _ports.store()
+    yield
+    _ports.configure(reader=prev_reader, store=prev_store)
+    sb.reset_backend_for_tests()
 
 
 def _frame(geno_col, rep_col):
@@ -32,32 +46,27 @@ def _frame(geno_col, rep_col):
     )
 
 
-def test_correlation_reads_flow_through_the_port(monkeypatch):
+def test_correlation_reads_flow_through_the_port(reset_ports):
     """A seeded FakeReader (no filesystem) drives the correlation tool — proving
     the reads go through the injected adapter, not pd.read_csv(TRAITS_DIR/…)."""
     reader = FakeReader()
     reader.add_experiment("cylinder_traits.csv", _frame("Geno", "Rep"))
     reader.add_experiment("turface_traits.csv", _frame("geno", "rep"))
     _ports.configure(reader=reader, store=FakeResultStore())
-    try:
-        out = correlation_tools.run_cross_experiment_correlations()
-        assert "Cross-Experiment Correlation" in out
-        assert "Common genotypes: 4" in out
 
-        listing = correlation_tools.list_experiments()
-        assert "cylinder: 4 genotypes" in listing
-        assert "FILE MISSING" not in listing
-    finally:
-        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    out = correlation_tools.run_cross_experiment_correlations()
+    assert "Cross-Experiment Correlation" in out
+    assert "Common genotypes: 4" in out
+
+    listing = correlation_tools.list_experiments()
+    assert "cylinder: 4 genotypes" in listing
+    assert "FILE MISSING" not in listing
 
 
-def test_correlation_list_reports_missing_via_port():
+def test_correlation_list_reports_missing_via_port(reset_ports):
     _ports.configure(reader=FakeReader(), store=FakeResultStore())
-    try:
-        out = correlation_tools.list_experiments()
-        assert out.count("FILE MISSING") == 2  # neither experiment seeded
-    finally:
-        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    out = correlation_tools.list_experiments()
+    assert out.count("FILE MISSING") == 2  # neither experiment seeded
 
 
 def test_correlation_tools_no_longer_imports_pandas():
@@ -69,7 +78,7 @@ def test_correlation_tools_no_longer_imports_pandas():
     assert "pd.read_csv(TRAITS_DIR" not in src.replace("``pd.read_csv(TRAITS_DIR / …)``", "")
 
 
-def test_start_run_records_input_hash_via_reader(monkeypatch, tmp_path):
+def test_start_run_records_input_hash_via_reader(monkeypatch, tmp_path, reset_ports):
     """start_run sources source_csv from the active reader (LocalReader), so the
     committed manifest content-addresses the real input — no empty input_sha256."""
     from bloom_mcp.data_access import LocalReader
@@ -88,21 +97,20 @@ def test_start_run_records_input_hash_via_reader(monkeypatch, tmp_path):
     monkeypatch.delenv("BLOOM_EXPERIMENT_LOCAL_ROOT", raising=False)
     sb.reset_backend_for_tests()
     _ports.configure(reader=LocalReader(), store=SupabaseResultStore())
-    try:
-        resp = run_qc_workflow("exp.csv")
-        assert "error" not in resp, resp
 
-        manifest = json.loads(
-            (store / "bloommcp_output" / "qc_exp" / "manifest.json").read_bytes()
-        )
-        expected = hashlib.sha256((inp / "exp.csv").read_bytes()).hexdigest()
-        assert manifest["experiment"]["input_sha256"] == expected
-    finally:
-        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
-        sb.reset_backend_for_tests()
+    resp = run_qc_workflow("exp.csv")
+    assert "error" not in resp, resp
+
+    manifest = json.loads(
+        (store / "bloommcp_output" / "qc_exp" / "manifest.json").read_bytes()
+    )
+    expected = hashlib.sha256((inp / "exp.csv").read_bytes()).hexdigest()
+    assert manifest["experiment"]["input_sha256"] == expected
 
 
-def test_qc_clean_sources_provenance_from_experiment_local_root(monkeypatch, tmp_path):
+def test_qc_clean_sources_provenance_from_experiment_local_root(
+    monkeypatch, tmp_path, reset_ports
+):
     """qc_clean self-stamps provenance and now sources source_csv through the active
     reader (``_ports.raw_source_for``), so a custom ``BLOOM_EXPERIMENT_LOCAL_ROOT``
     distinct from ``TRAITS_DIR`` is honoured — the committed manifest content-addresses
@@ -131,14 +139,11 @@ def test_qc_clean_sources_provenance_from_experiment_local_root(monkeypatch, tmp
     monkeypatch.setenv("BLOOM_EXPERIMENT_LOCAL_ROOT", str(exp_root))
     sb.reset_backend_for_tests()
     _ports.configure(reader=LocalReader(), store=SupabaseResultStore())
-    try:
-        qc_clean(QCCleanParams(experiment="exp.csv"))
 
-        manifest = json.loads(
-            (store / "bloommcp_output" / "qc_exp" / "manifest.json").read_bytes()
-        )
-        expected = hashlib.sha256((exp_root / "exp.csv").read_bytes()).hexdigest()
-        assert manifest["experiment"]["input_sha256"] == expected
-    finally:
-        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
-        sb.reset_backend_for_tests()
+    qc_clean(QCCleanParams(experiment="exp.csv"))
+
+    manifest = json.loads(
+        (store / "bloommcp_output" / "qc_exp" / "manifest.json").read_bytes()
+    )
+    expected = hashlib.sha256((exp_root / "exp.csv").read_bytes()).hexdigest()
+    assert manifest["experiment"]["input_sha256"] == expected

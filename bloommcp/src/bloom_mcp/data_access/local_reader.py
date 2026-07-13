@@ -128,11 +128,20 @@ class LocalReader:
 
         bloommcp is LLM-driven, so an agent can be steered to request an arbitrary
         ``name``. Names are bare filenames (e.g. ``exp.csv``); reject path
-        components, absolute paths, and ``.``/``..``, then verify the resolved real
-        path stays within the resolved real root (covers a symlink escape). The
-        error leaks no host path.
+        components, absolute paths, ``.``/``..``, and names that contain null bytes
+        (which raise ``ValueError`` from ``Path()`` in CPython 3.11+). Then verify
+        the resolved real path stays within the resolved real root (covers a symlink
+        escape). The error leaks no host path.
+
+        NOTE: ``_resolved_root`` is captured once at ``__init__``. If the root is
+        replaced by a symlink after construction the canonical path is stale — an
+        accepted risk for a dev/offline backend on a bind-mount.
         """
-        if not name or name in (".", "..") or name != Path(name).name:
+        try:
+            bare = Path(name).name
+        except ValueError:
+            raise ExperimentReadError("experiment name must be a bare filename")
+        if not name or name in (".", "..") or name != bare:
             raise ExperimentReadError("experiment name must be a bare filename")
         root = self._resolved_root
         target = (self._root / name).resolve()

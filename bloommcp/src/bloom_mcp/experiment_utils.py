@@ -54,25 +54,28 @@ def validate_experiment_local_root() -> None:
     """Fail fast at boot when fully-local mode has no usable local input root.
 
     Called by ``server.main()`` only in fully-local mode (the default Supabase
-    path keeps validating Supabase credentials instead). Raises naming the
-    resolved root so a misconfigured offline deploy fails at boot, not on the
-    first read.
+    path keeps validating Supabase credentials instead). The absolute root path
+    is logged server-side but not included in the raised RuntimeError — boot
+    errors can appear in LLM-agent-visible tracebacks, and the design goal is to
+    avoid leaking host paths there.
     """
     root = resolve_experiment_local_root()
-    # Path("") and Path(".") both have empty .parts — the pathlib-native "no root
-    # configured" check (str(Path("")) is always ".", so a str membership test has
-    # a dead "" arm).
-    if not root.parts:
+    # Only Path("") has empty .parts; Path(".").parts == (".",) and resolves to
+    # CWD, which is not a safe local input root for LLM-controlled reads.
+    if not root.parts or str(root) == ".":
         raise RuntimeError(
             "BLOOM_STORAGE_BACKEND=local but neither BLOOM_EXPERIMENT_LOCAL_ROOT "
             "nor BLOOM_TRAITS_DIR is set for the local input root."
         )
     if not root.exists() or not root.is_dir():
+        logger.error("local input root does not exist or is not a directory: %s", root)
         raise RuntimeError(
-            f"Local input root {root} does not exist or is not a directory."
+            "Local input root does not exist or is not a directory. "
+            "Check BLOOM_EXPERIMENT_LOCAL_ROOT or BLOOM_TRAITS_DIR."
         )
     if not os.access(root, os.R_OK):
-        raise RuntimeError(f"Local input root {root} is not readable.")
+        logger.error("local input root is not readable: %s", root)
+        raise RuntimeError("Local input root is not readable.")
 
 
 def _validate_dirs() -> None:
@@ -402,12 +405,18 @@ def load_experiment_data(
             config = detect_columns(df)
             return df, config["trait_cols"], config, source_label
 
-        if version == "latest" and allow_legacy_cleaned:
+        if version == "latest":
             legacy_path = o_dir / f"qc_{stem}" / f"{stem}_cleaned.csv"
-            if legacy_path.exists():
+            if allow_legacy_cleaned and legacy_path.exists():
                 df = pd.read_csv(legacy_path)
                 config = detect_columns(df)
                 return df, config["trait_cols"], config, "legacy_cleaned"
+            elif not allow_legacy_cleaned and legacy_path.exists():
+                logger.warning(
+                    "Skipping un-versioned legacy cleaned CSV %s; "
+                    "run the QC workflow to produce a versioned output.",
+                    legacy_path,
+                )
 
     if require_clean:
         return (

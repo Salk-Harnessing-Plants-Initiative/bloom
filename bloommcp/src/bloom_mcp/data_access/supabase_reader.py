@@ -86,7 +86,7 @@ class SupabaseReader:
         outside ``TRAITS_DIR`` and have its bytes hashed into the run provenance.
         (``LocalReader`` guards the same via ``_safe_name``.)
         """
-        if name != Path(name).name:
+        if not name or name != Path(name).name:
             return None
         candidate = _eu.TRAITS_DIR / name
         return candidate if candidate.is_file() else None

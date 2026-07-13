@@ -107,7 +107,7 @@ def test_fully_local_boot_validates_local_input_root(spy_run, monkeypatch, tmp_p
     _local_dirs(monkeypatch, tmp_path)
     missing = tmp_path / "nope"
     monkeypatch.setenv("BLOOM_EXPERIMENT_LOCAL_ROOT", str(missing))
-    with pytest.raises(RuntimeError, match=str(missing.name)):
+    with pytest.raises(RuntimeError, match="(?i)local input root"):
         spy_run.main()
 
 
@@ -148,6 +148,31 @@ def test_default_backend_still_requires_supabase(spy_run, monkeypatch, tmp_path)
 # ── import purity (a fresh interpreter, no bloom env) ────────────────────────
 
 
+def test_ports_import_is_pure_without_supabase_env():
+    """_ports.py constructs SupabaseReader()/SupabaseResultStore() at module level;
+    assert that import still succeeds with no Supabase env — no credential access
+    at construction enforces the 'no Supabase at import' contract for the tools layer."""
+    strip = (
+        "SUPABASE_URL",
+        "BLOOM_AGENT_KEY",
+        "BLOOM_TRAITS_DIR",
+        "BLOOM_OUTPUT_DIR",
+        "BLOOM_PLOTS_DIR",
+        "BLOOM_PLOTS_URL",
+        "BLOOM_STORAGE_BACKEND",
+        "BLOOM_STORAGE_LOCAL_ROOT",
+        "BLOOM_EXPERIMENT_LOCAL_ROOT",
+    )
+    env = {k: v for k, v in os.environ.items() if k not in strip}
+    result = subprocess.run(
+        [sys.executable, "-c", "import bloom_mcp.tools._ports"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_server_import_is_pure_including_experiment_local_root():
     strip = (
         "SUPABASE_URL",
@@ -173,9 +198,26 @@ def test_server_import_is_pure_including_experiment_local_root():
 # ── fully-local end-to-end: qc_clean → pca_analysis, no live Supabase ───────
 
 
-def test_fully_local_qc_clean_to_pca_no_supabase(monkeypatch, tmp_path):
+@pytest.fixture
+def reset_ports():
+    """Restore the injected _ports reader/store after a test that swaps them.
+
+    Also resets the memoized storage backend so the next test starts clean —
+    avoids constructing a new SupabaseReader in teardown (which could raise if
+    validation tightens) by saving/restoring the previous reader/store objects.
+    """
+    from bloom_mcp.tools import _ports
+
+    prev_reader = _ports.reader()
+    prev_store = _ports.store()
+    yield
+    _ports.configure(reader=prev_reader, store=prev_store)
+    sb.reset_backend_for_tests()
+
+
+def test_fully_local_qc_clean_to_pca_no_supabase(monkeypatch, tmp_path, reset_ports):
     import bloom_mcp.supabase_client as sc
-    from bloom_mcp.data_access import LocalReader, SupabaseReader
+    from bloom_mcp.data_access import LocalReader
     from bloom_mcp.result_store import SupabaseResultStore
     from bloom_mcp.tools import _ports
     from bloom_mcp.tools.pca_analysis_tool import PCAAnalysisParams, pca_analysis
@@ -202,23 +244,20 @@ def test_fully_local_qc_clean_to_pca_no_supabase(monkeypatch, tmp_path):
     monkeypatch.setattr(sc.supabase, "create_client", _no_net)
 
     _ports.configure(reader=LocalReader(), store=SupabaseResultStore())
-    try:
-        qc_res = qc_clean(QCCleanParams(experiment="turface_19.csv"))
-        assert qc_res.run_ref  # a persisted cleaned run
 
-        cleaned = _ports.reader().load_experiment("turface_19.csv", require_clean=True)
-        traits = [t for t in _GOLDEN_TRAITS if t in cleaned.trait_cols]
-        assert len(traits) >= 2
+    qc_res = qc_clean(QCCleanParams(experiment="turface_19.csv"))
+    assert qc_res.run_ref  # a persisted cleaned run
 
-        pca_res = pca_analysis(
-            PCAAnalysisParams(experiment="turface_19.csv", trait_columns=traits)
-        )
-        assert pca_res.n_components >= 1
+    cleaned = _ports.reader().load_experiment("turface_19.csv", require_clean=True)
+    traits = [t for t in _GOLDEN_TRAITS if t in cleaned.trait_cols]
+    assert len(traits) >= 2
 
-        # Real files on disk under the local store root; nothing needed Supabase.
-        manifests = list(store.rglob("manifest.json"))
-        assert len(manifests) >= 2  # qc + pca
-        assert list(store.rglob("_cleaned.csv"))
-    finally:
-        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
-        sb.reset_backend_for_tests()
+    pca_res = pca_analysis(
+        PCAAnalysisParams(experiment="turface_19.csv", trait_columns=traits)
+    )
+    assert pca_res.n_components >= 1
+
+    # Real files on disk under the local store root; nothing needed Supabase.
+    manifests = list(store.rglob("manifest.json"))
+    assert len(manifests) >= 2  # qc + pca
+    assert list(store.rglob("_cleaned.csv"))
