@@ -6,17 +6,17 @@ credentials. Successor to the Node `@salk-hpi/bloom-cli`. Tracked by issue #347.
 
 ## Commands
 
-Core commands are flat; assay-specific write-back is grouped under `cyl`:
+`login` is flat; assay-specific commands are grouped by data type (`cyl`):
 
 - `bloomctl login` — bootstrap client config from the Bloom server and store
   credentials per profile.
-- `bloomctl download <out_dir> …` — download a cylinder experiment or single scan
-  (metadata `scans.csv` + per-frame images).
+- `bloomctl cyl download <out_dir> …` — download a cylinder experiment or single
+  scan (metadata `scans.csv` + per-frame images).
 - `bloomctl cyl ingest-result <envelope>` — write a per-scan pipeline
   `ResultEnvelope` back to Bloom (see below).
 
-(Full `login`/`download` usage docs are still forthcoming; run any command with
-`--help` in the meantime.)
+(Full `login`/`cyl download` usage docs are still forthcoming; run any command
+with `--help` in the meantime.)
 
 ## `bloomctl cyl ingest-result`
 
