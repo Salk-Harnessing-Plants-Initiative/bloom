@@ -87,6 +87,14 @@ export function AccessionKnn({ queryUid, queryLabel, k, onSelectNeighbor }: Prop
           {loading && <span className="text-xs text-neutral-500">Running KNN…</span>}
           <button
             type="button"
+            disabled
+            title="Protein sequences are not loaded yet"
+            className="cursor-not-allowed rounded-md border border-stone-200 bg-stone-50 px-2.5 py-1 text-xs font-medium text-neutral-400"
+          >
+            Download FASTA · coming soon
+          </button>
+          <button
+            type="button"
             onClick={handleDownload}
             disabled={neighbors.length === 0}
             className="rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-neutral-700 shadow-sm transition-colors hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
