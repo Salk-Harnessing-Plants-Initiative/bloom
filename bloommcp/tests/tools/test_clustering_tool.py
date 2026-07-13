@@ -117,6 +117,7 @@ def test_kmeans_snapshot_through_the_tool(injected_ports):
     assert result.calinski_harabasz_score == pytest.approx(
         g["calinski_harabasz_score"], abs=_TOL
     )
+    assert result.inertia == pytest.approx(g["inertia"], abs=_TOL)
 
 
 def test_gmm_snapshot_through_the_tool(injected_ports):
@@ -132,6 +133,9 @@ def test_gmm_snapshot_through_the_tool(injected_ports):
     assert result.calinski_harabasz_score == pytest.approx(
         g["calinski_harabasz_score"], abs=_TOL
     )
+    # Fixed-n path: bic/aic are upstream-correct (not the auto-select bug) — pin them.
+    assert result.bic == pytest.approx(g["bic"], abs=_TOL)
+    assert result.aic == pytest.approx(g["aic"], abs=_TOL)
 
 
 # ── 2.4 / 2.5 no silent sample loss + full certified default ────────────────
@@ -289,6 +293,35 @@ def test_gmm_autoselect_may_collapse_to_one_component(injected_ports):
     result = _run(method="gmm", n_components=None)
     assert result.n_clusters == 1
     assert result.silhouette_score == pytest.approx(0.0, abs=_TOL)
+
+
+def test_gmm_autoselect_bic_aic_reflect_the_selected_model(injected_ports, monkeypatch):
+    """Upstream sleap-roots-analyze 0.1.0a4 returns the LAST-candidate BIC/AIC on the GMM
+    auto-select path, not the selected model's. The tool corrects both to the selected
+    model's scores (bic_scores[n-1]) — otherwise the reported BIC/AIC would be inconsistent
+    with the reported cluster assignments."""
+    captured: dict = {}
+    real = clustering_tool.perform_gmm_clustering
+
+    def _spy(data, **kwargs):
+        d = real(data, **kwargs)
+        captured["dict"] = d
+        return d
+
+    monkeypatch.setattr(clustering_tool, "perform_gmm_clustering", _spy)
+    result = _run(method="gmm", n_components=None)
+
+    d = captured["dict"]
+    idx = result.n_clusters - 1
+    # Corrected values == the selected candidate's per-candidate scores.
+    assert result.bic == pytest.approx(d["bic_scores"][idx], abs=_TOL)
+    assert result.aic == pytest.approx(d["aic_scores"][idx], abs=_TOL)
+    # ... and NOT the buggy scalar the delegate returned (the last candidate tested), as long
+    # as the selected model wasn't the last candidate (it isn't here — collapses to n=1 of 5).
+    if result.n_clusters != len(d["bic_scores"]):
+        assert result.bic != pytest.approx(
+            d["bic"], abs=_TOL
+        )  # d["bic"] == bic_scores[-1]
 
 
 # ── 3.7 out-of-range + wrong-method controls ────────────────────────────────

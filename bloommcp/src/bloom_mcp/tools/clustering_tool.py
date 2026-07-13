@@ -226,6 +226,36 @@ def _labels_frame(result, frame: ExperimentFrame) -> pd.DataFrame:
     return pd.concat([identity, labels], axis=1)
 
 
+def _gmm_selected_scores(
+    params: ClusteringParams, result, result_dict: dict
+) -> tuple[float, float]:
+    """Return the (bic, aic) of the *selected* GMM model — working around an upstream bug.
+
+    **Upstream bug (sleap-roots-analyze 0.1.0a4):** on the GMM **auto-select** path
+    (``n_components`` omitted), ``perform_gmm_clustering`` scores candidates 1..max by BIC, re-fits
+    the winner, but returns the scalar ``bic``/``aic`` of the **last candidate tested** rather than
+    the selected one (``bic_scores[-1]`` is never replaced after the re-fit). ``GMMResult`` is a
+    blind pass-through, so ``result.bic``/``result.aic`` are then inconsistent with the reported
+    cluster assignments (e.g. selected n=1 but reported n=5's BIC — even flipping sign). The
+    per-candidate ``bic_scores``/``aic_scores`` arrays (candidate index i → ``n_components`` i+1)
+    ARE correct, so recover the selected model's scores from them.
+
+    The **fixed-n** path is already correct upstream (single-element score arrays), so only correct
+    when we auto-selected AND the arrays line up; otherwise fall through to the pass-through value.
+    Forward-compatible: once upstream fixes it, ``bic_scores[idx]`` equals the corrected scalar, so
+    this is a no-op. **Re-verify and drop on the 0.1.0a5 bump** — tracked upstream (talmolab/
+    sleap-roots-analyze; see the #309 follow-up).
+    """
+    bic, aic = float(result.bic), float(result.aic)
+    if params.n_components is None:
+        bic_scores = result_dict.get("bic_scores") or []
+        aic_scores = result_dict.get("aic_scores") or []
+        idx = int(result.n_clusters) - 1  # candidate i holds n_components = i + 1
+        if 0 <= idx < len(bic_scores) and 0 <= idx < len(aic_scores):
+            bic, aic = float(bic_scores[idx]), float(aic_scores[idx])
+    return bic, aic
+
+
 @as_mcp_tool(
     input_model=ClusteringParams,
     output_model=ClusteringResult,
@@ -323,13 +353,16 @@ def clustering(
     # The finite-guard makes the delegate's dropna() a no-op, so labels are row-aligned with
     # the cleaned frame — but the labels.csv identity stitch is positional, so a delegate that
     # *reordered* (not just dropped) rows would mis-map labels to plants without shrinking the
-    # count. Assert the delegate preserved row order via data_indices (identity == range(n))
-    # when it reports them, falling back to the length floor otherwise, so both a drop and a
-    # reorder surface here rather than silently corrupting traceability.
+    # count. The delegate reports data_indices = the surviving rows' ORIGINAL index labels
+    # (df.index after its internal dropna()), NOT positional integers — so compare against
+    # frame.df.index, which is exact whether or not the index is contiguous (a non-RangeIndex
+    # frame from a future reader would false-reject against range(n)). Equal iff every row
+    # survived in original order; a drop drops a label, a reorder permutes them. Fall back to
+    # the length floor when the delegate omits data_indices.
     n_rows = len(frame.df)
     data_indices = result_dict.get("data_indices")
     if data_indices is not None:
-        row_aligned = list(data_indices) == list(range(n_rows))
+        row_aligned = list(data_indices) == list(frame.df.index)
     else:
         row_aligned = len(result.cluster_labels) == n_rows
     if not row_aligned:
@@ -345,9 +378,10 @@ def clustering(
     if params.method == "kmeans":
         method_scalars: dict[str, object] = {"inertia": float(result.inertia)}
     else:
+        bic, aic = _gmm_selected_scores(params, result, result_dict)
         method_scalars = {
-            "bic": float(result.bic),
-            "aic": float(result.aic),
+            "bic": bic,
+            "aic": aic,
             "converged": bool(result.converged),
             "covariance_type": str(result.covariance_type),
         }

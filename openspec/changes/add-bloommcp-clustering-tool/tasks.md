@@ -231,6 +231,11 @@
 - [ ] 7.2 (fast-follow, gated) once `0.1.0a5` ships: add `"hierarchical"` to the `method` `Literal` + one
       dispatch-table row (deterministic → the tool records `seed = None` for that branch); extend the
       fixture + tests. **Not part of this PR.**
+- [ ] 7.3 File (or fold into the 7.1 issue) the **GMM auto-select BIC/AIC bug** in
+      `perform_gmm_clustering` (0.1.0a4): after re-fitting the BIC-selected model it returns the *last
+      candidate's* `bic`/`aic` (`bic_scores[-1]`), not the selected model's. `clustering_tool`
+      works around it (`_gmm_selected_scores`, reading `bic_scores[n-1]`); **re-verify and drop that
+      workaround on the `0.1.0a5` bump.** A GitHub action, not a commit.
 
 ## 8. Agent-surface validation, docs + verification
 

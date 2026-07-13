@@ -60,7 +60,13 @@ internal-validation metric computation — and SHALL NOT call the vendored `bloo
   its summary and does not raise, rather than hiding the collapse or presenting a spurious multi-cluster
   result
 
-### Requirement: Clustering Requires a Cleaned Input and Selects Only Certified-Clean Traits
+#### Scenario: GMM auto-selected BIC/AIC describe the selected model, not the last candidate
+
+- **WHEN** `clustering` runs with `method = "gmm"` and `n_components` omitted, so the delegate BIC-selects
+  a component count from the candidates it tested
+- **THEN** the reported `bic` and `aic` are those of the **selected** model (consistent with the reported
+  cluster assignments), not those of the last candidate the delegate happened to test — even where the
+  underlying delegate returns the last candidate's scores as its scalar summary
 
 The `clustering` tool SHALL load its experiment frame through the injected `ExperimentReader` port
 with `require_clean=True`, as a **consumer** of cleaned data, and SHALL restrict the clustering to
