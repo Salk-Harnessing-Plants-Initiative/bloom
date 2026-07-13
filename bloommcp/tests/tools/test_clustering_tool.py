@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -289,10 +290,16 @@ def test_kmeans_cluster_count_override_and_autoselect(injected_ports):
 def test_gmm_autoselect_may_collapse_to_one_component(injected_ports):
     """gmm with n_components omitted lets BIC pick — on this data it collapses to 1,
     surfaced honestly (n_clusters==1, silhouette 0.0) rather than raising or hiding it.
+    All three internal-validation metrics must be finite (not NaN/±inf) even for n=1.
+    An advisory warning is added to the result so the scientist is informed.
     """
     result = _run(method="gmm", n_components=None)
     assert result.n_clusters == 1
     assert result.silhouette_score == pytest.approx(0.0, abs=_TOL)
+    assert math.isfinite(result.davies_bouldin_score)
+    assert math.isfinite(result.calinski_harabasz_score)
+    assert len(result.warnings) == 1
+    assert "single component" in result.warnings[0].lower()
 
 
 def test_gmm_autoselect_bic_aic_reflect_the_selected_model(injected_ports, monkeypatch):
@@ -313,15 +320,18 @@ def test_gmm_autoselect_bic_aic_reflect_the_selected_model(injected_ports, monke
 
     d = captured["dict"]
     idx = result.n_clusters - 1
+    # On this dataset auto-select collapses to n=1 out of the default max_components=5
+    # candidates — making the negative assertion unconditional (selected ≠ last candidate).
+    assert (
+        result.n_clusters == 1
+    ), f"expected auto-collapse to n=1, got {result.n_clusters}"
+    assert len(d["bic_scores"]) == 5  # default max_components=5
     # Corrected values == the selected candidate's per-candidate scores.
     assert result.bic == pytest.approx(d["bic_scores"][idx], abs=_TOL)
     assert result.aic == pytest.approx(d["aic_scores"][idx], abs=_TOL)
-    # ... and NOT the buggy scalar the delegate returned (the last candidate tested), as long
-    # as the selected model wasn't the last candidate (it isn't here — collapses to n=1 of 5).
-    if result.n_clusters != len(d["bic_scores"]):
-        assert result.bic != pytest.approx(
-            d["bic"], abs=_TOL
-        )  # d["bic"] == bic_scores[-1]
+    # The corrected values are NOT the buggy last-candidate scalar (d["bic"] == bic_scores[-1]).
+    assert result.bic != pytest.approx(d["bic"], abs=_TOL)
+    assert result.aic != pytest.approx(d["aic"], abs=_TOL)
 
 
 # ── 3.7 out-of-range + wrong-method controls ────────────────────────────────
@@ -509,6 +519,34 @@ def test_reordered_rows_are_assumption_violated(injected_ports, monkeypatch):
     assert exc.value.code == "assumption_violated"
     assert "reordered" in exc.value.message.lower()
     assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_fallback_length_check_catches_wrong_count(injected_ports, monkeypatch):
+    """When data_indices is absent the fallback floor still catches a label-count mismatch."""
+    _reader, store = injected_ports
+    real = clustering_tool.perform_kmeans_clustering
+
+    def _no_index_extra_label(data, **kwargs):
+        d = real(data, **kwargs)
+        d.pop("data_indices", None)  # force the len-fallback path
+        d["cluster_labels"] = list(d["cluster_labels"]) + [0]  # 154, not 153
+        return d
+
+    monkeypatch.setattr(
+        clustering_tool, "perform_kmeans_clustering", _no_index_extra_label
+    )
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="kmeans", n_clusters=3)
+    assert exc.value.code == "assumption_violated"
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_warnings_empty_on_normal_fixed_n_run(injected_ports):
+    """Normal fixed-n runs (both methods) carry no advisory warnings."""
+    km = _run(method="kmeans", n_clusters=3)
+    assert km.warnings == []
+    gm = _run(method="gmm", n_components=3)
+    assert gm.warnings == []
 
 
 # ── 3.11 require_clean consumption (property / invariant) ───────────────────

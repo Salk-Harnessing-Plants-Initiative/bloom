@@ -70,6 +70,7 @@ from bloom_mcp.tools._qc_shared import _validate_trait_subset
 _TOOL_CLASS = "clustering"
 _LABELS_NAME = "labels.csv"
 _RESULT_NAME = "cluster_result.json"
+# Transient snapshot for input_sha256 only — intentionally not committed as an artifact.
 _INPUT_SNAPSHOT_NAME = "input.csv"
 
 
@@ -84,7 +85,9 @@ class ClusteringParams(BaseModel):
     method: Literal["kmeans", "gmm"] = Field(
         default="kmeans",
         description="Clustering algorithm. 'kmeans' (default) partitions into n_clusters; "
-        "'gmm' fits a Gaussian mixture of n_components. Set only that method's controls.",
+        "'gmm' fits a Gaussian mixture of n_components. Set only that method's controls. "
+        "Hierarchical clustering is planned for a future release pending upstream support "
+        "in sleap-roots-analyze.",
     )
     trait_columns: list[str] | None = Field(
         default=None,
@@ -161,6 +164,12 @@ class ClusteringResult(BaseModel):
     aic: float | None = None
     converged: bool | None = None
     covariance_type: str | None = None
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Advisory messages (empty on a normal run). Non-empty when the tool surfaces "
+        "a scientifically-notable outcome — e.g. GMM auto-selected a single component on data "
+        "that may not have separable cluster structure.",
+    )
     run_ref: str
     version_dir: str
     manifest_path: str
@@ -201,7 +210,7 @@ def _reject_wrong_method_controls(params: ClusteringParams) -> None:
         raise BloomMCPError(
             code="invalid_input",
             message=(
-                f"{wrong} {'is' if len(wrong) == 1 else 'are'} not a control for "
+                f"{', '.join(wrong)} {'is' if len(wrong) == 1 else 'are'} not a control for "
                 f"method={params.method!r}."
             ),
             remedy=(
@@ -268,6 +277,11 @@ def clustering(
     reader = _ports.reader()
     store = _ports.store()
 
+    # Validate method-control conflicts before any I/O — a cross-method control (e.g.
+    # n_components on a kmeans call) should be rejected immediately, not after a full
+    # Supabase read.
+    _reject_wrong_method_controls(params)
+
     # Consumer: require a cleaned version. A missing one is a precondition failure with a
     # concrete remedy — caught here so it carries "run qc_clean first" rather than the
     # contract's generic tool_error message for the declared read error.
@@ -282,8 +296,6 @@ def clustering(
             ),
             remedy=f"Run qc_clean on {params.experiment!r} first, then retry clustering.",
         ) from None
-
-    _reject_wrong_method_controls(params)
 
     if params.trait_columns is None:
         trait_cols = list(frame.trait_cols)
@@ -386,6 +398,18 @@ def clustering(
             "covariance_type": str(result.covariance_type),
         }
 
+    tool_warnings: list[str] = []
+    if (
+        params.method == "gmm"
+        and int(result.n_clusters) == 1
+        and params.n_components is None
+    ):
+        tool_warnings.append(
+            "GMM auto-selected a single component — the data may not have separable cluster "
+            "structure. Consider inspecting trait distributions or increasing max_components "
+            "before interpreting this result."
+        )
+
     # Persist a versioned run, recording the cleaned-source lineage on a *copy* of the stamped
     # provenance (model_copy — the non-proliferating pattern; not remove_outliers' in-place
     # mutation). Snapshot the consumed frame to a temp CSV passed as source_csv so the manifest
@@ -424,6 +448,7 @@ def clustering(
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,
         outputs=dict(stored.output_keys),
+        warnings=tool_warnings,
         **method_scalars,
     )
 

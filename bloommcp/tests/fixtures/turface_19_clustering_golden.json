@@ -36,6 +36,7 @@
       "standardize": true,
       "seed": 42
     },
+    "_bic_aic_note": "Negative values are expected: large log-likelihood dominates the BIC/AIC penalty for this dataset at n=3 fixed. Uses fixed n_components=3 (not auto-select) to avoid the upstream 0.1.0a4 auto-select bug.",
     "n_clusters": 3,
     "silhouette_score": 0.31565232704612356,
     "davies_bouldin_score": 1.0737231775349985,

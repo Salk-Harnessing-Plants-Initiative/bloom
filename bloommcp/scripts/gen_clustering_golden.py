@@ -51,6 +51,11 @@ def build() -> dict:
         ),
         random_state=_SEED,
     )
+    # NOTE: uses fixed n_components=3, not auto-select (n_components=None), to avoid the
+    # upstream sleap-roots-analyze 0.1.0a4 bug where perform_gmm_clustering returns the
+    # last-candidate BIC/AIC on the auto-select path rather than the selected model's.
+    # If you regenerate with n_components=None, apply the _gmm_selected_scores workaround
+    # from clustering_tool.py to recover the correct BIC/AIC before recording the fixture.
     gmm = GMMResult.from_gmm_dict(
         perform_gmm_clustering(
             x,
@@ -89,6 +94,11 @@ def build() -> dict:
                 "standardize": True,
                 "seed": _SEED,
             },
+            "_bic_aic_note": (
+                "Negative values are expected: large log-likelihood dominates the BIC/AIC "
+                "penalty for this dataset at n=3 fixed. Uses fixed n_components=3 (not "
+                "auto-select) to avoid the upstream 0.1.0a4 auto-select bug."
+            ),
             **_metrics(gmm),
             "converged": bool(gmm.converged),
             "bic": float(gmm.bic),
