@@ -346,13 +346,6 @@ jobs:
             echo "> Full scan output available in the [trivy-built-images-report](../actions/artifacts) artifact."
           } > trivy-report.md
 
-      - name: Post Trivy report as PR comment
-        if: always()
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: trivy-docker-build
-          path: trivy-report.md
-
       - name: Upload Trivy report artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -399,6 +392,14 @@ jobs:
           severity: 'CRITICAL'
           exit-code: '1'
           trivyignores: '.trivyignore'
+
+      # Post after the CVE gates so the comment only appears once a pass/fail exists.
+      - name: Post Trivy report as PR comment
+        if: ${{ !cancelled() }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: trivy-docker-build
+          path: trivy-report.md
 
   lint-migrations:
     name: Lint new migration filenames + timestamps
