@@ -65,7 +65,10 @@ BEGIN
          LIMIT capped + 1
       ) t
      WHERE t.uid <> query_uid
-     ORDER BY t.dist
+     -- Tiebreak on uid so exact-distance ties order deterministically (stable
+     -- CSV export). NB: does not make the approximate HNSW candidate SET
+     -- reproducible — only the ordering of whatever set is returned.
+     ORDER BY t.dist, t.uid
      LIMIT capped;
 END;
 $$;

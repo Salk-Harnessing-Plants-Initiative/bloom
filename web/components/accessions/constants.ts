@@ -43,5 +43,4 @@ export function accessionColor(accessionId: number | null | undefined): string {
 export const ACCESSION_DISCLAIMER =
   "Neighbors and rankings are by ESM-3 protein-embedding cosine similarity — " +
   "a proxy for protein divergence, not a verified functional or orthology " +
-  "call. Accession variants often differ by few residues, so small similarity " +
-  "gaps may be within noise.";
+  "call.";

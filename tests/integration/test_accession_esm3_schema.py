@@ -373,6 +373,10 @@ def test_knn_search_esm3_excludes_self_and_orders(pg_conn, accession_seed):
     assert rows[0][1] == "atest-Ler-0"  # ALT's accession_name
     sims = [r[3] for r in rows]
     assert sims == sorted(sims, reverse=True)  # non-increasing similarity
+    if len(rows) >= 2:
+        # Strict: nearest is more similar than the farthest returned — catches a
+        # constant/broken similarity (a constant list is trivially "sorted").
+        assert rows[0][3] > rows[-1][3]
 
 
 def test_knn_search_esm3_match_count_is_neighbor_count(pg_conn, accession_seed):

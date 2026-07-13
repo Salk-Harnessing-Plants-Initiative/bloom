@@ -237,7 +237,7 @@ export function AccessionPage() {
           active={tab === "neighborhood"}
           label="Find similar proteins"
           hint="Most similar proteins, anywhere in the panel"
-          info="Pick a protein (accession + gene). Nearest-neighbour retrieval over ESM-3 embeddings — ranks every accession protein by cosine similarity to your query, no sequence alignment."
+          info="Pick a protein (accession + gene). Nearest-neighbour retrieval over ESM-3 embeddings — ranks the most similar accession proteins by cosine similarity to your query, no sequence alignment."
           onClick={() => setTab("neighborhood")}
         />
       </section>
