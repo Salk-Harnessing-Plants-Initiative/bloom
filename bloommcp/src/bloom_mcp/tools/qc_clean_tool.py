@@ -40,39 +40,30 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-import pandas as pd
 from pydantic import BaseModel, Field
 from sleap_roots_analyze import clean_traits_for_analysis
 
 from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
 from bloom_mcp.contract import register as _contract_register
-from bloom_mcp.data_access import ExperimentFrame, ExperimentReadError
+from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, TRAITS_DIR
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._qc_shared import (
+    _CANONICAL_MAX_NANS_PER_SAMPLE,
+    _CANONICAL_MAX_NANS_PER_TRAIT,
+    _CANONICAL_MAX_ZEROS_PER_TRAIT,
+    _CANONICAL_MIN_SAMPLES_PER_TRAIT,
+    _role_kwargs,
+    _validate_trait_subset,
+)
 
 _TOOL_CLASS = "qc"
 _LOG_NAME = "cleanup_log.json"
 
-# Default cleanup thresholds mirror the **canonical QC pipeline** defaults — the
-# values ``sleap_roots_analyze``'s QC pipeline actually cleans with
-# (``CleanupConfig`` in ``pipeline/config/components.py``, and the ``_QC_DEFAULTS``
-# that ``clean_traits_for_analysis`` injects) — NOT the looser
-# ``apply_data_cleanup_filters`` *signature* defaults
-# (``max_nans_per_trait=0.3`` / ``max_nans_per_sample=0.2``). Two values differ:
-# the pipeline is stricter — ``max_nans_per_trait=0.2`` drops NaN-heavier traits
-# sooner, and ``max_nans_per_sample=0.0`` drops any sample that still carries a NaN
-# in a kept trait. Mirroring the pipeline means a default ``qc_clean`` reproduces
-# the QC pipeline's clean rather than shipping a looser one. Because ``qc_clean``
-# forwards all four thresholds *explicitly*, they must carry the canonical values
-# here — otherwise our looser defaults would override the delegate's own canonical
-# injection. Source of truth: talmolab/sleap-roots-analyze#167 +
-# ``CleanupConfig`` (max_nan_fraction=0.0, max_zeros_per_trait=0.5,
-# max_nans_per_trait=0.2, min_samples_per_trait=10).
-_CANONICAL_MAX_ZEROS_PER_TRAIT = 0.5
-_CANONICAL_MAX_NANS_PER_TRAIT = 0.2
-_CANONICAL_MAX_NANS_PER_SAMPLE = 0.0
-_CANONICAL_MIN_SAMPLES_PER_TRAIT = 10
+# Default cleanup thresholds mirror the **canonical QC pipeline** defaults, shared with
+# qc_inspect and single-sourced in ``_qc_shared`` (``_CANONICAL_*``) so the two tools
+# cannot silently desync — see that module for the full rationale.
 
 
 class QCCleanParams(BaseModel):
@@ -147,47 +138,14 @@ class QCCleanResult(BaseModel):
     version_dir: str
     manifest_path: str
     outputs: dict[str, str]
-
-
-def _role_kwargs(frame: ExperimentFrame) -> dict[str, str]:
-    """Forward the adapter-detected role columns to the delegate.
-
-    Omit any role that is ``None`` so ``clean_traits_for_analysis`` applies its
-    own default rather than receiving ``None``.
-    """
-    roles = {
-        "barcode_col": frame.sample_id_col,
-        "genotype_col": frame.genotype_col,
-        "replicate_col": frame.replicate_col,
-    }
-    return {k: v for k, v in roles.items() if v is not None}
-
-
-def _validate_trait_subset(
-    frame: ExperimentFrame, requested: list[str], experiment: str
-) -> None:
-    """Reject a caller-supplied ``trait_columns`` subset up front with a clear remedy.
-
-    Without this an unknown column raises ``KeyError`` (→ opaque ``internal_error``)
-    and a non-numeric column silently corrupts the delegate's zero/NaN-fraction
-    filtering. Both surface here as a fixable ``invalid_input`` naming the columns.
-    """
-    missing = [c for c in requested if c not in frame.df.columns]
-    if missing:
-        raise BloomMCPError(
-            code="invalid_input",
-            message=f"trait_columns names columns not in {experiment!r}: {missing}.",
-            remedy="Use column names from load_experiment_data, or omit trait_columns to clean all detected traits.",
-        )
-    non_numeric = [
-        c for c in requested if not pd.api.types.is_numeric_dtype(frame.df[c])
-    ]
-    if non_numeric:
-        raise BloomMCPError(
-            code="invalid_input",
-            message=f"trait_columns includes non-numeric columns: {non_numeric}.",
-            remedy="Pass only numeric trait columns; metadata/identifier columns cannot be cleaned as traits.",
-        )
+    next_step: Optional[str] = Field(
+        default=None,
+        description=(
+            "Advisory populated only when cleaning dropped samples: nudges the "
+            "caller to run qc_inspect to see which traits drove the loss and get a "
+            "threshold recommendation. None when no samples were dropped."
+        ),
+    )
 
 
 @as_mcp_tool(
@@ -296,6 +254,19 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         {CLEANED_CSV_NAME: CLEANED_CSV_NAME, _LOG_NAME: _LOG_NAME},
     )
 
+    # Message-only tie-in to qc_inspect (#360): when cleaning drops samples, nudge
+    # the caller to inspect the missingness that drove the loss. Kept out of the
+    # cleanup logic (no behavior change) — it is purely advisory on the summary.
+    n_samples_dropped = n_samples_in - n_samples_out
+    sample_word = "sample" if n_samples_in == 1 else "samples"
+    next_step = (
+        f"Cleaning dropped {n_samples_dropped} of {n_samples_in} {sample_word}. Run "
+        f"qc_inspect on {params.experiment!r} to see which traits drove the loss "
+        f"and get a max_nans_per_trait recommendation that retains more samples."
+        if n_samples_dropped > 0
+        else None
+    )
+
     return QCCleanResult(
         experiment=params.experiment,
         source=frame.source,
@@ -303,7 +274,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         n_samples_out=n_samples_out,
         n_traits_in=n_traits_in,
         n_traits_out=n_traits_out,
-        n_samples_dropped=n_samples_in - n_samples_out,
+        n_samples_dropped=n_samples_dropped,
         n_traits_dropped=n_traits_in - n_traits_out,
         sample_retention=round(n_samples_out / n_samples_in, 4)
         if n_samples_in
@@ -317,6 +288,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,
         outputs=dict(stored.output_keys),
+        next_step=next_step,
     )
 
 

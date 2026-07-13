@@ -1,0 +1,52 @@
+{
+  "_comment": "Characterization snapshot of remove_outliers (mahalanobis, seed=42) on the turface_19 frame cleaned at clean_traits_for_analysis CANONICAL DEFAULTS (max_zeros_per_trait=0.5, max_nans_per_trait=0.2, max_nans_per_sample=0.0, min_samples_per_trait=10). The 158-sample cleaned input is the canonical-default cleaned count -- NOT turface_19_qc_golden.json's 187 (max_nans_per_trait=0.1) and NOT the naive-dropna number. Recorded via the exact tool path (detect_columns on the cleaned frame -> remove_outlier_samples). turface_19's mahalanobis chi-squared fit is poor; these flagged samples are a method+seed characterization, not ground truth.",
+  "_raw_source": "tests/fixtures/turface_19_raw_data.csv (from #338)",
+  "cleaning_params": {
+    "max_zeros_per_trait": 0.5,
+    "max_nans_per_trait": 0.2,
+    "max_nans_per_sample": 0.0,
+    "min_samples_per_trait": 10
+  },
+  "cleaned_samples": 158,
+  "cleaned_trait_cols": [
+    "Shoot_Biomass_mg",
+    "Root_Biomass_mg",
+    "Root_Shoot_Ratio",
+    "Median.Number.of.Roots",
+    "Maximum.Number.of.Roots",
+    "Number.of.Root.Tips",
+    "Total.Root.Length.mm",
+    "Depth.mm",
+    "Maximum.Width.mm",
+    "Width-to-Depth.Ratio",
+    "Network.Area.mm2",
+    "Convex.Area.mm2",
+    "Solidity",
+    "Lower.Root.Area.mm2",
+    "Perimeter.mm",
+    "Volume.mm3",
+    "Surface.Area.mm2",
+    "Holes",
+    "Average.Hole.Size.mm2",
+    "Computation.Time.s"
+  ],
+  "method": "mahalanobis",
+  "seed": 42,
+  "n_input_samples": 158,
+  "n_outliers": 8,
+  "n_output_samples": 150,
+  "removal_fraction": 0.050633,
+  "threshold_type": "chi_squared",
+  "threshold_value": 19.022768,
+  "outlier_barcodes": [
+    "9R7ATZEAZ4",
+    "CFQQVEDLYK",
+    "I462RKXHHN",
+    "UKAZXAPALS",
+    "UVA4M5QZG5",
+    "ZEKAOID92S",
+    "ZHEJSRUYQS",
+    "ZIVOKN9PTV"
+  ],
+  "goodness_of_fit_fit_quality": "very_poor"
+}

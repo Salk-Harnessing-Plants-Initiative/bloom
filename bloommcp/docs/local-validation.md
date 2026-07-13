@@ -42,7 +42,7 @@ per-check summary and a non-zero exit — never an unlabelled traceback.
 ## What it validates
 
 The driver first checks the **Tier-0 import-clean guarantee** (`import bloom_mcp` is clean in
-a subprocess with the Supabase env scrubbed), then runs two legs through the real ports:
+a subprocess with the Supabase env scrubbed), then runs three legs through the real ports:
 
 ### Leg 1 — clustering (Tier-2 persistence, stochastic)
 
@@ -70,6 +70,26 @@ asserts:
 This is the `qc_clean` → `pca_analysis(require_clean=True)` composition proven over the real
 storage round-trip rather than the in-memory fakes.
 
+### Leg 3 — `remove_outliers` (outlier trim, stochastic)
+
+Immediately after Leg 2 commits a cleaned version, runs
+`remove_outliers(experiment="turface_raw.csv", method="mahalanobis", seed=42)` through the same
+real ports and asserts:
+
+- the committed run's outputs include **`_cleaned.csv`** (the trimmed table) and
+  **`outlier_report.json`**;
+- the run's manifest is **`manifest_schema_version == 3`** and records the resolved
+  `seed == 42` (outlier detection is stochastic, unlike `qc_clean`);
+- each recorded `output_sha256` matches the actual stored bytes for **both** artifacts;
+- a fresh `SupabaseReader().load_experiment("turface_raw.csv", require_clean=True)` now resolves
+  the committed **trimmed** version (`source` is `v<N>_cleaned`, **not** `raw`) with **fewer
+  rows** than the pre-trim clean and **zero NaN** trait cells.
+
+`remove_outliers` persists under the same `qc` tool class, so its trimmed `_cleaned.csv` becomes
+the newest cleaned version the reader resolves — this is the
+`qc_clean` → `remove_outliers` → `require_clean` composition proven end-to-end over the real
+ports.
+
 > **Note on raw inputs.** The deployed reader currently resolves *raw* experiment inputs from
 > the local `BLOOM_TRAITS_DIR`, so the qc_clean leg seeds `turface_raw.csv` there (matching
 > the clustering leg's fixture-upload pattern). When raw inputs migrate to the
@@ -78,15 +98,17 @@ storage round-trip rather than the in-memory fakes.
 A green run ends with:
 
 ```
-SMOKE PASSED ✅ — clustering(kmeans) seed-bearing run AND qc_clean (Tier 3) cleaned run
-both persist full v3 provenance through the real ports.
+SMOKE PASSED ✅ — clustering(kmeans) seed-bearing run, qc_clean cleaned run, AND
+remove_outliers trimmed run all persist full v3 provenance through the real ports;
+the qc_clean → remove_outliers → require_clean composition resolves the trimmed table.
 ```
 
 ## Unit tests (no live stack)
 
 The driver's pure decision logic — manifest/provenance assertions, the hash-compare loop,
-version-advance detection, the qc_clean persist/read checks, and the summary/exit aggregation
-— is factored into importable helpers and unit-tested with **no** Supabase:
+version-advance detection, the qc_clean and remove_outliers persist/read checks, and the
+summary/exit aggregation — is factored into importable helpers and unit-tested with **no**
+Supabase:
 
 ```bash
 cd bloommcp && uv run pytest tests/scripts/test_live_persistence_smoke_logic.py
@@ -101,6 +123,7 @@ cd bloommcp && uv run pytest tests/scripts/test_live_persistence_smoke_logic.py
 | `FAIL ... sha256 matches stored bytes` | A real write-path regression — bytes stored differ from the recorded hash. |
 | `... read-back attempt N/5 failed` then a `FAIL` | Read-after-write lag exceeded the bounded retry; check `storage` / `db-dev` health (`make dev-logs`). |
 | `FAIL qc_clean: require_clean read resolves the cleaned artifact (not raw)` | The reader fell back to the raw input — the `qc` run did not commit or the manifest is unresolvable. |
+| `FAIL remove_outliers: trimmed frame has fewer rows than the pre-trim clean` | The trim removed no rows (or the read resolved the clean, not the trim) — check the `remove_outliers` run committed after `qc_clean` and advanced `latest`. |
 
 See also [DEV_SETUP.md](../../DEV_SETUP.md) (host vs container URLs, migrations) and the
 `bloommcp-smoke` target in the repo-root [Makefile](../../Makefile).
