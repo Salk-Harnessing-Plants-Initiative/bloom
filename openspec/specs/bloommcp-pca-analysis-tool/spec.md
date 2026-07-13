@@ -1,7 +1,15 @@
 # bloommcp-pca-analysis-tool Specification
 
 ## Purpose
-TBD - created by archiving change add-bloommcp-pca-analysis-tool. Update Purpose after archive.
+The `pca_analysis` MCP tool exposes principal component analysis over certified-clean experiment
+data as a first-class bloom-mcp capability. It delegates all PCA math to the tested upstream entry
+point `sleap_roots_analyze.perform_pca_analysis`, requires a committed cleaned version produced by
+`qc_clean` as its input, and restricts the fit to the frame's certified-clean trait set. Results
+are persisted as a versioned run (loadings CSV, scores CSV with sample identity, serialized
+`PCAResult`) via the `ResultStore` port, with provenance stamped by the `@as_mcp_tool` contract
+envelope. The tool is deterministic (no random state), records `seed = None`, and returns variance
+summaries and artifact links inline rather than embedding large matrices.
+
 ## Requirements
 ### Requirement: PCA Analysis Tool Registration and Discovery
 

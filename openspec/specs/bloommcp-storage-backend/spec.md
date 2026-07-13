@@ -1,7 +1,18 @@
 # bloommcp-storage-backend Specification
 
 ## Purpose
-TBD - created by archiving change add-bloommcp-local-storage-backend. Update Purpose after archive.
+Introduces a backend-agnostic object-storage abstraction into bloom-mcp so that the same analysis
+pipeline can write and read artifacts through Supabase Storage (the deployed default) or a local
+filesystem (opt-in for development). The five helper functions in `bloom_mcp.supabase_client`
+(`upload_file`, `download_file`, `write_json`, `read_json`, `list_prefix`) remain the call surface;
+existing consumers and the in-memory test fake require no modification. Backend selection is driven
+by the `BLOOM_STORAGE_BACKEND` environment variable (`supabase` by default, `local` for the
+filesystem backend) and is resolved lazily at first use, preserving the package's side-effect-free
+import contract. The local backend writes files laid out by storage key under a configurable root
+(`BLOOM_STORAGE_LOCAL_ROOT`, falling back to `BLOOM_OUTPUT_DIR`), enforces path-traversal
+containment, uses atomic writes on POSIX, and guarantees byte-identical provenance records across
+both backends.
+
 ## Requirements
 ### Requirement: Storage Backend Interface
 
