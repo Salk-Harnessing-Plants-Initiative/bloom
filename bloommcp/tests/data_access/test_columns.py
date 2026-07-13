@@ -94,6 +94,43 @@ def test_detect_columns_shim_delegates_to_resolve_columns():
     assert "Computation.Time.s" not in detected["trait_cols"]
 
 
+def test_run_input_validation_captures_advisory_warnings(monkeypatch):
+    """F / B2: advisory warnings emitted through the injected logger are captured.
+
+    Monkeypatches validate_entry_input to emit one warning via the injected logger
+    and asserts run_input_validation returns it in the list. Guards the getLogger
+    vs Logger() regression — a broken logger means validation_warnings is silently
+    empty even when warnings exist.
+    """
+    import sleap_roots_analyze.validation as _val
+
+    from bloom_mcp.data_access.columns import ResolvedColumns, run_input_validation
+
+    def _warn_via_logger(df, *, columns, mode, additional_exclude, logger):
+        logger.warning("advisory: replicate column has only one unique value")
+
+    monkeypatch.setattr(_val, "validate_entry_input", _warn_via_logger)
+
+    df = pd.DataFrame(
+        {
+            "geno": ["a"] * 6,
+            "Barcode": [f"b{i}" for i in range(6)],
+            "t1": [float(i) for i in range(6)],
+        }
+    )
+    resolved = ResolvedColumns(
+        genotype="geno",
+        sample_id="Barcode",
+        replicate=None,
+        trait_cols=["t1"],
+        excluded_cols=[],
+        metadata_cols=["geno", "Barcode"],
+    )
+    warnings = run_input_validation(df, resolved)
+    assert len(warnings) == 1
+    assert "replicate" in warnings[0]
+
+
 def test_degenerate_frames_do_not_raise():
     # Empty frame → no traits, no roles, no raise.
     empty = resolve_columns(pd.DataFrame())

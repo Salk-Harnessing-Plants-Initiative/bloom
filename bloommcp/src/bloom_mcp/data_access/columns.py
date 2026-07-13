@@ -157,9 +157,10 @@ def run_input_validation(
     from sleap_roots_analyze.validation import validate_entry_input
 
     capture = _WarningCapture()
-    logger = logging.Logger("bloom_mcp.input_validation")
+    logger = logging.getLogger("bloom_mcp.input_validation")
     logger.setLevel(logging.WARNING)
     logger.addHandler(capture)
+    logger.propagate = False
     validate_entry_input(
         df,
         columns=_Roles(

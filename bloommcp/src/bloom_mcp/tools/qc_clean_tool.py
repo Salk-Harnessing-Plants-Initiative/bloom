@@ -71,6 +71,9 @@ from bloom_mcp.tools._qc_shared import (
     _validate_trait_subset,
 )
 
+# NOTE: _role_kwargs intentionally not imported — qc_clean builds role kwargs inline
+# from resolve_columns; _role_kwargs (frame-based) is used by qc_inspect / remove_outliers.
+
 _TOOL_CLASS = "qc"
 _LOG_NAME = "cleanup_log.json"
 _VALIDATION_MODE = "warn"
@@ -109,7 +112,9 @@ class QCCleanParams(BaseModel):
     genotype_column: Optional[str] = Field(
         default=None,
         description="Genotype/accession column. Omit to auto-detect; a genotype is "
-        "REQUIRED.",
+        "REQUIRED. Note: supplying an override that was previously auto-detected as a "
+        "different role (or a numeric column previously treated as a trait) shifts that "
+        "column's role assignment — see excluded_columns in the result.",
     )
     exclude_columns: Optional[list[str]] = Field(
         default=None,
@@ -258,8 +263,47 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
             ),
         )
 
+    # K — guard against a genotype override that names a column whose values are
+    # entirely NaN/blank. resolved.genotype is non-None (column name resolved), but
+    # the run would be scientifically untraceable. Check here so the bloommcp guard
+    # catches it independently of the contract's warn-mode behaviour.
+    geno_vals = frame.df[resolved.genotype].dropna()
+    if geno_vals.empty or (geno_vals.astype(str).str.strip() == "").all():
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=(
+                f"Genotype column {resolved.genotype!r} in {params.experiment!r} is "
+                f"entirely NaN or blank — no sample is traceable to a genotype."
+            ),
+            remedy=(
+                "Ensure the genotype column has valid (non-blank) values, or use "
+                "genotype_column to name a different column."
+            ),
+        )
+
     if params.trait_columns is not None:
         _validate_trait_subset(frame, params.trait_columns, params.experiment)
+        # A — reject any caller-supplied trait column that resolve_columns promoted to
+        # a role. A role column cannot also be analyzed as a trait; with overrides the
+        # promoted column may differ from what auto-detection would have chosen.
+        role_set = {
+            r for r in (resolved.genotype, resolved.sample_id, resolved.replicate) if r
+        }
+        as_role = [c for c in params.trait_columns if c in role_set]
+        if as_role:
+            raise BloomMCPError(
+                code="invalid_input",
+                message=(
+                    f"trait_columns includes resolved role columns: {as_role}. "
+                    f"Role columns (genotype, sample_id, replicate) cannot be analyzed "
+                    f"as traits."
+                ),
+                remedy=(
+                    "Remove the role column(s) from trait_columns, or use "
+                    "genotype_column / sample_id_column to remap the role to a "
+                    "different column."
+                ),
+            )
     trait_cols = params.trait_columns or resolved.trait_cols
 
     # Run analyze's input contract in warn mode (delegated; no contract logic here).

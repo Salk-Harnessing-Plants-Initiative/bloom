@@ -249,6 +249,60 @@ def test_missing_required_roles_error_with_no_run(injected_ports):
     assert store.list_runs("roleless.csv", "qc") == []
 
 
+def test_only_genotype_missing_error_names_single_role(injected_ports):
+    """G: single-role-missing path — only genotype absent (sample_id present).
+
+    Error message must name 'genotype' only (not ' and sample-identifier'), and
+    the remedy must name genotype_column but not sample_id_column. Guards the
+    ' and '.join(missing) concatenation for the single-item case.
+    """
+    reader, store = injected_ports
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(12)],  # sample_id auto-detects
+            "t1": [float(i) for i in range(12)],
+            "t2": [float(2 * i) for i in range(12)],
+        }
+    )
+    reader.add_experiment("no_geno.csv", df)
+
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment="no_geno.csv"))
+
+    assert exc.value.code == "assumption_violated"
+    assert "genotype" in exc.value.message
+    assert "sample-identifier" not in exc.value.message
+    assert "genotype_column" in exc.value.remedy
+    assert "sample_id_column" not in exc.value.remedy
+    assert store.list_runs("no_geno.csv", "qc") == []
+
+
+def test_only_sample_id_missing_error_names_single_role(injected_ports):
+    """G: single-role-missing path — only sample_id absent (genotype present).
+
+    Error message must name 'sample-identifier' only (not 'genotype and …').
+    """
+    reader, store = injected_ports
+    df = pd.DataFrame(
+        {
+            "geno": (["g1", "g2"] * 6),  # genotype auto-detects
+            "t1": [float(i) for i in range(12)],
+            "t2": [float(2 * i) for i in range(12)],
+        }
+    )
+    reader.add_experiment("no_sample_id.csv", df)
+
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment="no_sample_id.csv"))
+
+    assert exc.value.code == "assumption_violated"
+    assert "sample-identifier" in exc.value.message
+    assert "genotype and" not in exc.value.message
+    assert "sample_id_column" in exc.value.remedy
+    assert "genotype_column" not in exc.value.remedy
+    assert store.list_runs("no_sample_id.csv", "qc") == []
+
+
 # ── 3.7 error envelope ──────────────────────────────────────────────────────
 
 
@@ -350,7 +404,7 @@ def test_qc_clean_matches_pipeline_cleanup_on_same_fixture(
     """
     from sleap_roots_analyze import clean_traits_for_analysis
 
-    from bloom_mcp.tools._qc_shared import _role_kwargs
+    from bloom_mcp.data_access.columns import resolve_columns
 
     reader = FakeReader()
     reader.add_experiment(_EXPERIMENT, _raw_df())
@@ -361,15 +415,22 @@ def test_qc_clean_matches_pipeline_cleanup_on_same_fixture(
     params = QCCleanParams(experiment=_EXPERIMENT, max_nans_per_trait=_MNT)
     try:
         frame = reader.load_experiment(_EXPERIMENT, version="raw")
+        # Mirror the tool's actual path: resolve_columns → role kwargs inline.
+        # (Previously used _role_kwargs(frame) which reads adapter-detected roles
+        # and would diverge if override priority logic ever changed.)
+        r = resolve_columns(frame.df)
+        expected_role_kwargs = {"barcode_col": r.sample_id, "genotype_col": r.genotype}
+        if r.replicate is not None:
+            expected_role_kwargs["replicate_col"] = r.replicate
         # The pipeline cleanup step, called directly with the tool's own params.
         expected_df, expected_kept, _log = clean_traits_for_analysis(
             frame.df,
-            trait_cols=frame.trait_cols,
+            trait_cols=r.trait_cols,
             max_zeros_per_trait=params.max_zeros_per_trait,
             max_nans_per_trait=params.max_nans_per_trait,
             max_nans_per_sample=params.max_nans_per_sample,
             min_samples_per_trait=params.min_samples_per_trait,
-            **_role_kwargs(frame),
+            **expected_role_kwargs,
         )
 
         result = qc_clean(params)
