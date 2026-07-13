@@ -6,7 +6,13 @@ import { type AccessionGeneRow } from "./accession-gene-picker";
 import { AccessionProteinPicker, type Accession } from "./accession-protein-picker";
 import { BestMatchPanel } from "./best-match-panel";
 import { AccessionKnn } from "./accession-knn";
-import { ACCESSION_DISCLAIMER, ALL_ACCESSION_MATCHES, DEFAULT_K } from "./constants";
+import {
+  ACCESSION_DISCLAIMER,
+  DEFAULT_K,
+  PER_ACCESSION_DEFAULT,
+  PER_ACCESSION_MAX,
+  PER_ACCESSION_MIN,
+} from "./constants";
 
 type Tab = "bestmatch" | "neighborhood";
 
@@ -177,7 +183,10 @@ function useProteinQuery(accessions: Accession[], initialK: number = DEFAULT_K) 
  */
 export function AccessionPage() {
   const supabase = createClientSupabaseClient();
-  const [tab, setTab] = useState<Tab>("bestmatch");
+  // "Best match per accession" is temporarily disabled: its per-accession result
+  // can misreport an accession's true nearest, and making it both correct and
+  // fast is follow-up work. Default to the working "Find similar proteins" tab.
+  const [tab, setTab] = useState<Tab>("neighborhood");
   const [accessions, setAccessions] = useState<Accession[]>([]);
   const [accListError, setAccListError] = useState<string | null>(null);
 
@@ -201,7 +210,7 @@ export function AccessionPage() {
   }, [supabase]);
 
   // Best-match shows every accession (sortable table); neighbourhood uses a K.
-  const bm = useProteinQuery(accessions, ALL_ACCESSION_MATCHES);
+  const bm = useProteinQuery(accessions, PER_ACCESSION_DEFAULT);
   const nb = useProteinQuery(accessions);
 
   return (
@@ -214,18 +223,21 @@ export function AccessionPage() {
       </header>
 
       <section className="flex gap-3">
+        {/* "Best match per accession" temporarily disabled — re-enable once its
+            per-accession search returns each accession's true nearest, fast.
         <TabButton
           active={tab === "bestmatch"}
           label="Best match per accession"
-          hint="Closest protein to your gene in each accession"
-          info="Pick a protein (accession + gene). For each other accession, it finds that accession's single most-similar protein by ESM-3 embedding — the likely counterpart of your gene — ranked by cosine similarity. Your protein is the reference."
+          hint="Your gene's closest match in each accession"
+          info="Pick a gene. See the most similar gene to it in each other accession, ranked by similarity. Shows top accessions closest to your gene (might not include all 458)."
           onClick={() => setTab("bestmatch")}
         />
+        */}
         <TabButton
           active={tab === "neighborhood"}
           label="Find similar proteins"
-          hint="Nearest proteins across all accessions"
-          info="Pick a protein (accession + gene). It finds the most similar proteins across every gene and accession. The same gene in other accessions usually ranks near the top, followed by related genes."
+          hint="Most similar proteins, anywhere in the panel"
+          info="Pick a protein (accession + gene). Nearest-neighbour retrieval over ESM-3 embeddings — ranks the most similar accession proteins by cosine similarity to your query, no sequence alignment."
           onClick={() => setTab("neighborhood")}
         />
       </section>
@@ -249,19 +261,27 @@ export function AccessionPage() {
             searchDisabled={bm.accId == null || !bm.gene || bm.resolving}
             searching={bm.resolving}
             accName={bm.accName}
-            showK={false}
+            kLabel="Per accession"
+            kMin={PER_ACCESSION_MIN}
+            kMax={PER_ACCESSION_MAX}
           />
           <span className="text-xs text-neutral-500">
-            For your gene, the closest protein in each other accession by ESM-3 similarity,
-            nearest first. Click a column header to sort.
+            Each accession&apos;s closest protein to your gene (among your query&apos;s nearest
+            matches), most similar first. Click a column to sort.
           </span>
+          {bm.query && bm.k !== bm.query.k && (
+            <p className="text-xs text-blue-600">
+              Per accession set to {bm.k} — press Search to apply (table below shows{" "}
+              {bm.query.k}).
+            </p>
+          )}
           {bm.searchError && <p className="text-xs text-red-600">{bm.searchError}</p>}
           {bm.resolveMsg && <p className="text-xs text-amber-700">{bm.resolveMsg}</p>}
           {bm.query ? (
             <BestMatchPanel
               queryUid={bm.query.uid}
               queryLabel={bm.query.label}
-              k={bm.query.k}
+              perAccession={bm.query.k}
               onSelectMatch={(r) =>
                 bm.pivot({
                   uid: r.uid,

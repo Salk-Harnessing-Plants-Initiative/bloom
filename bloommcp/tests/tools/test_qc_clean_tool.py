@@ -622,6 +622,32 @@ def test_second_run_increments_version(injected_ports):
     assert store.get_run(_EXPERIMENT, "qc", "latest").run_ref == "v2"
 
 
+# ── qc_inspect tie-in: nudge when samples are dropped (#360 task 6.1) ────────
+
+
+def test_dropped_samples_nudge_points_to_qc_inspect(injected_ports):
+    """When cleaning drops samples, the result carries an advisory nudging the
+    caller to run qc_inspect to see what drove the loss. This is the #360 task-6.1
+    tie-in: at qc_clean's canonical defaults the NaN-heavy traits are kept, so
+    turface_19 loses 29 samples (vs 0 at the golden threshold)."""
+    _reader, _store = injected_ports
+    result = qc_clean(QCCleanParams(experiment=_EXPERIMENT))  # canonical defaults
+    assert result.n_samples_dropped == 29  # sanity: this run really drops samples
+    assert result.next_step is not None
+    assert "qc_inspect" in result.next_step
+    assert str(result.n_samples_dropped) in result.next_step
+
+
+def test_no_nudge_when_no_samples_dropped(injected_ports):
+    """At the golden threshold the NaN-heavy traits are removed instead, so zero
+    samples are lost — no advisory is emitted (the nudge is drop-triggered, not
+    always-on)."""
+    _reader, _store = injected_ports
+    result = _run()  # golden _MNT → 187 in / 187 out, no sample loss
+    assert result.n_samples_dropped == 0
+    assert result.next_step is None
+
+
 # ── re-run after a cleaned version exists still reads RAW (dogfood regression) ──
 
 

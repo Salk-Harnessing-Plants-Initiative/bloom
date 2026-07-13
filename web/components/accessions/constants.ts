@@ -6,7 +6,15 @@
 
 export const DEFAULT_K = 20;
 export const K_MIN = 5;
-export const K_MAX = 50;
+// 1000 — pgvector's hnsw.ef_search ceiling, the most neighbours the index can
+// return in one search. knn_search_esm3 already clamps match_count to 1000.
+export const K_MAX = 1000;
+
+// Best-match-per-accession returns the top-N nearest proteins PER accession
+// (N=1 = one best row each). Separate from the neighbourhood K above.
+export const PER_ACCESSION_DEFAULT = 1;
+export const PER_ACCESSION_MIN = 1;
+export const PER_ACCESSION_MAX = 10;
 
 // Best-match-per-accession shows every accession (one row each), so it requests
 // the RPC's hard cap rather than a user-chosen K. ~458 accessions exist today.
@@ -35,5 +43,4 @@ export function accessionColor(accessionId: number | null | undefined): string {
 export const ACCESSION_DISCLAIMER =
   "Neighbors and rankings are by ESM-3 protein-embedding cosine similarity — " +
   "a proxy for protein divergence, not a verified functional or orthology " +
-  "call. Accession variants often differ by few residues, so small similarity " +
-  "gaps may be within noise.";
+  "call.";
