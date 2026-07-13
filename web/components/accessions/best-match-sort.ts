@@ -7,6 +7,8 @@ export type BestMatchRow = {
   uid: string;
   gene_id: string | null;
   similarity: number;
+  // 1 = the accession's closest protein to the query; 2 = next-closest; etc.
+  rank_in_accession: number;
 };
 
 export type SortKey = "accession_name" | "gene_id" | "similarity";
@@ -39,6 +41,8 @@ export function sortBestMatchRows(
       const bv = (sortKey === "accession_name" ? b.accession_name : b.gene_id) ?? "";
       cmp = av.localeCompare(bv);
     }
-    return cmp * dir;
+    if (cmp !== 0) return cmp * dir;
+    // Tiebreak (e.g. same accession with per_accession > 1): closest first.
+    return a.rank_in_accession - b.rank_in_accession;
   });
 }
