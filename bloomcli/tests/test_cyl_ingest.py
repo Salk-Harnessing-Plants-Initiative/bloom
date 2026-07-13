@@ -344,7 +344,7 @@ def test_cli_registration_in_help():
     assert "ingest-result" in sub.output
     # download is grouped by data type under `cyl`, not at the top level.
     assert "download" in sub.output
-    assert "download" not in res.output
+    assert "download" not in cli.commands
 
 
 # --- review follow-ups: spec-scenario gaps + robustness guards ---------------

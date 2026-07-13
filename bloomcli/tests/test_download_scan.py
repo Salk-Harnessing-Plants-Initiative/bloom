@@ -1,4 +1,4 @@
-"""Single-scan download (`bloomctl download --scan-id`)."""
+"""Single-scan download (`bloomctl cyl download --scan-id`)."""
 
 from click.testing import CliRunner
 from test_download_metadata import SCAN
