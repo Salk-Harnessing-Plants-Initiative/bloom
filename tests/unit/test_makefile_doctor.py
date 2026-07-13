@@ -6,6 +6,7 @@ stack would already be coming up). This pins: a `doctor` target exists; the
 `docker compose ... up` line; and a hard doctor error aborts `dev-up` before it
 touches the frontend/compose steps.
 """
+
 from __future__ import annotations
 
 import os
@@ -48,7 +49,9 @@ def test_doctor_target_exists():
 
 
 def test_doctor_target_runs_the_script():
-    assert "scripts/doctor.sh" in _recipe("doctor"), "`make doctor` must run scripts/doctor.sh"
+    assert "scripts/doctor.sh" in _recipe(
+        "doctor"
+    ), "`make doctor` must run scripts/doctor.sh"
 
 
 def test_dev_up_runs_doctor_before_compose():

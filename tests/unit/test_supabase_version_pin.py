@@ -4,6 +4,7 @@
 carry a literal `SUPABASE_VERSION: "x.y.z"`; this drift guard fails if any of
 them diverges from `.supabase-version`, so the pin can't silently fork.
 """
+
 from __future__ import annotations
 
 import re
@@ -15,14 +16,16 @@ WORKFLOWS = [
     REPO_ROOT / ".github" / "workflows" / "pr-checks.yml",
     REPO_ROOT / ".github" / "workflows" / "deploy.yml",
 ]
-_ENV_RE = re.compile(r'^\s*SUPABASE_VERSION:\s*"?([0-9]+\.[0-9]+\.[0-9]+)"?', re.MULTILINE)
+_ENV_RE = re.compile(
+    r'^\s*SUPABASE_VERSION:\s*"?([0-9]+\.[0-9]+\.[0-9]+)"?', re.MULTILINE
+)
 
 
 def test_pin_file_exists_and_is_a_version():
     assert PIN_FILE.exists(), ".supabase-version must exist (the canonical pin)"
-    assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", PIN_FILE.read_text().strip()), (
-        ".supabase-version must contain exactly one semver line"
-    )
+    assert re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+", PIN_FILE.read_text().strip()
+    ), ".supabase-version must contain exactly one semver line"
 
 
 def test_workflows_match_the_pin():
@@ -33,5 +36,7 @@ def test_workflows_match_the_pin():
             continue
         for v in _ENV_RE.findall(wf.read_text(encoding="utf-8")):
             if v != pin:
-                problems.append(f"{wf.name}: SUPABASE_VERSION={v} != .supabase-version={pin}")
+                problems.append(
+                    f"{wf.name}: SUPABASE_VERSION={v} != .supabase-version={pin}"
+                )
     assert not problems, "Supabase CLI pin drift:\n" + "\n".join(problems)

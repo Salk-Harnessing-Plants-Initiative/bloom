@@ -5,6 +5,7 @@ dev path (`make init` -> `make dev-up` -> `make migrate-local` -> `make check`)
 is never run live. This test pins a `pr-checks.yml` job that does, so a
 regression in the dev workflow fails CI instead of a developer.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -49,11 +50,16 @@ def test_dev_stack_smoke_skips_the_doctor_preflight():
     otherwise a doctor false-positive turns a required check red."""
     workflow = yaml.safe_load(PR_CHECKS.read_text(encoding="utf-8"))
     jobs = workflow.get("jobs", {})
-    smoke = [job for job in jobs.values() if all(c in _job_run_text(job) for c in REQUIRED_COMMANDS)]
+    smoke = [
+        job
+        for job in jobs.values()
+        if all(c in _job_run_text(job) for c in REQUIRED_COMMANDS)
+    ]
     assert smoke, "dev-stack smoke job not found"
     for job in smoke:
         dev_up_steps = [
-            s for s in job.get("steps", []) or []
+            s
+            for s in job.get("steps", []) or []
             if isinstance(s.get("run"), str) and "make dev-up" in s["run"]
         ]
         for step in dev_up_steps:

@@ -10,6 +10,7 @@ Scope: in prose docs it matches only *hyphenated* `make <a-b>` tokens (so plain
 English like "make sure" isn't a false positive); `make help` lines are a
 controlled string, so any advertised target there is checked.
 """
+
 from __future__ import annotations
 
 import re
@@ -17,7 +18,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = REPO_ROOT / "Makefile"
-DOCS = [REPO_ROOT / "DEV_SETUP.md", REPO_ROOT / "PROD_SETUP.md", REPO_ROOT / "README.md"]
+DOCS = [
+    REPO_ROOT / "DEV_SETUP.md",
+    REPO_ROOT / "PROD_SETUP.md",
+    REPO_ROOT / "README.md",
+]
 
 # A `make <token>` reference where token is hyphenated (e.g. apply-migrations,
 # migrate-local). Requiring a hyphen avoids English false positives like
@@ -61,7 +66,9 @@ def test_docs_reference_only_real_make_targets():
         for tgt in set(_DOC_TARGET_RE.findall(doc.read_text(encoding="utf-8"))):
             if tgt not in real:
                 problems.append(f"{doc.name}: `make {tgt}` has no Makefile rule")
-    assert not problems, "phantom make targets referenced in docs:\n" + "\n".join(problems)
+    assert not problems, "phantom make targets referenced in docs:\n" + "\n".join(
+        problems
+    )
 
 
 def test_command_docs_do_not_reference_legacy_migrations_table():
@@ -76,7 +83,9 @@ def test_command_docs_do_not_reference_legacy_migrations_table():
                     f"{doc.name}:{i}: references nonexistent `_migrations` table "
                     f"(use supabase_migrations.schema_migrations)"
                 )
-    assert not problems, "legacy migration-table refs in command docs:\n" + "\n".join(problems)
+    assert not problems, "legacy migration-table refs in command docs:\n" + "\n".join(
+        problems
+    )
 
 
 def test_command_docs_use_compose_aware_exec_not_bare_docker_exec():
@@ -93,7 +102,9 @@ def test_command_docs_use_compose_aware_exec_not_bare_docker_exec():
                     f"{doc.name}:{i}: bare `docker exec db-*` fails without "
                     f"container_name; use `docker compose -f <file> exec db-*`"
                 )
-    assert not problems, "bare docker exec in setup/command docs:\n" + "\n".join(problems)
+    assert not problems, "bare docker exec in setup/command docs:\n" + "\n".join(
+        problems
+    )
 
 
 def test_make_help_advertises_only_real_targets():
@@ -114,15 +125,19 @@ def test_dev_setup_has_no_home_minio_references():
     anywhere (incl. the troubleshooting/reset sections)."""
     text = _DEV_SETUP.read_text(encoding="utf-8")
     assert "~/minio" not in text, "DEV_SETUP.md must not reference ~/minio anywhere"
-    assert "MINIO_DATA_PATH=/Users" not in text, (
-        "DEV_SETUP.md must not set MINIO_DATA_PATH to a /Users path"
-    )
+    assert (
+        "MINIO_DATA_PATH=/Users" not in text
+    ), "DEV_SETUP.md must not set MINIO_DATA_PATH to a /Users path"
 
 
 def test_dev_setup_surfaces_doctor_and_minio_default():
     text = _DEV_SETUP.read_text(encoding="utf-8")
-    assert "make doctor" in text, "DEV_SETUP.md should surface `make doctor` as a preflight step"
-    assert "DOCTOR_SKIP" in text, "DEV_SETUP.md should document the DOCTOR_SKIP escape hatch"
-    assert "./volumes/minio-dev" in text, (
-        "DEV_SETUP.md should state the MINIO_DATA_PATH default (./volumes/minio-dev)"
-    )
+    assert (
+        "make doctor" in text
+    ), "DEV_SETUP.md should surface `make doctor` as a preflight step"
+    assert (
+        "DOCTOR_SKIP" in text
+    ), "DEV_SETUP.md should document the DOCTOR_SKIP escape hatch"
+    assert (
+        "./volumes/minio-dev" in text
+    ), "DEV_SETUP.md should state the MINIO_DATA_PATH default (./volumes/minio-dev)"

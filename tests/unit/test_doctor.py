@@ -9,6 +9,7 @@ Testability hooks used here (see the change's design.md): `DOCTOR_WSL`,
 `DOCTOR_REPO_PATH`, `DOCTOR_MNT_PREFIX`, `DOCTOR_PORT`, `DOCTOR_SCAN_ROOT`,
 `DOCTOR_SKIP`.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -25,10 +26,14 @@ TOOLS = ("uv", "node", "npm", "supabase", "make", "docker")
 # External commands the doctor invokes (must be reachable on the isolated PATH).
 COREUTILS = ("dirname", "grep", "sed", "tr", "awk", "find", "head", "cat", "env")
 
-pytestmark = pytest.mark.skipif(SH is None, reason="POSIX sh not available (run in WSL on Windows)")
+pytestmark = pytest.mark.skipif(
+    SH is None, reason="POSIX sh not available (run in WSL on Windows)"
+)
 
 
-def _make_bin(tmp_path, *, tools=TOOLS, supabase_version="2.92.1", include_net=False) -> Path:
+def _make_bin(
+    tmp_path, *, tools=TOOLS, supabase_version="2.92.1", include_net=False
+) -> Path:
     """A controlled bin dir: coreutils symlinks + stub tool executables."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -51,8 +56,15 @@ def _make_bin(tmp_path, *, tools=TOOLS, supabase_version="2.92.1", include_net=F
     return bin_dir
 
 
-def _run(tmp_path, *, env=None, tools=TOOLS, supabase_version="2.92.1", include_net=False):
-    bin_dir = _make_bin(tmp_path, tools=tools, supabase_version=supabase_version, include_net=include_net)
+def _run(
+    tmp_path, *, env=None, tools=TOOLS, supabase_version="2.92.1", include_net=False
+):
+    bin_dir = _make_bin(
+        tmp_path,
+        tools=tools,
+        supabase_version=supabase_version,
+        include_net=include_net,
+    )
     full_env = {"PATH": str(bin_dir)}
     if env:
         full_env.update(env)
@@ -67,14 +79,18 @@ def _run(tmp_path, *, env=None, tools=TOOLS, supabase_version="2.92.1", include_
 
 # --- Check 1: repo on the Windows filesystem is a hard error ---
 
+
 def test_repo_on_mnt_is_error(tmp_path):
-    r = _run(tmp_path, env={"DOCTOR_WSL": "1", "DOCTOR_REPO_PATH": "/mnt/c/repos/bloom"})
+    r = _run(
+        tmp_path, env={"DOCTOR_WSL": "1", "DOCTOR_REPO_PATH": "/mnt/c/repos/bloom"}
+    )
     assert r.returncode != 0
     assert "/mnt/" in r.stderr
     assert "WSL2 Linux filesystem" in r.stderr
 
 
 # --- Check 2: required tools + Windows-mount leak ---
+
 
 @pytest.mark.parametrize("missing", TOOLS)
 def test_missing_required_tool_is_error(tmp_path, missing):
@@ -95,7 +111,11 @@ def test_windows_mount_leak_is_warning(tmp_path):
     bin_prefix = str(tmp_path / "bin") + "/"
     r = _run(
         tmp_path,
-        env={"DOCTOR_WSL": "1", "DOCTOR_MNT_PREFIX": bin_prefix, "DOCTOR_SCAN_ROOT": str(tmp_path)},
+        env={
+            "DOCTOR_WSL": "1",
+            "DOCTOR_MNT_PREFIX": bin_prefix,
+            "DOCTOR_SCAN_ROOT": str(tmp_path),
+        },
     )
     assert r.returncode == 0, f"a leak alone must not fail; stderr:\n{r.stderr}"
     assert "leaking via /mnt" in r.stderr
@@ -103,6 +123,7 @@ def test_windows_mount_leak_is_warning(tmp_path):
 
 
 # --- Check 3: supabase version vs pinned .supabase-version ---
+
 
 def test_supabase_version_mismatch_warns(tmp_path):
     r = _run(
@@ -127,6 +148,7 @@ def test_supabase_version_match_no_warn(tmp_path):
 
 # --- Check 4: configured host port already in use ---
 
+
 def test_occupied_host_port_warns(tmp_path):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -136,7 +158,11 @@ def test_occupied_host_port_warns(tmp_path):
         r = _run(
             tmp_path,
             include_net=True,
-            env={"DOCTOR_WSL": "0", "DOCTOR_PORT": str(port), "DOCTOR_SCAN_ROOT": str(tmp_path)},
+            env={
+                "DOCTOR_WSL": "0",
+                "DOCTOR_PORT": str(port),
+                "DOCTOR_SCAN_ROOT": str(tmp_path),
+            },
         )
     if shutil.which("ss") is None and shutil.which("nc") is None:
         pytest.skip("no ss/nc to probe ports")
@@ -152,7 +178,11 @@ def test_free_host_port_no_warn(tmp_path):
     r = _run(
         tmp_path,
         include_net=True,
-        env={"DOCTOR_WSL": "0", "DOCTOR_PORT": str(port), "DOCTOR_SCAN_ROOT": str(tmp_path)},
+        env={
+            "DOCTOR_WSL": "0",
+            "DOCTOR_PORT": str(port),
+            "DOCTOR_SCAN_ROOT": str(tmp_path),
+        },
     )
     assert r.returncode == 0
     assert "already in use" not in r.stderr
@@ -160,10 +190,13 @@ def test_free_host_port_no_warn(tmp_path):
 
 # --- Check 5: CRLF in bind-mounted init scripts (both globs) ---
 
+
 def test_crlf_in_minio_init_warns(tmp_path):
     scan = tmp_path / "scan"
     (scan / "minio" / "init").mkdir(parents=True)
-    (scan / "minio" / "init" / "create-buckets.sh").write_bytes(b"#!/bin/sh\r\nset -e\r\n")
+    (scan / "minio" / "init" / "create-buckets.sh").write_bytes(
+        b"#!/bin/sh\r\nset -e\r\n"
+    )
     r = _run(tmp_path, env={"DOCTOR_WSL": "0", "DOCTOR_SCAN_ROOT": str(scan)})
     assert r.returncode == 0
     assert "CRLF" in r.stderr and "create-buckets.sh" in r.stderr
@@ -189,6 +222,7 @@ def test_lf_only_tree_no_crlf_warn(tmp_path):
 
 # --- Precedence + skip + self-guard ---
 
+
 def test_error_takes_precedence_over_warnings(tmp_path):
     """The real /mnt/c case: an ERROR plus advisories must still exit non-zero
     and print both."""
@@ -205,7 +239,7 @@ def test_error_takes_precedence_over_warnings(tmp_path):
     )
     assert r.returncode != 0, "a hard error must fail even with advisories present"
     assert "/mnt/" in r.stderr  # the error
-    assert "CRLF" in r.stderr   # the advisory, still printed
+    assert "CRLF" in r.stderr  # the advisory, still printed
 
 
 def test_doctor_skip_short_circuits(tmp_path):
@@ -224,5 +258,7 @@ def test_real_repo_init_scripts_are_lf(tmp_path):
     proving the committed minio/init + volumes/db scripts are LF (a CRLF
     regression would fail here)."""
     r = _run(tmp_path, env={"DOCTOR_WSL": "0"})  # default DOCTOR_SCAN_ROOT = repo root
-    assert r.returncode == 0, f"doctor should be clean on the real repo; stderr:\n{r.stderr}"
+    assert (
+        r.returncode == 0
+    ), f"doctor should be clean on the real repo; stderr:\n{r.stderr}"
     assert "CRLF" not in r.stderr
