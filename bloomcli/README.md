@@ -14,6 +14,10 @@ credentials. Successor to the Node `@salk-hpi/bloom-cli`. Tracked by issue #347.
   scan (metadata `scans.csv` + per-frame images).
 - `bloomctl cyl ingest-result <envelope>` — write a per-scan pipeline
   `ResultEnvelope` back to Bloom (see below).
+- `bloomctl cyl datasets list` — list cylinder trait datasets (`--experiment-id`
+  to scope to one experiment, `--json` for machine-readable output).
+- `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
+  create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`).
 
 (Full `login`/`cyl download` usage docs are still forthcoming; run any command
 with `--help` in the meantime.)

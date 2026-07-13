@@ -16,6 +16,10 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
+- `bloomctl cyl datasets list` / `bloomctl cyl datasets create` — list cylinder trait
+  datasets (with `--experiment-id` filter and `--json` output) and create one via the
+  `create_cyl_dataset` RPC (`--qc-set-name`, `--timepoints`). Ports the legacy
+  `cyl datasets` commands.
 - `bloomctl cyl ingest-result <envelope>` — write a per-scan `ResultEnvelope`
   back to Bloom via the `insert_cyl_result_envelope` RPC. Reads from a path or
   stdin (`-`), validates against `sleap-roots-contracts`, sends the original JSON
