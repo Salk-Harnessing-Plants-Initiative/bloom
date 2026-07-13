@@ -40,9 +40,11 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Widen the index search to the requested count + margin, clamped to
-  -- pgvector's [1, 1000] ef_search range.
-  PERFORM set_config('hnsw.ef_search', LEAST(capped + 10, 1000)::text, true);
+  -- Widen the index search to the requested count + margin, with a floor of 100
+  -- so recall stays reliable for small K: HNSW under-returns when ef_search is
+  -- very low (< pgvector's default of 40), which starved K=1 down to zero rows.
+  -- Clamped to pgvector's [1, 1000] ef_search range.
+  PERFORM set_config('hnsw.ef_search', LEAST(GREATEST(capped + 10, 100), 1000)::text, true);
 
   -- Fetch capped+1 nearest (self is always nearest, distance 0), THEN exclude
   -- self and take capped. Excluding self inside the ORDER BY..LIMIT would let the
