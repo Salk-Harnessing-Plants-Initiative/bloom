@@ -72,7 +72,8 @@ Notes:
   (link its `#N` in the `contracts/README.md` re-pin note — **file it if it does not yet exist**, so
   the tag-vs-package ambiguity that motivates prefix-tolerance is tracked upstream; prior art: the
   `a1`→`a2` note links `sleap-roots-contracts#5`).
-- Non-goals: the `bloommcp` `sleap-roots-analyze` pin (separate in-flight `bump-analyze-pin-a3`
-  change — and note `bloommcp` pins `sleap-roots-contracts` at `>=0.1.0a1` for a *different*,
+- Non-goals: the `bloommcp` `sleap-roots-analyze` pin (archived as
+  `openspec/changes/archive/2026-07-08-bump-analyze-pin-a3/`, tracked in #354 — and note `bloommcp`
+  pins `sleap-roots-contracts` at `>=0.1.0a1` for a *different*,
   non-write-back use, so its lock showing `a1` is expected and unrelated); any multi-version
   compatibility set; promoting the new `predict_*` provenance fields to columns.
