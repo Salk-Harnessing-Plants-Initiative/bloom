@@ -183,7 +183,10 @@ function useProteinQuery(accessions: Accession[], initialK: number = DEFAULT_K) 
  */
 export function AccessionPage() {
   const supabase = createClientSupabaseClient();
-  const [tab, setTab] = useState<Tab>("bestmatch");
+  // "Best match per accession" is temporarily disabled: its per-accession result
+  // can misreport an accession's true nearest, and making it both correct and
+  // fast is follow-up work. Default to the working "Find similar proteins" tab.
+  const [tab, setTab] = useState<Tab>("neighborhood");
   const [accessions, setAccessions] = useState<Accession[]>([]);
   const [accListError, setAccListError] = useState<string | null>(null);
 
@@ -220,6 +223,8 @@ export function AccessionPage() {
       </header>
 
       <section className="flex gap-3">
+        {/* "Best match per accession" temporarily disabled — re-enable once its
+            per-accession search returns each accession's true nearest, fast.
         <TabButton
           active={tab === "bestmatch"}
           label="Best match per accession"
@@ -227,11 +232,12 @@ export function AccessionPage() {
           info="Pick a gene. See the most similar gene to it in each other accession, ranked by similarity. Shows top accessions closest to your gene (might not include all 458)."
           onClick={() => setTab("bestmatch")}
         />
+        */}
         <TabButton
           active={tab === "neighborhood"}
           label="Find similar proteins"
           hint="Most similar proteins, anywhere in the panel"
-          info="Pick a protein (accession + gene). Nearest-neighbour retrieval over ESM-3 embeddings — ranks every accession protein by cosine similarity to your query, no sequence alignment."
+          info="Pick a protein (accession + gene). Nearest-neighbour retrieval over ESM-3 embeddings — ranks the most similar accession proteins by cosine similarity to your query, no sequence alignment."
           onClick={() => setTab("neighborhood")}
         />
       </section>
