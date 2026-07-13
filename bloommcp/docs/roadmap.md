@@ -21,7 +21,7 @@
 
 ## Dev setup (ready)
 `DEV_SETUP.md` + `make init` (mints JWT-signed `BLOOM_AGENT_KEY`) bring up the full stack via `docker-compose.dev.yml` — **bloommcp + langchain-agent + self-hosted Supabase + MinIO + storage-api**. The dev `/health` healthcheck is fixed (probes the **unauthenticated** `/health` custom route in `server.py`; **#125 resolved** by #281 on staging). Two Tier-0/2 preconditions surfaced from the deployed code:
-- **Windows: develop inside WSL2 on the native Linux FS** (`~/repos/bloom`), **NOT `/mnt/c/...`** (CRLF/filesystem issues — #124). Onboarding note for Evelyn.
+- **Windows: develop inside WSL2 on the native Linux FS** (`~/repos/bloom`), **NOT `/mnt/c/...`** — MinIO's `/data` bind mount fails there with `input/output error` (primary reason); CRLF init scripts (#124) are secondary. Run `make doctor` to catch it. Onboarding note for Evelyn/Lin.
 - **`supabase_client.py` raises at import** if `SUPABASE_URL`/`BLOOM_AGENT_KEY` are unset → Tier 0 must make that validation **lazy** so `import bloom_mcp` + fakes-based unit tests run with **no Supabase**.
 
 ## Hard constraints / decisions (design)

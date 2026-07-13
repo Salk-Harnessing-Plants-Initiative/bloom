@@ -35,12 +35,24 @@ Before starting, ensure you have:
 
 ### Windows: use WSL2
 
-Bloom's stack is Linux containers, and the Postgres init scripts under
-`volumes/db/` must be checked out with LF line endings. **Develop inside WSL2**
-(Ubuntu) with Docker Desktop's WSL integration enabled, and **clone the repo into
-the WSL2 Linux filesystem** (e.g. `~/repos/bloom`) — *not* under `/mnt/c/...`.
-Cloning onto the Windows drive reintroduces filesystem/line-ending problems
-(issue #124). Inside WSL2 every command below is identical to macOS/Linux.
+Bloom's stack is Linux containers. **Develop inside WSL2** (Ubuntu) with Docker
+Desktop's WSL integration enabled, and **clone the repo into the WSL2 Linux
+filesystem** (e.g. `~/repos/bloom`) — *not* under `/mnt/c/...`. Two things break
+silently if you run from the Windows drive:
+
+- **MinIO** bind-mounts its data dir to `/data`; from `/mnt/c` that fails with
+  `lstat /data: input/output error` / "drive is faulty" — Docker Desktop can't
+  service MinIO's low-level disk I/O over the Windows↔Linux share. This is the
+  **primary** reason the repo must live on the Linux filesystem.
+- **Line endings:** the Postgres init scripts under `volumes/db/` must be LF; a
+  CRLF checkout breaks them with `bad interpreter` (issue #124). `.gitattributes`
+  forces LF on a fresh clone, but a `/mnt/c` working tree can still reintroduce
+  CRLF — a secondary reason.
+
+**Install the toolchain _inside_ WSL Ubuntu, not on Windows** — `uv`, `node`
+(via nvm), and the `supabase` CLI. A Windows-installed Node leaks into WSL via
+`/mnt/c/Program Files/nodejs`, so `npm` runs the wrong runtime; `make doctor`
+(below) flags this. Inside WSL2 every command below is identical to macOS/Linux.
 
 ---
 
@@ -83,29 +95,39 @@ Only needed for specific features / conflicts:
 
 ---
 
+## Preflight: `make doctor`
+
+Before bringing the stack up, run the environment doctor:
+
+```bash
+make doctor
+```
+
+It checks your machine for the traps that silently break local setup and prints
+what to fix: a repo on the Windows drive (`/mnt/c`), a missing or Windows-leaked
+tool (`uv`/`node`/`npm`/`supabase`/`make`/`docker`), a `supabase` CLI version off
+the pin in `.supabase-version`, the configured `POSTGRES_HOST_PORT` already in
+use (the port-conflict note above), and CRLF in the container init scripts. A
+hard error (repo on `/mnt/`, a missing tool) stops with a non-zero exit;
+everything else is an advisory. `make dev-up` runs this same preflight
+automatically — set `DOCTOR_SKIP=1` to bypass it (CI does this on its known-good
+runner).
+
+---
+
 ## MinIO Storage Setup
 
-### Step 1: Create Storage Directory
+Nothing to do — MinIO is provisioned automatically:
 
-```bash
-# Create directory (adjust path to match MINIO_DATA_PATH)
-mkdir -p ~/minio
+- **Buckets** are created on `make dev-up` by the `minio-init` service
+  (`minio/init/create-buckets.sh`).
+- **Data dir:** `MINIO_DATA_PATH` defaults to `./volumes/minio-dev` (a
+  gitignored, repo-relative path); Docker creates it on first start. Leave it at
+  the default.
 
-# Set permissions
-chmod 755 ~/minio
-```
-
-### Step 2: Verify Path Configuration
-
-Ensure `MINIO_DATA_PATH` in `.env.dev` matches your created directory:
-
-```bash
-# Example for macOS/Linux
-MINIO_DATA_PATH=/Users/yourusername/minio
-
-# Or use full path
-MINIO_DATA_PATH=$(pwd)/minio
-```
+> On native Linux only, if MinIO can't write its data dir (a host/container UID
+> mismatch on the bind mount), see the writability note in `openspec/project.md`
+> (`chmod 770`). On Docker Desktop (macOS / Windows-WSL2) this doesn't arise.
 
 ---
 
@@ -328,8 +350,8 @@ docker compose -f docker-compose.dev.yml restart db-dev
 # Check MinIO is running
 docker ps | grep minio
 
-# Verify path exists and is writable
-ls -la ~/minio
+# Verify the data dir exists and is writable (default: ./volumes/minio-dev)
+ls -la ./volumes/minio-dev
 
 # Check environment variable
 cat .env.dev | grep MINIO_DATA_PATH
@@ -399,8 +421,8 @@ make dev-down
 # Remove all containers and volumes
 docker compose -f docker-compose.dev.yml down -v
 
-# Remove MinIO data
-rm -rf ~/minio/*
+# Remove MinIO data (default path; adjust if you overrode MINIO_DATA_PATH)
+rm -rf ./volumes/minio-dev/*
 
 # Start fresh
 make dev-up
@@ -483,7 +505,7 @@ What the target does:
 Safety notes:
 - The Make target prompts twice (first to proceed, then to type `delete` to actually remove files) to avoid accidents.
 - This target is intended for development only. Don't run it against production.
-- If the MinIO host path cannot be detected automatically, you'll be prompted to enter it manually (e.g. `/Users/benficaa/minio`).
+- If the MinIO host path cannot be detected automatically, you'll be prompted to enter it manually (the default is `./volumes/minio-dev`).
 
 
-**Last Updated:** March 2026
+**Last Updated:** July 2026

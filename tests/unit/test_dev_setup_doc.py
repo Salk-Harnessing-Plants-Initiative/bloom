@@ -102,3 +102,27 @@ def test_make_help_advertises_only_real_targets():
     advertised = set(_HELP_TARGET_RE.findall(text))
     missing = sorted(t for t in advertised if t not in real)
     assert not missing, f"`make help` advertises non-existent targets: {missing}"
+
+
+_DEV_SETUP = REPO_ROOT / "DEV_SETUP.md"
+
+
+def test_dev_setup_has_no_home_minio_references():
+    """The stale MinIO guidance told developers to `mkdir ~/minio` and set
+    MINIO_DATA_PATH to a /Users path. Buckets auto-create via the minio-init
+    service and MINIO_DATA_PATH defaults to ./volumes/minio-dev — no ~/minio
+    anywhere (incl. the troubleshooting/reset sections)."""
+    text = _DEV_SETUP.read_text(encoding="utf-8")
+    assert "~/minio" not in text, "DEV_SETUP.md must not reference ~/minio anywhere"
+    assert "MINIO_DATA_PATH=/Users" not in text, (
+        "DEV_SETUP.md must not set MINIO_DATA_PATH to a /Users path"
+    )
+
+
+def test_dev_setup_surfaces_doctor_and_minio_default():
+    text = _DEV_SETUP.read_text(encoding="utf-8")
+    assert "make doctor" in text, "DEV_SETUP.md should surface `make doctor` as a preflight step"
+    assert "DOCTOR_SKIP" in text, "DEV_SETUP.md should document the DOCTOR_SKIP escape hatch"
+    assert "./volumes/minio-dev" in text, (
+        "DEV_SETUP.md should state the MINIO_DATA_PATH default (./volumes/minio-dev)"
+    )
