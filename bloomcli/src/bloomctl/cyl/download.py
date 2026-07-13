@@ -302,8 +302,6 @@ def download(
     if (experiment_id is None) == (scan_id is None):
         raise click.UsageError("Pass exactly one of --experiment-id or --scan-id.")
 
-    # NOTE: this inlines what `_authed_client(profile)` does; kept inline here to
-    # avoid overlapping PR #385, which migrates `download` to the shared helper.
     try:
         creds = load_credentials(profile)
     except (FileNotFoundError, ValueError) as exc:
