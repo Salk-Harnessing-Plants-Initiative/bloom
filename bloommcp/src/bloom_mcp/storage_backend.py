@@ -408,7 +408,9 @@ def validate_storage_backend() -> None:
         raise _unrecognized_backend_error(name)
     if name == "local":
         root = _resolve_local_root()
-        if str(root) in ("", "."):
+        # Path("") and Path(".") both have empty .parts — pathlib-native "no root
+        # configured" check (the old str-membership test had a dead "" arm).
+        if not root.parts:
             raise RuntimeError(
                 "BLOOM_STORAGE_BACKEND=local but neither BLOOM_STORAGE_LOCAL_ROOT "
                 "nor BLOOM_OUTPUT_DIR is set."

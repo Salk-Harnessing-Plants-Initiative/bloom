@@ -50,3 +50,29 @@ def test_unknown_experiment_raises_not_found(
     reader = SupabaseReader()
     with pytest.raises(ExperimentNotFoundError):
         reader.load_experiment("nope.csv")
+
+
+def test_raw_source_path_rejects_path_traversal(
+    fake_supabase_storage, tmp_path, monkeypatch
+):
+    """raw_source_path honours only a bare filename. ``name`` is LLM-controlled
+    (via ``_ports.start_run``), so a crafted name that would resolve outside
+    TRAITS_DIR is refused — no out-of-root file's bytes get hashed into run
+    provenance."""
+    import bloom_mcp.experiment_utils as eu
+
+    traits = tmp_path / "traits"
+    traits.mkdir()
+    monkeypatch.setattr(eu, "TRAITS_DIR", traits)
+    reader = SupabaseReader()
+
+    # A legit bare filename resolves to the file under TRAITS_DIR.
+    (traits / "exp.csv").write_text("Genotype,trait\ng,1.0\n")
+    assert reader.raw_source_path("exp.csv") == traits / "exp.csv"
+
+    # A real file exists one level up; a traversal name must NOT resolve to it.
+    (tmp_path / "secrets.csv").write_text("secret")
+    assert reader.raw_source_path("../secrets.csv") is None
+    assert reader.raw_source_path("/etc/passwd") is None
+    assert reader.raw_source_path("sub/exp.csv") is None
+    assert reader.raw_source_path("absent.csv") is None

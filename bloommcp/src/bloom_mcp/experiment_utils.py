@@ -59,7 +59,10 @@ def validate_experiment_local_root() -> None:
     first read.
     """
     root = resolve_experiment_local_root()
-    if str(root) in ("", "."):
+    # Path("") and Path(".") both have empty .parts — the pathlib-native "no root
+    # configured" check (str(Path("")) is always ".", so a str membership test has
+    # a dead "" arm).
+    if not root.parts:
         raise RuntimeError(
             "BLOOM_STORAGE_BACKEND=local but neither BLOOM_EXPERIMENT_LOCAL_ROOT "
             "nor BLOOM_TRAITS_DIR is set for the local input root."

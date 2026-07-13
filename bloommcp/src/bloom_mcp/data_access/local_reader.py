@@ -49,6 +49,9 @@ class LocalReader:
                 f"BLOOM_STORAGE_BACKEND={selected_backend_name()!r}."
             )
         self._root = resolve_experiment_local_root()
+        # Resolve once: the root never changes after __init__, so _safe_name avoids
+        # a symlink-canonicalization syscall on every load / raw_source_path call.
+        self._resolved_root = self._root.resolve()
 
     # --- ExperimentReader --------------------------------------------------
 
@@ -96,18 +99,10 @@ class LocalReader:
         )
 
     def list_experiments(self) -> list[ExperimentSummary]:
+        # The scan dicts' keys are exactly ExperimentSummary's fields, so splat them:
+        # one place to update if a field is added, and identical to SupabaseReader.
         return [
-            ExperimentSummary(
-                filename=exp["filename"],
-                stem=exp["stem"],
-                rows=exp["rows"],
-                total_columns=exp["total_columns"],
-                trait_columns=exp["trait_columns"],
-                experiment_name=exp["experiment_name"],
-                genotype_col=exp["genotype_col"],
-                sample_id_col=exp["sample_id_col"],
-            )
-            for exp in _list_experiments(traits_dir=self._root)
+            ExperimentSummary(**exp) for exp in _list_experiments(traits_dir=self._root)
         ]
 
     # --- optional provenance capability (used by tools._ports.start_run) ---
@@ -139,7 +134,7 @@ class LocalReader:
         """
         if not name or name in (".", "..") or name != Path(name).name:
             raise ExperimentReadError("experiment name must be a bare filename")
-        root = self._root.resolve()
+        root = self._resolved_root
         target = (self._root / name).resolve()
         if target != root and root not in target.parents:
             raise ExperimentReadError("experiment name escapes the local input root")

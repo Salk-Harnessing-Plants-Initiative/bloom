@@ -80,24 +80,21 @@ class SupabaseReader:
         deployed raw inputs still live on local disk, so this is the path the store
         hashes into ``input_sha256``. Returns ``None`` when the file is absent.
         Read via the module attribute so a monkeypatched ``TRAITS_DIR`` is honoured.
+
+        ``name`` is LLM-controlled (it arrives via ``_ports.start_run``), so reject
+        anything but a bare filename: a crafted ``"../secrets.csv"`` must not resolve
+        outside ``TRAITS_DIR`` and have its bytes hashed into the run provenance.
+        (``LocalReader`` guards the same via ``_safe_name``.)
         """
+        if name != Path(name).name:
+            return None
         candidate = _eu.TRAITS_DIR / name
         return candidate if candidate.is_file() else None
 
     def list_experiments(self) -> list[ExperimentSummary]:
-        return [
-            ExperimentSummary(
-                filename=exp["filename"],
-                stem=exp["stem"],
-                rows=exp["rows"],
-                total_columns=exp["total_columns"],
-                trait_columns=exp["trait_columns"],
-                experiment_name=exp["experiment_name"],
-                genotype_col=exp["genotype_col"],
-                sample_id_col=exp["sample_id_col"],
-            )
-            for exp in _list_experiments()
-        ]
+        # The scan dicts' keys are exactly ExperimentSummary's fields, so splat them
+        # (identical to LocalReader — one place to update if a field is added).
+        return [ExperimentSummary(**exp) for exp in _list_experiments()]
 
 
 # Re-exported so consumers that need ad-hoc role detection use the same source
