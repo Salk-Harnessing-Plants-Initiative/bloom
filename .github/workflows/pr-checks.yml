@@ -933,7 +933,11 @@ jobs:
         run: make init
 
       - name: make dev-up (build + start the dev stack)
-        run: make dev-up
+        # Skip the environment doctor preflight: this Linux runner is known-good
+        # (no /mnt/ repo, tools provisioned above), and the doctor's checks are
+        # for local developer machines. Keeps the required check off the doctor's
+        # false-abort surface. See scripts/doctor.sh.
+        run: DOCTOR_SKIP=1 make dev-up
 
       # No manual waits — this is exactly what a developer types. The robustness
       # lives in the commands: migrate-local bounded-waits for the storage schema

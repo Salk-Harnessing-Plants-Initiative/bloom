@@ -19,6 +19,8 @@
 .env.dev.example text eol=lf
 .env.prod.defaults text eol=lf
 .env.staging.defaults text eol=lf
+# Pinned Supabase CLI version — read by scripts/doctor.sh; keep LF.
+.supabase-version text eol=lf
 
 # Container init scripts under volumes/db/ are bind-mounted into the Linux
 # db-dev container; a CRLF shebang breaks them with "bad interpreter" and the
