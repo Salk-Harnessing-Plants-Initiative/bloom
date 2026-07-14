@@ -837,6 +837,43 @@ def test_exclude_columns_drops_trait_and_trait_columns_wins(injected_ports):
         exclude_columns=["Total.Root.Length.mm"],
     )
     assert won.kept_trait_columns == ["Total.Root.Length.mm"]
+    # B-2: the allow-list winner must NOT also appear in excluded_columns.
+    assert "Total.Root.Length.mm" not in won.excluded_columns
+
+
+def test_exclude_columns_absent_column_is_silent_noop(injected_ports):
+    """I-1 / BLOCK-2: an exclude_columns entry absent from the frame is a no-op —
+    no error, and the trait set is identical to an unparameterized run."""
+    _reader, _store = injected_ports
+    baseline = _run()
+    result = _run(exclude_columns=["NoSuchColumn"])
+    assert result.kept_trait_columns == baseline.kept_trait_columns
+    assert result.n_traits_out == baseline.n_traits_out
+
+
+def test_exclude_columns_role_column_emits_absorbed_warning(injected_ports):
+    """B-3 / BLOCK-4: exclude_columns=[role_col] is absorbed by role assignment and
+    surfaces as a validation_warnings entry — the caller is not silently ignored."""
+    _reader, _store = injected_ports
+    result = _run(exclude_columns=["geno"])  # "geno" is the auto-detected genotype role
+    assert any("absorbed" in w for w in result.validation_warnings)
+
+
+def test_same_column_for_genotype_and_sample_id_is_invalid_input(injected_ports):
+    """B-4: supplying the same column for both genotype_column and sample_id_column
+    raises invalid_input; a single column cannot serve as both roles."""
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                experiment=_EXPERIMENT,
+                genotype_column="geno",
+                sample_id_column="geno",
+            )
+        )
+    assert exc.value.code == "invalid_input"
+    assert "geno" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "qc") == []
 
 
 def test_override_naming_nonexistent_column_is_invalid_input(injected_ports):

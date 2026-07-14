@@ -131,6 +131,43 @@ def test_run_input_validation_captures_advisory_warnings(monkeypatch):
     assert "replicate" in warnings[0]
 
 
+def test_run_input_validation_no_handler_accumulation(monkeypatch):
+    """B-1: calling run_input_validation twice in succession must not accumulate
+    handlers on the singleton logger — the second call must return the same warning
+    count as the first (not 2x).
+
+    Guards the try/finally + removeHandler fix: deleting removeHandler from the
+    finally block would double-count warnings on the second call.
+    """
+    import sleap_roots_analyze.validation as _val
+
+    from bloom_mcp.data_access.columns import ResolvedColumns, run_input_validation
+
+    def _warn_once(df, *, columns, mode, additional_exclude, logger):
+        logger.warning("advisory: replicate column has only one unique value")
+
+    monkeypatch.setattr(_val, "validate_entry_input", _warn_once)
+
+    df = pd.DataFrame(
+        {
+            "geno": ["a"] * 6,
+            "Barcode": [f"b{i}" for i in range(6)],
+            "t1": [float(i) for i in range(6)],
+        }
+    )
+    resolved = ResolvedColumns(
+        genotype="geno",
+        sample_id="Barcode",
+        replicate=None,
+        trait_cols=["t1"],
+        excluded_cols=[],
+        metadata_cols=["geno", "Barcode"],
+    )
+    w1 = run_input_validation(df, resolved)
+    w2 = run_input_validation(df, resolved)
+    assert len(w1) == len(w2) == 1
+
+
 def test_degenerate_frames_do_not_raise():
     # Empty frame → no traits, no roles, no raise.
     empty = resolve_columns(pd.DataFrame())

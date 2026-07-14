@@ -210,6 +210,22 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     # the default "latest" resolution, which would resolve the newest _cleaned.csv.
     frame = reader.load_experiment(params.experiment, version="raw")
 
+    # B-4: the same column cannot serve as both genotype label and sample identifier.
+    if (
+        params.genotype_column is not None
+        and params.sample_id_column is not None
+        and params.genotype_column == params.sample_id_column
+    ):
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"genotype_column and sample_id_column both name the same column "
+                f"{params.genotype_column!r}. A single column cannot serve as both "
+                f"genotype label and sample identifier."
+            ),
+            remedy="Supply different columns for genotype_column and sample_id_column.",
+        )
+
     # BLOCK-2: Only role overrides (sample_id_column, genotype_column) must name a
     # column that actually exists. exclude_columns is a deny-list — absent entries are
     # a silent no-op (a shared config may list columns not present in every experiment).
