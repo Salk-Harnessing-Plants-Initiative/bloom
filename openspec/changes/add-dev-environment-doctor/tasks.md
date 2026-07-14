@@ -23,6 +23,9 @@ _Verified: 33 unit tests pass; `shellcheck --shell=sh scripts/doctor.sh` clean
 - [x] 2.1 Parametrized over the six tools: each missing → non-zero + named.
 - [x] 2.2 A `/mnt/`-resolved tool (via `DOCTOR_MNT_PREFIX`) → WARN, exit 0.
 - [x] 2.3 (GREEN) required-tool ERROR + `/mnt/` leak WARN implemented.
+- [x] 2.4 (post-#440 review, Benfica) docker-daemon-reachable ERROR (`docker info`)
+  so a stopped daemon is caught before `docker compose up` —
+  + test `test_docker_daemon_down_is_error`.
 
 ## 3. supabase-version (+ pin source of truth), host-port, CRLF
 - [x] 3.1 `tests/unit/test_supabase_version_pin.py`: `.supabase-version` ==

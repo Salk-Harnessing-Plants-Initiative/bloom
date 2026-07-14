@@ -106,9 +106,10 @@ make doctor
 
 It checks your machine for the traps that silently break local setup and prints
 what to fix: a repo on the Windows drive (`/mnt/c`), a missing or Windows-leaked
-tool (`uv`/`node`/`npm`/`supabase`/`make`/`docker`), a `supabase` CLI version off
-the pin in `.supabase-version`, the configured `POSTGRES_HOST_PORT` already in
-use (the port-conflict note above), and CRLF in the container init scripts. A
+tool (`uv`/`node`/`npm`/`supabase`/`make`/`docker`), the Docker daemon not
+running, a `supabase` CLI version off the pin in `.supabase-version`, the
+configured `POSTGRES_HOST_PORT` already in use (the port-conflict note above),
+and CRLF in the container init scripts. A
 hard error (repo on `/mnt/`, a missing tool) stops with a non-zero exit;
 everything else is an advisory. `make dev-up` runs this same preflight
 automatically — set `DOCTOR_SKIP=1` to bypass it (CI does this on its known-good

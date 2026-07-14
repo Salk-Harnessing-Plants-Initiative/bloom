@@ -98,6 +98,14 @@ for tool in uv node npm supabase make docker; do
   fi
 done
 
+# --- Check 2b: docker daemon reachable (ERROR) ---
+# 'docker' on PATH doesn't mean the daemon is up; dev-up's next step is
+# `docker compose up`, which fails cryptically without it. Catch it here with a
+# clear message (suggested in #440 review).
+if command -v docker >/dev/null 2>&1 && ! docker info >/dev/null 2>&1; then
+  err "docker is installed but its daemon isn't reachable. Start Docker Desktop (or the docker service) and retry."
+fi
+
 # --- Check 3: supabase CLI version vs pinned .supabase-version (WARN) ---
 pin_file="${DOCTOR_PIN_FILE:-$REPO_ROOT/.supabase-version}"
 if [ -r "$pin_file" ] && command -v supabase >/dev/null 2>&1; then

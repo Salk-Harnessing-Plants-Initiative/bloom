@@ -32,7 +32,12 @@ pytestmark = pytest.mark.skipif(
 
 
 def _make_bin(
-    tmp_path, *, tools=TOOLS, supabase_version="2.92.1", include_net=False
+    tmp_path,
+    *,
+    tools=TOOLS,
+    supabase_version="2.92.1",
+    include_net=False,
+    docker_daemon_up=True,
 ) -> Path:
     """A controlled bin dir: coreutils symlinks + stub tool executables."""
     bin_dir = tmp_path / "bin"
@@ -50,6 +55,9 @@ def _make_bin(
         stub = bin_dir / tool
         if tool == "supabase":
             stub.write_text(f'#!/bin/sh\necho "{supabase_version}"\n')
+        elif tool == "docker" and not docker_daemon_up:
+            # present on PATH, but `docker info` fails (daemon down)
+            stub.write_text('#!/bin/sh\n[ "$1" = info ] && exit 1\nexit 0\n')
         else:
             stub.write_text("#!/bin/sh\nexit 0\n")
         stub.chmod(0o755)
@@ -57,13 +65,20 @@ def _make_bin(
 
 
 def _run(
-    tmp_path, *, env=None, tools=TOOLS, supabase_version="2.92.1", include_net=False
+    tmp_path,
+    *,
+    env=None,
+    tools=TOOLS,
+    supabase_version="2.92.1",
+    include_net=False,
+    docker_daemon_up=True,
 ):
     bin_dir = _make_bin(
         tmp_path,
         tools=tools,
         supabase_version=supabase_version,
         include_net=include_net,
+        docker_daemon_up=docker_daemon_up,
     )
     full_env = {"PATH": str(bin_dir)}
     if env:
@@ -103,6 +118,18 @@ def test_missing_required_tool_is_error(tmp_path, missing):
 def test_all_tools_present_no_tool_error(tmp_path):
     r = _run(tmp_path, env={"DOCTOR_WSL": "0", "DOCTOR_SCAN_ROOT": str(tmp_path)})
     assert r.returncode == 0, f"clean env should exit 0; stderr:\n{r.stderr}"
+
+
+def test_docker_daemon_down_is_error(tmp_path):
+    """docker on PATH but `docker info` failing (daemon down) is a hard error —
+    dev-up's next step (`docker compose up`) would fail cryptically otherwise."""
+    r = _run(
+        tmp_path,
+        docker_daemon_up=False,
+        env={"DOCTOR_WSL": "0", "DOCTOR_SCAN_ROOT": str(tmp_path)},
+    )
+    assert r.returncode != 0
+    assert "daemon" in r.stderr.lower()
 
 
 def test_windows_mount_leak_is_warning(tmp_path):

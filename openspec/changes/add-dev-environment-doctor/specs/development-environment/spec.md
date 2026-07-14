@@ -12,9 +12,11 @@ MUST NOT require `uv`, Python, or Node, so it can itself report those missing.
 
 Findings SHALL be classified by severity. The following SHALL be **errors** that
 cause a non-zero exit (and thus abort `make dev-up`): the repository residing on
-a Windows-mounted path (under `/mnt/`) when running under WSL, and any of the
+a Windows-mounted path (under `/mnt/`) when running under WSL, any of the
 required tools `uv`, `node`, `npm`, `supabase`, `make`, `docker` being absent
-from `PATH`. The following SHALL be **advisories** that are printed but do not
+from `PATH`, and `docker` being installed but its daemon unreachable (`docker
+info` fails) — since `make dev-up`'s next step is `docker compose up`. The
+following SHALL be **advisories** that are printed but do not
 change the exit code: a required tool resolving from a Windows mount (a `/mnt/`
 leak), the `supabase` CLI version differing from the pinned version recorded in a
 committed repository source of truth (`.supabase-version`), the configured
@@ -42,6 +44,13 @@ is known-good.
 - **WHEN** `make doctor` runs with any of `uv`, `node`, `npm`, `supabase`,
   `make`, or `docker` absent from `PATH`
 - **THEN** it exits non-zero, names the missing tool, and prints its install hint
+
+#### Scenario: Docker installed but its daemon not running is a hard error
+
+- **WHEN** `make doctor` runs with `docker` on `PATH` but its daemon unreachable
+  (`docker info` fails)
+- **THEN** it exits non-zero with a message to start Docker, rather than letting
+  `make dev-up`'s subsequent `docker compose up` fail cryptically
 
 #### Scenario: A Windows-mount toolchain leak is an advisory
 
