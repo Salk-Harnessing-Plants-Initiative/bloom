@@ -1,11 +1,11 @@
-"""Task 4 — `bloomctl download` metadata (scans.csv) contract."""
+"""Task 4 — `bloomctl cyl download` metadata (scans.csv) contract."""
 
 import csv
 
 from click.testing import CliRunner
 
 import bloomctl.auth as auth
-import bloomctl.download as dl
+import bloomctl.cyl.download as dl
 from bloomctl.cli import cli
 from bloomctl.credentials import Credentials
 
@@ -76,7 +76,7 @@ def test_meta_only_writes_csv_and_skips_images(tmp_path, monkeypatch):
 
     out = tmp_path / "out"
     result = CliRunner().invoke(
-        cli, ["download", str(out), "--experiment_id", "17957", "--meta_only"]
+        cli, ["cyl", "download", str(out), "--experiment_id", "17957", "--meta_only"]
     )
 
     assert result.exit_code == 0, result.output
