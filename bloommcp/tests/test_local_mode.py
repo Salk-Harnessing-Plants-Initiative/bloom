@@ -8,9 +8,7 @@ Supabase boot gate, and still fails fast on the data dirs / an invalid backend.
 
 from __future__ import annotations
 
-import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,15 +17,6 @@ import pytest
 
 import bloom_mcp.experiment_utils as eu
 import bloom_mcp.storage_backend as sb
-
-_FIXTURES = Path(__file__).resolve().parent / "fixtures"
-# The already-clean certified fixture: qc_clean keeps its traits (this e2e proves
-# the offline plumbing, not QC's column-dropping behaviour, which is covered
-# elsewhere). Feeding raw data would make the run depend on canonical-QC science.
-_INPUT_FIXTURE = _FIXTURES / "turface_19_final_data.csv"
-_GOLDEN_TRAITS = json.loads(
-    (_FIXTURES / "turface_19_pca_golden.json").read_text()
-)["trait_cols"]
 
 
 @pytest.fixture
@@ -216,6 +205,12 @@ def reset_ports():
 
 
 def test_fully_local_qc_clean_to_pca_no_supabase(monkeypatch, tmp_path, reset_ports):
+    """Offline I/O plumbing: LocalReader + SupabaseResultStore(local backend).
+
+    Uses a small synthetic fixture (15 rows, 2 traits) so the test runs in
+    seconds — scientific correctness of qc_clean / pca_analysis is covered by
+    the oracle and tool-unit tests; here we only prove the wiring.
+    """
     import bloom_mcp.supabase_client as sc
     from bloom_mcp.data_access import LocalReader
     from bloom_mcp.result_store import SupabaseResultStore
@@ -227,8 +222,13 @@ def test_fully_local_qc_clean_to_pca_no_supabase(monkeypatch, tmp_path, reset_po
     inp.mkdir()
     store = tmp_path / "store"
     store.mkdir()
-    shutil.copy(_INPUT_FIXTURE, inp / "turface_19.csv")
-    # Local input root == TRAITS_DIR so qc_clean's own source_csv resolves too.
+    # 15 genotypes × 1 rep = 15 samples, 2 traits — above the min-samples
+    # threshold (10) with no NaN/zero, so qc_clean keeps every trait and sample.
+    rows = "".join(
+        f"g{i},{float(i + 1)},{float(i * 2 + 1)}\n" for i in range(15)
+    )
+    (inp / "offline_e2e.csv").write_text("Genotype,trait_a,trait_b\n" + rows)
+    # Local input root == TRAITS_DIR so qc_clean's source_csv resolves too.
     monkeypatch.setattr(eu, "TRAITS_DIR", inp)
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(store))
@@ -245,15 +245,15 @@ def test_fully_local_qc_clean_to_pca_no_supabase(monkeypatch, tmp_path, reset_po
 
     _ports.configure(reader=LocalReader(), store=SupabaseResultStore())
 
-    qc_res = qc_clean(QCCleanParams(experiment="turface_19.csv"))
+    qc_res = qc_clean(QCCleanParams(experiment="offline_e2e.csv"))
     assert qc_res.run_ref  # a persisted cleaned run
 
-    cleaned = _ports.reader().load_experiment("turface_19.csv", require_clean=True)
-    traits = [t for t in _GOLDEN_TRAITS if t in cleaned.trait_cols]
+    cleaned = _ports.reader().load_experiment("offline_e2e.csv", require_clean=True)
+    traits = list(cleaned.trait_cols)[:2]
     assert len(traits) >= 2
 
     pca_res = pca_analysis(
-        PCAAnalysisParams(experiment="turface_19.csv", trait_columns=traits)
+        PCAAnalysisParams(experiment="offline_e2e.csv", trait_columns=traits)
     )
     assert pca_res.n_components >= 1
 
