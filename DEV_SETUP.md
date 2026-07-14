@@ -26,12 +26,13 @@ Before starting, ensure you have:
 - **`uv`** — https://docs.astral.sh/uv/getting-started/installation/ (runs the
   Python helpers; no separate Python install needed)
 - **Node.js 18+ and npm**
-- **Supabase CLI**, pinned to the version CI uses (currently **2.92.1**) so local
-  `migrate-local` behaves identically to CI:
+- **Supabase CLI**, pinned to the version in [`.supabase-version`](.supabase-version)
+  (the repo's single source of truth, matched by CI) so local `migrate-local`
+  behaves identically to CI:
   - macOS: `brew install supabase/tap/supabase`
   - Linux/WSL2: download the matching release from
     https://github.com/supabase/cli/releases
-  - check: `supabase --version`
+  - check: `supabase --version` (and `make doctor` warns if it's off the pin)
 
 ### Windows: use WSL2
 

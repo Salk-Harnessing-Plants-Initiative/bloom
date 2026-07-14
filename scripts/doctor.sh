@@ -15,6 +15,8 @@
 #   DOCTOR_WSL        1|0 to force WSL detection            (default: auto)
 #   DOCTOR_PORT       host port probed for the in-use check (default: .env.dev / 5432)
 #   DOCTOR_SCAN_ROOT  root for the CRLF scan                (default: repo root)
+#   DOCTOR_MNT_PREFIX Windows-drive mount prefix            (default: /mnt/)
+#   DOCTOR_PIN_FILE   supabase version pin file             (default: .supabase-version)
 #
 # See openspec/specs/development-environment (Preflight Environment Doctor).
 
@@ -46,13 +48,11 @@ is_wsl() {
     [ "$DOCTOR_WSL" = "1" ]
     return
   fi
-  if [ -r /proc/version ] && grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
-    return 0
-  fi
-  case "$REPO_PATH" in
-    "$MNT_PREFIX"*) return 0 ;;
-  esac
-  return 1
+  # Detect WSL from the kernel string ONLY. Do not infer WSL from a /mnt/ repo
+  # path — /mnt is an ordinary mount point on native Linux too, and inferring
+  # WSL from it would raise a spurious hard error on a normal Linux box whose
+  # repo happens to live under /mnt (e.g. /mnt/data/repos/bloom).
+  [ -r /proc/version ] && grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null
 }
 
 port_in_use() {
@@ -99,10 +99,12 @@ for tool in uv node npm supabase make docker; do
 done
 
 # --- Check 3: supabase CLI version vs pinned .supabase-version (WARN) ---
-pin_file="$REPO_ROOT/.supabase-version"
+pin_file="${DOCTOR_PIN_FILE:-$REPO_ROOT/.supabase-version}"
 if [ -r "$pin_file" ] && command -v supabase >/dev/null 2>&1; then
   pinned=$(tr -d " \t\r\n" < "$pin_file")
-  actual=$(supabase --version 2>/dev/null | head -n1 | tr -d " \t\r")
+  # Extract the semver only — the CLI may print "supabase 2.92.1", "v2.92.1",
+  # or an update-available notice line; match how CI greps for the version.
+  actual=$(supabase --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
   if [ -n "$pinned" ] && [ -n "$actual" ] && [ "$pinned" != "$actual" ]; then
     warn "supabase CLI is $actual but the repo pins $pinned (.supabase-version). Install the pinned version so 'make migrate-local' matches CI."
   fi
@@ -112,23 +114,28 @@ fi
 port=${DOCTOR_PORT:-}
 if [ -z "$port" ]; then
   if [ -r "$REPO_ROOT/.env.dev" ]; then
-    port=$(sed -n 's/^POSTGRES_HOST_PORT=//p' "$REPO_ROOT/.env.dev" | head -n1 | tr -d " \t\r")
+    port=$(sed -n 's/^POSTGRES_HOST_PORT=//p' "$REPO_ROOT/.env.dev" | head -n1 | sed 's/#.*//' | tr -d " \t\r")
   fi
   port=${port:-5432}
 fi
 if [ -n "$port" ] && port_in_use "$port"; then
-  warn "host port $port is already in use before bring-up. If a foreign Postgres (e.g. a WSL-relayed one) owns it, set POSTGRES_HOST_PORT to a free port (e.g. 5433) in .env.dev."
+  warn "host port $port is already in use before bring-up (a foreign Postgres — e.g. a WSL-relayed one — or your own Bloom stack is already running). If it's foreign, set POSTGRES_HOST_PORT to a free port (e.g. 5433) in .env.dev."
 fi
 
 # --- Check 5: CRLF in bind-mounted init scripts (WARN) ---
 # Safety net for working trees that predate the .gitattributes LF rules; detects
 # what .gitattributes prevents on a fresh clone (defense in depth).
+# Scope to the actual init scripts (*.sh/*.sql) and PRUNE volumes/db/data/ — the
+# live Postgres cluster bind-mount is gitignored, huge, and binary (0x0D bytes
+# are normal in heap/WAL files); scanning it would be slow and flag false CRLF.
 crlf_files=$(
   {
     for f in "$SCAN_ROOT"/minio/init/*.sh; do
       [ -f "$f" ] && printf '%s\n' "$f"
     done
-    [ -d "$SCAN_ROOT/volumes/db" ] && find "$SCAN_ROOT/volumes/db" -type f 2>/dev/null
+    [ -d "$SCAN_ROOT/volumes/db" ] && find "$SCAN_ROOT/volumes/db" \
+      -type d -name data -prune -o \
+      -type f \( -name '*.sh' -o -name '*.sql' \) -print 2>/dev/null
   } | while IFS= read -r f; do
     [ -f "$f" ] && LC_ALL=C grep -lq "$CR" "$f" 2>/dev/null && printf '%s\n' "$f"
   done
@@ -140,7 +147,7 @@ fi
 # --- Summary + exit ---
 echo ""
 if [ "$ERRORS" -gt 0 ]; then
-  printf 'doctor: %d error(s), %d warning(s) — cannot continue. Fix the errors above.\n' "$ERRORS" "$WARNINGS" >&2
+  printf 'doctor: %d error(s), %d warning(s) — cannot continue. Fix the errors above, or set DOCTOR_SKIP=1 to bypass this preflight (e.g. a false positive).\n' "$ERRORS" "$WARNINGS" >&2
   exit 1
 fi
 if [ "$WARNINGS" -gt 0 ]; then

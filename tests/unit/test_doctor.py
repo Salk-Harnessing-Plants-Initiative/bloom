@@ -262,3 +262,38 @@ def test_real_repo_init_scripts_are_lf(tmp_path):
         r.returncode == 0
     ), f"doctor should be clean on the real repo; stderr:\n{r.stderr}"
     assert "CRLF" not in r.stderr
+
+
+def test_crlf_scan_prunes_volumes_db_data(tmp_path):
+    """The CRLF scan must NOT descend into volumes/db/data/ — that's the live,
+    gitignored Postgres cluster (binary files with 0x0D bytes). Scanning it would
+    be slow and flag hundreds of false 'CRLF init script' warnings after the
+    stack has run once. Only *.sh/*.sql init scripts are in scope."""
+    scan = tmp_path / "scan"
+    (scan / "volumes" / "db" / "data" / "base" / "1").mkdir(parents=True)
+    # A binary Postgres-like file with a CR byte, under data/ — must be ignored.
+    (scan / "volumes" / "db" / "data" / "base" / "1" / "1247").write_bytes(
+        b"\x00\x01\r\x02binarypage\r\n"
+    )
+    # A legit LF init script alongside it — must not trigger anything.
+    (scan / "volumes" / "db" / "init").mkdir(parents=True)
+    (scan / "volumes" / "db" / "init" / "01-roles.sql").write_bytes(b"select 1;\n")
+    r = _run(tmp_path, env={"DOCTOR_WSL": "0", "DOCTOR_SCAN_ROOT": str(scan)})
+    assert r.returncode == 0
+    assert "CRLF" not in r.stderr, f"data/ dir should be pruned; stderr:\n{r.stderr}"
+
+
+def test_missing_pin_file_skips_version_check(tmp_path):
+    """If the version pin file is absent, the supabase-version check is skipped
+    (no warning) even when the CLI version differs."""
+    r = _run(
+        tmp_path,
+        supabase_version="9.9.9",
+        env={
+            "DOCTOR_WSL": "0",
+            "DOCTOR_SCAN_ROOT": str(tmp_path),
+            "DOCTOR_PIN_FILE": str(tmp_path / "nonexistent-pin"),
+        },
+    )
+    assert r.returncode == 0
+    assert "supabase CLI is" not in r.stderr
