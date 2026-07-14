@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Generator
 import pandas as pd
 
 if TYPE_CHECKING:
-    from bloom_mcp.reader.ports import ExperimentFrame
+    from bloom_mcp.data_access import ExperimentFrame
 
 _SNAPSHOT_NAME = "source_snapshot.csv"
 
@@ -36,12 +36,16 @@ def _build_output_frame(
 ) -> pd.DataFrame:
     """Prepend ``frame.metadata_cols`` identity columns to *payload_df*.
 
-    Resets the index on the identity slice so positional alignment is
-    guaranteed regardless of the original ``frame.df`` index.
+    Both the identity slice and *payload_df* are reset to a default RangeIndex
+    before concatenation so positional alignment is guaranteed regardless of
+    the original ``frame.df`` or ``payload_df`` index.  This matters for the
+    clustering and UMAP call sites where the payload may be a filtered or
+    re-indexed slice.
     """
     if not frame.metadata_cols:
-        return payload_df
+        return payload_df.copy()
     identity = frame.df[frame.metadata_cols].reset_index(drop=True)
+    payload_df = payload_df.reset_index(drop=True)
     return pd.concat([identity, payload_df], axis=1)
 
 

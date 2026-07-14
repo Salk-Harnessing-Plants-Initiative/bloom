@@ -2,12 +2,10 @@
 
 Maps the spec "RunLinks Base Model" scenarios under bloommcp-tool-contract:
   1. RunLinks is importable from bloom_mcp.contract and listed in __all__
-  2. Consumer result models (PCAAnalysisResult) inherit RunLinks without redeclaring fields
+  2. Consumer result models inherit RunLinks without redeclaring fields
+     (PCAAnalysisResult and RemoveOutliersResult — both must be guarded)
   3. RunLinks fields survive round-trip serialization
   4. Missing / wrong-typed run-link fields are rejected at construction
-
-The PCAAnalysisResult inheritance tests (test_pca_result_inherits_run_links,
-test_run_link_fields_not_redeclared) are regression guards that turn green at task 3.1.
 """
 
 from __future__ import annotations
@@ -18,6 +16,7 @@ from pydantic import ValidationError
 
 from bloom_mcp.contract import RunLinks
 from bloom_mcp.tools.pca_analysis_tool import PCAAnalysisResult
+from bloom_mcp.tools.remove_outliers_tool import RemoveOutliersResult
 
 # ---------------------------------------------------------------------------
 # Importability and __all__
@@ -53,11 +52,30 @@ def test_pca_result_is_run_links_subclass():
 
 
 def test_run_link_fields_not_redeclared_on_pca_result():
-    """None of the four RunLinks fields should be declared directly on PCAAnalysisResult."""
-    pca_own = vars(PCAAnalysisResult).get("__annotations__", {})
+    """None of the four RunLinks fields should appear in PCAAnalysisResult.model_fields directly."""
+    pca_own = set(PCAAnalysisResult.model_fields.keys()) - set(RunLinks.model_fields.keys())
     for field in _EXPECTED_FIELDS:
         assert field not in pca_own, (
             f"{field!r} is redeclared directly on PCAAnalysisResult — "
+            "it should come from RunLinks inheritance only"
+        )
+
+
+# ---------------------------------------------------------------------------
+# RemoveOutliersResult inherits RunLinks (parallel regression guard)
+# ---------------------------------------------------------------------------
+
+
+def test_remove_outliers_result_is_run_links_subclass():
+    assert issubclass(RemoveOutliersResult, RunLinks)
+
+
+def test_run_link_fields_not_redeclared_on_remove_outliers_result():
+    """None of the four RunLinks fields should appear in RemoveOutliersResult.model_fields directly."""
+    ro_own = set(RemoveOutliersResult.model_fields.keys()) - set(RunLinks.model_fields.keys())
+    for field in _EXPECTED_FIELDS:
+        assert field not in ro_own, (
+            f"{field!r} is redeclared directly on RemoveOutliersResult — "
             "it should come from RunLinks inheritance only"
         )
 
@@ -119,3 +137,39 @@ def test_outputs_must_be_string_valued():
             manifest_path="m.json",
             outputs={"key": 42},  # int value — should be rejected
         )
+
+
+# ---------------------------------------------------------------------------
+# RemoveOutliersResult field ordering (intentional change from BaseModel → RunLinks)
+# ---------------------------------------------------------------------------
+
+
+def test_remove_outliers_result_run_link_fields_appear_first_in_model_dump():
+    """Pydantic v2 places base-class fields first in model_dump().
+
+    RemoveOutliersResult(RunLinks) has run_ref/version_dir/manifest_path/outputs
+    at the START of the serialized dict (inherited from RunLinks), followed by the
+    tool-specific fields.  This is an intentional consequence of the inheritance
+    refactor and differs from the old BaseModel order where they appeared last.
+    This test locks in the new order as deliberate so any future reversion is caught.
+    """
+    result = RemoveOutliersResult(
+        run_ref="r1",
+        version_dir="v1",
+        manifest_path="m.json",
+        outputs={"cleaned.csv": "cleaned.csv"},
+        experiment="exp.csv",
+        source="v1_cleaned",
+        method="mahalanobis",
+        n_input_samples=100,
+        n_outliers=3,
+        n_output_samples=97,
+        removal_fraction=0.03,
+        outlier_barcodes=["b1", "b2", "b3"],
+    )
+    keys = list(result.model_dump().keys())
+    run_link_positions = [keys.index(f) for f in _EXPECTED_FIELDS]
+    tool_specific_positions = [keys.index("experiment"), keys.index("n_outliers")]
+    assert max(run_link_positions) < min(tool_specific_positions), (
+        "RunLinks fields must precede tool-specific fields in model_dump() key order"
+    )

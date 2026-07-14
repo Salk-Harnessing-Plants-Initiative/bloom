@@ -1,14 +1,15 @@
-"""_build_output_frame and snapshot_frame — unit tests (red phase until tasks 2.2/2.3).
+"""_build_output_frame and snapshot_frame — unit tests.
 
 Scenarios covered:
   _build_output_frame
-    1. With metadata_cols — identity columns prepended to payload
-    2. With empty metadata_cols — payload returned as-is (no identity prepend)
-    3. With non-default index on frame.df — reset_index must be called (regression guard)
+    1. With metadata_cols — identity columns prepended to payload, correct values
+    2. With empty metadata_cols — payload returned as a copy (no identity prepend)
+    3. Non-default index on frame.df — reset_index on identity side (regression guard)
+    4. Non-default index on payload_df — reset_index on payload side (regression guard)
   snapshot_frame
-    4. Normal path — CSV exists, yields a readable Path, temp dir cleaned up after exit
-    5. Empty DataFrame — CSV written (zero data rows), context manager still works
-    6. Exception inside the block — temp dir cleaned up even on error
+    5. Normal path — CSV exists, yields a readable Path, temp dir cleaned up after exit
+    6. Empty DataFrame — CSV written (zero data rows), context manager still works
+    7. Exception inside the block — temp dir cleaned up even on error
 """
 
 from __future__ import annotations
@@ -59,6 +60,10 @@ def test_build_output_frame_with_metadata_cols():
     assert list(result.columns[2:]) == ["PC1", "PC2"]
     # Row count preserved
     assert len(result) == 3
+    # Correct values — wrong reset_index behavior produces NaN or misaligned rows
+    assert list(result["Genotype"]) == ["A", "B", "C"]
+    assert list(result["SampleID"]) == ["s1", "s2", "s3"]
+    assert result["PC1"].tolist() == pytest.approx([0.1, 0.2, 0.3])
 
 
 def test_build_output_frame_empty_metadata_cols():
@@ -71,19 +76,30 @@ def test_build_output_frame_empty_metadata_cols():
     assert len(result) == 3
 
 
-def test_build_output_frame_non_default_index():
-    """reset_index must be called; a mis-aligned index would corrupt the concat."""
+def test_build_output_frame_non_default_frame_index():
+    """reset_index on identity side: frame.df has non-default index, payload has RangeIndex."""
     frame = _FakeFrame(["Genotype", "SampleID"], index_start=10)
     # payload has default RangeIndex(0..2); frame.df has RangeIndex(10..12)
     payload = pd.DataFrame({"PC1": [0.1, 0.2, 0.3]})
     result = _build_output_frame(frame, payload)
 
-    # After reset_index the rows should align: no NaN from index mismatch
-    assert not result.isnull().any().any(), (
-        "NaN values indicate the identity and payload indices were not aligned — "
-        "reset_index(drop=True) must be called on the identity slice"
-    )
+    assert not result.isnull().any().any()
     assert len(result) == 3
+    assert list(result["Genotype"]) == ["A", "B", "C"]
+    assert result["PC1"].tolist() == pytest.approx([0.1, 0.2, 0.3])
+
+
+def test_build_output_frame_non_default_payload_index():
+    """reset_index on payload side: payload has non-default index, frame.df has RangeIndex."""
+    frame = _FakeFrame(["Genotype", "SampleID"])
+    # payload has a non-default starting index — pd.concat without reset_index silently NaNs
+    payload = pd.DataFrame({"PC1": [0.1, 0.2, 0.3]}, index=[5, 6, 7])
+    result = _build_output_frame(frame, payload)
+
+    assert not result.isnull().any().any()
+    assert len(result) == 3
+    assert list(result["Genotype"]) == ["A", "B", "C"]
+    assert result["PC1"].tolist() == pytest.approx([0.1, 0.2, 0.3])
 
 
 # ---------------------------------------------------------------------------
