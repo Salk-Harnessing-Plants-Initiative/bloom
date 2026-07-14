@@ -742,6 +742,9 @@ def test_hierarchical_snapshot_through_the_tool(injected_ports):
     assert result.calinski_harabasz_score == pytest.approx(g["calinski_harabasz_score"], abs=_TOL)
     assert result.linkage_method == g["linkage_method"]
     assert result.distance_metric == g["distance_metric"]
+    # I5: dendrogram-specific outputs are also drift-gated
+    assert result.cophenetic_correlation == pytest.approx(g["cophenetic_correlation"], abs=_TOL)
+    assert result.cut_height == pytest.approx(g["cut_height"], abs=_TOL)
 
 
 def test_hierarchical_optimization_method_valid_values(injected_ports, monkeypatch):
@@ -785,3 +788,83 @@ def test_hierarchical_in_tools_list_enum(injected_ports):
     schema = tools["clustering"].inputSchema
     method_enum = schema["properties"]["params"]["properties"]["method"]["enum"]
     assert "hierarchical" in method_enum
+
+
+def test_hierarchical_requires_clean_version():
+    """I6/3.5: hierarchical uses require_clean=True — raw-only experiment is rejected."""
+    reader = FakeReader()
+    store = FakeResultStore()
+    reader.add_experiment("rawonly.csv", _final_df())
+    _ports.configure(reader=reader, store=store)
+    try:
+        with pytest.raises(BloomMCPError) as exc:
+            clustering(ClusteringParams(
+                experiment="rawonly.csv", method="hierarchical", n_clusters=3
+            ))
+        assert exc.value.code == "tool_error"
+        assert "qc_clean" in exc.value.remedy
+    finally:
+        from bloom_mcp.data_access import SupabaseReader
+        from bloom_mcp.result_store import SupabaseResultStore
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def test_hierarchical_only_controls_rejected_on_kmeans_and_gmm(injected_ports):
+    """I7: linkage_method/distance_metric/optimization_method are rejected on kmeans and gmm."""
+    hierarchical_only = {
+        "linkage_method": "complete",
+        "distance_metric": "cosine",
+        "optimization_method": "silhouette",
+    }
+    for method in ("kmeans", "gmm"):
+        for ctrl, val in hierarchical_only.items():
+            with pytest.raises(BloomMCPError) as exc:
+                _run(method=method, **{ctrl: val})
+            assert exc.value.code == "invalid_input"
+            assert ctrl in exc.value.message
+
+
+def test_hierarchical_ward_cosine_rejected_before_dispatch(injected_ports):
+    """B2: ward+non-euclidean is caught as invalid_input before reaching the try block."""
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="hierarchical", n_clusters=3, linkage_method="ward", distance_metric="cosine")
+    assert exc.value.code == "invalid_input"
+    assert "ward" in exc.value.message.lower()
+    assert "euclidean" in exc.value.message.lower()
+
+
+def test_hierarchical_ward_cosine_error_not_assumption_violated(injected_ports):
+    """B2: the ward+non-euclidean error is a parameter error, not a data-quality accusation."""
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="hierarchical", n_clusters=3, linkage_method="ward", distance_metric="cosine")
+    assert exc.value.code != "assumption_violated"
+
+
+def test_hierarchical_seed_warning_on_explicit_non_default(injected_ports):
+    """I9: a non-default seed with hierarchical produces a tool_warnings entry."""
+    result = _run(method="hierarchical", n_clusters=3, seed=1234)
+    assert any("seed" in w and "ignored" in w for w in result.warnings)
+
+
+def test_hierarchical_default_seed_no_warning(injected_ports):
+    """I9: the default seed=42 does not generate a seed-ignored warning."""
+    result = _run(method="hierarchical", n_clusters=3)
+    assert not any("seed" in w and "ignored" in w for w in result.warnings)
+
+
+def test_hierarchical_degenerate_fit_does_not_leak_backend_internals(injected_ports, monkeypatch):
+    """I10: internal exception text from hierarchical_cluster_labels is not echoed to the caller."""
+    def _raise(*a, **k):
+        raise ValueError(
+            "/home/user/.venv/lib/python3.11/site-packages/scipy/cluster/hierarchy.py:42 "
+            "Ward's method only works with Euclidean distance — internal detail"
+        )
+    monkeypatch.setattr(clustering_tool, "hierarchical_cluster_labels", _raise)
+    # Trigger via a valid parameter set (non-ward/cosine) so the pre-dispatch guard
+    # doesn't fire; the degenerate-fit handler must suppress the raw message.
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="hierarchical", n_clusters=3, linkage_method="complete", distance_metric="cosine")
+    assert exc.value.code == "assumption_violated"
+    # The raw exception text (file paths, scipy internals) must not appear.
+    for fragment in ("site-packages", "hierarchy.py", "internal detail"):
+        assert fragment not in exc.value.message

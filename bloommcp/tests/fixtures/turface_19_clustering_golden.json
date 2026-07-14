@@ -1,7 +1,7 @@
 {
   "_comment": "Characterization snapshot of sleap-roots-analyze clustering on the post-QC turface_19 fixture, restricted to the 8 recorded PCA golden trait_cols. Used as a DRIFT GATE through the clustering MCP tool.",
-  "_source": "Re-derived by bloommcp/scripts/gen_clustering_golden.py from perform_kmeans_clustering / perform_gmm_clustering==0.1.0a4. A drift gate, NOT an independently recorded oracle: no external clustering oracle exists for turface_19 (unlike PCA's #120 viz_pca_metadata.json). The real correctness oracle is determinism (same seed -> identical labels), asserted in the tests.",
-  "_reproduced_by_sleap_roots_analyze_version": "0.1.0a4",
+  "_source": "Re-derived by bloommcp/scripts/gen_clustering_golden.py from perform_kmeans_clustering / perform_gmm_clustering / hierarchical_cluster_labels==0.1.0a5. A drift gate, NOT an independently recorded oracle: no external clustering oracle exists for turface_19 (unlike PCA's #120 viz_pca_metadata.json). The real correctness oracle is determinism (same seed -> identical labels), asserted in the tests.",
+  "_reproduced_by_sleap_roots_analyze_version": "0.1.0a5",
   "trait_cols": [
     "Holes",
     "Network Area (mm²)",
@@ -27,7 +27,7 @@
       85,
       28
     ],
-    "inertia": 333.4642388939501
+    "inertia": 333.46423889395015
   },
   "hierarchical": {
     "params": {
@@ -35,10 +35,14 @@
       "standardize": true
     },
     "n_clusters": 3,
-    "cluster_sizes": [28, 23, 102],
     "silhouette_score": 0.4153917590688732,
     "davies_bouldin_score": 0.7185795309086481,
     "calinski_harabasz_score": 174.09633824015913,
+    "cluster_sizes": [
+      28,
+      23,
+      102
+    ],
     "linkage_method": "ward",
     "distance_metric": "euclidean",
     "cophenetic_correlation": 0.7203580466038094,
@@ -51,7 +55,7 @@
       "standardize": true,
       "seed": 42
     },
-    "_bic_aic_note": "Negative values are expected: large log-likelihood dominates the BIC/AIC penalty for this dataset at n=3 fixed. Uses fixed n_components=3 (not auto-select) to avoid the upstream 0.1.0a4 auto-select bug.",
+    "_bic_aic_note": "Negative values are expected: large log-likelihood dominates the BIC/AIC penalty for this dataset at n=3 fixed. Uses fixed n_components=3 (not auto-select) to avoid the upstream auto-select BIC/AIC bug.",
     "n_clusters": 3,
     "silhouette_score": 0.31565232704612356,
     "davies_bouldin_score": 1.0737231775349985,

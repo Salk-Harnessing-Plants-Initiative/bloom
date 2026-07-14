@@ -126,14 +126,15 @@ class ClusteringParams(BaseModel):
         default=None,
         description="gmm only: covariance form (default 'full'). Do not set for kmeans.",
     )
-    linkage_method: str | None = Field(
+    linkage_method: Literal["ward", "complete", "average", "single"] | None = Field(
         default=None,
         description="hierarchical only: linkage criterion (default 'ward'). "
-        "Options: 'ward', 'complete', 'average', 'single'. Do not set for kmeans/gmm.",
+        "One of 'ward', 'complete', 'average', 'single'. Do not set for kmeans/gmm.",
     )
     distance_metric: str | None = Field(
         default=None,
-        description="hierarchical only: distance metric (default 'euclidean'). "
+        description="hierarchical only: distance metric passed to scipy pdist "
+        "(default 'euclidean'). Note: 'ward' linkage only works with 'euclidean'. "
         "Do not set for kmeans/gmm.",
     )
     optimization_method: Literal["silhouette", "calinski", "davies_bouldin"] | None = Field(
@@ -267,8 +268,8 @@ def _gmm_selected_scores(
     The **fixed-n** path is already correct upstream (single-element score arrays), so only correct
     when we auto-selected AND the arrays line up; otherwise fall through to the pass-through value.
     Forward-compatible: once upstream fixes it, ``bic_scores[idx]`` equals the corrected scalar, so
-    this is a no-op. **Re-verify and drop on the 0.1.0a5 bump** — tracked upstream (talmolab/
-    sleap-roots-analyze; see the #309 follow-up).
+    this is a no-op. **Re-verified on the 0.1.0a5 bump — bug still present** (clustering.py:439
+    returns ``bic_scores[-1]``, not the selected model's score). Drop on the 0.1.0a6 bump.
     """
     bic, aic = float(result.bic), float(result.aic)
     if params.n_components is None:
@@ -334,6 +335,27 @@ def clustering(
             ),
             remedy="Re-run qc_clean to produce a finite-valued cleaned version, then retry.",
         )
+
+    # Pre-dispatch parameter-compatibility guard for hierarchical: scipy raises a
+    # ValueError("Ward's method only works with Euclidean distance") which would be caught
+    # below and re-raised as the misleading "degenerate data" assumption_violated. Catch it
+    # here so the remedy names the actual problem (parameter mismatch, not data quality).
+    if params.method == "hierarchical":
+        effective_linkage = params.linkage_method or "ward"
+        effective_metric = params.distance_metric or "euclidean"
+        if effective_linkage == "ward" and effective_metric != "euclidean":
+            raise BloomMCPError(
+                code="invalid_input",
+                message=(
+                    f"linkage_method='ward' requires distance_metric='euclidean'; "
+                    f"got distance_metric={effective_metric!r}."
+                ),
+                remedy=(
+                    "Either keep the default 'ward'/'euclidean' pair, or switch to "
+                    "a non-ward linkage (e.g. 'complete', 'average', 'single') to "
+                    "use a different distance metric."
+                ),
+            )
 
     # Delegate ALL clustering, dispatching on method. The delegates *raise* on degenerate
     # input: ValueError (fewer samples than requested clusters / too few for the method) and
@@ -425,13 +447,15 @@ def clustering(
         }
     else:  # hierarchical
         coph = float(result.cophenetic_correlation)
+        cut = float(result.cut_height)
         method_scalars = {
             "linkage_method": str(result.linkage_method),
             "distance_metric": str(result.distance_metric),
             # NaN arises when all pairwise distances are 0 (all-identical data) giving a
-            # 0/0 correlation; convert to None so to_json() doesn't raise on allow_nan=False.
+            # 0/0 cophenet correlation or undefined cut height; convert to None so
+            # to_json(allow_nan=False) doesn't raise after the run is already committed.
             "cophenetic_correlation": None if not np.isfinite(coph) else coph,
-            "cut_height": float(result.cut_height),
+            "cut_height": None if not np.isfinite(cut) else cut,
         }
 
     tool_warnings: list[str] = []
@@ -444,6 +468,11 @@ def clustering(
             "GMM auto-selected a single component — the data may not have separable cluster "
             "structure. Consider inspecting trait distributions or increasing max_components "
             "before interpreting this result."
+        )
+    if params.method == "hierarchical" and params.seed != 42:
+        tool_warnings.append(
+            f"seed={params.seed} was provided but is ignored for hierarchical clustering "
+            f"(deterministic); provenance records seed=None."
         )
 
     # Persist a versioned run. For hierarchical (deterministic, no RNG), override seed=None

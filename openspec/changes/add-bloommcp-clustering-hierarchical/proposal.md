@@ -22,10 +22,12 @@ in with no contract or schema change.
 - **RETURN** the upstream `ClusterResult` (hierarchical variant) inline + persist the versioned run +
   resource links, exactly mirroring the kmeans/gmm pattern (labels CSV with sample identity,
   `cluster_result.json`, manifest with `based_on_version` and `input_sha256`).
-- **REJECT** hierarchical-incompatible controls: `n_clusters`, `max_clusters`, `n_components`,
-  `max_components`, and `covariance_type` are kmeans/gmm-only — passing them with
-  `method="hierarchical"` returns a `BloomMCPError` with code `invalid_input`, consistent with the
-  cross-method guard already in place for kmeans vs gmm.
+- **REJECT** hierarchical-incompatible controls: `n_components`, `max_components`, and
+  `covariance_type` are GMM-only — passing them with `method="hierarchical"` returns a
+  `BloomMCPError` with code `invalid_input`. `n_clusters` and `max_clusters` are valid for both
+  `"kmeans"` and `"hierarchical"` (forwarded to the delegate) and are never rejected for those
+  methods. `linkage_method`, `distance_metric`, and `optimization_method` are hierarchical-only —
+  rejected on kmeans/gmm.
 - **DETERMINISM ORACLE**: hierarchical is deterministic — same input → identical `cluster_labels`
   (no seed tolerance needed, no `random_state` forwarded).
 - Tests cover: `tools/list` presence, schema round-trip, provenance records `seed = None`, the
