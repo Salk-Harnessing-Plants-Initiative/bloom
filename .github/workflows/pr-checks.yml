@@ -326,24 +326,15 @@ jobs:
             for img in bloom-web langchain bloommcp caddy workflows; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
-                crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || echo 0)
-                high=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "HIGH" || echo 0)
+                # grep -c already emits 0 and exits 1 on no match; `|| true`
+                # keeps the count clean (`|| echo 0` would append a second 0).
+                crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || true)
+                high=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "HIGH" || true)
                 echo "| ${img} | ${crit} | ${high} |"
               fi
             done
             echo ""
-            for img in bloom-web langchain bloommcp caddy workflows; do
-              file="trivy-${img}.txt"
-              if [ -f "$file" ] && [ -s "$file" ]; then
-                cves=$(grep -oP 'CVE-\d+-\d+' "$file" | sort -u | tr '\n' ', ' | sed 's/,$//')
-                if [ -n "$cves" ]; then
-                  echo "**${img}:** ${cves}"
-                  echo ""
-                fi
-              fi
-            done
-            echo ""
-            echo "> Full scan output available in the [trivy-built-images-report](../actions/artifacts) artifact."
+            echo "> Full CVE lists are in the [trivy-built-images-report](../actions/artifacts) artifact."
           } > trivy-report.md
 
       - name: Upload Trivy report artifact
@@ -351,7 +342,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: trivy-built-images-report
-          path: trivy-report.md
+          # Include the raw per-image scans so the full CVE detail stays
+          # downloadable after it was dropped from the PR-comment table.
+          path: |
+            trivy-report.md
+            trivy-*.txt
 
       - name: Check bloom-web for critical CVEs
         uses: aquasecurity/trivy-action@v0.35.0
@@ -1022,8 +1017,10 @@ jobs:
       - name: Generate summary
         if: always()
         run: |
-          crit=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "CRITICAL" || echo 0)
-          high=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "HIGH" || echo 0)
+          # grep -c already emits 0 and exits 1 on no match; `|| true` keeps
+          # the count clean (`|| echo 0` would append a second 0).
+          crit=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "CRITICAL" || true)
+          high=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "HIGH" || true)
           cves=$(grep -oP 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | sort -u | tr '\n' ',' | sed 's/,$//' || echo "")
           echo "${{ matrix.image }}|${crit}|${high}|${cves}" > summary.txt
 
@@ -1062,18 +1059,16 @@ jobs:
           {
             echo "## Pinned Image CVE Report"
             echo ""
-            echo "| Image | Critical | High | CVEs |"
-            echo "|-------|----------|------|------|"
+            echo "| Image | Critical | High |"
+            echo "|-------|----------|------|"
             for file in results/trivy-pinned-*/summary.txt; do
               if [ -f "$file" ]; then
                 IFS='|' read -r img crit high cves < "$file"
-                if [ -n "$cves" ]; then
-                  echo "| ${img} | ${crit} | ${high} | ${cves} |"
-                else
-                  echo "| ${img} | ${crit} | ${high} | — |"
-                fi
+                echo "| ${img} | ${crit} | ${high} |"
               fi
             done
+            echo ""
+            echo "> Per-image CVE lists are in the trivy-pinned-* artifacts."
           } > pinned-report.md
 
       - name: Post as PR comment
