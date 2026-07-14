@@ -63,7 +63,7 @@ from pydantic import BaseModel, Field
 from sleap_roots_analyze import plot_outlier_analysis, remove_outlier_samples
 from sleap_roots_analyze.outlier_removal import OutlierRemovalError
 
-from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
+from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
 from bloom_mcp.contract import register as _contract_register
 from bloom_mcp.data_access import (
     CleanedVersionRequiredError,
@@ -144,7 +144,7 @@ class RemoveOutliersParams(BaseModel):
     )
 
 
-class RemoveOutliersResult(BaseModel):
+class RemoveOutliersResult(RunLinks):
     """The numeric outlier report + links to the persisted trimmed run (no table inline)."""
 
     experiment: str
@@ -165,10 +165,6 @@ class RemoveOutliersResult(BaseModel):
     # threshold's trustworthiness without re-parsing the goodness_of_fit dict / prose.
     fit_is_trustworthy: Optional[bool] = None
     outlier_barcodes: list[str]
-    run_ref: str
-    version_dir: str
-    manifest_path: str
-    outputs: dict[str, str]
 
 
 def _role_kwargs(frame: ExperimentFrame) -> dict[str, str]:

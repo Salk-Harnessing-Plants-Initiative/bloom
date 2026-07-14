@@ -32,15 +32,12 @@ links (never the score/loadings matrices inline).
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
 from sleap_roots_analyze import PCAResult, perform_pca_analysis
 
-from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
+from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
 from bloom_mcp.contract import register as _contract_register
 from bloom_mcp.data_access import (
     CleanedVersionRequiredError,
@@ -48,12 +45,12 @@ from bloom_mcp.data_access import (
     ExperimentReadError,
 )
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._consumer_utils import _build_output_frame, snapshot_frame
 
 _TOOL_CLASS = "pca"
 _LOADINGS_NAME = "loadings.csv"
 _SCORES_NAME = "scores.csv"
 _RESULT_NAME = "pca_result.json"
-_INPUT_SNAPSHOT_NAME = "input.csv"
 
 
 class PCAAnalysisParams(BaseModel):
@@ -93,7 +90,7 @@ class PCAAnalysisParams(BaseModel):
     )
 
 
-class PCAAnalysisResult(BaseModel):
+class PCAAnalysisResult(RunLinks):
     """A small variance summary + links to the persisted PCA run (no matrices inline)."""
 
     experiment: str
@@ -105,10 +102,6 @@ class PCAAnalysisResult(BaseModel):
     explained_variance_ratio: list[float]
     cumulative_variance_ratio: list[float]
     eigenvalues: list[float]
-    run_ref: str
-    version_dir: str
-    manifest_path: str
-    outputs: dict[str, str]
 
 
 def _validate_trait_subset(
@@ -174,24 +167,6 @@ def _loadings_frame(pca: PCAResult) -> pd.DataFrame:
     """Component loadings as features (rows) × components (columns)."""
     cols = [f"PC{i + 1}" for i in range(pca.n_components)]
     return pd.DataFrame(pca.loadings, index=pca.feature_names, columns=cols)
-
-
-def _scores_frame(pca: PCAResult, frame: ExperimentFrame) -> pd.DataFrame:
-    """Sample scores as samples (rows) × components (columns), carrying sample identity.
-
-    Prepends the frame's ``metadata_cols`` (e.g. Barcode/Genotype/Replicate) so each score
-    row maps back to its plant by a shared key rather than fragile positional alignment —
-    mirroring how the upstream ``run_pca_and_export_artifacts`` stitches ``metadata_cols``
-    onto its exported scores. This is sound *because* the tool certifies the selection
-    finite before fitting: the delegate's internal ``dropna()`` is then a no-op, so
-    ``pca.scores`` is row-aligned (in order) with ``frame.df``.
-    """
-    cols = [f"PC{i + 1}" for i in range(pca.n_components)]
-    scores = pd.DataFrame(pca.scores, columns=cols)
-    if not frame.metadata_cols:
-        return scores
-    identity = frame.df[frame.metadata_cols].reset_index(drop=True)
-    return pd.concat([identity, scores], axis=1)
 
 
 @as_mcp_tool(
@@ -304,9 +279,10 @@ def pca_analysis(
     # not just the mutable v<N>_cleaned label. The snapshot must outlive commit(), which is
     # where the store hashes it.
     prov = provenance.model_copy(update={"based_on_version": frame.source})
-    with tempfile.TemporaryDirectory(prefix="pca_input_") as _tmp:
-        source_snapshot = Path(_tmp) / _INPUT_SNAPSHOT_NAME
-        frame.df.to_csv(source_snapshot, index=False)
+    scores_df = pd.DataFrame(
+        pca.scores, columns=[f"PC{i + 1}" for i in range(pca.n_components)]
+    )
+    with snapshot_frame(frame.df) as source_snapshot:
         run = store.create_run(
             experiment=params.experiment,
             tool_class=_TOOL_CLASS,
@@ -315,7 +291,9 @@ def pca_analysis(
             source_csv=source_snapshot,
         )
         _loadings_frame(pca).to_csv(run.staging_dir / _LOADINGS_NAME, index=True)
-        _scores_frame(pca, frame).to_csv(run.staging_dir / _SCORES_NAME, index=False)
+        _build_output_frame(frame, scores_df).to_csv(
+            run.staging_dir / _SCORES_NAME, index=False
+        )
         (run.staging_dir / _RESULT_NAME).write_text(pca.to_json())
         stored = store.commit(
             run,
