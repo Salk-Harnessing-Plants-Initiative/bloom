@@ -84,6 +84,13 @@ CVE-2026-42496
 # Reassess on next python:3.11-slim SHA bump.
 CVE-2026-8376
 
+# perl-base 5.40.1-6 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
+# Perl produces silently incorrect regex results on certain patterns. The agent
+# does not execute Perl at runtime; perl-base is a transitive Debian base
+# package included by python:3.11-slim, no Perl interpreter is invoked by the
+# application. No fix available upstream. Reassess on next python:3.11-slim SHA bump.
+CVE-2026-13221
+
 # linux-libc-dev (Debian 13 in python:3.11-slim) — affects: langchain-agent / bloommcp
 # kernel: ksmbd signedness bug. Kernel headers are a build-time-only transitive base
 # package; the container runs no kernel and uses no in-kernel SMB server (ksmbd), so the
