@@ -60,11 +60,13 @@ valid values. Caller-supplied controls incompatible with the chosen method SHALL
 #### Scenario: A cluster-count control set for the wrong method is rejected
 
 - **WHEN** a request supplies a gmm-only control (`n_components`, `max_components`, or `covariance_type`)
-  with `method = "kmeans"`, a kmeans-only control (`n_clusters` or `max_clusters`) with `method = "gmm"`,
-  or any method-specific control (`n_clusters`, `max_clusters`, `n_components`, `max_components`,
-  `covariance_type`) with `method = "hierarchical"`
+  with `method = "kmeans"` or `method = "hierarchical"`, or a kmeans-only control (`n_clusters` or
+  `max_clusters`) with `method = "gmm"`, or a hierarchical-only control (`linkage_method`,
+  `distance_metric`, or `optimization_method`) with `method = "kmeans"` or `method = "gmm"`
 - **THEN** the tool returns a `BloomMCPError` with code `invalid_input` naming the mismatched control,
   rather than silently ignoring it
+- **NOTE** `n_clusters` and `max_clusters` are valid for both `"kmeans"` and `"hierarchical"` and are
+  never rejected for those methods
 
 The `clustering` tool SHALL load its experiment frame through the injected `ExperimentReader` port
 with `require_clean=True` and SHALL restrict the clustering to columns within the resolved frame's

@@ -136,10 +136,11 @@ class ClusteringParams(BaseModel):
         description="hierarchical only: distance metric (default 'euclidean'). "
         "Do not set for kmeans/gmm.",
     )
-    optimization_method: Literal["silhouette", "calinski_harabasz"] | None = Field(
+    optimization_method: Literal["silhouette", "calinski", "davies_bouldin"] | None = Field(
         default=None,
         description="hierarchical only: metric used for automatic cluster-count selection "
-        "when n_clusters is omitted (default 'silhouette'). Do not set for kmeans/gmm.",
+        "when n_clusters is omitted. One of 'silhouette' (default), 'calinski', or "
+        "'davies_bouldin'. Do not set for kmeans/gmm.",
     )
     user_label: str | None = Field(
         default=None,
@@ -423,10 +424,13 @@ def clustering(
             "covariance_type": str(result.covariance_type),
         }
     else:  # hierarchical
+        coph = float(result.cophenetic_correlation)
         method_scalars = {
             "linkage_method": str(result.linkage_method),
             "distance_metric": str(result.distance_metric),
-            "cophenetic_correlation": float(result.cophenetic_correlation),
+            # NaN arises when all pairwise distances are 0 (all-identical data) giving a
+            # 0/0 correlation; convert to None so to_json() doesn't raise on allow_nan=False.
+            "cophenetic_correlation": None if not np.isfinite(coph) else coph,
             "cut_height": float(result.cut_height),
         }
 

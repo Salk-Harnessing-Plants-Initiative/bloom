@@ -744,6 +744,33 @@ def test_hierarchical_snapshot_through_the_tool(injected_ports):
     assert result.distance_metric == g["distance_metric"]
 
 
+def test_hierarchical_optimization_method_valid_values(injected_ports, monkeypatch):
+    """optimization_method accepts 'silhouette', 'calinski', 'davies_bouldin' — not 'calinski_harabasz'."""
+    captured: dict = {}
+    real = clustering_tool.hierarchical_cluster_labels
+
+    def _spy(data, **kwargs):
+        captured.update(kwargs)
+        return real(data, **kwargs)
+
+    monkeypatch.setattr(clustering_tool, "hierarchical_cluster_labels", _spy)
+    for valid in ("silhouette", "calinski", "davies_bouldin"):
+        _run(method="hierarchical", n_clusters=3, optimization_method=valid)
+        assert captured["optimization_method"] == valid
+
+    # 'calinski_harabasz' is NOT a valid Literal — the @as_mcp_tool wrapper converts the
+    # Pydantic ValidationError to invalid_input (pass a raw dict, not ClusteringParams, so
+    # the wrapper's model_validate path is exercised rather than the constructor).
+    with pytest.raises(BloomMCPError) as exc:
+        clustering({
+            "experiment": _EXPERIMENT,
+            "method": "hierarchical",
+            "n_clusters": 3,
+            "optimization_method": "calinski_harabasz",
+        })
+    assert exc.value.code == "invalid_input"
+
+
 def test_hierarchical_in_tools_list_enum(injected_ports):
     """The tools/list schema lists 'hierarchical' as a valid method enum value."""
     from fastmcp import Client
