@@ -17,6 +17,8 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
   `ResultEnvelope` back to Bloom (see below).
 - **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets
   (`--experiment-id` to scope to one experiment, `--json` for machine-readable output).
+- **[read]** `bloomctl cyl datasets get <name>` — show one dataset's details and the
+  unique traits it contains (`--json` for machine-readable output).
 - **[write]** `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
   create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`).
 

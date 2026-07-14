@@ -268,6 +268,147 @@ def test_create_surfaces_rpc_error(monkeypatch):
     assert "duplicate key" in res.output
 
 
+# --- get command ------------------------------------------------------------
+
+GET_ROW = {**FULL, "id": 7}
+
+
+def test_fetch_dataset_by_name_builds_query():
+    captured = {}
+
+    class _Q:
+        def select(self, sel):
+            captured["select"] = sel
+            return self
+
+        def eq(self, col, val):
+            captured["eq"] = (col, val)
+            return self
+
+        def limit(self, n):
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": [GET_ROW]})()
+
+    class _Client:
+        def table(self, name):
+            captured["table"] = name
+            return _Q()
+
+    out = ds.fetch_dataset_by_name(_Client(), "canola-v1")
+    assert out == GET_ROW
+    assert captured["table"] == "cyl_datasets"
+    assert captured["eq"] == ("name", "canola-v1")
+    # trait embed is NOT used (no FK) — traits are fetched separately
+    assert "cyl_dataset_traits" not in captured["select"]
+
+
+def test_fetch_dataset_by_name_missing_returns_none():
+    class _Client:
+        def table(self, name):
+            class _Q:
+                def select(self, *a):
+                    return self
+
+                def eq(self, *a):
+                    return self
+
+                def limit(self, n):
+                    return self
+
+                def execute(self):
+                    return type("R", (), {"data": []})()
+
+            return _Q()
+
+    assert ds.fetch_dataset_by_name(_Client(), "nope") is None
+
+
+def test_fetch_dataset_traits_three_step_unique_sorted():
+    # cyl_dataset_traits → scan_trait ids → cyl_scan_traits.trait_id → cyl_traits.name
+    # (dups at each hop must collapse)
+    calls = []
+
+    def _R(data):
+        return type("R", (), {"data": data})()
+
+    class _Client:
+        def table(self, name):
+            calls.append(name)
+
+            class _Q:
+                def select(self, *a):
+                    return self
+
+                def eq(self, *a):
+                    return self
+
+                def in_(self, *a):
+                    return self
+
+                def execute(self):
+                    if name == "cyl_dataset_traits":
+                        return _R([{"trait_id": 100}, {"trait_id": 101}, {"trait_id": 100}])  # scan_trait ids
+                    if name == "cyl_scan_traits":
+                        return _R([{"trait_id": 29}, {"trait_id": 27}, {"trait_id": 29}])      # cyl_traits ids
+                    return _R([{"name": "root_depth"}, {"name": "root_width_max"}])            # names
+
+            return _Q()
+
+    out = ds.fetch_dataset_traits(_Client(), 7)
+    assert out == ["root_depth", "root_width_max"]
+    assert calls == ["cyl_dataset_traits", "cyl_scan_traits", "cyl_traits"]
+
+
+def test_fetch_dataset_traits_empty():
+    class _Client:
+        def table(self, name):
+            class _Q:
+                def select(self, *a):
+                    return self
+
+                def eq(self, *a):
+                    return self
+
+                def execute(self):
+                    return type("R", (), {"data": []})()
+
+            return _Q()
+
+    assert ds.fetch_dataset_traits(_Client(), 7) == []
+
+
+def test_get_shows_metadata_and_unique_traits(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ds, "fetch_dataset_by_name", lambda client, name: GET_ROW)
+    monkeypatch.setattr(ds, "fetch_dataset_traits", lambda client, did: ["root_depth", "root_width_max"])
+    res = CliRunner().invoke(cli, ["cyl", "datasets", "get", "canola-v1"])
+    assert res.exit_code == 0, res.output
+    assert "canola-v1" in res.output
+    assert "2 unique" in res.output
+    assert "root_depth" in res.output and "root_width_max" in res.output
+
+
+def test_get_not_found(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ds, "fetch_dataset_by_name", lambda client, name: None)
+    res = CliRunner().invoke(cli, ["cyl", "datasets", "get", "missing"])
+    assert res.exit_code != 0
+    assert "missing" in res.output and "not found" in res.output.lower()
+
+
+def test_get_json_includes_traits(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ds, "fetch_dataset_by_name", lambda client, name: GET_ROW)
+    monkeypatch.setattr(ds, "fetch_dataset_traits", lambda client, did: ["root_depth", "root_width_max"])
+    res = CliRunner().invoke(cli, ["cyl", "datasets", "get", "canola-v1", "--json"])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.output)
+    assert payload["name"] == "canola-v1"
+    assert payload["traits"] == ["root_depth", "root_width_max"]
+
+
 # --- grouping ---------------------------------------------------------------
 
 
@@ -277,3 +418,4 @@ def test_datasets_grouped_under_cyl_not_top_level():
     sub = CliRunner().invoke(cli, ["cyl", "datasets", "--help"])
     assert "list" in sub.output
     assert "create" in sub.output
+    assert "get" in sub.output
