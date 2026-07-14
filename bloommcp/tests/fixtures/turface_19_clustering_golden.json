@@ -29,6 +29,21 @@
     ],
     "inertia": 333.4642388939501
   },
+  "hierarchical": {
+    "params": {
+      "n_clusters": 3,
+      "standardize": true
+    },
+    "n_clusters": 3,
+    "cluster_sizes": [28, 23, 102],
+    "silhouette_score": 0.4153917590688732,
+    "davies_bouldin_score": 0.7185795309086481,
+    "calinski_harabasz_score": 174.09633824015913,
+    "linkage_method": "ward",
+    "distance_metric": "euclidean",
+    "cophenetic_correlation": 0.7203580466038094,
+    "cut_height": 22.673373780132547
+  },
   "gmm": {
     "params": {
       "n_components": 3,

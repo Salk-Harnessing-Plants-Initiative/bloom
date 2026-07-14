@@ -637,3 +637,124 @@ def test_passes_source_csv_for_input_lineage(injected_ports, monkeypatch):
     monkeypatch.setattr(store, "create_run", _spy)
     _run(method="kmeans", n_clusters=3)
     assert captured["exists"]
+
+
+# ── Hierarchical (#422) ──────────────────────────────────────────────────────
+
+
+def test_hierarchical_delegates_to_hierarchical_entry_point(injected_ports, monkeypatch):
+    """hierarchical routes to hierarchical_cluster_labels exactly once; kmeans/gmm never called."""
+    captured: dict[str, object] = {}
+    real = clustering_tool.hierarchical_cluster_labels
+
+    def _spy(data, **kwargs):
+        captured["n"] = captured.get("n", 0) + 1
+        captured["kwargs"] = kwargs
+        return real(data, **kwargs)
+
+    monkeypatch.setattr(clustering_tool, "hierarchical_cluster_labels", _spy)
+
+    def _boom(*a, **k):  # pragma: no cover
+        raise AssertionError("hierarchical call routed to stochastic delegate")
+
+    monkeypatch.setattr(clustering_tool, "perform_kmeans_clustering", _boom)
+    monkeypatch.setattr(clustering_tool, "perform_gmm_clustering", _boom)
+
+    _run(method="hierarchical", n_clusters=3)
+    assert captured["n"] == 1
+    assert "random_state" not in captured["kwargs"]
+    assert captured["kwargs"].get("n_clusters") == 3
+
+
+def test_hierarchical_deterministic_without_seed(injected_ports, monkeypatch):
+    """Two hierarchical runs on the same input produce element-wise identical labels."""
+    _reader, store = injected_ports
+    first = _labels_of(store, monkeypatch, method="hierarchical", n_clusters=3)
+    second = _labels_of(store, monkeypatch, method="hierarchical", n_clusters=3)
+    assert first == second
+
+
+def test_hierarchical_provenance_records_seed_none(injected_ports):
+    _reader, store = injected_ports
+    _run(method="hierarchical", n_clusters=3)
+    stored = store.get_run(_EXPERIMENT, "clustering", "latest")
+    assert stored.seed is None
+
+
+def test_hierarchical_schema_round_trip(injected_ports):
+    result = _run(method="hierarchical", n_clusters=3)
+    again = ClusteringResult.model_validate(json.loads(result.model_dump_json()))
+    assert again.cluster_sizes == result.cluster_sizes
+    assert again.method == "hierarchical"
+
+
+def test_hierarchical_method_scalars_set_stochastic_unset(injected_ports):
+    """Hierarchical result carries its provenance scalars; stochastic ones are absent."""
+    result = _run(method="hierarchical", n_clusters=3)
+    # hierarchical-specific fields are set
+    assert result.linkage_method is not None
+    assert result.distance_metric is not None
+    assert result.cophenetic_correlation is not None
+    assert result.cut_height is not None
+    # stochastic-method fields are absent
+    assert result.inertia is None
+    assert result.bic is None
+    assert result.aic is None
+    assert result.converged is None
+    assert result.covariance_type is None
+
+
+def test_hierarchical_controls_rejected(injected_ports):
+    """gmm-only controls are rejected for hierarchical (n_components, max_components, covariance_type)."""
+    for bad in (
+        {"n_components": 3},
+        {"max_components": 8},
+        {"covariance_type": "full"},
+    ):
+        with pytest.raises(BloomMCPError) as exc:
+            _run(method="hierarchical", **bad)
+        assert exc.value.code == "invalid_input"
+        assert list(bad)[0] in exc.value.message
+
+
+def test_hierarchical_linkage_and_metric_forwarded(injected_ports, monkeypatch):
+    """linkage_method and distance_metric reach the delegate."""
+    captured: dict = {}
+    real = clustering_tool.hierarchical_cluster_labels
+
+    def _spy(data, **kwargs):
+        captured.update(kwargs)
+        return real(data, **kwargs)
+
+    monkeypatch.setattr(clustering_tool, "hierarchical_cluster_labels", _spy)
+    _run(method="hierarchical", n_clusters=3, linkage_method="complete", distance_metric="cosine")
+    assert captured["method"] == "complete"
+    assert captured["metric"] == "cosine"
+
+
+def test_hierarchical_snapshot_through_the_tool(injected_ports):
+    g = _GOLDEN["hierarchical"]
+    result = _run(method="hierarchical", n_clusters=g["params"]["n_clusters"])
+    assert result.n_clusters == g["n_clusters"]
+    assert result.cluster_sizes == g["cluster_sizes"]
+    assert result.silhouette_score == pytest.approx(g["silhouette_score"], abs=_TOL)
+    assert result.davies_bouldin_score == pytest.approx(g["davies_bouldin_score"], abs=_TOL)
+    assert result.calinski_harabasz_score == pytest.approx(g["calinski_harabasz_score"], abs=_TOL)
+    assert result.linkage_method == g["linkage_method"]
+    assert result.distance_metric == g["distance_metric"]
+
+
+def test_hierarchical_in_tools_list_enum(injected_ports):
+    """The tools/list schema lists 'hierarchical' as a valid method enum value."""
+    from fastmcp import Client
+    from bloom_mcp import server
+    import asyncio
+
+    async def _list():
+        async with Client(server.mcp) as client:
+            return await client.list_tools()
+
+    tools = {t.name: t for t in asyncio.run(_list())}
+    schema = tools["clustering"].inputSchema
+    method_enum = schema["properties"]["params"]["properties"]["method"]["enum"]
+    assert "hierarchical" in method_enum
