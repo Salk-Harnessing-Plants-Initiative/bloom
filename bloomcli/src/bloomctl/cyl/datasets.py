@@ -217,8 +217,8 @@ def create_dataset(
     A dataset is a collection of traits for a set of plants in a cylinder experiment.
 
     Requires a profile with write access (bloom_writer / bloom_admin) — intended for
-    automated DE pipelines or users granted write access; a read-only bloom_user
-    login can `datasets list` but will get a permission error here.
+    automated pipelines (e.g. the trait-extraction write-back) or users granted write
+    access; a read-only bloom_user login can `datasets list` but gets a permission error.
     """
     from postgrest import APIError
 

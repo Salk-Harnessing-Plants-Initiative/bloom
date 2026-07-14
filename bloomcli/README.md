@@ -32,7 +32,7 @@ profile maps to determines what works:
 | Command tag | Required role | Intended user |
 |---|---|---|
 | **[read]** (`download`, `datasets list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account |
-| **[write]** (`ingest-result`, `datasets create`) | `bloom_writer` / `bloom_admin` | automated DE / trait-extraction pipelines, or users granted write access |
+| **[write]** (`ingest-result`, `datasets create`) | `bloom_writer` / `bloom_admin` | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
 
 A read-only `bloom_user` can `list` datasets but **cannot** `create` one — the
 write path (the `create_cyl_dataset` / `insert_cyl_result_envelope` RPCs and the
