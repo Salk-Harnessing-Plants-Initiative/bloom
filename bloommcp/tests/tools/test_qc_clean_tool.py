@@ -876,6 +876,28 @@ def test_same_column_for_genotype_and_sample_id_is_invalid_input(injected_ports)
     assert store.list_runs(_EXPERIMENT, "qc") == []
 
 
+def test_partial_override_dual_role_collision_is_invalid_input(injected_ports):
+    """BLOCK-2 (post-resolution guard): partial override where genotype_column names a
+    column that is also auto-detected as sample_id must raise invalid_input even though
+    only one param was supplied.
+
+    turface_19: 'Barcode' matches sample_id patterns. Passing genotype_column='Barcode'
+    without sample_id_column causes resolve_columns to assign Barcode to both roles.
+    The post-resolution guard catches this before the run is persisted.
+    """
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                experiment=_EXPERIMENT,
+                genotype_column="Barcode",
+            )
+        )
+    assert exc.value.code == "invalid_input"
+    assert "Barcode" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "qc") == []
+
+
 def test_override_naming_nonexistent_column_is_invalid_input(injected_ports):
     """#403: an override that names a column absent from the frame is a fixable
     invalid_input naming it, not a downstream KeyError; nothing is persisted."""

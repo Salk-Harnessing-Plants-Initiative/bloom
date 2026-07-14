@@ -251,6 +251,23 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         exclude_columns=params.exclude_columns,
     )
 
+    # BLOCK-2 (post-resolution): the partial-override case — e.g. genotype_column="Barcode"
+    # when Barcode is also auto-detected as sample_id — cannot be caught by the pre-resolution
+    # B-4 guard (which only fires when both params are explicit). Check after resolution so
+    # any combination of explicit/auto-detected roles is covered.
+    if resolved.genotype is not None and resolved.genotype == resolved.sample_id:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"Column {resolved.genotype!r} resolved as both genotype and "
+                f"sample_id. A single column cannot serve as both roles."
+            ),
+            remedy=(
+                "Supply different columns via genotype_column and sample_id_column, "
+                "or rename the column so only one role pattern matches."
+            ),
+        )
+
     # Build role_info once — used for BLOCK-4 (absorbed exclusion warnings) and for the
     # role-as-trait error message (explains HOW each column became a role).
     role_info: dict[str, str] = {}
