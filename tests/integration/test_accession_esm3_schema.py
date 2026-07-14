@@ -4,8 +4,9 @@ registry row, protein_embedding_runs provenance, arabidopsis_accessions
 (natural key + one-reference + NOT NULLs), proteins.accession_id (FK, one
 locus per accession, cross-species rows stay NULL), protein_embeddings_esm3
 (vector(1536) dimension guardrail, zero-vector CHECK, run FK, ON DELETE
-CASCADE, HNSW index / no ivfflat), the three comparison RPCs (knn_search_esm3,
-compare_gene_across_accessions, search_accession_genes) and the search_genes
+CASCADE, HNSW index / no ivfflat), the comparison RPCs (knn_search_esm3,
+compare_gene_across_accessions, best_match_per_accession, and search_accession_genes
+incl. accession scoping + empty-query browse) and the search_genes
 scoping change, plus RLS (anon blocked via REST; read matrix for every bloom_*
 role; write-denial for user/agent; writer can ingest) and a six-policy drift
 detector.
@@ -360,13 +361,22 @@ def test_knn_search_esm3_excludes_self_and_orders(pg_conn, accession_seed):
         )
         rows = cur.fetchall()
     uids = [r[0] for r in rows]
-    # The query protein is excluded; only the two other accession proteins
-    # remain, nearest-first (ALT cosine ~0.9, SOLO ~0).
-    assert uids == [ALT_UID, SOLO_UID], f"unexpected KNN result: {uids}"
-    assert REF_UID not in uids  # query itself is never returned
+    # Approximate (HNSW) contract: the query itself is excluded, results are
+    # accession-scoped and nearest-first, and the clear nearest (ALT, cosine ~0.9)
+    # is found and ranked first. Complete recall of the far, orthogonal SOLO
+    # (cosine ~0) is NOT asserted — an HNSW index does not guarantee the farthest
+    # neighbour, and this surface is exploratory ("predicted, not verified").
+    assert REF_UID not in uids  # self-exclusion: query is never returned
     assert XSPEC_UID not in uids  # accession-only scope
-    assert rows[0][1] == "atest-Ler-0"  # nearest neighbor's accession_name
-    assert rows[0][3] > rows[1][3]  # descending similarity
+    assert ALT_UID in uids  # the clear nearest neighbour is found
+    assert uids[0] == ALT_UID  # nearest-first ordering
+    assert rows[0][1] == "atest-Ler-0"  # ALT's accession_name
+    sims = [r[3] for r in rows]
+    assert sims == sorted(sims, reverse=True)  # non-increasing similarity
+    if len(rows) >= 2:
+        # Strict: nearest is more similar than the farthest returned — catches a
+        # constant/broken similarity (a constant list is trivially "sorted").
+        assert rows[0][3] > rows[-1][3]
 
 
 def test_knn_search_esm3_match_count_is_neighbor_count(pg_conn, accession_seed):
@@ -453,6 +463,165 @@ def test_search_genes_excludes_accession_proteins(pg_conn, accession_seed):
         uids = {r[0] for r in cur.fetchall()}
     assert XSPEC_UID in uids
     assert not (uids & set(ACCESSION_UIDS)), f"accession proteins leaked into search_genes: {uids}"
+
+
+def test_search_accession_genes_scoped_to_one_accession(pg_conn, accession_seed):
+    """filter_accession_id restricts suggestions to a single accession's genes."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT uid FROM public.search_accession_genes('AT1G01010', 20, %s)",
+            (accession_seed["col0_id"],),
+        )
+        uids = {r[0] for r in cur.fetchall()}
+    assert uids == {REF_UID}  # Col-0's variant only — Ler-0's ALT_UID excluded
+
+
+def test_search_accession_genes_empty_lists_scoped_accession(pg_conn, accession_seed):
+    """Empty query lists the scoped accession's genes (browse without knowing the
+    ID format); empty with no accession filter still returns nothing."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT uid FROM public.search_accession_genes('', 20, %s)",
+            (accession_seed["ler0_id"],),
+        )
+        assert {r[0] for r in cur.fetchall()} == {ALT_UID, SOLO_UID}  # both Ler-0 genes
+        cur.execute("SELECT count(*) FROM public.search_accession_genes('', 20, NULL)")
+        assert cur.fetchone()[0] == 0  # empty + unscoped lists nothing (never all accessions)
+
+
+# ---------------------------------------------------------------------------
+# 5b. best_match_per_accession (embedding comparison across accessions)
+# ---------------------------------------------------------------------------
+
+def test_best_match_per_accession_picks_best_in_each_other_accession(pg_conn, accession_seed):
+    """Default (per_accession=1): one row per OTHER accession, each that
+    accession's single closest protein by ESM-3 cosine. Query = Col-0's
+    AT1G01010; the only other accession is Ler-0, whose closest is ALT (~0.9),
+    not SOLO (~0)."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT accession_id, accession_name, uid, gene_id, similarity, rank_in_accession "
+            "FROM public.best_match_per_accession(%s)",
+            (REF_UID,),
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1, f"expected one row (Ler-0 only), got {rows}"
+    accession_id, accession_name, uid, gene_id, similarity, rank_in_acc = rows[0]
+    assert accession_id == accession_seed["ler0_id"]
+    assert accession_name == "atest-Ler-0"
+    assert uid == ALT_UID  # ALT (~0.9) beats SOLO (~0) within Ler-0
+    assert gene_id == "AT1G01010"
+    assert abs(similarity - _NEAR_X) < 0.02  # cosine ≈ 0.9
+    assert rank_in_acc == 1
+
+
+def test_best_match_top_k_per_accession(pg_conn, accession_seed):
+    """per_accession=2 returns Ler-0's two nearest to the query (ALT then SOLO),
+    with rank_in_accession 1 and 2, ordered most-similar-first."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT uid, rank_in_accession, similarity "
+            "FROM public.best_match_per_accession(%s, 2)",
+            (REF_UID,),
+        )
+        rows = cur.fetchall()
+    assert [r[0] for r in rows] == [ALT_UID, SOLO_UID]  # nearest first
+    assert [r[1] for r in rows] == [1, 2]  # within-accession rank
+    assert rows[0][2] > rows[1][2]  # ALT more similar than SOLO
+
+
+def test_best_match_excludes_query_own_accession(pg_conn, accession_seed):
+    """'Best match in OTHER accessions' — the query's own accession never appears."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT accession_id, uid FROM public.best_match_per_accession(%s)",
+            (REF_UID,),
+        )
+        rows = cur.fetchall()
+    assert all(r[0] != accession_seed["col0_id"] for r in rows), "query's own accession leaked in"
+    assert REF_UID not in [r[1] for r in rows]
+
+
+def test_best_match_missing_query_returns_empty(pg_conn, accession_seed):
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM public.best_match_per_accession('atest:nope')")
+        assert cur.fetchone()[0] == 0
+
+
+def test_best_match_bounds_do_not_crash(pg_conn, accession_seed):
+    """per_accession clamps to >=1 (negative) and <=25 (huge); match_count
+    clamps to LIMIT >=1 (no 'LIMIT -n' error)."""
+    with pg_conn.cursor() as cur:
+        # per_accession = -5 -> clamped to 1 -> Ler-0's single best
+        cur.execute("SELECT count(*) FROM public.best_match_per_accession(%s, -5)", (REF_UID,))
+        assert cur.fetchone()[0] == 1
+        # per_accession huge -> clamped to 25 -> Ler-0 has 2 proteins in the pool
+        cur.execute("SELECT count(*) FROM public.best_match_per_accession(%s, 100000)", (REF_UID,))
+        assert cur.fetchone()[0] == 2
+        # match_count = -1 -> clamped to LIMIT 1
+        cur.execute("SELECT count(*) FROM public.best_match_per_accession(%s, 2, -1)", (REF_UID,))
+        assert cur.fetchone()[0] == 1
+
+
+def test_best_match_partitions_across_multiple_accessions(pg_conn, accession_seed):
+    """The result must be grouped BY accession: with more than one OTHER
+    accession, each contributes its OWN nearest protein(s), not the globally
+    nearest. The 2-accession fixture can't show this (one partition == global),
+    so seed a 3rd accession in a savepoint and verify the partitioning.
+
+    Query = Col-0's REF (e0). Ler-0 has ALT(cos .9)/SOLO(cos 0); Bur-0 gets
+    BURA(cos .95)/BURB(cos .5). Globally the two nearest are BURA then ALT — a
+    global top-1 would return only Bur-0. Correct per-accession grouping returns
+    Ler-0's ALT AND Bur-0's BURA, each rank 1."""
+    bura_x, burb_x = 0.95, 0.5
+    bura = _make_vec(ESM3_DIM, {0: bura_x, 1: (1 - bura_x * bura_x) ** 0.5})
+    burb = _make_vec(ESM3_DIM, {0: burb_x, 1: (1 - burb_x * burb_x) ** 0.5})
+    with pg_conn.cursor() as cur:
+        cur.execute("SAVEPOINT sp3")
+        cur.execute(
+            "INSERT INTO public.arabidopsis_accessions (common_name, external_id, id_source) "
+            "VALUES ('atest-Bur-0', 'atest-bur', '1001 Genomes') RETURNING id"
+        )
+        bur_id = cur.fetchone()[0]
+        for uid, gene, vec in (
+            ("atest:bur:G1", "ATBUR1", bura),
+            ("atest:bur:G2", "ATBUR2", burb),
+        ):
+            cur.execute(
+                "INSERT INTO public.proteins (uid, species, gene_id, accession_id) "
+                "VALUES (%s, 'arabidopsis', %s, %s)",
+                (uid, gene, bur_id),
+            )
+            cur.execute(
+                "INSERT INTO public.protein_embeddings_esm3 (uid, embedding, run_id) "
+                "VALUES (%s, %s::vector(1536), %s)",
+                (uid, _to_pgvector(vec), accession_seed["run_id"]),
+            )
+
+        # per_accession = 1: BOTH other accessions appear, each its own best.
+        cur.execute(
+            "SELECT accession_id, uid, rank_in_accession "
+            "FROM public.best_match_per_accession(%s, 1)",
+            (REF_UID,),
+        )
+        by_acc = {r[0]: r for r in cur.fetchall()}
+        assert accession_seed["ler0_id"] in by_acc, "Ler-0 dropped — not grouped per accession"
+        assert bur_id in by_acc, "Bur-0 dropped — not grouped per accession"
+        assert by_acc[accession_seed["ler0_id"]][1] == ALT_UID  # Ler-0's own nearest
+        assert by_acc[bur_id][1] == "atest:bur:G1"              # Bur-0's own nearest, not global
+        assert all(r[2] == 1 for r in by_acc.values())
+
+        # per_accession = 2: Bur-0 shows both its proteins, ranked within itself.
+        cur.execute(
+            "SELECT uid, rank_in_accession FROM public.best_match_per_accession(%s, 2) "
+            "WHERE accession_id = %s ORDER BY rank_in_accession",
+            (REF_UID, bur_id),
+        )
+        bur_rows = cur.fetchall()
+        assert [r[0] for r in bur_rows] == ["atest:bur:G1", "atest:bur:G2"]
+        assert [r[1] for r in bur_rows] == [1, 2]
+
+        cur.execute("ROLLBACK TO SAVEPOINT sp3")  # undo the 3rd accession
 
 
 # ---------------------------------------------------------------------------

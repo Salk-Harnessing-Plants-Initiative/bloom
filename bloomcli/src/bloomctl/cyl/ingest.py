@@ -1,4 +1,4 @@
-"""Cyl ResultEnvelope write-back: read + validate an envelope, call the RPC.
+"""`bloomctl cyl ingest-result`: read + validate an envelope, call the RPC.
 
 Pure helpers (read/parse, validate, summarize, error-mapping) are separated from
 the single Supabase I/O call so the contract is unit-testable without a live
@@ -15,6 +15,10 @@ import json
 import sys
 from pathlib import Path
 from typing import Any, TextIO
+
+import click
+
+from ..credentials import DEFAULT_PROFILE
 
 
 class EnvelopeError(Exception):
@@ -154,3 +158,62 @@ def call_insert_envelope(client: Any, envelope: dict[str, Any]) -> dict[str, Any
     Lets ``postgrest.APIError`` propagate so the command can map it to a message.
     """
     return client.rpc("insert_cyl_result_envelope", {"envelope": envelope}).execute().data
+
+
+# --- command ----------------------------------------------------------------
+
+
+@click.command(name="ingest-result")
+@click.argument("envelope")
+@click.option(
+    "-p",
+    "--profile",
+    default=DEFAULT_PROFILE,
+    show_default=True,
+    help="Credentials profile to use (must have write access to the RPC).",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the RPC result object as JSON on stdout (e.g. to capture source_id).",
+)
+def ingest_result(envelope: str, profile: str, as_json: bool) -> None:
+    """Ingest a per-scan ResultEnvelope (a path, or - for stdin) into Bloom.
+
+    Validates the envelope against sleap-roots-contracts, then calls the
+    insert_cyl_result_envelope RPC. Re-ingesting an already-ingested envelope is a
+    benign no-op (first-writer-wins), reported distinctly from a real error.
+    """
+    from ..cli import _authed_client
+
+    # Read + validate before any network call: the model gate catches shape and
+    # missing-provenance errors up front (fails fast without authenticating). Some
+    # value-level checks (e.g. an empty idempotency_key) are enforced only by the
+    # RPC and surface below.
+    try:
+        data = load_envelope(envelope)
+        validate_envelope(data)
+    except EnvelopeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    client = _authed_client(profile)
+
+    from postgrest import APIError
+
+    try:
+        result = call_insert_envelope(client, data)
+    except APIError as exc:
+        raise click.ClickException(
+            map_rpc_error(getattr(exc, "message", None), profile=profile)
+        ) from exc
+
+    # The RPC RETURNS jsonb (an object) on every path; guard so any future
+    # shape change surfaces as a clean error, not a bare AttributeError.
+    if not isinstance(result, dict):
+        raise click.ClickException(f"unexpected RPC response shape: {result!r}")
+
+    if as_json:
+        click.echo(json.dumps(result))
+    else:
+        click.echo(summarize_result(result))

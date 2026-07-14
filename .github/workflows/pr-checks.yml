@@ -10,6 +10,13 @@ permissions:
   contents: read
   pull-requests: write
 
+# Cancel superseded runs — a new push to a PR aborts the in-flight run for the
+# same ref instead of building all Docker images + the compose stack to
+# completion for a commit that's already been replaced.
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Supabase CLI version — matched to what's installed on the Salk deploy
   # server (documented in #135). Change here + on the server together.
@@ -169,11 +176,10 @@ jobs:
   docker-build:
     name: Build Docker Images & Scan for CVEs
     runs-on: ubuntu-latest
-    # compose-health-check `needs: docker-build`, and this job builds all four
-    # images (bloom-web/langchain/bloommcp/caddy) + Trivy-scans them on the same
-    # ~14 GB-free runner — the same disk-heavy pattern as compose-health-check
-    # (issue #334). Protect it too: a disk-out here would skip the very job the
-    # cleanup is meant to guard. Cap the runtime so a wedge can't hang for 6h.
+    # This job builds all five images (bloom-web/langchain/bloommcp/caddy/
+    # workflows) + Trivy-scans them on the same ~14 GB-free runner — the same
+    # disk-heavy pattern as compose-health-check (issue #334). Protect it too:
+    # free disk before building. Cap the runtime so a wedge can't hang for 6h.
     timeout-minutes: 30
     steps:
       - name: Checkout code
@@ -183,6 +189,12 @@ jobs:
         uses: ./.github/actions/free-disk-space
         with:
           min-free-gb: "20"
+
+      # Buildx enables the GHA layer cache below. Each build reads/writes a
+      # per-image cache scope in the GitHub Actions cache, so unchanged layers
+      # are restored across runs instead of rebuilt cold every PR.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build bloom-web image
         # NEXT_PUBLIC_* build args are still REQUIRED until PR-3 §6 of the
@@ -194,24 +206,63 @@ jobs:
         # the Dockerfile, (b) drop these --build-arg flags here, and
         # (c) add tests/unit/test_dockerfile_no_next_public_args.py to
         # fence the absence on both sides.
-        run: |
-          docker build --provenance=false -f web/Dockerfile.bloom-web.prod \
-            --build-arg NEXT_PUBLIC_SUPABASE_URL=http://localhost:8000 \
-            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder \
-            --build-arg NEXT_PUBLIC_SUPABASE_COOKIE_NAME=sb-localhost-auth-token \
-            -t bloom-web:ci .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: web/Dockerfile.bloom-web.prod
+          tags: bloom-web:ci
+          load: true                     # load into the docker daemon so Trivy can scan it
+          provenance: false
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=http://localhost:8000
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder
+            NEXT_PUBLIC_SUPABASE_COOKIE_NAME=sb-localhost-auth-token
+          cache-from: type=gha,scope=bloom-web
+          cache-to: type=gha,mode=max,scope=bloom-web
 
       - name: Build langchain-agent image
-        run: docker build --provenance=false -f langchain/Dockerfile -t langchain-agent:ci ./langchain
+        uses: docker/build-push-action@v6
+        with:
+          context: ./langchain
+          file: langchain/Dockerfile
+          tags: langchain-agent:ci
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=langchain-agent
+          cache-to: type=gha,mode=max,scope=langchain-agent
 
       - name: Build bloommcp image
-        run: docker build --provenance=false -f bloommcp/Dockerfile -t bloommcp:ci ./bloommcp
+        uses: docker/build-push-action@v6
+        with:
+          context: ./bloommcp
+          file: bloommcp/Dockerfile
+          tags: bloommcp:ci
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=bloommcp
+          cache-to: type=gha,mode=max,scope=bloommcp
 
       - name: Build caddy image
-        run: docker build --provenance=false -f caddy/Dockerfile -t caddy:ci ./caddy
+        uses: docker/build-push-action@v6
+        with:
+          context: ./caddy
+          file: caddy/Dockerfile
+          tags: caddy:ci
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=caddy
+          cache-to: type=gha,mode=max,scope=caddy
 
       - name: Build workflows image
-        run: docker build --provenance=false -f services/workflows/Dockerfile -t workflows:ci ./services/workflows
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/workflows
+          file: services/workflows/Dockerfile
+          tags: workflows:ci
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=workflows
+          cache-to: type=gha,mode=max,scope=workflows
 
       # Scan built images for CVEs and generate markdown report
       - name: Scan bloom-web image
@@ -295,13 +346,6 @@ jobs:
             echo "> Full scan output available in the [trivy-built-images-report](../actions/artifacts) artifact."
           } > trivy-report.md
 
-      - name: Post Trivy report as PR comment
-        if: always()
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: trivy-docker-build
-          path: trivy-report.md
-
       - name: Upload Trivy report artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -348,6 +392,14 @@ jobs:
           severity: 'CRITICAL'
           exit-code: '1'
           trivyignores: '.trivyignore'
+
+      # Post after the CVE gates so the comment only appears once a pass/fail exists.
+      - name: Post Trivy report as PR comment
+        if: ${{ !cancelled() }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: trivy-docker-build
+          path: trivy-report.md
 
   lint-migrations:
     name: Lint new migration filenames + timestamps
@@ -402,7 +454,10 @@ jobs:
 
   compose-health-check:
     name: Docker Compose Health Check
-    needs: docker-build
+    # Runs in parallel with docker-build (separate runners, no shared images).
+    # It formerly `needs: docker-build`, which serialized the two jobs and gave
+    # fail-fast — a failing CVE build skipped this expensive job. Dropping it
+    # trades that saving for parallelism (both build their own stacks anyway).
     runs-on: ubuntu-latest
     # Cap the job. The GitHub default is 6h; a "No space left on device" fill
     # once left this job hanging for the full 6h before failing (issue #334).
@@ -459,6 +514,10 @@ jobs:
       # tries to descend into the root-owned volumes directory.
       - name: Setup uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+
+      # Enables the type=gha layer cache on the compose builds below (mirrors docker-build).
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Install Supabase CLI
         run: |
@@ -589,7 +648,13 @@ jobs:
           echo "Database is healthy!"
 
       - name: Start remaining services
-        run: docker compose $COMPOSE_FILES --env-file .env.ci up -d --build
+        # COMPOSE_BAKE routes the build through Buildx bake so the type=gha cache
+        # in the ci-cache overlay is honored. The overlay is added only here (not
+        # to COMPOSE_FILES) so it never applies to local dev, which lacks the
+        # GitHub Actions credentials that gha cache export requires.
+        env:
+          COMPOSE_BAKE: "true"
+        run: docker compose $COMPOSE_FILES -f docker-compose.ci-cache.yml --env-file .env.ci up -d --build
 
       - name: Wait for services to be healthy
         run: |
