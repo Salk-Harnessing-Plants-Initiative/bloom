@@ -322,9 +322,9 @@ def test_gmm_autoselect_bic_aic_reflect_the_selected_model(injected_ports, monke
     idx = result.n_clusters - 1
     # On this dataset auto-select collapses to n=1 out of the default max_components=5
     # candidates — making the negative assertion unconditional (selected ≠ last candidate).
-    assert (
-        result.n_clusters == 1
-    ), f"expected auto-collapse to n=1, got {result.n_clusters}"
+    assert result.n_clusters == 1, (
+        f"expected auto-collapse to n=1, got {result.n_clusters}"
+    )
     assert len(d["bic_scores"]) == 5  # default max_components=5
     # Corrected values == the selected candidate's per-candidate scores.
     assert result.bic == pytest.approx(d["bic_scores"][idx], abs=_TOL)
@@ -607,7 +607,9 @@ def test_labels_csv_carries_sample_identity(injected_ports, monkeypatch):
 
     labels = pd.read_csv(io.StringIO(captured["labels.csv"]))
     assert list(labels.columns[:3]) == ["Barcode", "Genotype", "Replicate"]
-    assert labels.columns[3] == "cluster"
+    # cluster is always last; don't assert a fixed index because metadata_cols now
+    # includes Computation.Time.s (reclassified from traits by get_trait_columns/#403).
+    assert labels.columns[-1] == "cluster"
     final = _final_df()
     assert labels["Barcode"].tolist() == final["Barcode"].tolist()
     assert len(labels) == len(final) == 153
