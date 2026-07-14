@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -48,6 +49,7 @@ from bloom_mcp.data_access import (
     ExperimentReadError,
 )
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
 from bloom_mcp.tools._qc_shared import _validate_trait_subset
 
 _TOOL_CLASS = "pca"
@@ -55,6 +57,18 @@ _LOADINGS_NAME = "loadings.csv"
 _SCORES_NAME = "scores.csv"
 _RESULT_NAME = "pca_result.json"
 _INPUT_SNAPSHOT_NAME = "input.csv"
+
+# Valid plot keys — four upstream plotters callable from PCA outputs.
+# create_variance_decomposition_plot excluded: requires a heritability pipeline
+# frame not derivable from PCA outputs (see design.md).
+_PCA_CATALOG_KEYS: frozenset[str] = frozenset(
+    {
+        "create_pca_scree_plot",
+        "create_pca_biplot",
+        "create_feature_contribution_plot",
+        "create_feature_contribution_heatmap",
+    }
+)
 
 
 class PCAAnalysisParams(BaseModel):
@@ -88,6 +102,19 @@ class PCAAnalysisParams(BaseModel):
         description="Fixed number of components; overrides the variance threshold. "
         "Clamped to the number of selected features (never raises if larger).",
     )
+    include_plots: bool = Field(
+        default=False,
+        description="If true, generate and persist PCA plots as run artifacts. "
+        "Returned as additional entries in outputs (object-key links). "
+        "When false (default), behavior is identical to pre-plots behavior.",
+    )
+    plots: Optional[list[str]] = Field(
+        default=None,
+        description="Subset of plot keys to generate; omit (None) to generate all four "
+        "available plots when include_plots=True. Ignored when include_plots=False. "
+        "Valid keys: create_pca_scree_plot, create_pca_biplot, "
+        "create_feature_contribution_plot, create_feature_contribution_heatmap.",
+    )
     user_label: str | None = Field(
         default=None,
         description="Optional slug appended to the version directory name.",
@@ -110,6 +137,54 @@ class PCAAnalysisResult(BaseModel):
     version_dir: str
     manifest_path: str
     outputs: dict[str, str]
+
+
+def _pca_plot_calls(
+    result_dict: dict,
+    pca: PCAResult,
+    frame: ExperimentFrame,
+    threshold: float,
+) -> dict:
+    """Return zero-arg callables for each catalog plot key, lazily importing plotters.
+
+    Plotters are imported here (not at module level) so that importing this
+    module never pulls in matplotlib — the Tier-0 import-clean guarantee is
+    maintained on the default no-plots path.
+    """
+    from sleap_roots_analyze import (
+        create_feature_contribution_heatmap,
+        create_feature_contribution_plot,
+        create_pca_biplot,
+        create_pca_scree_plot,
+    )
+
+    return {
+        "create_pca_scree_plot": lambda: create_pca_scree_plot(
+            result_dict, variance_threshold=threshold
+        ),
+        # color_by=None: passing the genotype column name causes matplotlib to
+        # interpret string genotype values as colors, which raises ValueError.
+        # Blue-point biplot is still a valid scientific visualization.
+        "create_pca_biplot": lambda: create_pca_biplot(
+            result_dict,
+            df=frame.df,
+            trait_names=list(pca.feature_names),
+            color_by=None,
+        ),
+        "create_feature_contribution_plot": lambda: create_feature_contribution_plot(
+            result_dict,
+            trait_names=list(pca.feature_names),
+            n_components=pca.n_components,
+            variance_threshold=threshold,
+        ),
+        # plot_type='loadings' forces a single Figure return (default 'both' → 2-tuple).
+        "create_feature_contribution_heatmap": lambda: create_feature_contribution_heatmap(
+            result_dict,
+            n_components=pca.n_components,
+            n_features=len(pca.feature_names),
+            plot_type="loadings",
+        ),
+    }
 
 
 def _loadings_frame(pca: PCAResult) -> pd.DataFrame:
@@ -215,6 +290,8 @@ def pca_analysis(
     # Stamp the threshold that produced the fit so the serialized PCAResult self-describes
     # its selection rule (random_state stays None — consistent with seed=None; the delegate's
     # deterministic path does not consume one).
+    # result_dict is retained in scope — all four plot-path plotters take the raw dict,
+    # not the PCAResult instance (see design.md § "result_dict retained in scope").
     pca = PCAResult.from_pca_dict(
         result_dict,
         explained_variance_threshold=params.explained_variance_threshold,
@@ -241,34 +318,61 @@ def pca_analysis(
             ),
         )
 
-    # Persist a versioned run, recording the cleaned-source lineage on the manifest so the
-    # qc_clean run that produced this PCA's input is recoverable. The consumed cleaned frame
-    # lives in the backend, not at a known local path, so snapshot it to a temp CSV and pass
-    # it as source_csv — the manifest then content-addresses the exact input (input_sha256),
-    # not just the mutable v<N>_cleaned label. The snapshot must outlive commit(), which is
-    # where the store hashes it.
+    # Optional plots — validate keys and generate figures BEFORE create_run so an unknown
+    # key fails as invalid_input with no run committed. The try/finally wraps the whole
+    # persistence region (including the tempdir) so figures are always closed even when
+    # the tempdir entry or store operations fail (see design.md § "Figure/tempdir nesting").
     prov = provenance.model_copy(update={"based_on_version": frame.source})
-    with tempfile.TemporaryDirectory(prefix="pca_input_") as _tmp:
-        source_snapshot = Path(_tmp) / _INPUT_SNAPSHOT_NAME
-        frame.df.to_csv(source_snapshot, index=False)
-        run = store.create_run(
-            experiment=params.experiment,
-            tool_class=_TOOL_CLASS,
-            provenance=prov,
-            user_label=params.user_label,
-            source_csv=source_snapshot,
-        )
-        _loadings_frame(pca).to_csv(run.staging_dir / _LOADINGS_NAME, index=True)
-        _scores_frame(pca, frame).to_csv(run.staging_dir / _SCORES_NAME, index=False)
-        (run.staging_dir / _RESULT_NAME).write_text(pca.to_json())
-        stored = store.commit(
-            run,
-            {
+    figures: dict = {}
+    try:
+        if params.include_plots:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            validate_plot_keys(params.plots, _PCA_CATALOG_KEYS)
+            calls = _pca_plot_calls(
+                result_dict, pca, frame, params.explained_variance_threshold
+            )
+            keys_to_generate = (
+                list(params.plots)
+                if params.plots is not None
+                else list(_PCA_CATALOG_KEYS)
+            )
+            figures = generate_figures({k: calls[k] for k in keys_to_generate})
+
+        # Persist a versioned run, recording the cleaned-source lineage on the manifest so
+        # the qc_clean run that produced this PCA's input is recoverable. The consumed
+        # cleaned frame lives in the backend, not at a known local path, so snapshot it to a
+        # temp CSV and pass it as source_csv — the manifest then content-addresses the exact
+        # input (input_sha256), not just the mutable v<N>_cleaned label. The snapshot must
+        # outlive commit(), which is where the store hashes it.
+        with tempfile.TemporaryDirectory(prefix="pca_input_") as _tmp:
+            source_snapshot = Path(_tmp) / _INPUT_SNAPSHOT_NAME
+            frame.df.to_csv(source_snapshot, index=False)
+            run = store.create_run(
+                experiment=params.experiment,
+                tool_class=_TOOL_CLASS,
+                provenance=prov,
+                user_label=params.user_label,
+                source_csv=source_snapshot,
+            )
+            _loadings_frame(pca).to_csv(run.staging_dir / _LOADINGS_NAME, index=True)
+            _scores_frame(pca, frame).to_csv(
+                run.staging_dir / _SCORES_NAME, index=False
+            )
+            (run.staging_dir / _RESULT_NAME).write_text(pca.to_json())
+            outputs: dict[str, str] = {
                 _LOADINGS_NAME: _LOADINGS_NAME,
                 _SCORES_NAME: _SCORES_NAME,
                 _RESULT_NAME: _RESULT_NAME,
-            },
-        )
+            }
+            for name, fig in figures.items():
+                rel = f"{name}.png"
+                fig.savefig(run.staging_dir / rel, bbox_inches="tight")
+                outputs[rel] = rel
+            stored = store.commit(run, outputs)
+    finally:
+        close_figures(figures)
 
     return PCAAnalysisResult(
         experiment=params.experiment,
