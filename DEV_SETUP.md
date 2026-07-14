@@ -222,7 +222,7 @@ make load-test-data
 make upload-images
 ```
 
-> **Validate the bloom-mcp persistence path:** with the stack up + migrated, `make bloommcp-smoke` drives clustering, `qc_clean`, and `remove_outliers` end-to-end through real Supabase storage — see [bloommcp/docs/local-validation.md](bloommcp/docs/local-validation.md).
+> **Validate the bloom-mcp persistence path:** with the stack up + migrated, `make bloommcp-smoke` drives the granular bloom-mcp tools end-to-end through real Supabase storage — see [bloommcp/docs/local-validation.md](bloommcp/docs/local-validation.md).
 
 ---
 
