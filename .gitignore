@@ -92,6 +92,10 @@ volumes/db/data/
 minio/data/
 minio_data/
 
+# bloom-mcp local runtime output (SLEAP_OUT_CSV etc.) + a stray pip-redirect artifact
+bloommcp/data/
+/=0.1.0a4
+
 # temporary/copy files
 nginx/copy.config
 nginx/copy.config_2

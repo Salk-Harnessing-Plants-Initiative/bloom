@@ -48,6 +48,7 @@ from bloom_mcp.data_access import (
     ExperimentReadError,
 )
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._qc_shared import _validate_trait_subset
 
 _TOOL_CLASS = "pca"
 _LOADINGS_NAME = "loadings.csv"
@@ -111,65 +112,6 @@ class PCAAnalysisResult(BaseModel):
     outputs: dict[str, str]
 
 
-def _validate_trait_subset(
-    frame: ExperimentFrame, requested: list[str], experiment: str
-) -> None:
-    """Require the selection to be a duplicate-free set of certified-clean trait columns.
-
-    ``require_clean`` guarantees no-NaN only within ``frame.trait_cols``; the frame may
-    still carry other numeric columns holding NaNs. Restricting the selection to the
-    certified set (not merely "exists + numeric" over the whole frame) is what forecloses
-    the silent-``dropna()`` path — a NaN-bearing numeric column ``qc_clean`` did not adopt
-    as a surviving trait cannot be selected. Unknown, metadata, and non-certified columns
-    all surface here as a fixable ``invalid_input`` naming the offenders.
-
-    An **empty** list and **duplicate** names are rejected too: ``[]`` would otherwise fall
-    through to "all certified traits" (a full-frame PCA the caller did not ask for), and a
-    duplicate name would be re-selected by the delegate's ``standardize_data``, inflating the
-    feature set (e.g. ``["Holes", "Holes"]`` → four features) while ``n_features`` still
-    reported two.
-    """
-    if not requested:
-        raise BloomMCPError(
-            code="invalid_input",
-            message="trait_columns was given as an empty list.",
-            remedy=(
-                "Omit trait_columns to analyze all certified-clean traits, or name at "
-                "least one certified trait column."
-            ),
-        )
-    duplicates = sorted({c for c in requested if requested.count(c) > 1})
-    if duplicates:
-        raise BloomMCPError(
-            code="invalid_input",
-            message=f"trait_columns contains duplicate columns: {duplicates}.",
-            remedy="List each trait column at most once.",
-        )
-    certified = set(frame.trait_cols)
-    outside = [c for c in requested if c not in certified]
-    if outside:
-        raise BloomMCPError(
-            code="invalid_input",
-            message=(
-                f"trait_columns includes columns that are not certified-clean traits of "
-                f"{experiment!r}: {outside}."
-            ),
-            remedy=(
-                "Pass only cleaned trait columns (see load_experiment_data on the cleaned "
-                "version), or omit trait_columns to use all of them."
-            ),
-        )
-    non_numeric = [
-        c for c in requested if not pd.api.types.is_numeric_dtype(frame.df[c])
-    ]
-    if non_numeric:
-        raise BloomMCPError(
-            code="invalid_input",
-            message=f"trait_columns includes non-numeric columns: {non_numeric}.",
-            remedy="Pass only numeric trait columns; identifiers/metadata cannot be analyzed.",
-        )
-
-
 def _loadings_frame(pca: PCAResult) -> pd.DataFrame:
     """Component loadings as features (rows) × components (columns)."""
     cols = [f"PC{i + 1}" for i in range(pca.n_components)]
@@ -224,7 +166,9 @@ def pca_analysis(
     if params.trait_columns is None:
         trait_cols = list(frame.trait_cols)
     else:
-        _validate_trait_subset(frame, params.trait_columns, params.experiment)
+        _validate_trait_subset(
+            frame, params.trait_columns, params.experiment, require_certified=True
+        )
         trait_cols = list(params.trait_columns)
     selected = frame.df[trait_cols]
 
