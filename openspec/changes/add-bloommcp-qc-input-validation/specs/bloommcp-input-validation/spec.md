@@ -168,3 +168,21 @@ validation `mode`, the `contract_version`, the `resolved_roles`, the `excluded_c
 - **WHEN** the persisted run manifest for a successful `qc_clean` is inspected
 - **THEN** it contains an `input_validation` block with `mode`, `contract_version`,
   `resolved_roles`, `excluded_columns`, and `warnings`
+
+
+## REMOVED Requirements
+
+### Requirement: next_step advisory nudge removed from QCCleanResult
+
+The `next_step: Optional[str]` field that carried an advisory nudge (suggesting
+`qc_inspect` when samples were dropped) SHALL be removed from `QCCleanResult`.
+
+The field is superseded by the richer `validation_warnings` list and the explicit
+`n_samples_dropped` / `sample_retention` summary returned in the same result.
+
+#### Scenario: QCCleanResult does not carry next_step
+
+- **WHEN** a successful `qc_clean` call returns a result
+- **THEN** the result has no `next_step` field; downstream consumers that relied on
+  advisory nudges SHOULD instead inspect `validation_warnings`, `n_samples_dropped`,
+  and `sample_retention`

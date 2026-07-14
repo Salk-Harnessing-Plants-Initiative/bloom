@@ -71,9 +71,6 @@ from bloom_mcp.tools._qc_shared import (
     _validate_trait_subset,
 )
 
-# NOTE: _role_kwargs intentionally not imported — qc_clean builds role kwargs inline
-# from resolve_columns; _role_kwargs (frame-based) is used by qc_inspect / remove_outliers.
-
 _TOOL_CLASS = "qc"
 _LOG_NAME = "cleanup_log.json"
 _VALIDATION_MODE = "warn"
@@ -213,12 +210,13 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     # the default "latest" resolution, which would resolve the newest _cleaned.csv.
     frame = reader.load_experiment(params.experiment, version="raw")
 
-    # A column override that names a column not in the frame is a fixable input error
-    # (rather than a downstream KeyError / opaque internal_error).
-    override_named = [
+    # BLOCK-2: Only role overrides (sample_id_column, genotype_column) must name a
+    # column that actually exists. exclude_columns is a deny-list — absent entries are
+    # a silent no-op (a shared config may list columns not present in every experiment).
+    role_overrides = [
         c for c in (params.sample_id_column, params.genotype_column) if c is not None
-    ] + list(params.exclude_columns or [])
-    unknown = [c for c in override_named if c not in frame.df.columns]
+    ]
+    unknown = [c for c in role_overrides if c not in frame.df.columns]
     if unknown:
         raise BloomMCPError(
             code="invalid_input",
@@ -236,6 +234,36 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         genotype_column=params.genotype_column,
         exclude_columns=params.exclude_columns,
     )
+
+    # Build role_info once — used for BLOCK-4 (absorbed exclusion warnings) and for the
+    # role-as-trait error message (explains HOW each column became a role).
+    role_info: dict[str, str] = {}
+    if resolved.genotype:
+        how = (
+            "explicitly set via genotype_column"
+            if params.genotype_column
+            else "auto-detected"
+        )
+        role_info[resolved.genotype] = f"genotype ({how})"
+    if resolved.sample_id:
+        how = (
+            "explicitly set via sample_id_column"
+            if params.sample_id_column
+            else "auto-detected"
+        )
+        role_info[resolved.sample_id] = f"sample_id ({how})"
+    if resolved.replicate:
+        role_info[resolved.replicate] = "replicate (auto-detected)"
+
+    # BLOCK-4: when an explicit exclude_columns entry is the resolved role column,
+    # resolve_columns absorbs it silently. Surface this as a validation_warning so the
+    # caller knows their exclusion had no effect.
+    absorbed_warnings: list[str] = [
+        f"exclude_columns: {col!r} is the resolved {role_info[col]} and cannot be "
+        f"excluded from that role — the exclusion was absorbed."
+        for col in (params.exclude_columns or [])
+        if col in role_info
+    ]
 
     # Traceability guard — a bloommcp policy enforced BEFORE the contract call, so it
     # holds even when sleap-roots-contracts is absent (the warn-mode contract alone
@@ -284,17 +312,14 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     if params.trait_columns is not None:
         _validate_trait_subset(frame, params.trait_columns, params.experiment)
         # A — reject any caller-supplied trait column that resolve_columns promoted to
-        # a role. A role column cannot also be analyzed as a trait; with overrides the
-        # promoted column may differ from what auto-detection would have chosen.
-        role_set = {
-            r for r in (resolved.genotype, resolved.sample_id, resolved.replicate) if r
-        }
-        as_role = [c for c in params.trait_columns if c in role_set]
+        # a role. Use role_info so the error explains HOW each column became a role.
+        as_role = [c for c in params.trait_columns if c in role_info]
         if as_role:
+            details = ", ".join(f"{c!r} [{role_info[c]}]" for c in as_role)
             raise BloomMCPError(
                 code="invalid_input",
                 message=(
-                    f"trait_columns includes resolved role columns: {as_role}. "
+                    f"trait_columns includes resolved role columns: {details}. "
                     f"Role columns (genotype, sample_id, replicate) cannot be analyzed "
                     f"as traits."
                 ),
@@ -313,7 +338,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     # selection, so a caller who narrows the analysis may still see advisories about
     # columns they excluded — intentional (the contract is about the input, not the pick).
     try:
-        validation_warnings = run_input_validation(
+        contract_warnings = run_input_validation(
             frame.df,
             resolved,
             exclude_columns=params.exclude_columns,
@@ -329,6 +354,15 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
                 "then retry."
             ),
         ) from None
+    # BLOCK-4: absorbed_warnings (role-absorbed exclusions) prepended so they appear
+    # first; contract_warnings follow.
+    validation_warnings = absorbed_warnings + contract_warnings
+
+    # BLOCK-3: when an allow-list (trait_columns) wins over the deny-list (exclude_columns),
+    # a column appears in both resolved.excluded_cols and trait_cols — a contradiction in
+    # the result. Compute the effective excluded set as what was NOT actually analyzed.
+    trait_col_set = set(trait_cols)
+    effective_excluded = [c for c in resolved.excluded_cols if c not in trait_col_set]
 
     n_samples_in = len(frame.df)
     n_traits_in = len(trait_cols)
@@ -419,7 +453,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
             "sample_id": resolved.sample_id,
             "replicate": resolved.replicate,
         },
-        "excluded_columns": resolved.excluded_cols,
+        "excluded_columns": effective_excluded,
         "warnings": validation_warnings,
     }
     provenance = provenance.model_copy(
@@ -477,7 +511,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         genotype_column=resolved.genotype,
         sample_id_column=resolved.sample_id,
         replicate_column=resolved.replicate,
-        excluded_columns=resolved.excluded_cols,
+        excluded_columns=effective_excluded,
         validation_warnings=validation_warnings,
         input_nan_summary=input_nan_summary,
         cleaned_nan_cells_remaining=cleaned_nan_cells,

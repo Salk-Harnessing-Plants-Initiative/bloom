@@ -850,6 +850,58 @@ def test_override_naming_nonexistent_column_is_invalid_input(injected_ports):
     assert store.list_runs(_EXPERIMENT, "qc") == []
 
 
+def test_all_nan_genotype_column_is_assumption_violated(injected_ports):
+    """Item 2 / K: a genotype override that resolves to a column whose values are
+    entirely NaN/blank errors with assumption_violated, no run persisted.
+
+    resolved.genotype is non-None (name resolved), but every row is untraceable —
+    the bloommcp guard catches this independently of the contract's warn-mode."""
+    reader, store = injected_ports
+    df = pd.DataFrame(
+        {
+            "my_geno": [float("nan")] * 12,  # all NaN — untraceable
+            "Barcode": [f"b{i}" for i in range(12)],
+            "t1": [float(i) for i in range(12)],
+            "t2": [float(2 * i) for i in range(12)],
+        }
+    )
+    reader.add_experiment("nan_geno.csv", df)
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment="nan_geno.csv", genotype_column="my_geno"))
+    assert exc.value.code == "assumption_violated"
+    assert "my_geno" in exc.value.message
+    assert store.list_runs("nan_geno.csv", "qc") == []
+
+
+def test_role_column_in_trait_columns_is_invalid_input(injected_ports):
+    """Item 3 / A: a caller-supplied trait column that is the resolved genotype
+    role errors with invalid_input; the error names the column and explains it was
+    auto-detected (so an agent knows whether to remap or remove it).
+
+    "geno" must be numeric here so _validate_trait_subset's dtype check doesn't fire
+    first — role detection is name-based regardless of dtype."""
+    reader, store = injected_ports
+    df = pd.DataFrame(
+        {
+            "geno": [0.0, 1.0] * 6,  # numeric; still auto-detects as genotype by name
+            "Barcode": [f"b{i}" for i in range(12)],
+            "t1": [float(i) for i in range(12)],
+            "t2": [float(2 * i) for i in range(12)],
+        }
+    )
+    reader.add_experiment("role_trait.csv", df)
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(experiment="role_trait.csv", trait_columns=["geno", "t1"])
+        )
+    assert exc.value.code == "invalid_input"
+    assert "geno" in exc.value.message
+    assert (
+        "auto-detected" in exc.value.message
+    )  # item 10: explains how column became a role
+    assert store.list_runs("role_trait.csv", "qc") == []
+
+
 def test_warn_mode_structural_failure_is_assumption_violated(injected_ports):
     """#403: warn mode still RAISES on a universal structural failure (a frame with
     genotype + sample-id but no numeric trait) — surfaced as assumption_violated, no

@@ -151,8 +151,10 @@ def run_input_validation(
     contract logic here), mapping the resolved ``sample_id`` role onto the
     contract's ``.barcode``. In ``warn`` mode it **raises ``ValueError``** on a
     universal structural failure (no numeric trait, NaN/blank genotype, bad role
-    dtype) — the caller maps that to a structured error. If ``sleap-roots-contracts``
-    is not installed, the delegate degrades to a logged no-op (returns ``[]``).
+    dtype) — the caller maps that to a structured error. Degradation when
+    ``sleap-roots-contracts`` is not installed is implemented inside
+    ``validate_entry_input`` via the ``CONTRACTS_AVAILABLE`` flag — no
+    ``ImportError`` is raised here.
     """
     from sleap_roots_analyze.validation import validate_entry_input
 
@@ -160,16 +162,23 @@ def run_input_validation(
     logger = logging.getLogger("bloom_mcp.input_validation")
     logger.setLevel(logging.WARNING)
     logger.addHandler(capture)
+    # Restore propagate in finally so the singleton is not permanently mutated;
+    # also removeHandler so successive calls don't accumulate duplicate handlers.
+    old_propagate = logger.propagate
     logger.propagate = False
-    validate_entry_input(
-        df,
-        columns=_Roles(
-            genotype=resolved.genotype,
-            barcode=resolved.sample_id,
-            replicate=resolved.replicate,
-        ),
-        mode=mode,
-        additional_exclude=list(exclude_columns) if exclude_columns else None,
-        logger=logger,
-    )
+    try:
+        validate_entry_input(
+            df,
+            columns=_Roles(
+                genotype=resolved.genotype,
+                barcode=resolved.sample_id,
+                replicate=resolved.replicate,
+            ),
+            mode=mode,
+            additional_exclude=list(exclude_columns) if exclude_columns else None,
+            logger=logger,
+        )
+    finally:
+        logger.removeHandler(capture)
+        logger.propagate = old_propagate
     return capture.messages
