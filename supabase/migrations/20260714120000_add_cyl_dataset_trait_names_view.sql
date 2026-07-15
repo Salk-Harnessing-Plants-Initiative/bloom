@@ -11,17 +11,24 @@
 -- table. It stores nothing, so it is always correct with no backfill or sync. If a hot
 -- path ever needs it, this can become a MATERIALIZED view with the same interface.
 --
--- security_invoker = true so the view runs under the CALLER's RLS (Postgres 15+): a
+-- security_invoker = on so the view runs under the CALLER's RLS (Postgres 15+): a
 -- caller sees exactly the datasets/traits their policies allow.
+--
+-- cyl_scan_traits.trait_id is nullable (added post-hoc in 20241119232238). Rows where
+-- the backfill left trait_id NULL cannot resolve to a trait name and are excluded
+-- explicitly (the join would drop them anyway; the WHERE makes the intent clear).
 
 create or replace view public.cyl_dataset_trait_names
-with (security_invoker = true) as
+with (security_invoker = on) as
 select distinct
   dt.dataset_id,
   t.name as trait_name
 from cyl_dataset_traits dt
 join cyl_scan_traits st on st.id = dt.trait_id
-join cyl_traits t on t.id = st.trait_id;
+join cyl_traits t on t.id = st.trait_id
+where st.trait_id is not null
+order by dt.dataset_id, t.name;
 
+-- No anon (all access requires auth); bloom_writer inherits bloom_user.
 grant select on public.cyl_dataset_trait_names
-  to anon, authenticated, bloom_user, bloom_writer, bloom_admin, bloom_agent;
+  to authenticated, bloom_user, bloom_admin, bloom_agent;
