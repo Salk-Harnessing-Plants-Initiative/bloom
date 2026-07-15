@@ -50,14 +50,14 @@ into the delegate rather than relying on the delegate's `geno`/`rep`/`Barcode` d
 
 ### Requirement: QC Clean Default Thresholds Mirror the Canonical QC Pipeline
 
-The `qc_clean` tool's default cleanup thresholds (`max_zeros_per_trait`,
-`max_nans_per_trait`, `max_nans_per_sample`, `min_samples_per_trait`) SHALL mirror the
-**canonical QC pipeline** defaults that `sleap_roots_analyze` actually cleans with — the
-`CleanupConfig` values (and the `_QC_DEFAULTS` that `clean_traits_for_analysis` injects) —
-**not** the looser `apply_data_cleanup_filters` *signature* defaults (`max_nans_per_trait=0.3`,
-`max_nans_per_sample=0.2`). Because `qc_clean` forwards all four thresholds **explicitly** to
-the delegate, an unparameterized `qc_clean` SHALL reproduce the QC pipeline's clean rather than
-a looser one. (Source of truth: talmolab/sleap-roots-analyze#167 + `CleanupConfig`.)
+The `qc_clean` tool SHALL default its four cleanup thresholds (`max_zeros_per_trait`,
+`max_nans_per_trait`, `max_nans_per_sample`, `min_samples_per_trait`) to the **canonical
+QC pipeline** values from `CleanupConfig` (and the `_QC_DEFAULTS` that
+`clean_traits_for_analysis` injects) — **not** the looser `apply_data_cleanup_filters`
+*signature* defaults (`max_nans_per_trait=0.3`, `max_nans_per_sample=0.2`). An
+unparameterized `qc_clean` SHALL reproduce the QC pipeline's clean rather than a looser one,
+because it forwards all four thresholds **explicitly** to the delegate.
+(Source of truth: talmolab/sleap-roots-analyze#167 + `CleanupConfig`.)
 
 #### Scenario: Unparameterized defaults equal the canonical pipeline values
 
