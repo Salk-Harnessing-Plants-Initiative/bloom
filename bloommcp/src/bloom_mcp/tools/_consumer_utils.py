@@ -43,7 +43,7 @@ def _build_output_frame(
     re-indexed slice.
     """
     if not frame.metadata_cols:
-        return payload_df.copy()
+        return payload_df.reset_index(drop=True)
     identity = frame.df[frame.metadata_cols].reset_index(drop=True)
     payload_df = payload_df.reset_index(drop=True)
     return pd.concat([identity, payload_df], axis=1)

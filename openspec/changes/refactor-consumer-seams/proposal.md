@@ -21,8 +21,12 @@ the pattern from hardening as boilerplate across four tools.
 - **Refactor** `remove_outliers_tool.py` — `RemoveOutliersResult` inherits `RunLinks`
   (the four fields drop from its body)
 
-No behavior change: the same fields are returned in the same positions; existing tests
-serve as the regression suite.
+No behavior change for `PCAAnalysisResult` — run-link fields were already last in its
+body and remain last in `model_dump()` output. `RemoveOutliersResult` is a partial
+exception: Pydantic v2 MRO places inherited `RunLinks` fields first in `model_dump()`
+output (previously they were last, as the final four fields). The new
+`test_remove_outliers_result_run_link_fields_appear_first_in_model_dump` test locks
+this in as intentional. All existing tests pass unchanged.
 
 ## Impact
 

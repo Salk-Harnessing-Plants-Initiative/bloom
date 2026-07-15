@@ -68,12 +68,17 @@ def test_build_output_frame_with_metadata_cols():
 
 def test_build_output_frame_empty_metadata_cols():
     frame = _FakeFrame([])
-    payload = pd.DataFrame({"PC1": [0.1, 0.2, 0.3]})
+    payload = pd.DataFrame({"PC1": [0.1, 0.2, 0.3]}, index=[5, 6, 7])
     result = _build_output_frame(frame, payload)
 
-    # With no metadata_cols, result is just the payload
+    # With no metadata_cols, result is just the payload (same columns, row count)
     assert list(result.columns) == ["PC1"]
     assert len(result) == 3
+    # Index is reset to RangeIndex — consistent with the non-empty path
+    assert list(result.index) == [0, 1, 2]
+    # Result is independent — mutating it must not affect the original payload
+    result["PC1"] = -1.0
+    assert payload["PC1"].tolist() == pytest.approx([0.1, 0.2, 0.3])
 
 
 def test_build_output_frame_non_default_frame_index():
@@ -121,6 +126,21 @@ def test_snapshot_frame_normal():
 
     # Temp directory cleaned up after exit
     assert not captured_path.exists()
+
+
+def test_snapshot_frame_non_default_index_written_without_index_column():
+    """snapshot_frame writes index=False regardless of the DataFrame's index.
+
+    A non-default index (e.g. after filtering) must not produce an
+    'Unnamed: 0' column in the CSV.
+    """
+    df = pd.DataFrame({"a": [1, 2, 3]}, index=[10, 11, 12])
+
+    with snapshot_frame(df) as src:
+        loaded = pd.read_csv(src)
+        assert "Unnamed: 0" not in loaded.columns
+        assert list(loaded.columns) == ["a"]
+        assert list(loaded["a"]) == [1, 2, 3]
 
 
 def test_snapshot_frame_empty_df():
