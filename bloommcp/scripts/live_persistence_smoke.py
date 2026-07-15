@@ -53,6 +53,25 @@ A third, ``remove_outliers`` leg (#378) trims the cleaned version through the sa
     outliers on that frame — a no-op trim, not a regression; the trim's persistence as the
     resolvable latest is anchored on the ``tool`` provenance check above, not the row delta.)
 
+A fourth, granular **``clustering``** leg (#309) *consumes* that cleaned version through the
+same real ports:
+
+  * ``clustering(experiment="turface_raw.csv", method="kmeans", seed=42)`` resolves the latest
+    cleaned version via ``require_clean=True`` (the trim if the leg above ran, else the qc_clean
+    clean) and commits a versioned ``clustering`` run whose outputs are ``labels.csv`` +
+    ``cluster_result.json``, with a schema-v3 manifest recording the resolved ``seed``,
+    ``tool == "clustering"``, and matching ``output_sha256`` for both artifacts — the
+    qc_clean → … → clustering(require_clean=True) composition, in parallel with pca_analysis.
+    Its ``clustering`` class is disjoint from the legacy workflow leg (different experiment).
+
+A fifth, **hierarchical clustering** leg (#422) validates the deterministic arm:
+
+  * ``clustering(experiment="turface_raw.csv", method="hierarchical")`` resolves the latest
+    cleaned version via ``require_clean=True`` and commits a versioned ``clustering`` run whose
+    outputs are ``labels.csv`` + ``cluster_result.json``, with a schema-v3 manifest recording
+    ``seed=None`` (hierarchical is deterministic — no RNG), ``tool == "clustering"``, and
+    matching ``output_sha256`` for both artifacts.
+
 Every failure mode (workflow error, hash mismatch, read-after-write timeout, import leak)
 routes through the per-check summary and a non-zero exit — never an unlabelled traceback.
 
@@ -109,6 +128,18 @@ RO_TOOL_CLASS = "qc"
 RO_REPORT_NAME = "outlier_report.json"  # logical key for the outlier report
 RO_SEED = 42  # remove_outliers is stochastic — resolves this fixed seed
 
+# --- clustering leg constants (#309) ------------------------------------------
+# The granular clustering tool (#309) *consumes* the cleaned version qc_clean (then
+# remove_outliers) committed, through the SAME real ports, persisting a versioned
+# ``clustering`` run — proving qc_clean -> ... -> clustering(require_clean=True). It
+# shares no namespace with the legacy run_clustering_workflow leg above: that leg
+# persists under (turface.csv, "clustering"); this one under (turface_raw.csv,
+# "clustering") — a different experiment. clustering is stochastic (records the seed).
+CL_TOOL_CLASS = "clustering"
+CL_SEED = 42  # clustering/kmeans is stochastic — resolves this fixed seed
+CL_LABELS_NAME = "labels.csv"  # logical key for the per-sample cluster labels
+CL_RESULT_NAME = "cluster_result.json"  # logical key for the serialized typed result
+
 # Read-after-write can lag the storage-api; bound the wait so a real regression
 # still fails fast (5 attempts, 1s apart, ≤5s ceiling) rather than hanging.
 RETRY_ATTEMPTS = 5
@@ -137,9 +168,11 @@ def summarize(checks: list[Check]) -> tuple[str, int]:
         lines.append(f"SMOKE FAILED: {failed}")
         return "\n".join(lines), 1
     lines.append(
-        "SMOKE PASSED ✅ — clustering(kmeans) seed-bearing run, qc_clean cleaned run, AND "
-        "remove_outliers trimmed run all persist full v3 provenance through the real ports; "
-        "the qc_clean → remove_outliers → require_clean composition resolves the trimmed table."
+        "SMOKE PASSED ✅ — the legacy clustering(kmeans) run, qc_clean cleaned run, "
+        "remove_outliers trimmed run, AND the granular clustering(kmeans) and "
+        "clustering(hierarchical) consumers all persist full v3 provenance through the real "
+        "ports; the qc_clean → remove_outliers → clustering(require_clean=True) composition "
+        "resolves and clusters the trimmed table for both stochastic and deterministic methods."
     )
     return "\n".join(lines), 0
 
@@ -349,6 +382,109 @@ def ro_trimmed_read_checks(
             "remove_outliers: trimmed frame has zero NaN trait cells",
             trait_nan_cells == 0,
             f"trait_nan_cells={trait_nan_cells!r}",
+        ),
+    ]
+
+
+def clustering_persist_checks(
+    *,
+    schema_version: object,
+    seed: object,
+    tool: object,
+    source: object,
+    output_keys: dict,
+    output_sha256: dict,
+    expected_outputs: set,
+) -> list[Check]:
+    """Assert the persisted ``clustering`` run: v3 manifest, recorded seed, catalog, lineage.
+
+    The #309 analogue of :func:`ro_persist_checks`. clustering is *stochastic*, so the run
+    records the resolved integer ``seed`` — asserted here. Unlike ``remove_outliers`` it is a
+    pure **consumer**: it produces no new cleaned version, so the composition payoff is that it
+    resolved the committed cleaned source (``v<N>_cleaned``, not ``raw``) via
+    ``require_clean=True`` and persisted a versioned ``clustering`` run whose per-sample labels
+    + serialized typed result share one key-set. ``tool == "clustering"`` anchors that the run
+    is the granular tool's, not the legacy workflow's.
+    """
+    return [
+        Check(
+            "clustering: manifest schema == 3",
+            schema_version == 3,
+            f"schema_version={schema_version!r}",
+        ),
+        Check(
+            f"clustering: seed == {CL_SEED}",
+            seed == CL_SEED,
+            f"seed={seed!r}",
+        ),
+        Check(
+            "clustering: run tool == 'clustering'",
+            tool == "clustering",
+            f"tool={tool!r}",
+        ),
+        Check(
+            "clustering: consumed a cleaned source (require_clean, not raw)",
+            isinstance(source, str) and source != "raw" and source.endswith("_cleaned"),
+            f"source={source!r}",
+        ),
+        Check(
+            "clustering: committed outputs include labels.csv + cluster_result.json",
+            expected_outputs <= set(output_keys),
+            f"output_keys={sorted(output_keys)}",
+        ),
+        Check(
+            "clustering: output_keys / output_sha256 share one key-set",
+            set(output_keys) == set(output_sha256),
+            f"keys={sorted(output_keys)} sha={sorted(output_sha256)}",
+        ),
+    ]
+
+
+def hierarchical_clustering_persist_checks(
+    *,
+    schema_version: object,
+    seed: object,
+    tool: object,
+    source: object,
+    output_keys: dict,
+    output_sha256: dict,
+    expected_outputs: set,
+) -> list[Check]:
+    """Assert the persisted hierarchical ``clustering`` run: v3 manifest, seed=None, catalog.
+
+    Hierarchical clustering is deterministic (no RNG), so provenance records ``seed=None``
+    rather than the resolved integer seed. Otherwise mirrors :func:`clustering_persist_checks`.
+    """
+    return [
+        Check(
+            "hierarchical clustering: manifest schema == 3",
+            schema_version == 3,
+            f"schema_version={schema_version!r}",
+        ),
+        Check(
+            "hierarchical clustering: seed == None (deterministic)",
+            seed is None,
+            f"seed={seed!r}",
+        ),
+        Check(
+            "hierarchical clustering: run tool == 'clustering'",
+            tool == "clustering",
+            f"tool={tool!r}",
+        ),
+        Check(
+            "hierarchical clustering: consumed a cleaned source (require_clean, not raw)",
+            isinstance(source, str) and source != "raw" and source.endswith("_cleaned"),
+            f"source={source!r}",
+        ),
+        Check(
+            "hierarchical clustering: committed outputs include labels.csv + cluster_result.json",
+            expected_outputs <= set(output_keys),
+            f"output_keys={sorted(output_keys)}",
+        ),
+        Check(
+            "hierarchical clustering: output_keys / output_sha256 share one key-set",
+            set(output_keys) == set(output_sha256),
+            f"keys={sorted(output_keys)} sha={sorted(output_sha256)}",
         ),
     ]
 
@@ -678,6 +814,97 @@ def main() -> int:
                     len(trimmed_frame.df),
                     n_pre_trim,
                 )
+            )
+
+        # === clustering leg (#309) ============================================
+        # Cluster the latest cleaned version (the trim if remove_outliers ran, else
+        # the qc_clean clean) through the SAME real ports. clustering is a pure
+        # consumer: require_clean resolves the committed cleaned source, and it
+        # persists a versioned `clustering` run under its own class — the
+        # qc_clean -> ... -> clustering(require_clean=True) composition, in parallel
+        # with the pca_analysis consumer.
+        from bloom_mcp.tools.clustering_tool import (  # noqa: E402
+            ClusteringParams,
+            clustering,
+        )
+
+        print(
+            f">>> running clustering on {QC_EXPERIMENT} "
+            f"(kmeans, seed={CL_SEED}) through real ports ..."
+        )
+        cl_committed = False
+        cl_source: object = None
+        try:
+            cl_result = clustering(
+                ClusteringParams(
+                    experiment=QC_EXPERIMENT, method="kmeans", seed=CL_SEED
+                )
+            )
+            cl_committed = True
+            cl_source = cl_result.source
+            checks.append(Check("clustering commits a run", True))
+        except BloomMCPError as exc:
+            checks.append(Check("clustering commits a run", False, f"error={exc!r}"))
+
+        if cl_committed:
+            cl_stored = retry(
+                lambda: _ports.store().get_run(QC_EXPERIMENT, CL_TOOL_CLASS, "latest")
+            )
+            cl_manifest = retry(lambda: sc.read_json(cl_stored.manifest_path))
+            checks.extend(
+                clustering_persist_checks(
+                    schema_version=cl_manifest.get("manifest_schema_version"),
+                    seed=cl_stored.seed,
+                    tool=cl_stored.tool,
+                    source=cl_source,
+                    output_keys=cl_stored.output_keys,
+                    output_sha256=cl_stored.output_sha256,
+                    expected_outputs={CL_LABELS_NAME, CL_RESULT_NAME},
+                )
+            )
+            checks.extend(
+                hash_checks(cl_stored.output_keys, cl_stored.output_sha256, read_bytes)
+            )
+
+        # === hierarchical clustering leg (#422) ==============================
+        # Validate the deterministic arm: hierarchical clustering consumes the same
+        # cleaned version through the real ports, recording seed=None in provenance.
+        print(
+            f">>> running clustering on {QC_EXPERIMENT} "
+            f"(hierarchical) through real ports ..."
+        )
+        hier_source: object = None
+        hier_committed = False
+        try:
+            hier_result = clustering(
+                ClusteringParams(experiment=QC_EXPERIMENT, method="hierarchical")
+            )
+            hier_committed = True
+            hier_source = hier_result.source
+            checks.append(Check("hierarchical clustering commits a run", True))
+        except BloomMCPError as exc:
+            checks.append(
+                Check("hierarchical clustering commits a run", False, f"error={exc!r}")
+            )
+
+        if hier_committed:
+            hier_stored = retry(
+                lambda: _ports.store().get_run(QC_EXPERIMENT, CL_TOOL_CLASS, "latest")
+            )
+            hier_manifest = retry(lambda: sc.read_json(hier_stored.manifest_path))
+            checks.extend(
+                hierarchical_clustering_persist_checks(
+                    schema_version=hier_manifest.get("manifest_schema_version"),
+                    seed=hier_stored.seed,
+                    tool=hier_stored.tool,
+                    source=hier_source,
+                    output_keys=hier_stored.output_keys,
+                    output_sha256=hier_stored.output_sha256,
+                    expected_outputs={CL_LABELS_NAME, CL_RESULT_NAME},
+                )
+            )
+            checks.extend(
+                hash_checks(hier_stored.output_keys, hier_stored.output_sha256, read_bytes)
             )
 
     text, code = summarize(checks)
