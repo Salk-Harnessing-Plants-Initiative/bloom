@@ -121,6 +121,11 @@ jobs:
   python-audit:
     name: Python Security Audit for CVEs
     runs-on: ubuntu-latest
+    # A hang anywhere in this job's chain (unit tests, the bloommcp/bloomcli
+    # suites, the wheel build, or pip-audit itself) would otherwise run until
+    # GitHub Actions' 360-minute default cap with zero output (#454). Matches
+    # docker-build (30m) / compose-health-check (30m) / dev-stack-smoke (20m).
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
