@@ -60,6 +60,10 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
   create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`).
 - **[read]** `bloomctl cyl experiments list` — list cylinder experiments (species,
   name, id), sorted by species then name (`--json` for machine-readable output).
+- **[read]** `bloomctl cyl accessions list --experiment-id N` — list the accessions
+  used in an experiment (`--json`).
+- **[read]** `bloomctl cyl accessions sample-counts [--species X]` — sample (plant)
+  count per accession, per species (`--json`).
 
 (Full `cyl download` usage docs are still forthcoming; run any command
 with `--help` in the meantime. `cyl ingest-result` and `cyl download-for-predict`
