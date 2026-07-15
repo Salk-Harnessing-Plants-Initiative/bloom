@@ -17,15 +17,16 @@ Proposal + implementation land in the **same PR** (bloom #411).
 
 **Commit plan (reconciled after `/review-openspec`)** — §3-5's RED tasks cannot be their own
 commits before §6's GREEN implementation without going red on every intermediate push (an
-unregistered command fails CLI-invocation tests outright, not silently). Land as:
+unregistered command fails CLI-invocation tests outright, not silently). Landed as (commits 3+4
+merged during implementation — the reviewer noted this split was optional, not CI-mandatory,
+since one module file + its full test suite + registration is a single coherent, already-GREEN
+unit; see round-1 git-workflow review):
 1. `docs(openspec): add proposal for cyl download-for-predict (#411)` — §1 (this proposal).
 2. `chore(contracts): bump sleap-roots-contracts to v0.1.0a4 (bloomcli floor + full re-pin)` —
    §2, verified installable (2.1) and re-pin diff confirmed `$id`-only (2.2) before committing.
-3. `feat(bloomcli): add download_for_predict pure helpers + oracle test (#411)` — §3 (oracle test)
-   + §4 (pure helpers) + the pure-helper half of §6.1 (no CLI registration yet).
-4. `feat(bloomctl): register cyl download-for-predict command (#411)` — §5 (command-wiring tests)
-   + the I/O/CLI half of §6.1 + §6.2 (registration).
-5. `docs(bloomcli): document cyl download-for-predict command` — §7.
+3. `feat(bloomctl): add cyl download-for-predict command (#411)` — §3-§6 (oracle test, pure
+   helpers, command-wiring tests, implementation, and registration together).
+4. `docs(bloomcli): document cyl download-for-predict command` — §7.
 §8 (verify) is a gate applied across all commits during review, not its own commit.
 
 ## 1. Proposal & specs (this change)
@@ -72,7 +73,7 @@ CI**; run it manually on a dev machine with `sleap-roots-predict` installed (e.g
 every shape fact predict's code is documented to require, without importing predict — that suite,
 not this test, is the CI-enforced contract for this change.
 
-- [ ] 3.1 **Oracle / acceptance test (manual, dev-machine only — see note above):**
+- [x] 3.1 **Oracle / acceptance test (manual, dev-machine only — see note above):**
       Given the SCAN fixture row (from `test_download_metadata.py`), a list of two fake
       `cyl_images` rows (`id=1001, frame_number=0, object_path="cyl-images/a.png"` and `id=1002,
       frame_number=1, object_path="cyl-images/b.png"`), and fake frame bytes per image:
@@ -91,17 +92,17 @@ not this test, is the CI-enforced contract for this change.
 
 Each test must FAIL before `download_for_predict.py` exists.
 
-- [ ] 4.1 `scan_key_for(scan_id)` returns `f"scan_{scan_id}"` for integer and string inputs.
-- [ ] 4.2 `frame_dest_for_predict(scan_dir, image)` returns
+- [x] 4.1 `scan_key_for(scan_id)` returns `f"scan_{scan_id}"` for integer and string inputs.
+- [x] 4.2 `frame_dest_for_predict(scan_dir, image)` returns
       `scan_dir / f"{image['frame_number']}{suffix}"` where suffix is the original extension of
       `image['object_path']` (or `.png` when missing).
-- [ ] 4.3 `compute_checksum(frame_bytes_list)` returns a string starting with `"sha256:"` whose
+- [x] 4.3 `compute_checksum(frame_bytes_list)` returns a string starting with `"sha256:"` whose
       hex suffix is the sha256 of all bytes concatenated in list order; an empty list produces a
       well-defined checksum (sha256 of `b""`).
-- [ ] 4.4 `build_sidecar(scan, images, frame_bytes_list)` assembles the sidecar dict — all four
+- [x] 4.4 `build_sidecar(scan, images, frame_bytes_list)` assembles the sidecar dict — all four
       fields present (`scan_key`, `params`, `image_ids`, `images_checksum`); `image_ids` order
       matches the input `images` list order; `scan_key` equals `scan_key_for(scan["scan_id"])`.
-- [ ] 4.5 `build_sidecar` calls `resolve_params(scan, overrides={"mode": "cylinder"})` — assert
+- [x] 4.5 `build_sidecar` calls `resolve_params(scan, overrides={"mode": "cylinder"})` — assert
       the actual call, not just the output (monkeypatch/spy on `resolve_params` to capture the
       `overrides` argument it receives), and assert it is exactly `{"mode": "cylinder"}`.
       (Asserting only `params["mode"] == "cylinder"` is insufficient: `sleap-roots-contracts
@@ -109,18 +110,18 @@ Each test must FAIL before `download_for_predict.py` exists.
       returns `"cylinder"` regardless of how — or whether — `resolve_params` is called, so that
       assertion alone can't distinguish "the override was passed" from "the oracle ignores every
       caller.")
-- [ ] 4.5b Add `test_resolve_params_ignores_mode_on_pinned_contracts_version`: call
+- [x] 4.5b Add `test_resolve_params_ignores_mode_on_pinned_contracts_version`: call
       `resolve_params(SCAN)` directly (no `overrides` at all) against the pinned
       `sleap-roots-contracts>=0.1.0a4`, and assert `result.values["mode"] == "cylinder"` anyway.
       Documents that `overrides={"mode": "cylinder"}` in `build_sidecar` is not currently
       load-bearing on this contracts version; if a future contracts bump makes `mode`
       metadata-driven, this test starts failing and flags the divergence instead of it going
       unnoticed.
-- [ ] 4.6 `write_sidecar(sidecar, path)` writes valid UTF-8 JSON to `path` (parent created if
+- [x] 4.6 `write_sidecar(sidecar, path)` writes valid UTF-8 JSON to `path` (parent created if
       absent); round-trips back to the original dict via `json.loads`.
-- [ ] 4.7 `frame_dest_for_predict` with `image["object_path"]` lacking an extension (e.g.
+- [x] 4.7 `frame_dest_for_predict` with `image["object_path"]` lacking an extension (e.g.
       `"cyl-images/a"`) returns a path ending in `.png` (the documented default).
-- [ ] 4.8 `compute_checksum` and `build_sidecar` with an empty `images` / `frame_bytes_list`
+- [x] 4.8 `compute_checksum` and `build_sidecar` with an empty `images` / `frame_bytes_list`
       produce `image_ids: []` and `images_checksum == "sha256:" + hashlib.sha256(b"").hexdigest()`
       — documents the pure helpers are well-defined on empty input. (Note: this path is not
       actually exercised by 5.9's CLI behavior — the command short-circuits on zero `cyl_images`
@@ -129,47 +130,47 @@ Each test must FAIL before `download_for_predict.py` exists.
 
 ## 5. RED — command wiring (`bloomcli/tests/test_cyl_download_for_predict.py`)
 
-- [ ] 5.1 Confirm `fetch_scan` is reused from `download.py`, not duplicated: import
+- [x] 5.1 Confirm `fetch_scan` is reused from `download.py`, not duplicated: import
       `bloomctl.cyl.download_for_predict` and assert `download_for_predict.fetch_scan is
       download.fetch_scan` (mirrors the intent of `test_fetch_scan_returns_single_row`, which
       exercises `fetch_scan` itself — this task instead pins the no-duplication contract).
-- [ ] 5.2 Happy-path CLI: `CliRunner().invoke(cli, ["cyl", "download-for-predict", "1",
+- [x] 5.2 Happy-path CLI: `CliRunner().invoke(cli, ["cyl", "download-for-predict", "1",
       str(out)])` with faked `fetch_scan` → SCAN, faked `fetch_images` → two image rows, faked
       Storage bucket, monkeypatched creds/auth → exit 0; assert:
       - `out/scan_1/0.png` and `out/scan_1/1.png` exist;
       - `out/scan_1/scan_1.scan_metadata.json` is valid JSON with `scan_key="scan_1"`,
         `image_ids=[1001, 1002]`, `params.mode="cylinder"`, `images_checksum` starts with
         `"sha256:"`.
-- [ ] 5.3 Scan not found: faked `fetch_scan` returns `None` → exit non-zero, "not found" in
+- [x] 5.3 Scan not found: faked `fetch_scan` returns `None` → exit non-zero, "not found" in
       output, no directory created.
-- [ ] 5.4 Partial frame failure: one frame download raises → exit non-zero, failure count in
+- [x] 5.4 Partial frame failure: one frame download raises → exit non-zero, failure count in
       output; assert the successfully-downloaded frame file(s) still exist on disk; assert
       `scan_1.scan_metadata.json` is **not** written (per the design decision: a sidecar is a
       claim that `image_ids`/`images_checksum` match what's on disk — see design.md).
-- [ ] 5.5 `fetch_scans` (experiment path) is never called in `download-for-predict` — assert via
+- [x] 5.5 `fetch_scans` (experiment path) is never called in `download-for-predict` — assert via
       monkeypatch that raises if called.
-- [ ] 5.6 `discover_scans` smoke (manual, dev-machine only — same non-CI-gate note as 3.1): after
+- [x] 5.6 `discover_scans` smoke (manual, dev-machine only — same non-CI-gate note as 3.1): after
       the happy-path run, `sleap_roots_predict.discover_scans` on `out` finds one scan (same
       `pytest.importorskip` guard as 3.1).
-- [ ] 5.7 Registration smoke: `CliRunner().invoke(cli, ["cyl", "--help"])` output contains
+- [x] 5.7 Registration smoke: `CliRunner().invoke(cli, ["cyl", "--help"])` output contains
       `"download-for-predict"`.
-- [ ] 5.8 Missing credentials → non-zero exit, "login" in output (mirror
+- [x] 5.8 Missing credentials → non-zero exit, "login" in output (mirror
       `test_cli_missing_credentials_hints_login`'s pattern of monkeypatching
       `creds.default_config_dir`, adapted to whichever of `load_credentials`/`_authed_client`
       `download_for_predict.py`'s command actually calls).
-- [ ] 5.9 Zero-frame scan: faked `fetch_images` → `[]` → exit non-zero, "no frames found" (or
+- [x] 5.9 Zero-frame scan: faked `fetch_images` → `[]` → exit non-zero, "no frames found" (or
       equivalent readable message) in output, no output directory created.
-- [ ] 5.10 `--profile` passthrough: `CliRunner().invoke(cli, ["cyl", "download-for-predict", "1",
+- [x] 5.10 `--profile` passthrough: `CliRunner().invoke(cli, ["cyl", "download-for-predict", "1",
       str(out), "-p", "staging"])` with monkeypatched `load_credentials` capturing its `profile`
       argument → assert it received `"staging"`.
-- [ ] 5.11 Checksum changes when frame content changes: run the happy-path CLI invocation twice
+- [x] 5.11 Checksum changes when frame content changes: run the happy-path CLI invocation twice
       into two different output dirs with different fake bytes for the same frame; assert the two
       resulting sidecars' `images_checksum` values differ.
-- [ ] 5.12 Storage bucket returns `None` (not raising) for one frame: assert this is treated as a
+- [x] 5.12 Storage bucket returns `None` (not raising) for one frame: assert this is treated as a
       per-frame failure (same handling as `download.py`'s `download_images`, which raises
       `ValueError("empty response from storage")` on a `None` response) — same non-zero exit /
       failure-count / no-sidecar assertions as 5.4.
-- [ ] 5.13 Stale-frame reconciliation on retry (added after second review round): pre-create
+- [x] 5.13 Stale-frame reconciliation on retry (added after second review round): pre-create
       `out/scan_1/` with an extra image file not among the current run's frames (e.g. `2.png`,
       simulating a leftover from an earlier attempt whose `cyl_images` row was since deleted/
       renumbered); run the happy-path CLI invocation into that same `out`; assert `2.png` no
@@ -179,7 +180,7 @@ Each test must FAIL before `download_for_predict.py` exists.
 
 ## 6. GREEN — implementation
 
-- [ ] 6.1 Create `bloomcli/src/bloomctl/cyl/download_for_predict.py`:
+- [x] 6.1 Create `bloomcli/src/bloomctl/cyl/download_for_predict.py`:
       Pure helpers (`scan_key_for`, `frame_dest_for_predict`, `compute_checksum`, `build_sidecar`,
       `write_sidecar`) above the `# --- supabase / storage I/O ---` marker. Import and reuse
       `fetch_scan`, `fetch_images`, `FrameResult`, `DownloadResult` from `download.py` (no
@@ -189,7 +190,7 @@ Each test must FAIL before `download_for_predict.py` exists.
       image-extension file in `scan_dir` that isn't one of the frame paths just written (task
       5.13; see design.md's stray-frame-reconciliation decision). Add the
       `@click.command(name="download-for-predict")` command.
-- [ ] 6.2 Register `download_for_predict_cmd` in `bloomcli/src/bloomctl/cyl/__init__.py`
+- [x] 6.2 Register `download_for_predict_cmd` in `bloomcli/src/bloomctl/cyl/__init__.py`
       (alias + `cyl.add_command`, matching the pattern for `download_cmd` and `ingest_result_cmd`).
       Iterate until tasks 3–5 are GREEN.
 
@@ -221,7 +222,12 @@ Each test must FAIL before `download_for_predict.py` exists.
       one-off at the start of §2.
 - [ ] 8.5 Run `npm run contracts:check` at the repo root to confirm the re-pin (task 2.2) passes
       the drift guard before committing.
-- [ ] 8.6 Manually run tests 3.1 and 5.6 with `sleap-roots-predict` installed locally (e.g. the
-      `sleap-roots-predict-dev` environment) and confirm they pass; paste the passing output into
-      the PR description — this is the only place these two tests are demonstrated to pass, since
-      they self-skip in CI (see §3 note).
+- [ ] 8.6 Manually run tests 3.1 (`test_oracle_sidecar_is_accepted_by_discover_scans`) and 5.6
+      (`test_discover_scans_smoke_after_happy_path`) with `sleap-roots-predict` installed locally
+      and confirm they pass; paste the passing output into the PR description. **Attempted during
+      implementation, blocked** — the local `sleap-roots-predict-dev` conda env has `sleap-nn
+      0.0.1` installed while `sleap-roots-predict`'s own `pyproject.toml` pins `sleap-nn==0.3.0`;
+      `import sleap_roots_predict` fails on `ImportError: cannot import name 'Predictor' from
+      'sleap_nn.inference'` before `discover_scans` is even reachable. This is a pre-existing,
+      broken environment issue in a separate repo, unrelated to this change — re-run once that
+      env is fixed (worth flagging to whoever owns `sleap-roots-predict-dev`'s setup).
