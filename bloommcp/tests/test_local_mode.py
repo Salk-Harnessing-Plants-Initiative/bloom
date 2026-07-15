@@ -158,6 +158,7 @@ def test_ports_import_is_pure_without_supabase_env():
         env=env,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
 
@@ -180,6 +181,7 @@ def test_server_import_is_pure_including_experiment_local_root():
         env=env,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
 
