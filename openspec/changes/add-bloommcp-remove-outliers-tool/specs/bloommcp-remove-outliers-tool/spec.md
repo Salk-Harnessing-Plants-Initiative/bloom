@@ -226,9 +226,10 @@ that the trim derived from a cleaned version rather than from raw data (and so a
 un-trim is auditable after the fact). It SHALL write the trimmed trait CSV under the shared
 `CLEANED_CSV_NAME` (`_cleaned.csv`) and the outlier report as `outlier_report.json`, and SHALL
 return the numeric report inline together
-with **`resource_link`s** to the persisted artifacts (the `run_ref`, the `manifest_path`, and
-the per-output object keys) — never the trimmed table inline. The persisted run SHALL be
-resolvable by the `ExperimentReader` as the newest **cleaned version** so any later
+with **`resource_link`s** to the persisted artifacts — never the trimmed table inline. The
+`RemoveOutliersResult` return model SHALL inherit `RunLinks` (from `bloom_mcp.contract`) for
+the four run-link fields (`run_ref`, `version_dir`, `manifest_path`, `outputs`). The persisted
+run SHALL be resolvable by the `ExperimentReader` as the newest **cleaned version** so any later
 `require_clean=True` consumer reads the trimmed table.
 
 #### Scenario: Run is committed with provenance under class qc
