@@ -206,18 +206,18 @@ str(out), "-p", "staging"])` with monkeypatched `load_credentials` capturing its
 
 ## 8. Verify
 
-- [ ] 8.1 `openspec validate add-cyl-download-for-predict --strict` passes.
-- [ ] 8.2 bloomcli unit suite green using the CI invocation:
+- [x] 8.1 `openspec validate add-cyl-download-for-predict --strict` passes.
+- [x] 8.2 bloomcli unit suite green using the CI invocation:
       `cd bloomcli && uv run --extra test pytest tests/ -m "not integration" -v --tb=short`.
       Run the release-time ruff gate manually:
       `uvx ruff@0.9.9 check bloomcli && uvx ruff@0.9.9 format --check bloomcli`.
       Run `pre-commit run --files` over new `.py`/`.md` files; confirm gitleaks is clean.
-- [ ] 8.3 Confirm no `TBD` or placeholder remains in `proposal.md` / `design.md`.
-- [ ] 8.4 Re-run task 2.1's installability check
+- [x] 8.3 Confirm no `TBD` or placeholder remains in `proposal.md` / `design.md`.
+- [x] 8.4 Re-run task 2.1's installability check
       (`uv run --no-project --with 'sleap-roots-contracts>=0.1.0a4' python -c "from
 sleap_roots_contracts import resolve_params; print('ok')"`) as a final gate, not just a
       one-off at the start of §2.
-- [ ] 8.5 Run `npm run contracts:check` at the repo root to confirm the re-pin (task 2.2) passes
+- [x] 8.5 Run `npm run contracts:check` at the repo root to confirm the re-pin (task 2.2) passes
       the drift guard before committing.
 - [ ] 8.6 Manually run tests 3.1 (`test_oracle_sidecar_is_accepted_by_discover_scans`) and 5.6
       (`test_discover_scans_smoke_after_happy_path`) with `sleap-roots-predict` installed locally
