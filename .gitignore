@@ -145,3 +145,6 @@ uv.lock
 # agents scratch (claude skill system)
 .agents/
 skills-lock.json
+
+# Serena MCP local memory (removed from tracking 2026-07 — no longer used)
+.serena/
