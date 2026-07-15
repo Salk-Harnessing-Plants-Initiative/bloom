@@ -69,3 +69,32 @@ def test_dev_stack_smoke_skips_the_doctor_preflight():
                 "the dev-stack-smoke `make dev-up` step must set DOCTOR_SKIP=1 "
                 "(step env or inline) so the doctor preflight is skipped in CI"
             )
+
+
+def test_dev_stack_smoke_cleanup_guards_missing_env_dev():
+    """Regression guard for #455: Cleanup runs `if: always()` and depends on
+    .env.dev (written by `make init`). pr-checks.yml's concurrency block is
+    workflow-level, so a superseding push can cancel this job before `make
+    init` ever runs — Cleanup must no-op instead of crashing with `couldn't
+    find env file`."""
+    workflow = yaml.safe_load(PR_CHECKS.read_text(encoding="utf-8"))
+    jobs = workflow.get("jobs", {})
+    smoke = [
+        job
+        for job in jobs.values()
+        if all(c in _job_run_text(job) for c in REQUIRED_COMMANDS)
+    ]
+    assert smoke, "dev-stack smoke job not found"
+    for job in smoke:
+        cleanup_steps = [
+            s for s in job.get("steps", []) or [] if s.get("name") == "Cleanup"
+        ]
+        assert cleanup_steps, "dev-stack-smoke has no Cleanup step"
+        for step in cleanup_steps:
+            assert step.get("if") == "always()", "Cleanup must keep if: always()"
+            run = str(step.get("run") or "")
+            first_line = run.strip().splitlines()[0].strip() if run.strip() else ""
+            assert first_line.startswith("[ -f .env.dev ]"), (
+                "dev-stack-smoke's Cleanup run: block must guard .env.dev "
+                f"existence as its first line; got {first_line!r}"
+            )

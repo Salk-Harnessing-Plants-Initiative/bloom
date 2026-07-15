@@ -269,6 +269,39 @@ def test_env_ci_sets_bloom_web_next_public_build_arg_vars() -> None:
     )
 
 
+GUARDED_ENV_CI_STEPS = (
+    "Migration summary",
+    "Show migration status on failure",
+    "Cleanup",
+)
+
+
+def test_compose_health_check_teardown_steps_guard_missing_env_ci() -> None:
+    """Regression guard for #455: these steps run if: always()/if: failure()
+    and must no-op (not crash) when .env.ci was never generated — either a
+    superseding push canceled the run before "Generate .env.ci from secrets"
+    ran, or an earlier, unrelated step failed first. Without the guard, each
+    crashes with a confusing missing-file error stacked on top of the real
+    cancellation/failure signal.
+    """
+    workflow = _load_workflow()
+    job = workflow["jobs"]["compose-health-check"]
+    by_name = {step.get("name"): step for step in job.get("steps") or []}
+    for step_name in GUARDED_ENV_CI_STEPS:
+        step = by_name.get(step_name)
+        assert step is not None, f"compose-health-check has no step named {step_name!r}"
+        assert step.get("if") in ("always()", "failure()"), (
+            f"{step_name} must keep its always()/failure() condition, "
+            f"got {step.get('if')!r}"
+        )
+        run = str(step.get("run") or "")
+        first_line = run.strip().splitlines()[0].strip() if run.strip() else ""
+        assert first_line.startswith("[ -f .env.ci ]"), (
+            f"compose-health-check's {step_name!r} run: block must guard "
+            f".env.ci existence as its first line; got {first_line!r}"
+        )
+
+
 def test_docker_compose_ci_overlay_exists_with_build_blocks() -> None:
     """Invariant 6: docker-compose.ci.yml declares build: for custom services."""
     assert COMPOSE_CI.exists(), (
