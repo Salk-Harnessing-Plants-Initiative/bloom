@@ -325,13 +325,48 @@ def test_fetch_dataset_by_name_missing_returns_none():
     assert ds.fetch_dataset_by_name(_Client(), "nope") is None
 
 
-def test_get_shows_metadata(monkeypatch):
+def test_fetch_dataset_traits_queries_view():
+    # one query against the cyl_dataset_trait_names view, filtered by dataset_id;
+    # result is deduped + sorted client-side too
+    captured = {}
+
+    class _Q:
+        def select(self, sel):
+            captured["select"] = sel
+            return self
+
+        def eq(self, col, val):
+            captured["eq"] = (col, val)
+            return self
+
+        def execute(self):
+            return type(
+                "R",
+                (),
+                {"data": [{"trait_name": "root_width_max"}, {"trait_name": "root_depth"}, {"trait_name": "root_depth"}]},
+            )()
+
+    class _Client:
+        def table(self, name):
+            captured["table"] = name
+            return _Q()
+
+    out = ds.fetch_dataset_traits(_Client(), 7)
+    assert out == ["root_depth", "root_width_max"]
+    assert captured["table"] == "cyl_dataset_trait_names"
+    assert captured["select"] == "trait_name"
+    assert captured["eq"] == ("dataset_id", 7)
+
+
+def test_get_shows_metadata_and_traits(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(ds, "fetch_dataset_by_name", lambda client, name: GET_ROW)
+    monkeypatch.setattr(ds, "fetch_dataset_traits", lambda client, did: ["root_depth", "root_width_max"])
     res = CliRunner().invoke(cli, ["cyl", "datasets", "get", "canola-v1"])
     assert res.exit_code == 0, res.output
     assert "Dataset" in res.output  # table title (cell values may wrap across lines)
-    assert "Canola" in res.output  # species column
+    assert "2 unique" in res.output
+    assert "root_depth" in res.output and "root_width_max" in res.output
 
 
 def test_get_not_found(monkeypatch):
@@ -345,11 +380,12 @@ def test_get_not_found(monkeypatch):
 def test_get_json(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(ds, "fetch_dataset_by_name", lambda client, name: GET_ROW)
+    monkeypatch.setattr(ds, "fetch_dataset_traits", lambda client, did: ["root_depth", "root_width_max"])
     res = CliRunner().invoke(cli, ["cyl", "datasets", "get", "canola-v1", "--json"])
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)
     assert payload["name"] == "canola-v1"
-    assert payload["trait_source"] == "canola-cyl-sleap-v1"
+    assert payload["traits"] == ["root_depth", "root_width_max"]
 
 
 # --- grouping ---------------------------------------------------------------

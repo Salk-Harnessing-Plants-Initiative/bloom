@@ -273,13 +273,31 @@ def fetch_dataset_by_name(client: Any, name: str) -> dict[str, Any] | None:  # s
     return rows[0] if rows else None
 
 
+def fetch_dataset_traits(client: Any, dataset_id: Any) -> list[str]:  # supabase I/O
+    """Unique, sorted trait names in a dataset, via the ``cyl_dataset_trait_names`` view.
+
+    The view resolves cyl_dataset_traits → cyl_scan_traits → cyl_traits server-side and
+    returns the distinct (small) trait-name set per dataset, so this single query stays
+    well under the API row cap.
+    """
+    rows = (
+        client.table("cyl_dataset_trait_names")
+        .select("trait_name")
+        .eq("dataset_id", dataset_id)
+        .execute()
+        .data
+        or []
+    )
+    return sorted({r["trait_name"] for r in rows if isinstance(r, dict) and r.get("trait_name")})
+
+
 @datasets.command(name="get")
 @click.argument("name")
 @click.option(
     "--json",
     "as_json",
     is_flag=True,
-    help="Emit the dataset as a JSON object.",
+    help="Emit the dataset (with its traits) as a JSON object.",
 )
 @click.option(
     "-p",
@@ -289,7 +307,7 @@ def fetch_dataset_by_name(client: Any, name: str) -> dict[str, Any] | None:  # s
     help="Credentials profile to use.",
 )
 def get_dataset(name: str, as_json: bool, profile: str) -> None:
-    """Show a dataset's details by name."""
+    """Show a dataset's details and the unique traits it contains."""
     from ..cli import _authed_client
 
     client = _authed_client(profile)
@@ -299,8 +317,17 @@ def get_dataset(name: str, as_json: bool, profile: str) -> None:
             f"Dataset {name!r} not found — run `cyl datasets list` to see available datasets."
         )
 
+    traits = fetch_dataset_traits(client, dataset["id"])
+
     if as_json:
-        click.echo(json.dumps(build_dataset_record(dataset)))
+        record = build_dataset_record(dataset)
+        record["traits"] = traits
+        click.echo(json.dumps(record))
         return
 
     print_table("Dataset", DATASET_COLUMNS, [build_dataset_row(dataset)], empty="")
+    click.echo(f"\nTraits ({len(traits)} unique):")
+    for trait in traits:
+        click.echo(f"  - {trait}")
+    if not traits:
+        click.echo("  (none)")
