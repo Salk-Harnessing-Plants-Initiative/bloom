@@ -23,7 +23,7 @@ to get a green predict run; this change provides the real stage-in.
 ## Decisions
 
 - **New subcommand, not a flag on `download`.** `bloomctl cyl download-for-predict <scan-id>
-  <out>` rather than modifying `download --scan-id`. The two commands produce fundamentally
+<out>` rather than modifying `download --scan-id`. The two commands produce fundamentally
   different output trees; a flag would silently break any existing caller of `download --scan-id`
   that expects `scans.csv`. A dedicated subcommand is self-documenting and non-breaking. The name
   `download-for-predict` is the one named by contracts PR #16's follow-up notes — the canonical
@@ -52,12 +52,12 @@ to get a green predict run; this change provides the real stage-in.
   public API, where row augmentation was relying on undocumented (if currently harmless)
   behavior.
 - **`params` via `resolve_params(scan_row, overrides={"mode": "cylinder"}).values` from contracts
-  >=0.1.0a4.** The canonical
-  `resolve_params` oracle is now in `sleap-roots-contracts` (PR #16, v0.1.0a4). It normalises
-  species names and age types; duplicating the logic here would create a second normalization path
-  and could diverge `param_hash → idempotency_key` between bloomctl and predict (exactly the
-  silent corruption that contracts PR #16 exists to prevent). The sidecar stores the flat
-  `.values` dict `{species, mode, age}` — predict's `_load_scan` builds `ResolvedParams` from it.
+  `>=0.1.0a4`.** The canonical `resolve_params` oracle is now in `sleap-roots-contracts` (PR #16,
+  v0.1.0a4). It normalises species names and age types; duplicating the logic here would create a
+  second normalization path and could diverge `param_hash → idempotency_key` between bloomctl and
+  predict (exactly the silent corruption that contracts PR #16 exists to prevent). The sidecar
+  stores the flat `.values` dict `{species, mode, age}` — predict's `_load_scan` builds
+  `ResolvedParams` from it.
 - **`image_ids` in DB `frame_number` order, stored as integers.** `fetch_images` already returns
   rows ordered by `frame_number`; re-using that order is consistent and requires no second sort.
   The DB returns integer ids; JSON serialises them as numbers, which the RPC's `^[0-9]+$` check
@@ -89,7 +89,7 @@ to get a green predict run; this change provides the real stage-in.
   image-extension file physically present in the sidecar's parent directory — it does not consult
   `image_ids` or a frame count. So "no sidecar on failure" alone doesn't fully protect the
   provenance guarantee across retries: if attempt 1 downloads frames for `image_ids [1001, 1002,
-  1003]` and fails on 1003 (files `0.png`, `1.png` on disk, no sidecar), and between attempt 1 and
+1003]` and fails on 1003 (files `0.png`, `1.png` on disk, no sidecar), and between attempt 1 and
   a later successful attempt 2 the scan's `cyl_images` rows change (e.g. row 1002 is deleted or
   renumbered) such that attempt 2 only writes `0.png` and a differently-numbered replacement,
   `1.png` from attempt 1 could survive on disk and be picked up as an extra, unaccounted-for frame

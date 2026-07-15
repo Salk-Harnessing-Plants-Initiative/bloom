@@ -21,13 +21,14 @@ unregistered command fails CLI-invocation tests outright, not silently). Landed 
 merged during implementation — the reviewer noted this split was optional, not CI-mandatory,
 since one module file + its full test suite + registration is a single coherent, already-GREEN
 unit; see round-1 git-workflow review):
+
 1. `docs(openspec): add proposal for cyl download-for-predict (#411)` — §1 (this proposal).
 2. `chore(contracts): bump sleap-roots-contracts to v0.1.0a4 (bloomcli floor + full re-pin)` —
    §2, verified installable (2.1) and re-pin diff confirmed `$id`-only (2.2) before committing.
 3. `feat(bloomctl): add cyl download-for-predict command (#411)` — §3-§6 (oracle test, pure
    helpers, command-wiring tests, implementation, and registration together).
 4. `docs(bloomcli): document cyl download-for-predict command` — §7.
-§8 (verify) is a gate applied across all commits during review, not its own commit.
+   §8 (verify) is a gate applied across all commits during review, not its own commit.
 
 ## 1. Proposal & specs (this change)
 
@@ -38,24 +39,24 @@ unit; see round-1 git-workflow review):
 
 - [x] 2.1 Bump `sleap-roots-contracts>=0.1.0a3` → `>=0.1.0a4` in `bloomcli/pyproject.toml`.
       Verify installability: `uv run --no-project --with 'sleap-roots-contracts>=0.1.0a4' python -c
-      "from sleap_roots_contracts import resolve_params; print('ok')"`. bloomcli has no `uv.lock` —
+"from sleap_roots_contracts import resolve_params; print('ok')"`. bloomcli has no `uv.lock` —
       no lock refresh needed.
 - [x] 2.2 Full contracts re-pin per contracts PR #16 instructions:
       (a) update `contracts/pin.json`: version `v0.1.0a3` → `v0.1.0a4`, `$id` and `source` URLs;
       (b) fetch updated `contracts/schema/result_envelope.schema.json` from
-          `github.com/talmolab/sleap-roots-contracts` at tag `v0.1.0a4` and **diff it against the
-          currently-vendored `a3` schema with the version string normalized out** — do not assume
-          the diff shape in advance (the prior two re-pins, `a1→a2` and `a2→a3`, were both real
-          revisions, not `$id`-only no-ops). Confirmed during review: for `a4` this diff IS
-          `$id`-only;
-      (c) regenerate `contracts/generated/result-envelope.ts` from the updated schema (`npm run
-          contracts:gen`, per `contracts/README.md`'s re-pin procedure) and run
-          `npm run contracts:check` locally to confirm it passes before committing;
+      `github.com/talmolab/sleap-roots-contracts` at tag `v0.1.0a4` and **diff it against the
+      currently-vendored `a3` schema with the version string normalized out** — do not assume
+      the diff shape in advance (the prior two re-pins, `a1→a2` and `a2→a3`, were both real
+      revisions, not `$id`-only no-ops). Confirmed during review: for `a4` this diff IS
+      `$id`-only;
+      (c) regenerate `contracts/generated/result-envelope.ts` from the updated schema
+      (`npm run contracts:gen`, per `contracts/README.md`'s re-pin procedure) and run
+      `npm run contracts:check` locally to confirm it passes before committing;
       (d) update `contracts/README.md`: bump the "Currently pinned: `v0.1.0a3`" line to
-          `v0.1.0a4`, and add a new dated "> Note on `v0.1.0a4`: ..." paragraph above the existing
-          `v0.1.0a3` note (matching that note's structure) explaining that this re-pin is an
-          `$id`-only structural no-op for the JSON Schema, and that the substantive addition
-          (`resolve_params`) is on the Python package side, not the schema.
+      `v0.1.0a4`, and add a new dated "> Note on `v0.1.0a4`: ..." paragraph above the existing
+      `v0.1.0a3` note (matching that note's structure) explaining that this re-pin is an
+      `$id`-only structural no-op for the JSON Schema, and that the substantive addition
+      (`resolve_params`) is on the Python package side, not the schema.
 
 ## 3. RED — oracle test (write FIRST; must fail before implementation)
 
@@ -73,20 +74,19 @@ CI**; run it manually on a dev machine with `sleap-roots-predict` installed (e.g
 every shape fact predict's code is documented to require, without importing predict — that suite,
 not this test, is the CI-enforced contract for this change.
 
-- [x] 3.1 **Oracle / acceptance test (manual, dev-machine only — see note above):**
-      Given the SCAN fixture row (from `test_download_metadata.py`), a list of two fake
-      `cyl_images` rows (`id=1001, frame_number=0, object_path="cyl-images/a.png"` and `id=1002,
-      frame_number=1, object_path="cyl-images/b.png"`), and fake frame bytes per image:
-      - `build_sidecar(scan, images, frame_bytes)` returns a dict whose `scan_key` equals
-        `"scan_1"` (scan_id=1 from SCAN fixture);
-      - the dict's `params` has keys `species`, `mode`, `age`; `mode` is `"cylinder"`;
-      - the dict's `image_ids` is `[1001, 1002]`;
-      - the dict's `images_checksum` starts with `"sha256:"`;
-      - **cross-repo oracle**: write the sidecar to `tmp_path/scan_1/scan_1.scan_metadata.json`
-        alongside two fake image files, then assert
-        `sleap_roots_predict.discover_scans(tmp_path)` returns exactly one `ScanInput` with
-        `scan_key="scan_1"`, `error=None`, and non-None `params`
-        (`pytest.importorskip("sleap_roots_predict")` at the top of the test).
+- [x] 3.1 **Oracle / acceptance test (manual, dev-machine only — see note above):** Given the
+      SCAN fixture row (from `test_download_metadata.py`), a list of two fake `cyl_images` rows
+      (`id=1001, frame_number=0, object_path="cyl-images/a.png"` and
+      `id=1002, frame_number=1, object_path="cyl-images/b.png"`), and fake frame bytes per image:
+  - `build_sidecar(scan, images, frame_bytes)` returns a dict whose `scan_key` equals `"scan_1"`
+    (scan_id=1 from SCAN fixture);
+  - the dict's `params` has keys `species`, `mode`, `age`; `mode` is `"cylinder"`;
+  - the dict's `image_ids` is `[1001, 1002]`;
+  - the dict's `images_checksum` starts with `"sha256:"`;
+  - **cross-repo oracle**: write the sidecar to `tmp_path/scan_1/scan_1.scan_metadata.json`
+    alongside two fake image files, then assert `sleap_roots_predict.discover_scans(tmp_path)`
+    returns exactly one `ScanInput` with `scan_key="scan_1"`, `error=None`, and non-None `params`
+    (`pytest.importorskip("sleap_roots_predict")` at the top of the test).
 
 ## 4. RED — pure helpers (`bloomcli/tests/test_cyl_download_for_predict.py`)
 
@@ -105,11 +105,10 @@ Each test must FAIL before `download_for_predict.py` exists.
 - [x] 4.5 `build_sidecar` calls `resolve_params(scan, overrides={"mode": "cylinder"})` — assert
       the actual call, not just the output (monkeypatch/spy on `resolve_params` to capture the
       `overrides` argument it receives), and assert it is exactly `{"mode": "cylinder"}`.
-      (Asserting only `params["mode"] == "cylinder"` is insufficient: `sleap-roots-contracts
-      >=0.1.0a4`'s `_mode_for_scan` currently ignores its `metadata` argument and unconditionally
-      returns `"cylinder"` regardless of how — or whether — `resolve_params` is called, so that
-      assertion alone can't distinguish "the override was passed" from "the oracle ignores every
-      caller.")
+      (Asserting only `params["mode"] == "cylinder"` is insufficient: `sleap-roots-contracts>=0.1.0a4`'s
+      `_mode_for_scan` currently ignores its `metadata` argument and unconditionally returns
+      `"cylinder"` regardless of how — or whether — `resolve_params` is called, so that assertion
+      alone can't distinguish "the override was passed" from "the oracle ignores every caller.")
 - [x] 4.5b Add `test_resolve_params_ignores_mode_on_pinned_contracts_version`: call
       `resolve_params(SCAN)` directly (no `overrides` at all) against the pinned
       `sleap-roots-contracts>=0.1.0a4`, and assert `result.values["mode"] == "cylinder"` anyway.
@@ -132,15 +131,13 @@ Each test must FAIL before `download_for_predict.py` exists.
 
 - [x] 5.1 Confirm `fetch_scan` is reused from `download.py`, not duplicated: import
       `bloomctl.cyl.download_for_predict` and assert `download_for_predict.fetch_scan is
-      download.fetch_scan` (mirrors the intent of `test_fetch_scan_returns_single_row`, which
+download.fetch_scan` (mirrors the intent of `test_fetch_scan_returns_single_row`, which
       exercises `fetch_scan` itself — this task instead pins the no-duplication contract).
 - [x] 5.2 Happy-path CLI: `CliRunner().invoke(cli, ["cyl", "download-for-predict", "1",
-      str(out)])` with faked `fetch_scan` → SCAN, faked `fetch_images` → two image rows, faked
-      Storage bucket, monkeypatched creds/auth → exit 0; assert:
-      - `out/scan_1/0.png` and `out/scan_1/1.png` exist;
-      - `out/scan_1/scan_1.scan_metadata.json` is valid JSON with `scan_key="scan_1"`,
-        `image_ids=[1001, 1002]`, `params.mode="cylinder"`, `images_checksum` starts with
-        `"sha256:"`.
+str(out)])` with faked `fetch_scan` → SCAN, faked `fetch_images` → two image rows, faked
+      Storage bucket, monkeypatched creds/auth → exit 0; assert: - `out/scan_1/0.png` and `out/scan_1/1.png` exist; - `out/scan_1/scan_1.scan_metadata.json` is valid JSON with `scan_key="scan_1"`,
+      `image_ids=[1001, 1002]`, `params.mode="cylinder"`, `images_checksum` starts with
+      `"sha256:"`.
 - [x] 5.3 Scan not found: faked `fetch_scan` returns `None` → exit non-zero, "not found" in
       output, no directory created.
 - [x] 5.4 Partial frame failure: one frame download raises → exit non-zero, failure count in
@@ -161,7 +158,7 @@ Each test must FAIL before `download_for_predict.py` exists.
 - [x] 5.9 Zero-frame scan: faked `fetch_images` → `[]` → exit non-zero, "no frames found" (or
       equivalent readable message) in output, no output directory created.
 - [x] 5.10 `--profile` passthrough: `CliRunner().invoke(cli, ["cyl", "download-for-predict", "1",
-      str(out), "-p", "staging"])` with monkeypatched `load_credentials` capturing its `profile`
+str(out), "-p", "staging"])` with monkeypatched `load_credentials` capturing its `profile`
       argument → assert it received `"staging"`.
 - [x] 5.11 Checksum changes when frame content changes: run the happy-path CLI invocation twice
       into two different output dirs with different fake bytes for the same frame; assert the two
@@ -196,16 +193,16 @@ Each test must FAIL before `download_for_predict.py` exists.
 
 ## 7. Docs & changelog
 
-- [ ] 7.1 Add a bullet under the *existing* `### Added` heading in `[Unreleased]` in
+- [x] 7.1 Add a bullet under the _existing_ `### Added` heading in `[Unreleased]` in
       `bloomcli/CHANGELOG.md` (do not add a second `### Added` header — the section already has
       one, from the `ingest-result` entry) for `bloomctl cyl download-for-predict`. Update
       `bloomcli/README.md`:
       (a) add a bullet to the top "## Commands" list, distinguishing it from `cyl download`;
       (b) add a `## bloomctl cyl download-for-predict` section matching the `ingest-result`
-          section's shape (usage line, bullets of behavior, auth note, example) — positional
-          args, `--profile`, output layout, sidecar field names/types/one-line purpose (full
-          rationale stays in design.md, not duplicated here), and an explicit note that this
-          produces a different directory tree than `cyl download` for the same scan.
+      section's shape (usage line, bullets of behavior, auth note, example) — positional
+      args, `--profile`, output layout, sidecar field names/types/one-line purpose (full
+      rationale stays in design.md, not duplicated here), and an explicit note that this
+      produces a different directory tree than `cyl download` for the same scan.
 
 ## 8. Verify
 
@@ -218,7 +215,7 @@ Each test must FAIL before `download_for_predict.py` exists.
 - [ ] 8.3 Confirm no `TBD` or placeholder remains in `proposal.md` / `design.md`.
 - [ ] 8.4 Re-run task 2.1's installability check
       (`uv run --no-project --with 'sleap-roots-contracts>=0.1.0a4' python -c "from
-      sleap_roots_contracts import resolve_params; print('ok')"`) as a final gate, not just a
+sleap_roots_contracts import resolve_params; print('ok')"`) as a final gate, not just a
       one-off at the start of §2.
 - [ ] 8.5 Run `npm run contracts:check` at the repo root to confirm the re-pin (task 2.2) passes
       the drift guard before committing.
@@ -226,8 +223,8 @@ Each test must FAIL before `download_for_predict.py` exists.
       (`test_discover_scans_smoke_after_happy_path`) with `sleap-roots-predict` installed locally
       and confirm they pass; paste the passing output into the PR description. **Attempted during
       implementation, blocked** — the local `sleap-roots-predict-dev` conda env has `sleap-nn
-      0.0.1` installed while `sleap-roots-predict`'s own `pyproject.toml` pins `sleap-nn==0.3.0`;
+0.0.1` installed while `sleap-roots-predict`'s own `pyproject.toml` pins `sleap-nn==0.3.0`;
       `import sleap_roots_predict` fails on `ImportError: cannot import name 'Predictor' from
-      'sleap_nn.inference'` before `discover_scans` is even reachable. This is a pre-existing,
+'sleap_nn.inference'` before `discover_scans` is even reachable. This is a pre-existing,
       broken environment issue in a separate repo, unrelated to this change — re-run once that
       env is fixed (worth flagging to whoever owns `sleap-roots-predict-dev`'s setup).
