@@ -62,8 +62,8 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
   name, id), sorted by species then name (`--json` for machine-readable output).
 - **[read]** `bloomctl cyl accessions list --experiment-id N` — list the accessions
   used in an experiment (`--json`).
-- **[read]** `bloomctl cyl accessions sample-counts [--species X]` — sample (plant)
-  count per accession, per species (`--json`).
+- **[read]** `bloomctl cyl accessions sample-counts [--species X]` — plant count per
+  accession, per species (`--json`).
 
 (Full `cyl download` usage docs are still forthcoming; run any command
 with `--help` in the meantime. `cyl ingest-result` and `cyl download-for-predict`

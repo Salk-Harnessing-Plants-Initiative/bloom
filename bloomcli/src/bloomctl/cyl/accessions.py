@@ -16,7 +16,7 @@ from ..credentials import DEFAULT_PROFILE
 from ._output import print_table
 
 ACCESSION_COLUMNS = ["Accession", "Accession ID"]
-SAMPLE_COUNT_COLUMNS = ["Species", "Accession", "Samples"]
+SAMPLE_COUNT_COLUMNS = ["Species", "Accession", "Plants"]
 
 
 @click.group(name="accessions")
@@ -50,7 +50,7 @@ def build_sample_count_row(rec: dict[str, Any]) -> list[str]:
     return [
         rec.get("species_name") or "",
         rec.get("accession_name") or "",
-        str(rec.get("samples", "")),
+        str(rec.get("plant_count", "")),
     ]
 
 
@@ -59,7 +59,7 @@ def build_sample_count_record(rec: dict[str, Any]) -> dict[str, Any]:
     return {
         "species": rec.get("species_name"),
         "accession": rec.get("accession_name"),
-        "samples": rec.get("samples"),
+        "plant_count": rec.get("plant_count"),
     }
 
 
@@ -81,7 +81,7 @@ def fetch_experiment_accessions(client: Any, experiment_id: int) -> list[dict[st
 def fetch_accession_sample_counts(client: Any, species: str | None = None) -> list[dict[str, Any]]:
     """Sample count per accession per species, via the cyl_accession_sample_counts view."""
     query = client.table("cyl_accession_sample_counts").select(
-        "species_name, accession_id, accession_name, samples"
+        "species_name, accession_id, accession_name, plant_count"
     )
     if species is not None:
         query = query.eq("species_name", species)
@@ -130,7 +130,7 @@ def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
     help="Credentials profile to use.",
 )
 def sample_counts(species: str | None, as_json: bool, profile: str) -> None:
-    """Show the sample (plant) count per accession, per species."""
+    """Show the plant count per accession, per species (one plant = one biological replicate)."""
     from ..cli import _authed_client
 
     client = _authed_client(profile)

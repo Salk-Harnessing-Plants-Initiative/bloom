@@ -27,7 +27,7 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   sorted by species then name, with `--json` output. Ports the legacy
   `cyl experiments list` command.
 - `bloomctl cyl accessions list --experiment-id N` / `sample-counts [--species X]` —
-  list the accessions used in an experiment, and the sample (plant) count per
+  list the accessions used in an experiment, and the plant count per
   accession per species, with `--json`. Read the server-side `cyl_experiment_accessions`
   and `cyl_accession_sample_counts` views (new capability; no legacy equivalent).
 - `bloomctl cyl ingest-result <envelope>` — write a per-scan `ResultEnvelope`

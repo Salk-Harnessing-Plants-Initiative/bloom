@@ -16,9 +16,9 @@ EXP_ACC = [
 
 # cyl_accession_sample_counts rows (out of order, to prove species-then-name sort).
 COUNTS = [
-    {"species_name": "Rice", "accession_id": 1, "accession_name": "IR64", "samples": 12},
-    {"species_name": "Canola", "accession_id": 4, "accession_name": "Bay-0", "samples": 5},
-    {"species_name": "Canola", "accession_id": 2, "accession_name": "Ames", "samples": 8},
+    {"species_name": "Rice", "accession_id": 1, "accession_name": "IR64", "plant_count": 12},
+    {"species_name": "Canola", "accession_id": 4, "accession_name": "Bay-0", "plant_count": 5},
+    {"species_name": "Canola", "accession_id": 2, "accession_name": "Ames", "plant_count": 8},
 ]
 
 
@@ -46,16 +46,16 @@ def test_build_accession_record():
 
 def test_build_sample_count_row():
     row = acc.build_sample_count_row(
-        {"species_name": "Canola", "accession_name": "Bay-0", "samples": 5}
+        {"species_name": "Canola", "accession_name": "Bay-0", "plant_count": 5}
     )
     assert row == ["Canola", "Bay-0", "5"]
 
 
 def test_build_sample_count_record():
     rec = acc.build_sample_count_record(
-        {"species_name": "Canola", "accession_name": "Bay-0", "samples": 5}
+        {"species_name": "Canola", "accession_name": "Bay-0", "plant_count": 5}
     )
-    assert rec == {"species": "Canola", "accession": "Bay-0", "samples": 5}
+    assert rec == {"species": "Canola", "accession": "Bay-0", "plant_count": 5}
 
 
 def test_sample_count_sort_key_species_then_name():
@@ -183,7 +183,7 @@ def test_sample_counts_json_sorted(monkeypatch):
         ("Canola", "Bay-0"),
         ("Rice", "IR64"),
     ]
-    assert payload[0]["samples"] == 8
+    assert payload[0]["plant_count"] == 8
 
 
 def test_sample_counts_table(monkeypatch):
