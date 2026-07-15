@@ -35,11 +35,11 @@ unregistered command fails CLI-invocation tests outright, not silently). Land as
 
 ## 2. Package + repo setup (pre-req; lands before tests that import it)
 
-- [ ] 2.1 Bump `sleap-roots-contracts>=0.1.0a3` → `>=0.1.0a4` in `bloomcli/pyproject.toml`.
+- [x] 2.1 Bump `sleap-roots-contracts>=0.1.0a3` → `>=0.1.0a4` in `bloomcli/pyproject.toml`.
       Verify installability: `uv run --no-project --with 'sleap-roots-contracts>=0.1.0a4' python -c
       "from sleap_roots_contracts import resolve_params; print('ok')"`. bloomcli has no `uv.lock` —
       no lock refresh needed.
-- [ ] 2.2 Full contracts re-pin per contracts PR #16 instructions:
+- [x] 2.2 Full contracts re-pin per contracts PR #16 instructions:
       (a) update `contracts/pin.json`: version `v0.1.0a3` → `v0.1.0a4`, `$id` and `source` URLs;
       (b) fetch updated `contracts/schema/result_envelope.schema.json` from
           `github.com/talmolab/sleap-roots-contracts` at tag `v0.1.0a4` and **diff it against the
