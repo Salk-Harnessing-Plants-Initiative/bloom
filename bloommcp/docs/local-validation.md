@@ -42,9 +42,9 @@ per-check summary and a non-zero exit — never an unlabelled traceback.
 ## What it validates
 
 The driver first checks the **Tier-0 import-clean guarantee** (`import bloom_mcp` is clean in
-a subprocess with the Supabase env scrubbed), then runs three legs through the real ports:
+a subprocess with the Supabase env scrubbed), then runs four legs through the real ports:
 
-### Leg 1 — clustering (Tier-2 persistence, stochastic)
+### Leg 1 — clustering **workflow** (legacy, Tier-2 persistence, stochastic)
 
 Drives `run_clustering_workflow("turface.csv", algorithm="kmeans")` (resolves `seed=42`) and
 asserts the committed run's manifest is **schema v3** with a real `seed == 42`,
@@ -90,6 +90,25 @@ the newest cleaned version the reader resolves — this is the
 `qc_clean` → `remove_outliers` → `require_clean` composition proven end-to-end over the real
 ports.
 
+### Leg 4 — clustering (granular tool, #309, stochastic)
+
+Distinct from **Leg 1** above (that's the legacy `run_clustering_workflow` on `turface.csv`; this
+is the granular `clustering` tool on the cleaned `turface_raw.csv` — a different experiment, so the
+`clustering` result-store class does not collide). Immediately after Legs 2–3, runs
+`clustering(experiment="turface_raw.csv", method="kmeans", seed=42)` through the same real ports
+and asserts:
+
+- the tool resolves the latest **cleaned** version via `require_clean=True` (the trim from Leg 3,
+  else the Leg 2 clean; `source` is `v<N>_cleaned`, **not** `raw`);
+- the committed run's outputs are **`labels.csv`** (per-sample cluster labels with identity) and
+  **`cluster_result.json`** (the serialized typed result);
+- the run's manifest is **`manifest_schema_version == 3`**, records the resolved `seed == 42`
+  (clustering is stochastic), and `tool == "clustering"`;
+- each recorded `output_sha256` matches the actual stored bytes for **both** artifacts.
+
+This is the `qc_clean` → … → `clustering(require_clean=True)` composition proven end-to-end over
+the real ports, in parallel with the `pca_analysis` consumer.
+
 > **Note on raw inputs.** The deployed reader currently resolves *raw* experiment inputs from
 > the local `BLOOM_TRAITS_DIR`, so the qc_clean leg seeds `turface_raw.csv` there (matching
 > the clustering leg's fixture-upload pattern). When raw inputs migrate to the
@@ -98,9 +117,10 @@ ports.
 A green run ends with:
 
 ```
-SMOKE PASSED ✅ — clustering(kmeans) seed-bearing run, qc_clean cleaned run, AND
-remove_outliers trimmed run all persist full v3 provenance through the real ports;
-the qc_clean → remove_outliers → require_clean composition resolves the trimmed table.
+SMOKE PASSED ✅ — the legacy clustering(kmeans) run, qc_clean cleaned run,
+remove_outliers trimmed run, AND the granular clustering(kmeans) consumer all persist
+full v3 provenance through the real ports; the qc_clean → remove_outliers →
+clustering(require_clean=True) composition resolves and clusters the trimmed table.
 ```
 
 ## Unit tests (no live stack)

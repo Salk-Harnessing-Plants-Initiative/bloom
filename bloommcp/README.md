@@ -30,10 +30,9 @@ uv sync                   # installs the package + dev group
 uv run pytest             # runs the Supabase-free test suite
 ```
 
-`make bloommcp-smoke` (from the repo root, with the dev stack up + migrated) drives
-clustering, `qc_clean`, **and** `remove_outliers` end-to-end through the **real** Supabase
-storage and asserts the committed runs' v3 provenance — the live counterpart to the
-Supabase-free suite above.
+`make bloommcp-smoke` (from the repo root, with the dev stack up + migrated) drives the
+granular bloom-mcp tools end-to-end through the **real** Supabase storage and asserts the
+committed runs' v3 provenance — the live counterpart to the Supabase-free suite above.
 See [docs/local-validation.md](docs/local-validation.md) for prerequisites, what each leg
 validates, and troubleshooting (design rationale lives in
 `openspec/changes/add-bloommcp-live-persistence-smoke/`).
