@@ -153,6 +153,7 @@ def test_shipped_correlations_reproduce_recorded_offdiagonal(turface_19):
 _WRAPPER_CONSUMED_TRAIT_KEYS = ("heritability", "var_genetic", "var_residual")
 
 
+@pytest.mark.integration
 def test_external_library_heritability_matches_recorded_oracle(turface_19):
     """The delegated heritability path reproduces the recorded #120 mean H².
 
@@ -184,6 +185,7 @@ def test_external_library_heritability_matches_recorded_oracle(turface_19):
     assert sum(1 for v in h2 if v >= 0.5) == golden["heritability_n_above_0.5"]
 
 
+@pytest.mark.integration
 def test_delegated_heritability_returns_wrapper_consumed_keys(turface_19):
     """Delegation-boundary contract: every per-trait result the wrappers plot carries
     the keys they read (heritability, var_genetic, var_residual), non-defaulted.
@@ -256,6 +258,7 @@ def _umap_trustworthiness(df, trait_cols, embedding, n_neighbors=15) -> float:
     return float(trustworthiness(standardized, embedding, n_neighbors=n_neighbors))
 
 
+@pytest.mark.integration
 def test_external_library_umap_is_deterministic_and_structural(turface_19):
     """Fixed-seed UMAP is reproducible AND preserves local structure.
 
@@ -287,6 +290,7 @@ def test_external_library_umap_is_deterministic_and_structural(turface_19):
     assert t == pytest.approx(golden["umap_trustworthiness"], abs=0.05)
 
 
+@pytest.mark.integration
 def test_umap_trustworthiness_floor_rejects_wrong_parameters(turface_19):
     """The structural floor actually discriminates: a wrong n_neighbors collapses it.
 
