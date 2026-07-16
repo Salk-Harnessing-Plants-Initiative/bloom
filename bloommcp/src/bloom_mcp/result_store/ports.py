@@ -67,6 +67,7 @@ class StoredRun:
     agent: Optional[str]
     environment: Optional[str]
     code_versions: dict[str, Optional[str]]
+    input_validation: Optional[dict] = None
 
     @classmethod
     def from_version_entry(
@@ -93,6 +94,7 @@ class StoredRun:
             agent=entry.agent,
             environment=entry.environment,
             code_versions=entry.code_versions.model_dump(mode="json"),
+            input_validation=entry.input_validation,
         )
 
 

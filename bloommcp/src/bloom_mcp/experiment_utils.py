@@ -75,44 +75,11 @@ def validate_env() -> None:
     validate_storage_backend()
 
 
-# metadata columns, matched case-insensitively
-KNOWN_METADATA_COLS = {
-    "scan_id",
-    "plant_qr_code",
-    "scan_path",
-    "scanner_id",
-    "species_id",
-    "species_name",
-    "species_genus",
-    "species_species",
-    "uploaded_at",
-    "wave_id",
-    "wave_number",
-    "wave_name",
-    "accession_id",
-    "date_scanned",
-    "experiment_id",
-    "experiment_name",
-    "germ_day",
-    "germ_day_color",
-    "phenotyper_id",
-    "plant_age_days",
-    "plant_id",
-    "plant_name",
-    "primary",
-    "lateral",
-    "crown",
-    "barcode",
-    "geno",
-    "genotype",
-    "rep",
-    "replicate",
-}
-
-# Patterns to auto-detect special columns (checked case-insensitively)
-GENOTYPE_PATTERNS = ["geno", "genotype", "accession", "species_name"]
-REPLICATE_PATTERNS = ["rep", "replicate", "wave_number"]
-SAMPLE_ID_PATTERNS = ["barcode", "plant_qr_code", "scan_id", "plant_id", "plant_name"]
+# Column-role matching + trait detection now live in
+# ``bloom_mcp.data_access.columns`` (``resolve_columns``); ``detect_columns`` below
+# is a thin shim over it so the read adapters and ``qc_clean`` share one source of
+# truth. Imported lazily inside the function to avoid an import cycle
+# (``data_access`` -> readers -> ``experiment_utils``).
 
 
 def list_experiments(traits_dir: Optional[Path] = None) -> list[dict]:
@@ -159,10 +126,12 @@ def list_experiments(traits_dir: Optional[Path] = None) -> list[dict]:
 def detect_columns(df: pd.DataFrame) -> dict:
     """Auto-detect metadata vs trait columns, and identify special columns.
 
-    Logic:
-    - Known metadata column names → metadata
-    - Non-numeric columns → metadata
-    - Remaining numeric columns → traits
+    Thin shim over :func:`bloom_mcp.data_access.columns.resolve_columns` (the single
+    source of truth): role-name matching is bloommcp's; **trait detection delegates
+    to** ``sleap_roots_analyze.get_trait_columns``, so numeric metadata such as
+    ``Computation.Time.s`` is excluded from the trait set. Retained for the reader
+    adapters and ``list_experiments`` / ``load_experiment_data`` that call it;
+    returns the same dict shape as before.
 
     Returns:
         {
@@ -173,46 +142,17 @@ def detect_columns(df: pd.DataFrame) -> dict:
             "sample_id_col": str or None,
         }
     """
-    metadata_cols = []
-    trait_cols = []
+    # Lazy import breaks the data_access -> readers -> experiment_utils cycle.
+    from bloom_mcp.data_access.columns import resolve_columns
 
-    for col in df.columns:
-        col_lower = col.lower().strip()
-
-        # Known metadata name?
-        if col_lower in KNOWN_METADATA_COLS:
-            metadata_cols.append(col)
-            continue
-
-        # Non-numeric dtype?
-        if not pd.api.types.is_numeric_dtype(df[col]):
-            metadata_cols.append(col)
-            continue
-
-        # Numeric → trait
-        trait_cols.append(col)
-
-    # Detect special columns
-    genotype_col = _find_column(df.columns, GENOTYPE_PATTERNS)
-    replicate_col = _find_column(df.columns, REPLICATE_PATTERNS)
-    sample_id_col = _find_column(df.columns, SAMPLE_ID_PATTERNS)
-
+    resolved = resolve_columns(df)
     return {
-        "trait_cols": trait_cols,
-        "metadata_cols": metadata_cols,
-        "genotype_col": genotype_col,
-        "replicate_col": replicate_col,
-        "sample_id_col": sample_id_col,
+        "trait_cols": resolved.trait_cols,
+        "metadata_cols": resolved.metadata_cols,
+        "genotype_col": resolved.genotype,
+        "replicate_col": resolved.replicate,
+        "sample_id_col": resolved.sample_id,
     }
-
-
-def _find_column(columns, patterns: list[str]) -> Optional[str]:
-    """Find first column matching any pattern (case-insensitive exact match)."""
-    col_lower_map = {c.lower().strip(): c for c in columns}
-    for pattern in patterns:
-        if pattern.lower() in col_lower_map:
-            return col_lower_map[pattern.lower()]
-    return None
 
 
 # Logical output key + filename for the cleaned trait CSV. The producer
