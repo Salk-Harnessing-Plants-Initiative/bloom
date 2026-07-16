@@ -19,11 +19,20 @@
 .env.dev.example text eol=lf
 .env.prod.defaults text eol=lf
 .env.staging.defaults text eol=lf
+# Pinned Supabase CLI version — read by scripts/doctor.sh; keep LF.
+.supabase-version text eol=lf
 
 # Container init scripts under volumes/db/ are bind-mounted into the Linux
 # db-dev container; a CRLF shebang breaks them with "bad interpreter" and the
 # database is left half-initialised (issue #124). Force LF for everything there.
 volumes/db/** text eol=lf
+
+# The supavisor pooler container evals volumes/pooler/pooler.exs via Elixir at
+# startup (`supavisor eval "$(cat /etc/pooler/pooler.exs)"`); a CRLF there
+# crashes it with "unexpected token: carriage return (U+000D)" and the pooler
+# crash-loops. `.exs` is not otherwise covered, so force LF for the pooler dir.
+*.exs text eol=lf
+volumes/pooler/** text eol=lf
 
 # Generated contract types (pin-sleap-roots-contract / #294). The `* text=auto`
 # default would round-trip .ts through CRLF on Windows working trees, while

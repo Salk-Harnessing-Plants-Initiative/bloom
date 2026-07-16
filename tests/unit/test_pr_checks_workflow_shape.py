@@ -49,6 +49,7 @@ values present at build time.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -267,6 +268,99 @@ def test_env_ci_sets_bloom_web_next_public_build_arg_vars() -> None:
         "empty values — CI/prod-shape drift. Add an `echo \"VAR=...\" "
         ">> .env.ci` line for each."
     )
+
+
+# Maps each guarded step to its own required `if:` condition — a dict, not a
+# shared set, so a regression that swaps e.g. Migration summary's always()
+# with Show migration status on failure's failure() is caught (a shared
+# membership check across all four would not notice the swap).
+GUARDED_ENV_CI_STEPS = {
+    "Migration summary": "always()",
+    "Show migration status on failure": "failure()",
+    "Cleanup": "always()",
+    "Debug logs on failure": "failure()",
+}
+
+
+def _first_run_line(step: dict) -> str:
+    run = str(step.get("run") or "")
+    lines = run.strip().splitlines()
+    assert lines, "step has an empty run: block"
+    return lines[0].strip()
+
+
+def test_compose_health_check_teardown_steps_guard_missing_env_ci() -> None:
+    """Regression guard for #455: these steps run if: always()/if: failure()
+    and must no-op (not crash) when .env.ci was never generated — either a
+    superseding push canceled the run before "Generate .env.ci from secrets"
+    ran, or an earlier, unrelated step failed first. Without the guard, each
+    crashes with a confusing missing-file error stacked on top of the real
+    cancellation/failure signal.
+    """
+    workflow = _load_workflow()
+    job = workflow["jobs"]["compose-health-check"]
+    by_name = {step.get("name"): step for step in job.get("steps") or []}
+    for step_name, expected_if in GUARDED_ENV_CI_STEPS.items():
+        step = by_name.get(step_name)
+        assert step is not None, f"compose-health-check has no step named {step_name!r}"
+        assert (
+            step.get("if") == expected_if
+        ), f"{step_name} must keep if: {expected_if}, got {step.get('if')!r}"
+        first_line = _first_run_line(step)
+        assert first_line.startswith("[ -s .env.ci ]"), (
+            f"compose-health-check's {step_name!r} run: block must guard "
+            f".env.ci existence as its first line; got {first_line!r}"
+        )
+
+
+@pytest.mark.parametrize("file_state", ["absent", "empty", "nonempty"])
+def test_compose_health_check_guard_short_circuits_behaviorally(
+    tmp_path: Path, file_state: str
+) -> None:
+    """Behavioral counterpart to the shape check above: actually execute each
+    guard line, don't just assert its literal text. A regression that flips
+    `||` to `&&`, or `exit 0` to `exit 1`, or reverts `-s` to `-f` (which
+    would treat a 0-byte file as present) would pass the shape check above
+    but fail this one.
+    """
+    workflow = _load_workflow()
+    job = workflow["jobs"]["compose-health-check"]
+    by_name = {step.get("name"): step for step in job.get("steps") or []}
+    env_file = tmp_path / ".env.ci"
+    if file_state == "nonempty":
+        env_file.write_text("POSTGRES_USER=x\n")
+    elif file_state == "empty":
+        env_file.write_text("")
+    # "absent": leave the file uncreated.
+    for step_name in GUARDED_ENV_CI_STEPS:
+        guard = _first_run_line(by_name[step_name])
+        result = subprocess.run(
+            ["bash", "-c", f"{guard}\necho REACHED_PAST_GUARD"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        assert result.returncode == 0, (
+            f"{step_name}'s guard exited {result.returncode} for "
+            f"file_state={file_state!r}; expected 0 regardless. "
+            f"stderr: {result.stderr}"
+        )
+        if file_state == "nonempty":
+            assert "REACHED_PAST_GUARD" in result.stdout, (
+                f"{step_name}'s guard did not let execution continue past "
+                f"it when .env.ci is non-empty; stdout: {result.stdout!r}"
+            )
+        else:
+            assert "REACHED_PAST_GUARD" not in result.stdout, (
+                f"{step_name}'s guard let execution continue past it when "
+                f".env.ci is {file_state}; it must skip instead. "
+                f"stdout: {result.stdout!r}"
+            )
+            assert "skipping" in result.stdout.lower(), (
+                f"{step_name}'s guard printed no skip message; "
+                f"stdout: {result.stdout!r}"
+            )
 
 
 def test_docker_compose_ci_overlay_exists_with_build_blocks() -> None:
