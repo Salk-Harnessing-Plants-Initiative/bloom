@@ -1,10 +1,11 @@
-"""Regenerate ``tests/fixtures/turface_19_clustering_golden.json`` (Tier 5 / #309).
+"""Regenerate ``tests/fixtures/turface_19_clustering_golden.json`` (Tier 5 / #309, #422).
 
 A **characterization** snapshot, NOT an independently recorded oracle. Every metric literal
-in the fixture is emitted here from ``sleap_roots_analyze.perform_*`` on the pinned analyze
-version, so the fixture is regenerable and no number is transcribed by hand. The clustering
-oracle proper is *determinism* (same seed -> identical labels), asserted in
-``tests/tools/test_clustering_tool.py``; this file only gates metric drift.
+in the fixture is emitted here from ``sleap_roots_analyze.perform_*`` /
+``hierarchical_cluster_labels`` on the pinned analyze version, so the fixture is regenerable
+and no number is transcribed by hand. The clustering oracle proper is *determinism* (same
+seed -> identical labels), asserted in ``tests/tools/test_clustering_tool.py``; this file
+only gates metric drift.
 
 Run:  cd bloommcp && uv run --frozen python scripts/gen_clustering_golden.py
 """
@@ -12,13 +13,16 @@ Run:  cd bloommcp && uv run --frozen python scripts/gen_clustering_golden.py
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pandas as pd
 import sleap_roots_analyze as sra
 from sleap_roots_analyze import (
+    ClusterResult,
     GMMResult,
     KMeansResult,
+    hierarchical_cluster_labels,
     perform_gmm_clustering,
     perform_kmeans_clustering,
 )
@@ -67,6 +71,15 @@ def build() -> dict:
         random_state=_SEED,
     )
 
+    hier_dict = hierarchical_cluster_labels(
+        x, n_clusters=3, method="ward", metric="euclidean", standardize=True,
+        optimization_method="silhouette",
+    )
+    hier = ClusterResult.from_hierarchical_dict(hier_dict)
+
+    def _nan_or(v: float) -> float | None:
+        return None if math.isnan(v) else v
+
     return {
         "_comment": (
             "Characterization snapshot of sleap-roots-analyze clustering on the post-QC "
@@ -75,10 +88,11 @@ def build() -> dict:
         ),
         "_source": (
             "Re-derived by bloommcp/scripts/gen_clustering_golden.py from "
-            f"perform_kmeans_clustering / perform_gmm_clustering=={sra.__version__}. A drift "
-            "gate, NOT an independently recorded oracle: no external clustering oracle exists "
-            "for turface_19 (unlike PCA's #120 viz_pca_metadata.json). The real correctness "
-            "oracle is determinism (same seed -> identical labels), asserted in the tests."
+            f"perform_kmeans_clustering / perform_gmm_clustering / hierarchical_cluster_labels"
+            f"=={sra.__version__}. A drift gate, NOT an independently recorded oracle: no "
+            "external clustering oracle exists for turface_19 (unlike PCA's #120 "
+            "viz_pca_metadata.json). The real correctness oracle is determinism "
+            "(same seed -> identical labels), asserted in the tests."
         ),
         "_reproduced_by_sleap_roots_analyze_version": sra.__version__,
         "trait_cols": trait_cols,
@@ -86,6 +100,14 @@ def build() -> dict:
             "params": {"n_clusters": 3, "standardize": True, "seed": _SEED},
             **_metrics(kmeans),
             "inertia": float(kmeans.inertia),
+        },
+        "hierarchical": {
+            "params": {"n_clusters": 3, "standardize": True},
+            **_metrics(hier),
+            "linkage_method": str(hier.linkage_method),
+            "distance_metric": str(hier.distance_metric),
+            "cophenetic_correlation": _nan_or(float(hier.cophenetic_correlation)),
+            "cut_height": _nan_or(float(hier.cut_height)),
         },
         "gmm": {
             "params": {
@@ -97,7 +119,7 @@ def build() -> dict:
             "_bic_aic_note": (
                 "Negative values are expected: large log-likelihood dominates the BIC/AIC "
                 "penalty for this dataset at n=3 fixed. Uses fixed n_components=3 (not "
-                "auto-select) to avoid the upstream 0.1.0a4 auto-select bug."
+                "auto-select) to avoid the upstream auto-select BIC/AIC bug."
             ),
             **_metrics(gmm),
             "converged": bool(gmm.converged),

@@ -31,8 +31,9 @@ Direct tools (granular, available for ad-hoc use):
                        QC time (delegates to sleap_roots_analyze EDA functions)
   - pca_analysis:      PCA on a cleaned experiment (require_clean; delegates to
                        sleap_roots_analyze.perform_pca_analysis)
-  - clustering:        k-means / GMM on a cleaned experiment (require_clean; delegates to
-                       sleap_roots_analyze.perform_kmeans_clustering / perform_gmm_clustering)
+  - clustering:        k-means / GMM / hierarchical on a cleaned experiment (require_clean;
+                       delegates to sleap_roots_analyze perform_kmeans_clustering /
+                       perform_gmm_clustering / hierarchical_cluster_labels)
   - correlation_tools: 8 cross-experiment correlation tools
   - viz_tools:         7 plotting tools
 

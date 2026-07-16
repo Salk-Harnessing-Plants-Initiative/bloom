@@ -1,44 +1,36 @@
-"""clustering — k-means / GMM on a cleaned experiment, delegating to sleap-roots-analyze.
+"""clustering — k-means / GMM / hierarchical on a cleaned experiment, delegating to sleap-roots-analyze.
 
-The second granular **consumer** and the first **polymorphic** + first genuinely
-**stochastic** analysis tool (Tier 5 / #309). It reads a *cleaned* experiment through the
-:class:`ExperimentReader` port with ``require_clean=True`` and **dispatches on ``method``** to
-the matching tested upstream entry point — ``perform_kmeans_clustering`` →
-``KMeansResult.from_kmeans_dict`` or ``perform_gmm_clustering`` → ``GMMResult.from_gmm_dict``.
-The MCP owns no clustering math — no standardization, distance computation, EM/Lloyd
-iteration, or metric computation of its own — and never touches the vendored
-``bloom_mcp.clustering``.
+The second granular **consumer** and the first **polymorphic** analysis tool (Tier 5 / #309,
+fast-follow #422). It reads a *cleaned* experiment through the :class:`ExperimentReader` port
+with ``require_clean=True`` and **dispatches on ``method``** to the matching tested upstream
+entry point:
 
-**Polymorphic result, one envelope.** k-means and GMM return two distinct typed results over
-a shared ``ClusterResult`` base (labels, sizes, the three internal-validation scores). The
-tool surfaces the common core inline plus the method-specific scalars — ``inertia`` for
-k-means; ``bic`` / ``aic`` / ``converged`` / ``covariance_type`` for GMM — proving the contract
-surface generalizes past PCA's single shape.
+- ``"kmeans"`` → ``perform_kmeans_clustering`` → ``KMeansResult.from_kmeans_dict``
+- ``"gmm"`` → ``perform_gmm_clustering`` → ``GMMResult.from_gmm_dict``
+- ``"hierarchical"`` → ``hierarchical_cluster_labels`` → ``ClusterResult.from_hierarchical_dict``
 
-**Stochastic — the resolved seed is real here.** Unlike ``pca_analysis`` (deterministic,
-``seed = None``), k-means and GMM consume ``random_state`` and their labels depend on it. So
-the tool declares a ``random_state`` parameter and a ``seed`` input; the contract resolves the
-requested seed into ``random_state``, forwards it to the delegate, and records **that resolved
-seed** in provenance. The correctness oracle is *determinism*: same seed → identical labels.
+The MCP owns no clustering math of its own and never touches the vendored ``bloom_mcp.clustering``.
 
-**Consume, don't re-cluster raw.** The delegates standardize and fit over whatever numeric
-columns they are handed, dropping NaN-bearing rows internally. So — like ``pca_analysis`` — the
-tool requires a cleaned version and restricts the selection to the certified-clean trait set
-(``frame.trait_cols``) via the shared ``_validate_trait_subset(..., require_certified=True)``,
-and asserts the selection finite before fitting, making the delegate's internal ``dropna()`` a
-no-op over the sample set ``qc_clean`` certified. It persists a versioned run under tool class
-``clustering`` — the per-sample labels **with sample identity** (``labels.csv``) and the
+**Polymorphic result, one envelope.** Each method returns a distinct typed result over the
+shared ``ClusterResult`` base. Method-specific scalars: ``inertia`` for k-means; ``bic`` /
+``aic`` / ``converged`` / ``covariance_type`` for GMM; ``linkage_method`` / ``distance_metric`` /
+``cophenetic_correlation`` / ``cut_height`` for hierarchical.
+
+**Stochastic (kmeans/gmm) vs deterministic (hierarchical).** k-means and GMM consume
+``random_state`` — the contract resolves ``seed`` into it, forwards it to the delegate, and
+records the resolved seed in provenance. Hierarchical clustering has no RNG; ``random_state``
+is never forwarded and provenance records ``seed = None``, mirroring ``pca_analysis``.
+
+**Consume, don't re-cluster raw.** The tool requires a cleaned version and restricts the
+selection to the certified-clean trait set (``frame.trait_cols``) via
+``_validate_trait_subset(..., require_certified=True)``, making the delegate's internal
+``dropna()`` a no-op over the certified sample set. It persists a versioned run under tool
+class ``clustering`` — per-sample labels **with sample identity** (``labels.csv``) and the
 serialized typed result (``cluster_result.json``) — recording ``based_on_version`` = the
-consumed cleaned version and content-addressing the frame via ``source_csv``, and returns a
-cluster summary + links (never the N-length label vector inline).
+consumed cleaned version, and returns a cluster summary + links (never the label vector inline).
 
-**Coexists with the legacy ``run_clustering_workflow``.** That older workflow tool + the
-vendored ``bloom_mcp.clustering`` stay in place; this adds granularity alongside. Retirement of
-``source/*`` is deferred to after Stage 1 (deleting ``clustering.py`` breaks server boot).
-
-**Hierarchical is a deferred fast-follow.** ``perform_hierarchical_clustering`` returns only a
-linkage matrix (no labels/scores, no ``from_hierarchical_dict``), so it cannot be thin-delegated
-yet; it drops in as one ``method`` member once an upstream labeled entry point ships (#309).
+**Coexists with the legacy ``run_clustering_workflow``.** That older workflow tool and the
+vendored ``bloom_mcp.clustering`` stay in place; this adds granularity alongside.
 """
 
 from __future__ import annotations
@@ -51,8 +43,10 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
 from sleap_roots_analyze import (
+    ClusterResult,
     GMMResult,
     KMeansResult,
+    hierarchical_cluster_labels,
     perform_gmm_clustering,
     perform_kmeans_clustering,
 )
@@ -82,12 +76,11 @@ class ClusteringParams(BaseModel):
         description="Experiment (CSV filename) to cluster. Must have a cleaned version "
         "produced by qc_clean; clustering consumes it (require_clean).",
     )
-    method: Literal["kmeans", "gmm"] = Field(
+    method: Literal["kmeans", "gmm", "hierarchical"] = Field(
         default="kmeans",
-        description="Clustering algorithm. 'kmeans' (default) partitions into n_clusters; "
-        "'gmm' fits a Gaussian mixture of n_components. Set only that method's controls. "
-        "Hierarchical clustering is planned for a future release pending upstream support "
-        "in sleap-roots-analyze.",
+        description="Clustering algorithm. 'kmeans' (default) or 'hierarchical' use "
+        "n_clusters/max_clusters; 'gmm' uses n_components/max_components/covariance_type. "
+        "Set only the controls for the chosen method.",
     )
     trait_columns: list[str] | None = Field(
         default=None,
@@ -102,19 +95,19 @@ class ClusteringParams(BaseModel):
     seed: int = Field(
         default=42,
         ge=0,
-        description="Random seed for the fit (recorded in provenance for reproducibility). "
-        "Same seed + inputs → identical cluster labels.",
+        description="Random seed for stochastic methods (kmeans/gmm). Ignored for "
+        "hierarchical (deterministic); provenance records seed=None for hierarchical.",
     )
     n_clusters: int | None = Field(
         default=None,
         ge=2,
-        description="kmeans only: fixed number of clusters; omit to auto-select up to "
-        "max_clusters by silhouette. Do not set for gmm.",
+        description="kmeans/hierarchical: fixed number of clusters; omit to auto-select "
+        "up to max_clusters. Do not set for gmm.",
     )
     max_clusters: int | None = Field(
         default=None,
         ge=2,
-        description="kmeans only: upper bound for automatic cluster-count selection "
+        description="kmeans/hierarchical: upper bound for automatic cluster-count selection "
         "(default 10). Do not set for gmm.",
     )
     n_components: int | None = Field(
@@ -132,6 +125,23 @@ class ClusteringParams(BaseModel):
     covariance_type: Literal["full", "tied", "diag", "spherical"] | None = Field(
         default=None,
         description="gmm only: covariance form (default 'full'). Do not set for kmeans.",
+    )
+    linkage_method: Literal["ward", "complete", "average", "single"] | None = Field(
+        default=None,
+        description="hierarchical only: linkage criterion (default 'ward'). "
+        "One of 'ward', 'complete', 'average', 'single'. Do not set for kmeans/gmm.",
+    )
+    distance_metric: str | None = Field(
+        default=None,
+        description="hierarchical only: distance metric passed to scipy pdist "
+        "(default 'euclidean'). Note: 'ward' linkage only works with 'euclidean'. "
+        "Do not set for kmeans/gmm.",
+    )
+    optimization_method: Literal["silhouette", "calinski", "davies_bouldin"] | None = Field(
+        default=None,
+        description="hierarchical only: metric used for automatic cluster-count selection "
+        "when n_clusters is omitted. One of 'silhouette' (default), 'calinski', or "
+        "'davies_bouldin'. Do not set for kmeans/gmm.",
     )
     user_label: str | None = Field(
         default=None,
@@ -159,11 +169,15 @@ class ClusteringResult(BaseModel):
     calinski_harabasz_score: float
     feature_names: list[str]
     # method-specific (mutually exclusive by method)
-    inertia: float | None = None
-    bic: float | None = None
-    aic: float | None = None
-    converged: bool | None = None
-    covariance_type: str | None = None
+    inertia: float | None = None                  # kmeans only
+    bic: float | None = None                      # gmm only
+    aic: float | None = None                      # gmm only
+    converged: bool | None = None                 # gmm only
+    covariance_type: str | None = None            # gmm only
+    linkage_method: str | None = None             # hierarchical only
+    distance_metric: str | None = None            # hierarchical only
+    cophenetic_correlation: float | None = None   # hierarchical only
+    cut_height: float | None = None               # hierarchical only
     warnings: list[str] = Field(
         default_factory=list,
         description="Advisory messages (empty on a normal run). Non-empty when the tool surfaces "
@@ -187,25 +201,26 @@ def _reject_wrong_method_controls(params: ClusteringParams) -> None:
     internally, so an explicitly-set cross-method control is detectable here and surfaces as a
     fixable ``invalid_input`` naming the mismatch.
     """
+    _hierarchical_only = (
+        ("linkage_method", params.linkage_method),
+        ("distance_metric", params.distance_metric),
+        ("optimization_method", params.optimization_method),
+    )
+    _gmm_only = (
+        ("n_components", params.n_components),
+        ("max_components", params.max_components),
+        ("covariance_type", params.covariance_type),
+    )
+    _kmeans_gmm_shared = (
+        ("n_clusters", params.n_clusters),
+        ("max_clusters", params.max_clusters),
+    )
     if params.method == "kmeans":
-        wrong = [
-            name
-            for name, val in (
-                ("n_components", params.n_components),
-                ("max_components", params.max_components),
-                ("covariance_type", params.covariance_type),
-            )
-            if val is not None
-        ]
-    else:  # gmm
-        wrong = [
-            name
-            for name, val in (
-                ("n_clusters", params.n_clusters),
-                ("max_clusters", params.max_clusters),
-            )
-            if val is not None
-        ]
+        wrong = [n for n, v in (*_gmm_only, *_hierarchical_only) if v is not None]
+    elif params.method == "gmm":
+        wrong = [n for n, v in (*_kmeans_gmm_shared, *_hierarchical_only) if v is not None]
+    else:  # hierarchical
+        wrong = [n for n, v in _gmm_only if v is not None]
     if wrong:
         raise BloomMCPError(
             code="invalid_input",
@@ -214,8 +229,9 @@ def _reject_wrong_method_controls(params: ClusteringParams) -> None:
                 f"method={params.method!r}."
             ),
             remedy=(
-                "Use n_clusters/max_clusters for method='kmeans' and "
-                "n_components/max_components/covariance_type for method='gmm'."
+                "Use n_clusters/max_clusters for method='kmeans'/'hierarchical'; "
+                "n_components/max_components/covariance_type for method='gmm'; "
+                "linkage_method/distance_metric/optimization_method for method='hierarchical'."
             ),
         )
 
@@ -252,8 +268,8 @@ def _gmm_selected_scores(
     The **fixed-n** path is already correct upstream (single-element score arrays), so only correct
     when we auto-selected AND the arrays line up; otherwise fall through to the pass-through value.
     Forward-compatible: once upstream fixes it, ``bic_scores[idx]`` equals the corrected scalar, so
-    this is a no-op. **Re-verify and drop on the 0.1.0a5 bump** — tracked upstream (talmolab/
-    sleap-roots-analyze; see the #309 follow-up).
+    this is a no-op. **Re-verified on the 0.1.0a5 bump — bug still present** (clustering.py:439
+    returns ``bic_scores[-1]``, not the selected model's score). Drop on the 0.1.0a6 bump.
     """
     bic, aic = float(result.bic), float(result.aic)
     if params.n_components is None:
@@ -320,6 +336,27 @@ def clustering(
             remedy="Re-run qc_clean to produce a finite-valued cleaned version, then retry.",
         )
 
+    # Pre-dispatch parameter-compatibility guard for hierarchical: scipy raises a
+    # ValueError("Ward's method only works with Euclidean distance") which would be caught
+    # below and re-raised as the misleading "degenerate data" assumption_violated. Catch it
+    # here so the remedy names the actual problem (parameter mismatch, not data quality).
+    if params.method == "hierarchical":
+        effective_linkage = params.linkage_method or "ward"
+        effective_metric = params.distance_metric or "euclidean"
+        if effective_linkage == "ward" and effective_metric != "euclidean":
+            raise BloomMCPError(
+                code="invalid_input",
+                message=(
+                    f"linkage_method='ward' requires distance_metric='euclidean'; "
+                    f"got distance_metric={effective_metric!r}."
+                ),
+                remedy=(
+                    "Either keep the default 'ward'/'euclidean' pair, or switch to "
+                    "a non-ward linkage (e.g. 'complete', 'average', 'single') to "
+                    "use a different distance metric."
+                ),
+            )
+
     # Delegate ALL clustering, dispatching on method. The delegates *raise* on degenerate
     # input: ValueError (fewer samples than requested clusters / too few for the method) and
     # RuntimeError ("clustering failed: No numeric columns with non-zero variance" when the
@@ -338,7 +375,7 @@ def clustering(
             result = KMeansResult.from_kmeans_dict(
                 result_dict, random_state=random_state
             )
-        else:
+        elif params.method == "gmm":
             result_dict = perform_gmm_clustering(
                 selected,
                 n_components=params.n_components,
@@ -348,6 +385,17 @@ def clustering(
                 random_state=random_state,
             )
             result = GMMResult.from_gmm_dict(result_dict, random_state=random_state)
+        else:  # hierarchical
+            result_dict = hierarchical_cluster_labels(
+                selected,
+                n_clusters=params.n_clusters,
+                method=params.linkage_method or "ward",
+                metric=params.distance_metric or "euclidean",
+                standardize=params.standardize,
+                optimization_method=params.optimization_method or "silhouette",
+                max_clusters=params.max_clusters or 10,
+            )
+            result = ClusterResult.from_hierarchical_dict(result_dict)
     except (ValueError, RuntimeError):
         raise BloomMCPError(
             code="assumption_violated",
@@ -389,13 +437,25 @@ def clustering(
 
     if params.method == "kmeans":
         method_scalars: dict[str, object] = {"inertia": float(result.inertia)}
-    else:
+    elif params.method == "gmm":
         bic, aic = _gmm_selected_scores(params, result, result_dict)
         method_scalars = {
             "bic": bic,
             "aic": aic,
             "converged": bool(result.converged),
             "covariance_type": str(result.covariance_type),
+        }
+    else:  # hierarchical
+        coph = float(result.cophenetic_correlation)
+        cut = float(result.cut_height)
+        method_scalars = {
+            "linkage_method": str(result.linkage_method),
+            "distance_metric": str(result.distance_metric),
+            # NaN arises when all pairwise distances are 0 (all-identical data) giving a
+            # 0/0 cophenet correlation or undefined cut height; convert to None so
+            # to_json(allow_nan=False) doesn't raise after the run is already committed.
+            "cophenetic_correlation": None if not np.isfinite(coph) else coph,
+            "cut_height": None if not np.isfinite(cut) else cut,
         }
 
     tool_warnings: list[str] = []
@@ -409,12 +469,18 @@ def clustering(
             "structure. Consider inspecting trait distributions or increasing max_components "
             "before interpreting this result."
         )
+    if params.method == "hierarchical" and params.seed != 42:
+        tool_warnings.append(
+            f"seed={params.seed} was provided but is ignored for hierarchical clustering "
+            f"(deterministic); provenance records seed=None."
+        )
 
-    # Persist a versioned run, recording the cleaned-source lineage on a *copy* of the stamped
-    # provenance (model_copy — the non-proliferating pattern; not remove_outliers' in-place
-    # mutation). Snapshot the consumed frame to a temp CSV passed as source_csv so the manifest
-    # content-addresses the exact input (input_sha256), not just the mutable v<N>_cleaned label.
-    prov = provenance.model_copy(update={"based_on_version": frame.source})
+    # Persist a versioned run. For hierarchical (deterministic, no RNG), override seed=None
+    # in the stamped provenance — the contract resolved params.seed but we never consumed it.
+    prov_update: dict[str, object] = {"based_on_version": frame.source}
+    if params.method == "hierarchical":
+        prov_update["seed"] = None
+    prov = provenance.model_copy(update=prov_update)
     with tempfile.TemporaryDirectory(prefix="clustering_input_") as _tmp:
         source_snapshot = Path(_tmp) / _INPUT_SNAPSHOT_NAME
         frame.df.to_csv(source_snapshot, index=False)
