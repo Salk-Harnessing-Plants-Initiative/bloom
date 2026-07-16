@@ -197,16 +197,6 @@ def test_kmeans_delegates_to_kmeans_and_seed_reaches_fit(injected_ports, monkeyp
 
     monkeypatch.setattr(clustering_tool, "perform_gmm_clustering", _boom_gmm)
 
-    import bloom_mcp.clustering as vendored
-
-    monkeypatch.setattr(
-        vendored,
-        "perform_kmeans_clustering",
-        lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("clustering called the vendored bloom_mcp.clustering")
-        ),
-    )
-
     _run(method="kmeans", n_clusters=3, seed=_SEED)
     assert captured["n"] == 1
     assert captured["columns"] == _TRAITS

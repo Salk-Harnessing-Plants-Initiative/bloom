@@ -126,13 +126,6 @@ def test_delegates_once_and_never_calls_vendored_pca(injected_ports, monkeypatch
 
     monkeypatch.setattr(pca_analysis_tool, "perform_pca_analysis", _spy)
 
-    import bloom_mcp.pca as vendored
-
-    def _boom(*a, **k):  # pragma: no cover
-        raise AssertionError("pca_analysis called the vendored bloom_mcp.pca")
-
-    monkeypatch.setattr(vendored, "perform_pca_analysis", _boom)
-
     _run()
 
     assert captured["n_calls"] == 1

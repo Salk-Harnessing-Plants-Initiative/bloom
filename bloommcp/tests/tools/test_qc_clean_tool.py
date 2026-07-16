@@ -203,14 +203,6 @@ def test_delegates_once_forwards_roles_and_never_calls_vendored_cleanup(
 
     monkeypatch.setattr(qc_clean_tool, "clean_traits_for_analysis", _spy)
 
-    # The vendored cleanup must never be touched.
-    import bloom_mcp.data_cleanup as vendored
-
-    def _boom(*a, **k):  # pragma: no cover
-        raise AssertionError("qc_clean called the vendored bloom_mcp.data_cleanup")
-
-    monkeypatch.setattr(vendored, "apply_data_cleanup_filters", _boom)
-
     _run()
 
     assert captured["n_calls"] == 1

@@ -319,13 +319,6 @@ def test_delegates_to_analyze_and_never_calls_vendored_cleanup(
     monkeypatch.setattr(qc_inspect_tool, "create_trait_eda_plots", _spy_eda)
     monkeypatch.setattr(qc_inspect_tool, "inspect_nan_samples", _spy_inspect)
 
-    import bloom_mcp.data_cleanup as vendored
-
-    def _boom(*a, **k):  # pragma: no cover
-        raise AssertionError("qc_inspect called the vendored bloom_mcp.data_cleanup")
-
-    monkeypatch.setattr(vendored, "apply_data_cleanup_filters", _boom)
-
     _run()
 
     assert calls["eda"] == 1

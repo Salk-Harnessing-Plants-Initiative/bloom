@@ -226,15 +226,6 @@ def test_delegates_once_forwards_roles_seed_and_never_calls_vendored(
 
     monkeypatch.setattr(remove_outliers_tool, "remove_outlier_samples", _spy)
 
-    import bloom_mcp.outlier_detection as vendored
-
-    def _boom(*a, **k):  # pragma: no cover
-        raise AssertionError(
-            "remove_outliers called the vendored bloom_mcp.outlier_detection"
-        )
-
-    monkeypatch.setattr(vendored, "detect_outliers_mahalanobis", _boom)
-
     _run(method="mahalanobis", seed=42)
 
     assert captured["n_calls"] == 1

@@ -139,10 +139,14 @@ before its vendored copy is removed (C2/C10).
       won't carry); fold the shipped PCA assertion into the cross-tier PCA test. Keep the UMAP
       cross-tier test (still calls `sleap_roots_analyze.umap` directly). (Delta: *Oracle has no
       import dependency on deleted vendored modules*.)
-- [ ] C8.2 In the 4 delegation-guard spies (`test_{pca_analysis,qc_clean,qc_inspect,remove_outliers}_tool.py`),
+- [ ] C8.2 In the 5 delegation-guard spies (`test_{pca_analysis,qc_clean,qc_inspect,remove_outliers,
+      clustering}_tool.py` — the last new since #309/#422 landed after this proposal was first drafted),
       **remove the `import bloom_mcp.<vendored> as vendored` binding itself** (not just the assertion)
       and keep the positive delegation spy (`n_calls == 1` + role/seed forwarding against the upstream
-      symbol). Land C8.1+C8.2 together, before/with C10, so no file imports a deleted module.
+      symbol). `test_clustering_tool.py`'s cross-method guards (kmeans-never-routes-to-GMM and vice
+      versa) are between two live upstream delegates, not vendored — keep those, remove only the
+      `bloom_mcp.clustering` binding. Land C8.1+C8.2 together, before/with C10, so no file imports a
+      deleted module.
 
 ### C9 — Drop the correlation tools (delete, no rewire)
 
