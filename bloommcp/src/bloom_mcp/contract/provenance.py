@@ -120,6 +120,9 @@ class Provenance(BaseModel):
     output_keys: dict[str, str] = Field(default_factory=dict)
     user_label: Optional[str] = None
     version_dir: str = ""
+    # Input-contract validation findings (``qc_clean`` #403); None for tools that
+    # don't validate their input. Carried verbatim into the manifest VersionEntry.
+    input_validation: Optional[dict] = None
 
     @classmethod
     def stamp(
@@ -170,4 +173,5 @@ class Provenance(BaseModel):
             environment=self.environment,
             output_sha256=self.output_sha256,
             output_keys=self.output_keys,
+            input_validation=self.input_validation,
         )

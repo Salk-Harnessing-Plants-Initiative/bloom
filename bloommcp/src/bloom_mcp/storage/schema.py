@@ -81,6 +81,12 @@ class VersionEntry(_StrictModel):
     environment: Optional[str] = None
     output_sha256: dict[str, str] = Field(default_factory=dict)
     output_keys: dict[str, str] = Field(default_factory=dict)
+    # Input-contract validation findings, recorded by ``qc_clean`` (#403). Optional
+    # and additive within schema v3: absent on runs that don't validate their input
+    # (and on all pre-#403 manifests), so those still load under ``extra="forbid"``.
+    # Keys: ``mode``, ``contract_version``, ``resolved_roles``, ``excluded_columns``,
+    # ``warnings``.
+    input_validation: Optional[dict] = None
 
 
 class Manifest(_StrictModel):
