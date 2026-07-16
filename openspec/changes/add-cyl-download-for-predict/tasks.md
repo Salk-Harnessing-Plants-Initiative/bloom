@@ -245,21 +245,21 @@ important gaps. See `design.md`'s Decisions/Risks for the full rationale of each
 tests below must FAIL against the current `download_for_predict.py` before the §10 implementation
 lands.
 
-- [ ] 9.1 **BLOCKING fix — uncaught `ValueError` + reconcile-before-validation ordering:** a scan
+- [x] 9.1 **BLOCKING fix — uncaught `ValueError` + reconcile-before-validation ordering:** a scan
       with `species_name=None` (or `plant_age_days=None`) exits non-zero with a readable
       `click.ClickException` message (not a raw traceback); if `scan_dir` already existed with
       content, that content is untouched (the failure happens before any destructive action).
-- [ ] 9.2 **New pure helper `resolve_sidecar_params(scan) -> dict`:** extracted from
+- [x] 9.2 **New pure helper `resolve_sidecar_params(scan) -> dict`:** extracted from
       `build_sidecar`'s inline `resolve_params(scan, overrides={"mode": "cylinder"}).values` call
       — same behavior, now independently callable/testable. Raises `ValueError` on missing
       required params (unchanged underlying behavior).
-- [ ] 9.3 **New pure helper `validate_frame_numbers(images) -> None`:** raises `ValueError` if any
+- [x] 9.3 **New pure helper `validate_frame_numbers(images) -> None`:** raises `ValueError` if any
       `image["frame_number"]` is `None`, or if two images share the same non-`None`
       `frame_number`. No-op (returns `None`) otherwise.
-- [ ] 9.4 **CLI-level:** a scan whose `cyl_images` rows have a null or duplicate `frame_number`
+- [x] 9.4 **CLI-level:** a scan whose `cyl_images` rows have a null or duplicate `frame_number`
       exits non-zero with a readable message before any frame is downloaded or any existing
       `scan_dir` content is touched.
-- [ ] 9.5 **`build_sidecar` signature change:** now `build_sidecar(scan, images,
+- [x] 9.5 **`build_sidecar` signature change:** now `build_sidecar(scan, images,
 frame_bytes_list, params)` — accepts the already-resolved `params` dict instead of calling
       `resolve_sidecar_params` internally. Update the existing tests
       (`test_build_sidecar_assembles_all_fields_in_input_order`,
@@ -267,39 +267,39 @@ frame_bytes_list, params)` — accepts the already-resolved `params` dict instea
       `params` explicitly; `test_build_sidecar_passes_mode_override_to_resolve_params` now tests
       `resolve_sidecar_params` directly (it's the one that calls `resolve_params`) rather than
       `build_sidecar`.
-- [ ] 9.6 **Params values, not just keys:** the sidecar's `params["species"]` is exactly
+- [x] 9.6 **Params values, not just keys:** the sidecar's `params["species"]` is exactly
       `"pennycress"` and `params["age"]` is exactly `14` for the `SCAN` fixture (not just "keys
       present") — closes the spec.md "canonical values" scenario that had no real assertion behind
       it.
-- [ ] 9.7 **`clear_scan_dir(scan_dir) -> list[str]`** (replaces `reconcile_stray_frames`): if
+- [x] 9.7 **`clear_scan_dir(scan_dir) -> list[str]`** (replaces `reconcile_stray_frames`): if
       `scan_dir` exists, removes it entirely (frames + any old sidecar) and returns the list of
       removed entry names (for the CLI to echo); no-op, returns `[]`, if `scan_dir` doesn't exist.
-- [ ] 9.8 **CLI-level — stale sidecar cannot survive a retry:** run the happy-path CLI to success
+- [x] 9.8 **CLI-level — stale sidecar cannot survive a retry:** run the happy-path CLI to success
       (sidecar + frames written), then re-run for the same scan with one frame now failing —
       assert the now-non-zero-exit run's directory has **no** `scan_metadata.json` at all (not a
       stale one from the first run) and reports what it cleared before starting.
-- [ ] 9.9 **CLI-level — clear is echoed, not silent:** the happy-path re-run test above (or a
+- [x] 9.9 **CLI-level — clear is echoed, not silent:** the happy-path re-run test above (or a
       dedicated one) asserts the command's output mentions the directory was cleared/what was
       removed, closing the "silent deletion" gap.
-- [ ] 9.10 **`frame_dest_for_predict` fails loudly on a missing `object_path`:** `KeyError` (not a
+- [x] 9.10 **`frame_dest_for_predict` fails loudly on a missing `object_path`:** `KeyError` (not a
       silently-defaulted `.png`) for `{"frame_number": 3}` (no `object_path` key) — still caught
       per-frame by `download_frames_for_predict`'s existing `try/except Exception`, so this
       surfaces as a clean per-frame failure, not a crash; update
       `test_frame_dest_for_predict_defaults_to_png_when_extension_missing` (which used a row that
       _had_ `object_path` with no extension — still valid, keep it) and add a new test for the
       missing-key case.
-- [ ] 9.11 **Atomic writes:** `write_sidecar` and each frame write survive a simulated kill
+- [x] 9.11 **Atomic writes:** `write_sidecar` and each frame write survive a simulated kill
       mid-write without leaving a truncated file at the final path — assert via monkeypatching the
       write call to raise partway through, then check the final path either doesn't exist or has
       the complete prior content (never partial new content).
-- [ ] 9.12 **Auth refactor has no behavior change:** `test_cli_missing_credentials_hints_login`
+- [x] 9.12 **Auth refactor has no behavior change:** `test_cli_missing_credentials_hints_login`
       continues to pass unmodified after switching to `cli._authed_client` (same error message,
       same "run `bloomctl login`" hint) — this is the test that pins the refactor is behavior-
       preserving.
-- [ ] 9.13 **Reuse identity tests for the remaining three re-used objects** (mirrors 5.1's
+- [x] 9.13 **Reuse identity tests for the remaining three re-used objects** (mirrors 5.1's
       `fetch_scan` pattern): `dfp.fetch_images is dl.fetch_images`, `dfp.FrameResult is
 dl.FrameResult`, `dfp.DownloadResult is dl.DownloadResult`.
-- [ ] 9.14 **Oracle test — `_IMAGE_EXTENSIONS` drift guard (manual, dev-machine only, same
+- [x] 9.14 **Oracle test — `_IMAGE_EXTENSIONS` drift guard (manual, dev-machine only, same
       non-CI-gate note as §3):** add `assert dfp._IMAGE_EXTENSIONS ==
 frozenset(sleap_roots_predict.batch._IMAGE_EXTENSIONS)` to
       `test_oracle_sidecar_is_accepted_by_discover_scans`, guarded by the same
@@ -307,7 +307,7 @@ frozenset(sleap_roots_predict.batch._IMAGE_EXTENSIONS)` to
 
 ## 10. GREEN — implement the fixes
 
-- [ ] 10.1 Update `bloomcli/src/bloomctl/cyl/download_for_predict.py`:
+- [x] 10.1 Update `bloomcli/src/bloomctl/cyl/download_for_predict.py`:
       add `resolve_sidecar_params`, `validate_frame_numbers`; change `build_sidecar`'s signature;
       rename/rewrite `reconcile_stray_frames` → `clear_scan_dir`; switch
       `frame_dest_for_predict` to `image["object_path"]`; add atomic writes (temp file +
@@ -317,13 +317,13 @@ frozenset(sleap_roots_predict.batch._IMAGE_EXTENSIONS)` to
       (both wrapped in `try/except ValueError` → `ClickException`) → `clear_scan_dir` (echo what
       was removed) → download frames → failure check → `build_sidecar` (using the already-resolved
       `params`) → `write_sidecar` → success echo.
-- [ ] 10.2 Iterate until every §9 test is GREEN, and the full suite (§8.2's invocation) stays
+- [x] 10.2 Iterate until every §9 test is GREEN, and the full suite (§8.2's invocation) stays
       green with no regressions.
 
 ## 11. Re-verify
 
-- [ ] 11.1 Re-run §8.1-8.5 (validate, full suite, ruff, pre-commit, contracts guards).
-- [ ] 11.2 Re-run §8.6's manual oracle-test verification (now including the new
+- [x] 11.1 Re-run §8.1-8.5 (validate, full suite, ruff, pre-commit, contracts guards).
+- [x] 11.2 Re-run §8.6's manual oracle-test verification (now including the new
       `_IMAGE_EXTENSIONS` assertion from 9.14) — paste the passing output.
 - [ ] 11.3 Push a fixup and reply to the `/review-pr` findings on PR #458, noting what was fixed
       vs. explicitly accepted as a documented limitation (concurrent same-scan invocations).

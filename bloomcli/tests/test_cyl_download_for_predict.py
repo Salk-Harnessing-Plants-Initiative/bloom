@@ -19,6 +19,7 @@ IMAGES = [
     {"id": 1002, "frame_number": 1, "object_path": "cyl-images/b.png"},
 ]
 FRAME_BYTES = [b"frame-0-bytes", b"frame-1-bytes"]
+PARAMS = {"species": "pennycress", "mode": "cylinder", "age": 14}
 
 
 class _FakeBucket:
@@ -51,6 +52,9 @@ class _FakeClient:
 def test_oracle_sidecar_is_accepted_by_discover_scans(tmp_path):
     """Manual, dev-machine only (see tasks.md §3 note) — self-skips in CI."""
     sleap_roots_predict = pytest.importorskip("sleap_roots_predict")
+    predict_batch = pytest.importorskip("sleap_roots_predict.batch")
+
+    assert dfp._IMAGE_EXTENSIONS == frozenset(predict_batch._IMAGE_EXTENSIONS)
 
     scan_dir = tmp_path / "scan_1"
     scan_dir.mkdir()
@@ -58,7 +62,7 @@ def test_oracle_sidecar_is_accepted_by_discover_scans(tmp_path):
         dest = dfp.frame_dest_for_predict(scan_dir, image)
         dest.write_bytes(data)
 
-    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES)
+    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES, PARAMS)
     assert sidecar["scan_key"] == "scan_1"
     assert set(sidecar["params"]) == {"species", "mode", "age"}
     assert sidecar["params"]["mode"] == "cylinder"
@@ -93,6 +97,11 @@ def test_frame_dest_for_predict_defaults_to_png_when_extension_missing(tmp_path)
     assert dest == tmp_path / "3.png"
 
 
+def test_frame_dest_for_predict_raises_on_missing_object_path(tmp_path):
+    with pytest.raises(KeyError):
+        dfp.frame_dest_for_predict(tmp_path, {"frame_number": 3})
+
+
 def test_compute_checksum_is_sha256_prefixed_and_order_sensitive():
     checksum = dfp.compute_checksum(FRAME_BYTES)
     assert checksum.startswith("sha256:")
@@ -106,27 +115,39 @@ def test_compute_checksum_empty_list_is_well_defined():
 
 
 def test_build_sidecar_assembles_all_fields_in_input_order():
-    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES)
+    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES, PARAMS)
     assert set(sidecar) == {"scan_key", "params", "image_ids", "images_checksum"}
     assert sidecar["scan_key"] == dfp.scan_key_for(SCAN["scan_id"])
     assert sidecar["image_ids"] == [1001, 1002]
+    assert sidecar["params"] == PARAMS
 
 
-def test_build_sidecar_passes_mode_override_to_resolve_params(monkeypatch):
+def test_resolve_sidecar_params_passes_mode_override(monkeypatch):
     captured = {}
     real_resolve_params = sleap_roots_contracts.resolve_params
 
     def spy(metadata, overrides=None):
-        captured["metadata"] = metadata
         captured["overrides"] = overrides
         return real_resolve_params(metadata, overrides=overrides)
 
     monkeypatch.setattr(sleap_roots_contracts, "resolve_params", spy)
 
-    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES)
+    params = dfp.resolve_sidecar_params(SCAN)
 
     assert captured["overrides"] == {"mode": "cylinder"}
-    assert sidecar["params"]["mode"] == "cylinder"
+    assert params["mode"] == "cylinder"
+
+
+def test_resolve_sidecar_params_canonicalizes_species_and_age():
+    params = dfp.resolve_sidecar_params(SCAN)
+    assert params["species"] == "pennycress"
+    assert params["age"] == 14
+
+
+def test_resolve_sidecar_params_raises_valueerror_on_missing_metadata():
+    bad_scan = {**SCAN, "species_name": None}
+    with pytest.raises(ValueError):
+        dfp.resolve_sidecar_params(bad_scan)
 
 
 def test_resolve_params_ignores_mode_on_pinned_contracts_version():
@@ -139,17 +160,89 @@ def test_resolve_params_ignores_mode_on_pinned_contracts_version():
 
 
 def test_write_sidecar_round_trips_through_json(tmp_path):
-    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES)
+    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES, PARAMS)
     path = tmp_path / "scan_1.scan_metadata.json"
     dfp.write_sidecar(sidecar, path)
     assert json.loads(path.read_text(encoding="utf-8")) == sidecar
 
 
 def test_write_sidecar_creates_parent_dir(tmp_path):
-    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES)
+    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES, PARAMS)
     path = tmp_path / "nested" / "scan_1.scan_metadata.json"
     dfp.write_sidecar(sidecar, path)
     assert path.exists()
+
+
+def test_write_sidecar_is_atomic_on_write_failure(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    path = tmp_path / "scan_1.scan_metadata.json"
+    path.write_text('{"old": "content"}', encoding="utf-8")
+
+    def _boom(self, data, **kwargs):
+        raise OSError("simulated crash mid-write")
+
+    monkeypatch.setattr(Path, "write_text", _boom)
+
+    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES, PARAMS)
+    with pytest.raises(OSError):
+        dfp.write_sidecar(sidecar, path)
+
+    assert path.read_text(encoding="utf-8") == '{"old": "content"}'
+
+
+def test_atomic_write_bytes_is_atomic_on_write_failure(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    dest = tmp_path / "0.png"
+    dest.write_bytes(b"old-bytes")
+
+    def _boom(self, data):
+        raise OSError("simulated crash mid-write")
+
+    monkeypatch.setattr(Path, "write_bytes", _boom)
+
+    with pytest.raises(OSError):
+        dfp._atomic_write_bytes(dest, b"new-bytes")
+
+    assert dest.read_bytes() == b"old-bytes"
+
+
+def test_validate_frame_numbers_accepts_unique_non_null():
+    dfp.validate_frame_numbers(IMAGES)  # must not raise
+
+
+def test_validate_frame_numbers_rejects_null():
+    images = [{"id": 1, "frame_number": None, "object_path": "a.png"}]
+    with pytest.raises(ValueError):
+        dfp.validate_frame_numbers(images)
+
+
+def test_validate_frame_numbers_rejects_duplicates():
+    images = [
+        {"id": 1, "frame_number": 0, "object_path": "a.png"},
+        {"id": 2, "frame_number": 0, "object_path": "b.png"},
+    ]
+    with pytest.raises(ValueError):
+        dfp.validate_frame_numbers(images)
+
+
+def test_clear_scan_dir_removes_existing_contents_and_returns_names(tmp_path):
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "0.png").write_bytes(b"x")
+    (scan_dir / "scan_1.scan_metadata.json").write_text("{}")
+
+    removed = dfp.clear_scan_dir(scan_dir)
+
+    assert not scan_dir.exists()
+    assert set(removed) == {"0.png", "scan_1.scan_metadata.json"}
+
+
+def test_clear_scan_dir_noop_when_absent(tmp_path):
+    scan_dir = tmp_path / "scan_1"
+    assert dfp.clear_scan_dir(scan_dir) == []
+    assert not scan_dir.exists()
 
 
 # --- 5.x command wiring -------------------------------------------------------
@@ -157,6 +250,18 @@ def test_write_sidecar_creates_parent_dir(tmp_path):
 
 def test_fetch_scan_is_reused_not_duplicated():
     assert dfp.fetch_scan is dl.fetch_scan
+
+
+def test_fetch_images_is_reused_not_duplicated():
+    assert dfp.fetch_images is dl.fetch_images
+
+
+def test_frame_result_is_reused_not_duplicated():
+    assert dfp.FrameResult is dl.FrameResult
+
+
+def test_download_result_is_reused_not_duplicated():
+    assert dfp.DownloadResult is dl.DownloadResult
 
 
 def _patch_common(monkeypatch, images=None, storage_responses=None):
@@ -201,6 +306,48 @@ def test_cli_scan_not_found_exits_nonzero(tmp_path, monkeypatch):
     assert result.exit_code != 0
     assert "not found" in result.output.lower()
     assert not out.exists()
+
+
+def test_cli_missing_species_name_exits_cleanly_without_deleting_existing_dir(
+    tmp_path, monkeypatch
+):
+    bad_scan = {**SCAN, "species_name": None}
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(dfp, "fetch_scan", lambda client, scan_id: bad_scan)
+
+    out = tmp_path / "out"
+    scan_dir = out / "scan_1"
+    scan_dir.mkdir(parents=True)
+    existing = scan_dir / "existing.png"
+    existing.write_bytes(b"must survive a metadata-resolution failure")
+
+    result = CliRunner().invoke(cli, ["cyl", "download-for-predict", "1", str(out)])
+
+    assert result.exit_code != 0
+    assert result.exception is None or not isinstance(result.exception, ValueError)
+    assert existing.exists()
+    assert existing.read_bytes() == b"must survive a metadata-resolution failure"
+
+
+def test_cli_duplicate_frame_number_exits_cleanly_without_deleting_existing_dir(
+    tmp_path, monkeypatch
+):
+    dup_images = [
+        {"id": 1001, "frame_number": 0, "object_path": "cyl-images/a.png"},
+        {"id": 1002, "frame_number": 0, "object_path": "cyl-images/b.png"},
+    ]
+    _patch_common(monkeypatch, images=dup_images)
+
+    out = tmp_path / "out"
+    scan_dir = out / "scan_1"
+    scan_dir.mkdir(parents=True)
+    existing = scan_dir / "existing.png"
+    existing.write_bytes(b"must survive a frame_number validation failure")
+
+    result = CliRunner().invoke(cli, ["cyl", "download-for-predict", "1", str(out)])
+
+    assert result.exit_code != 0
+    assert existing.exists()
 
 
 def test_cli_partial_frame_failure_no_sidecar_written(tmp_path, monkeypatch):
@@ -332,7 +479,7 @@ def test_checksum_changes_when_frame_content_changes(tmp_path, monkeypatch):
     assert sidecar_a["images_checksum"] != sidecar_b["images_checksum"]
 
 
-def test_stale_frame_reconciled_away_on_successful_retry(tmp_path, monkeypatch):
+def test_stale_frame_cleared_on_successful_retry(tmp_path, monkeypatch):
     _patch_common(monkeypatch)
     out = tmp_path / "out"
     scan_dir = out / "scan_1"
@@ -346,3 +493,48 @@ def test_stale_frame_reconciled_away_on_successful_retry(tmp_path, monkeypatch):
     assert not stale.exists()
     assert (scan_dir / "0.png").exists()
     assert (scan_dir / "1.png").exists()
+
+
+def test_cli_stale_sidecar_does_not_survive_a_partial_failure_retry(tmp_path, monkeypatch):
+    _patch_common(monkeypatch)
+    out = tmp_path / "out"
+
+    result1 = CliRunner().invoke(cli, ["cyl", "download-for-predict", "1", str(out)])
+    assert result1.exit_code == 0, result1.output
+    sidecar_path = out / "scan_1" / "scan_1.scan_metadata.json"
+    assert sidecar_path.exists()
+
+    def _flaky_download(object_path):
+        if object_path == "cyl-images/b.png":
+            raise ConnectionError("simulated storage failure")
+        return f"bytes::{object_path}::changed".encode()
+
+    class _FlakyClient(_FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.storage._bucket.download = _flaky_download
+
+    monkeypatch.setattr(auth, "make_authed_client", lambda creds: _FlakyClient())
+
+    result2 = CliRunner().invoke(cli, ["cyl", "download-for-predict", "1", str(out)])
+
+    assert result2.exit_code != 0
+    assert not sidecar_path.exists()
+
+
+def test_cli_echoes_what_it_cleared_on_rerun(tmp_path, monkeypatch):
+    # NB: assert an exact, deliberately-chosen count/phrase, not a loose substring like
+    # "clear" — pytest truncates tmp_path's directory name to 30 chars of the test's own
+    # name, and that truncated path is embedded in the CLI's own path-containing output, so
+    # a generic word can coincidentally "pass" via the directory name rather than real output.
+    _patch_common(monkeypatch)
+    out = tmp_path / "out"
+
+    result1 = CliRunner().invoke(cli, ["cyl", "download-for-predict", "1", str(out)])
+    assert result1.exit_code == 0, result1.output
+    assert "existing file" not in result1.output.lower()
+
+    result2 = CliRunner().invoke(cli, ["cyl", "download-for-predict", "1", str(out)])
+    assert result2.exit_code == 0, result2.output
+    # 0.png, 1.png, scan_1.scan_metadata.json from the first run.
+    assert "3 existing file" in result2.output.lower()
