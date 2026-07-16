@@ -158,9 +158,6 @@ export function EmbedtreePage() {
   return (
     <div className="flex h-full flex-col gap-4 p-4">
       <header className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold text-neutral-800">
-          AI Orthologs
-        </h1>
         <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
           <span className="font-semibold">Predicted, not verified.</span>{" "}
           {SIMILARITY_DISCLAIMER}

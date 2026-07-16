@@ -10,6 +10,13 @@ permissions:
   contents: read
   pull-requests: write
 
+# Cancel superseded runs — a new push to a PR aborts the in-flight run for the
+# same ref instead of building all Docker images + the compose stack to
+# completion for a commit that's already been replaced.
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Supabase CLI version — matched to what's installed on the Salk deploy
   # server (documented in #135). Change here + on the server together.
@@ -114,6 +121,11 @@ jobs:
   python-audit:
     name: Python Security Audit for CVEs
     runs-on: ubuntu-latest
+    # A hang anywhere in this job's chain (unit tests, the bloommcp/bloomcli
+    # suites, the wheel build, or pip-audit itself) would otherwise run until
+    # GitHub Actions' 360-minute default cap with zero output (#454). Matches
+    # docker-build (30m) / compose-health-check (30m) / dev-stack-smoke (20m).
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -125,7 +137,10 @@ jobs:
         run: uv run --extra test pytest tests/unit/ -v --tb=short
 
       - name: Run bloom_mcp package tests
-        run: cd bloommcp && uv run --frozen --extra test pytest tests/ -v --tb=short
+        # Excludes the integration-marked full-fixture heritability/UMAP oracle
+        # tests (bloommcp/tests/test_oracle.py) — they're known to intermittently
+        # stall in CI containers (#454) and run instead via /pre-merge.
+        run: cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration" -v --tb=short
         env:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
@@ -169,11 +184,10 @@ jobs:
   docker-build:
     name: Build Docker Images & Scan for CVEs
     runs-on: ubuntu-latest
-    # compose-health-check `needs: docker-build`, and this job builds all four
-    # images (bloom-web/langchain/bloommcp/caddy) + Trivy-scans them on the same
-    # ~14 GB-free runner — the same disk-heavy pattern as compose-health-check
-    # (issue #334). Protect it too: a disk-out here would skip the very job the
-    # cleanup is meant to guard. Cap the runtime so a wedge can't hang for 6h.
+    # This job builds all five images (bloom-web/langchain/bloommcp/caddy/
+    # workflows) + Trivy-scans them on the same ~14 GB-free runner — the same
+    # disk-heavy pattern as compose-health-check (issue #334). Protect it too:
+    # free disk before building. Cap the runtime so a wedge can't hang for 6h.
     timeout-minutes: 30
     steps:
       - name: Checkout code
@@ -183,6 +197,12 @@ jobs:
         uses: ./.github/actions/free-disk-space
         with:
           min-free-gb: "20"
+
+      # Buildx enables the GHA layer cache below. Each build reads/writes a
+      # per-image cache scope in the GitHub Actions cache, so unchanged layers
+      # are restored across runs instead of rebuilt cold every PR.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build bloom-web image
         # NEXT_PUBLIC_* build args are still REQUIRED until PR-3 §6 of the
@@ -194,24 +214,63 @@ jobs:
         # the Dockerfile, (b) drop these --build-arg flags here, and
         # (c) add tests/unit/test_dockerfile_no_next_public_args.py to
         # fence the absence on both sides.
-        run: |
-          docker build --provenance=false -f web/Dockerfile.bloom-web.prod \
-            --build-arg NEXT_PUBLIC_SUPABASE_URL=http://localhost:8000 \
-            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder \
-            --build-arg NEXT_PUBLIC_SUPABASE_COOKIE_NAME=sb-localhost-auth-token \
-            -t bloom-web:ci .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: web/Dockerfile.bloom-web.prod
+          tags: bloom-web:ci
+          load: true                     # load into the docker daemon so Trivy can scan it
+          provenance: false
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=http://localhost:8000
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder
+            NEXT_PUBLIC_SUPABASE_COOKIE_NAME=sb-localhost-auth-token
+          cache-from: type=gha,scope=bloom-web
+          cache-to: type=gha,mode=max,scope=bloom-web
 
       - name: Build langchain-agent image
-        run: docker build --provenance=false -f langchain/Dockerfile -t langchain-agent:ci ./langchain
+        uses: docker/build-push-action@v6
+        with:
+          context: ./langchain
+          file: langchain/Dockerfile
+          tags: langchain-agent:ci
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=langchain-agent
+          cache-to: type=gha,mode=max,scope=langchain-agent
 
       - name: Build bloommcp image
-        run: docker build --provenance=false -f bloommcp/Dockerfile -t bloommcp:ci ./bloommcp
+        uses: docker/build-push-action@v6
+        with:
+          context: ./bloommcp
+          file: bloommcp/Dockerfile
+          tags: bloommcp:ci
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=bloommcp
+          cache-to: type=gha,mode=max,scope=bloommcp
 
       - name: Build caddy image
-        run: docker build --provenance=false -f caddy/Dockerfile -t caddy:ci ./caddy
+        uses: docker/build-push-action@v6
+        with:
+          context: ./caddy
+          file: caddy/Dockerfile
+          tags: caddy:ci
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=caddy
+          cache-to: type=gha,mode=max,scope=caddy
 
       - name: Build workflows image
-        run: docker build --provenance=false -f services/workflows/Dockerfile -t workflows:ci ./services/workflows
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/workflows
+          file: services/workflows/Dockerfile
+          tags: workflows:ci
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=workflows
+          cache-to: type=gha,mode=max,scope=workflows
 
       # Scan built images for CVEs and generate markdown report
       - name: Scan bloom-web image
@@ -295,13 +354,6 @@ jobs:
             echo "> Full scan output available in the [trivy-built-images-report](../actions/artifacts) artifact."
           } > trivy-report.md
 
-      - name: Post Trivy report as PR comment
-        if: always()
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: trivy-docker-build
-          path: trivy-report.md
-
       - name: Upload Trivy report artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -348,6 +400,14 @@ jobs:
           severity: 'CRITICAL'
           exit-code: '1'
           trivyignores: '.trivyignore'
+
+      # Post after the CVE gates so the comment only appears once a pass/fail exists.
+      - name: Post Trivy report as PR comment
+        if: ${{ !cancelled() }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: trivy-docker-build
+          path: trivy-report.md
 
   lint-migrations:
     name: Lint new migration filenames + timestamps
@@ -402,7 +462,10 @@ jobs:
 
   compose-health-check:
     name: Docker Compose Health Check
-    needs: docker-build
+    # Runs in parallel with docker-build (separate runners, no shared images).
+    # It formerly `needs: docker-build`, which serialized the two jobs and gave
+    # fail-fast — a failing CVE build skipped this expensive job. Dropping it
+    # trades that saving for parallelism (both build their own stacks anyway).
     runs-on: ubuntu-latest
     # Cap the job. The GitHub default is 6h; a "No space left on device" fill
     # once left this job hanging for the full 6h before failing (issue #334).
@@ -459,6 +522,10 @@ jobs:
       # tries to descend into the root-owned volumes directory.
       - name: Setup uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+
+      # Enables the type=gha layer cache on the compose builds below (mirrors docker-build).
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Install Supabase CLI
         run: |
@@ -589,7 +656,13 @@ jobs:
           echo "Database is healthy!"
 
       - name: Start remaining services
-        run: docker compose $COMPOSE_FILES --env-file .env.ci up -d --build
+        # COMPOSE_BAKE routes the build through Buildx bake so the type=gha cache
+        # in the ci-cache overlay is honored. The overlay is added only here (not
+        # to COMPOSE_FILES) so it never applies to local dev, which lacks the
+        # GitHub Actions credentials that gha cache export requires.
+        env:
+          COMPOSE_BAKE: "true"
+        run: docker compose $COMPOSE_FILES -f docker-compose.ci-cache.yml --env-file .env.ci up -d --build
 
       - name: Wait for services to be healthy
         run: |
@@ -677,10 +750,13 @@ jobs:
       # Layer B — runs only on failure. Prints applied-vs-pending state so an
       # on-call engineer can see which migration broke without digging through
       # step logs. `|| true` stops a diagnostic-fetch failure from masking
-      # the original migration error.
+      # the original migration error. Guarded: if: failure() doesn't fire on
+      # a cancelled job, but it DOES fire if an earlier, unrelated step (e.g.
+      # "Install Supabase CLI") fails before .env.ci is ever generated (#455).
       - name: Show migration status on failure
         if: failure()
         run: |
+          [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (an earlier step failed before this ran)"; exit 0; }
           PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
           PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
           echo "::add-mask::$PG_PASSWORD"
@@ -695,9 +771,13 @@ jobs:
       # Layer C — fenced code block of migration state in the run's summary panel.
       # Uses CLI's native text output (the `-o json` flag does NOT exist on
       # `migration list` in the pinned CLI version — see SUPABASE_VERSION above).
+      # Guarded: if: always() fires both when a superseding push cancels this
+      # run and when an earlier step fails, before .env.ci is ever generated
+      # (#455) — skip cleanly instead of crashing on a missing-file error.
       - name: Migration summary
         if: always()
         run: |
+          [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (job canceled or failed before this step ran)"; exit 0; }
           PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
           PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
           echo "::add-mask::$PG_PASSWORD"
@@ -803,9 +883,13 @@ jobs:
           path: web/playwright-report/
           retention-days: 7
 
+      # Guarded: if: failure() fires if an earlier, unrelated step fails
+      # before .env.ci is ever generated (#455) — same defect class as
+      # "Show migration status on failure" above.
       - name: Debug logs on failure
         if: failure()
         run: |
+          [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (an earlier step failed before this ran)"; exit 0; }
           echo "=== Container Status ==="
           docker compose $COMPOSE_FILES --env-file .env.ci ps
           echo "=== db-prod logs ==="
@@ -821,9 +905,15 @@ jobs:
           echo "=== bloommcp logs ==="
           docker compose $COMPOSE_FILES --env-file .env.ci logs bloommcp --tail=50
 
+      # Guarded: if: always() fires both when a superseding push cancels this
+      # run and when an earlier step fails, before .env.ci is ever generated
+      # (#455) — nothing was ever brought up in that case, so there's nothing
+      # to tear down.
       - name: Cleanup
         if: always()
-        run: docker compose $COMPOSE_FILES --env-file .env.ci down -v
+        run: |
+          [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (job canceled or failed before this step ran)"; exit 0; }
+          docker compose $COMPOSE_FILES --env-file .env.ci down -v
 
   # Exercise the *documented dev workflow* end to end on docker-compose.dev.yml
   # (compose-health-check above uses the prod compose). Self-contained: `make
@@ -868,7 +958,11 @@ jobs:
         run: make init
 
       - name: make dev-up (build + start the dev stack)
-        run: make dev-up
+        # Skip the environment doctor preflight: this Linux runner is known-good
+        # (no /mnt/ repo, tools provisioned above), and the doctor's checks are
+        # for local developer machines. Keeps the required check off the doctor's
+        # false-abort surface. See scripts/doctor.sh.
+        run: DOCTOR_SKIP=1 make dev-up
 
       # No manual waits — this is exactly what a developer types. The robustness
       # lives in the commands: migrate-local bounded-waits for the storage schema
@@ -892,9 +986,13 @@ jobs:
       - name: make bloommcp-smoke (live persistence smoke through real ports)
         run: make bloommcp-smoke
 
+      # Guarded: if: failure() fires if an earlier, unrelated step fails
+      # before .env.dev is ever generated (#455) — same defect class as
+      # compose-health-check's "Debug logs on failure" above.
       - name: Debug logs on failure
         if: failure()
         run: |
+          [ -s .env.dev ] || { echo "::notice::skipping — .env.dev was never generated (an earlier step failed before this ran)"; exit 0; }
           echo "=== Container Status ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev ps
           echo "=== db-dev logs ==="
@@ -910,9 +1008,16 @@ jobs:
           echo "=== langchain-agent logs ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs langchain-agent --tail=50
 
+      # Guarded: if: always() fires both when the workflow-level
+      # cancel-in-progress concurrency group cancels this job and when an
+      # earlier step fails, before "make init" ever generates .env.dev
+      # (#455) — nothing was ever brought up in that case, so there's
+      # nothing to tear down.
       - name: Cleanup
         if: always()
-        run: docker compose -f docker-compose.dev.yml --env-file .env.dev down -v
+        run: |
+          [ -s .env.dev ] || { echo "::notice::skipping — .env.dev was never generated (job canceled or failed before this step ran)"; exit 0; }
+          docker compose -f docker-compose.dev.yml --env-file .env.dev down -v
 
   extract-pinned-images:
     name: Extract Pinned Images

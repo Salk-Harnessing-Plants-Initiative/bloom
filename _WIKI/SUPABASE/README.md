@@ -8,22 +8,22 @@ Supabase is run as a self-hosted set of containers under
 `docker-compose.prod.yml` (used for both prod and staging, with different
 `-p` projects). The components used in this repo:
 
-| Container                 | Image                           | What it does                                                                                |
-| ------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------- |
-| `db-prod`               | `supabase/postgres:15.x`      | The Postgres database (data + auth schemas + storage schema).                               |
+| Container               | Image                         | What it does                                                                        |
+| ----------------------- | ----------------------------- | ----------------------------------------------------------------------------------- |
+| `db-prod`               | `supabase/postgres:15.x`      | The Postgres database (data + auth schemas + storage schema).                       |
 | `kong`                  | `kong:2.8.1`                  | API gateway. Routes `/auth`, `/rest`, `/storage`, `/realtime` to the right backend. |
-| `auth` (gotrue)         | `supabase/gotrue:v2.x`        | User authentication, magic links, JWT issuance.                                             |
-| `rest` (postgrest)      | `postgrest/postgrest:v12.x`   | Exposes Postgres tables as REST via the JWT-derived role.                                   |
-| `storage` (storage-api) | `supabase/storage-api:v1.x`   | Object storage HTTP API in front of MinIO.                                                  |
-| `realtime`              | `supabase/realtime:v2.x`      | Postgres logical replication → WebSocket.                                                  |
-| `supavisor`             | `supabase/supavisor:2.x`      | Connection pooler.                                                                          |
-| `supabase-minio`        | `minio/minio`                 | S3-compatible object store backing `storage`.                                             |
-| `meta`                  | `supabase/postgres-meta:v0.x` | Used by Studio for schema introspection.                                                    |
-| `studio`                | `supabase/studio:2026.x`      | Admin UI.                                                                                   |
+| `auth` (gotrue)         | `supabase/gotrue:v2.x`        | User authentication, magic links, JWT issuance.                                     |
+| `rest` (postgrest)      | `postgrest/postgrest:v12.x`   | Exposes Postgres tables as REST via the JWT-derived role.                           |
+| `storage` (storage-api) | `supabase/storage-api:v1.x`   | Object storage HTTP API in front of MinIO.                                          |
+| `realtime`              | `supabase/realtime:v2.x`      | Postgres logical replication → WebSocket.                                           |
+| `supavisor`             | `supabase/supavisor:2.x`      | Connection pooler.                                                                  |
+| `supabase-minio`        | `minio/minio`                 | S3-compatible object store backing `storage`.                                       |
+| `meta`                  | `supabase/postgres-meta:v0.x` | Used by Studio for schema introspection.                                            |
+| `studio`                | `supabase/studio:2026.x`      | Admin UI.                                                                           |
 
 The browser-facing URL is the one in `.env.{prod,staging}.defaults` (`SUPABASE_PUBLIC_URL`). Internal services talk to `http://kong:8000` via the `supanet` Docker network.
 
-## The four bloom_* Postgres roles
+## The four bloom\_\* Postgres roles
 
 The repo defines four custom Postgres roles that the storage / REST APIs switch into based on the JWT's `role` claim.
 
@@ -69,16 +69,16 @@ The sleap-roots pipeline write-back (changes D/E) is the one place where the DB,
 
 **Every logical bucket below is a prefix inside it.**
 
-| Bucket                                                 | What it holds                                                                                                                 | Public?        | Notes                                                                                                       |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------- |
-| `images`                                             | Cylinder phenotyping images                                                                                                   | no             | bloom_user has SELECT only.                                                                                 |
-| `cyl-images`                                         | Cylinder scan images                                                                                                          | no             | bloom_user SELECT.                                                                                          |
-| `videos`                                             | Cylinder scan videos                                                                                                          | no             | bloom_user SELECT.                                                                                          |
-| `scrna`                                              | scRNA-seq counts JSON                                                                                                         | no             | bloom_user SELECT.                                                                                          |
-| `species-illustrations` (hyphen; rename in progress) | Per-species illustration thumbnails                                                                                           | no             | bloom_user SELECT. PR #261 renames this from the legacy `species_illustrations` underscore form.          |
-| `experiment-log-images`                              | Images attached to gene-candidate progress logs                                                                               | yes (download) | Anyone can read; only authenticated can write.                                                              |
-| `plates-images`                                      | Plate scan thumbnails                                                                                                         | yes (download) |                                                                                                             |
-| `plate-blob-storage`                                 | Plate scan large blobs                                                                                                        | yes (download) |                                                                                                             |
-| `graviscan-images`                                   | Plate-scanner gravi images                                                                                                    | no             | bloom_user INSERT + UPDATE — the only buckets users can write to.                                          |
-| `graviscan-videos`                                   | Plate-scanner gravi videos                                                                                                    | no             | Same as above.                                                                                              |
+| Bucket                                               | What it holds                                                                                                             | Public?        | Notes                                                                                                 |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------- |
+| `images`                                             | Cylinder phenotyping images                                                                                               | no             | bloom_user has SELECT only.                                                                           |
+| `cyl-images`                                         | Cylinder scan images                                                                                                      | no             | bloom_user SELECT.                                                                                    |
+| `videos`                                             | Cylinder scan videos                                                                                                      | no             | bloom_user SELECT.                                                                                    |
+| `scrna`                                              | scRNA-seq counts JSON                                                                                                     | no             | bloom_user SELECT.                                                                                    |
+| `species-illustrations` (hyphen; rename in progress) | Per-species illustration thumbnails                                                                                       | no             | bloom_user SELECT. PR #261 renames this from the legacy `species_illustrations` underscore form.      |
+| `experiment-log-images`                              | Images attached to gene-candidate progress logs                                                                           | yes (download) | Anyone can read; only authenticated can write.                                                        |
+| `plates-images`                                      | Plate scan thumbnails                                                                                                     | yes (download) |                                                                                                       |
+| `plate-blob-storage`                                 | Plate scan large blobs                                                                                                    | yes (download) |                                                                                                       |
+| `graviscan-images`                                   | Plate-scanner gravi images                                                                                                | no             | bloom_user INSERT + UPDATE — the only buckets users can write to.                                     |
+| `graviscan-videos`                                   | Plate-scanner gravi videos                                                                                                | no             | Same as above.                                                                                        |
 | `bloommcp-data` (new)                                | CSV exchange between bloommcp tools and external producers/consumers. Two prefixes:`bloommcp_input/`, `bloommcp_output/`. | no             | Only `bloom_agent` can write, scoped via `agent_insert_bloommcp_data` / `agent_update_bloommcp_data`. |

@@ -667,22 +667,18 @@ MinIO (supabase-minio): ports 9100-9101
 git clone <repo-url>
 cd bloom
 
-# 2. Create MinIO data directory
-mkdir -p minio_data
-chmod 777 minio_data
+# 2. Generate .env.dev with fresh local secrets
+make init
 
-# 3. Copy and configure environment
-cp .env.dev.example .env.dev
-# Edit .env.dev with your values
-
-# 4. Start all services
+# 3. Start all services (MinIO buckets + data dir auto-provisioned)
 make dev-up
 
-# 5. Initialize database
+# 4. Apply migrations
 make migrate-local
 
-# 6. Load test data
-cd web && npm run init-env
+# 5. Load test data (optional)
+make load-test-data
+make upload-images
 \```
 
 ### Daily Development
@@ -820,24 +816,19 @@ git clone <repo-url>
 cd bloom
 \```
 
-### 2. Create MinIO Data Directory
+### 2. Configure Environment Variables
 
-MinIO requires a local directory for object storage:
-
-\```bash
-mkdir -p minio_data
-chmod 777 minio_data # Allow Docker to write
-\```
-
-**Note**: `minio_data/` is gitignored. Do not commit it.
-
-### 3. Configure Environment Variables
-
-Copy the development environment template:
+Generate a working `.env.dev` with fresh local secrets:
 
 \```bash
-cp .env.dev.example .env.dev
+make init
 \```
+
+MinIO needs no manual setup: `make dev-up` provisions the buckets (via the
+`minio-init` service) and Docker creates the data dir — `MINIO_DATA_PATH`
+defaults to `./volumes/minio-dev` (gitignored).
+
+Then edit `.env.dev` only for optional keys:
 
 Edit `.env.dev` and configure:
 
@@ -897,7 +888,7 @@ docker compose ps
 make migrate-local
 
 # Load test data (optional)
-cd web && npm run init-env
+make load-test-data
 \```
 
 ### 7. Verify Setup
@@ -991,7 +982,7 @@ docker volume rm bloom_db-data
 # Restart and re-initialize
 make dev-up
 make migrate-local
-cd web && npm run init-env
+make load-test-data
 \```
 
 ### Clear MinIO Storage
@@ -1001,8 +992,8 @@ cd web && npm run init-env
 # Stop services
 make dev-down
 
-# Remove MinIO data
-rm -rf minio_data/*
+# Remove MinIO data (default path; adjust if you overrode MINIO_DATA_PATH)
+rm -rf volumes/minio-dev/*
 
 # Restart (bucket will be recreated)
 make dev-up
@@ -1080,13 +1071,11 @@ kill -9 <PID>
 **Solution**:
 \```bash
 
-# Ensure minio_data/ has correct permissions
-chmod 777 minio_data
-
-# Or recreate directory
-rm -rf minio_data
-mkdir minio_data
-chmod 777 minio_data
+# Ensure the MinIO data dir is writable (default: ./volumes/minio-dev).
+# On native Linux a UID/GID mismatch can make it unwritable — prefer matching
+# the container's user; see openspec/project.md (chmod 770). On Docker Desktop
+# (macOS / Windows-WSL2) this doesn't arise.
+chmod 770 volumes/minio-dev
 \```
 
 ### Issue: Supabase Auth Not Working

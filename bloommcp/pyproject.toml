@@ -29,7 +29,7 @@ dependencies = [
     "supabase>=2.0.0",
     # Phase-2 foundation: the public root-trait analysis library (source of the
     # cross-tier oracle's perform_* functions) and the contracts schemas.
-    "sleap-roots-analyze>=0.1.0a4",
+    "sleap-roots-analyze>=0.1.0a5",
     "sleap-roots-contracts[pandas]>=0.1.0a1",
     # Data & analysis. numpy floor is >=2.3.2 because sleap-roots-analyze
     # requires numpy 2.x. scipy + scikit-learn are retained because shipped
@@ -73,6 +73,9 @@ module-root = "src"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "integration: full-fixture statsmodels/umap oracle tests over turface_19 — slow, intermittently stalls in CI containers; excluded from per-PR CI, run via /pre-merge or pytest -m integration",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Pre-existing lint debt in the vendored analysis modules (former source/*) and

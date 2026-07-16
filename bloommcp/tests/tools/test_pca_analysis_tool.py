@@ -472,3 +472,30 @@ def test_passes_source_csv_for_input_lineage(injected_ports, monkeypatch):
 
     assert captured["source_csv"] is not None
     assert captured["exists"]  # the snapshot exists when the store hashes it
+
+
+# 9.9 — snapshot is written index=False (regression guard for the snapshot_frame refactor)
+
+
+def test_source_snapshot_written_index_false(injected_ports, monkeypatch):
+    """The source snapshot CSV must NOT include the DataFrame index as a column.
+
+    If ``to_csv(index=True)`` (the default) were used, every CSV would gain a
+    spurious ``Unnamed: 0`` column that would corrupt content-addressing and
+    confuse downstream readers.
+    """
+    _reader, store = injected_ports
+    captured: dict[str, object] = {}
+    real_create = store.create_run
+
+    def _spy(**kwargs):
+        src = kwargs.get("source_csv")
+        if src is not None:
+            captured["columns"] = list(pd.read_csv(src).columns)
+        return real_create(**kwargs)
+
+    monkeypatch.setattr(store, "create_run", _spy)
+    _run()
+
+    assert "columns" in captured
+    assert "Unnamed: 0" not in captured["columns"]

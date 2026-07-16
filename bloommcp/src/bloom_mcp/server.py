@@ -25,8 +25,15 @@ Discovery tools (always-on):
 Direct tools (granular, available for ad-hoc use):
   - qc_clean:          clean a raw trait table for analysis (delegates to
                        sleap_roots_analyze.clean_traits_for_analysis)
+  - remove_outliers:   trim outlier samples from a cleaned experiment (delegates to
+                       sleap_roots_analyze.remove_outlier_samples)
+  - qc_inspect:        read-only NaN/missingness report + threshold recommendation at
+                       QC time (delegates to sleap_roots_analyze EDA functions)
   - pca_analysis:      PCA on a cleaned experiment (require_clean; delegates to
                        sleap_roots_analyze.perform_pca_analysis)
+  - clustering:        k-means / GMM / hierarchical on a cleaned experiment (require_clean;
+                       delegates to sleap_roots_analyze perform_kmeans_clustering /
+                       perform_gmm_clustering / hierarchical_cluster_labels)
   - correlation_tools: 8 cross-experiment correlation tools
   - viz_tools:         7 plotting tools
 
@@ -58,7 +65,10 @@ from bloom_mcp.tools import (
     correlation_tools,
     storage_tools,
     qc_clean_tool,
+    remove_outliers_tool,
+    qc_inspect_tool,
     pca_analysis_tool,
+    clustering_tool,
 )
 from bloom_mcp.tools.workflows import (
     clustering as clustering_workflow,
@@ -90,7 +100,10 @@ clustering_workflow.register(mcp)
 
 # Direct tools (granular)
 qc_clean_tool.register(mcp)
+remove_outliers_tool.register(mcp)
+qc_inspect_tool.register(mcp)
 pca_analysis_tool.register(mcp)
+clustering_tool.register(mcp)
 correlation_tools.register(mcp)
 viz_tools.register(mcp)
 
