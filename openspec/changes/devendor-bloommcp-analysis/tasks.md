@@ -107,8 +107,11 @@ before its vendored copy is removed (C2/C10).
       in it drives a workflow via top-level imports at L18-19 → would fail collection once C7 deletes
       the modules); and remove the one `run_qc_workflow` test in `test_storage_backend.py` (keep the
       other 33 backend tests). Must land in C6, before C7.
-- [ ] C6.2 Remove the 4 "workflow-preserved" `tools/list` assertions in the granular tool tests;
-      keep the granular-tool presence assertions.
+- [ ] C6.2 Remove the 5 "workflow-preserved" `tools/list` assertions in the granular tool tests
+      (`test_qc_clean_tool.py`, `test_qc_inspect_tool.py`, `test_pca_analysis_tool.py`,
+      `test_remove_outliers_tool.py`, and `test_clustering_tool.py` — the last is new since
+      #309/#422 landed on `staging` after this proposal was first drafted); keep the
+      granular-tool presence assertions.
 - [ ] C6.3 **Repoint** `_CONSUMERS` in `test_persistence_import_guard.py`: drop the 5 workflow
       entries (`tools/workflows/*`) + `_helpers.py`; and (per the result-store "Write consumers"
       scenario, which now names the 5 granular write tools incl. `clustering`, #309/#422) **replace

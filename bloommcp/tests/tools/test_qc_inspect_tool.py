@@ -185,7 +185,7 @@ def test_all_nan_trait_is_reported_not_rejected():
 
 
 def test_qc_inspect_appears_in_tools_list_and_siblings_preserved():
-    """3.1 — qc_inspect is discoverable; qc_clean + run_qc_workflow are still registered."""
+    """3.1 — qc_inspect is discoverable; qc_clean is still registered."""
     from fastmcp import Client
 
     from bloom_mcp import server
@@ -198,7 +198,6 @@ def test_qc_inspect_appears_in_tools_list_and_siblings_preserved():
     assert "qc_inspect" in tools
     assert tools["qc_inspect"].inputSchema is not None
     assert "qc_clean" in tools  # additive — sibling not removed
-    assert "run_qc_workflow" in tools
 
 
 # ── 3.2 schema round-trip ───────────────────────────────────────────────────

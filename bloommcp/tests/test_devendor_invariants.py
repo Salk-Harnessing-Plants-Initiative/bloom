@@ -187,3 +187,32 @@ def test_inspect_data_quality_absent():
 
     assert not hasattr(qc_tools, "inspect_data_quality")
     assert "inspect_data_quality" not in asyncio.run(_live_tool_names())
+
+
+_RETIRED_WORKFLOW_TOOLS = (
+    "run_qc_workflow",
+    "run_outlier_workflow",
+    "run_descriptive_stats_workflow",  # note: not "run_stats_workflow"
+    "run_dimensionality_reduction_workflow",
+    "run_clustering_workflow",
+)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="C7 has not yet retired tools/workflows/* — flips to a plain assert there",
+)
+def test_retired_workflow_tools_absent_and_package_gone():
+    """None of the five run_*_workflow tools is registered, and the whole
+    tools/workflows package is gone.
+
+    (bloommcp-tool-sections: 'Retired workflow tools are absent from the surface'.)
+    """
+    import asyncio
+
+    live = asyncio.run(_live_tool_names())
+    present = [name for name in _RETIRED_WORKFLOW_TOOLS if name in live]
+    assert not present, f"retired workflow tools still registered: {present}"
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("bloom_mcp.tools.workflows")

@@ -93,8 +93,8 @@ def test_fewer_samples_dropped_than_naive_dropna(injected_ports):
 # ── 3.1 tools/list presence ─────────────────────────────────────────────────
 
 
-def test_qc_clean_appears_in_tools_list_and_workflow_preserved():
-    """3.1 — qc_clean is discoverable; run_qc_workflow is still registered."""
+def test_qc_clean_appears_in_tools_list():
+    """3.1 — qc_clean is discoverable."""
     from fastmcp import Client
 
     from bloom_mcp import server
@@ -106,7 +106,6 @@ def test_qc_clean_appears_in_tools_list_and_workflow_preserved():
     tools = {t.name: t for t in asyncio.run(_list())}
     assert "qc_clean" in tools
     assert tools["qc_clean"].inputSchema is not None
-    assert "run_qc_workflow" in tools  # additive — workflow not removed
 
 
 # ── 3.2 schema round-trip ───────────────────────────────────────────────────

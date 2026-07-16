@@ -96,8 +96,8 @@ def test_no_silent_sample_loss(injected_ports):
 # ── 3.1 tools/list presence ─────────────────────────────────────────────────
 
 
-def test_pca_analysis_in_tools_list_and_workflow_preserved():
-    """3.1 — pca_analysis is discoverable; the dimred workflow is still registered."""
+def test_pca_analysis_in_tools_list():
+    """3.1 — pca_analysis is discoverable."""
     from fastmcp import Client
 
     from bloom_mcp import server
@@ -109,7 +109,6 @@ def test_pca_analysis_in_tools_list_and_workflow_preserved():
     tools = {t.name: t for t in asyncio.run(_list())}
     assert "pca_analysis" in tools
     assert tools["pca_analysis"].inputSchema is not None
-    assert "run_dimensionality_reduction_workflow" in tools  # additive — not removed
 
 
 # ── 3.2 delegation pinning (spy) ────────────────────────────────────────────

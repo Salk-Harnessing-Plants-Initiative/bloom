@@ -3,9 +3,11 @@
 Covers backend selection (`BLOOM_STORAGE_BACKEND`), the local filesystem backend
 (key→path mapping, listing, escape guard, overwrite, verbatim bytes, atomic
 writes, redacted errors), root resolution + boot-time validation, and
-parity/integrity (byte-identical manifest, hash-equality on disk, a workflow
-round-trip under `local`, the default-writes-no-local-files guard, and
-legacy-fallback disjointness). No live Supabase.
+parity/integrity (byte-identical manifest, hash-equality on disk, the
+default-writes-no-local-files guard, and legacy-fallback disjointness). No live
+Supabase. (The `run_qc_workflow` local round-trip test was removed when the
+Phase-1 workflow tools were retired — devendor-bloommcp-analysis C6.1 — its
+`local_workflow_env` fixture had no other consumer and was removed with it.)
 """
 
 from __future__ import annotations
@@ -13,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -21,8 +22,6 @@ from pathlib import Path
 import pytest
 
 from bloom_mcp import storage_backend as sb
-
-_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "turface_19_final_data.csv"
 
 
 @pytest.fixture(autouse=True)
@@ -460,62 +459,6 @@ def test_local_layout_disjoint_from_legacy_fallback(monkeypatch, tmp_path):
     legacy = tmp_path / "qc_exp" / "exp_cleaned.csv"
     assert not legacy.exists()
     assert (tmp_path / "bloommcp_output" / "qc_exp" / "manifest.json").is_file()
-
-
-@pytest.fixture
-def local_workflow_env(monkeypatch, tmp_path):
-    """Real reader/store + local backend + a seeded raw input for a full workflow."""
-    from bloom_mcp import experiment_utils as eu
-    from bloom_mcp.data_access import SupabaseReader
-    from bloom_mcp.result_store import SupabaseResultStore
-    from bloom_mcp.tools import _ports
-
-    root = tmp_path / "store"
-    root.mkdir()
-    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
-    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(root))
-    sb.reset_backend_for_tests()
-
-    traits = tmp_path / "traits"
-    traits.mkdir()
-    shutil.copy(_FIXTURE, traits / "turface.csv")
-    monkeypatch.setattr(eu, "TRAITS_DIR", traits)
-
-    _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
-    try:
-        yield root
-    finally:
-        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
-
-
-def test_qc_workflow_local_roundtrip_with_hash_equality(local_workflow_env):
-    """A qc workflow under BLOOM_STORAGE_BACKEND=local writes real files, reads
-    back through _resolve_versioned_cleaned, and each on-disk hash matches the
-    recorded output_sha256."""
-    from bloom_mcp.data_access import SupabaseReader
-    from bloom_mcp.tools.workflows.qc import run_qc_workflow
-
-    root = local_workflow_env
-    resp = run_qc_workflow("turface.csv")
-    assert "error" not in resp, resp
-    assert resp["version_id"] == "v1"
-
-    out = root / "bloommcp_output" / "qc_turface"
-    assert (out / "manifest.json").is_file()
-    manifest = json.loads((out / "manifest.json").read_bytes())
-    entry = manifest["versions"][-1]
-    assert (out / entry["version_dir"] / "_cleaned.csv").is_file()
-
-    # hash-equality: the bytes on disk match the recorded provenance hash
-    for name, sha in entry["output_sha256"].items():
-        key = entry["output_keys"][name]  # logical bloommcp_output/... key
-        on_disk = (root / key).read_bytes()
-        assert hashlib.sha256(on_disk).hexdigest() == sha
-
-    # read-back exercises the download_file local leg via _resolve_versioned_cleaned
-    frame = SupabaseReader().load_experiment("turface.csv", version="latest")
-    assert frame.source.startswith("v1")
-    assert len(frame.df) > 0
 
 
 # ─── 5. Cross-backend list_prefix parity + read-path fallback ──────────────────

@@ -122,7 +122,7 @@ def test_goodness_of_fit_is_dict_with_fit_quality_and_optional_types(injected_po
 # ── 3.1 tools/list presence ─────────────────────────────────────────────────
 
 
-def test_remove_outliers_appears_in_tools_list_and_workflow_preserved():
+def test_remove_outliers_appears_in_tools_list():
     from fastmcp import Client
 
     from bloom_mcp import server
@@ -134,7 +134,6 @@ def test_remove_outliers_appears_in_tools_list_and_workflow_preserved():
     tools = {t.name: t for t in asyncio.run(_list())}
     assert "remove_outliers" in tools
     assert tools["remove_outliers"].inputSchema is not None
-    assert "run_outlier_workflow" in tools  # additive — workflow not removed
 
 
 # ── 3.2 schema round-trip ───────────────────────────────────────────────────

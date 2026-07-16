@@ -163,7 +163,7 @@ def test_omitting_trait_columns_uses_full_certified_set(injected_ports):
 # ── 3.1 tools/list presence ─────────────────────────────────────────────────
 
 
-def test_clustering_in_tools_list_and_workflow_preserved():
+def test_clustering_in_tools_list():
     from fastmcp import Client
 
     from bloom_mcp import server
@@ -175,7 +175,6 @@ def test_clustering_in_tools_list_and_workflow_preserved():
     tools = {t.name: t for t in asyncio.run(_list())}
     assert "clustering" in tools
     assert tools["clustering"].inputSchema is not None
-    assert "run_clustering_workflow" in tools  # additive — legacy not removed
 
 
 # ── 3.2 polymorphic delegation pinning + seed-reaches-fit ───────────────────
