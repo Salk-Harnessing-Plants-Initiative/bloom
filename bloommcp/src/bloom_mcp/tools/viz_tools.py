@@ -1,12 +1,15 @@
 """
 MCP Tool Wrappers for SLEAP Visualization.
 
-Wraps functions from bloom_mcp/visualization.py, bloom_mcp/cluster_visualization.py, and
-bloom_mcp/outlier_visualization.py. Uses bloom_mcp/experiment_utils.py for dynamic
-experiment discovery and column auto-detection.
+Wraps sleap_roots_analyze.visualization directly (5 surviving standalone plots —
+histograms, boxplots, correlation matrix, heritability bar, variance decomposition).
+Uses bloom_mcp/experiment_utils.py for dynamic experiment discovery and column
+auto-detection. `plot_dendrogram` and `plot_outlier_comparison` were dropped: the
+former computes hierarchical clustering internally rather than consuming the
+granular `clustering` tool's persisted output, and the latter's only input source
+(the retired outlier workflow's JSON) no longer exists.
 """
 
-import json
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -16,18 +19,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from bloom_mcp.visualization import (
+from sleap_roots_analyze.visualization import (
     create_trait_histograms,
     create_trait_boxplots_by_genotype,
     create_correlation_heatmap,
     create_heritability_plot,
     create_variance_decomposition_plot,
 )
-from bloom_mcp.cluster_visualization import create_dendrogram
-from bloom_mcp.outlier_visualization import create_comprehensive_outlier_comparison
 from bloom_mcp.experiment_utils import (
     load_experiment_data as _load_data,
-    OUTPUT_DIR,
     PLOTS_DIR,
     PLOTS_URL,
 )
@@ -325,129 +325,6 @@ def plot_variance_decomposition(filename: str) -> str:
 
 
 # ============================================================================
-# Tool 8: Hierarchical Clustering Dendrogram
-# ============================================================================
-
-
-def plot_dendrogram(
-    filename: str,
-    n_clusters: int = 3,
-    linkage_method: str = "ward",
-) -> str:
-    """Generate a hierarchical clustering dendrogram.
-
-    Shows the hierarchical structure of sample relationships with a cut line
-    at the specified number of clusters.
-
-    Args:
-        filename: CSV filename from list_available_experiments
-        n_clusters: Number of clusters to indicate with cut line (default 3)
-        linkage_method: Linkage method (ward, complete, average, single)
-    """
-    df, trait_cols, config, source = _load_data(filename)
-    if df is None:
-        return source
-
-    stem = Path(filename).stem
-
-    from bloom_mcp.clustering import (
-        perform_hierarchical_clustering,
-        cut_dendrogram as cut_dendro,
-    )
-
-    try:
-        hier_result = perform_hierarchical_clustering(
-            data=df[trait_cols],
-            method=linkage_method,
-            standardize=True,
-        )
-        cut_result = cut_dendro(hier_result, n_clusters=n_clusters)
-    except Exception as e:
-        return f"Hierarchical clustering failed: {e}"
-
-    try:
-        fig = create_dendrogram(
-            hier_result,
-            cut_height=cut_result["cut_height"],
-            n_clusters=n_clusters,
-        )
-    except Exception as e:
-        return f"Dendrogram plot failed: {e}"
-
-    url = _save_plot(fig, f"dendrogram_{stem}_{linkage_method}.png")
-    return (
-        f"Dendrogram: {stem} (source: {source})\n"
-        f"  Linkage: {linkage_method}, k={n_clusters}\n"
-        f"  Cophenetic correlation: {hier_result['cophenetic_correlation']:.3f}\n"
-        f"  Plot saved: {url}"
-    )
-
-
-# ============================================================================
-# Tool 9: Multi-method Outlier Comparison
-# ============================================================================
-
-
-def plot_outlier_comparison(filename: str) -> str:
-    """Generate a multi-method outlier comparison plot.
-
-    Requires prior outlier detection runs. Reads saved results from
-    BLOOM_OUTPUT_DIR and creates a comparison visualization showing
-    which samples are flagged by each method.
-
-    Args:
-        filename: CSV filename from list_available_experiments
-    """
-    stem = Path(filename).stem
-    out_dir = OUTPUT_DIR / f"outliers_{stem}"
-    if not out_dir.exists():
-        return (
-            f"No outlier detection results found for '{stem}'. "
-            "Run outlier detection tools first."
-        )
-
-    outlier_results = {}
-    method_files = {
-        "mahalanobis": "mahalanobis_outliers.json",
-        "isolation_forest": "isolation_forest_outliers.json",
-        "pca": "pca_outliers.json",
-    }
-
-    for method, fname in method_files.items():
-        json_path = out_dir / fname
-        if json_path.exists():
-            data = json.loads(json_path.read_text())
-            outlier_results[method] = {
-                "outlier_indices": data.get(
-                    "outlier_indices", data.get("consensus_outliers", [])
-                ),
-                "n_outliers": data.get(
-                    "n_outliers", data.get("n_consensus_outliers", 0)
-                ),
-            }
-
-    if not outlier_results:
-        return f"No outlier detection results found in {out_dir}. Run detection tools first."
-
-    try:
-        fig = create_comprehensive_outlier_comparison(outlier_results)
-    except Exception as e:
-        return f"Outlier comparison plot failed: {e}"
-
-    url = _save_plot(fig, f"outlier_comparison_{stem}.png")
-
-    lines = [
-        f"Outlier Comparison: {stem}",
-        f"  Methods compared: {', '.join(outlier_results.keys())}",
-    ]
-    for method, result in outlier_results.items():
-        lines.append(f"    {method}: {result['n_outliers']} outliers")
-
-    lines.append(f"\n  Plot saved: {url}")
-    return "\n".join(lines)
-
-
-# ============================================================================
 # Registration
 # ============================================================================
 
@@ -459,6 +336,3 @@ def register(mcp):
     mcp.tool()(plot_correlation_matrix)
     mcp.tool()(plot_heritability_bar)
     mcp.tool()(plot_variance_decomposition)
-    # plot_pca_scree and plot_pca_biplot are registered by dimred_tools
-    mcp.tool()(plot_dendrogram)
-    mcp.tool()(plot_outlier_comparison)
