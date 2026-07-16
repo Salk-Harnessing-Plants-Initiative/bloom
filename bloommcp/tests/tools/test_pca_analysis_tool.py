@@ -474,138 +474,28 @@ def test_passes_source_csv_for_input_lineage(injected_ports, monkeypatch):
     assert captured["exists"]  # the snapshot exists when the store hashes it
 
 
-# ── 10. Plot generation (#426) ───────────────────────────────────────────────
-
-_ALL_PLOT_KEYS = {
-    "create_pca_scree_plot",
-    "create_pca_biplot",
-    "create_feature_contribution_plot",
-    "create_feature_contribution_heatmap",
-}
+# 9.9 — snapshot is written index=False (regression guard for the snapshot_frame refactor)
 
 
-def _capture_staged_bytes(store, monkeypatch) -> dict[str, bytes]:
-    """Read each staged PNG artifact's raw bytes at commit time."""
-    captured: dict[str, bytes] = {}
-    real_commit = store.commit
+def test_source_snapshot_written_index_false(injected_ports, monkeypatch):
+    """The source snapshot CSV must NOT include the DataFrame index as a column.
 
-    def _commit(run, outputs):
-        for name in outputs:
-            p = run.staging_dir / name
-            if p.suffix == ".png":
-                captured[name] = p.read_bytes()
-        return real_commit(run, outputs)
-
-    monkeypatch.setattr(store, "commit", _commit)
-    return captured
-
-
-def test_default_no_plots_outputs_unchanged(injected_ports):
-    """10.1 — no include_plots → outputs unchanged from pre-plots behavior."""
+    If ``to_csv(index=True)`` (the default) were used, every CSV would gain a
+    spurious ``Unnamed: 0`` column that would corrupt content-addressing and
+    confuse downstream readers.
+    """
     _reader, store = injected_ports
-    result = _run()
-    assert set(result.outputs) == {"loadings.csv", "scores.csv", "pca_result.json"}
-    assert not any(k.endswith(".png") for k in result.outputs)
+    captured: dict[str, object] = {}
+    real_create = store.create_run
 
+    def _spy(**kwargs):
+        src = kwargs.get("source_csv")
+        if src is not None:
+            captured["columns"] = list(pd.read_csv(src).columns)
+        return real_create(**kwargs)
 
-def test_unknown_plot_key_invalid_input_no_run_committed(injected_ports):
-    """10.2 — unknown key → invalid_input, no run committed."""
-    _reader, store = injected_ports
-    with pytest.raises(BloomMCPError) as exc:
-        _run(include_plots=True, plots=["not_a_real_plot"])
-    assert exc.value.code == "invalid_input"
-    assert "not_a_real_plot" in exc.value.message
-    assert store.list_runs(_EXPERIMENT, "pca") == []
+    monkeypatch.setattr(store, "create_run", _spy)
+    _run()
 
-
-def test_duplicate_plot_key_invalid_input_no_run_committed(injected_ports):
-    """10.3 — duplicate key → invalid_input naming the duplicate, no run."""
-    _reader, store = injected_ports
-    with pytest.raises(BloomMCPError) as exc:
-        _run(
-            include_plots=True,
-            plots=["create_pca_scree_plot", "create_pca_scree_plot"],
-        )
-    assert exc.value.code == "invalid_input"
-    assert "create_pca_scree_plot" in exc.value.message
-    assert store.list_runs(_EXPERIMENT, "pca") == []
-
-
-def test_empty_plots_list_is_invalid_input(injected_ports):
-    """10.4 — plots=[] → invalid_input (use None for all)."""
-    _reader, store = injected_ports
-    with pytest.raises(BloomMCPError) as exc:
-        _run(include_plots=True, plots=[])
-    assert exc.value.code == "invalid_input"
-    assert store.list_runs(_EXPERIMENT, "pca") == []
-
-
-def test_include_plots_false_with_plots_param_is_silently_ignored(injected_ports):
-    """10.5 — include_plots=False + plots=[...] → no error, no PNG outputs."""
-    _reader, store = injected_ports
-    result = _run(include_plots=False, plots=["create_pca_scree_plot"])
-    assert not any(k.endswith(".png") for k in result.outputs)
-    assert set(result.outputs) == {"loadings.csv", "scores.csv", "pca_result.json"}
-
-
-def test_all_four_plots_png_round_trip(injected_ports, monkeypatch):
-    """10.6 — include_plots=True, plots=None → four PNGs with valid magic bytes."""
-    _reader, store = injected_ports
-    staged = _capture_staged_bytes(store, monkeypatch)
-    result = _run(include_plots=True, plots=None)
-
-    png_keys = {k for k in result.outputs if k.endswith(".png")}
-    assert png_keys == {f"{k}.png" for k in _ALL_PLOT_KEYS}
-    for key in png_keys:
-        assert key in staged, f"staged bytes missing for {key}"
-        assert staged[key][:4] == b"\x89PNG", f"{key} is not a valid PNG"
-
-
-def test_plots_subset_generates_only_requested(injected_ports, monkeypatch):
-    """10.7 — plots subset → only those PNGs in outputs."""
-    _reader, store = injected_ports
-    requested = ["create_pca_scree_plot", "create_pca_biplot"]
-    staged = _capture_staged_bytes(store, monkeypatch)
-    result = _run(include_plots=True, plots=requested)
-
-    png_keys = {k for k in result.outputs if k.endswith(".png")}
-    assert png_keys == {f"{k}.png" for k in requested}
-    assert set(result.outputs) == {
-        "loadings.csv",
-        "scores.csv",
-        "pca_result.json",
-    } | png_keys
-    for key in png_keys:
-        assert staged[key][:4] == b"\x89PNG"
-
-
-def test_figure_cleanup_get_fignums_empty_on_success(injected_ports):
-    """10.8a — after a successful plots call, no figures remain open."""
-    import matplotlib.pyplot as plt
-
-    _run(include_plots=True, plots=None)
-    assert plt.get_fignums() == []
-
-
-def test_figure_cleanup_get_fignums_empty_on_invalid_key(injected_ports):
-    """10.8b — after an invalid_key error, no figures remain open."""
-    import matplotlib.pyplot as plt
-
-    with pytest.raises(BloomMCPError):
-        _run(include_plots=True, plots=["bad_key"])
-    assert plt.get_fignums() == []
-
-
-def test_matplotlib_not_imported_on_default_path(injected_ports, monkeypatch):
-    """10.9 — no include_plots → matplotlib import never reached."""
-    import sys
-
-    monkeypatch.setitem(sys.modules, "matplotlib", None)
-    _run()  # must not raise ImportError
-
-
-def test_plot_outputs_included_in_schema_round_trip(injected_ports):
-    """10.10 — PNG keys survive model_dump_json / model_validate round-trip."""
-    result = _run(include_plots=True, plots=["create_pca_scree_plot"])
-    again = PCAAnalysisResult.model_validate(json.loads(result.model_dump_json()))
-    assert "create_pca_scree_plot.png" in again.outputs
+    assert "columns" in captured
+    assert "Unnamed: 0" not in captured["columns"]

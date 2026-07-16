@@ -24,12 +24,17 @@ dependencies = [
     # NestedSecretsSettingsSource follows symlinks outside the configured
     # secrets directory. Fix in 2.14.2+. Transitive via fastmcp/supabase.
     "pydantic-settings>=2.14.2",
+    # mcp CVE-2026-52870, CVE-2026-52869, CVE-2026-59950 (disclosed 2026-07-16):
+    # fixed in 1.28.1. Transitive via fastmcp (fastmcp 3.2.3 constrains
+    # mcp<2.0,>=1.24.0, so 1.28.1 fits without a fastmcp bump). Open floor per
+    # repo convention.
+    "mcp>=1.28.1",
     # Supabase PostgREST + Storage client, used by bloom_mcp.supabase_client
     # for CSV exchange via the bloommcp-data bucket.
     "supabase>=2.0.0",
     # Phase-2 foundation: the public root-trait analysis library (source of the
     # cross-tier oracle's perform_* functions) and the contracts schemas.
-    "sleap-roots-analyze>=0.1.0a4",
+    "sleap-roots-analyze>=0.1.0a5",
     "sleap-roots-contracts[pandas]>=0.1.0a1",
     # Data & analysis. numpy floor is >=2.3.2 because sleap-roots-analyze
     # requires numpy 2.x. scipy + scikit-learn are retained because shipped
@@ -73,6 +78,9 @@ module-root = "src"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "integration: full-fixture statsmodels/umap oracle tests over turface_19 — slow, intermittently stalls in CI containers; excluded from per-PR CI, run via /pre-merge or pytest -m integration",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Pre-existing lint debt in the vendored analysis modules (former source/*) and
