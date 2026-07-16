@@ -1,15 +1,19 @@
 """Devendor invariants for `devendor-bloommcp-analysis` (bloommcp-packaging spec).
 
-Three layers, landed across the change's commit plan (see openspec tasks.md):
+Landed incrementally across the change's commit plan (see openspec tasks.md), each
+xfail(strict=True) flipping to a plain assert the moment its premise genuinely holds
+— not all at once at the end:
 
-* C2 — parity + no-vendored-import invariants. The first two are `xfail(strict=True)`
-  until C10 deletes the vendored modules (C4/C5/C7/C8/C9 must first repoint every
-  consumer); the parity check itself (C2.3) is green from the start — it is a
+* C2.3 (parity: every deleted symbol exists upstream) — green from the start; a
   frozen, hand-committed record of the pre-deletion import graph, never a live scan
   of the repointed tree (which would pass vacuously once the imports are gone).
-* C6/C9 — positive-absence tests for the retired workflow tools and correlation tools.
-* C10 — the vendored files are actually gone from the tree; C11 — the exact tool
-  surface and the tool-name-list drift guard.
+* C2.1 (no shipped module imports vendored analysis) — xfail until C9 (C4/C5/C7/C8
+  repoint every consumer but one; C9 deletes the last, correlation_tools.py), then
+  flipped there — ahead of C10, which only deletes the now-unimported files.
+* C2.2 (vendored files are gone from the tree) — xfail until this commit (C10).
+* C5.3/C6.4/C9.2 — positive-absence tests for inspect_data_quality, the retired
+  workflow tools, and the retired correlation tools (added as each is removed).
+* C11 — the exact tool surface + the tool-name-list drift guard (not yet added here).
 
 All assertions are AST-based (real Import/ImportFrom nodes), not substring matches.
 """
@@ -94,10 +98,6 @@ def test_no_shipped_module_imports_vendored_analysis():
     ), "shipped modules still import vendored analysis code:\n" + "\n".join(offenders)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="C10 has not yet deleted the vendored module files",
-)
 def test_vendored_analysis_modules_absent():
     """The nine vendored modules are gone from src/bloom_mcp/.
 
@@ -263,3 +263,44 @@ def test_correlation_tools_absent():
         importlib.import_module("bloom_mcp.tools.correlation_tools")
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("bloom_mcp.cross_experiment_correlations")
+
+
+# ── C10.2: server boots clean after every vendored module is deleted ──────────
+
+# Every bloom-specific env var the package reads (mirrors test_package_baseline.py) —
+# a fresh interpreter must build the app with none of these set.
+_BLOOM_ENV_VARS = (
+    "SUPABASE_URL",
+    "BLOOM_AGENT_KEY",
+    "BLOOM_TRAITS_DIR",
+    "BLOOM_OUTPUT_DIR",
+    "BLOOM_PLOTS_DIR",
+    "BLOOM_PLOTS_URL",
+)
+
+
+def test_server_boots_after_devendor():
+    """`import bloom_mcp.server` + `build_app()` succeed in a clean env now that
+    every vendored analysis module is deleted — catches any dangling import a
+    registered module might still have (e.g. a lazy import inside a function body,
+    which the AST-based C2.1 scan also catches statically, but this exercises the
+    real import machinery end to end).
+
+    (bloommcp-tool-sections: 'No dangling registration or import'.)
+    """
+    import os
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k not in _BLOOM_ENV_VARS}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import bloom_mcp.server as s; s.build_app()",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

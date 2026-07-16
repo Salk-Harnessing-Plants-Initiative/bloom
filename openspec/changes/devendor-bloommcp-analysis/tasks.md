@@ -174,6 +174,12 @@ before its vendored copy is removed (C2/C10).
       this from the dependency chain would leave a bare `ModuleNotFoundError` at collection), C8
       (oracle + spy imports), and C9 (correlation) have already removed **every** vendored importer —
       deletion alone (without those five prior repoints) would not have been sufficient.
+      **Must land in the same commit:** `test_package_baseline.py::test_retained_heavy_deps_are_each_imported`'s
+      retained set reduced to `{matplotlib}` — `scikit-learn`/`scipy`/`seaborn` had no shipped importer
+      *left* the instant these 8 files are gone (their only importers), so this test hard-fails between
+      C10.1 and a separately-landed C11.2 if the two are split into different commits. (Discovered by
+      actually running the suite after the deletion — the original plan under-scoped this dependency;
+      C11.2 below now covers only the opposite-direction leaked-import guard.)
 - [ ] C10.2 Add `test_server_boots_after_devendor`: subprocess `import bloom_mcp.server` +
       `build_app()` in a clean env returns 0 (catches any dangling vendored import). (Delta:
       *No dangling registration or import*.)
@@ -192,13 +198,13 @@ before its vendored copy is removed (C2/C10).
       `dependencies` (no shipped or test importer); keep `matplotlib`. Update the pyproject
       dependency comment (currently says scipy/scikit-learn retained for viz). Re-sync
       `bloommcp/uv.lock` **and** the root lock; `uv lock --check` + `scripts/check-uv-locks.py` green.
-- [ ] C11.2 Update `test_package_baseline.py::test_retained_heavy_deps_are_each_imported`: reduce the
-      retained set to `{matplotlib}` (else it hard-fails once the three lose importers). Also extend
-      the opposite-direction guard, `test_pruned_analysis_deps_not_imported`'s leaked-import set, from
-      `{statsmodels, umap}` to `{statsmodels, umap, sklearn, scipy, seaborn}` — required by
-      `bloommcp-packaging/spec.md`'s "Pruned dependencies are absent..." scenario, which asserts no
-      shipped module imports `sklearn`/`scipy`/`seaborn`; without this the guard would not actually
-      catch a reintroduced import of any of the three newly-pruned packages.
+- [ ] C11.2 Extend the opposite-direction guard, `test_pruned_analysis_deps_not_imported`'s
+      leaked-import set, from `{statsmodels, umap}` to `{statsmodels, umap, sklearn, scipy, seaborn}` —
+      required by `bloommcp-packaging/spec.md`'s "Pruned dependencies are absent..." scenario, which
+      asserts no shipped module imports `sklearn`/`scipy`/`seaborn`; without this the guard would not
+      actually catch a reintroduced import of any of the three newly-pruned packages. (The retained-set
+      reduction on `test_retained_heavy_deps_are_each_imported` already landed in C10.1 — it was a
+      same-commit requirement, not a C11-only one.)
 - [ ] C11.3 Remove the now-dangling `[tool.ruff.lint.per-file-ignores]` entries for deleted modules
       (pyproject L84-90); confirm no *surviving* module needed them; `ruff check` green.
 - [ ] C11.4 Fix the tool-name lists off the retired/renamed tools: drop `inspect_data_quality` from
