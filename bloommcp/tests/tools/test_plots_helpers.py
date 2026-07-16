@@ -1,7 +1,8 @@
 """Unit tests for the tool-agnostic ``_plots`` helpers.
 
-These tests exercise ``validate_plot_keys`` and ``close_figures`` in isolation —
-no live stack, no Supabase, no matplotlib import on the validation path.
+These tests exercise ``validate_plot_keys``, ``generate_figures``, and
+``close_figures`` in isolation — no live stack, no Supabase, no matplotlib
+import on the validation path.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from bloom_mcp.contract import BloomMCPError
-from bloom_mcp.tools._plots import close_figures, validate_plot_keys
+from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
 
 _VALID = {"key_a", "key_b", "key_c"}
 
@@ -54,6 +55,61 @@ def test_empty_list_raises_invalid_input():
     with pytest.raises(BloomMCPError) as exc:
         validate_plot_keys([], _VALID)
     assert exc.value.code == "invalid_input"
+
+
+# ── generate_figures ─────────────────────────────────────────────────────────
+
+
+def test_generate_figures_populates_caller_dict():
+    figures: dict = {}
+    generate_figures({"a": lambda: "fig_a", "b": lambda: "fig_b"}, figures)
+    assert figures == {"a": "fig_a", "b": "fig_b"}
+
+
+def test_generate_figures_partial_failure_leaves_prior_results_in_caller_dict():
+    """Regression: a mid-generation exception must not discard figures already
+    produced by earlier calls — the caller's dict (passed in, not returned) is
+    the only thing ``close_figures`` can reach in ``finally``."""
+    figures: dict = {}
+
+    def _boom():
+        raise RuntimeError("second plotter blew up")
+
+    with pytest.raises(RuntimeError):
+        generate_figures(
+            {
+                "first": lambda: "fig_first",
+                "second": _boom,
+                "third": lambda: "fig_third",
+            },
+            figures,
+        )
+    # "first" ran and was recorded before "second" raised; "third" never ran.
+    assert figures == {"first": "fig_first"}
+
+
+def test_generate_figures_partial_failure_then_close_leaves_no_open_figures():
+    """End-to-end with real matplotlib figures: after a mid-generation failure,
+    ``close_figures`` on the caller's dict must close everything that leaked in."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    figures: dict = {}
+
+    def _boom():
+        raise RuntimeError("second plotter blew up")
+
+    with pytest.raises(RuntimeError):
+        generate_figures({"first": lambda: plt.figure(), "second": _boom}, figures)
+
+    assert list(figures) == ["first"]
+    assert plt.get_fignums() != []  # the first figure is open before cleanup
+    close_figures(figures)
+    assert (
+        plt.get_fignums() == []
+    )  # closed via the same dict generate_figures populated
 
 
 # ── close_figures ────────────────────────────────────────────────────────────

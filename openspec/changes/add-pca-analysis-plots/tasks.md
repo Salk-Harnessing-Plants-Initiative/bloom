@@ -1,9 +1,9 @@
 ## 1. Tests (write red tests first — TDD)
 
 - [x] 1.1 `test_default_no_plots_oracle_unchanged` — call `_run()` (no `include_plots`);
-  assert `result.plot_links` absent or `None`; assert numeric fields match turface_19 golden
-  within `_VAR_TOL`; assert `store.list_runs(experiment, "pca")` outputs contain exactly
-  `{loadings.csv, scores.csv, pca_result.json}`
+  assert `result.outputs` contains exactly `{loadings.csv, scores.csv, pca_result.json}`
+  (no new `plot_links` field — plots merge into the existing `outputs` dict, see design.md);
+  assert numeric fields match turface_19 golden within `_VAR_TOL`
 - [x] 1.2 `test_unknown_plot_key_invalid_input_no_run_committed` — call with
   `include_plots=True, plots=["not_a_real_plot"]`; assert `BloomMCPError(invalid_input)`;
   assert `store.list_runs(experiment, "pca") == []`
@@ -44,8 +44,10 @@
 - [x] 3.1 Create `bloommcp/src/bloom_mcp/tools/_plots.py` with:
   - `validate_plot_keys(requested: list[str] | None, valid_keys: set[str]) -> None` —
     raises `BloomMCPError(invalid_input)` on unknown, duplicate, or empty list
-  - `generate_figures(resolved_calls: dict[str, Callable[[], Figure]]) -> dict[str, Figure]`
-    — calls each zero-arg callable; on exception, propagates without swallowing
+  - `generate_figures(resolved_calls: dict[str, Callable[[], Figure]], figures: dict[str,
+    Figure]) -> None` — calls each zero-arg callable, recording each result into the
+    caller-supplied `figures` dict one key at a time; on exception, propagates without
+    swallowing, leaving every already-successful figure in `figures` for `close_figures`
   - `close_figures(figures: dict[str, Figure]) -> None` — best-effort; never raises
 
 ## 4. Modify `pca_analysis_tool.py`
@@ -55,8 +57,10 @@
 - [x] 4.2 Retain `result_dict` in local scope after `PCAResult.from_pca_dict` (plotters
   take the raw dict, not a `PCAResult` instance)
 - [x] 4.3 Define `_pca_plot_calls(result_dict, pca, frame, threshold)` returning a dict of
-  four zero-arg lambdas with lazy plotter imports (`color_by=None` on biplot — string genotype
-  values cannot be used as matplotlib colors)
+  four zero-arg lambdas with lazy plotter imports (`color_by=frame.genotype_col` on biplot,
+  via `_biplot_df(frame)` which casts a copy of the genotype column to `pd.Categorical` — the
+  upstream plotter's categorical-coloring check doesn't recognize pandas's `StringDtype`, so
+  an uncast column crashes; see design.md § "color_by decision")
 - [x] 4.4 Restructure persistence: wrap with `try/finally` (outer) nesting the existing
   `with tempfile.TemporaryDirectory` (inner). In `try`: validate plot keys, generate figures,
   then enter the `with` block for `create_run` + savefig + `commit`. In `finally`:

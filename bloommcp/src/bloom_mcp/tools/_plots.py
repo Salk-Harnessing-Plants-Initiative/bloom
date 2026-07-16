@@ -62,13 +62,17 @@ def validate_plot_keys(requested: list[str] | None, valid_keys: set[str]) -> Non
 
 def generate_figures(
     resolved_calls: dict[str, "Callable[[], Figure]"],
-) -> "dict[str, Figure]":
-    """Call each zero-arg plotter callable and return ``{key: figure}``.
+    figures: "dict[str, Figure]",
+) -> None:
+    """Call each zero-arg plotter callable, recording each result into ``figures``.
 
-    On exception, propagates immediately — the caller's ``finally`` block is
-    responsible for closing any figures accumulated in prior iterations.
+    Populates ``figures`` one key at a time — not via an all-or-nothing dict
+    comprehension — so a mid-generation exception still leaves every
+    already-successful figure in the caller's dict for ``close_figures`` to
+    reach in ``finally``. The caller passes the same dict it later closes.
     """
-    return {key: fn() for key, fn in resolved_calls.items()}
+    for key, fn in resolved_calls.items():
+        figures[key] = fn()
 
 
 def close_figures(figures: "dict[str, Figure]") -> None:

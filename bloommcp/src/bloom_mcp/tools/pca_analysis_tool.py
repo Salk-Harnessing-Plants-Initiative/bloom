@@ -28,6 +28,14 @@ component scores as CSVs and the serialized ``PCAResult`` — recording ``based_
 the consumed cleaned version and content-addressing the consumed frame via ``source_csv`` so
 the ``qc_clean`` → ``pca_analysis`` lineage is recoverable, and returns a variance summary +
 links (never the score/loadings matrices inline).
+
+**Optional plots (#426).** ``include_plots=True`` generates figures via the four
+catalog plotters in ``_pca_plot_calls`` (``plots`` narrows the selection; omit for
+all four) and persists them as additional ``*.png`` entries in the existing
+``outputs`` field — no new result field, no matplotlib import on the default
+``include_plots=False`` path. Figure construction is delegated entirely to
+``bloom_mcp.tools._plots`` (validate/generate/close), which is tool-agnostic and
+meant to be reused verbatim by the upcoming UMAP tool (#425).
 """
 
 from __future__ import annotations
@@ -46,6 +54,7 @@ from bloom_mcp.data_access import (
 )
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import _build_output_frame, snapshot_frame
+from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
 from bloom_mcp.tools._qc_shared import _validate_trait_subset
 
 _TOOL_CLASS = "pca"
@@ -103,7 +112,7 @@ class PCAAnalysisParams(BaseModel):
         "Returned as additional entries in outputs (object-key links). "
         "When false (default), behavior is identical to pre-plots behavior.",
     )
-    plots: Optional[list[str]] = Field(
+    plots: list[str] | None = Field(
         default=None,
         description="Subset of plot keys to generate; omit (None) to generate all four "
         "available plots when include_plots=True. Ignored when include_plots=False. "
@@ -130,6 +139,20 @@ class PCAAnalysisResult(RunLinks):
     eigenvalues: list[float]
 
 
+def _biplot_df(frame: ExperimentFrame) -> pd.DataFrame:
+    """``create_pca_biplot``'s categorical-coloring check only recognizes ``object``
+    dtype or ``CategoricalDtype`` — it does not recognize pandas's newer default
+    ``StringDtype`` for string columns, so an uncast genotype column falls through to
+    the numeric-coloring branch and raises ``ValueError``. Cast a copy so genotype
+    coloring works instead of crashing (see design.md § "color_by decision").
+    """
+    if frame.genotype_col is None:
+        return frame.df
+    df = frame.df.copy()
+    df[frame.genotype_col] = df[frame.genotype_col].astype("category")
+    return df
+
+
 def _pca_plot_calls(
     result_dict: dict,
     pca: PCAResult,
@@ -153,14 +176,11 @@ def _pca_plot_calls(
         "create_pca_scree_plot": lambda: create_pca_scree_plot(
             result_dict, variance_threshold=threshold
         ),
-        # color_by=None: passing the genotype column name causes matplotlib to
-        # interpret string genotype values as colors, which raises ValueError.
-        # Blue-point biplot is still a valid scientific visualization.
         "create_pca_biplot": lambda: create_pca_biplot(
             result_dict,
-            df=frame.df,
+            df=_biplot_df(frame),
             trait_names=list(pca.feature_names),
-            color_by=None,
+            color_by=frame.genotype_col,
         ),
         "create_feature_contribution_plot": lambda: create_feature_contribution_plot(
             result_dict,
@@ -169,11 +189,13 @@ def _pca_plot_calls(
             variance_threshold=threshold,
         ),
         # plot_type='loadings' forces a single Figure return (default 'both' → 2-tuple).
-        "create_feature_contribution_heatmap": lambda: create_feature_contribution_heatmap(
-            result_dict,
-            n_components=pca.n_components,
-            n_features=len(pca.feature_names),
-            plot_type="loadings",
+        "create_feature_contribution_heatmap": lambda: (
+            create_feature_contribution_heatmap(
+                result_dict,
+                n_components=pca.n_components,
+                n_features=len(pca.feature_names),
+                plot_type="loadings",
+            )
         ),
     }
 
@@ -299,22 +321,37 @@ def pca_analysis(
     scores_df = pd.DataFrame(
         pca.scores, columns=[f"PC{i + 1}" for i in range(pca.n_components)]
     )
-    with snapshot_frame(frame.df) as source_snapshot:
-        run = store.create_run(
-            experiment=params.experiment,
-            tool_class=_TOOL_CLASS,
-            provenance=prov,
-            user_label=params.user_label,
-            source_csv=source_snapshot,
-        )
-        _loadings_frame(pca).to_csv(run.staging_dir / _LOADINGS_NAME, index=True)
-        _build_output_frame(frame, scores_df).to_csv(
-            run.staging_dir / _SCORES_NAME, index=False
-        )
-        (run.staging_dir / _RESULT_NAME).write_text(pca.to_json())
-        stored = store.commit(
-            run,
-            {
+    figures: dict = {}
+    try:
+        if params.include_plots:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            validate_plot_keys(params.plots, _PCA_CATALOG_KEYS)
+            calls = _pca_plot_calls(
+                result_dict, pca, frame, params.explained_variance_threshold
+            )
+            keys_to_generate = (
+                list(params.plots)
+                if params.plots is not None
+                else list(_PCA_CATALOG_KEYS)
+            )
+            generate_figures({k: calls[k] for k in keys_to_generate}, figures)
+
+        with snapshot_frame(frame.df) as source_snapshot:
+            run = store.create_run(
+                experiment=params.experiment,
+                tool_class=_TOOL_CLASS,
+                provenance=prov,
+                user_label=params.user_label,
+                source_csv=source_snapshot,
+            )
+            _loadings_frame(pca).to_csv(run.staging_dir / _LOADINGS_NAME, index=True)
+            _build_output_frame(frame, scores_df).to_csv(
+                run.staging_dir / _SCORES_NAME, index=False
+            )
+            (run.staging_dir / _RESULT_NAME).write_text(pca.to_json())
+            outputs: dict[str, str] = {
                 _LOADINGS_NAME: _LOADINGS_NAME,
                 _SCORES_NAME: _SCORES_NAME,
                 _RESULT_NAME: _RESULT_NAME,

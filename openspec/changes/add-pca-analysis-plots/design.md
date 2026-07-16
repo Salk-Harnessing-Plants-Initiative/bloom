@@ -1,9 +1,10 @@
 ## Context
 
-`pca_analysis_tool.py` uses `with tempfile.TemporaryDirectory(prefix="pca_input_") as _tmp:`
-for its persistence block. Adding matplotlib figures introduces two new concerns:
-(a) figures must be closed even when persistence fails, and (b) validation must fail before
-any run is committed. Five plotter signatures were checked against the installed
+`pca_analysis_tool.py`'s persistence block is a `with snapshot_frame(frame.df) as
+source_snapshot:` context manager (the `_consumer_utils` seam shared with the other
+consumer tools). Adding matplotlib figures introduces two new concerns: (a) figures
+must be closed even when persistence fails, and (b) validation must fail before any
+run is committed. Five plotter signatures were checked against the installed
 `sleap_roots_analyze 0.1.0a4`; one plotter was excluded after its API was found incompatible
 with available PCA outputs.
 
@@ -59,7 +60,7 @@ def _pca_plot_calls(result_dict, pca, frame, explained_variance_threshold):
             result_dict, variance_threshold=explained_variance_threshold
         ),
         "create_pca_biplot": lambda: create_pca_biplot(
-            result_dict, df=frame.df, trait_names=list(pca.feature_names),
+            result_dict, df=_biplot_df(frame), trait_names=list(pca.feature_names),
             color_by=frame.genotype_col,
         ),
         "create_feature_contribution_plot": lambda: create_feature_contribution_plot(
@@ -77,52 +78,73 @@ def _pca_plot_calls(result_dict, pca, frame, explained_variance_threshold):
 `_plots.py` is then purely:
 
 ```python
-def generate_figures(resolved_calls: dict[str, Callable[[], Figure]]) -> dict[str, Figure]:
-    return {key: fn() for key, fn in resolved_calls.items()}
+def generate_figures(
+    resolved_calls: dict[str, Callable[[], Figure]],
+    figures: dict[str, Figure],
+) -> None:
+    """Populate ``figures`` one key at a time (not an all-or-nothing dict
+    comprehension) so a mid-generation exception still leaves every
+    already-successful figure in the caller's dict for `close_figures` to
+    reach in `finally`."""
+    for key, fn in resolved_calls.items():
+        figures[key] = fn()
 ```
+
+`generate_figures` takes the caller's `figures` dict and mutates it in place rather than
+returning a new one — a dict comprehension would build its result only at the very end,
+so an exception partway through would discard everything already generated, and the
+caller's `finally: close_figures(figures)` would find nothing to close (see "Graceful
+degradation on plotter failure" below).
 
 UMAP (#425) builds its own `_umap_plot_calls(...)` dict and reuses the same
 `validate_plot_keys` / `generate_figures` / `close_figures` without any changes to `_plots.py`.
 
-### Figure/tempdir nesting order
+### Figure/snapshot nesting order
 
-The current tool uses `with tempfile.TemporaryDirectory` for the persistence block. The
+The tool's persistence block is `with snapshot_frame(frame.df) as source_snapshot:`. The
 `try/finally` for figure cleanup must wrap this block so figures are always closed even when
-the temp-dir entry or persistence fails. Correct nesting:
+the snapshot or persistence fails. Correct nesting:
 
 ```python
 figures: dict[str, Figure] = {}
 try:
     if params.include_plots:
+        import matplotlib
+        matplotlib.use("Agg")
         validate_plot_keys(params.plots, _PCA_PLOT_CATALOG_KEYS)
-        resolved = {
-            k: calls[k]
-            for k in (params.plots if params.plots is not None else _PCA_PLOT_CATALOG_KEYS)
-        }
-        figures = generate_figures(resolved)   # before create_run
+        calls = _pca_plot_calls(result_dict, pca, frame, params.explained_variance_threshold)
+        keys_to_generate = (
+            list(params.plots) if params.plots is not None else list(_PCA_PLOT_CATALOG_KEYS)
+        )
+        generate_figures({k: calls[k] for k in keys_to_generate}, figures)  # before create_run
 
-    with tempfile.TemporaryDirectory(prefix="pca_input_") as _tmp:
-        source_snapshot = Path(_tmp) / _INPUT_SNAPSHOT_NAME
-        frame.df.to_csv(source_snapshot, index=False)
+    with snapshot_frame(frame.df) as source_snapshot:
         run = store.create_run(...)
         # write loadings / scores / pca_result.json
+        outputs = {...}  # the three data keys
         for name, fig in figures.items():
             fig.savefig(run.staging_dir / f"{name}.png", bbox_inches="tight")
+            outputs[f"{name}.png"] = f"{name}.png"
         stored = store.commit(run, outputs)
 finally:
     close_figures(figures)
 ```
 
 `validate_plot_keys` fires before `create_run`, so an unknown key never commits a run.
-Figures are live only between generation and the `finally` — the `with` tempdir is nested
-inside so an `OSError` on dir creation cannot bypass `finally`.
+`generate_figures` mutates the same `figures` dict `close_figures` later reads (see above) —
+so figures are reachable in `finally` from the moment each one is generated, not just on a
+fully successful run. The `with snapshot_frame(...)` block is nested inside the `try` so a
+failure there cannot bypass `finally` either.
 
 ### Graceful degradation on plotter failure
 
-If a plotter raises during `generate_figures`, the exception propagates out of the `try` block
-and the `finally` closes all figures accumulated so far (partial dict). The contract maps
-unhandled exceptions to `tool_error`. No run is committed (the exception fires before
-`create_run`). No silent partial-plot persistence occurs.
+If a plotter raises during `generate_figures`, the exception propagates out of the `try` block.
+Because `generate_figures` populates the caller's `figures` dict incrementally (one key per
+successful call, not a single all-or-nothing dict comprehension), every figure produced by an
+earlier, successful plotter in the same call is already in `figures` when the exception fires —
+so `finally: close_figures(figures)` actually closes it, rather than finding an empty dict. The
+contract maps unhandled exceptions to `tool_error`. No run is committed (the exception fires
+before `create_run`). No silent partial-plot persistence occurs.
 
 ### `plots=[]` and `include_plots=False` with `plots` provided
 
@@ -157,5 +179,14 @@ branch (same as `remove_outliers`). The top-level module never imports `matplotl
 ## Open Questions
 
 - Should `create_pca_biplot` receive `color_by=frame.genotype_col` (may be `None` → blue
-  points) or always `color_by=None`? Decision: pass `frame.genotype_col`; the plotter's
-  `None` fallback (blue points) is scientifically correct for barcode-less experiments.
+  points) or always `color_by=None`? Decision: pass `frame.genotype_col` (`None` falls back
+  to blue points — scientifically correct for genotype-less experiments). **Caveat found
+  during review**: `create_pca_biplot`'s categorical-coloring check only recognizes
+  `dtype == "object"` or `CategoricalDtype` — it does not recognize pandas's newer default
+  `StringDtype` for string columns (pandas ≥ 2.x with the string-dtype default, e.g. 3.0.2),
+  so passing the raw genotype column crashes with `ValueError: 'c' argument must be a
+  color...` on that pandas version. Verified fix: `_biplot_df(frame)` casts a *copy* of
+  `frame.df[frame.genotype_col]` to `pd.Categorical` before the call, which the plotter's
+  check does recognize, restoring genotype-colored biplots without touching `frame.df`
+  itself. The dtype-detection gap is upstream in `sleap_roots_analyze`, not bloommcp-specific
+  — worth filing there so callers on newer pandas don't need this workaround.
