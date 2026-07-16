@@ -138,9 +138,12 @@ download.fetch_scan` (mirrors the intent of `test_fetch_scan_returns_single_row`
       exercises `fetch_scan` itself — this task instead pins the no-duplication contract).
 - [x] 5.2 Happy-path CLI: `CliRunner().invoke(cli, ["cyl", "download-for-predict", "1",
 str(out)])` with faked `fetch_scan` → SCAN, faked `fetch_images` → two image rows, faked
-      Storage bucket, monkeypatched creds/auth → exit 0; assert: - `out/scan_1/0.png` and `out/scan_1/1.png` exist; - `out/scan_1/scan_1.scan_metadata.json` is valid JSON with `scan_key="scan_1"`,
-      `image_ids=[1001, 1002]`, `params.mode="cylinder"`, `images_checksum` starts with
-      `"sha256:"`.
+      Storage bucket, monkeypatched creds/auth → exit 0; assert:
+
+  - `out/scan_1/0.png` and `out/scan_1/1.png` exist;
+  - `out/scan_1/scan_1.scan_metadata.json` is valid JSON with `scan_key="scan_1"`,
+    `image_ids=[1001, 1002]`, `params.mode="cylinder"`, `images_checksum` starts with `"sha256:"`.
+
 - [x] 5.3 Scan not found: faked `fetch_scan` returns `None` → exit non-zero, "not found" in
       output, no directory created.
 - [x] 5.4 Partial frame failure: one frame download raises → exit non-zero, failure count in
@@ -234,3 +237,93 @@ test pytest tests/test_cyl_download_for_predict.py -k "oracle or discover_scans_
       extra (correctly pins `sleap-nn==0.3.0` + CPU `torch`). Result:
       `2 passed, 22 deselected in 24.46s` — both oracle tests pass against the real
       `sleap_roots_predict.discover_scans`.
+
+## 9. RED — PR #458 `/review-pr` fixes (write tests FIRST; must fail before implementation)
+
+`/review-pr` on the merged PR reproduced three real bugs (not hypothetical) plus several
+important gaps. See `design.md`'s Decisions/Risks for the full rationale of each fix. All new
+tests below must FAIL against the current `download_for_predict.py` before the §10 implementation
+lands.
+
+- [ ] 9.1 **BLOCKING fix — uncaught `ValueError` + reconcile-before-validation ordering:** a scan
+      with `species_name=None` (or `plant_age_days=None`) exits non-zero with a readable
+      `click.ClickException` message (not a raw traceback); if `scan_dir` already existed with
+      content, that content is untouched (the failure happens before any destructive action).
+- [ ] 9.2 **New pure helper `resolve_sidecar_params(scan) -> dict`:** extracted from
+      `build_sidecar`'s inline `resolve_params(scan, overrides={"mode": "cylinder"}).values` call
+      — same behavior, now independently callable/testable. Raises `ValueError` on missing
+      required params (unchanged underlying behavior).
+- [ ] 9.3 **New pure helper `validate_frame_numbers(images) -> None`:** raises `ValueError` if any
+      `image["frame_number"]` is `None`, or if two images share the same non-`None`
+      `frame_number`. No-op (returns `None`) otherwise.
+- [ ] 9.4 **CLI-level:** a scan whose `cyl_images` rows have a null or duplicate `frame_number`
+      exits non-zero with a readable message before any frame is downloaded or any existing
+      `scan_dir` content is touched.
+- [ ] 9.5 **`build_sidecar` signature change:** now `build_sidecar(scan, images,
+frame_bytes_list, params)` — accepts the already-resolved `params` dict instead of calling
+      `resolve_sidecar_params` internally. Update the existing tests
+      (`test_build_sidecar_assembles_all_fields_in_input_order`,
+      `test_build_sidecar_passes_mode_override_to_resolve_params`, the oracle test) to pass
+      `params` explicitly; `test_build_sidecar_passes_mode_override_to_resolve_params` now tests
+      `resolve_sidecar_params` directly (it's the one that calls `resolve_params`) rather than
+      `build_sidecar`.
+- [ ] 9.6 **Params values, not just keys:** the sidecar's `params["species"]` is exactly
+      `"pennycress"` and `params["age"]` is exactly `14` for the `SCAN` fixture (not just "keys
+      present") — closes the spec.md "canonical values" scenario that had no real assertion behind
+      it.
+- [ ] 9.7 **`clear_scan_dir(scan_dir) -> list[str]`** (replaces `reconcile_stray_frames`): if
+      `scan_dir` exists, removes it entirely (frames + any old sidecar) and returns the list of
+      removed entry names (for the CLI to echo); no-op, returns `[]`, if `scan_dir` doesn't exist.
+- [ ] 9.8 **CLI-level — stale sidecar cannot survive a retry:** run the happy-path CLI to success
+      (sidecar + frames written), then re-run for the same scan with one frame now failing —
+      assert the now-non-zero-exit run's directory has **no** `scan_metadata.json` at all (not a
+      stale one from the first run) and reports what it cleared before starting.
+- [ ] 9.9 **CLI-level — clear is echoed, not silent:** the happy-path re-run test above (or a
+      dedicated one) asserts the command's output mentions the directory was cleared/what was
+      removed, closing the "silent deletion" gap.
+- [ ] 9.10 **`frame_dest_for_predict` fails loudly on a missing `object_path`:** `KeyError` (not a
+      silently-defaulted `.png`) for `{"frame_number": 3}` (no `object_path` key) — still caught
+      per-frame by `download_frames_for_predict`'s existing `try/except Exception`, so this
+      surfaces as a clean per-frame failure, not a crash; update
+      `test_frame_dest_for_predict_defaults_to_png_when_extension_missing` (which used a row that
+      _had_ `object_path` with no extension — still valid, keep it) and add a new test for the
+      missing-key case.
+- [ ] 9.11 **Atomic writes:** `write_sidecar` and each frame write survive a simulated kill
+      mid-write without leaving a truncated file at the final path — assert via monkeypatching the
+      write call to raise partway through, then check the final path either doesn't exist or has
+      the complete prior content (never partial new content).
+- [ ] 9.12 **Auth refactor has no behavior change:** `test_cli_missing_credentials_hints_login`
+      continues to pass unmodified after switching to `cli._authed_client` (same error message,
+      same "run `bloomctl login`" hint) — this is the test that pins the refactor is behavior-
+      preserving.
+- [ ] 9.13 **Reuse identity tests for the remaining three re-used objects** (mirrors 5.1's
+      `fetch_scan` pattern): `dfp.fetch_images is dl.fetch_images`, `dfp.FrameResult is
+dl.FrameResult`, `dfp.DownloadResult is dl.DownloadResult`.
+- [ ] 9.14 **Oracle test — `_IMAGE_EXTENSIONS` drift guard (manual, dev-machine only, same
+      non-CI-gate note as §3):** add `assert dfp._IMAGE_EXTENSIONS ==
+frozenset(sleap_roots_predict.batch._IMAGE_EXTENSIONS)` to
+      `test_oracle_sidecar_is_accepted_by_discover_scans`, guarded by the same
+      `pytest.importorskip("sleap_roots_predict")`.
+
+## 10. GREEN — implement the fixes
+
+- [ ] 10.1 Update `bloomcli/src/bloomctl/cyl/download_for_predict.py`:
+      add `resolve_sidecar_params`, `validate_frame_numbers`; change `build_sidecar`'s signature;
+      rename/rewrite `reconcile_stray_frames` → `clear_scan_dir`; switch
+      `frame_dest_for_predict` to `image["object_path"]`; add atomic writes (temp file +
+      `os.replace`) to `write_sidecar` and the per-frame write loop; switch the command to
+      `from ..cli import _authed_client`. Reorder the command body: auth → `fetch_scan` → not-found
+      check → `fetch_images` → no-images check → `validate_frame_numbers` → `resolve_sidecar_params`
+      (both wrapped in `try/except ValueError` → `ClickException`) → `clear_scan_dir` (echo what
+      was removed) → download frames → failure check → `build_sidecar` (using the already-resolved
+      `params`) → `write_sidecar` → success echo.
+- [ ] 10.2 Iterate until every §9 test is GREEN, and the full suite (§8.2's invocation) stays
+      green with no regressions.
+
+## 11. Re-verify
+
+- [ ] 11.1 Re-run §8.1-8.5 (validate, full suite, ruff, pre-commit, contracts guards).
+- [ ] 11.2 Re-run §8.6's manual oracle-test verification (now including the new
+      `_IMAGE_EXTENSIONS` assertion from 9.14) — paste the passing output.
+- [ ] 11.3 Push a fixup and reply to the `/review-pr` findings on PR #458, noting what was fixed
+      vs. explicitly accepted as a documented limitation (concurrent same-scan invocations).

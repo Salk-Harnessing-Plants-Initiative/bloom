@@ -83,23 +83,90 @@ to get a green predict run; this change provides the real stage-in.
   that doesn't have all its frames, with a checksum that can't be reproduced by a successful
   re-run. Failing to write the sidecar means `discover_scans` simply doesn't see the scan at all —
   a safe, glob-invisible failure mode — until a clean re-run succeeds.
-- **Stray frame files are reconciled away before the sidecar is written (added after second
-  review round).** Verified against the real `sleap_roots_predict.batch._load_scan`
-  (`c:\repos\sleap-roots-predict\sleap_roots_predict\batch.py`): frame discovery globs **every**
-  image-extension file physically present in the sidecar's parent directory — it does not consult
-  `image_ids` or a frame count. So "no sidecar on failure" alone doesn't fully protect the
-  provenance guarantee across retries: if attempt 1 downloads frames for `image_ids [1001, 1002,
-1003]` and fails on 1003 (files `0.png`, `1.png` on disk, no sidecar), and between attempt 1 and
-  a later successful attempt 2 the scan's `cyl_images` rows change (e.g. row 1002 is deleted or
-  renumbered) such that attempt 2 only writes `0.png` and a differently-numbered replacement,
-  `1.png` from attempt 1 could survive on disk and be picked up as an extra, unaccounted-for frame
-  by `discover_scans` — even though the freshly-written sidecar's `image_ids`/`images_checksum`
-  never counted it. Fix: immediately before writing the sidecar on a fully successful run, delete
-  any file in `scan_dir` with a recognized image extension that is not one of the frame paths just
-  written this run. This is a no-op on the common case (plain retry, same `frame_number`s
-  overwrite in place) and only actually removes files in the narrower stale-data case. Failed
-  runs are unaffected (no sidecar is written either way, so no reconciliation happens on failure —
-  partial frames intentionally remain for debugging, per the bullet above).
+- **Superseded: end-of-run stray-frame reconciliation → start-of-run full directory clear (revised
+  after PR #458 review).** The original decision (kept below, struck through in spirit, for
+  history) deleted only files not among the current run's just-written frames, computed
+  _immediately before writing the sidecar_ on a fully successful run. PR review reproduced a gap
+  this didn't cover: if `scan_dir` already holds a valid sidecar from an earlier _successful_ run,
+  and a later re-run partially fails, the end-of-run reconcile+write never runs (the failure path
+  exits first) — so the old sidecar survives untouched, now describing frame bytes that a partial
+  retry may have already overwritten in place. A diff-based, end-of-run fix can't close this: the
+  problem is that stale state can outlive a failed run at all. Fix: **clear `scan_dir` entirely at
+  the start of every invocation**, before downloading any frame — not just reconcile stray files
+  at the end. This is a strictly simpler model (idempotent "stage fresh," not "diff against a
+  moving target") that closes the stale-sidecar gap by construction: a failed run has nothing to
+  leave _behind_ to go stale, because whatever was there before this run started is already gone.
+  The command echoes what it clears, so this isn't silent (PR review also flagged the original
+  reconcile as too quiet). See the next two bullets for how this composes safely with validation.
+  <details><summary>Original decision (superseded, kept for history)</summary>
+  Verified against the real `sleap_roots_predict.batch._load_scan`: frame discovery globs every
+  image-extension file physically present in the sidecar's parent directory, not just
+  `image_ids`. Fix (at the time): immediately before writing the sidecar on success, delete any
+  file in `scan_dir` not among the frame paths just written. This correctly closed the
+  "renumbered-frame" case but not the "prior success, later partial failure" case above.
+  </details>
+- **Validate everything that can fail _before_ clearing the directory or downloading anything
+  (added after PR #458 review — closes a reproduced crash).** PR review reproduced: a scan with a
+  null `species_name`/`plant_age_days` makes `resolve_params` raise a bare, uncaught `ValueError`
+  from inside `build_sidecar`, which was called _after_ the (then end-of-run) reconcile step — so
+  the crash left destructive cleanup already done, with no `ClickException`, just a raw traceback.
+  Fix: extract the `resolve_params` call into its own pure helper (`resolve_sidecar_params`),
+  call it — and the new frame-number validation below — right after `fetch_images`, wrapped in
+  `try/except ValueError` → `ClickException`, **before** the directory clear or any download. The
+  already-resolved `params` dict is threaded into `build_sidecar` (new required parameter) rather
+  than re-resolved later, so there's no duplicate call and no way to reach the destructive/download
+  steps with metadata that can't produce a valid sidecar.
+- **Reject duplicate or null `frame_number` values before downloading (added after PR #458
+  review).** `cyl_images.frame_number` is nullable and `UNIQUE(scan_id, frame_number)` doesn't
+  block `NULL` (Postgres never considers two `NULL`s equal for uniqueness), so two rows can share
+  a null/duplicate `frame_number` for one scan. Reproduced: without a guard, both rows map to the
+  same on-disk path (`frame_dest_for_predict` derives the filename from `frame_number` alone), the
+  second overwrites the first, yet _both_ ids land in `image_ids` and _both_ frames' bytes get
+  hashed into `images_checksum` — a checksum that no longer describes what's on disk, silently.
+  Fix: new pure helper `validate_frame_numbers(images)` raises `ValueError` (caught the same way as
+  the metadata-resolution failure above) if any `frame_number` is `None` or duplicated, before any
+  destructive action. `cyl download`'s equivalent data-quality gap (documented below, in Risks) is
+  otherwise unaffected — this fix is scoped to `download-for-predict` alone, since only its sidecar
+  makes a checksum/`image_ids` claim that duplicate frame numbers would falsify.
+- **Reuse `cli.py`'s `_authed_client` instead of duplicating `download.py`'s auth-error-handling
+  block (added after PR #458 review).** The command's `load_credentials`/`make_authed_client`
+  try/except pair was copy-pasted byte-for-byte from `download.py`, when `ingest.py` (a sibling
+  command in this same `cyl` group) already extracted this exact pattern into
+  `cli._authed_client(profile)`. Switching to it produces the identical error messages (verified:
+  same `ClickException` text, same "run `bloomctl login`" hint), so no test changes are needed —
+  it's a pure de-duplication, not a behavior change.
+- **`frame_dest_for_predict` fails loudly on a missing `object_path`, matching `download.py`'s
+  `image_dest` (added after PR #458 review).** Was `image.get("object_path", "")`, silently
+  degrading a malformed row to a bare `.png` extension; `download.py`'s equivalent helper does
+  `image["object_path"]` and raises `KeyError` on the identical bad input. Two helpers doing the
+  same job should fail the same way. Fix: switch to `image["object_path"]`. The `KeyError` is
+  still caught per-frame inside `download_frames_for_predict`'s existing `try/except Exception`
+  (unchanged), so a single malformed row still surfaces as a clean per-frame failure, not a crash —
+  only the _manner_ of that per-frame failure detection changed (loud vs. silently-wrong).
+- **Sidecar and frame writes are atomic (write-to-temp, then `os.replace`) (added after PR #458
+  review).** `write_sidecar`/frame writes were direct `write_text`/`write_bytes` calls — a process
+  killed mid-write could leave a truncated-but-present file. `os.replace` is atomic on both POSIX
+  and Windows (unlike `os.rename`, which fails on Windows if the destination exists), so this is a
+  small, portable fix. Low-probability risk, but this module's whole design rests on "a written
+  file accurately represents its claimed content" — worth closing given how cheap it is.
+- **Concurrent invocations of the same `scan_id`/`out_dir` remain unsupported (accepted, not fixed,
+  added after PR #458 review).** PR review reproduced a race: two processes staging the same scan
+  into the same directory at once can have one process's directory-clear or write step interleave
+  with the other's, since there is no file lock anywhere in this command (nor in sibling `cyl`
+  commands). A real fix needs a lock file or DB advisory lock — disproportionate for what is a
+  single-operator, run-once-per-scan CLI tool, not a batch-parallel service. The intended usage
+  pattern is one invocation per scan, sequential retries, not concurrent runs of the _same_
+  scan_id. Accepted as a known limitation; the clear-upfront design (above) doesn't make this
+  worse than the previous end-of-run-reconcile design, just differently-shaped.
+- **The oracle tests now assert `_IMAGE_EXTENSIONS` equality against predict's real constant
+  (added after PR #458 review).** The hardcoded `_IMAGE_EXTENSIONS` frozenset is the safety-
+  critical basis for what the directory-clear step (and, previously, stray-frame reconciliation)
+  treats as an image file — a drift from predict's real `sleap_roots_predict.batch
+._IMAGE_EXTENSIONS` would silently change what gets cleared/protected, in either direction, with
+  no signal. Since the two oracle tests already import `sleap_roots_predict` when available, they
+  now also assert `dfp._IMAGE_EXTENSIONS == frozenset(sleap_roots_predict.batch._IMAGE_EXTENSIONS)`
+  — this is the one place that assumption is actually checked, even though only manually/dev-machine
+  (per the existing non-CI-gate decision below).
 - **The cross-repo "oracle" tests (3.1, 5.6) are not a CI gate — deferred, not dependency-added
   (added after review).** These tests assert the sidecar is accepted by the real
   `sleap_roots_predict.discover_scans`/`_load_scan`. Adding `sleap-roots-predict` as a bloomcli
@@ -179,4 +246,12 @@ hand the `bloomctl cyl download-for-predict` invocation to the A4 pipeline stage
   1's partial fix, and — verified against the real `sleap_roots_predict.batch._load_scan` code —
   added the stray-frame-reconciliation decision above, since "no sidecar on failure" alone doesn't
   fully protect provenance across retries where the scan's `cyl_images` rows changed between
-  attempts.)
+  attempts. Round 3 (`/review-pr` on the merged implementation, PR #458, 2026-07-15): reproduced a
+  real crash (uncaught `ValueError` from `resolve_params` on missing scan metadata, with the
+  destructive reconcile step already having run) and a real data-integrity gap the round-2 fix
+  didn't fully close (a prior successful run's sidecar surviving stale after a later partial-
+  failure retry). Superseded end-of-run stray-frame reconciliation with start-of-run full
+  directory clear; added frame-number duplicate/null validation, metadata-resolution validation
+  before any destructive action, atomic writes, `_authed_client` reuse, loud `frame_dest_for_predict`
+  failure, and an `_IMAGE_EXTENSIONS`-equality assertion in the oracle tests. Accepted (not fixed):
+  concurrent invocations of the same scan_id/out_dir remain unsupported — see Risks.)
