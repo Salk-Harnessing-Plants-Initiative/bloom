@@ -607,7 +607,9 @@ def test_labels_csv_carries_sample_identity(injected_ports, monkeypatch):
 
     labels = pd.read_csv(io.StringIO(captured["labels.csv"]))
     assert list(labels.columns[:3]) == ["Barcode", "Genotype", "Replicate"]
-    assert labels.columns[3] == "cluster"
+    # cluster is always last; do not assert a fixed index because metadata_cols now
+    # includes Computation.Time.s (reclassified from traits by get_trait_columns/#403).
+    assert labels.columns[-1] == "cluster"
     final = _final_df()
     assert labels["Barcode"].tolist() == final["Barcode"].tolist()
     assert len(labels) == len(final) == 153
