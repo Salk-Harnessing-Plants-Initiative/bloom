@@ -26,7 +26,7 @@ dependencies = [
     # the emitters' contract_version (stricter than bloommcp's a1 on purpose); no
     # [pandas] extra — only the pydantic models are needed (pydantic already present
     # transitively via supabase->postgrest).
-    "sleap-roots-contracts>=0.1.0a3",
+    "sleap-roots-contracts>=0.1.0a4",
 ]
 
 [project.scripts]
