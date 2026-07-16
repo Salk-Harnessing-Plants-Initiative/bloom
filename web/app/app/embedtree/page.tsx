@@ -1,16 +1,16 @@
 import { redirect } from "next/navigation";
 import { getUser } from "@/lib/supabase/server";
-import { EmbedtreePage } from "@/components/embedtree/embedtree-page";
+import { OrthoVecPage } from "@/components/embedtree/orthovec-page";
 
 export const metadata = {
-  title: "AI Orthologs | Bloom",
+  title: "OrthoVec | Bloom",
   description:
-    "Find predicted orthologs across plant species using ESM-2 protein embeddings.",
+    "Protein-embedding similarity: predicted orthologs across species (ESM-2) and Arabidopsis accession comparison (ESM-3).",
 };
 
 export default async function EmbedtreeRoute() {
   const user = await getUser();
   if (!user) redirect("/login");
 
-  return <EmbedtreePage />;
+  return <OrthoVecPage />;
 }

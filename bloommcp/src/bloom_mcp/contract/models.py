@@ -1,10 +1,13 @@
 """Base Pydantic I/O models for contract-wrapped tools.
 
-Tier 1 ships a minimal base: #191 (per-tool Pydantic input models) is unmerged,
-and the real `pca_analysis` / `clustering` models arrive with the granular tools
-(Tiers 3/4). `ToolParams` carries the one field the contract reads directly —
-the optional `seed`, which `@as_mcp_tool` resolves and propagates as
-`random_state=`. Real tool params extend this base.
+``ToolParams`` is the base input model — carries the optional ``seed`` field that
+``@as_mcp_tool`` resolves, propagates as ``random_state=``, and records in
+``Provenance``. Real tool input params extend this base.
+
+``RunLinks`` is the base result model for consumer tools — carries the four
+run-link fields (``run_ref``, ``version_dir``, ``manifest_path``, ``outputs``)
+returned by every consumer tool result (``pca_analysis``, ``remove_outliers``,
+and forthcoming ``clustering``/``umap``).
 """
 
 from __future__ import annotations
@@ -14,6 +17,20 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from bloom_mcp.contract.provenance import SEED_MAX
+
+
+class RunLinks(BaseModel):
+    """Base result model for consumer tools.
+
+    Carries the four run-link fields returned by every consumer tool result
+    (``pca_analysis``, ``remove_outliers``, and forthcoming consumers). Tool-
+    specific result models inherit this class rather than redeclaring the fields.
+    """
+
+    run_ref: str
+    version_dir: str
+    manifest_path: str
+    outputs: dict[str, str]
 
 
 class ToolParams(BaseModel):

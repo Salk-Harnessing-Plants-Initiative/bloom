@@ -1,0 +1,34 @@
+# ─────────────────────────────────────────────────────────────────────
+# docker-compose.ci-cache.yml — CI-only BuildKit layer-cache overlay
+# ─────────────────────────────────────────────────────────────────────
+#
+# Adds the type=gha cache to the custom-image builds so compose-health-check
+# reuses the same per-image cache scopes the docker-build job writes, instead
+# of building cold. Layered ONLY on the compose build step in
+# .github/workflows/pr-checks.yml (with COMPOSE_BAKE=true) — never in local
+# dev, because type=gha cache export requires GitHub Actions credentials.
+#
+# Scopes MUST match docker-build's cache-to scopes so both jobs share entries.
+# ─────────────────────────────────────────────────────────────────────
+
+services:
+  bloom-web:
+    build:
+      cache_from:
+        - type=gha,scope=bloom-web
+      cache_to:
+        - type=gha,mode=max,scope=bloom-web
+
+  langchain-agent:
+    build:
+      cache_from:
+        - type=gha,scope=langchain-agent
+      cache_to:
+        - type=gha,mode=max,scope=langchain-agent
+
+  bloommcp:
+    build:
+      cache_from:
+        - type=gha,scope=bloommcp
+      cache_to:
+        - type=gha,mode=max,scope=bloommcp

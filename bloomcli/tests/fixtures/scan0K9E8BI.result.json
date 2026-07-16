@@ -1,0 +1,65 @@
+{
+  "provenance": {
+    "contract_version": "0.1.0a3",
+    "scan_key": "scan0K9E8BI",
+    "inputs": {
+      "image_ids": [
+        "1001",
+        "1002"
+      ],
+      "images_checksum": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "idempotency_key": "1c194b810a71cc86639516f6f300a1f263acd0544e38eaa4733f8d4cbae459cc",
+    "pipeline_run_id": null,
+    "predict_models": [
+      {
+        "registry_id": "rice-primary",
+        "version": "123",
+        "sleap_nn_version": "0.3.0",
+        "root_type": "primary",
+        "weights_checksum": null
+      },
+      {
+        "registry_id": "rice-crown",
+        "version": "123",
+        "sleap_nn_version": "0.3.0",
+        "root_type": "crown",
+        "weights_checksum": null
+      }
+    ],
+    "predict_container_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "predict_code_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "worker_request_id": null,
+    "predict_inference_config": null,
+    "predict_output_params": null,
+    "traits_sleap_roots_version": "0.1.4",
+    "traits_container_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "traits_code_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "argo_workflow_uid": null,
+    "argo_node_id": null,
+    "params": {
+      "values": {
+        "species": "rice",
+        "mode": "cylinder",
+        "age": 3
+      },
+      "param_hash": "046a360d8fdc16c83bcdb9b63e2cced5264fa87b740d8132e2b21b73da914abd"
+    },
+    "produced_at": null
+  },
+  "traits": [
+    {
+      "name": "primary_length_mean",
+      "value": 123.45,
+      "grain": "scan",
+      "scan_key": "scan0K9E8BI"
+    },
+    {
+      "name": "lateral_count",
+      "value": 7.0,
+      "grain": "scan",
+      "scan_key": "scan0K9E8BI"
+    }
+  ],
+  "blobs": []
+}
