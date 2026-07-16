@@ -24,8 +24,11 @@ from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.experiment_utils import detect_columns
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
-from bloom_mcp.tools import _ports, remove_outliers_tool
-from bloom_mcp.tools.remove_outliers_tool import (
+from bloom_mcp.tools import _ports
+from bloom_mcp.sections.sleap_roots.analysis import (
+    remove_outliers as remove_outliers_tool,
+)
+from bloom_mcp.sections.sleap_roots.analysis.remove_outliers import (
     RemoveOutliersParams,
     RemoveOutliersResult,
     remove_outliers,
@@ -132,8 +135,8 @@ def test_remove_outliers_appears_in_tools_list():
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    assert "remove_outliers" in tools
-    assert tools["remove_outliers"].inputSchema is not None
+    assert "sleap_roots_remove_outliers" in tools
+    assert tools["sleap_roots_remove_outliers"].inputSchema is not None
 
 
 # ── 3.2 schema round-trip ───────────────────────────────────────────────────

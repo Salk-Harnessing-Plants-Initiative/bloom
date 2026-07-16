@@ -52,7 +52,6 @@ from sleap_roots_analyze import (
 )
 
 from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
-from bloom_mcp.contract import register as _contract_register
 from bloom_mcp.data_access import (
     CleanedVersionRequiredError,
     ExperimentFrame,
@@ -137,11 +136,13 @@ class ClusteringParams(BaseModel):
         "(default 'euclidean'). Note: 'ward' linkage only works with 'euclidean'. "
         "Do not set for kmeans/gmm.",
     )
-    optimization_method: Literal["silhouette", "calinski", "davies_bouldin"] | None = Field(
-        default=None,
-        description="hierarchical only: metric used for automatic cluster-count selection "
-        "when n_clusters is omitted. One of 'silhouette' (default), 'calinski', or "
-        "'davies_bouldin'. Do not set for kmeans/gmm.",
+    optimization_method: Literal["silhouette", "calinski", "davies_bouldin"] | None = (
+        Field(
+            default=None,
+            description="hierarchical only: metric used for automatic cluster-count selection "
+            "when n_clusters is omitted. One of 'silhouette' (default), 'calinski', or "
+            "'davies_bouldin'. Do not set for kmeans/gmm.",
+        )
     )
     user_label: str | None = Field(
         default=None,
@@ -169,15 +170,15 @@ class ClusteringResult(BaseModel):
     calinski_harabasz_score: float
     feature_names: list[str]
     # method-specific (mutually exclusive by method)
-    inertia: float | None = None                  # kmeans only
-    bic: float | None = None                      # gmm only
-    aic: float | None = None                      # gmm only
-    converged: bool | None = None                 # gmm only
-    covariance_type: str | None = None            # gmm only
-    linkage_method: str | None = None             # hierarchical only
-    distance_metric: str | None = None            # hierarchical only
-    cophenetic_correlation: float | None = None   # hierarchical only
-    cut_height: float | None = None               # hierarchical only
+    inertia: float | None = None  # kmeans only
+    bic: float | None = None  # gmm only
+    aic: float | None = None  # gmm only
+    converged: bool | None = None  # gmm only
+    covariance_type: str | None = None  # gmm only
+    linkage_method: str | None = None  # hierarchical only
+    distance_metric: str | None = None  # hierarchical only
+    cophenetic_correlation: float | None = None  # hierarchical only
+    cut_height: float | None = None  # hierarchical only
     warnings: list[str] = Field(
         default_factory=list,
         description="Advisory messages (empty on a normal run). Non-empty when the tool surfaces "
@@ -218,7 +219,9 @@ def _reject_wrong_method_controls(params: ClusteringParams) -> None:
     if params.method == "kmeans":
         wrong = [n for n, v in (*_gmm_only, *_hierarchical_only) if v is not None]
     elif params.method == "gmm":
-        wrong = [n for n, v in (*_kmeans_gmm_shared, *_hierarchical_only) if v is not None]
+        wrong = [
+            n for n, v in (*_kmeans_gmm_shared, *_hierarchical_only) if v is not None
+        ]
     else:  # hierarchical
         wrong = [n for n, v in _gmm_only if v is not None]
     if wrong:
@@ -517,8 +520,3 @@ def clustering(
         warnings=tool_warnings,
         **method_scalars,
     )
-
-
-def register(mcp):
-    """Register clustering with the MCP server."""
-    return _contract_register(mcp, clustering)

@@ -26,8 +26,8 @@ from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools import pca_analysis_tool
-from bloom_mcp.tools.pca_analysis_tool import (
+from bloom_mcp.sections.sleap_roots.analysis import pca_analysis as pca_analysis_tool
+from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import (
     PCAAnalysisParams,
     PCAAnalysisResult,
     pca_analysis,
@@ -107,8 +107,8 @@ def test_pca_analysis_in_tools_list():
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    assert "pca_analysis" in tools
-    assert tools["pca_analysis"].inputSchema is not None
+    assert "sleap_roots_pca_analysis" in tools
+    assert tools["sleap_roots_pca_analysis"].inputSchema is not None
 
 
 # ── 3.2 delegation pinning (spy) ────────────────────────────────────────────

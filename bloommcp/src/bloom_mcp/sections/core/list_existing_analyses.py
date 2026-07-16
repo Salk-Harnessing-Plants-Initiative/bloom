@@ -1,4 +1,8 @@
-"""MCP tool: list every prior analysis on file for an experiment."""
+"""list_existing_analyses — discovery tool: list every prior analysis on file.
+
+Not a ``sleap-roots-analyze`` wrapper — reads through the injected
+``ResultStore`` port. Always-included in the agent's tool set.
+"""
 
 import dataclasses
 import json
@@ -6,6 +10,9 @@ import time
 
 from bloom_mcp.tools import _ports
 
+# Kept intact across tool retirements (devendor-bloommcp-analysis) so historical
+# runs persisted under a retired tool class (stats, dimred, outlier, correlation)
+# still read back via list_existing_analyses. Do NOT prune retired classes.
 TOOL_CLASSES = (
     "qc",
     "stats",
@@ -79,8 +86,3 @@ def list_existing_analyses(experiment_filename: str) -> str:
     response_str = json.dumps(response, indent=2)
     _RESPONSE_CACHE[experiment_filename] = (_now(), response_str)
     return response_str
-
-
-def register(mcp):
-    """Register storage introspection tools with the MCP server."""
-    mcp.tool()(list_existing_analyses)

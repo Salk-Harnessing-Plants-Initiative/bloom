@@ -57,7 +57,6 @@ from pydantic import BaseModel, Field
 from sleap_roots_analyze import clean_traits_for_analysis
 
 from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
-from bloom_mcp.contract import register as _contract_register
 from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.data_access.columns import resolve_columns, run_input_validation
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
@@ -557,8 +556,3 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         outputs=dict(stored.output_keys),
         next_step=next_step,
     )
-
-
-def register(mcp):
-    """Register qc_clean with the MCP server."""
-    return _contract_register(mcp, qc_clean)

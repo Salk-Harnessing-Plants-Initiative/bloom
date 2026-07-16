@@ -27,8 +27,8 @@ from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools import clustering_tool
-from bloom_mcp.tools.clustering_tool import (
+from bloom_mcp.sections.sleap_roots.analysis import clustering as clustering_tool
+from bloom_mcp.sections.sleap_roots.analysis.clustering import (
     ClusteringParams,
     ClusteringResult,
     clustering,
@@ -173,8 +173,8 @@ def test_clustering_in_tools_list():
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    assert "clustering" in tools
-    assert tools["clustering"].inputSchema is not None
+    assert "sleap_roots_clustering" in tools
+    assert tools["sleap_roots_clustering"].inputSchema is not None
 
 
 # ── 3.2 polymorphic delegation pinning + seed-reaches-fit ───────────────────
@@ -791,7 +791,7 @@ def test_hierarchical_in_tools_list_enum(injected_ports):
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    schema = tools["clustering"].inputSchema
+    schema = tools["sleap_roots_clustering"].inputSchema
     method_enum = schema["properties"]["params"]["properties"]["method"]["enum"]
     assert "hierarchical" in method_enum
 

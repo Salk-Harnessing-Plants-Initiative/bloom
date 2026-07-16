@@ -7,12 +7,14 @@ The storage layer lives under
 [bloommcp/src/bloom_mcp/storage/](../../bloommcp/src/bloom_mcp/storage/). Everything below is a view
 of those files plus the two kinds of callers that actually use them: granular tools writing
 through the `ResultStore` port (e.g.
-[`qc_clean_tool.py`](../../bloommcp/src/bloom_mcp/tools/qc_clean_tool.py), via
+[`qc_clean.py`](../../bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/qc_clean.py), via
 [`bloom_mcp/tools/_ports.py`](../../bloommcp/src/bloom_mcp/tools/_ports.py)) and
-[`list_existing_analyses`](../../bloommcp/src/bloom_mcp/tools/storage_tools.py) (read
-side). (The Phase-1 `run_*_workflow` tools this doc originally illustrated with —
+[`list_existing_analyses`](../../bloommcp/src/bloom_mcp/sections/core/list_existing_analyses.py)
+(read side). (The Phase-1 `run_*_workflow` tools this doc originally illustrated with —
 `tools/workflows/_helpers.py`'s `build_writer` — were retired by
-`devendor-bloommcp-analysis`; the granular tools below are their replacement.)
+`devendor-bloommcp-analysis`, which also moved the granular tools below from
+`tools/*_tool.py` into `sections/`; the granular tools are the workflow tools'
+replacement.)
 
 ## Why this exists
 

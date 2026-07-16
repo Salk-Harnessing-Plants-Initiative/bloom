@@ -46,7 +46,6 @@ from pydantic import BaseModel, Field
 from sleap_roots_analyze import PCAResult, perform_pca_analysis
 
 from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
-from bloom_mcp.contract import register as _contract_register
 from bloom_mcp.data_access import CleanedVersionRequiredError, ExperimentReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import _build_output_frame, snapshot_frame
@@ -373,8 +372,3 @@ def pca_analysis(
         manifest_path=stored.manifest_path,
         outputs=dict(stored.output_keys),
     )
-
-
-def register(mcp):
-    """Register pca_analysis with the MCP server."""
-    return _contract_register(mcp, pca_analysis)

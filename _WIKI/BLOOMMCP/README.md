@@ -38,20 +38,26 @@ bloommcp/
 │   ├── experiment_utils.py
 │   └── supabase_client.py
 ├── storage/
-└── tools/
-    ├── qc_tools.py             # list_available_experiments, load_experiment_data
-    ├── viz_tools.py            # 5 plotting tools (delegate to sleap_roots_analyze)
-    ├── storage_tools.py        # list_existing_analyses (always-on)
-    ├── qc_clean_tool.py, qc_inspect_tool.py, remove_outliers_tool.py,
-    │   pca_analysis_tool.py, clustering_tool.py   # granular consumers
-    └── (correlation_tools.py and workflows/ — the Phase-1 run_*_workflow tools
-        and the 8 correlation tools — were retired/dropped by
-        devendor-bloommcp-analysis; see that OpenSpec change for why)
+├── tools/                      # shared helpers only — every tool lives in sections/
+│   ├── _ports.py                # composition seam: injected reader/store
+│   ├── _qc_shared.py             # canonical QC thresholds shared by qc_clean/qc_inspect
+│   └── _consumer_utils.py        # RunLinks / output-frame helpers shared by consumers
+└── sections/                   # every MCP tool lives here (devendor-bloommcp-analysis P2)
+    ├── core/                    # list_available_experiments, load_experiment_data,
+    │                            # list_existing_analyses (not sleap-roots-analyze wrappers)
+    ├── sleap_roots/             # umbrella for the sleap-roots pipeline family
+    │   ├── analysis/             # pca_analysis, qc_clean, qc_inspect, remove_outliers,
+    │   │                         # clustering, + 5 plot_*.py — one file per tool,
+    │   │                         # each delegating to sleap_roots_analyze
+    │   └── extraction/           # reserved for future sleap-roots tools (empty)
+    └── phenotyping_segmentation/ # Lin's segmentation tools
 ```
 
-_(This diagram predates the `source/` → `src/bloom_mcp/` package move and is stale in
-other respects too — the `tools/` listing above is corrected for this change's scope
-only; a fuller refresh is tracked separately.)_
+(The Phase-1 `run_*_workflow` tools, `tools/correlation_tools.py` + the 8 correlation
+tools, and the 9 vendored analysis/plotting modules under `source/`/`src/bloom_mcp/`
+were retired/dropped by `devendor-bloommcp-analysis`; see that OpenSpec change for why.
+This diagram predates the `source/` → `src/bloom_mcp/` package move in other respects
+too — a fuller refresh of the top-level layout is tracked separately.)
 
 ## Storage
 
@@ -153,11 +159,12 @@ role / RLS picture.
 
 **Every persistence-writing tool writes through the `ResultStore` port**
 (`bloom_mcp.tools._ports.store()`), never `AnalysisWriter` or `supabase` directly —
-see [`qc_clean_tool.py`](../../bloommcp/src/bloom_mcp/tools/qc_clean_tool.py) for a
-worked example (`store().create_run()` → write outputs into the staging dir →
+see [`qc_clean.py`](../../bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/qc_clean.py)
+for a worked example (`store().create_run()` → write outputs into the staging dir →
 `store().commit()`). (The Phase-1 workflow tools used to write through
 `AnalysisWriter` via a `build_writer` factory in `tools/workflows/_helpers.py`;
-both are gone — retired by `devendor-bloommcp-analysis`.)
+both are gone — retired by `devendor-bloommcp-analysis`, which also moved this
+file from `tools/qc_clean_tool.py` to its current path.)
 
 The port's real (`SupabaseResultStore`) implementation gives the same versioned write
 contract the diagram below shows: each `(experiment, tool_class)` pair gets one folder in the `bloommcp-data` bucket containing a `manifest.json` that catalogs every run for that

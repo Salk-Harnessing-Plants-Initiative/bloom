@@ -11,9 +11,13 @@ MCP surface over it, not a second home for analysis code.
 Installable `uv` package under `src/bloom_mcp/`:
 
 - `bloom_mcp.server` — the FastMCP app and `/health` endpoint (`main()` entry point)
-- `bloom_mcp.tools` — granular MCP tool modules (each delegates to `sleap_roots_analyze`)
-- `bloom_mcp.sections` — per-contributor/package section sub-servers (see
-  `docs/2026-06-29-bloom-mcp-contributor-namespacing.md`)
+- `bloom_mcp.sections` — every MCP tool lives here, one section sub-server per
+  contributor/package, one file per tool (see
+  `docs/2026-06-29-bloom-mcp-contributor-namespacing.md`). `sections.sleap_roots` wraps
+  `sleap-roots-analyze` (PCA, QC, clustering, outlier removal, plotting);
+  `sections.core` holds the cross-cutting discovery tools.
+- `bloom_mcp.tools` — shared helpers only (`_ports`, `_qc_shared`, `_consumer_utils`),
+  not tools themselves
 - `bloom_mcp.storage` — versioned, append-only analysis-artifact storage
 - `bloom_mcp.supabase_client` — single point of Supabase access
 

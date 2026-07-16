@@ -1,11 +1,10 @@
 """C3.2 behavioral coverage for the surviving core discovery tools.
 
-`list_available_experiments`, `load_experiment_data` (qc_tools.py) and
-`list_existing_analyses` (storage_tools.py) are the three tools the
+`list_available_experiments`, `load_experiment_data` and `list_existing_analyses`
+(now in `bloom_mcp.sections.core`, one file per tool — moved by the Phase-2
+sections migration, devendor-bloommcp-analysis) are the three tools the
 `bloommcp-tool-sections` spec's "Core Section for Cross-Cutting Discovery Tools"
-requirement carries into the `core` section unchanged — none is a
-`sleap-roots-analyze` wrapper, so none is touched by the de-vendor repoint. This
-file establishes real behavioral coverage before the Phase-2 move.
+requirement carries — none is a `sleap-roots-analyze` wrapper.
 """
 
 from __future__ import annotations
@@ -17,7 +16,12 @@ import pytest
 
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
-from bloom_mcp.tools import _ports, qc_tools, storage_tools
+from bloom_mcp.sections.core import (
+    list_available_experiments as list_available_experiments_mod,
+    list_existing_analyses as list_existing_analyses_mod,
+    load_experiment_data as load_experiment_data_mod,
+)
+from bloom_mcp.tools import _ports
 
 _EXPERIMENT = "turface_19.csv"
 
@@ -40,16 +44,16 @@ def injected_ports():
     reader.add_experiment(_EXPERIMENT, _raw_df())
     store = FakeResultStore()
     _ports.configure(reader=reader, store=store)
-    storage_tools._RESPONSE_CACHE.clear()
+    list_existing_analyses_mod._RESPONSE_CACHE.clear()
     try:
         yield reader, store
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
-        storage_tools._RESPONSE_CACHE.clear()
+        list_existing_analyses_mod._RESPONSE_CACHE.clear()
 
 
 def test_list_available_experiments_reports_the_seeded_experiment(injected_ports):
-    result = qc_tools.list_available_experiments()
+    result = list_available_experiments_mod.list_available_experiments()
 
     assert _EXPERIMENT in result
     assert "Samples: 6" in result
@@ -62,7 +66,10 @@ def test_list_available_experiments_empty_reader_says_none_available():
     store = FakeResultStore()
     _ports.configure(reader=reader, store=store)
     try:
-        assert qc_tools.list_available_experiments() == "No experiments available"
+        assert (
+            list_available_experiments_mod.list_available_experiments()
+            == "No experiments available"
+        )
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
@@ -70,7 +77,7 @@ def test_list_available_experiments_empty_reader_says_none_available():
 def test_load_experiment_data_summarizes_samples_traits_and_missingness(
     injected_ports,
 ):
-    result = qc_tools.load_experiment_data(_EXPERIMENT)
+    result = load_experiment_data_mod.load_experiment_data(_EXPERIMENT)
 
     assert "Samples: 6" in result
     assert "Genotypes: 2" in result
@@ -82,14 +89,14 @@ def test_load_experiment_data_summarizes_samples_traits_and_missingness(
 
 
 def test_load_experiment_data_unknown_file_surfaces_reader_error(injected_ports):
-    result = qc_tools.load_experiment_data("does_not_exist.csv")
+    result = load_experiment_data_mod.load_experiment_data("does_not_exist.csv")
     assert "does_not_exist.csv" in result
 
 
 def test_list_existing_analyses_reports_no_prior_runs_for_a_known_experiment(
     injected_ports,
 ):
-    result = storage_tools.list_existing_analyses(_EXPERIMENT)
+    result = list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
     payload = json.loads(result)
 
     assert payload["experiment_filename"] == _EXPERIMENT
@@ -98,7 +105,7 @@ def test_list_existing_analyses_reports_no_prior_runs_for_a_known_experiment(
 
 
 def test_list_existing_analyses_unknown_experiment_is_reported(injected_ports):
-    result = storage_tools.list_existing_analyses("not_seeded.csv")
+    result = list_existing_analyses_mod.list_existing_analyses("not_seeded.csv")
     payload = json.loads(result)
 
     assert "error" in payload
@@ -110,7 +117,7 @@ def test_list_existing_analyses_response_is_cached_within_ttl(
 ):
     _reader, store = injected_ports
 
-    first = storage_tools.list_existing_analyses(_EXPERIMENT)
+    first = list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
 
     # Mutate the store directly (bypassing the tool) — a cached response should
     # still be returned without re-querying the store within the TTL window.
@@ -121,5 +128,5 @@ def test_list_existing_analyses_response_is_cached_within_ttl(
             AssertionError("store queried despite a fresh cache entry")
         ),
     )
-    second = storage_tools.list_existing_analyses(_EXPERIMENT)
+    second = list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
     assert second == first

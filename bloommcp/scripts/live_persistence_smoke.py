@@ -629,7 +629,10 @@ def main() -> int:
     # require_clean read resolves the committed *cleaned* artifact rather than the
     # raw input — the qc_clean -> pca_analysis(require_clean=True) composition.
     from bloom_mcp.contract import BloomMCPError  # noqa: E402
-    from bloom_mcp.tools.qc_clean_tool import QCCleanParams, qc_clean  # noqa: E402
+    from bloom_mcp.sections.sleap_roots.analysis.qc_clean import (  # noqa: E402
+        QCCleanParams,
+        qc_clean,
+    )
 
     print(
         f">>> running qc_clean on {QC_EXPERIMENT} "
@@ -689,7 +692,7 @@ def main() -> int:
         # through the SAME real ports. remove_outliers persists under the same `qc`
         # class, so its trimmed `_cleaned.csv` becomes the newest cleaned version a
         # require_clean read resolves — proving qc_clean -> remove_outliers -> pca.
-        from bloom_mcp.tools.remove_outliers_tool import (  # noqa: E402
+        from bloom_mcp.sections.sleap_roots.analysis.remove_outliers import (  # noqa: E402
             RemoveOutliersParams,
             remove_outliers,
         )
@@ -813,7 +816,7 @@ def main() -> int:
         # persists a versioned `clustering` run under its own class — the
         # qc_clean -> ... -> clustering(require_clean=True) composition, in parallel
         # with the pca_analysis consumer.
-        from bloom_mcp.tools.clustering_tool import (  # noqa: E402
+        from bloom_mcp.sections.sleap_roots.analysis.clustering import (  # noqa: E402
             ClusteringParams,
             clustering,
         )

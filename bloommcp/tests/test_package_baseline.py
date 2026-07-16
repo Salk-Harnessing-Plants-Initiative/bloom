@@ -239,7 +239,7 @@ def test_fastmcp_client_lists_registered_tools():
 
     tools = asyncio.run(_list())
     names = {t.name for t in tools}
-    assert "list_available_experiments" in names
+    assert "core_list_available_experiments" in names
     assert len(names) >= 5
 
 

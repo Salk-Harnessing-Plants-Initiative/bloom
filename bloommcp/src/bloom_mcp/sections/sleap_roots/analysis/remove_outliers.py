@@ -64,7 +64,6 @@ from sleap_roots_analyze import plot_outlier_analysis, remove_outlier_samples
 from sleap_roots_analyze.outlier_removal import OutlierRemovalError
 
 from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
-from bloom_mcp.contract import register as _contract_register
 from bloom_mcp.data_access import (
     CleanedVersionRequiredError,
     ExperimentFrame,
@@ -551,8 +550,3 @@ def _close_figure(fig: "Figure") -> None:
         plt.close(fig)
     except Exception:  # pragma: no cover - best-effort cleanup
         pass
-
-
-def register(mcp):
-    """Register remove_outliers with the MCP server."""
-    return _contract_register(mcp, remove_outliers)

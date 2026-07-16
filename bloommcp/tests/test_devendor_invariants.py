@@ -202,10 +202,11 @@ def test_inspect_data_quality_absent():
     """
     import asyncio
 
-    import bloom_mcp.tools.qc_tools as qc_tools
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("bloom_mcp.tools.qc_tools")
 
-    assert not hasattr(qc_tools, "inspect_data_quality")
-    assert "inspect_data_quality" not in asyncio.run(_live_tool_names())
+    live = asyncio.run(_live_tool_names())
+    assert not any(name.endswith("inspect_data_quality") for name in live)
 
 
 _RETIRED_WORKFLOW_TOOLS = (
@@ -364,38 +365,60 @@ def test_tool_name_lists_match_live_registry():
 
     live = asyncio.run(_live_tool_names())
     for name in sorted(always_include | hidden_tools):
-        assert name in live, f"{name!r} is not a live tool — hand-list has drifted"
+        # Prefix-aware, matching the production matching logic in chat.py /
+        # mcp-chat-client.tsx: an exact name, or "<section>_<name>" post-namespacing.
+        matched = name in live or any(t.endswith(f"_{name}") for t in live)
+        assert matched, f"{name!r} is not a live tool — hand-list has drifted"
 
 
 def test_expected_tool_surface():
-    """The exact (still un-namespaced) Phase-1 tool-name set — enumerated, not a
-    placeholder. Guards against silently losing or gaining a tool. P2.5 re-asserts
-    the namespaced set after the Phase-2 sections migration.
+    """The exact **namespaced** tool-name set for the sleap_roots and core
+    sections — enumerated, not a placeholder. Guards against silently losing or
+    gaining a tool across the Phase-2 sections migration (P2.5): the
+    un-namespaced Phase-1 set and this namespaced set are the same tools with
+    `sleap_roots_`/`core_` prefixes, dropping and adding nothing.
 
-    (bloommcp-tool-sections + bloommcp-packaging: the full Phase-1 surface.)
+    (bloommcp-tool-sections + bloommcp-packaging: the full post-migration surface.)
     """
     import asyncio
 
     expected = {
-        # sleap_roots-analyze granular consumers
+        # sleap_roots: the 5 sleap_roots-analyze granular consumers
+        "sleap_roots_pca_analysis",
+        "sleap_roots_qc_clean",
+        "sleap_roots_qc_inspect",
+        "sleap_roots_remove_outliers",
+        "sleap_roots_clustering",
+        # sleap_roots: the 5 surviving plots
+        "sleap_roots_plot_trait_histograms",
+        "sleap_roots_plot_trait_boxplots",
+        "sleap_roots_plot_correlation_matrix",
+        "sleap_roots_plot_heritability_bar",
+        "sleap_roots_plot_variance_decomposition",
+        # core: the 3 discovery tools
+        "core_list_available_experiments",
+        "core_load_experiment_data",
+        "core_list_existing_analyses",
+    }
+    not_expected = {
+        # Un-namespaced Phase-1 names must NOT survive the P2.2/P2.3 move —
+        # only the namespaced set above should be live.
         "pca_analysis",
         "qc_clean",
         "qc_inspect",
         "remove_outliers",
         "clustering",
-        # surviving plots
         "plot_trait_histograms",
         "plot_trait_boxplots",
         "plot_correlation_matrix",
         "plot_heritability_bar",
         "plot_variance_decomposition",
-        # core discovery
         "list_available_experiments",
         "load_experiment_data",
         "list_existing_analyses",
-    }
-    not_expected = {
+        # Retired / dropped tools — never namespaced, just gone.
         "inspect_data_quality",
+        "core_inspect_data_quality",
         "run_qc_workflow",
         "run_outlier_workflow",
         "run_descriptive_stats_workflow",
@@ -411,11 +434,13 @@ def test_expected_tool_surface():
         "compare_trait_across_experiments",
         "plot_dendrogram",
         "plot_outlier_comparison",
+        "sleap_roots_plot_dendrogram",
+        "sleap_roots_plot_outlier_comparison",
     }
     live = asyncio.run(_live_tool_names())
     # Sections (e.g. phenotyping_segmentation) mount alongside the combined surface
-    # too, but expected/not_expected only enumerates the (still un-namespaced)
-    # Phase-1 tools/tools_ registrations — restrict the comparison to those names.
+    # too, but expected/not_expected only enumerates the sleap_roots/core
+    # registrations — restrict the comparison to those names.
     relevant = expected | not_expected
     assert live & relevant == expected, (
         f"unexpected tool surface — missing: {expected - live}, "

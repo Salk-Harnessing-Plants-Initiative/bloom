@@ -25,8 +25,8 @@ from bloom_mcp.data_access import (
 )
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools import qc_inspect_tool
-from bloom_mcp.tools.qc_inspect_tool import (
+from bloom_mcp.sections.sleap_roots.analysis import qc_inspect as qc_inspect_tool
+from bloom_mcp.sections.sleap_roots.analysis.qc_inspect import (
     QCInspectParams,
     QCInspectResult,
     qc_inspect,
@@ -195,9 +195,9 @@ def test_qc_inspect_appears_in_tools_list_and_siblings_preserved():
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    assert "qc_inspect" in tools
-    assert tools["qc_inspect"].inputSchema is not None
-    assert "qc_clean" in tools  # additive — sibling not removed
+    assert "sleap_roots_qc_inspect" in tools
+    assert tools["sleap_roots_qc_inspect"].inputSchema is not None
+    assert "sleap_roots_qc_clean" in tools  # additive — sibling not removed
 
 
 # ── 3.2 schema round-trip ───────────────────────────────────────────────────
@@ -223,7 +223,7 @@ def test_default_thresholds_mirror_qc_clean_canonical():
     overlays/recommendation reflect the clean a default qc_clean would apply. Compared
     field-by-field against QCCleanParams (not just literals) so a future qc_clean bump that
     isn't mirrored here fails — the thresholds are single-sourced in _qc_shared."""
-    from bloom_mcp.tools.qc_clean_tool import QCCleanParams
+    from bloom_mcp.sections.sleap_roots.analysis.qc_clean import QCCleanParams
 
     qi = QCInspectParams(experiment="x.csv")
     qc = QCCleanParams(experiment="x.csv")

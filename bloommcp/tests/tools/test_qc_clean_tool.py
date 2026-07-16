@@ -20,8 +20,12 @@ from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools import qc_clean_tool
-from bloom_mcp.tools.qc_clean_tool import QCCleanParams, QCCleanResult, qc_clean
+from bloom_mcp.sections.sleap_roots.analysis import qc_clean as qc_clean_tool
+from bloom_mcp.sections.sleap_roots.analysis.qc_clean import (
+    QCCleanParams,
+    QCCleanResult,
+    qc_clean,
+)
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _RAW = _FIXTURES / "turface_19_raw_data.csv"
@@ -104,8 +108,8 @@ def test_qc_clean_appears_in_tools_list():
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    assert "qc_clean" in tools
-    assert tools["qc_clean"].inputSchema is not None
+    assert "sleap_roots_qc_clean" in tools
+    assert tools["sleap_roots_qc_clean"].inputSchema is not None
 
 
 # ── 3.2 schema round-trip ───────────────────────────────────────────────────

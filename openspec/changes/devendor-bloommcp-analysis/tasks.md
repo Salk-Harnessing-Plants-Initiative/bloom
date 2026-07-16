@@ -265,7 +265,7 @@ before its vendored copy is removed (C2/C10).
 
 ## Phase 2 — Converge tool organization on `sections/` (code-only PR, same change)
 
-- [ ] P2.0 **Land the #412 fix in `pca_analysis_tool.py` before it moves** (see `tasks.md` 0.3 /
+- [x] P2.0 **Land the #412 fix in `pca_analysis_tool.py` before it moves** (see `tasks.md` 0.3 /
       `design.md` D8 — there is no pending #412 PR to land on `staging`; this change implements the
       fix directly). Test first: extend `test_pca_analysis_tool.py` with a case where a certified
       trait selection includes a constant (zero-variance) column and assert the result carries a
@@ -276,16 +276,16 @@ before its vendored copy is removed (C2/C10).
       `bloommcp-tool-sections/spec.md`'s "pca_analysis reports dropped constant traits across the
       migration" scenario, asserting the field + no-raise behavior — written now, so P2.2's move is
       proven not to have disturbed it.
-- [ ] P2.1 (test first) Extend `test_sections_scaffold.py`: assert the `sleap_roots` and `core`
+- [x] P2.1 (test first) Extend `test_sections_scaffold.py`: assert the `sleap_roots` and `core`
       sections mount and expose the expected namespaced tools.
-- [ ] P2.2 Create `sections/sleap_roots/` (umbrella): `analysis/` with one file per tool
+- [x] P2.2 Create `sections/sleap_roots/` (umbrella): `analysis/` with one file per tool
       (`pca_analysis`, `qc_clean`, `qc_inspect`, `remove_outliers`, `clustering` — the last landed on
       `staging` via #309/#422 since this proposal was first drafted; it already delegates to
       `sleap_roots_analyze` with no vendored import, so only the move applies — + the 5 split
       plotting tools); empty reserved `extraction/`. Move the tool defs (including the already-fixed
       `pca_analysis.py` from P2.0); delete the old `tools/*_tool.py` + `tools/viz_tools.py`.
       Re-point the granular tool tests to the new import locations (a move, not a behavior change).
-- [ ] P2.3 Create `sections/core/` for `list_available_experiments`, `load_experiment_data`,
+- [x] P2.3 Create `sections/core/` for `list_available_experiments`, `load_experiment_data`,
       `list_existing_analyses` (move the thin shim defs; the real logic stays in `experiment_utils` /
       `_ports`). **Delete `tools/qc_tools.py` and `tools/storage_tools.py` entirely** — with
       `inspect_data_quality` already dropped (C5.3) and the two discovery tools relocated here,
@@ -295,9 +295,9 @@ before its vendored copy is removed (C2/C10).
       trim `CONTEXT_MCP` (`langchain/tools/context_tools.py`) to routing guidance only — dropping the
       retired `run_*_workflow` / correlation-tool lines — per `bloommcp-tool-sections/spec.md`'s "web
       client's hidden-tools list and routing prompt" scenario. Confirm C11.5's drift guard stays green.
-- [ ] P2.4 Update `SECTIONS` wiring + remove the now-empty per-module `register()` calls from
+- [x] P2.4 Update `SECTIONS` wiring + remove the now-empty per-module `register()` calls from
       `server.py`; rewrite the server docstring for the sections surface.
-- [ ] P2.5 Verify `tools/list` namespaced names (`sleap_roots_pca_analysis`, `sleap_roots_qc_clean`,
+- [x] P2.5 Verify `tools/list` namespaced names (`sleap_roots_pca_analysis`, `sleap_roots_qc_clean`,
       `sleap_roots_qc_inspect`, `sleap_roots_remove_outliers`, `sleap_roots_clustering`, the 5
       namespaced plot tools, `core_*`); update any doc listing tool names.
 
