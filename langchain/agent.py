@@ -336,13 +336,16 @@ def create_agent(
             - "scrna": Only scRNA-seq tools
             - "cyl": Only cylinder phenotyping tools
             - "generic": Only generic database tools
+            - "mcp": MCP tools only (no native tools)
         mcp_tools: Tools loaded from MCP servers (bloommcp, external MCP servers)
         checkpointer: AsyncPostgresSaver instance for persistent conversation memory
     """
     llm = get_llm(provider=provider, model=model)
 
-    # Select tools based on tool_set (context_tools always included)
-    if tool_set == "scrna":
+    # Select tools based on tool_set (context_tools always included, except "mcp")
+    if tool_set == "mcp":
+        tools = []  # MCP-only: expose no native tools, just the MCP tools appended below
+    elif tool_set == "scrna":
         tools = context_tools + generic_tools + scrna_tools
     elif tool_set == "cyl":
         tools = context_tools + generic_tools + cyl_tools

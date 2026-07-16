@@ -85,7 +85,8 @@ jobs:
         run: uvx ruff@0.9.9 check .
 
       - name: Run tests
-        run: uv run --extra test pytest -q
+        # Exclude the env-gated integration test (needs live staging creds).
+        run: uv run --extra test pytest -m "not integration" -q
 
   build-and-publish:
     name: Build and publish

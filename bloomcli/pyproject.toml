@@ -22,6 +22,11 @@ dependencies = [
     # Security floor for the supabase auth/JWT transitive dep, per repo convention
     # (open floor past the upstream CVE fix; see bloommcp/pyproject.toml).
     "cryptography>=48.0.1",
+    # ResultEnvelope model for `cyl ingest` fail-fast validation. a3 floor matches
+    # the emitters' contract_version (stricter than bloommcp's a1 on purpose); no
+    # [pandas] extra — only the pydantic models are needed (pydantic already present
+    # transitively via supabase->postgrest).
+    "sleap-roots-contracts>=0.1.0a4",
 ]
 
 [project.scripts]
@@ -46,6 +51,9 @@ module-root = "src"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "integration: requires live staging credentials (env-gated; self-skips when absent)",
+]
 
 # Lint config lives here (matching bloommcp); CI runs ruff via `uvx ruff`
 # pinned to the repo's .pre-commit-config.yaml version, so ruff is not a

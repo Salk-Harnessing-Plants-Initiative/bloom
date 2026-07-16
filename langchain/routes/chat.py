@@ -23,7 +23,7 @@ ALWAYS_INCLUDE_MCP_TOOLS = {
     "list_existing_analyses",
 }
 
-VALID_TOOL_SETS = ["all", "scrna", "cyl", "generic"]
+VALID_TOOL_SETS = ["all", "scrna", "cyl", "generic", "mcp"]
 
 
 # ─── Shared helpers ───────────────────────────────────────────────────────────
@@ -49,6 +49,9 @@ def _resolve_agent(body: ChatRequest, checkpointer) -> tuple[object, str, str]:
     if body.mcp_tool_names:
         selected = set(body.mcp_tool_names) | ALWAYS_INCLUDE_MCP_TOOLS
         filtered = [t for t in deps.mcp_tools if t.name in selected]
+    elif tool_set == "mcp":
+        # MCP-only mode: expose every connected MCP tool (no foundational filter).
+        filtered = list(deps.mcp_tools)
     else:
         filtered = [t for t in deps.mcp_tools if t.name in ALWAYS_INCLUDE_MCP_TOOLS]
 

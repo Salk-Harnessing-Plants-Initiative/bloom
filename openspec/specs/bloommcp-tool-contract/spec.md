@@ -1,7 +1,10 @@
 # bloommcp-tool-contract Specification
 
 ## Purpose
-TBD - created by archiving change add-bloommcp-contract-layer. Update Purpose after archive.
+Define the contract layer for bloom-mcp tools: the `@as_mcp_tool` decorator
+(validated Pydantic I/O, structured `BloomMCPError`, single stamped `Provenance`),
+the `RunLinks` result base (shared run-link fields for consumer tools), and the
+`Provenance` model unified with the manifest `VersionEntry`.
 ## Requirements
 ### Requirement: Uniform Tool Contract Decorator
 
