@@ -24,7 +24,7 @@ help:
 	@echo "  make new-migration name=xxx - Create a new migration file"
 	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
 	@echo "  make test-integration - Run integration tests against the local dev stack"
-	@echo "  make bloommcp-smoke   - Live persistence smoke: drive a workflow through real Supabase storage"
+	@echo "  make bloommcp-smoke   - Live persistence smoke: drive granular tools through real Supabase storage"
 	@echo "  make check            - Verify local stack: services, roles, schemas, migrations"
 	@echo "  make verify-dev       - Clean reset -> up -> migrate -> check (destructive)"
 	@echo "  make load-test-data   - Load CSV test data into dev database"

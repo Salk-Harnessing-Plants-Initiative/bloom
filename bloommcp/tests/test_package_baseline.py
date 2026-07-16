@@ -95,10 +95,12 @@ def _shipped_top_level_imports() -> set[str]:
 
 
 def test_pruned_analysis_deps_not_imported():
-    """statsmodels + umap-learn were delegated to sleap-roots-analyze and pruned (#315),
-    so no shipped module may import them — else the prune regressed."""
+    """statsmodels + umap-learn were delegated to sleap-roots-analyze and pruned (#315);
+    sklearn + scipy + seaborn were pruned by devendor-bloommcp-analysis once the
+    vendored analysis modules that were their only importers were deleted. No shipped
+    module may import any of them — else a prune regressed."""
     imported = _shipped_top_level_imports()
-    leaked = {"statsmodels", "umap"} & imported
+    leaked = {"statsmodels", "umap", "sklearn", "scipy", "seaborn"} & imported
     assert not leaked, (
         f"pruned deps re-imported by shipped code: {sorted(leaked)} — delegate to "
         "sleap_roots_analyze instead, or restore the dependency in pyproject.toml"

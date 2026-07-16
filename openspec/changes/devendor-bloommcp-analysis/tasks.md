@@ -18,7 +18,7 @@ before its vendored copy is removed (C2/C10).
       section now + a separate `sleap_roots` extraction section later — affects **Phase 2 only**),
       (c) any off-repo caller (Claude Desktop config, demos) relying on a `run_*_workflow` /
       correlation tool. Record his answer in the PR description. Gates PR **merge**, not commits.
-- [ ] 0.2 Create the missing sections design doc `bloommcp/docs/2026-06-29-bloom-mcp-contributor-namespacing.md`
+- [x] 0.2 Create the missing sections design doc `bloommcp/docs/2026-06-29-bloom-mcp-contributor-namespacing.md`
       (referenced by the proposal, `sections/__init__.py`, and `_WIKI/…/adding-a-section-tool.md`
       but absent) — document the sections layout + the `sleap_roots` umbrella decision — or repoint
       all three references to the correct existing doc. Resolve before the proposal cites it as authority.
@@ -34,15 +34,15 @@ before its vendored copy is removed (C2/C10).
 
 ### C2 — Lock the parity + no-vendored-import invariants (xfail-first, never bare-red)
 
-- [ ] C2.1 Add `test_no_shipped_module_imports_vendored_analysis` — AST-scan every
+- [x] C2.1 Add `test_no_shipped_module_imports_vendored_analysis` — AST-scan every
       `src/bloom_mcp/**` module; assert no import's first dotted segment is a deleted vendored
       module (`pca`, `clustering`, `cluster_visualization`, `outlier_detection`,
       `outlier_visualization`, `visualization`, `data_cleanup`, `data_utils`,
       `cross_experiment_correlations`). Mark `@pytest.mark.xfail(strict=True)` now; C10 flips it
       to a plain assert. (Delta: *No shipped module imports a vendored analysis module*.)
-- [ ] C2.2 Add `test_vendored_analysis_modules_absent` (file-absence). `xfail(strict=True)` now,
+- [x] C2.2 Add `test_vendored_analysis_modules_absent` (file-absence). `xfail(strict=True)` now,
       flipped in C10. (Delta: *Deleted vendored files are gone from the tree*.)
-- [ ] C2.3 Add `test_deleted_symbols_exist_upstream`: freeze `_DELETED_VENDORED_SYMBOLS: dict[str, list[str]]`
+- [x] C2.3 Add `test_deleted_symbols_exist_upstream`: freeze `_DELETED_VENDORED_SYMBOLS: dict[str, list[str]]`
       — module → the symbol names shipped code imported from it, **recorded from the pre-deletion
       tree** (not a live scan of the repointed tree, which would pass vacuously). For each, assert
       the name resolves under `sleap_roots_analyze` (top-level or the documented submodule, incl.
@@ -57,7 +57,7 @@ before its vendored copy is removed (C2/C10).
 
 ### C3 — Add golden + delegation coverage for survivors (pre-repoint, green vs vendored)
 
-- [ ] C3.1 Add a through-the-MCP golden + delegation test for each of the **5 surviving** viz
+- [x] C3.1 Add a through-the-MCP golden + delegation test for each of the **5 surviving** viz
       tools (`plot_trait_histograms`, `plot_trait_boxplots`, `plot_correlation_matrix`,
       `plot_heritability_bar`, `plot_variance_decomposition`). Fixture recipe (the established
       pattern from `test_supabase_reader.py`/`test_storage_backend.py` — **NOT**
@@ -72,13 +72,13 @@ before its vendored copy is removed (C2/C10).
       `create_*` symbol (spy), `plt.get_fignums() == []` after (figure-leak guard), heritability-backed
       tools reuse the oracle's `_H2_TOL` discipline, and **pin one `plot_correlation_matrix` off-diagonal
       `.corr()` cell** as a real numeric guard (Rec-B). Green vs vendored now; stays green after C4.
-- [ ] C3.2 Add a behavioral test for the surviving core discovery tools
+- [x] C3.2 Add a behavioral test for the surviving core discovery tools
       (`list_available_experiments`, `load_experiment_data`); clear `storage_tools._RESPONSE_CACHE`
       in a fixture to avoid cross-test staleness.
 
 ### C4 — Repoint viz to upstream; drop the two non-surviving plots
 
-- [ ] C4.1 Repoint `viz_tools`' vendored imports to `sleap_roots_analyze`: top-level L19/26/27
+- [x] C4.1 Repoint `viz_tools`' vendored imports to `sleap_roots_analyze`: top-level L19/26/27
       **and the lazy `from bloom_mcp.clustering import …` at `viz_tools.py:347`**. Delete
       `plot_dendrogram` (L326) + `plot_outlier_comparison` (L385), their imports, and their
       `register()` entries. Strip the stale `plot_pca_scree`/`plot_pca_biplot`/`dimred_tools`
@@ -86,14 +86,14 @@ before its vendored copy is removed (C2/C10).
 
 ### C5 — Repoint discovery + the shared helper
 
-- [ ] C5.1 (red-first) Add `test_convert_to_json_serializable_importable_from_submodule`:
+- [x] C5.1 (red-first) Add `test_convert_to_json_serializable_importable_from_submodule`:
       `from sleap_roots_analyze.data_utils import convert_to_json_serializable` succeeds and is
       callable. Then repoint the 3 call sites (`qc_clean_tool:49`, `qc_inspect_tool:63`,
       `remove_outliers_tool:73`).
-- [ ] C5.2 Repoint the surviving discovery tools (`list_available_experiments`,
+- [x] C5.2 Repoint the surviving discovery tools (`list_available_experiments`,
       `load_experiment_data`) — they route through `_ports` already, so only remove any residual
       vendored import. C3.2 stays green.
-- [ ] C5.3 **Remove `inspect_data_quality` here (before C10), not in C11.** It is the *sole* user
+- [x] C5.3 **Remove `inspect_data_quality` here (before C10), not in C11.** It is the *sole* user
       of `qc_tools.py`'s top-level `from bloom_mcp import data_cleanup as cleanup` (L8, used at L149);
       delete the tool's `def` + `register()` entry **and** that `data_cleanup` import in the same
       commit, so `data_cleanup.py` has **zero** importers by the time C10 deletes it (otherwise
@@ -103,23 +103,23 @@ before its vendored copy is removed (C2/C10).
 
 ### C6 — Retire workflow test-guards (before deleting the modules)
 
-- [ ] C6.1 **Delete `bloommcp/tests/workflows/test_workflow_persistence.py` entirely** (every test
+- [x] C6.1 **Delete `bloommcp/tests/workflows/test_workflow_persistence.py` entirely** (every test
       in it drives a workflow via top-level imports at L18-19 → would fail collection once C7 deletes
       the modules); and remove the one `run_qc_workflow` test in `test_storage_backend.py` (keep the
       other 33 backend tests). Must land in C6, before C7.
-- [ ] C6.2 Remove the 5 "workflow-preserved" `tools/list` assertions in the granular tool tests
+- [x] C6.2 Remove the 5 "workflow-preserved" `tools/list` assertions in the granular tool tests
       (`test_qc_clean_tool.py`, `test_qc_inspect_tool.py`, `test_pca_analysis_tool.py`,
       `test_remove_outliers_tool.py`, and `test_clustering_tool.py` — the last is new since
       #309/#422 landed on `staging` after this proposal was first drafted); keep the
       granular-tool presence assertions.
-- [ ] C6.3 **Repoint** `_CONSUMERS` in `test_persistence_import_guard.py`: drop the 5 workflow
+- [x] C6.3 **Repoint** `_CONSUMERS` in `test_persistence_import_guard.py`: drop the 5 workflow
       entries (`tools/workflows/*`) + `_helpers.py`; and (per the result-store "Write consumers"
       scenario, which now names the 5 granular write tools incl. `clustering`, #309/#422) **replace
       them with** `tools/pca_analysis_tool.py`, `tools/qc_clean_tool.py`, `tools/qc_inspect_tool.py`,
       `tools/remove_outliers_tool.py`, `tools/clustering_tool.py` — so the port-only guarantee is
       enforced on the real write consumers rather than vacuously green. Leave the `correlation_tools`
       entry for C9 to remove.
-- [ ] C6.4 Add `test_retired_workflow_tools_absent_and_package_gone`: assert none of the five
+- [x] C6.4 Add `test_retired_workflow_tools_absent_and_package_gone`: assert none of the five
       literal names — `run_qc_workflow`, `run_outlier_workflow`, `run_descriptive_stats_workflow`
       (note: *not* `run_stats_workflow`), `run_dimensionality_reduction_workflow`,
       `run_clustering_workflow` — is in `tools/list`, and `import bloom_mcp.tools.workflows` raises
@@ -127,19 +127,19 @@ before its vendored copy is removed (C2/C10).
 
 ### C7 — Retire the workflow tools
 
-- [ ] C7.1 Delete `tools/workflows/*` (incl. `_helpers.py`, `_response.py`) and their `server.py`
+- [x] C7.1 Delete `tools/workflows/*` (incl. `_helpers.py`, `_response.py`) and their `server.py`
       imports/registrations (L69-75, L91-95). Rewrite the `server.py` module docstring tool
       catalog (L12-39) to the post-change surface. Green (C6 guards already updated).
 
 ### C8 — Repoint the oracle; neutralize the vendored spies
 
-- [ ] C8.1 In `test_oracle.py`: remove the top-level `bloom_mcp.{pca,clustering,cross_experiment_correlations}`
+- [x] C8.1 In `test_oracle.py`: remove the top-level `bloom_mcp.{pca,clustering,cross_experiment_correlations}`
       imports (L28-30); **delete** `test_shipped_kmeans_*` and `test_shipped_correlations_*` (dropped
       capabilities, no surviving through-tool; upstream correlation contract differs so the literal
       won't carry); fold the shipped PCA assertion into the cross-tier PCA test. Keep the UMAP
       cross-tier test (still calls `sleap_roots_analyze.umap` directly). (Delta: *Oracle has no
       import dependency on deleted vendored modules*.)
-- [ ] C8.2 In the 5 delegation-guard spies (`test_{pca_analysis,qc_clean,qc_inspect,remove_outliers,
+- [x] C8.2 In the 5 delegation-guard spies (`test_{pca_analysis,qc_clean,qc_inspect,remove_outliers,
       clustering}_tool.py` — the last new since #309/#422 landed after this proposal was first drafted),
       **remove the `import bloom_mcp.<vendored> as vendored` binding itself** (not just the assertion)
       and keep the positive delegation spy (`n_calls == 1` + role/seed forwarding against the upstream
@@ -150,11 +150,11 @@ before its vendored copy is removed (C2/C10).
 
 ### C9 — Drop the correlation tools (delete, no rewire)
 
-- [ ] C9.1 Delete `tools/correlation_tools.py` + `cross_experiment_correlations.py` + their
+- [x] C9.1 Delete `tools/correlation_tools.py` + `cross_experiment_correlations.py` + their
       `server.py` reg (L62/L102) + the `correlation_tools` entry in `_CONSUMERS` + any
       correlation-targeting test, in one commit. (Rationale D2: upstream `cross_experiment_analysis`
       has a different contract — rewiring would change numbers.)
-- [ ] C9.2 Add `test_correlation_tools_absent` (analogous to C6.4): the 8 correlation tool names are
+- [x] C9.2 Add `test_correlation_tools_absent` (analogous to C6.4): the 8 correlation tool names are
       not in `tools/list` and `import bloom_mcp.tools.correlation_tools` /
       `import bloom_mcp.cross_experiment_correlations` raise `ModuleNotFoundError`. **Flip C2.1
       (`test_no_shipped_module_imports_vendored_analysis`) from `xfail` to a plain assert here** — it
@@ -165,7 +165,7 @@ before its vendored copy is removed (C2/C10).
 
 ### C10 — Delete remaining vendored modules
 
-- [ ] C10.1 Delete `pca.py`, `clustering.py`, `cluster_visualization.py`, `outlier_detection.py`,
+- [x] C10.1 Delete `pca.py`, `clustering.py`, `cluster_visualization.py`, `outlier_detection.py`,
       `outlier_visualization.py`, `visualization.py`, `data_cleanup.py`, `data_utils.py`. Flip
       C2.2 from `xfail` to a plain assert (C2.1 already flipped in C9.2). Note: the deletion is only
       safe because C4 (viz repoint incl. the lazy `clustering` import), C5 (discovery +
@@ -180,10 +180,10 @@ before its vendored copy is removed (C2/C10).
       C10.1 and a separately-landed C11.2 if the two are split into different commits. (Discovered by
       actually running the suite after the deletion — the original plan under-scoped this dependency;
       C11.2 below now covers only the opposite-direction leaked-import guard.)
-- [ ] C10.2 Add `test_server_boots_after_devendor`: subprocess `import bloom_mcp.server` +
+- [x] C10.2 Add `test_server_boots_after_devendor`: subprocess `import bloom_mcp.server` +
       `build_app()` in a clean env returns 0 (catches any dangling vendored import). (Delta:
       *No dangling registration or import*.)
-- [ ] C10.3 Strengthen the CI wheel-import gate (`.github/workflows/pr-checks.yml`'s "Build
+- [x] C10.3 Strengthen the CI wheel-import gate (`.github/workflows/pr-checks.yml`'s "Build
       bloom_mcp wheel and import in a clean env" step, currently
       `import bloom_mcp, bloom_mcp.tools, bloom_mcp.storage, bloom_mcp.server`) to also call
       `bloom_mcp.server.build_app()` against the **installed wheel** — C10.2's subprocess test only
@@ -193,29 +193,29 @@ before its vendored copy is removed (C2/C10).
 
 ### C11 — Dependency prune + name-list hygiene + drift guard
 
-- [ ] C11.1 Move `scikit-learn` from runtime `dependencies` to `[project.optional-dependencies].test`
+- [x] C11.1 Move `scikit-learn` from runtime `dependencies` to `[project.optional-dependencies].test`
       (open `>=` floor, matching the extra's convention); remove `scipy` and `seaborn` from runtime
       `dependencies` (no shipped or test importer); keep `matplotlib`. Update the pyproject
       dependency comment (currently says scipy/scikit-learn retained for viz). Re-sync
       `bloommcp/uv.lock` **and** the root lock; `uv lock --check` + `scripts/check-uv-locks.py` green.
-- [ ] C11.2 Extend the opposite-direction guard, `test_pruned_analysis_deps_not_imported`'s
+- [x] C11.2 Extend the opposite-direction guard, `test_pruned_analysis_deps_not_imported`'s
       leaked-import set, from `{statsmodels, umap}` to `{statsmodels, umap, sklearn, scipy, seaborn}` —
       required by `bloommcp-packaging/spec.md`'s "Pruned dependencies are absent..." scenario, which
       asserts no shipped module imports `sklearn`/`scipy`/`seaborn`; without this the guard would not
       actually catch a reintroduced import of any of the three newly-pruned packages. (The retained-set
       reduction on `test_retained_heavy_deps_are_each_imported` already landed in C10.1 — it was a
       same-commit requirement, not a C11-only one.)
-- [ ] C11.3 Remove the now-dangling `[tool.ruff.lint.per-file-ignores]` entries for deleted modules
+- [x] C11.3 Remove the now-dangling `[tool.ruff.lint.per-file-ignores]` entries for deleted modules
       (pyproject L84-90); confirm no *surviving* module needed them; `ruff check` green.
-- [ ] C11.4 Fix the tool-name lists off the retired/renamed tools: drop `inspect_data_quality` from
+- [x] C11.4 Fix the tool-name lists off the retired/renamed tools: drop `inspect_data_quality` from
       `langchain/routes/chat.py` `ALWAYS_INCLUDE_MCP_TOOLS` and `web/components/mcp-chat-client.tsx`
       `HIDDEN_TOOLS`; trim the retired/correlation names out of `context_tools.py` `CONTEXT_MCP`
       (keep only routing guidance). Make the matching prefix-aware where Phase-2 namespacing applies.
-- [ ] C11.5 Add `test_tool_name_lists_match_live_registry` (drift guard): every name in the surviving
+- [x] C11.5 Add `test_tool_name_lists_match_live_registry` (drift guard): every name in the surviving
       hand-lists resolves to a live tool in the mounted registry, and every core discovery tool is in
       the always-included set — fails the PR the moment a rename/removal desyncs. (Backstop for the
       DRY follow-up.)
-- [ ] C11.6 Add `test_expected_tool_surface`: assert the **exact** Phase-1 (still *un-namespaced*)
+- [x] C11.6 Add `test_expected_tool_surface`: assert the **exact** Phase-1 (still *un-namespaced*)
       tool-name set from `tools/list` — the 5 plot tools + `pca_analysis` + `qc_clean` + `qc_inspect`
       + `remove_outliers` + `clustering` (already a surviving granular tool pre-Phase-2, #309/#422) +
       `list_available_experiments` + `load_experiment_data` + `list_existing_analyses`, and NOT
@@ -225,7 +225,7 @@ before its vendored copy is removed (C2/C10).
       CI/verification: build the wheel, then `import bloom_mcp.server; build_app()` against the
       *installed wheel*, no Supabase env (see C10.3).
       _(inspect_data_quality removal moved to C5.3 — it must precede C10's `data_cleanup.py` delete.)_
-- [ ] C11.8 Repoint the persistence smoke to drive **`remove_outliers`** (seed-bearing → keeps the
+- [x] C11.8 Repoint the persistence smoke to drive **`remove_outliers`** (seed-bearing → keeps the
       `seed==42`/provenance/hash/version-advance assertions) instead of `run_clustering_workflow`. The
       smoke (`bloommcp/scripts/live_persistence_smoke.py`) **already has a full `remove_outliers` leg**
       under `RO_TOOL_CLASS="qc"` / `RO_SEED=42`, so this is mostly wiring, not new code: drop the
@@ -239,7 +239,7 @@ before its vendored copy is removed (C2/C10).
       clustering-specific ones in the same commit. (pytest stays green through the C7→C11.8 window
       because the smoke's workflow import is lazy inside `main()` and the logic test only `exec_module`s
       top-level.)
-- [ ] C11.9 Docs reconciliation: update `bloommcp/docs/roadmap.md` — mark the vendored-`source/*` +
+- [x] C11.9 Docs reconciliation: update `bloommcp/docs/roadmap.md` — mark the vendored-`source/*` +
       `run_*_workflow` retirement (gated "after Stage 1 / Tiers 0–4 — Benfica confirmed on PR #310")
       as done. **Note explicitly:** the *delegation* tiers (contract #306, ports #307, qc_clean #338,
       qc_inspect #360, pca_analysis #308, remove_outliers #378) have all landed, and the roadmap's
@@ -256,7 +256,7 @@ before its vendored copy is removed (C2/C10).
       **and** the `_pca_evr_source`/`_heritability_source`/`_umap_source` snapshot lines — to `0.1.0a5`
       (the branch's actual current pin post-rebase; confirm each snapshot is still unchanged at `a5`
       before updating the label, not just relabeling).
-- [ ] C11.10 Delete the orphaned workflow test placeholders at the **repo root** (not under
+- [x] C11.10 Delete the orphaned workflow test placeholders at the **repo root** (not under
       `bloommcp/`): `tests/integration/test_workflow_{qc,stats,dimred,clustering,outlier}.py` and
       `tests/unit/test_workflow_scaffolding.py` (module-level `pytest.skip`, so CI-safe, but they name
       the retired workflows). Add an explicit note that `storage_tools.TOOL_CLASSES`

@@ -10,8 +10,9 @@ On each call it reads the **raw** frame via the :class:`ExperimentReader` port (
 ``create_trait_eda_plots`` (per-trait NaN/zero/outlier bar charts with the threshold
 lines drawn + the traits-actually-removed panel), takes the ``missing_data_pattern``
 heatmap from ``create_exploratory_summary_plots``, and ``inspect_nan_samples`` for the
-per-sample NaN table. The MCP contains **no** EDA/plotting logic and never calls the
-vendored ``bloom_mcp.data_cleanup``.
+per-sample NaN table. The MCP contains **no** EDA/plotting logic of its own — every symbol
+above resolves to ``sleap_roots_analyze``, never a vendored copy (the former vendored
+``bloom_mcp.data_cleanup`` was deleted by ``devendor-bloommcp-analysis``).
 
 It persists a versioned **report** run via the :class:`ResultStore` port under tool
 class ``qc_inspect`` — deliberately **not** ``qc`` — so the reader never resolves it as

@@ -304,3 +304,120 @@ def test_server_boots_after_devendor():
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+# ── C11.5: tool-name hand-lists (langchain/web) don't drift from the live registry ──
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _parse_always_include_mcp_tools() -> set[str]:
+    """Statically parse ALWAYS_INCLUDE_MCP_TOOLS from langchain/routes/chat.py.
+
+    Parsed via AST rather than imported — chat.py lives in a different service
+    (its own venv/dependencies), so importing it here isn't viable; this reads
+    the literal set assignment directly out of the source.
+    """
+    path = _REPO_ROOT / "langchain" / "routes" / "chat.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "ALWAYS_INCLUDE_MCP_TOOLS"
+            for t in node.targets
+        ):
+            return {
+                elt.value for elt in node.value.elts if isinstance(elt, ast.Constant)
+            }
+    raise AssertionError(f"ALWAYS_INCLUDE_MCP_TOOLS not found in {path}")
+
+
+def _parse_hidden_tools() -> set[str]:
+    """Statically parse HIDDEN_TOOLS from web/components/mcp-chat-client.tsx."""
+    import re
+
+    path = _REPO_ROOT / "web" / "components" / "mcp-chat-client.tsx"
+    text = path.read_text(encoding="utf-8")
+    match = re.search(r"HIDDEN_TOOLS = new Set\(\[(.*?)\]\)", text, re.DOTALL)
+    if not match:
+        raise AssertionError(f"HIDDEN_TOOLS not found in {path}")
+    names = set(re.findall(r'"([^"]+)"', match.group(1)))
+    if not names:
+        raise AssertionError(f"HIDDEN_TOOLS parsed empty from {path}")
+    return names
+
+
+def test_tool_name_lists_match_live_registry():
+    """Neither hand-list names a retired tool, and every name each lists resolves
+    to a live tool in the mounted registry — catches a rename/removal desyncing
+    either list from the actual server (the DRY follow-up's backstop).
+
+    (bloommcp-tool-sections: 'Always-included selection tracks the core tools'
+    registered names' / 'The web client's hidden-tools list ... stay in sync'.)
+    """
+    import asyncio
+
+    always_include = _parse_always_include_mcp_tools()
+    hidden_tools = _parse_hidden_tools()
+
+    assert "inspect_data_quality" not in always_include
+    assert "inspect_data_quality" not in hidden_tools
+
+    live = asyncio.run(_live_tool_names())
+    for name in sorted(always_include | hidden_tools):
+        assert name in live, f"{name!r} is not a live tool — hand-list has drifted"
+
+
+def test_expected_tool_surface():
+    """The exact (still un-namespaced) Phase-1 tool-name set — enumerated, not a
+    placeholder. Guards against silently losing or gaining a tool. P2.5 re-asserts
+    the namespaced set after the Phase-2 sections migration.
+
+    (bloommcp-tool-sections + bloommcp-packaging: the full Phase-1 surface.)
+    """
+    import asyncio
+
+    expected = {
+        # sleap_roots-analyze granular consumers
+        "pca_analysis",
+        "qc_clean",
+        "qc_inspect",
+        "remove_outliers",
+        "clustering",
+        # surviving plots
+        "plot_trait_histograms",
+        "plot_trait_boxplots",
+        "plot_correlation_matrix",
+        "plot_heritability_bar",
+        "plot_variance_decomposition",
+        # core discovery
+        "list_available_experiments",
+        "load_experiment_data",
+        "list_existing_analyses",
+    }
+    not_expected = {
+        "inspect_data_quality",
+        "run_qc_workflow",
+        "run_outlier_workflow",
+        "run_descriptive_stats_workflow",
+        "run_dimensionality_reduction_workflow",
+        "run_clustering_workflow",
+        "list_experiments",
+        "run_cross_experiment_correlations",
+        "plot_trait_correlation",
+        "plot_correlation_heatmap",
+        "plot_genotype_boxplots",
+        "check_correlation_power",
+        "find_redundant_traits",
+        "compare_trait_across_experiments",
+        "plot_dendrogram",
+        "plot_outlier_comparison",
+    }
+    live = asyncio.run(_live_tool_names())
+    # Sections (e.g. phenotyping_segmentation) mount alongside the combined surface
+    # too, but expected/not_expected only enumerates the (still un-namespaced)
+    # Phase-1 tools/tools_ registrations — restrict the comparison to those names.
+    relevant = expected | not_expected
+    assert live & relevant == expected, (
+        f"unexpected tool surface — missing: {expected - live}, "
+        f"present-but-should-be-absent: {(live & relevant) - expected}"
+    )

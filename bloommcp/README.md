@@ -1,16 +1,19 @@
 # bloom-mcp
 
-FastMCP server exposing SLEAP root-trait analysis tools (QC, descriptive stats,
-dimensionality reduction, clustering, outlier detection, correlation, and
-visualization) over the Model Context Protocol, backed by the bloom Supabase
-database.
+FastMCP server exposing SLEAP root-trait analysis tools (QC cleaning/inspection, PCA,
+clustering, outlier detection, and plotting) over the Model Context Protocol, backed by the
+bloom Supabase database. Every analysis/plotting tool delegates to
+[`sleap-roots-analyze`](https://github.com/talmolab/sleap-roots-analyze) — bloom-mcp is a thin
+MCP surface over it, not a second home for analysis code.
 
 ## Layout
 
 Installable `uv` package under `src/bloom_mcp/`:
 
 - `bloom_mcp.server` — the FastMCP app and `/health` endpoint (`main()` entry point)
-- `bloom_mcp.tools` — MCP tool modules and the high-level `workflows`
+- `bloom_mcp.tools` — granular MCP tool modules (each delegates to `sleap_roots_analyze`)
+- `bloom_mcp.sections` — per-contributor/package section sub-servers (see
+  `docs/2026-06-29-bloom-mcp-contributor-namespacing.md`)
 - `bloom_mcp.storage` — versioned, append-only analysis-artifact storage
 - `bloom_mcp.supabase_client` — single point of Supabase access
 

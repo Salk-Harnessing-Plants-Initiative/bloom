@@ -39,18 +39,19 @@ bloommcp/
 │   └── supabase_client.py
 ├── storage/
 └── tools/
-    ├── qc_tools.py
-    ├── viz_tools.py
-    ├── correlation_tools.py
-    ├── storage_tools.py       # list_existing_analyses (always-on)
-    └── workflows/             # the consolidated workflow tools (in flight)
-        ├── qc.py
-        ├── stats.py
-        ├── clustering.py
-
-        ├── dimred.py
-        └── outlier.py
+    ├── qc_tools.py             # list_available_experiments, load_experiment_data
+    ├── viz_tools.py            # 5 plotting tools (delegate to sleap_roots_analyze)
+    ├── storage_tools.py        # list_existing_analyses (always-on)
+    ├── qc_clean_tool.py, qc_inspect_tool.py, remove_outliers_tool.py,
+    │   pca_analysis_tool.py, clustering_tool.py   # granular consumers
+    └── (correlation_tools.py and workflows/ — the Phase-1 run_*_workflow tools
+        and the 8 correlation tools — were retired/dropped by
+        devendor-bloommcp-analysis; see that OpenSpec change for why)
 ```
+
+_(This diagram predates the `source/` → `src/bloom_mcp/` package move and is stale in
+other respects too — the `tools/` listing above is corrected for this change's scope
+only; a fuller refresh is tracked separately.)_
 
 ## Storage
 
@@ -150,11 +151,16 @@ role / RLS picture.
 
 ## Coding style for tool calls
 
-**Every workflow tool writes its outputs through the `AnalysisWriter`
-class** (from [`bloommcp/src/bloom_mcp/storage/writer.py`](../../bloommcp/src/bloom_mcp/storage/writer.py)), constructed via the `build_writer` factory in
-[`_helpers.py`](../../bloommcp/src/bloom_mcp/tools/workflows/_helpers.py).
+**Every persistence-writing tool writes through the `ResultStore` port**
+(`bloom_mcp.tools._ports.store()`), never `AnalysisWriter` or `supabase` directly —
+see [`qc_clean_tool.py`](../../bloommcp/src/bloom_mcp/tools/qc_clean_tool.py) for a
+worked example (`store().create_run()` → write outputs into the staging dir →
+`store().commit()`). (The Phase-1 workflow tools used to write through
+`AnalysisWriter` via a `build_writer` factory in `tools/workflows/_helpers.py`;
+both are gone — retired by `devendor-bloommcp-analysis`.)
 
-`AnalysisWriter` implements a versioned write contract: each `(experiment, tool_class)` pair gets one folder in the `bloommcp-data` bucket containing a `manifest.json` that catalogs every run for that
+The port's real (`SupabaseResultStore`) implementation gives the same versioned write
+contract the diagram below shows: each `(experiment, tool_class)` pair gets one folder in the `bloommcp-data` bucket containing a `manifest.json` that catalogs every run for that
 pair.
 
 Each tool call appends a new `VersionEntry` to the same manifest and a new `v<N>_<date>_<slug>/` subfolder for its outputs.
@@ -178,8 +184,8 @@ Each tool's outputs land in a folder named after its `tool_class`.
 To add a tool to a **section** (the current pattern — e.g. phenotyping), see
 [adding-a-section-tool.md](./adding-a-section-tool.md).
 
-For the older **workflow-tool** style (read CSV → versioned output), see
-[writing-a-new-tool.md](./writing-a-new-tool.md). 
+The older **workflow-tool** style ([writing-a-new-tool.md](./writing-a-new-tool.md))
+is retired — kept as historical record only.
 
 For the underlying schema and the manifest's data model, see
 [storage-workflow.md](./storage-workflow.md).

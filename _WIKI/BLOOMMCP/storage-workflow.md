@@ -5,15 +5,18 @@ them back). If you are about to write a new workflow tool start here.
 
 The storage layer lives under
 [bloommcp/src/bloom_mcp/storage/](../../bloommcp/src/bloom_mcp/storage/). Everything below is a view
-of those files plus the two callers that actually use them:
-[`build_writer`](../../bloommcp/src/bloom_mcp/tools/workflows/_helpers.py) (write
-side) and
+of those files plus the two kinds of callers that actually use them: granular tools writing
+through the `ResultStore` port (e.g.
+[`qc_clean_tool.py`](../../bloommcp/src/bloom_mcp/tools/qc_clean_tool.py), via
+[`bloom_mcp/tools/_ports.py`](../../bloommcp/src/bloom_mcp/tools/_ports.py)) and
 [`list_existing_analyses`](../../bloommcp/src/bloom_mcp/tools/storage_tools.py) (read
-side).
+side). (The Phase-1 `run_*_workflow` tools this doc originally illustrated with —
+`tools/workflows/_helpers.py`'s `build_writer` — were retired by
+`devendor-bloommcp-analysis`; the granular tools below are their replacement.)
 
 ## Why this exists
 
-A bloommcp workflow tool (say, `run_qc_workflow`) takes a CSV of plant traits, does something to it (QC, stats, PCA, clustering), and produces
+A bloommcp tool (say, `qc_clean`) takes a CSV of plant traits, does something to it (QC, PCA, clustering, outlier removal), and produces
 output files. We want three things from those outputs:
 
 1. **Persistence** - they outlive the container, so the agent can refer to "the QC run we did yesterday."
@@ -98,7 +101,7 @@ appended to `Manifest.versions`.
 |---|---|
 | `id` | `"v1"`, `"v2"`, … — the run's identifier |
 | `created_at` | UTC timestamp, ISO-8601 ending in `Z` |
-| `tool` | The tool function name (e.g. `"run_qc_workflow"`) |
+| `tool` | The tool function name (e.g. `"qc_clean"`) |
 | `params` | Dict of whatever args the tool was called with |
 | `based_on_version` | Lineage pointer (hardcoded `"raw"` today) |
 | `code_versions` | A `CodeVersions` block — package versions at write time |
@@ -126,7 +129,7 @@ Concrete example of a `manifest.json` after one run:
     {
       "id": "v1",
       "created_at": "2026-06-05T12:34:56Z",
-      "tool": "run_qc_workflow",
+      "tool": "qc_clean",
       "params": {"threshold": 0.1},
       "based_on_version": "raw",
       "code_versions": {"bloommcp": "0.1.0", "supabase": "2.31.0"},
