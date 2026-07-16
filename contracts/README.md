@@ -33,17 +33,17 @@ sequenced it first, and added `read-path` #298); the design doc uses the `A–H`
 | `pin.json`                           | The pin manifest: `package`, `version`, full schema `$id`, `source`, file paths                              | The declared pin                                          |
 | `generated/result-envelope.ts`       | TypeScript types (`ResultEnvelope`/`Provenance`/`TraitValue`/`BlobRef` + sub-defs) generated from the schema | Emitted by codegen — **do not edit by hand**              |
 
-**Currently pinned: `v0.1.0a3`.** These are the _contract_ types (from the JSON Schema), distinct
+**Currently pinned: `v0.1.0a4`.** These are the _contract_ types (from the JSON Schema), distinct
 from the Supabase `database.types.ts` (generated from the database by `make gen-types`).
+
+> Note on `v0.1.0a4`: re-pinned from `v0.1.0a3` for Bloom change `add-cyl-download-for-predict` (#411) — an **`$id`-only structural no-op for the JSON Schema** (verified by diffing the fetched `v0.1.0a4` schema against the vendored `a3` schema with the version string normalized out: no other bytes differ). `BlobRef`/`Provenance` are unchanged and the generated TS is byte-identical apart from the `$id` line. The substantive addition in this contracts release is on the Python package side — `sleap_roots_contracts.resolve_params`, the canonical species/age-normalization oracle bloomctl now calls when authoring `scan_metadata.json` sidecars for the A4 per-scan pipeline stage-in — not a schema field, so it doesn't surface in the drift-guard diff.
 
 > Note on `v0.1.0a3`: re-pinned from `v0.1.0a2` for Bloom change `repin-cyl-contract-a3` (#393) —
 > a **real contract revision**, not a `$id` no-op, but **additive and non-breaking**. `Provenance`
 > gained two optional, nullable fields (`predict_inference_config`, `predict_output_params`); no field
 > was removed or retyped and `BlobRef` is unchanged. Because `Provenance` is a plain object with
-> `properties`, the generated TS **does** surface the two new optional fields (unlike the `BlobRef`
-> `anyOf` caveat below) — an expected, reviewed drift-guard diff. Both fields ride inside the opaque
-> `cyl_trait_sources.metadata` jsonb, so no Bloom DB column or migration is needed. The bare-vs-`v`
-> `contract_version` convention (the write-back RPC now matches prefix-tolerantly) is tracked upstream
+> `properties`, the generated TS **does** surface the two new optional fields (unlike the `BlobRef` > `anyOf` caveat below) — an expected, reviewed drift-guard diff. Both fields ride inside the opaque
+> `cyl_trait_sources.metadata` jsonb, so no Bloom DB column or migration is needed. The bare-vs-`v` > `contract_version` convention (the write-back RPC now matches prefix-tolerantly) is tracked upstream
 > in `talmolab/sleap-roots-contracts` (companion issue — link `#N` when filed).
 
 > Note on `v0.1.0a2`: re-pinned from `v0.1.0a1` for Bloom change C
