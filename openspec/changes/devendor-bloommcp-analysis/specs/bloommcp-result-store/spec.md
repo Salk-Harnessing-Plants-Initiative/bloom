@@ -31,7 +31,9 @@ The system SHALL define a backend-agnostic `ResultStore` port exposing `create_r
 
 #### Scenario: Write consumers depend only on the port
 
-- **WHEN** the persistence-writing tools (`pca_analysis`, `qc_clean`, `qc_inspect`, `remove_outliers`) are inspected
+- **WHEN** the persistence-writing tools (`pca_analysis`, `qc_clean`, `qc_inspect`, `remove_outliers`,
+  `clustering` — landed via #309/#422 after this scenario was first drafted, also writes a versioned
+  run through the port) are inspected
 - **THEN** none imports `AnalysisWriter`, `AnalysisDir`, or `supabase` directly; each obtains a `ResultStore` through the injected `_ports` seam. (The `sleap_roots` section plotting tools write PNGs to `PLOTS_DIR` and do not persist through the `ResultStore` port, so they are out of scope for this guarantee.)
 
 ### Requirement: Live Supabase Persistence Smoke

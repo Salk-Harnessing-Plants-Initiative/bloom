@@ -111,10 +111,11 @@ before its vendored copy is removed (C2/C10).
       keep the granular-tool presence assertions.
 - [ ] C6.3 **Repoint** `_CONSUMERS` in `test_persistence_import_guard.py`: drop the 5 workflow
       entries (`tools/workflows/*`) + `_helpers.py`; and (per the result-store "Write consumers"
-      scenario, which now names the 4 granular write tools) **replace them with**
-      `tools/pca_analysis_tool.py`, `tools/qc_clean_tool.py`, `tools/qc_inspect_tool.py`,
-      `tools/remove_outliers_tool.py` — so the port-only guarantee is enforced on the real write
-      consumers rather than vacuously green. Leave the `correlation_tools` entry for C9 to remove.
+      scenario, which now names the 5 granular write tools incl. `clustering`, #309/#422) **replace
+      them with** `tools/pca_analysis_tool.py`, `tools/qc_clean_tool.py`, `tools/qc_inspect_tool.py`,
+      `tools/remove_outliers_tool.py`, `tools/clustering_tool.py` — so the port-only guarantee is
+      enforced on the real write consumers rather than vacuously green. Leave the `correlation_tools`
+      entry for C9 to remove.
 - [ ] C6.4 Add `test_retired_workflow_tools_absent_and_package_gone`: assert none of the five
       literal names — `run_qc_workflow`, `run_outlier_workflow`, `run_descriptive_stats_workflow`
       (note: *not* `run_stats_workflow`), `run_dimensionality_reduction_workflow`,
