@@ -26,22 +26,34 @@ The granular analysis tools that delegate to `sleap-roots-analyze` SHALL live in
 named `sleap_roots`, organized as an umbrella for the sleap-roots family with an `analysis/`
 subgroup (wrapping `sleap-roots-analyze`) and a reserved `extraction/` subgroup for future
 `sleap-roots` trait-extraction tools. The `analysis/` subgroup SHALL contain `pca_analysis`,
-`qc_clean`, `qc_inspect`, `remove_outliers`, and the **five surviving plotting tools**
-(`plot_trait_histograms`, `plot_trait_boxplots`, `plot_correlation_matrix`,
-`plot_heritability_bar`, `plot_variance_decomposition`), each tool in its own file. The former
-`plot_dendrogram` and `plot_outlier_comparison` tools SHALL NOT be carried over
-(`plot_dendrogram` computes hierarchical clustering — a dropped capability — and
-`plot_outlier_comparison` reads the retired outlier workflow's output); each returns later
-co-located with the granular clustering / outlier tool that owns it. The section SHALL NOT be
-named `sleap_roots_traits` (collides with the separate `sleap-roots-traits` pipeline
-repository, which these tools do not wrap). No tool in this section SHALL contain analysis or
-plotting logic of its own; each SHALL delegate to `sleap_roots_analyze`.
+`qc_clean`, `qc_inspect`, `remove_outliers`, `clustering` (the polymorphic kmeans/GMM/
+hierarchical tool, #309/#422 — landed on `staging` after this change was first proposed; it
+already delegates to `sleap_roots_analyze` with no vendored import, so only the Phase-2 move
+applies to it), and the **five surviving plotting tools** (`plot_trait_histograms`,
+`plot_trait_boxplots`, `plot_correlation_matrix`, `plot_heritability_bar`,
+`plot_variance_decomposition`), each tool in its own file. The former `plot_dendrogram` and
+`plot_outlier_comparison` tools SHALL NOT be carried over (`plot_dendrogram` computes
+hierarchical clustering internally rather than consuming the `clustering` tool's persisted
+output, and `plot_outlier_comparison` reads the retired outlier workflow's output); each may
+return later as a plot consuming its owning granular tool's persisted result. The section
+SHALL NOT be named `sleap_roots_traits` (collides with the separate `sleap-roots-traits`
+pipeline repository, which these tools do not wrap). No tool in this section SHALL contain
+analysis or plotting logic of its own; each SHALL delegate to `sleap_roots_analyze`.
 
 #### Scenario: Analysis tools are namespaced under sleap_roots
 
 - **WHEN** the tool surface is listed after migration
-- **THEN** `pca_analysis`, `qc_clean`, `qc_inspect`, `remove_outliers`, and the plotting
-  tools appear under the `sleap_roots` namespace, and each delegates to `sleap_roots_analyze`
+- **THEN** `pca_analysis`, `qc_clean`, `qc_inspect`, `remove_outliers`, `clustering`, and the
+  plotting tools appear under the `sleap_roots` namespace, and each delegates to
+  `sleap_roots_analyze`
+
+#### Scenario: pca_analysis reports dropped constant traits across the migration
+
+- **WHEN** `pca_analysis` (or its Phase-2 destination, `sleap_roots_pca_analysis`) drops one or
+  more constant (zero-variance) trait columns from a certified selection before fitting
+- **THEN** the result carries a `dropped_constant_traits` field naming them, rather than raising
+  `assumption_violated` — this behavior (the #412 fix) SHALL be in place before the Phase-2 move
+  and SHALL be unchanged by it
 
 #### Scenario: Plotting tools are one file per tool
 
@@ -76,6 +88,17 @@ any vendored analysis module.
   prefix-aware and drift-guarded against the live registry, not by a stale hand-copied literal
   that no longer matches
 
+#### Scenario: The web client's hidden-tools list and the routing prompt stay in sync with namespacing
+
+- **WHEN** the web client's `HIDDEN_TOOLS` set (`web/components/mcp-chat-client.tsx`, which
+  filters the three core discovery tools out of the user-visible "available tools" list) and the
+  LangChain routing prompt's `CONTEXT_MCP` tool catalog (`langchain/tools/context_tools.py`) are
+  checked after the core tools are namespaced
+- **THEN** `HIDDEN_TOOLS` matches the three core tools by their namespaced names (prefix-aware,
+  same guarantee as `ALWAYS_INCLUDE_MCP_TOOLS`) rather than the pre-namespacing unprefixed
+  literals, and `CONTEXT_MCP` no longer names any retired workflow, retired correlation tool, or
+  `inspect_data_quality` — it retains only routing guidance, not a hand-maintained per-tool catalog
+
 #### Scenario: inspect_data_quality is removed
 
 - **WHEN** the tool surface is listed after the change
@@ -88,10 +111,12 @@ The Phase-1 legacy "workflow" tools SHALL be removed from bloom-mcp: `run_qc_wor
 `run_dimensionality_reduction_workflow`, and `run_clustering_workflow`, along with their
 modules under `tools/workflows/` and their `server.py` registrations. These tools duplicated
 capabilities of the granular tools and/or the upstream library, some were broken, and they
-were the sole consumers of the vendored analysis modules. Capabilities not covered by a
-surviving granular tool (UMAP embedding, clustering, cross-method outlier comparison,
-descriptive stats tables, cross-experiment correlations) are intentionally dropped and MAY be
-re-added later only as thin section tools delegating to `sleap_roots_analyze`.
+were the sole consumers of the vendored analysis modules. `run_clustering_workflow`'s
+capability is already covered by the surviving granular `clustering` tool (#309/#422); the
+other capabilities not covered by a surviving granular tool (UMAP embedding, cross-method
+outlier comparison, descriptive stats tables, cross-experiment correlations) are intentionally
+dropped and MAY be re-added later only as thin section tools delegating to
+`sleap_roots_analyze`.
 
 #### Scenario: Retired workflow tools are absent from the surface
 

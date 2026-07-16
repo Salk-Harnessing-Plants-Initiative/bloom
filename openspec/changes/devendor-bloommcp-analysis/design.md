@@ -29,7 +29,7 @@ the intentionally dropped capabilities; changing the contract layer, ports, or s
 
 ### D1 — Delete vendored copies rather than repoint-and-keep
 
-The parity audit proves upstream `0.1.0a4` is a strict superset of every vendored module,
+The parity audit proves upstream `0.1.0a5` is a strict superset of every vendored module,
 with no bloom-mcp-specific logic in any of them. Keeping repointed shims would preserve
 the duplication risk (drift, filename collisions). Deletion + repointing consumers to
 `sleap_roots_analyze` is both simpler and an *upgrade* (picks up `#118` fixes and later
@@ -66,10 +66,15 @@ Structure:
 sections/sleap_roots/
 ├── __init__.py            # section sub-server + register()
 ├── analysis/              # wraps sleap-roots-analyze  (populated here)
-│   ├── pca_analysis.py  qc_clean.py  qc_inspect.py  remove_outliers.py
+│   ├── pca_analysis.py  qc_clean.py  qc_inspect.py  remove_outliers.py  clustering.py
 │   └── plot_*.py         # 5 surviving plotting tools, one file each
 └── extraction/            # reserved slot for future sleap-roots tools (empty here)
 ```
+
+(`clustering.py` — the polymorphic kmeans/GMM/hierarchical tool — landed on `staging` via
+#309/#422 after this design was first drafted, discovered when the branch was rebased before
+implementation. It already delegates to `sleap_roots_analyze` with zero vendored imports, so
+it needs no Phase-1 work; Phase 2 moves it here alongside the other four consumers.)
 
 Tool prefix becomes `sleap_roots_<tool>`. **This bends the convention, so it requires
 Benfica's sign-off** (folded into the required heads-up). Fallback if he objects:
@@ -90,12 +95,16 @@ in `experiment_utils` + the result store; the section files are thin registratio
 `viz_tools` exposes 7 plotting tools. Five are standalone plots delegating to
 `sleap_roots_analyze.visualization`/`statistics` (histograms, boxplots, correlation matrix,
 heritability bar, variance decomposition) → they survive, repointed to upstream. Two do not:
-`plot_dendrogram` *computes* hierarchical clustering (a dropped capability, and its lazy import
-at `viz_tools.py:347` must be caught in the repoint), and `plot_outlier_comparison` reads JSON
-that only the retired outlier workflow produced (no input source post-retirement). Both are
-**dropped** and return later co-located with the granular clustering / outlier tool that owns
-them — keeping "clustering/outlier dropped" consistent rather than shipping orphan tools that
-quietly do clustering/outlier work. (`plot_pca_scree`/`plot_pca_biplot` never existed — a stale
+`plot_dendrogram` *computes* hierarchical clustering itself rather than consuming a persisted
+run (its lazy import at `viz_tools.py:347` must be caught in the repoint), and
+`plot_outlier_comparison` reads JSON that only the retired outlier workflow produced (no input
+source post-retirement). Both are **dropped** — not because clustering/outlier analysis is a
+dropped capability (clustering ships as the granular `clustering` tool, #309/#422; outlier
+detection ships as `remove_outliers`), but because neither plot has a surviving input path of
+its own: `plot_dendrogram` would need to re-run clustering internally rather than plot an
+existing granular tool's persisted result, and `plot_outlier_comparison`'s JSON source is gone.
+Each may return later as a plot that *consumes* its owning granular tool's persisted output,
+rather than computing its own. (`plot_pca_scree`/`plot_pca_biplot` never existed — a stale
 comment — and vanish with the dimred workflow.)
 
 ### D6 — Dependency prune + oracle's test-only scikit-learn
@@ -119,6 +128,17 @@ drops and is independently valuable — it removes the broken workflows and the 
 Phase 2 (migrate to sections) is a pure reorganization. Splitting into two PRs on the same
 OpenSpec change keeps each review tractable and lets Phase 1's safety land first. The
 proposal + Phase 1 code go in the first PR (never proposal-only).
+
+### D8 — #412's fix lands in this change, not as a prerequisite PR
+
+The original sequencing assumed a pending #412 PR would land on `staging` first, then Phase 2
+would move the already-corrected `pca_analysis_tool.py` verbatim. That PR does not exist: #412
+closed via the upstream fix `talmolab/sleap-roots-analyze#178` (released `0.1.0a5`), but the
+bloom-mcp-side incorporation (report `dropped_constant_traits` instead of raising
+`assumption_violated`) was never implemented — confirmed directly against the merged `staging`
+tip. Waiting for a nonexistent PR would block Phase 2 indefinitely, so this change implements the
+fix itself as its own commit (P2.0), before the P2.2 file move, preserving the original intent
+("the corrected file moves verbatim") without an external dependency.
 
 ## Risks / Mitigations
 

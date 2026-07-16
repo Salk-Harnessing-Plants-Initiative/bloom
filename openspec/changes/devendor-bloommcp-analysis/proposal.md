@@ -1,5 +1,9 @@
 ## Why
 
+_(Change-ID note: `devendor-bloommcp-analysis` names Phase 1's de-vendoring; the ID
+covers Phase 2's `sections/` reorganization too, by the deliberate one-PR-pair,
+one-change choice in `design.md`'s D7 — not a scope mismatch.)_
+
 bloom-mcp currently ships **two tool generations side by side**, both duplicating
 `sleap-roots-analyze`:
 
@@ -8,11 +12,15 @@ bloom-mcp currently ships **two tool generations side by side**, both duplicatin
    `outlier_detection.py`, `outlier_visualization.py`, `visualization.py`,
    `data_cleanup.py`, `cross_experiment_correlations.py`) are near-verbatim copies of
    `sleap_roots_analyze` modules. A symbol-parity audit against the pinned upstream
-   (`0.1.0a4`) confirms **every symbol these files define exists upstream by the same
-   name**, upstream is a strict superset (the vendored copies are an older snapshot,
-   missing the `#118` `random_state` fixes and later plotting improvements), and **none
-   of them contain any bloom-mcp-specific logic** (no file paths, plot URLs, or MCP
-   envelopes — those all live in the `tools/` wrappers). They are pure duplication.
+   (`0.1.0a5`, re-confirmed live against the installed package after this branch was
+   rebased onto `staging`) confirms **every symbol these files define exists upstream by
+   the same name**, upstream is a strict superset (the vendored copies are an older
+   snapshot, missing the `#118` `random_state` fixes and later plotting improvements),
+   and **none of them contain any bloom-mcp-specific logic** (no file paths, plot URLs,
+   or MCP envelopes — those all live in the `tools/` wrappers). They are pure
+   duplication. (This vendored `clustering.py` module is distinct from the **granular**
+   `clustering` tool added since by #309/#422 — see below; the vendored copy has no
+   surviving importer and is deleted same as the other seven.)
 
 2. **A legacy "workflow" tool layer** (`tools/workflows/{qc,outlier,stats,dimred,
    clustering}.py`) registered via `mcp.tool()`. These are the *sole consumers* of the
@@ -23,11 +31,17 @@ bloom-mcp currently ships **two tool generations side by side**, both duplicatin
    pass-through.
 
 Meanwhile Phase 2 already established the right pattern: granular contract tools
-(`qc_clean`, `qc_inspect`, `pca_analysis`, `remove_outliers`) that delegate to
+(`qc_clean`, `qc_inspect`, `pca_analysis`, `remove_outliers`, and — landed on `staging`
+after this proposal was first drafted — `clustering`, #309/#422) that delegate to
 `sleap-roots-analyze` and carry `Provenance`, and Benfica's new `sections/` sub-server
 layout (design doc `2026-06-29-bloom-mcp-contributor-namespacing.md`). The de-vendoring
 of heritability/UMAP already landed under #315 — this change finishes the job for the
-remaining analysis/plotting surface.
+remaining analysis/plotting surface. **Branch note:** this change's branch was rebased
+onto `staging` before implementation started, incorporating `clustering` (and the
+`_consumer_utils` refactor, #434) as a fifth surviving granular tool — it was not part
+of the original audit and needs no Phase-1 work (it already delegates to
+`sleap_roots_analyze` with zero vendored imports), but Phase 2 must migrate it into
+`sections/sleap_roots/analysis/` alongside the other four.
 
 The result today is confusing (three registration styles, filename collisions like
 `bloom_mcp/clustering.py` vs `tools/workflows/clustering.py`), unsafe (untested vendored
@@ -74,18 +88,29 @@ code-only PR on the same branch/change).
 
 **Phase 2 — converge tool organization on `sections/`:**
 
-- **MIGRATE** the surviving granular tools into a new **`sleap_roots` umbrella section**
-  (`sections/sleap_roots/analysis/…`, one file per tool), splitting the 5 surviving
-  plotting tools into one-file-per-tool. Reserve a `sections/sleap_roots/extraction/`
-  slot for future `sleap-roots` trait-extraction tools (**not built here**).
+- **MIGRATE** the surviving granular tools — `pca_analysis`, `qc_clean`, `qc_inspect`,
+  `remove_outliers`, and `clustering` (the last landed on `staging` via #309/#422 since
+  this proposal was first drafted; it already delegates to `sleap_roots_analyze` with no
+  vendored import, so it needs no Phase-1 work, only the Phase-2 move) — into a new
+  **`sleap_roots` umbrella section** (`sections/sleap_roots/analysis/…`, one file per
+  tool), splitting the 5 surviving plotting tools into one-file-per-tool. Reserve a
+  `sections/sleap_roots/extraction/` slot for future `sleap-roots` trait-extraction tools
+  (**not built here**).
 - **MOVE** the cross-cutting discovery tools (`list_available_experiments`,
   `load_experiment_data`, `list_existing_analyses`) into a small **`core` section**; they
   are not `sleap-roots-analyze` wrappers. **DROP `inspect_data_quality`** (redundant with
   `qc_inspect`).
+- **LAND the #412 fix** (report `dropped_constant_traits` on `pca_analysis` instead of
+  raising `assumption_violated`) as its own commit **before** `pca_analysis_tool.py`
+  moves, so Phase 2 relocates the corrected file verbatim (see "#412 same-file
+  dependency" below — its original "land the #412 PR to staging first" premise no longer
+  applies; the fix must be implemented directly in this change).
 
 **Intentionally dropped capabilities** (user-approved; re-add later as thin section tools
-if wanted): UMAP embedding, clustering, cross-method outlier-comparison plot, descriptive
-stats tables, cross-experiment correlations.
+if wanted): UMAP embedding, cross-method outlier-comparison plot, descriptive stats
+tables, cross-experiment correlations. (Clustering is **no longer** in this list — #309/
+#422 shipped it as a surviving granular tool while this proposal was in flight; see the
+branch note above.)
 
 ## Non-Goals
 
@@ -131,13 +156,14 @@ stats tables, cross-experiment correlations.
 - **Docs:** `roadmap.md` reconciled — this performs the vendored-`source/*` + `run_*_workflow`
   retirement the roadmap gates on **"after Stage 1 (Tiers 0–4) lands"** (confirm Stage 1 has
   landed before relying on the trigger; update the roadmap's stale ⬜ status). The **vendored**
-  clustering path is removed, but the planned **granular** clustering tool **#309 stays open** as
-  the sanctioned re-add path (gated on the upstream fixes its 2026-07-08 reshape lists) — this
-  change does *not* supersede #309, it removes the legacy path #309 was going to replace anyway.
-  `local-validation.md` + `bloommcp/scripts/live_persistence_smoke.py` repointed off
-  `run_clustering_workflow`; `server.py` docstring + `_WIKI` + top-level `README.md` catalogs
+  clustering path is removed; the **granular** clustering tool that was to be #309's re-add path
+  has since **landed** (#309/#422, merged onto `staging`) and is folded into this change's Phase-2
+  migration (see above) rather than staying a future tracker — mark #309/#422 done in the roadmap,
+  not "stays open." `local-validation.md` + `bloommcp/scripts/live_persistence_smoke.py` repointed
+  off `run_clustering_workflow`; `server.py` docstring + `_WIKI` + top-level `README.md` catalogs
   updated; the missing `2026-06-29-…-namespacing.md` design doc created (or its references
-  repointed); golden-fixture `_reproduced_by` provenance strings updated to `0.1.0a4`.
+  repointed); golden-fixture `_reproduced_by` provenance strings updated to `0.1.0a5` (the
+  branch's actual current pin post-rebase, bumped by the unrelated #445).
 - **Tests:** shipped-code oracle layer folded/deleted (PCA folds into cross-tier; k-means +
   correlation shipped tests deleted with their capabilities; UMAP cross-tier kept via a
   test-only `scikit-learn`), 4 delegation-guard spies lose their vendored-import half,
@@ -149,21 +175,30 @@ stats tables, cross-experiment correlations.
   one-section-per-package convention (the `sleap_roots` umbrella spans the family). This
   proposal doubles as the heads-up artifact; his non-author review is required before merge,
   and he may know an off-repo caller (Claude Desktop config, demos) to account for.
-- **#412 same-file dependency (must resolve):** #412 (report `dropped_constant_traits` instead
-  of raising `assumption_violated`) is closed-as-completed, but its fix **never landed on staging** —
-  `pca_analysis_tool.py` still raises there (no `dropped_constant_traits` field). This change relocates
-  that exact file in Phase 2. **Preferred sequencing: land the #412 fix to staging first**, then
-  Phase 2 moves the corrected file verbatim; if #412 lands *after*, its behavior must be
-  re-applied at the new `sections/sleap_roots/analysis/pca_analysis.py` path. Either way a
-  golden/drift test SHALL assert the `dropped_constant_traits` field and the no-raise behavior
-  survive the migration. (This change *reinforces* #412 — the thin-wrapper thesis is exactly why
-  the wrapper should report, not raise.)
-- **Related issues:** #308 (pca_analysis, aligned), #338/#356 (qc_clean, aligned), #309
-  (granular clustering — stays open, re-add path), #315/#305 AC5 (dep follow-up completed),
-  #412 (above), #406 (per-user identity + sections/usage — Phase 2 touches the sections surface).
-- **Dropped-capability re-adds — reference existing trackers, don't duplicate:** UMAP already has
-  **#425** (`umap_analysis` granular tool); clustering is **#309** (+ hierarchical in **#422**). Point
-  at those as the re-add paths rather than filing new ones.
+- **#412 same-file dependency (resolved by this change, not by waiting):** #412 (report
+  `dropped_constant_traits` instead of raising `assumption_violated`) is closed, but **not** by a
+  bloom-mcp PR — it was closed by the upstream fix `talmolab/sleap-roots-analyze#178` (merged
+  2026-07-10, released in `0.1.0a5`, 2026-07-14). The upstream fix's own "Incorporation into
+  bloom-mcp" checklist (surface `reason=zero_variance`/report instead of raise, reconcile the
+  now-possibly-unreachable guard, update tests) was never started on the bloom-mcp side:
+  `pca_analysis_tool.py` still unconditionally raises `assumption_violated` on a dropped constant
+  trait (verified directly against the merged `staging` tip). There is **no pending #412 PR to
+  land** — the original "land #412 first, then move the file" sequencing assumed one existed.
+  Corrected sequencing: **this change implements the fix itself**, as its own commit in Phase 2
+  (before `pca_analysis_tool.py` moves — see P2.0 in `tasks.md`), so Phase 2's move relocates the
+  already-corrected file verbatim. A golden/drift test asserts the `dropped_constant_traits` field
+  and the no-raise behavior survive the migration.
+- **Related issues:** #308 (pca_analysis, aligned), #338/#356 (qc_clean, aligned), #309/#422
+  (granular clustering — **CLOSED/MERGED** onto `staging` via PR #427/#445 while this proposal was
+  in flight; `clustering_tool.py` already ships and is folded into this change's Phase-2 migration
+  scope, not a future re-add path), #315/#305 AC5 (dep follow-up completed), #412 (above), #406
+  (per-user identity + sections/usage — Phase 2 touches the sections surface), #426 (open — adds
+  scree/biplot/variance plots to `pca_analysis`; same-file touch on `pca_analysis_tool.py`/its
+  Phase-2 destination alongside the #412 fix and the P2.2 move — no conflict expected since #426 is
+  unstarted, but worth a heads-up to whoever picks it up next).
+- **Dropped-capability re-adds — reference existing trackers, don't duplicate:** UMAP has **#425**
+  (`umap_analysis` granular tool). (Clustering is no longer a dropped capability — #309/#422 already
+  shipped it; see above.)
 - **Follow-up issues to file (genuinely new):** the DRY single-source-of-truth tool-catalog refactor;
   the `storage_backend.py` vs `storage/` name-collision cleanup; and trackers for re-adding the
   **cross-method outlier-comparison plot**, **descriptive-stats tables**, and **cross-experiment
