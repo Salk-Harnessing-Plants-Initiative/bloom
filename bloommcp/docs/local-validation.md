@@ -67,6 +67,13 @@ asserts:
 - the resolved cleaned frame has **zero NaN cells** in its trait columns
   (`df[trait_cols].isna().sum().sum() == 0`).
 
+As of #403, `qc_clean` also **requires** a resolvable genotype **and** sample-identifier column
+(auto-detected, or named via `genotype_column` / `sample_id_column`) — a frame with neither
+returns a structured `assumption_violated` error and persists nothing. Trait detection delegates to
+`sleap_roots_analyze.get_trait_columns`, so numeric metadata like `Computation.Time.s` is excluded
+from the trait set (turface: 20 detected → 19). The run records an additive `input_validation`
+manifest block and the result surfaces the resolved roles + any `validation_warnings`.
+
 This is the `qc_clean` → `pca_analysis(require_clean=True)` composition proven over the real
 storage round-trip rather than the in-memory fakes.
 

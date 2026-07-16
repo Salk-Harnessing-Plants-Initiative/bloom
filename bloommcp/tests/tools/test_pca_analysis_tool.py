@@ -431,9 +431,17 @@ def test_scores_csv_carries_sample_identity(injected_ports, monkeypatch):
     _run()
 
     scores = pd.read_csv(io.StringIO(captured["scores.csv"]))
-    # Identity columns (Barcode/Genotype/Replicate) prefix the PC columns.
+    # Identity/metadata columns prefix a trailing block of PC columns. As of #403
+    # trait detection delegates to get_trait_columns, so the numeric metadata column
+    # Computation.Time.s is (correctly) classified as metadata and carried here too —
+    # it is NOT a PC. The role columns still lead, and the PCs are the trailing block.
     assert list(scores.columns[:3]) == ["Barcode", "Genotype", "Replicate"]
-    assert scores.columns[3].startswith("PC")
+    pc_cols = [c for c in scores.columns if c.startswith("PC")]
+    assert pc_cols, "expected PC score columns"
+    assert (
+        list(scores.columns[-len(pc_cols) :]) == pc_cols
+    )  # PCs are the trailing block
+    assert "Computation.Time.s" in scores.columns  # carried as metadata, not a trait
     # Row-aligned with the cleaned frame's samples (same Barcodes, same order).
     final = _final_df()
     assert scores["Barcode"].tolist() == final["Barcode"].tolist()
