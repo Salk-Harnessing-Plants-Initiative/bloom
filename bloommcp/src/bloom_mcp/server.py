@@ -9,20 +9,13 @@ Surfaces:
   - One path per section (e.g. /phenotyping_segmentation/mcp) so a Claude
     Desktop client can load just that section. See bloom_mcp/sections/.
 
-Workflow tools (one MCP call runs the full analysis):
-  - run_qc_workflow
-  - run_outlier_workflow
-  - run_descriptive_stats_workflow
-  - run_dimensionality_reduction_workflow
-  - run_clustering_workflow
-
 Discovery tools (always-on):
   - list_available_experiments
   - load_experiment_data
-  - inspect_data_quality
   - list_existing_analyses
 
-Direct tools (granular, available for ad-hoc use):
+Direct tools (granular, available for ad-hoc use — each delegates all
+analysis/plotting math to sleap_roots_analyze; the MCP owns none of it):
   - qc_clean:          clean a raw trait table for analysis (delegates to
                        sleap_roots_analyze.clean_traits_for_analysis)
   - remove_outliers:   trim outlier samples from a cleaned experiment (delegates to
@@ -35,10 +28,16 @@ Direct tools (granular, available for ad-hoc use):
                        delegates to sleap_roots_analyze perform_kmeans_clustering /
                        perform_gmm_clustering / hierarchical_cluster_labels)
   - correlation_tools: 8 cross-experiment correlation tools
-  - viz_tools:         7 plotting tools
+  - viz_tools:         5 plotting tools (histograms, boxplots, correlation matrix,
+                       heritability bar, variance decomposition)
 
 Sections (per-package sub-servers, see bloom_mcp/sections/):
   - phenotyping_segmentation: Lin's segmentation tools (empty scaffold today)
+
+(The Phase-1 `run_*_workflow` tools — qc, outlier, stats, dimred, clustering —
+were retired: they duplicated the granular tools and/or upstream, some were
+broken, and they were the sole consumers of bloom-mcp's vendored analysis
+modules. See openspec/changes/devendor-bloommcp-analysis.)
 """
 
 import logging
@@ -70,13 +69,6 @@ from bloom_mcp.tools import (
     pca_analysis_tool,
     clustering_tool,
 )
-from bloom_mcp.tools.workflows import (
-    clustering as clustering_workflow,
-    dimred as dimred_workflow,
-    outlier as outlier_workflow,
-    qc as qc_workflow,
-    stats as stats_workflow,
-)
 from bloom_mcp.sections import SECTIONS
 
 logger = logging.getLogger(__name__)
@@ -90,13 +82,6 @@ mcp = FastMCP("bloom-tools", auth=auth_provider)
 # Discovery tools (always-on)
 qc_tools.register(mcp)
 storage_tools.register(mcp)
-
-# Workflow tools
-qc_workflow.register(mcp)
-outlier_workflow.register(mcp)
-stats_workflow.register(mcp)
-dimred_workflow.register(mcp)
-clustering_workflow.register(mcp)
 
 # Direct tools (granular)
 qc_clean_tool.register(mcp)

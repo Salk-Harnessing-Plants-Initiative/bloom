@@ -11,7 +11,6 @@ granular `clustering` tool's persisted output, and the latter's only input sourc
 """
 
 import numpy as np
-import pandas as pd
 from pathlib import Path
 
 import matplotlib

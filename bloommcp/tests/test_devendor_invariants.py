@@ -38,25 +38,41 @@ _VENDORED_MODULES = (
 )
 
 
-def _first_dotted_segment(module: str) -> str:
-    return module.split(".")[0]
-
-
 def _vendored_imports_in(py: Path) -> list[str]:
-    """Every import in `py` whose first dotted segment is `bloom_mcp.<vendored>`."""
+    """Every import in `py` that resolves to a deleted vendored analysis module —
+    both `import bloom_mcp.<vendored>[.sub]` / `from bloom_mcp.<vendored>[.sub]
+    import Y` (module path names the vendored module) and `from bloom_mcp import
+    <vendored>` (the vendored module is imported as a direct child name of the
+    `bloom_mcp` package, e.g. the historical `from bloom_mcp import data_cleanup
+    as cleanup` / `... import cross_experiment_correlations as corr` style)."""
     tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
     hits: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 parts = alias.name.split(".")
-                if len(parts) >= 2 and parts[0] == "bloom_mcp" and parts[1] in _VENDORED_MODULES:
+                if (
+                    len(parts) >= 2
+                    and parts[0] == "bloom_mcp"
+                    and parts[1] in _VENDORED_MODULES
+                ):
                     hits.append(f"{py.relative_to(_SRC)}: import {alias.name}")
         elif isinstance(node, ast.ImportFrom):
-            if node.level == 0 and node.module:
-                parts = node.module.split(".")
-                if parts[0] == "bloom_mcp" and len(parts) >= 2 and parts[1] in _VENDORED_MODULES:
-                    hits.append(f"{py.relative_to(_SRC)}: from {node.module} import ...")
+            if node.level != 0 or not node.module:
+                continue
+            parts = node.module.split(".")
+            if parts[0] != "bloom_mcp":
+                continue
+            if len(parts) >= 2 and parts[1] in _VENDORED_MODULES:
+                hits.append(f"{py.relative_to(_SRC)}: from {node.module} import ...")
+            elif len(parts) == 1:
+                # from bloom_mcp import <name> — <name> itself may be the vendored
+                # module (a package-relative import of a top-level sibling module).
+                for alias in node.names:
+                    if alias.name in _VENDORED_MODULES:
+                        hits.append(
+                            f"{py.relative_to(_SRC)}: from bloom_mcp import {alias.name}"
+                        )
     return hits
 
 
@@ -72,9 +88,9 @@ def test_no_shipped_module_imports_vendored_analysis():
     offenders: list[str] = []
     for py in _SRC.rglob("*.py"):
         offenders.extend(_vendored_imports_in(py))
-    assert not offenders, "shipped modules still import vendored analysis code:\n" + "\n".join(
-        offenders
-    )
+    assert (
+        not offenders
+    ), "shipped modules still import vendored analysis code:\n" + "\n".join(offenders)
 
 
 @pytest.mark.xfail(
@@ -160,7 +176,9 @@ def test_deleted_symbols_exist_upstream():
         for symbol in symbols:
             if not hasattr(upstream, symbol):
                 missing.append(f"sleap_roots_analyze.{module}.{symbol}")
-    assert not missing, "deleted vendored symbols missing upstream:\n" + "\n".join(missing)
+    assert not missing, "deleted vendored symbols missing upstream:\n" + "\n".join(
+        missing
+    )
 
 
 # ── Retired / dropped tool-surface absence (C5.3, C6.4, C9.2, C11.6) ───────────
@@ -198,10 +216,6 @@ _RETIRED_WORKFLOW_TOOLS = (
 )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="C7 has not yet retired tools/workflows/* — flips to a plain assert there",
-)
 def test_retired_workflow_tools_absent_and_package_gone():
     """None of the five run_*_workflow tools is registered, and the whole
     tools/workflows package is gone.

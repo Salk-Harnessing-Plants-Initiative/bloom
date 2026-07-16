@@ -452,9 +452,11 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         reason = (
             "removed every trait column"
             if not kept_cols
-            else "removed every sample"
-            if n_samples_out == 0
-            else f"left {cleaned_nan_cells} NaN cell(s) in the kept trait columns"
+            else (
+                "removed every sample"
+                if n_samples_out == 0
+                else f"left {cleaned_nan_cells} NaN cell(s) in the kept trait columns"
+            )
         )
         raise BloomMCPError(
             code="assumption_violated",
@@ -536,9 +538,9 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         n_traits_out=n_traits_out,
         n_samples_dropped=n_samples_dropped,
         n_traits_dropped=n_traits_in - n_traits_out,
-        sample_retention=round(n_samples_out / n_samples_in, 4)
-        if n_samples_in
-        else 0.0,
+        sample_retention=(
+            round(n_samples_out / n_samples_in, 4) if n_samples_in else 0.0
+        ),
         trait_retention=round(n_traits_out / n_traits_in, 4) if n_traits_in else 0.0,
         kept_trait_columns=kept_cols,
         removed_traits=removed_traits,

@@ -105,7 +105,9 @@ def test_list_existing_analyses_unknown_experiment_is_reported(injected_ports):
     assert _EXPERIMENT in payload["available_experiments"]
 
 
-def test_list_existing_analyses_response_is_cached_within_ttl(injected_ports, monkeypatch):
+def test_list_existing_analyses_response_is_cached_within_ttl(
+    injected_ports, monkeypatch
+):
     _reader, store = injected_ports
 
     first = storage_tools.list_existing_analyses(_EXPERIMENT)
