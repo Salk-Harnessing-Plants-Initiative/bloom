@@ -131,6 +131,19 @@ _DELETED_VENDORED_SYMBOLS: dict[str, list[str]] = {
 }
 
 
+def test_convert_to_json_serializable_importable_from_submodule():
+    """`convert_to_json_serializable` is not in `sleap_roots_analyze`'s top-level
+    `__all__` — it must be imported via the `.data_utils` submodule path (the
+    import-path trap design.md's Risks calls out). C5 repoints qc_clean_tool,
+    qc_inspect_tool, and remove_outliers_tool from `bloom_mcp.data_utils` to this
+    exact path.
+    """
+    from sleap_roots_analyze.data_utils import convert_to_json_serializable
+
+    assert callable(convert_to_json_serializable)
+    assert convert_to_json_serializable({"a": 1}) == {"a": 1}
+
+
 def test_deleted_symbols_exist_upstream():
     """Every symbol shipped code imported from a deleted vendored module exists in
     the pinned `sleap_roots_analyze` by the same name (module-level or the documented
@@ -148,3 +161,29 @@ def test_deleted_symbols_exist_upstream():
             if not hasattr(upstream, symbol):
                 missing.append(f"sleap_roots_analyze.{module}.{symbol}")
     assert not missing, "deleted vendored symbols missing upstream:\n" + "\n".join(missing)
+
+
+# ── Retired / dropped tool-surface absence (C5.3, C6.4, C9.2, C11.6) ───────────
+
+
+async def _live_tool_names() -> set[str]:
+    from fastmcp import Client
+
+    import bloom_mcp.server as server
+
+    async with Client(server.mcp) as client:
+        tools = await client.list_tools()
+    return {t.name for t in tools}
+
+
+def test_inspect_data_quality_absent():
+    """inspect_data_quality is removed — qc_inspect covers its use.
+
+    (bloommcp-tool-sections: 'inspect_data_quality is removed'.)
+    """
+    import asyncio
+
+    import bloom_mcp.tools.qc_tools as qc_tools
+
+    assert not hasattr(qc_tools, "inspect_data_quality")
+    assert "inspect_data_quality" not in asyncio.run(_live_tool_names())

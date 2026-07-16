@@ -70,7 +70,7 @@ from bloom_mcp.data_access import (
     ExperimentFrame,
     ExperimentReadError,
 )
-from bloom_mcp.data_utils import convert_to_json_serializable
+from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME
 from bloom_mcp.tools import _ports
 

@@ -60,7 +60,7 @@ from sleap_roots_analyze import (
 from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
 from bloom_mcp.contract import register as _contract_register
 from bloom_mcp.data_access import ExperimentReadError
-from bloom_mcp.data_utils import convert_to_json_serializable
+from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import TRAITS_DIR
 from bloom_mcp.tools import _ports
 

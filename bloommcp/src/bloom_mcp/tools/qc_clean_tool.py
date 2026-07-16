@@ -60,7 +60,7 @@ from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
 from bloom_mcp.contract import register as _contract_register
 from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.data_access.columns import resolve_columns, run_input_validation
-from bloom_mcp.data_utils import convert_to_json_serializable
+from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._qc_shared import (
