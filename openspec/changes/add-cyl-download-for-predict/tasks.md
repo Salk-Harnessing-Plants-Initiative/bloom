@@ -69,8 +69,11 @@ conflicts with this proposal's `>=0.1.0a4` floor — adding it as a bloomcli tes
 would break dependency resolution outright. Its own re-pin to the newer contracts version is
 in progress separately (per Elizabeth). Until that lands and `sleap-roots-predict` can be added
 as a git dependency, this test is `pytest.importorskip`-guarded and **will always self-skip in
-CI**; run it manually on a dev machine with `sleap-roots-predict` installed (e.g. via the local
-`sleap-roots-predict-dev` environment) before merge. Tasks 4.x/5.x below independently assert
+CI**; run it manually on a dev machine with `sleap-roots-predict` installed via its own `uv`
+extra (`uv run --with "sleap-roots-predict[cpu] @ file:///path/to/sleap-roots-predict" --extra
+test pytest ...` from `bloomcli/`, or `cd sleap-roots-predict && uv sync --extra cpu` for a
+standalone env) before merge — this repo's convention is `uv`, not a hand-maintained conda env.
+Tasks 4.x/5.x below independently assert
 every shape fact predict's code is documented to require, without importing predict — that suite,
 not this test, is the CI-enforced contract for this change.
 
@@ -219,12 +222,15 @@ sleap_roots_contracts import resolve_params; print('ok')"`) as a final gate, not
       one-off at the start of §2.
 - [x] 8.5 Run `npm run contracts:check` at the repo root to confirm the re-pin (task 2.2) passes
       the drift guard before committing.
-- [ ] 8.6 Manually run tests 3.1 (`test_oracle_sidecar_is_accepted_by_discover_scans`) and 5.6
+- [x] 8.6 Manually run tests 3.1 (`test_oracle_sidecar_is_accepted_by_discover_scans`) and 5.6
       (`test_discover_scans_smoke_after_happy_path`) with `sleap-roots-predict` installed locally
-      and confirm they pass; paste the passing output into the PR description. **Attempted during
-      implementation, blocked** — the local `sleap-roots-predict-dev` conda env has `sleap-nn
-0.0.1` installed while `sleap-roots-predict`'s own `pyproject.toml` pins `sleap-nn==0.3.0`;
-      `import sleap_roots_predict` fails on `ImportError: cannot import name 'Predictor' from
-'sleap_nn.inference'` before `discover_scans` is even reachable. This is a pre-existing,
-      broken environment issue in a separate repo, unrelated to this change — re-run once that
-      env is fixed (worth flagging to whoever owns `sleap-roots-predict-dev`'s setup).
+      and confirm they pass; paste the passing output into the PR description. **Done** — a
+      pre-existing local conda env (`sleap-roots-predict-dev`) turned out to have a stale
+      `sleap-nn` (`0.0.1` installed vs. the repo's own `pyproject.toml` pin of `0.3.0`) and was
+      abandoned; the correct approach is `uv`, this repo's actual convention:
+      `uv run --with "sleap-roots-predict[cpu] @ file:///C:/repos/sleap-roots-predict" --extra
+test pytest tests/test_cyl_download_for_predict.py -k "oracle or discover_scans_smoke" -v`
+      from `bloomcli/`, which builds a fresh env from `sleap-roots-predict`'s own declared `cpu`
+      extra (correctly pins `sleap-nn==0.3.0` + CPU `torch`). Result:
+      `2 passed, 22 deselected in 24.46s` — both oracle tests pass against the real
+      `sleap_roots_predict.discover_scans`.

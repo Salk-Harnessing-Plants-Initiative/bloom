@@ -109,10 +109,15 @@ to get a green predict run; this change provides the real stage-in.
   skip a test. Per Elizabeth (2026-07-15): the sleap-roots-predict repo is actively being re-pinned
   to the newest sleap-roots-contracts as a separate, in-flight piece of work — once that lands,
   add `sleap-roots-predict` as a git dependency in a new bloomcli test extra and wire tests 3.1/5.6
-  into CI for real. Until then, they remain `pytest.importorskip`-guarded, run manually on a dev
-  machine with `sleap-roots-predict` installed locally, and are not treated as verifying anything
-  in CI. The non-skipped tests (4.x/5.x) independently assert every shape fact predict's code is
-  documented to require, without importing predict.
+  into CI for real. Until then, they remain `pytest.importorskip`-guarded and are not treated as
+  verifying anything in CI. Manually verified once during implementation (task 8.6) using
+  `sleap-roots-predict`'s own `uv`-managed `cpu` extra (`uv run --with
+"sleap-roots-predict[cpu] @ file:///path/to/sleap-roots-predict" --extra test pytest ...` — this
+  repo's convention is `uv`, not a hand-maintained conda env, which is why an earlier attempt
+  against a stale pre-existing conda env failed for an unrelated reason and was abandoned): both
+  passed (`2 passed, 22 deselected`). The non-skipped tests (4.x/5.x) independently assert every
+  shape fact predict's code is documented to require, without importing predict — that remains
+  the CI-enforced contract; 3.1/5.6 are a valuable but not CI-gated extra confirmation.
 
 ## Risks / Trade-offs
 
@@ -130,8 +135,8 @@ to get a green predict run; this change provides the real stage-in.
   `sleap-roots-predict` is not added as a dependency (PyPI-absent, and its `pyproject.toml`
   exact-pins a conflicting contracts version). Mitigation: tracked as a follow-up once
   sleap-roots-predict's own re-pin (in progress per Elizabeth) lands; until then the shape-only
-  tests (4.x/5.x) are the enforced contract, and 3.1/5.6 are run manually on a dev machine before
-  merge.
+  tests (4.x/5.x) are the enforced contract. 3.1/5.6 were manually run before merge and passed
+  (task 8.6).
 - **Duplicate or non-integer `frame_number` in `cyl_images` (accepted, pre-existing limitation,
   not introduced by this change).** `frame_dest_for_predict` derives each frame's filename from
   `frame_number` alone (`f"{image['frame_number']}{ext}"`), matching `download.py`'s existing
