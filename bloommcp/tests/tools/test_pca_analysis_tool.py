@@ -365,7 +365,12 @@ def test_duplicate_trait_columns_is_invalid_input_naming_them(
 # 9.4 — a constant certified trait the delegate would silently drop is surfaced
 
 
-def test_constant_certified_trait_is_assumption_violated(injected_ports):
+def test_constant_certified_trait_is_reported_not_raised(injected_ports):
+    """#412 — a constant trait the delegate silently drops is reported via
+    ``dropped_constant_traits``, not raised as ``assumption_violated``, as long as
+    enough non-constant traits remain to fit (see
+    :func:`test_real_delegate_degenerate_selection_is_assumption_violated` above for
+    the genuine no-non-constant-trait-survives case, which still raises)."""
     reader, store = injected_ports
     # Two varying traits (a real fit is reachable) + one constant trait the delegate drops.
     mixed = pd.DataFrame(
@@ -376,12 +381,15 @@ def test_constant_certified_trait_is_assumption_violated(injected_ports):
         }
     )
     reader.add_cleaned_version("mixed.csv", "v1", mixed, make_latest=True)
-    with pytest.raises(BloomMCPError) as exc:
-        pca_analysis(PCAAnalysisParams(experiment="mixed.csv"))
-    assert exc.value.code == "assumption_violated"
-    assert "tConst" in exc.value.message
-    # The internally inconsistent artifact is never persisted.
-    assert store.list_runs("mixed.csv", "pca") == []
+
+    result = pca_analysis(PCAAnalysisParams(experiment="mixed.csv"))
+
+    assert result.dropped_constant_traits == ["tConst"]
+    assert result.n_features == len(result.feature_names) == 2
+    assert "tConst" not in result.feature_names
+    # The run IS persisted — the artifact is internally consistent (n_features /
+    # feature_names / the persisted loadings all reflect the same post-drop set).
+    assert store.list_runs("mixed.csv", "pca") != []
 
 
 def test_n_features_equals_fitted_feature_count(injected_ports):

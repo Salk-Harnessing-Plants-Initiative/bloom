@@ -47,11 +47,7 @@ from sleap_roots_analyze import PCAResult, perform_pca_analysis
 
 from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
 from bloom_mcp.contract import register as _contract_register
-from bloom_mcp.data_access import (
-    CleanedVersionRequiredError,
-    ExperimentFrame,
-    ExperimentReadError,
-)
+from bloom_mcp.data_access import CleanedVersionRequiredError, ExperimentReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import _build_output_frame, snapshot_frame
 from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
@@ -137,6 +133,14 @@ class PCAAnalysisResult(RunLinks):
     explained_variance_ratio: list[float]
     cumulative_variance_ratio: list[float]
     eigenvalues: list[float]
+    dropped_constant_traits: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Certified trait columns the delegate silently dropped before fitting because "
+            "they were constant (zero-variance) in this selection. Empty when none were "
+            "dropped. n_features/feature_names already reflect the post-drop set."
+        ),
+    )
 
 
 def _biplot_df(frame: ExperimentFrame) -> pd.DataFrame:
@@ -292,26 +296,15 @@ def pca_analysis(
         explained_variance_threshold=params.explained_variance_threshold,
     )
 
-    # The delegate silently drops zero-variance (constant) columns before fitting, so
-    # feature_names can be shorter than the requested set — which would make the reported
-    # n_features disagree with the persisted (n-1)-row loadings. Surface that rather than
-    # emit an internally inconsistent artifact. (Duplicate names are already rejected, so a
-    # shrink here means a constant certified trait, not a re-selected duplicate.)
+    # The delegate silently drops zero-variance (constant) columns before fitting. That's
+    # not an inconsistency to reject (#412): n_features/feature_names below already reflect
+    # the post-drop set, so the persisted loadings and the reported result agree with each
+    # other. Report which certified columns were dropped rather than raising — the thin
+    # wrapper's job is to surface what the delegate did, not to demand every certified column
+    # survive. (Duplicate names are already rejected, so a drop here means a constant
+    # certified trait, not a re-selected duplicate.)
     fitted = set(pca.feature_names)
-    dropped = [c for c in trait_cols if str(c) not in fitted]
-    if dropped:
-        raise BloomMCPError(
-            code="assumption_violated",
-            message=(
-                "PCA dropped constant (zero-variance) trait column(s) from the certified "
-                f"selection: {dropped}. Fitting the remainder would report a feature count "
-                "that disagrees with the persisted loadings."
-            ),
-            remedy=(
-                "Exclude the constant column(s) from trait_columns (or re-run qc_clean to "
-                "drop them), then retry."
-            ),
-        )
+    dropped_constant_traits = [c for c in trait_cols if str(c) not in fitted]
 
     # Optional plots — validate keys and generate figures BEFORE create_run so an unknown
     # key fails as invalid_input with no run committed. The try/finally wraps the whole
@@ -374,6 +367,7 @@ def pca_analysis(
         explained_variance_ratio=list(pca.explained_variance_ratio),
         cumulative_variance_ratio=list(pca.cumulative_variance_ratio),
         eigenvalues=list(pca.eigenvalues),
+        dropped_constant_traits=dropped_constant_traits,
         run_ref=stored.run_ref,
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,
