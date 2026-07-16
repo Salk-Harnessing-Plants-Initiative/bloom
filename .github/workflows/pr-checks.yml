@@ -748,7 +748,7 @@ jobs:
       - name: Show migration status on failure
         if: failure()
         run: |
-          [ -f .env.ci ] || { echo "skipping — .env.ci was never generated (job canceled/failed early)"; exit 0; }
+          [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (an earlier step failed before this ran)"; exit 0; }
           PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
           PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
           echo "::add-mask::$PG_PASSWORD"
@@ -763,13 +763,13 @@ jobs:
       # Layer C — fenced code block of migration state in the run's summary panel.
       # Uses CLI's native text output (the `-o json` flag does NOT exist on
       # `migration list` in the pinned CLI version — see SUPABASE_VERSION above).
-      # Guarded: if: always() also fires when a superseding push cancels this
-      # run before .env.ci is ever generated (#455) — skip cleanly instead of
-      # crashing on a missing-file error.
+      # Guarded: if: always() fires both when a superseding push cancels this
+      # run and when an earlier step fails, before .env.ci is ever generated
+      # (#455) — skip cleanly instead of crashing on a missing-file error.
       - name: Migration summary
         if: always()
         run: |
-          [ -f .env.ci ] || { echo "skipping — .env.ci was never generated (job canceled/failed early)"; exit 0; }
+          [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (job canceled or failed before this step ran)"; exit 0; }
           PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
           PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
           echo "::add-mask::$PG_PASSWORD"
@@ -875,9 +875,13 @@ jobs:
           path: web/playwright-report/
           retention-days: 7
 
+      # Guarded: if: failure() fires if an earlier, unrelated step fails
+      # before .env.ci is ever generated (#455) — same defect class as
+      # "Show migration status on failure" above.
       - name: Debug logs on failure
         if: failure()
         run: |
+          [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (an earlier step failed before this ran)"; exit 0; }
           echo "=== Container Status ==="
           docker compose $COMPOSE_FILES --env-file .env.ci ps
           echo "=== db-prod logs ==="
@@ -893,13 +897,14 @@ jobs:
           echo "=== bloommcp logs ==="
           docker compose $COMPOSE_FILES --env-file .env.ci logs bloommcp --tail=50
 
-      # Guarded: if: always() also fires when a superseding push cancels this
-      # run before .env.ci is ever generated (#455) — nothing was ever
-      # brought up in that case, so there's nothing to tear down.
+      # Guarded: if: always() fires both when a superseding push cancels this
+      # run and when an earlier step fails, before .env.ci is ever generated
+      # (#455) — nothing was ever brought up in that case, so there's nothing
+      # to tear down.
       - name: Cleanup
         if: always()
         run: |
-          [ -f .env.ci ] || { echo "skipping — .env.ci was never generated (job canceled/failed early)"; exit 0; }
+          [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (job canceled or failed before this step ran)"; exit 0; }
           docker compose $COMPOSE_FILES --env-file .env.ci down -v
 
   # Exercise the *documented dev workflow* end to end on docker-compose.dev.yml
@@ -973,9 +978,13 @@ jobs:
       - name: make bloommcp-smoke (live persistence smoke through real ports)
         run: make bloommcp-smoke
 
+      # Guarded: if: failure() fires if an earlier, unrelated step fails
+      # before .env.dev is ever generated (#455) — same defect class as
+      # compose-health-check's "Debug logs on failure" above.
       - name: Debug logs on failure
         if: failure()
         run: |
+          [ -s .env.dev ] || { echo "::notice::skipping — .env.dev was never generated (an earlier step failed before this ran)"; exit 0; }
           echo "=== Container Status ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev ps
           echo "=== db-dev logs ==="
@@ -991,14 +1000,15 @@ jobs:
           echo "=== langchain-agent logs ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs langchain-agent --tail=50
 
-      # Guarded: the workflow-level cancel-in-progress concurrency group can
-      # cancel this job before "make init" ever generates .env.dev (#455) —
-      # nothing was ever brought up in that case, so there's nothing to tear
-      # down.
+      # Guarded: if: always() fires both when the workflow-level
+      # cancel-in-progress concurrency group cancels this job and when an
+      # earlier step fails, before "make init" ever generates .env.dev
+      # (#455) — nothing was ever brought up in that case, so there's
+      # nothing to tear down.
       - name: Cleanup
         if: always()
         run: |
-          [ -f .env.dev ] || { echo "skipping — .env.dev was never generated (job canceled/failed early)"; exit 0; }
+          [ -s .env.dev ] || { echo "::notice::skipping — .env.dev was never generated (job canceled or failed before this step ran)"; exit 0; }
           docker compose -f docker-compose.dev.yml --env-file .env.dev down -v
 
   extract-pinned-images:
