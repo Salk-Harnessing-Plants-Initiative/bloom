@@ -276,34 +276,40 @@ def plot_variance_decomposition(filename: str) -> str:
     if "error" in h2_results:
         return f"Heritability calculation failed: {h2_results['error']}"
 
-    rows = []
-    for trait in trait_cols:
-        r = h2_results.get(trait, {})
-        if "heritability" in r:
-            # Fail loudly on a missing variance key rather than defaulting to 0: a
-            # silent default would plot a wrong (zero) variance decomposition with no
-            # error if the delegated library ever renamed/dropped the key. The
-            # delegation-boundary oracle pins these keys, so this guards a future bump.
-            missing = [k for k in ("var_genetic", "var_residual") if k not in r]
-            if missing:
-                return (
-                    f"Variance decomposition unavailable: heritability result for "
-                    f"{trait!r} is missing {missing} — the sleap-roots-analyze return "
-                    f"contract changed. Refusing to plot a zero-filled decomposition."
-                )
-            rows.append(
-                {
-                    "trait": trait,
-                    "H2": r["heritability"],
-                    "var_genetic": r["var_genetic"],
-                    "var_residual": r["var_residual"],
-                }
-            )
+    # Delegate the comparison-table shape to the same upstream helper
+    # create_variance_decomposition_plot expects (compare_trait_heritabilities'
+    # own docstring shows its output feeding this exact plot) rather than hand-rolling
+    # a subset of its columns — the hand-rolled version was a pre-existing bug (wrong
+    # column name, and missing columns the delegate reads), so every call raised a
+    # KeyError; this tool never actually produced a plot before this fix.
+    comparison_df = stats_module.compare_trait_heritabilities(
+        df,
+        trait_cols,
+        h2_results,
+        genotype_col=genotype_col,
+        replicate_col=replicate_col,
+    )
 
-    if not rows:
+    # Traits calculate_heritability_estimates couldn't score land as NaN rows in
+    # compare_trait_heritabilities' output — exclude them (mirrors the tool's prior
+    # "only traits with a heritability result" filter).
+    comparison_df = comparison_df[comparison_df["heritability"].notna()]
+
+    # Fail loudly rather than plot a silently-zero-filled bar: a scored trait with a
+    # missing variance component means the delegated contract changed shape.
+    inconsistent = comparison_df[
+        comparison_df["var_genetic"].isna() | comparison_df["var_residual"].isna()
+    ]
+    if not inconsistent.empty:
+        return (
+            "Variance decomposition unavailable: heritability result for "
+            f"{list(inconsistent['trait'])} is missing var_genetic/var_residual — "
+            "the sleap-roots-analyze return contract changed. Refusing to plot a "
+            "zero-filled decomposition."
+        )
+
+    if comparison_df.empty:
         return "No valid heritability results to plot."
-
-    comparison_df = pd.DataFrame(rows)
 
     try:
         fig = create_variance_decomposition_plot(comparison_df)
@@ -313,7 +319,7 @@ def plot_variance_decomposition(filename: str) -> str:
     url = _save_plot(fig, f"variance_decomposition_{stem}.png")
     return (
         f"Variance Decomposition: {stem} (source: {source})\n"
-        f"  {len(rows)} traits plotted\n"
+        f"  {len(comparison_df)} traits plotted\n"
         f"  Plot saved: {url}"
     )
 
