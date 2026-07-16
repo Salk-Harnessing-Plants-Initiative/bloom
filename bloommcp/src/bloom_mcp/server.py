@@ -27,7 +27,6 @@ analysis/plotting math to sleap_roots_analyze; the MCP owns none of it):
   - clustering:        k-means / GMM / hierarchical on a cleaned experiment (require_clean;
                        delegates to sleap_roots_analyze perform_kmeans_clustering /
                        perform_gmm_clustering / hierarchical_cluster_labels)
-  - correlation_tools: 8 cross-experiment correlation tools
   - viz_tools:         5 plotting tools (histograms, boxplots, correlation matrix,
                        heritability bar, variance decomposition)
 
@@ -37,7 +36,10 @@ Sections (per-package sub-servers, see bloom_mcp/sections/):
 (The Phase-1 `run_*_workflow` tools — qc, outlier, stats, dimred, clustering —
 were retired: they duplicated the granular tools and/or upstream, some were
 broken, and they were the sole consumers of bloom-mcp's vendored analysis
-modules. See openspec/changes/devendor-bloommcp-analysis.)
+modules. The 8 `correlation_tools` were dropped together with the vendored
+`cross_experiment_correlations` module they wrapped — upstream's
+`cross_experiment_analysis` has a different contract, so rewiring would have
+silently changed numbers. See openspec/changes/devendor-bloommcp-analysis.)
 """
 
 import logging
@@ -61,7 +63,6 @@ from bloom_mcp.auth import API_KEY, auth_provider
 from bloom_mcp.tools import (
     qc_tools,
     viz_tools,
-    correlation_tools,
     storage_tools,
     qc_clean_tool,
     remove_outliers_tool,
@@ -89,7 +90,6 @@ remove_outliers_tool.register(mcp)
 qc_inspect_tool.register(mcp)
 pca_analysis_tool.register(mcp)
 clustering_tool.register(mcp)
-correlation_tools.register(mcp)
 viz_tools.register(mcp)
 
 # --- Sections ---

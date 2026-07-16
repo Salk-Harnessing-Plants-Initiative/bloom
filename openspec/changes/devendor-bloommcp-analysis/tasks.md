@@ -156,19 +156,24 @@ before its vendored copy is removed (C2/C10).
       has a different contract — rewiring would change numbers.)
 - [ ] C9.2 Add `test_correlation_tools_absent` (analogous to C6.4): the 8 correlation tool names are
       not in `tools/list` and `import bloom_mcp.tools.correlation_tools` /
-      `import bloom_mcp.cross_experiment_correlations` raise `ModuleNotFoundError`.
+      `import bloom_mcp.cross_experiment_correlations` raise `ModuleNotFoundError`. **Flip C2.1
+      (`test_no_shipped_module_imports_vendored_analysis`) from `xfail` to a plain assert here** — it
+      is genuinely green as of this commit (C4/C5/C7/C8 repointed every other consumer; C9.1 deletes
+      the last one), *before* C10 deletes the files. C2.2 (`test_vendored_analysis_modules_absent`,
+      the files-are-gone check) stays `xfail` until C10 — the import-invariant and the
+      files-absent-invariant become true at different commits, not the same one.
 
 ### C10 — Delete remaining vendored modules
 
 - [ ] C10.1 Delete `pca.py`, `clustering.py`, `cluster_visualization.py`, `outlier_detection.py`,
       `outlier_visualization.py`, `visualization.py`, `data_cleanup.py`, `data_utils.py`. Flip
-      C2.1/C2.2 from `xfail` to plain asserts (now green). Note: the flip is only valid because
-      C4 (viz repoint incl. the lazy `clustering` import), C5 (discovery + `convert_to_json_serializable`
-      submodule repoint), **C7** (deletes `tools/workflows/*`, the *sole* consumers of several vendored
-      modules per this proposal's own Why section — omitting this from the dependency chain would
-      leave a bare `ModuleNotFoundError` at collection, not just a failed xfail-flip), C8 (oracle + spy
-      imports), and C9 (correlation) have already removed **every** vendored importer — deletion alone
-      is not sufficient.
+      C2.2 from `xfail` to a plain assert (C2.1 already flipped in C9.2). Note: the deletion is only
+      safe because C4 (viz repoint incl. the lazy `clustering` import), C5 (discovery +
+      `convert_to_json_serializable` submodule repoint), **C7** (deletes `tools/workflows/*`, the
+      *sole* consumers of several vendored modules per this proposal's own Why section — omitting
+      this from the dependency chain would leave a bare `ModuleNotFoundError` at collection), C8
+      (oracle + spy imports), and C9 (correlation) have already removed **every** vendored importer —
+      deletion alone (without those five prior repoints) would not have been sufficient.
 - [ ] C10.2 Add `test_server_boots_after_devendor`: subprocess `import bloom_mcp.server` +
       `build_app()` in a clean env returns 0 (catches any dangling vendored import). (Delta:
       *No dangling registration or import*.)

@@ -76,14 +76,15 @@ def _vendored_imports_in(py: Path) -> list[str]:
     return hits
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="C10 has not yet deleted the vendored modules' importers (C4/C5/C7/C8/C9)",
-)
 def test_no_shipped_module_imports_vendored_analysis():
     """No module under src/bloom_mcp/** imports a deleted vendored analysis module.
 
     (bloommcp-packaging: 'No shipped module imports a vendored analysis module'.)
+
+    Genuinely green as of C9 (not waiting for C10): C4/C5/C7/C8 repointed every
+    consumer, and C9 deleted the last one (correlation_tools.py). C10 only deletes
+    the now-unimported vendored files themselves — test_vendored_analysis_modules_absent
+    covers that and stays xfail until then.
     """
     offenders: list[str] = []
     for py in _SRC.rglob("*.py"):
@@ -230,3 +231,35 @@ def test_retired_workflow_tools_absent_and_package_gone():
 
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("bloom_mcp.tools.workflows")
+
+
+_RETIRED_CORRELATION_TOOLS = (
+    "list_experiments",
+    "run_cross_experiment_correlations",
+    "plot_trait_correlation",
+    "plot_correlation_heatmap",
+    "plot_genotype_boxplots",
+    "check_correlation_power",
+    "find_redundant_traits",
+    "compare_trait_across_experiments",
+)
+
+
+def test_correlation_tools_absent():
+    """None of the 8 correlation tools is registered, and both correlation_tools.py
+    and cross_experiment_correlations.py are gone (deleted together, not rewired —
+    upstream cross_experiment_analysis has a different contract).
+
+    (bloommcp-experiment-read: 'The deleted cross-experiment local-CSV read path is
+    gone'.)
+    """
+    import asyncio
+
+    live = asyncio.run(_live_tool_names())
+    present = [name for name in _RETIRED_CORRELATION_TOOLS if name in live]
+    assert not present, f"retired correlation tools still registered: {present}"
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("bloom_mcp.tools.correlation_tools")
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("bloom_mcp.cross_experiment_correlations")

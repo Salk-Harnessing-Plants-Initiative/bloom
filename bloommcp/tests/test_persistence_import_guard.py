@@ -17,10 +17,10 @@ _SRC = Path(__file__).resolve().parents[1] / "src" / "bloom_mcp"
 # tools (tools/workflows/*, _helpers.py) are retired by devendor-bloommcp-analysis
 # (C7) — the port-only guarantee they used to (vacuously) cover is now enforced on
 # the real write consumers: the 5 granular persistence-writing tools.
+# tools/correlation_tools.py was dropped in C9 (see test_correlation_tools_absent).
 _CONSUMERS = [
     "tools/qc_tools.py",
     "tools/storage_tools.py",
-    "tools/correlation_tools.py",
     "tools/pca_analysis_tool.py",
     "tools/qc_clean_tool.py",
     "tools/qc_inspect_tool.py",
