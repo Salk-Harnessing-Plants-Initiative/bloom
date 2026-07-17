@@ -150,23 +150,49 @@ def build_app() -> Starlette:
 
 
 def main() -> None:
-    """Validate env, inject persistence adapters, then serve the ASGI app.
+    """Validate the runtime env (backend-aware), then start the MCP server.
 
     The validators run before the server binds the port so a misconfigured
     deploy fails fast at container boot — preserving the fail-fast that used to
     come from importing ``supabase_client`` / ``experiment_utils``.
-    """
-    validate_supabase_env()
-    validate_data_env()
 
-    # Composition root: inject the production persistence adapters into the
-    # tools layer. Tools depend on the ports (bloom_mcp.tools._ports), never on
-    # Supabase / AnalysisWriter directly, so swapping a backend is a change here.
-    from bloom_mcp.data_access import SupabaseReader
+    Backend-aware gate: ``validate_data_env()`` runs in both modes — it validates
+    the data directories AND the storage backend, so an invalid
+    ``BLOOM_STORAGE_BACKEND`` value or an unusable local output root fails fast
+    here. In fully-local mode (``BLOOM_STORAGE_BACKEND=local``) the Supabase
+    credentials are not required and the local input root is validated instead;
+    otherwise the Supabase gate runs exactly as before. prod/staging never set
+    ``local``, so their fail-fast is unchanged.
+    """
+    from bloom_mcp.experiment_utils import validate_experiment_local_root
+    from bloom_mcp.storage_backend import is_local_backend
+
+    validate_data_env()
+    fully_local = is_local_backend()
+    if fully_local:
+        validate_experiment_local_root()
+    else:
+        validate_supabase_env()
+
+    # Composition root: inject the persistence adapters into the tools layer.
+    # Tools depend on the ports (bloom_mcp.tools._ports), never on Supabase /
+    # AnalysisWriter directly. The reader is coupled to the object-storage backend
+    # (both local in fully-local mode) so inputs and outputs never split stores.
+    # NOTE: the store is SupabaseResultStore() in *both* branches on purpose — in
+    # fully-local mode its object-storage ops route through the active local backend
+    # (per #389), so it makes no Supabase call; the local-ness lives in the backend
+    # beneath the store, not in a separate store class.
     from bloom_mcp.result_store import SupabaseResultStore
     from bloom_mcp.tools import _ports
 
-    _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    if fully_local:
+        from bloom_mcp.data_access import LocalReader
+
+        _ports.configure(reader=LocalReader(), store=SupabaseResultStore())
+    else:
+        from bloom_mcp.data_access import SupabaseReader
+
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
     if API_KEY:
         print("Bloom MCP Server starting with API key authentication")

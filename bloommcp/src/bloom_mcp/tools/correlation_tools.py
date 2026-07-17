@@ -5,8 +5,6 @@ Wraps functions from bloom_mcp/cross_experiment_correlations.py. Uses
 bloom_mcp/experiment_utils.py for dynamic experiment discovery.
 """
 
-import pandas as pd
-
 from bloom_mcp import cross_experiment_correlations as corr
 
 import matplotlib
@@ -15,11 +13,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
+from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.experiment_utils import (
-    TRAITS_DIR,
     PLOTS_DIR,
     PLOTS_URL as PLOTS_URL_BASE,
 )
+from bloom_mcp.tools import _ports
 
 # Experiment file mapping
 EXPERIMENTS = {
@@ -35,18 +34,37 @@ EXPERIMENTS = {
     },
 }
 
-# Ensure plots directory exists
-PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-
-
 def _get_trait_cols(df):
     """Get trait columns (everything except genotype/rep metadata)."""
     skip = {"genotype", "replicate", "Geno", "geno", "Rep", "rep", "Replicate"}
     return [c for c in df.columns if c not in skip]
 
 
+def _load_raw(name: str):
+    """Load a raw experiment frame through the injected ExperimentReader port.
+
+    Routing cross-experiment reads through the port (with ``version="raw"`` to keep
+    today's raw-only semantics) honours the active adapter — local or Supabase —
+    instead of reading ``pd.read_csv(TRAITS_DIR / …)`` directly.
+    """
+    return _ports.reader().load_experiment(name, version="raw").df
+
+
+def _load_pair(exp1_info, exp2_info):
+    """Load + align two experiments, sourcing both frames through the port."""
+    return corr.align_experiments(
+        _load_raw(exp1_info["path"]),
+        _load_raw(exp2_info["path"]),
+        genotype_col1=exp1_info["genotype_col"],
+        genotype_col2=exp2_info["genotype_col"],
+        rep_col1=exp1_info["rep_col"],
+        rep_col2=exp2_info["rep_col"],
+    )
+
+
 def _save_plot(fig, name: str) -> str:
     """Save a matplotlib figure and return the URL."""
+    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     filepath = PLOTS_DIR / f"{name}.png"
     fig.savefig(filepath, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -66,22 +84,20 @@ def list_experiments() -> str:
     """
     lines = ["Available experiments:\n"]
     for name, info in EXPERIMENTS.items():
-        csv_path = TRAITS_DIR / info["path"]
-        exists = csv_path.exists()
-        status = "ready" if exists else "FILE MISSING"
+        try:
+            df = _load_raw(info["path"])
+        except ExperimentReadError:
+            lines.append(f"  {name}: {info['path']} [FILE MISSING]")
+            continue
 
-        if exists:
-            df = pd.read_csv(csv_path)
-            geno_col = info["genotype_col"]
-            n_genos = df[geno_col].nunique()
-            n_samples = len(df)
-            n_traits = len(_get_trait_cols(df))
-            lines.append(
-                f"  {name}: {n_genos} genotypes, {n_samples} samples, "
-                f"{n_traits} traits [{status}]"
-            )
-        else:
-            lines.append(f"  {name}: {csv_path} [{status}]")
+        geno_col = info["genotype_col"]
+        n_genos = df[geno_col].nunique()
+        n_samples = len(df)
+        n_traits = len(_get_trait_cols(df))
+        lines.append(
+            f"  {name}: {n_genos} genotypes, {n_samples} samples, "
+            f"{n_traits} traits [ready]"
+        )
 
     return "\n".join(lines)
 
@@ -116,14 +132,10 @@ def run_cross_experiment_correlations(
     exp1_info = EXPERIMENTS[experiment_1]
     exp2_info = EXPERIMENTS[experiment_2]
 
-    exp1_df, exp2_df, common_genos = corr.load_and_align_experiments(
-        TRAITS_DIR / exp1_info["path"],
-        TRAITS_DIR / exp2_info["path"],
-        genotype_col1=exp1_info["genotype_col"],
-        genotype_col2=exp2_info["genotype_col"],
-        rep_col1=exp1_info["rep_col"],
-        rep_col2=exp2_info["rep_col"],
-    )
+    try:
+        exp1_df, exp2_df, common_genos = _load_pair(exp1_info, exp2_info)
+    except ExperimentReadError as exc:
+        return f"Could not load experiment data: {exc}"
 
     exp1_traits = _get_trait_cols(exp1_df)
     exp2_traits = _get_trait_cols(exp2_df)
@@ -202,14 +214,10 @@ def plot_trait_correlation(
     exp1_info = EXPERIMENTS[experiment_1]
     exp2_info = EXPERIMENTS[experiment_2]
 
-    exp1_df, exp2_df, common_genos = corr.load_and_align_experiments(
-        TRAITS_DIR / exp1_info["path"],
-        TRAITS_DIR / exp2_info["path"],
-        genotype_col1=exp1_info["genotype_col"],
-        genotype_col2=exp2_info["genotype_col"],
-        rep_col1=exp1_info["rep_col"],
-        rep_col2=exp2_info["rep_col"],
-    )
+    try:
+        exp1_df, exp2_df, common_genos = _load_pair(exp1_info, exp2_info)
+    except ExperimentReadError as exc:
+        return f"Could not load experiment data: {exc}"
 
     exp1_traits = _get_trait_cols(exp1_df)
     exp2_traits = _get_trait_cols(exp2_df)
@@ -268,17 +276,16 @@ def plot_correlation_heatmap(
         experiment_2: Second experiment name
         top_n_traits: Number of top traits to include per axis
     """
+    if experiment_1 not in EXPERIMENTS or experiment_2 not in EXPERIMENTS:
+        return f"Unknown experiment. Available: {', '.join(EXPERIMENTS.keys())}"
+
     exp1_info = EXPERIMENTS[experiment_1]
     exp2_info = EXPERIMENTS[experiment_2]
 
-    exp1_df, exp2_df, _ = corr.load_and_align_experiments(
-        TRAITS_DIR / exp1_info["path"],
-        TRAITS_DIR / exp2_info["path"],
-        genotype_col1=exp1_info["genotype_col"],
-        genotype_col2=exp2_info["genotype_col"],
-        rep_col1=exp1_info["rep_col"],
-        rep_col2=exp2_info["rep_col"],
-    )
+    try:
+        exp1_df, exp2_df, _ = _load_pair(exp1_info, exp2_info)
+    except ExperimentReadError as exc:
+        return f"Could not load experiment data: {exc}"
 
     exp1_traits = _get_trait_cols(exp1_df)
     exp2_traits = _get_trait_cols(exp2_df)
@@ -317,17 +324,16 @@ def plot_genotype_boxplots(
         experiment_1: First experiment name
         experiment_2: Second experiment name
     """
+    if experiment_1 not in EXPERIMENTS or experiment_2 not in EXPERIMENTS:
+        return f"Unknown experiment. Available: {', '.join(EXPERIMENTS.keys())}"
+
     exp1_info = EXPERIMENTS[experiment_1]
     exp2_info = EXPERIMENTS[experiment_2]
 
-    exp1_df, exp2_df, _ = corr.load_and_align_experiments(
-        TRAITS_DIR / exp1_info["path"],
-        TRAITS_DIR / exp2_info["path"],
-        genotype_col1=exp1_info["genotype_col"],
-        genotype_col2=exp2_info["genotype_col"],
-        rep_col1=exp1_info["rep_col"],
-        rep_col2=exp2_info["rep_col"],
-    )
+    try:
+        exp1_df, exp2_df, _ = _load_pair(exp1_info, exp2_info)
+    except ExperimentReadError as exc:
+        return f"Could not load experiment data: {exc}"
 
     fig = corr.create_genotype_boxplots(
         exp1_df,
@@ -360,17 +366,16 @@ def check_correlation_power(
         experiment_1: First experiment name
         experiment_2: Second experiment name
     """
+    if experiment_1 not in EXPERIMENTS or experiment_2 not in EXPERIMENTS:
+        return f"Unknown experiment. Available: {', '.join(EXPERIMENTS.keys())}"
+
     exp1_info = EXPERIMENTS[experiment_1]
     exp2_info = EXPERIMENTS[experiment_2]
 
-    exp1_df, exp2_df, common_genos = corr.load_and_align_experiments(
-        TRAITS_DIR / exp1_info["path"],
-        TRAITS_DIR / exp2_info["path"],
-        genotype_col1=exp1_info["genotype_col"],
-        genotype_col2=exp2_info["genotype_col"],
-        rep_col1=exp1_info["rep_col"],
-        rep_col2=exp2_info["rep_col"],
-    )
+    try:
+        exp1_df, exp2_df, common_genos = _load_pair(exp1_info, exp2_info)
+    except ExperimentReadError as exc:
+        return f"Could not load experiment data: {exc}"
 
     n = len(common_genos)
 
@@ -444,7 +449,10 @@ def find_redundant_traits(
         return f"Unknown experiment. Available: {', '.join(EXPERIMENTS.keys())}"
 
     exp_info = EXPERIMENTS[experiment]
-    df = pd.read_csv(TRAITS_DIR / exp_info["path"])
+    try:
+        df = _load_raw(exp_info["path"])
+    except ExperimentReadError as exc:
+        return f"Could not load experiment data: {exc}"
 
     geno_col = exp_info["genotype_col"]
     trait_cols = _get_trait_cols(df)
@@ -504,17 +512,16 @@ def compare_trait_across_experiments(
         experiment_1: First experiment name
         experiment_2: Second experiment name
     """
+    if experiment_1 not in EXPERIMENTS or experiment_2 not in EXPERIMENTS:
+        return f"Unknown experiment. Available: {', '.join(EXPERIMENTS.keys())}"
+
     exp1_info = EXPERIMENTS[experiment_1]
     exp2_info = EXPERIMENTS[experiment_2]
 
-    exp1_df, exp2_df, common_genos = corr.load_and_align_experiments(
-        TRAITS_DIR / exp1_info["path"],
-        TRAITS_DIR / exp2_info["path"],
-        genotype_col1=exp1_info["genotype_col"],
-        genotype_col2=exp2_info["genotype_col"],
-        rep_col1=exp1_info["rep_col"],
-        rep_col2=exp2_info["rep_col"],
-    )
+    try:
+        exp1_df, exp2_df, common_genos = _load_pair(exp1_info, exp2_info)
+    except ExperimentReadError as exc:
+        return f"Could not load experiment data: {exc}"
 
     exp1_traits = _get_trait_cols(exp1_df)
     exp2_traits = _get_trait_cols(exp2_df)
@@ -529,6 +536,9 @@ def compare_trait_across_experiments(
     if not stats["valid"]:
         return f"Insufficient data to correlate '{trait_name}' across experiments."
 
+    # "genotype" is correct here because align_experiments (called by _load_pair)
+    # renames the adapter-declared genotype column to "genotype" — this depends on
+    # that renaming contract; update if align_experiments ever changes it.
     exp1_means_df = exp1_df.groupby("genotype")[trait_name].agg(
         ["mean", "std", "count"]
     )

@@ -33,6 +33,51 @@ PLOTS_DIR = Path(os.getenv("BLOOM_PLOTS_DIR", ""))
 PLOTS_URL = os.getenv("BLOOM_PLOTS_URL", "")
 
 
+def resolve_experiment_local_root() -> Path:
+    """The local input root for the opt-in ``LocalReader`` (fully-local mode).
+
+    ``BLOOM_EXPERIMENT_LOCAL_ROOT`` when set, otherwise the already-required,
+    already-mounted ``BLOOM_TRAITS_DIR`` — mirroring how the object-storage
+    ``local`` backend resolves its root (``BLOOM_STORAGE_LOCAL_ROOT`` →
+    ``BLOOM_OUTPUT_DIR``). Read via the module-level ``TRAITS_DIR`` so tests that
+    monkeypatch it are honoured. Unlike the storage-backend fallback,
+    ``BLOOM_TRAITS_DIR`` is a **supported** default here — this change promotes the
+    local input path rather than retiring it.
+    """
+    explicit = os.getenv("BLOOM_EXPERIMENT_LOCAL_ROOT")
+    if explicit:
+        return Path(explicit)
+    return TRAITS_DIR
+
+
+def validate_experiment_local_root() -> None:
+    """Fail fast at boot when fully-local mode has no usable local input root.
+
+    Called by ``server.main()`` only in fully-local mode (the default Supabase
+    path keeps validating Supabase credentials instead). The absolute root path
+    is logged server-side but not included in the raised RuntimeError — boot
+    errors can appear in LLM-agent-visible tracebacks, and the design goal is to
+    avoid leaking host paths there.
+    """
+    root = resolve_experiment_local_root()
+    # Only Path("") has empty .parts; Path(".").parts == (".",) and resolves to
+    # CWD, which is not a safe local input root for LLM-controlled reads.
+    if not root.parts or str(root) == ".":
+        raise RuntimeError(
+            "BLOOM_STORAGE_BACKEND=local but neither BLOOM_EXPERIMENT_LOCAL_ROOT "
+            "nor BLOOM_TRAITS_DIR is set for the local input root."
+        )
+    if not root.exists() or not root.is_dir():
+        logger.error("local input root does not exist or is not a directory: %s", root)
+        raise RuntimeError(
+            "Local input root does not exist or is not a directory. "
+            "Check BLOOM_EXPERIMENT_LOCAL_ROOT or BLOOM_TRAITS_DIR."
+        )
+    if not os.access(root, os.R_OK):
+        logger.error("local input root is not readable: %s", root)
+        raise RuntimeError("Local input root is not readable.")
+
+
 def _validate_dirs() -> None:
     """Check that configured data directories exist and are writable."""
     for name, path in [
@@ -259,6 +304,7 @@ def load_experiment_data(
     output_dir: Optional[Path] = None,
     require_clean: bool = False,
     version: str = "latest",
+    allow_legacy_cleaned: bool = True,
 ) -> tuple:
     """Load experiment CSV with auto-detected columns.
 
@@ -274,6 +320,10 @@ def load_experiment_data(
         output_dir: Override for BLOOM_OUTPUT_DIR
         require_clean: If True, fail when no cleaned CSV exists (for UMAP)
         version: "latest" (default), "raw", or an explicit "v<N>"
+        allow_legacy_cleaned: If False, the un-versioned legacy cleaned CSV tier is
+            skipped — it carries no manifest/hash lineage, so a certified-clean
+            consumer must not be satisfied by a stale legacy file that may not
+            correspond to the current input. `LocalReader` sets this False.
 
     Returns:
         (df, trait_cols, column_config, source_label)
@@ -297,10 +347,16 @@ def load_experiment_data(
 
         if version == "latest":
             legacy_path = o_dir / f"qc_{stem}" / f"{stem}_cleaned.csv"
-            if legacy_path.exists():
+            if allow_legacy_cleaned and legacy_path.exists():
                 df = pd.read_csv(legacy_path)
                 config = detect_columns(df)
                 return df, config["trait_cols"], config, "legacy_cleaned"
+            elif not allow_legacy_cleaned and legacy_path.exists():
+                logger.warning(
+                    "Skipping un-versioned legacy cleaned CSV %s; "
+                    "run the QC workflow to produce a versioned output.",
+                    legacy_path,
+                )
 
     if require_clean:
         return (
