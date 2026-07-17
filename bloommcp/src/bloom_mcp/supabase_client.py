@@ -154,7 +154,7 @@ def get_storage_client():
     return supabase.create_client(url, key).storage.from_(BUCKET)
 
 
-# The five helpers below delegate to the process's active storage backend
+# The six helpers below delegate to the process's active storage backend
 # (`bloom_mcp.storage_backend`), selected by `BLOOM_STORAGE_BACKEND` (default
 # `supabase`). Their names + signatures are unchanged, so every caller and the
 # `fake_supabase_storage` test fixture (which monkeypatches these module-level
@@ -212,3 +212,15 @@ def download_file(key: str, local_path: Path) -> None:
     from bloom_mcp.storage_backend import active_backend
 
     active_backend().download_file(key, local_path)
+
+
+def delete_files(keys: list[str]) -> None:
+    """Delete every object in `keys`. Missing keys are a no-op, not an error.
+
+    Best-effort by design: callers (see `SupabaseResultStore.commit`) use this
+    to clean up after a failed upload and must not let a delete failure mask
+    the original error.
+    """
+    from bloom_mcp.storage_backend import active_backend
+
+    active_backend().delete_files(keys)

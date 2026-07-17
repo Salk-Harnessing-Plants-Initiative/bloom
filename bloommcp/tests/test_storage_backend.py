@@ -319,6 +319,54 @@ def test_read_permission_error_is_redacted(tmp_path, monkeypatch):
     assert key in msg
 
 
+def test_local_delete_files_removes_existing_and_ignores_missing(tmp_path):
+    b = _local(tmp_path)
+    src = _seed_file(tmp_path)
+    b.upload_file("bloommcp_output/qc_x/v1/a.csv", src)
+    b.upload_file("bloommcp_output/qc_x/v1/b.csv", src)
+    assert (tmp_path / "bloommcp_output/qc_x/v1/a.csv").exists()
+
+    b.delete_files(
+        [
+            "bloommcp_output/qc_x/v1/a.csv",
+            "bloommcp_output/qc_x/v1/missing.csv",  # never existed — no error
+        ]
+    )
+    assert not (tmp_path / "bloommcp_output/qc_x/v1/a.csv").exists()
+    assert (tmp_path / "bloommcp_output/qc_x/v1/b.csv").exists()  # untouched
+
+
+def test_local_delete_files_empty_list_is_noop(tmp_path):
+    b = _local(tmp_path)
+    b.delete_files([])  # must not raise
+
+
+def test_supabase_backend_delete_files_calls_bucket_remove(monkeypatch):
+    calls = []
+
+    class _FakeClient:
+        def remove(self, paths):
+            calls.append(list(paths))
+
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda: _FakeClient()
+    )
+
+    backend = sb.SupabaseStorageBackend()
+    backend.delete_files(
+        ["bloommcp_output/qc_x/v1/a.csv", "bloommcp_output/qc_x/v1/b.csv"]
+    )
+    assert calls == [["bloommcp_output/qc_x/v1/a.csv", "bloommcp_output/qc_x/v1/b.csv"]]
+
+
+def test_supabase_backend_delete_files_empty_list_skips_client(monkeypatch):
+    def _boom():
+        raise AssertionError("get_storage_client called for an empty delete")
+
+    monkeypatch.setattr("bloom_mcp.supabase_client.get_storage_client", _boom)
+    sb.SupabaseStorageBackend().delete_files([])  # must not raise / not call the client
+
+
 # ─── 3. Root resolution + startup validation ──────────────────────────────────
 
 

@@ -72,6 +72,10 @@ class _InMemoryObjectStore:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(self.objects[key])
 
+    def delete_files(self, keys: list[str]) -> None:
+        for key in keys:
+            self.objects.pop(key, None)
+
 
 @pytest.fixture
 def fake_supabase_storage(monkeypatch):
@@ -89,6 +93,7 @@ def fake_supabase_storage(monkeypatch):
         "write_json",
         "upload_file",
         "download_file",
+        "delete_files",
     ):
         monkeypatch.setattr(_sc, name, getattr(store, name))
     for name in ("list_prefix", "read_json", "write_json"):
