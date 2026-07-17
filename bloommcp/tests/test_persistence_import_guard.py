@@ -55,7 +55,7 @@ def test_consumers_do_not_import_supabase_or_storage_writer():
     for rel in _CONSUMERS:
         path = _SRC / rel
         assert path.exists(), f"guard lists a missing module: {rel}"
-        imported = _imported_names(ast.parse(path.read_text()))
+        imported = _imported_names(ast.parse(path.read_text(encoding="utf-8")))
         hits = imported & _FORBIDDEN
         if hits:
             offenders.append(f"{rel}: {sorted(hits)}")

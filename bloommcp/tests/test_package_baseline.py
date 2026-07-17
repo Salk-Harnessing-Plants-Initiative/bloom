@@ -66,7 +66,7 @@ def test_no_stale_prototype_imports():
     """No module under src/bloom_mcp imports a bare source/tools/storage root."""
     offenders: list[str] = []
     for py in _PKG_ROOT.rglob("*.py"):
-        tree = ast.parse(py.read_text(), filename=str(py))
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -84,7 +84,7 @@ def _shipped_top_level_imports() -> set[str]:
     """Top-level package names imported by any shipped ``src/bloom_mcp`` module."""
     names: set[str] = set()
     for py in _PKG_ROOT.rglob("*.py"):
-        tree = ast.parse(py.read_text(), filename=str(py))
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 names.update(alias.name.split(".")[0] for alias in node.names)

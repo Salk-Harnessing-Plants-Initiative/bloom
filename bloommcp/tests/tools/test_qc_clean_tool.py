@@ -1015,7 +1015,7 @@ def test_new_override_params_exposed_in_tool_schema():
     tools = {t.name: t for t in asyncio.run(_list())}
     # The contract wrapper nests the model under a single ``params`` arg, so assert the
     # new fields appear anywhere in the (serialized) input schema.
-    schema_json = json.dumps(tools["qc_clean"].inputSchema)
+    schema_json = json.dumps(tools["sleap_roots_qc_clean"].inputSchema)
     assert "sample_id_column" in schema_json
     assert "genotype_column" in schema_json
     assert "exclude_columns" in schema_json

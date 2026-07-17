@@ -642,8 +642,6 @@ def test_figure_cleanup_get_fignums_empty_on_partial_plotter_failure(
     the tool's real try/finally nesting end-to-end (not just the _plots unit helpers)."""
     import matplotlib.pyplot as plt
 
-    from bloom_mcp.tools import pca_analysis_tool
-
     real = pca_analysis_tool._pca_plot_calls
 
     def _boom(*a, **k):

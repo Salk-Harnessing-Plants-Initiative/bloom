@@ -225,8 +225,14 @@ def test_fully_local_qc_clean_to_pca_no_supabase(monkeypatch, tmp_path, reset_po
     from bloom_mcp.data_access import LocalReader
     from bloom_mcp.result_store import SupabaseResultStore
     from bloom_mcp.tools import _ports
-    from bloom_mcp.tools.pca_analysis_tool import PCAAnalysisParams, pca_analysis
-    from bloom_mcp.tools.qc_clean_tool import QCCleanParams, qc_clean
+    from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import (
+        PCAAnalysisParams,
+        pca_analysis,
+    )
+    from bloom_mcp.sections.sleap_roots.analysis.qc_clean import (
+        QCCleanParams,
+        qc_clean,
+    )
 
     inp = tmp_path / "input"
     inp.mkdir()
