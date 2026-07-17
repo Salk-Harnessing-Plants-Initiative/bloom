@@ -71,7 +71,6 @@ _Verified: 33 unit tests pass; `shellcheck --shell=sh scripts/doctor.sh` clean
   Step 8 (/pre-merge)._
 - [x] 7.4 Fresh-clone behavior validated live in the 2026-07-09 reproduction +
   encoded in the `test_real_repo_init_scripts_are_lf` self-guard.
-- [ ] 7.5 `/pre-merge`; then **post-approval, at merge:** close PR #424 unmerged
-  with a `Supersedes` comment; `Supersedes #424` in this PR body. File the
-  deferred `.claude/commands/docs-review.md` + `.serena/memories/suggested_commands.md`
-  stale-doc follow-ups (human-applied).
+- [x] 7.5 Merged as #440 (CI green); PR #424 closed as superseded; the stale
+  onboarding docs handled — `.claude/commands/docs-review.md` corrected and the
+  unused `.serena/` directory removed (both folded into #440).
