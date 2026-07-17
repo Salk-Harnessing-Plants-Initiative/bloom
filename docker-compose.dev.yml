@@ -79,16 +79,27 @@ services:
     build:
       context: ./services/workflows
       dockerfile: Dockerfile
+    # Sandbox the service in dev too — it runs ffmpeg + Pillow/numpy on
+    # attacker-influenced image bytes. Matches prod hardening. The source
+    # bind-mount below stays writable for --reload; only the container's own
+    # filesystem is read-only, with a size-capped tmpfs for the temp MP4.
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - "${WORKFLOWS_PORT:-5100}:5100"
     environment:
       WORKFLOWS_CORS_ORIGINS: "http://localhost:3000"
-      # Supabase access — wired in for later login/data endpoints (unused today)
+      # Logs in as a dedicated least-privilege Supabase app user; that user's
+      # grants + storage policies bound everything the service can read/write.
       SUPABASE_URL: http://kong:8000
       SUPABASE_ANON_KEY: ${ANON_KEY}
-      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
-      JWT_SECRET: ${JWT_SECRET}
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
     volumes:
       - ./services/workflows:/app
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--reload"]

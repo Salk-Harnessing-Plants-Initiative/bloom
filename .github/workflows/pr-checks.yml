@@ -150,6 +150,9 @@ jobs:
         # also self-skips at collection time, so this is defense-in-depth.
         run: cd bloomcli && uv run --extra test pytest tests/ -m "not integration" -v --tb=short
 
+      - name: Run workflows service tests
+        run: cd services/workflows && uv run --frozen --extra test pytest tests/ -v --tb=short
+
       - name: Build bloom_mcp wheel and import in a clean env
         run: |
           cd bloommcp

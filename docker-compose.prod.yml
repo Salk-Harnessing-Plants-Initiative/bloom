@@ -199,7 +199,9 @@ services:
       dockerfile: Dockerfile
     read_only: true
     tmpfs:
-      - /tmp
+      # Size-capped so the temp MP4 can't exhaust host RAM (sized for the full
+      # video × the 2 workers, with headroom).
+      - /tmp:mode=1777,size=512m
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -208,12 +210,10 @@ services:
       - "5100"
     environment:
       WORKFLOWS_CORS_ORIGINS: ${CORS_ORIGINS}
-      # Supabase access — wired in for later login/data endpoints (unused today)
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_ANON_KEY: ${ANON_KEY}
-      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
-      JWT_SECRET: ${JWT_SECRET}
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
     networks:
       - supanet
     healthcheck:
