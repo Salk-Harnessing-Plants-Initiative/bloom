@@ -11,6 +11,7 @@ dtypes — so role detection never leaks into callers.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
 import pandas as pd
@@ -87,4 +88,21 @@ class ExperimentReader(Protocol):
 
     def list_experiments(self) -> list[ExperimentSummary]:
         """Return the available experiments; an empty list when none exist."""
+        ...
+
+
+@runtime_checkable
+class RawSourced(Protocol):
+    """Optional adapter capability: a concrete on-disk raw input path.
+
+    Adapters backed by a real raw CSV on local disk (:class:`SupabaseReader`,
+    :class:`LocalReader`) expose the source path so a run can content-address its
+    input (a non-empty ``input_sha256``). Path-less adapters (e.g. ``FakeReader``)
+    simply do not implement it — callers gate on ``isinstance(reader, RawSourced)``
+    rather than a duck-typed attribute lookup, so the capability is discoverable
+    and type-checked.
+    """
+
+    def raw_source_path(self, name: str) -> Optional[Path]:
+        """The on-disk raw CSV for ``name``, or ``None`` when absent."""
         ...
