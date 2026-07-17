@@ -21,10 +21,18 @@ import bloom_mcp.storage_backend as sb
 
 @pytest.fixture
 def spy_run(monkeypatch):
-    """Stub mcp.run so main() never binds a port; return the boot server module."""
+    """Stub uvicorn.run so main() never binds a port; return the boot server module.
+
+    main() calls ``uvicorn.run(build_app(), ...)`` directly (not ``mcp.run()``,
+    which FastMCP no longer drives now that section apps are mounted onto a
+    Starlette app in ``build_app()``) — patch the real entry point or main()
+    binds a live port and blocks forever.
+    """
+    import uvicorn
+
     import bloom_mcp.server as server
 
-    monkeypatch.setattr(server.mcp, "run", lambda *a, **k: None)
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
     return server
 
 
@@ -226,10 +234,12 @@ def test_fully_local_qc_clean_to_pca_no_supabase(monkeypatch, tmp_path, reset_po
     store.mkdir()
     # 15 genotypes × 1 rep = 15 samples, 2 traits — above the min-samples
     # threshold (10) with no NaN/zero, so qc_clean keeps every trait and sample.
+    # plant_id is a recognized SAMPLE_ID_PATTERNS name (#403) so qc_clean's
+    # traceability requirement auto-detects it without a role override.
     rows = "".join(
-        f"g{i},{float(i + 1)},{float(i * 2 + 1)}\n" for i in range(15)
+        f"g{i},p{i},{float(i + 1)},{float(i * 2 + 1)}\n" for i in range(15)
     )
-    (inp / "offline_e2e.csv").write_text("Genotype,trait_a,trait_b\n" + rows)
+    (inp / "offline_e2e.csv").write_text("Genotype,plant_id,trait_a,trait_b\n" + rows)
     # Local input root == TRAITS_DIR so qc_clean's source_csv resolves too.
     monkeypatch.setattr(eu, "TRAITS_DIR", inp)
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")

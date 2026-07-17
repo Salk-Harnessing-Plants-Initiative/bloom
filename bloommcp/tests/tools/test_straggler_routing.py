@@ -130,8 +130,10 @@ def test_qc_clean_sources_provenance_from_experiment_local_root(
     traits_dir.mkdir()
     store = tmp_path / "store"
     store.mkdir()
-    rows = "".join(f"g{i},{float(i)},{float(i + 1)}\n" for i in range(12))
-    (exp_root / "exp.csv").write_text("Genotype,trait_a,trait_b\n" + rows)
+    # plant_id is a recognized SAMPLE_ID_PATTERNS name (#403) so qc_clean's
+    # traceability requirement auto-detects it without a role override.
+    rows = "".join(f"g{i},p{i},{float(i)},{float(i + 1)}\n" for i in range(12))
+    (exp_root / "exp.csv").write_text("Genotype,plant_id,trait_a,trait_b\n" + rows)
 
     monkeypatch.setattr(eu, "TRAITS_DIR", traits_dir)
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
