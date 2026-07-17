@@ -325,5 +325,5 @@ frozenset(sleap_roots_predict.batch._IMAGE_EXTENSIONS)` to
 - [x] 11.1 Re-run §8.1-8.5 (validate, full suite, ruff, pre-commit, contracts guards).
 - [x] 11.2 Re-run §8.6's manual oracle-test verification (now including the new
       `_IMAGE_EXTENSIONS` assertion from 9.14) — paste the passing output.
-- [ ] 11.3 Push a fixup and reply to the `/review-pr` findings on PR #458, noting what was fixed
+- [x] 11.3 Push a fixup and reply to the `/review-pr` findings on PR #458, noting what was fixed
       vs. explicitly accepted as a documented limitation (concurrent same-scan invocations).

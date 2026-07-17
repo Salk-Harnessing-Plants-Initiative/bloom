@@ -42,9 +42,12 @@ from the Supabase `database.types.ts` (generated from the database by `make gen-
 > a **real contract revision**, not a `$id` no-op, but **additive and non-breaking**. `Provenance`
 > gained two optional, nullable fields (`predict_inference_config`, `predict_output_params`); no field
 > was removed or retyped and `BlobRef` is unchanged. Because `Provenance` is a plain object with
-> `properties`, the generated TS **does** surface the two new optional fields (unlike the `BlobRef` > `anyOf` caveat below) — an expected, reviewed drift-guard diff. Both fields ride inside the opaque
-> `cyl_trait_sources.metadata` jsonb, so no Bloom DB column or migration is needed. The bare-vs-`v` > `contract_version` convention (the write-back RPC now matches prefix-tolerantly) is tracked upstream
-> in `talmolab/sleap-roots-contracts` (companion issue — link `#N` when filed).
+> `properties`, the generated TS **does** surface the two new optional fields (unlike the `BlobRef`
+> `anyOf` caveat below) — an expected, reviewed drift-guard diff. Both fields ride inside the opaque
+> `cyl_trait_sources.metadata` jsonb, so no Bloom DB column or migration is needed. The bare-vs-`v`
+> `contract_version` convention (the write-back RPC now matches prefix-tolerantly) is tracked upstream
+> in [`talmolab/sleap-roots-contracts#14`](https://github.com/talmolab/sleap-roots-contracts/issues/14);
+> once it settles on the canonical byte, Bloom can drop the tolerance and pin it exactly.
 
 > Note on `v0.1.0a2`: re-pinned from `v0.1.0a1` for Bloom change C
 > ([talmolab/sleap-roots-contracts#5](https://github.com/talmolab/sleap-roots-contracts/issues/5)) —

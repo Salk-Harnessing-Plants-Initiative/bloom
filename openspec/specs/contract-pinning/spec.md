@@ -55,9 +55,13 @@ drift guard SHALL regenerate the types from the pinned schema, normalize line en
 when the committed types are not byte-identical to the regenerated output. Because the codegen does
 not emit the schema `$id` into the types, a re-pin that only re-stamps the `$id` MUST regenerate
 byte-identical types so the guard passes with no type change; conversely, a change to any contract
-field MUST produce a different generated output so the guard fails. The committed types SHALL be
-valid TypeScript (type-checkable). These contract types are distinct from the Supabase
-`database.types.ts` generated from the database.
+field MUST produce a different generated output so the guard fails. A re-pin that carries a **real
+contract revision** (a field added, removed, or retyped — not a `$id`-only restamp) MUST regenerate
+**and commit** the correspondingly changed types, which then pass the guard against the newly
+committed output; this is the reviewed counterpart of the `$id`-only no-op and is how an intended
+revision is distinguished from unreviewed drift. The committed types SHALL be valid TypeScript
+(type-checkable). These contract types are distinct from the Supabase `database.types.ts` generated
+from the database.
 
 #### Scenario: Drift guard passes when committed types match the pinned schema
 
@@ -83,6 +87,13 @@ valid TypeScript (type-checkable). These contract types are distinct from the Su
 - **WHEN** a contract field changes (a property is added/removed or a type changes) in addition to
   or instead of the `$id`, and the types are regenerated
 - **THEN** the regenerated types differ from the committed types and the drift guard exits non-zero
+
+#### Scenario: A real additive re-pin regenerates expanded types that pass the guard
+
+- **WHEN** the vendored schema is re-pinned to a new version whose payload adds one or more optional
+  fields (a real revision, not a `$id`-only restamp) and the types are regenerated **and committed**
+- **THEN** the regenerated types gain exactly those fields, differ from the previous committed types,
+  and the drift guard exits zero against the newly committed output (a reviewed revision, not drift)
 
 #### Scenario: Generated types are valid TypeScript
 
