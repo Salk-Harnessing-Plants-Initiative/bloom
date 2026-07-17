@@ -36,4 +36,9 @@ dependencies = [
     # NestedSecretsSettingsSource. Open floors per repo convention.
     "langsmith>=0.8.18",
     "pydantic-settings>=2.14.2",
+    # Security floor for transitive dep disclosed 2026-07-16:
+    # mcp (CVE-2026-52870, CVE-2026-52869, CVE-2026-59950) — fixed in 1.28.1.
+    # Transitive via langchain-mcp-adapters (floor >=1.9.2). Open floor per
+    # repo convention.
+    "mcp>=1.28.1",
 ]
