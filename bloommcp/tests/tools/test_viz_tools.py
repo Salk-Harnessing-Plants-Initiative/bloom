@@ -205,3 +205,86 @@ def test_plot_variance_decomposition_delegates_and_matches_independent_computati
     # own guard refuses to plot a zero-filled decomposition otherwise.
     assert not expected_scored["var_genetic"].isna().any()
     assert not expected_scored["var_residual"].isna().any()
+
+
+# ── Phase 3 / P3.3: path-safety + no-raw-exception-leak stopgap ─────────────
+
+_TOOLS = [
+    (plot_trait_histograms_mod, "plot_trait_histograms", "create_trait_histograms"),
+    (
+        plot_trait_boxplots_mod,
+        "plot_trait_boxplots",
+        "create_trait_boxplots_by_genotype",
+    ),
+    (
+        plot_correlation_matrix_mod,
+        "plot_correlation_matrix",
+        "create_correlation_heatmap",
+    ),
+    (plot_heritability_bar_mod, "plot_heritability_bar", "create_heritability_plot"),
+    (
+        plot_variance_decomposition_mod,
+        "plot_variance_decomposition",
+        "create_variance_decomposition_plot",
+    ),
+]
+_TOOL_IDS = [name for _module, name, _delegate in _TOOLS]
+
+
+@pytest.mark.parametrize("module,fn_name,delegate_name", _TOOLS, ids=_TOOL_IDS)
+def test_rejects_unsafe_filename_before_any_read(
+    module, fn_name, delegate_name, viz_env, monkeypatch, tmp_path
+):
+    """A traversal/absolute filename must be rejected before any file is read —
+    not merely produce an error string after reading. Plant a secret file OUTSIDE
+    TRAITS_DIR and prove its content never reaches the tool's output and the
+    delegate is never called."""
+    secret = tmp_path / "secret.csv"
+    secret.write_text("SECRET_MARKER_0xdeadbeef\nGenotype,Rep,t1\na,1,1.0\n")
+    fn = getattr(module, fn_name)
+    calls = _spy(monkeypatch, module, delegate_name)
+
+    for unsafe_name in (
+        "../secret.csv",
+        "..\\secret.csv",
+        str(secret),
+        "/etc/passwd",
+    ):
+        result = fn(unsafe_name)
+        assert "bare CSV filename" in result
+        assert "SECRET_MARKER_0xdeadbeef" not in result
+
+    assert calls["n"] == 0
+
+
+@pytest.mark.parametrize("module,fn_name,_delegate_name", _TOOLS, ids=_TOOL_IDS)
+def test_valid_missing_filename_still_returns_not_found(
+    module, fn_name, _delegate_name, viz_env
+):
+    """Regression guard: the new safety guard must not introduce a false-positive
+    rejection on the ordinary 'file not found' path — only unsafe names change
+    behavior."""
+    fn = getattr(module, fn_name)
+    result = fn("does_not_exist.csv")
+    assert "bare CSV filename" not in result
+    assert "not found" in result
+
+
+@pytest.mark.parametrize("module,fn_name,delegate_name", _TOOLS, ids=_TOOL_IDS)
+def test_internal_failure_does_not_leak_raw_exception_text(
+    module, fn_name, delegate_name, viz_env, monkeypatch
+):
+    """An unexpected delegate failure must return a sanitized message, never the
+    raw exception text (which could carry internal paths or backend details)."""
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("internal detail: /secret/backend/path token=abc123")
+
+    monkeypatch.setattr(module, delegate_name, _boom)
+    fn = getattr(module, fn_name)
+
+    result = fn(_EXPERIMENT)
+
+    assert "/secret/backend/path" not in result
+    assert "token=abc123" not in result
+    assert plt.get_fignums() == []

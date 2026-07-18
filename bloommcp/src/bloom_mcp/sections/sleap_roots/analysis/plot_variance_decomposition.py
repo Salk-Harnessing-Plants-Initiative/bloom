@@ -15,7 +15,7 @@ from sleap_roots_analyze import statistics as stats_module
 from sleap_roots_analyze.visualization import create_variance_decomposition_plot
 from bloom_mcp.experiment_utils import load_experiment_data as _load_data
 
-from ._viz_shared import save_plot
+from ._viz_shared import save_plot, validate_filename
 
 
 def plot_variance_decomposition(filename: str) -> str:
@@ -27,7 +27,14 @@ def plot_variance_decomposition(filename: str) -> str:
     Args:
         filename: CSV filename from list_available_experiments
     """
-    df, trait_cols, config, source = _load_data(filename)
+    unsafe = validate_filename(filename)
+    if unsafe:
+        return unsafe
+
+    try:
+        df, trait_cols, config, source = _load_data(filename)
+    except Exception:
+        return f"Could not load {filename!r}: the file could not be read as a CSV."
     if df is None:
         return source
 
@@ -79,8 +86,8 @@ def plot_variance_decomposition(filename: str) -> str:
 
     try:
         fig = create_variance_decomposition_plot(comparison_df)
-    except Exception as e:
-        return f"Variance decomposition plot failed: {e}"
+    except Exception:
+        return "Variance decomposition plot failed: the plot could not be generated for the computed estimates."
 
     url = save_plot(fig, f"variance_decomposition_{stem}.png")
     return (

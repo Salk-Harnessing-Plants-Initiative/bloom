@@ -12,7 +12,7 @@ from sleap_roots_analyze import statistics as stats_module
 from sleap_roots_analyze.visualization import create_heritability_plot
 from bloom_mcp.experiment_utils import load_experiment_data as _load_data
 
-from ._viz_shared import save_plot
+from ._viz_shared import save_plot, validate_filename
 
 
 def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
@@ -25,7 +25,14 @@ def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
         filename: CSV filename from list_available_experiments
         threshold: H2 threshold line to highlight (default 0.5)
     """
-    df, trait_cols, config, source = _load_data(filename)
+    unsafe = validate_filename(filename)
+    if unsafe:
+        return unsafe
+
+    try:
+        df, trait_cols, config, source = _load_data(filename)
+    except Exception:
+        return f"Could not load {filename!r}: the file could not be read as a CSV."
     if df is None:
         return source
 
@@ -48,8 +55,8 @@ def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
 
     try:
         fig = create_heritability_plot(h2_results, threshold=threshold)
-    except Exception as e:
-        return f"Heritability plot failed: {e}"
+    except Exception:
+        return "Heritability plot failed: the plot could not be generated for the computed estimates."
 
     url = save_plot(fig, f"heritability_{stem}.png")
 

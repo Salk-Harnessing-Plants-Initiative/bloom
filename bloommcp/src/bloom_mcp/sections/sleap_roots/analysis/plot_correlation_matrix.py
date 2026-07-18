@@ -12,7 +12,7 @@ import numpy as np
 from sleap_roots_analyze.visualization import create_correlation_heatmap
 from bloom_mcp.experiment_utils import load_experiment_data as _load_data
 
-from ._viz_shared import parse_traits, save_plot
+from ._viz_shared import parse_traits, save_plot, validate_filename
 
 
 def plot_correlation_matrix(filename: str, traits: str = "") -> str:
@@ -25,7 +25,14 @@ def plot_correlation_matrix(filename: str, traits: str = "") -> str:
         filename: CSV filename from list_available_experiments
         traits: Comma-separated trait names (empty = all traits)
     """
-    df, trait_cols, config, source = _load_data(filename)
+    unsafe = validate_filename(filename)
+    if unsafe:
+        return unsafe
+
+    try:
+        df, trait_cols, config, source = _load_data(filename)
+    except Exception:
+        return f"Could not load {filename!r}: the file could not be read as a CSV."
     if df is None:
         return source
 
@@ -37,8 +44,8 @@ def plot_correlation_matrix(filename: str, traits: str = "") -> str:
 
     try:
         fig = create_correlation_heatmap(df, selected)
-    except Exception as e:
-        return f"Correlation heatmap failed: {e}"
+    except Exception:
+        return "Correlation heatmap failed: the plot could not be generated for the selected traits."
 
     url = save_plot(fig, f"correlation_matrix_{stem}.png")
 

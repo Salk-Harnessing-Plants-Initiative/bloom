@@ -351,7 +351,7 @@ before its vendored copy is removed (C2/C10).
       restored guarantee ("`remove_outliers`'s `trait_columns` is restricted to certified-clean
       traits, matching `pca_analysis`/`clustering`") — this change's own precedent (P2.0/#412) is
       that a real behavior fix gets a spec scenario, not just a task-list line.
-- [ ] P3.3 (test first) The 5 relocated viz tools (`plot_trait_histograms`, `plot_trait_boxplots`,
+- [x] P3.3 (test first) The 5 relocated viz tools (`plot_trait_histograms`, `plot_trait_boxplots`,
       `plot_correlation_matrix`, `plot_heritability_bar`, `plot_variance_decomposition`) take a raw
       `filename` straight into `load_experiment_data` with **no path-safety guard** — unlike every
       other tool in `sections/sleap_roots/analysis/`, which validates via `_safe_name`/
