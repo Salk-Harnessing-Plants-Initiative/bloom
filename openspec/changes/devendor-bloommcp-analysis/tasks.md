@@ -440,7 +440,7 @@ before its vendored copy is removed (C2/C10).
 
 ## Phase 3 validation
 
-- [ ] V.9 Phase 3 hardening verified: `ruff check` reports zero `F821` anywhere in
+- [x] V.9 Phase 3 hardening verified: `ruff check` reports zero `F821` anywhere in
       `sections/sleap_roots/analysis/` (P3.1); `remove_outliers`'s `trait_columns` rejects a
       non-certified numeric column with `BloomMCPError(code="invalid_input")` (P3.2); each of the 5
       viz tools rejects a path-traversal/absolute `filename` before any file read (no content from
@@ -450,4 +450,10 @@ before its vendored copy is removed (C2/C10).
       pre-existing not-found string unchanged (P3.3); no docstring in `qc_clean.py`/
       `remove_outliers.py`/`clustering.py` still names a retired workflow or vendored module (P3.4);
       every listed Windows-encoding call site carries `encoding="utf-8"` (P3.5); full suite +
-      `ruff`/`black` green.
+      `ruff`/`black` green. **Verified 2026-07-17:** full non-integration suite (528 passed) run
+      **without** `PYTHONUTF8=1` — the actual failure condition P3.5 fixes, not `PYTHONUTF8=1`
+      papering over it; integration-marked oracle suite (4 passed); `ruff check .` clean
+      package-wide; Docker image rebuilt + `build_app()` + `fastmcp`/`statsmodels`/`umap` import
+      smoke passed. **Note:** `black --check` found 6 files needing reformatting, all confirmed
+      pre-existing (present before any Phase 3 commit touched them, 2 of the 6 touched by Phase 3
+      only incidentally) — left as-is, out of scope for this hardening pass.
