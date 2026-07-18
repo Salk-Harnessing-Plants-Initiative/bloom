@@ -500,6 +500,7 @@ jobs:
       # rather than letting `supabase db push` fail later with a cryptic URL
       # parse / auth error.
       - name: Apply database migrations (production)
+        id: migrate_prod
         if: steps.check_migrations_prod.outputs.pending != '0'
         env:
           EXPECTED_CLI_VERSION: ${{ env.SUPABASE_VERSION }}
@@ -532,12 +533,15 @@ jobs:
               -e PGPASSWORD=\"\$PG_PASSWORD\" db-prod \
               psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
               < supabase/grants/schema_grants.sql
-          "
+          " || {
+            echo '::error title=Schema grants failed (production)::supabase/grants/schema_grants.sql could not be applied — see this step log for the psql error.'
+            exit 1
+          }
 
       # Layer B: diagnostic on any failure upstream. Lists applied vs pending
       # so on-call can see which migration broke without scrolling logs.
       - name: Show migration status on failure (production)
-        if: failure()
+        if: failure() && steps.migrate_prod.outcome == 'failure'
         run: |
           echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
@@ -1011,6 +1015,7 @@ jobs:
           fi
 
       - name: Apply database migrations (staging)
+        id: migrate_staging
         if: steps.check_migrations_staging.outputs.pending != '0'
         env:
           EXPECTED_CLI_VERSION: ${{ env.SUPABASE_VERSION }}
@@ -1043,10 +1048,13 @@ jobs:
               -e PGPASSWORD=\"\$PG_PASSWORD\" db-prod \
               psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
               < supabase/grants/schema_grants.sql
-          "
+          " || {
+            echo '::error title=Schema grants failed (staging)::supabase/grants/schema_grants.sql could not be applied — see this step log for the psql error.'
+            exit 1
+          }
 
       - name: Show migration status on failure (staging)
-        if: failure()
+        if: failure() && steps.migrate_staging.outcome == 'failure'
         run: |
           echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
