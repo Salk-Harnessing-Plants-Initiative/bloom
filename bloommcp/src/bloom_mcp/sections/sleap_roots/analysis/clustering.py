@@ -29,8 +29,8 @@ class ``clustering`` — per-sample labels **with sample identity** (``labels.cs
 serialized typed result (``cluster_result.json``) — recording ``based_on_version`` = the
 consumed cleaned version, and returns a cluster summary + links (never the label vector inline).
 
-**Coexists with the legacy ``run_clustering_workflow``.** That older workflow tool and the
-vendored ``bloom_mcp.clustering`` stay in place; this adds granularity alongside.
+The legacy ``run_clustering_workflow`` tool and the vendored ``bloom_mcp.clustering``
+module this tool once coexisted alongside were retired by ``devendor-bloommcp-analysis``.
 """
 
 from __future__ import annotations

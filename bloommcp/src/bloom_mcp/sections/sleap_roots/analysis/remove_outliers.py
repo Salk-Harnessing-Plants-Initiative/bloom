@@ -7,12 +7,12 @@ public detectors + ``remove_outliers_from_data``): the MCP contains **no** outli
 detection or removal logic and never touches the vendored
 ``bloom_mcp.outlier_detection`` filters.
 
-**Coexists with the legacy ``run_outlier_workflow``.** That older tool persists under a
-distinct tool class ``outliers`` (writing ``<stem>_cleaned.csv``) using the vendored
-detector, whereas this tool persists under class ``qc`` (writing ``CLEANED_CSV_NAME``)
-using the ``sleap-roots-analyze`` delegate — silently *incompatible* persistence
-conventions, so the two never resolve each other's runs. The legacy path's retirement is
-tracked (tasks 7.1); until then prefer ``remove_outliers`` for the ``qc`` composition.
+**Persists under tool class ``qc``**, alongside ``qc_clean`` (writing
+``CLEANED_CSV_NAME``), so the reader resolves whichever committed most recently as
+"latest cleaned" — prefer the natural ``qc_clean`` → ``remove_outliers`` order per
+experiment (the legacy ``run_outlier_workflow``, which persisted incompatibly under
+a distinct ``outliers`` class using the vendored detector, was retired by
+``devendor-bloommcp-analysis``).
 
 On each call it reads the **cleaned** frame via the :class:`ExperimentReader` port
 with ``require_clean=True`` (outlier detection requires the NaN-free, unique-index
@@ -25,8 +25,7 @@ trimmed table under ``CLEANED_CSV_NAME`` + the ``outlier_report.json`` + provena
 tool class makes it the newest *cleaned version* the reader resolves, so
 ``qc_clean → remove_outliers → pca_analysis`` composes through ``require_clean=True``
 with no reader change. The reader resolves "latest cleaned" as whichever ``qc`` run
-committed most recently, so — as with ``qc_clean`` vs ``run_qc_workflow`` — prefer the
-natural clean→trim order once per experiment.
+committed most recently, so prefer the natural clean→trim order once per experiment.
 
 **Order-dependence caveat (inherited).** Because the trim shares the ``qc`` class +
 ``CLEANED_CSV_NAME``, "latest cleaned" is *order-dependent*: re-running ``qc_clean``

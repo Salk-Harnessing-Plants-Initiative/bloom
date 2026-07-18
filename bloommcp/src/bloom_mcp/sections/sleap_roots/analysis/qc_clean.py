@@ -39,11 +39,12 @@ leave residual NaNs, drop every trait, or drop every sample raises a structured
 ``BloomMCPError`` (with a relax-the-thresholds remedy) rather than committing a
 degenerate or NaN-bearing "cleaned" run.
 
-**Shared ``qc`` tool class.** ``qc_clean`` and the legacy ``run_qc_workflow``
-both persist under tool class ``qc`` writing ``CLEANED_CSV_NAME``, so the reader
-resolves whichever committed most recently as "latest cleaned". Retirement of
-``run_qc_workflow`` + the vendored ``data_cleanup`` is deferred to after Stage 1;
-until then, prefer a single cleaner per experiment. Versioning is single-writer
+**Shared ``qc`` tool class.** ``qc_clean`` and ``remove_outliers`` both persist
+under tool class ``qc`` writing ``CLEANED_CSV_NAME``, so the reader resolves
+whichever committed most recently as "latest cleaned" — prefer the natural
+``qc_clean`` → ``remove_outliers`` order per experiment (the legacy
+``run_qc_workflow`` + the vendored ``data_cleanup`` this row used to reference
+were retired by ``devendor-bloommcp-analysis``). Versioning is single-writer
 (``create_run`` allocates ``v<N>`` without compare-and-set) — safe for one
 bloom-mcp container; concurrent cleans on the same experiment are not guarded.
 """

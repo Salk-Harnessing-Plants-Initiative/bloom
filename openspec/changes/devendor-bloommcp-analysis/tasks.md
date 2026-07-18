@@ -412,7 +412,7 @@ before its vendored copy is removed (C2/C10).
       exception text") — `bloommcp-tool-sections/spec.md`'s existing scenario claiming these tools'
       "behavior... is unchanged from before the migration" needs an explicit carve-out noting this
       intentional, scoped exception.
-- [ ] P3.4 Fix 3 stale docstrings left untouched by the P2.2 move, describing coexistence with tools
+- [x] P3.4 Fix 3 stale docstrings left untouched by the P2.2 move, describing coexistence with tools
       this same change deletes: `qc_clean.py` (claims `run_qc_workflow` + vendored `data_cleanup`
       still exist), `remove_outliers.py` (claims `run_outlier_workflow` still exists), `clustering.py`
       (claims `run_clustering_workflow` + vendored `bloom_mcp.clustering` still exist).
