@@ -324,3 +324,124 @@ before its vendored copy is removed (C2/C10).
       against losing a tool when `tools/*_tool.py` + `viz_tools.py` are deleted in P2.2). Confirm
       `ALWAYS_INCLUDE_MCP_TOOLS` + `HIDDEN_TOOLS` + the drift guard (C11.5) stay green after the
       namespacing.
+
+## Phase 3 — Post-review hardening (adversarial 5-lens PR review, 2026-07-17)
+
+- [x] P3.1 (test first) `pca_analysis.py` — the P2.2 move dropped `ExperimentFrame` from the
+      `bloom_mcp.data_access` import while it's still used in two type annotations
+      (`_biplot_df`/`_pca_plot_calls`); silent at runtime only because
+      `from __future__ import annotations` defers evaluation, but `ruff check` reports two real
+      `F821 Undefined name` errors — contradicts this change's own V.3 gate. Oracle: restore the
+      import; `ruff check src/bloom_mcp/sections/sleap_roots/analysis/pca_analysis.py` clean.
+- [ ] P3.2 (test first) `remove_outliers.py` defines its own local `_role_kwargs`/
+      `_validate_trait_subset`, explicitly marked `# DUPLICATED: verbatim copy of qc_clean's ...;
+      fold into a shared _qc_shared helper (see #366)` — but #366 merged **without** ever covering
+      this file (its scope was `qc_clean`/`qc_inspect` only), so the pointer is stale and the
+      duplication was never resolved. Unlike its siblings `pca_analysis.py`/`clustering.py` (same
+      directory), its copy does not restrict `trait_columns` to the certified-clean set
+      (`require_certified=True` in the shared helper) — a caller can pass a numeric-but-non-certified
+      column straight into outlier detection. Write a test seeding a FakeReader cleaned version whose
+      certified trait set excludes a present numeric column, call `remove_outliers` with that column
+      named in `trait_columns`, and assert `BloomMCPError(code="invalid_input")` (red on current
+      code) — reuse the fixture idiom `tests/tools/test_qc_shared_validator.py` already establishes
+      for this exact case (a numeric-but-role column, e.g. `"Replicate"`, present but excluded from
+      `frame.trait_cols`), don't reinvent it. Then repoint `remove_outliers.py` onto
+      `bloom_mcp.tools._qc_shared._validate_trait_subset` (as the other two tools do) and delete the
+      local duplicate. Add a scenario to `specs/bloommcp-tool-sections/spec.md` documenting the
+      restored guarantee ("`remove_outliers`'s `trait_columns` is restricted to certified-clean
+      traits, matching `pca_analysis`/`clustering`") — this change's own precedent (P2.0/#412) is
+      that a real behavior fix gets a spec scenario, not just a task-list line.
+- [ ] P3.3 (test first) The 5 relocated viz tools (`plot_trait_histograms`, `plot_trait_boxplots`,
+      `plot_correlation_matrix`, `plot_heritability_bar`, `plot_variance_decomposition`) take a raw
+      `filename` straight into `load_experiment_data` with **no path-safety guard** — unlike every
+      other tool in `sections/sleap_roots/analysis/`, which validates via `_safe_name`/
+      `_validate_experiment_name` — reachable from agent-supplied tool input (traversal or an
+      absolute path). They also swallow every exception as
+      `except Exception as e: return f"...failed: {e}"`, leaking raw exception text instead of a
+      structured, sanitized error.
+
+      **Scope decision (2026-07-17):** the *full* convergence onto `@as_mcp_tool` +
+      Pydantic I/O — which is the architecturally-correct fix — is explicitly **deferred to two
+      follow-up issues**, not done in this change:
+      - #462 — `plot_heritability_bar` + `plot_variance_decomposition` are being **retired
+        entirely**, folded into a new `heritability_analysis` compute tool as an
+        `include_plots`/`plots` parameter (mirroring `pca_analysis`'s #426/#447 pattern), since
+        both duplicate heritability computation and skip `require_clean=True` the way
+        `pca_analysis`/`clustering` enforce it. A full rewrite of these two here would be
+        rework thrown away the moment #462 lands.
+      - #466 — `plot_trait_histograms`/`plot_trait_boxplots`/`plot_correlation_matrix` (no
+        backing compute tool to fold into; genuinely standalone, pre-clean-appropriate EDA
+        tools) get the full `@as_mcp_tool` conversion there instead, as an independent,
+        self-contained follow-up.
+
+      **What P3.3 actually does here — an immediate, minimal stopgap on all 5, resolved to remove
+      the three ambiguities an initial draft of this task left open:**
+      - **Guard lands once, in `_viz_shared.py`, not pasted 5×** — the same reason P3.2 exists
+        (a duplicated-and-drifted validator) is the reason not to repeat the mistake here. Add
+        one `_validated_filename(filename: str) -> str` (or similar) helper there.
+      - **The guard must return a plain string on rejection, not raise `BloomMCPError`.** These 5
+        tools register via bare `mcp.tool()` (not `@as_mcp_tool`) and return plain strings
+        end-to-end today — nothing in them catches `BloomMCPError`, so calling
+        `_qc_shared._validate_experiment_name` (which raises) directly would let the exception
+        escape uncaught to FastMCP's generic handler, contradicting the "stays a stopgap, no
+        registration-style change" premise. Write a **new, bespoke, string-returning** check in
+        `_viz_shared.py` — consistent with these tools' existing error-string convention (e.g.
+        `plot_heritability_bar.py`'s `"Heritability requires genotype and replicate columns..."`
+        early-return style) — rather than reusing `_validate_experiment_name` as-is.
+      - **Wrap the `_load_data(filename)` call itself, not only the plotting-delegate call.**
+        Today none of the 5 tools' `try/except` blocks cover `_load_data` at all — a malformed
+        CSV or permission error there currently propagates completely uncaught. The sanitized
+        catch must wrap both the load and the delegate call.
+      - **Explicitly out of scope:** `experiment_utils.load_experiment_data`'s own pre-existing
+        `str(e)`-leaking branches in `_resolve_versioned_cleaned` (shared code, also used by
+        non-viz tools) are a separate, pre-existing leak this stopgap does not fix. Note this in
+        the commit message so it doesn't read as silently missed.
+      - **This is an arbitrary-file-read vulnerability, not just a stack-trace leak** — `t_dir /
+        filename` performs no `.resolve()`/containment check, and pathlib silently drops the left
+        operand when the right is absolute, so a traversal/absolute `filename` gets `pd.read_csv`'d
+        and its content can surface in the tool's output. The test must assert no content from
+        outside `TRAITS_DIR` is ever read, not merely that "an error string came back."
+      - **Regression guard:** a valid-but-nonexistent filename must still return the tool's
+        existing not-found string unchanged — the new guard must not introduce a false-positive
+        rejection on the normal "file not found" path.
+
+      Per tool: write a path-traversal-rejection test (asserting no cross-boundary read occurs) +
+      an internal-error-no-leak test + the not-found regression test (red on current code), then
+      patch (green). Add a scenario to `specs/bloommcp-tool-sections/spec.md` documenting the new
+      guarantee ("the 5 viz tools reject unsafe filenames before any read and never return raw
+      exception text") — `bloommcp-tool-sections/spec.md`'s existing scenario claiming these tools'
+      "behavior... is unchanged from before the migration" needs an explicit carve-out noting this
+      intentional, scoped exception.
+- [ ] P3.4 Fix 3 stale docstrings left untouched by the P2.2 move, describing coexistence with tools
+      this same change deletes: `qc_clean.py` (claims `run_qc_workflow` + vendored `data_cleanup`
+      still exist), `remove_outliers.py` (claims `run_outlier_workflow` still exists), `clustering.py`
+      (claims `run_clustering_workflow` + vendored `bloom_mcp.clustering` still exist).
+- [ ] P3.5 Fix remaining Windows-only `encoding="utf-8"` gaps — C3.1 promised this fix for the
+      unicode trait-name fixtures (`mm²`/`mm³`). **Correction: none of the 8 files below have it
+      yet** (an earlier pass added `encoding="utf-8"` to `test_package_baseline.py` and
+      `test_persistence_import_guard.py`, but those fix a *different* root cause — `Path.read_text()`
+      scanning `.py` source during an import-guard AST scan, not `pd.read_csv`/fixture reads of
+      unicode trait names — so don't read this as "2 of 8 done"). Add `encoding="utf-8"` to every
+      `pd.read_csv`/`Path.read_text()` touching these fixtures in `test_oracle.py`,
+      `test_viz_tools.py`, `test_clustering_tool.py`, `test_qc_clean_tool.py`,
+      `test_qc_inspect_tool.py`, `test_remove_outliers_tool.py`, `data_access/test_columns.py`,
+      `test_consumer_utils.py`. **Land last**, after P3.2/P3.3 (both add new test code to
+      `test_remove_outliers_tool.py`/`test_viz_tools.py` that also needs the encoding kwarg) — one
+      complete sweep across all 8 files including whatever P3.2/P3.3 just added, rather than fixing
+      old code now and immediately needing a second pass for new code. No CI impact (Linux defaults
+      to UTF-8); fixes ~12% spurious local test failures for Windows contributors running `pytest`
+      without `PYTHONUTF8=1` set.
+
+## Phase 3 validation
+
+- [ ] V.9 Phase 3 hardening verified: `ruff check` reports zero `F821` anywhere in
+      `sections/sleap_roots/analysis/` (P3.1); `remove_outliers`'s `trait_columns` rejects a
+      non-certified numeric column with `BloomMCPError(code="invalid_input")` (P3.2); each of the 5
+      viz tools rejects a path-traversal/absolute `filename` before any file read (no content from
+      outside `TRAITS_DIR` surfaces anywhere in the response) and returns a sanitized string
+      containing no raw exception text on an internal failure, with the guard centralized in
+      `_viz_shared.py` (not duplicated 5×) and a normal not-found filename still returning the
+      pre-existing not-found string unchanged (P3.3); no docstring in `qc_clean.py`/
+      `remove_outliers.py`/`clustering.py` still names a retired workflow or vendored module (P3.4);
+      every listed Windows-encoding call site carries `encoding="utf-8"` (P3.5); full suite +
+      `ruff`/`black` green.

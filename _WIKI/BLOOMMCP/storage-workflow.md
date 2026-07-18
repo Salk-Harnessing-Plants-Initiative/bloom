@@ -1,7 +1,7 @@
 # Tool-call results storage
 
 This doc explains how bloommcp saves analysis results (and how it reads
-them back). If you are about to write a new workflow tool start here.
+them back). If you are about to write a new granular tool start here.
 
 The storage layer lives under
 [bloommcp/src/bloom_mcp/storage/](../../bloommcp/src/bloom_mcp/storage/). Everything below is a view
@@ -92,7 +92,7 @@ The models live in [`schema.py`](../../bloommcp/src/bloom_mcp/storage/schema.py)
 That means if a writer accidentally adds a field that isn't in the schema, `model_validate`
 raises a `ValidationError` instead of silently writing garbage.
 
-**`Manifest`** is the whole JSON file. It has four fields: `manifest_schema_version` (currently `2`, the constant `CURRENT_SCHEMA_VERSION`), `experiment` (an `ExperimentBlock`), `versions` (a list of `VersionEntry`), and `latest` (the `id` of the most recent version, or `None` if there are no runs yet).
+**`Manifest`** is the whole JSON file. It has four fields: `manifest_schema_version` (currently `3`, the constant `CURRENT_SCHEMA_VERSION`), `experiment` (an `ExperimentBlock`), `versions` (a list of `VersionEntry`), and `latest` (the `id` of the most recent version, or `None` if there are no runs yet).
 
 **`ExperimentBlock`** identifies *which* experiment this manifest catalogs.It has `filename` (e.g. `plant_traits.csv`), `source_path` and `input_sha256` (a stream-hashed digest of the source CSV, so we can detect if the input ever changed under us).
 
@@ -121,7 +121,7 @@ Concrete example of a `manifest.json` after one run:
 
 ```json
 {
-  "manifest_schema_version": 2,
+  "manifest_schema_version": 3,
   "experiment": {
     "filename": "plant_traits.csv",
     "source_path": "/app/data/SLEAP_OUT_CSV/plant_traits.csv",
@@ -146,17 +146,22 @@ Concrete example of a `manifest.json` after one run:
 
 ## The write flow
 
-> **Adding a new workflow tool?** Use the guide in [writing-a-new-tool.md](./writing-a-new-tool.md). 
+> **Adding a new granular tool?** Use the guide in
+> [writing-a-new-tool.md](./writing-a-new-tool.md).
 >
-> This section documents what happens *under the hood* during a commit.
+> This section documents what happens *under the hood* during a commit. (This originally
+> illustrated the retired `run_*_workflow` tools' `build_writer`/`AnalysisWriter` path — that
+> code is gone; the mechanics below are now reached through the `ResultStore` port instead,
+> per `devendor-bloommcp-analysis`.)
 
-Every workflow tool goes through the same machinery:
+Every granular tool goes through the same machinery, via the injected `ResultStore` port
+([`bloom_mcp/tools/_ports.py`](../../bloommcp/src/bloom_mcp/tools/_ports.py)):
 
-[`build_writer`](../../bloommcp/src/bloom_mcp/tools/workflows/_helpers.py) constructs an `AnalysisWriter`, the tool calls `create_version()` to get a tmp
-staging directory, writes outputs into it, then calls `commit({...})` to upload and register.
+`_ports.store().create_run(...)` returns a `RunHandle` with a tmp staging directory, the tool
+writes outputs into it, then calls `store().commit(run, {...})` to upload and register.
 
 What `commit()` does, step by step (see
-[`writer.py`](../../bloommcp/src/bloom_mcp/storage/writer.py)):
+[`supabase_store.py`](../../bloommcp/src/bloom_mcp/result_store/supabase_store.py)):
 
 1. Hashes `source_csv` if it exists (cached on `AnalysisDir`, so re-runs
    don't re-hash).

@@ -46,7 +46,11 @@ from pydantic import BaseModel, Field
 from sleap_roots_analyze import PCAResult, perform_pca_analysis
 
 from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
-from bloom_mcp.data_access import CleanedVersionRequiredError, ExperimentReadError
+from bloom_mcp.data_access import (
+    CleanedVersionRequiredError,
+    ExperimentFrame,
+    ExperimentReadError,
+)
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import _build_output_frame, snapshot_frame
 from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys

@@ -61,7 +61,31 @@ analysis or plotting logic of its own; each SHALL delegate to `sleap_roots_analy
 - **THEN** each of the five surviving plotting tools (formerly bundled in `viz_tools.py`) is
   defined in its own file, `plot_dendrogram` and `plot_outlier_comparison` are absent, and
   each surviving tool's behavior (inputs, outputs, produced artifacts) is unchanged from
-  before the migration
+  before the migration — **except** for the intentional, scoped path-safety and
+  error-sanitization hardening in the next scenario (Phase 3 / P3.3), which is a deliberate
+  narrowing of previously-accepted (unsafe) inputs, not a regression
+
+#### Scenario: remove_outliers restricts trait_columns to certified-clean traits
+
+- **WHEN** `remove_outliers` is called with a `trait_columns` entry that is numeric but not a
+  member of the certified-clean trait set (`frame.trait_cols`) — e.g. a role column or
+  QC-excluded metadata column
+- **THEN** the call is rejected with `BloomMCPError(code="invalid_input")`, matching
+  `pca_analysis`/`clustering`'s existing certified-set restriction (Phase 3 / P3.2 — the
+  file's own local, drifted validator duplicate is removed in favor of the shared
+  `_qc_shared._validate_trait_subset(require_certified=True)`)
+
+#### Scenario: Plotting tools reject unsafe filenames and never leak raw exception text
+
+- **WHEN** any of the 5 plotting tools is called with a `filename` containing a path
+  traversal (`..`) or an absolute path, or the delegate call fails internally
+- **THEN** the tool rejects the traversal/absolute filename before any file read (no content
+  from outside `TRAITS_DIR` is read or returned), and any internal failure returns a
+  sanitized string containing no raw exception text — while a normal, valid-but-nonexistent
+  filename still returns the tool's pre-existing not-found message unchanged (Phase 3 / P3.3;
+  an intentional, minimal stopgap — the full `@as_mcp_tool`/Pydantic convergence is deferred
+  to #462 for `plot_heritability_bar`/`plot_variance_decomposition` and #466 for the
+  remaining 3 tools)
 
 ### Requirement: Core Section for Cross-Cutting Discovery Tools
 

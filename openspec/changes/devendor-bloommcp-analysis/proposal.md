@@ -136,9 +136,11 @@ branch note above.)
   consumer-inspection scenarios that name `correlation_tools` / `tools/workflows/*`. (These
   cross-capability deltas are required: `--strict` does not cross-check that deleted code is
   still referenced by other live specs.)
-- **Tool surface (agent-visible):** removes 5 workflow tools + 8 correlation tools +
+- **Tool surface (agent-visible), BREAKING:** removes 5 workflow tools + 8 correlation tools +
   `inspect_data_quality` + 2 viz plots (`plot_dendrogram`, `plot_outlier_comparison`); the
-  granular tools become namespaced under their sections (e.g. `sleap_roots_pca_analysis`).
+  granular tools become namespaced under their sections (e.g. `sleap_roots_pca_analysis`) —
+  every surviving tool's callable name changes. Any caller (Claude Desktop config, demo script)
+  using an old unprefixed name breaks; Benfica confirmed no known off-repo caller (0.1 / PR review).
   The LangChain agent discovers tools dynamically (`chat.py` filters the live `mcp_tools`), so
   tools vanish automatically — **but** the two *name-matching* code lists
   (`ALWAYS_INCLUDE_MCP_TOOLS` in `chat.py`, `HIDDEN_TOOLS` in `web/…/mcp-chat-client.tsx`) hold
@@ -192,13 +194,22 @@ branch note above.)
   (granular clustering — **CLOSED/MERGED** onto `staging` via PR #427/#445 while this proposal was
   in flight; `clustering_tool.py` already ships and is folded into this change's Phase-2 migration
   scope, not a future re-add path), #315/#305 AC5 (dep follow-up completed), #412 (above), #406
-  (per-user identity + sections/usage — Phase 2 touches the sections surface), #426 (open — adds
-  scree/biplot/variance plots to `pca_analysis`; same-file touch on `pca_analysis_tool.py`/its
-  Phase-2 destination alongside the #412 fix and the P2.2 move — no conflict expected since #426 is
-  unstarted, but worth a heads-up to whoever picks it up next).
+  (per-user identity + sections/usage — Phase 2 touches the sections surface), #426 (**CLOSED/MERGED**
+  onto `staging` via PR #447 while this proposal was in flight, adding scree/biplot/variance plots to
+  `pca_analysis` — this branch's merge with `origin/staging` on 2026-07-17 reconciled the same-file
+  touch on `pca_analysis_tool.py`/its Phase-2 destination; corrected from this proposal's earlier text,
+  which assumed #426 was still unstarted).
 - **Dropped-capability re-adds — reference existing trackers, don't duplicate:** UMAP has **#425**
   (`umap_analysis` granular tool). (Clustering is no longer a dropped capability — #309/#422 already
   shipped it; see above.)
+- **Phase 3 (post-review hardening, 2026-07-17):** an adversarial 5-lens review of this PR found 3
+  real bugs (an undefined-name lint break, a validation gap in `remove_outliers`, a path-safety +
+  exception-leak gap in the 5 viz tools) — tracked as `tasks.md` P3.1–P3.5, landing as additional
+  commits on this same PR. The viz-tool fix there is an explicit minimal stopgap; the architecturally
+  correct fix is deferred to two just-filed follow-ups: **#462** (retire `plot_heritability_bar` +
+  `plot_variance_decomposition` entirely into a new `heritability_analysis` compute tool, mirroring
+  `pca_analysis`'s optional-plots pattern) and **#466** (converge the remaining 3 EDA-only viz tools
+  onto `@as_mcp_tool`).
 - **Follow-up issues to file (genuinely new):** the DRY single-source-of-truth tool-catalog refactor;
   the `storage_backend.py` vs `storage/` name-collision cleanup; and trackers for re-adding the
   **cross-method outlier-comparison plot**, **descriptive-stats tables**, and **cross-experiment
