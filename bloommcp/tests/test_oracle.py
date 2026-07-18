@@ -55,8 +55,10 @@ _H2_TOL = 1e-5
 
 @pytest.fixture(scope="module")
 def turface_19():
-    df = pd.read_csv(_FIXTURES / "turface_19_final_data.csv")
-    golden = json.loads((_FIXTURES / "turface_19_pca_golden.json").read_text())
+    df = pd.read_csv(_FIXTURES / "turface_19_final_data.csv", encoding="utf-8")
+    golden = json.loads(
+        (_FIXTURES / "turface_19_pca_golden.json").read_text(encoding="utf-8")
+    )
     return df, golden
 
 

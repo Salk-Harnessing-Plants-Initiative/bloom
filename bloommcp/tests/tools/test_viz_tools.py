@@ -97,7 +97,7 @@ def test_plot_trait_boxplots_delegates_and_saves_png(viz_env, monkeypatch):
 def test_plot_correlation_matrix_pins_one_off_diagonal_cell(viz_env, monkeypatch):
     calls = _spy(monkeypatch, plot_correlation_matrix_mod, "create_correlation_heatmap")
 
-    df = pd.read_csv(_RAW)
+    df = pd.read_csv(_RAW, encoding="utf-8")
     trait_cols = eu.detect_columns(df)["trait_cols"]
     expected_corr = df[trait_cols].corr()
 
@@ -134,7 +134,7 @@ def test_plot_heritability_bar_delegates_and_matches_independent_computation(
 
     calls = _spy(monkeypatch, plot_heritability_bar_mod, "create_heritability_plot")
 
-    df = pd.read_csv(_RAW)
+    df = pd.read_csv(_RAW, encoding="utf-8")
     config = eu.detect_columns(df)
     trait_cols = config["trait_cols"]
     expected = stats_module.calculate_heritability_estimates(
@@ -176,7 +176,7 @@ def test_plot_variance_decomposition_delegates_and_matches_independent_computati
         "create_variance_decomposition_plot",
     )
 
-    df = pd.read_csv(_RAW)
+    df = pd.read_csv(_RAW, encoding="utf-8")
     config = eu.detect_columns(df)
     trait_cols = config["trait_cols"]
     genotype_col, replicate_col = config["genotype_col"], config["replicate_col"]

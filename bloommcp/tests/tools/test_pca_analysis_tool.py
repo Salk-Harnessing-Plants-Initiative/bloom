@@ -35,7 +35,9 @@ from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import (
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _FINAL = _FIXTURES / "turface_19_final_data.csv"
-_GOLDEN = json.loads((_FIXTURES / "turface_19_pca_golden.json").read_text())
+_GOLDEN = json.loads(
+    (_FIXTURES / "turface_19_pca_golden.json").read_text(encoding="utf-8")
+)
 
 _EXPERIMENT = "turface_19.csv"
 _TRAITS = _GOLDEN["trait_cols"]  # the recorded 8-trait PCA selection
@@ -45,7 +47,7 @@ _VAR_TOL = (
 
 
 def _final_df() -> pd.DataFrame:
-    return pd.read_csv(_FINAL)
+    return pd.read_csv(_FINAL, encoding="utf-8")
 
 
 @pytest.fixture
@@ -318,7 +320,7 @@ def _capture_staged_outputs(store, monkeypatch) -> dict[str, str]:
 
     def _commit(run, outputs):
         for name in outputs:
-            captured[name] = (run.staging_dir / name).read_text()
+            captured[name] = (run.staging_dir / name).read_text(encoding="utf-8")
         return real_commit(run, outputs)
 
     monkeypatch.setattr(store, "commit", _commit)
@@ -499,7 +501,7 @@ def test_source_snapshot_written_index_false(injected_ports, monkeypatch):
     def _spy(**kwargs):
         src = kwargs.get("source_csv")
         if src is not None:
-            captured["columns"] = list(pd.read_csv(src).columns)
+            captured["columns"] = list(pd.read_csv(src, encoding="utf-8").columns)
         return real_create(**kwargs)
 
     monkeypatch.setattr(store, "create_run", _spy)

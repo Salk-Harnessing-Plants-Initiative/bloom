@@ -36,7 +36,9 @@ from bloom_mcp.sections.sleap_roots.analysis.clustering import (
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _FINAL = _FIXTURES / "turface_19_final_data.csv"
-_GOLDEN = json.loads((_FIXTURES / "turface_19_clustering_golden.json").read_text())
+_GOLDEN = json.loads(
+    (_FIXTURES / "turface_19_clustering_golden.json").read_text(encoding="utf-8")
+)
 
 _EXPERIMENT = "turface_19.csv"
 _TRAITS = _GOLDEN[
@@ -50,7 +52,7 @@ _SEED = 42
 
 
 def _final_df() -> pd.DataFrame:
-    return pd.read_csv(_FINAL)
+    return pd.read_csv(_FINAL, encoding="utf-8")
 
 
 @pytest.fixture
@@ -77,7 +79,9 @@ def _labels_of(store, monkeypatch, **overrides) -> list[int]:
     real_commit = store.commit
 
     def _commit(run, outputs):
-        holder["json"] = (run.staging_dir / "cluster_result.json").read_text()
+        holder["json"] = (run.staging_dir / "cluster_result.json").read_text(
+            encoding="utf-8"
+        )
         return real_commit(run, outputs)
 
     monkeypatch.setattr(store, "commit", _commit)
@@ -588,7 +592,7 @@ def test_labels_csv_carries_sample_identity(injected_ports, monkeypatch):
 
     def _commit(run, outputs):
         for name in outputs:
-            captured[name] = (run.staging_dir / name).read_text()
+            captured[name] = (run.staging_dir / name).read_text(encoding="utf-8")
         return real_commit(run, outputs)
 
     monkeypatch.setattr(store, "commit", _commit)

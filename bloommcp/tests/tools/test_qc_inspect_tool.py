@@ -34,13 +34,15 @@ from bloom_mcp.sections.sleap_roots.analysis.qc_inspect import (
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _RAW = _FIXTURES / "turface_19_raw_data.csv"
-_GOLDEN = json.loads((_FIXTURES / "turface_19_qc_inspect_golden.json").read_text())
+_GOLDEN = json.loads(
+    (_FIXTURES / "turface_19_qc_inspect_golden.json").read_text(encoding="utf-8")
+)
 
 _EXPERIMENT = "turface_19_raw.csv"
 
 
 def _raw_df() -> pd.DataFrame:
-    return pd.read_csv(_RAW)
+    return pd.read_csv(_RAW, encoding="utf-8")
 
 
 @pytest.fixture

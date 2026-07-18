@@ -36,7 +36,9 @@ from bloom_mcp.sections.sleap_roots.analysis.remove_outliers import (
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _RAW = _FIXTURES / "turface_19_raw_data.csv"
-_GOLDEN = json.loads((_FIXTURES / "turface_19_outlier_golden.json").read_text())
+_GOLDEN = json.loads(
+    (_FIXTURES / "turface_19_outlier_golden.json").read_text(encoding="utf-8")
+)
 
 _EXPERIMENT = "turface_19.csv"
 
@@ -56,7 +58,7 @@ def _cleaned_df() -> pd.DataFrame:
     Uses the tested upstream ``clean_traits_for_analysis`` (not the code under test)
     with the reader-detected roles/traits, exactly as ``qc_clean`` would produce it.
     """
-    raw = pd.read_csv(_RAW)
+    raw = pd.read_csv(_RAW, encoding="utf-8")
     det = detect_columns(raw)
     cleaned, _kept, _log = clean_traits_for_analysis(
         raw, trait_cols=det["trait_cols"], **_roles(det)
@@ -344,7 +346,9 @@ def test_non_default_roles_are_forwarded_overriding_delegate_defaults(monkeypatc
 
 def test_uncleaned_input_is_assumption_violated_run_qc_first():
     reader = FakeReader()
-    reader.add_experiment("raw_only.csv", pd.read_csv(_RAW))  # raw only, no cleaned
+    reader.add_experiment(
+        "raw_only.csv", pd.read_csv(_RAW, encoding="utf-8")
+    )  # raw only, no cleaned
     store = FakeResultStore()
     _ports.configure(reader=reader, store=store)
     try:

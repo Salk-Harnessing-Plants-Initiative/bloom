@@ -416,7 +416,7 @@ before its vendored copy is removed (C2/C10).
       this same change deletes: `qc_clean.py` (claims `run_qc_workflow` + vendored `data_cleanup`
       still exist), `remove_outliers.py` (claims `run_outlier_workflow` still exists), `clustering.py`
       (claims `run_clustering_workflow` + vendored `bloom_mcp.clustering` still exist).
-- [ ] P3.5 Fix remaining Windows-only `encoding="utf-8"` gaps — C3.1 promised this fix for the
+- [x] P3.5 Fix remaining Windows-only `encoding="utf-8"` gaps — C3.1 promised this fix for the
       unicode trait-name fixtures (`mm²`/`mm³`). **Correction: none of the 8 files below have it
       yet** (an earlier pass added `encoding="utf-8"` to `test_package_baseline.py` and
       `test_persistence_import_guard.py`, but those fix a *different* root cause — `Path.read_text()`
@@ -425,7 +425,13 @@ before its vendored copy is removed (C2/C10).
       `pd.read_csv`/`Path.read_text()` touching these fixtures in `test_oracle.py`,
       `test_viz_tools.py`, `test_clustering_tool.py`, `test_qc_clean_tool.py`,
       `test_qc_inspect_tool.py`, `test_remove_outliers_tool.py`, `data_access/test_columns.py`,
-      `test_consumer_utils.py`. **Land last**, after P3.2/P3.3 (both add new test code to
+      `test_consumer_utils.py`, **and `test_pca_analysis_tool.py`** (missed from this list
+      originally — a full-suite run without `PYTHONUTF8=1` after fixing the other 8 surfaced 25
+      more failures there; fixed the same way, verified 39/39 pass without `PYTHONUTF8=1`). A
+      broader repo sweep for any further gap (`test_local_reader.py`, `test_supabase_result_store.py`)
+      found only false positives — their `read_csv`/`read_text` calls are on ASCII-only synthetic
+      data or source files, confirmed to decode identically under any locale; no fix needed there.
+      **Land last**, after P3.2/P3.3 (both add new test code to
       `test_remove_outliers_tool.py`/`test_viz_tools.py` that also needs the encoding kwarg) — one
       complete sweep across all 8 files including whatever P3.2/P3.3 just added, rather than fixing
       old code now and immediately needing a second pass for new code. No CI impact (Linux defaults
