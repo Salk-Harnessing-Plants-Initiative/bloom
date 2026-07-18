@@ -72,6 +72,7 @@ from bloom_mcp.data_access import (
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._qc_shared import _role_kwargs, _validate_trait_subset
 
 if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph (Tier-0)
     from matplotlib.figure import Figure
@@ -164,47 +165,6 @@ class RemoveOutliersResult(RunLinks):
     # threshold's trustworthiness without re-parsing the goodness_of_fit dict / prose.
     fit_is_trustworthy: Optional[bool] = None
     outlier_barcodes: list[str]
-
-
-def _role_kwargs(frame: ExperimentFrame) -> dict[str, str]:
-    """Forward the adapter-detected role columns, omitting any that are None.
-
-    DUPLICATED: verbatim copy of qc_clean's ``_role_kwargs``; fold into a shared
-    ``_qc_shared`` helper (see #366). Whichever of #366/#400 merges second reconciles.
-    """
-    roles = {
-        "barcode_col": frame.sample_id_col,
-        "genotype_col": frame.genotype_col,
-        "replicate_col": frame.replicate_col,
-    }
-    return {k: v for k, v in roles.items() if v is not None}
-
-
-def _validate_trait_subset(
-    frame: ExperimentFrame, requested: list[str], experiment: str
-) -> None:
-    """Reject an unknown or non-numeric ``trait_columns`` subset as ``invalid_input``.
-
-    DUPLICATED: verbatim copy of qc_clean's ``_validate_trait_subset``; fold into a
-    shared ``_qc_shared`` helper (see #366). Whichever of #366/#400 merges second
-    reconciles this file.
-    """
-    missing = [c for c in requested if c not in frame.df.columns]
-    if missing:
-        raise BloomMCPError(
-            code="invalid_input",
-            message=f"trait_columns names columns not in {experiment!r}: {missing}.",
-            remedy="Use column names from load_experiment_data, or omit trait_columns.",
-        )
-    non_numeric = [
-        c for c in requested if not pd.api.types.is_numeric_dtype(frame.df[c])
-    ]
-    if non_numeric:
-        raise BloomMCPError(
-            code="invalid_input",
-            message=f"trait_columns includes non-numeric columns: {non_numeric}.",
-            remedy="Pass only numeric trait columns; metadata columns cannot be detected on.",
-        )
 
 
 def _detect_kwargs(params: RemoveOutliersParams) -> dict[str, float]:
@@ -332,7 +292,9 @@ def remove_outliers(
     provenance.based_on_version = frame.source
 
     if params.trait_columns is not None:
-        _validate_trait_subset(frame, params.trait_columns, params.experiment)
+        _validate_trait_subset(
+            frame, params.trait_columns, params.experiment, require_certified=True
+        )
     trait_cols = params.trait_columns or frame.trait_cols
     detect_kwargs = _detect_kwargs(params)
 

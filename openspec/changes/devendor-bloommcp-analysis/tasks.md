@@ -333,7 +333,7 @@ before its vendored copy is removed (C2/C10).
       `from __future__ import annotations` defers evaluation, but `ruff check` reports two real
       `F821 Undefined name` errors — contradicts this change's own V.3 gate. Oracle: restore the
       import; `ruff check src/bloom_mcp/sections/sleap_roots/analysis/pca_analysis.py` clean.
-- [ ] P3.2 (test first) `remove_outliers.py` defines its own local `_role_kwargs`/
+- [x] P3.2 (test first) `remove_outliers.py` defines its own local `_role_kwargs`/
       `_validate_trait_subset`, explicitly marked `# DUPLICATED: verbatim copy of qc_clean's ...;
       fold into a shared _qc_shared helper (see #366)` — but #366 merged **without** ever covering
       this file (its scope was `qc_clean`/`qc_inspect` only), so the pointer is stale and the

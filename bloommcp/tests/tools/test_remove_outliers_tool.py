@@ -663,6 +663,21 @@ def test_non_numeric_trait_column_is_invalid_input(injected_ports):
     assert store.list_runs(_EXPERIMENT, "qc") == []
 
 
+def test_non_certified_numeric_column_is_rejected_not_dropped(injected_ports):
+    """Phase 3 / P3.2 — a numeric-but-non-certified column (a role column qc_clean
+    excluded from trait_cols, e.g. the replicate column) must be rejected the same
+    way pca_analysis/clustering reject it, not silently accepted because it happens
+    to be numeric and present. Regression guard for remove_outliers's local
+    _validate_trait_subset, which (unlike its siblings) only checked existence +
+    numeric dtype, not certified-set membership."""
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        _run(trait_columns=["rep"])  # numeric, present, but a replicate role column
+    assert exc.value.code == "invalid_input"
+    assert "rep" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "qc") == []
+
+
 def test_own_guard_rejects_returned_frame_missing_trait_column(
     guard_ports, monkeypatch
 ):
