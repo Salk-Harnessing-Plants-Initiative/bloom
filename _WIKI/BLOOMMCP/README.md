@@ -52,6 +52,9 @@ bloommcp/
         └── outlier.py
 ```
 
+> `data/{SLEAP_OUT_CSV,ANALYSIS_OUTPUT,PLOTS_DIR}` are provisioned automatically
+> by `make dev-up` — see [DEV_SETUP.md](../../DEV_SETUP.md#bloommcp-data-directories).
+
 ## Storage
 
 bloommcp uses a dedicated S3 bucket on Supabase, `bloommcp-data`, for

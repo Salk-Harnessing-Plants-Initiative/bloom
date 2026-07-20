@@ -10,10 +10,11 @@ This guide covers setting up Bloom for local development.
 1. [Prerequisites](#prerequisites)
 2. [Environment Configuration](#environment-configuration)
 3. [MinIO Storage Setup](#minio-storage-setup)
-4. [Starting the Stack](#starting-the-stack)
-5. [Database Migrations](#database-migrations)
-6. [Loading Test Data](#loading-test-data)
-7. [Service URLs and Ports](#service-urls-and-ports)
+4. [bloommcp Data Directories](#bloommcp-data-directories)
+5. [Starting the Stack](#starting-the-stack)
+6. [Database Migrations](#database-migrations)
+7. [Loading Test Data](#loading-test-data)
+8. [Service URLs and Ports](#service-urls-and-ports)
 
 ---
 
@@ -130,6 +131,16 @@ Nothing to do — MinIO is provisioned automatically:
 > On native Linux only, if MinIO can't write its data dir (a host/container UID
 > mismatch on the bind mount), see the writability note in `openspec/project.md`
 > (`chmod 770`). On Docker Desktop (macOS / Windows-WSL2) this doesn't arise.
+
+---
+
+## bloommcp Data Directories
+
+Nothing to do — `bloommcp/data/{SLEAP_OUT_CSV,PLOTS_DIR,ANALYSIS_OUTPUT}` are
+provisioned automatically by `make dev-up`'s `ensure-bloommcp-data-dirs`
+preflight, before `docker compose up` runs — no manual `mkdir`/`chmod` needed.
+See the writability note in `openspec/project.md` for why this exists (the same
+root-owned-bind-mount class of issue as MinIO's, above).
 
 ---
 
