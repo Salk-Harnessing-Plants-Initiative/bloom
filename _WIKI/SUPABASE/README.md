@@ -61,7 +61,7 @@ The `authenticator` role is what PostgREST / storage-api connect as. After JWT v
 
 The sleap-roots pipeline write-back (changes D/E) is the one place where the DB, not the calling code, owns write scope. `public.insert_cyl_result_envelope(envelope jsonb)` is a `SECURITY DEFINER` function (owned by `postgres`, with a pinned `search_path`) that ingests one `sleap-roots-contracts` `ResultEnvelope` and writes it — in a single, idempotent transaction — into `cyl_trait_sources`, `cyl_scan_traits` (via the `cyl_traits` registry) and `cyl_scan_intermediates`. Re-delivery of an already-ingested run is a pure no-op.
 
-`EXECUTE` is revoked from `PUBLIC` and granted only to `bloom_writer`, `service_role`, and `bloom_admin`. The three target tables have **no** direct INSERT/UPDATE policy for any role except `bloom_admin` (break-glass), so the RPC is the sole sanctioned writer — closing the forgeable-client-INSERT path that the legacy `authenticated` policies left open.
+`EXECUTE` is revoked from `PUBLIC` and granted only to `bloom_writer`, `service_role`, `bloom_admin`, and `bloom_workflows` (the scoped, non-interactive service identity used by A4 cluster write-back pods). The three target tables have **no** direct INSERT/UPDATE policy for any role except `bloom_admin` (break-glass), so the RPC is the sole sanctioned writer — closing the forgeable-client-INSERT path that the legacy `authenticated` policies left open.
 
 ## Storage buckets
 
