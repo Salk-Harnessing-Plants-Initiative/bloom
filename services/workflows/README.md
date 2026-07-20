@@ -49,10 +49,12 @@ internal-only and not exposed through the public proxy.
 `job_id` immediately. The `cyl-video-worker` container polls the queue, runs the
 **same** `video.generate_scan_video` as the on-demand route, and updates the
 `cyl_video_jobs` status table (`queued → processing → complete`/`failed`). Poll
-that table for status (authenticated users can read it). On failure a job retries
-via the message visibility timeout and is dead-lettered (archived) after 3
-attempts. Scale throughput by running more `cyl-video-worker` replicas — pgmq's
-claim is concurrency-safe.
+that table for status (authenticated users can read it). On a reported failure a
+job retries via the message visibility timeout and is dead-lettered (archived)
+after 3 attempts; a job that hard-crashes the worker (never reporting) is
+dead-lettered by pgmq's `read_ct` after a few deliveries, so a poison message
+can't redeliver forever. Scale throughput by running more `cyl-video-worker`
+replicas — pgmq's claim is concurrency-safe.
 
 ### Video generation
 

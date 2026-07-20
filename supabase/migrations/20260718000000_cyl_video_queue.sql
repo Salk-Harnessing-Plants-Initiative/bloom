@@ -100,24 +100,43 @@ END;
 $$;
 
 -- claim: read one message (invisible for p_vt seconds), mark the job processing.
-CREATE OR REPLACE FUNCTION public.claim_cyl_video_job(p_vt integer DEFAULT 120)
+-- Poison-message guard: a job that hard-crashes the worker (OOM/SIGKILL) never
+-- reaches fail_cyl_video_job, so its attempts counter never advances and it would
+-- redeliver forever. pgmq's read_ct increments on every delivery regardless, so
+-- past p_max_reads we dead-letter here rather than hand it out again.
+CREATE OR REPLACE FUNCTION public.claim_cyl_video_job(
+  p_vt integer DEFAULT 120, p_max_reads integer DEFAULT 5
+)
 RETURNS TABLE(job_id uuid, scan_id bigint, experiment_id bigint, msg_id bigint)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pgmq
 AS $$
 DECLARE
   r pgmq.message_record;
+  v_job_id uuid;
 BEGIN
   SELECT * INTO r FROM pgmq.read('cyl_video_generation', p_vt, 1) LIMIT 1;
   IF NOT FOUND THEN
     RETURN;  -- empty queue
   END IF;
 
+  v_job_id := (r.message->>'job_id')::uuid;
+
+  IF r.read_ct > p_max_reads THEN
+    UPDATE public.cyl_video_jobs
+    SET status = 'failed',
+        error = coalesce(error, format('dead-lettered after %s deliveries', r.read_ct)),
+        completed_at = now()
+    WHERE id = v_job_id;
+    PERFORM pgmq.archive('cyl_video_generation', r.msg_id);
+    RETURN;  -- poison message — do not hand it to the worker again
+  END IF;
+
   UPDATE public.cyl_video_jobs
   SET status = 'processing', started_at = now()
-  WHERE id = (r.message->>'job_id')::uuid;
+  WHERE id = v_job_id;
 
   RETURN QUERY SELECT
-    (r.message->>'job_id')::uuid,
+    v_job_id,
     (r.message->>'scan_id')::bigint,
     (r.message->>'experiment_id')::bigint,
     r.msg_id;
@@ -163,7 +182,7 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.enqueue_cyl_video(bigint, bigint) TO bloom_workflows;
-GRANT EXECUTE ON FUNCTION public.claim_cyl_video_job(integer) TO bloom_workflows;
+GRANT EXECUTE ON FUNCTION public.claim_cyl_video_job(integer, integer) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.fail_cyl_video_job(uuid, bigint, text, integer) TO bloom_workflows;
 

@@ -137,3 +137,32 @@ def test_fail_retries_then_dead_letters(pg_conn):
             assert job["attempts"] == 3
     finally:
         pg_conn.rollback()
+
+
+def test_claim_dead_letters_poison_message(pg_conn):
+    # A job that hard-crashes the worker never calls fail_job (attempts stays 0),
+    # so dead-lettering must fall back to pgmq's read_ct. Simulate a message that
+    # has been redelivered many times and confirm claim dead-letters it.
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id = _new_scan(cur)
+            cur.execute("SELECT public.enqueue_cyl_video(%s, %s)", (scan_id, 1))
+            job_id = cur.fetchone()[0]
+            cur.execute("SELECT msg_id FROM public.cyl_video_jobs WHERE id = %s", (job_id,))
+            msg_id = cur.fetchone()[0]
+
+            # Pretend the worker has already crashed on this message many times.
+            cur.execute(
+                "UPDATE pgmq.q_cyl_video_generation SET read_ct = 10 WHERE msg_id = %s",
+                (msg_id,),
+            )
+
+            # max_reads below read_ct -> dead-letter, hand nothing to the worker.
+            cur.execute("SELECT * FROM public.claim_cyl_video_job(120, 5)")
+            assert cur.fetchone() is None
+
+            job = _job(cur, job_id)
+            assert job["status"] == "failed"   # dead-lettered by read_ct...
+            assert job["attempts"] == 0        # ...even though fail_job never ran
+    finally:
+        pg_conn.rollback()
