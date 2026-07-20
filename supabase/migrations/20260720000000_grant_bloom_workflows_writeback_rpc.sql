@@ -1,0 +1,12 @@
+-- A4 write-back: bloom_workflows (the scoped, non-interactive service identity used by
+-- cluster stage-in + write-back pods, see 20260716000000_create_workflows_role.sql) needs
+-- EXECUTE on the write-back RPC to call `bloomctl cyl ingest-result` from a pod (bloom#398,
+-- tracked under bloom#404). The read side (SELECT on cyl_images/cyl_scans_extended, Storage
+-- read on the images bucket) already landed in 20260716000000_create_workflows_role.sql;
+-- this is the write-back half. No other grant is added on the three write-back tables
+-- (cyl_trait_sources, cyl_scan_traits, cyl_scan_intermediates) — bloom_workflows stays
+-- least-privilege: read for stage-in, execute-only for write-back.
+--
+-- Forward-only: 20260706170000_cyl_writeback_contract_a3.sql is already applied and MUST
+-- NOT be edited (see its own header).
+GRANT EXECUTE ON FUNCTION public.insert_cyl_result_envelope(jsonb) TO bloom_workflows;
