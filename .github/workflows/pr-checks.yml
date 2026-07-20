@@ -991,6 +991,17 @@ jobs:
       - name: make bloommcp-smoke (live persistence smoke through real ports)
         run: make bloommcp-smoke
 
+      # Live plot-tool smoke (issue #472): unlike bloommcp-smoke above (in-process,
+      # env-overridden to host temp dirs), this calls a real plotting tool through
+      # the bloommcp container's actual MCP transport — the only way to prove the
+      # real bind-mounted PLOTS_DIR write path works, since plotting tools always
+      # write straight to disk regardless of storage backend. Proves the
+      # ensure-bloommcp-data-dirs preflight (Makefile `dev-up` prerequisite) is
+      # actually wired in and not silently skipped (e.g. by DOCTOR_SKIP=1, which
+      # this job sets on `make dev-up` above).
+      - name: make bloommcp-plot-smoke (live plot-tool smoke through the real container)
+        run: make bloommcp-plot-smoke
+
       # Guarded: if: failure() fires if an earlier, unrelated step fails
       # before .env.dev is ever generated (#455) — same defect class as
       # compose-health-check's "Debug logs on failure" above.

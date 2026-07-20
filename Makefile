@@ -341,6 +341,26 @@ bloommcp-smoke: check-uv
 	cd bloommcp && SUPABASE_URL="http://localhost:$${KONG_PORT}" BLOOM_AGENT_KEY="$$BLOOM_AGENT_KEY" \
 		uv run python scripts/live_persistence_smoke.py
 
+## Live plot-tool smoke (issue #472): calls a real plotting tool through the
+## bloommcp container's actual MCP transport (not an in-process/env-overridden
+## call like bloommcp-smoke's) — the only way to prove the real bind-mounted
+## PLOTS_DIR write path works. Requires the stack to be up (`make dev-up`).
+.PHONY: bloommcp-plot-smoke
+bloommcp-plot-smoke: check-uv
+	@if [ ! -f .env.dev ]; then \
+		echo "Error: .env.dev not found. Run 'make init' first."; \
+		exit 1; \
+	fi
+	@if ! docker ps | grep -q bloommcp; then \
+		echo "Error: dev stack not running. Start with 'make dev-up'."; \
+		exit 1; \
+	fi
+	@BLOOMMCP_PORT=$$(sed -n 's/^BLOOMMCP_PORT=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); BLOOMMCP_PORT=$${BLOOMMCP_PORT:-8811}; \
+	BLOOMMCP_API_KEY=$$(sed -n 's/^BLOOMMCP_API_KEY=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
+	if [ -z "$$BLOOMMCP_API_KEY" ]; then echo "Error: BLOOMMCP_API_KEY is empty in .env.dev — run 'make init'."; exit 1; fi; \
+	cd bloommcp && BLOOMMCP_PORT="$$BLOOMMCP_PORT" BLOOMMCP_API_KEY="$$BLOOMMCP_API_KEY" \
+		uv run python scripts/live_plot_tool_smoke.py
+
 ## One-shot: clean reset -> up -> migrate -> health check. Destructive (wipes the
 ## local DB). Use to reproduce a fresh-clone init and prove it end to end.
 .PHONY: verify-dev
