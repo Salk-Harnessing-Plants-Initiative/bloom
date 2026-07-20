@@ -181,6 +181,17 @@ BEGIN
 END;
 $$;
 
+-- New functions get EXECUTE granted to PUBLIC by default. These wrappers are
+-- SECURITY DEFINER and the public schema is PostgREST-exposed, so a leftover
+-- PUBLIC grant would let any anon/authenticated caller invoke them directly via
+-- /rest/v1/rpc — bypassing the API's auth, rate limit, and scan validation (e.g.
+-- setting an arbitrary path on any job). Deny PUBLIC; grant only bloom_workflows,
+-- the sanctioned caller (matches insert_cyl_result_envelope, 20260630180000).
+REVOKE EXECUTE ON FUNCTION public.enqueue_cyl_video(bigint, bigint) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.claim_cyl_video_job(integer, integer) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.fail_cyl_video_job(uuid, bigint, text, integer) FROM PUBLIC;
+
 GRANT EXECUTE ON FUNCTION public.enqueue_cyl_video(bigint, bigint) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.claim_cyl_video_job(integer, integer) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) TO bloom_workflows;

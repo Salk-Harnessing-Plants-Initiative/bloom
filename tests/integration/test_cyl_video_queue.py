@@ -139,6 +139,32 @@ def test_fail_retries_then_dead_letters(pg_conn):
         pg_conn.rollback()
 
 
+def test_wrappers_denied_to_public(pg_conn):
+    # The SECURITY DEFINER wrappers are PostgREST-exposed (public schema). EXECUTE
+    # must be revoked from PUBLIC so a direct /rest/v1/rpc call as anon/authenticated
+    # can't bypass the API's auth + rate limit. Only bloom_workflows may call them.
+    wrappers = [
+        "public.enqueue_cyl_video(bigint, bigint)",
+        "public.claim_cyl_video_job(integer, integer)",
+        "public.complete_cyl_video_job(uuid, bigint, text)",
+        "public.fail_cyl_video_job(uuid, bigint, text, integer)",
+    ]
+    try:
+        with pg_conn.cursor() as cur:
+            for sig in wrappers:
+                for role in ("anon", "authenticated"):
+                    cur.execute(
+                        "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, sig)
+                    )
+                    assert cur.fetchone()[0] is False, f"{role} must NOT execute {sig}"
+                cur.execute(
+                    "SELECT has_function_privilege('bloom_workflows', %s, 'EXECUTE')", (sig,)
+                )
+                assert cur.fetchone()[0] is True, f"bloom_workflows must execute {sig}"
+    finally:
+        pg_conn.rollback()
+
+
 def test_claim_dead_letters_poison_message(pg_conn):
     # A job that hard-crashes the worker never calls fail_job (attempts stays 0),
     # so dead-lettering must fall back to pgmq's read_ct. Simulate a message that
