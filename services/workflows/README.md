@@ -109,6 +109,7 @@ All of the above is set up by the migration `…_create_workflows_role.sql`.
 | `WORKFLOWS_VIDEO_TABLE`        | `cyl_scan_videos`       | Record table (`scan_id -> path`)                     |
 | `WORKFLOWS_RATE_LIMIT`         | `5`                     | Max video requests per user per window, per process (429 over) |
 | `WORKFLOWS_RATE_WINDOW_SECONDS`| `60`                    | Rate-limit window                                    |
+| `WORKFLOWS_PUBLIC_SUPABASE_URL`| –                        | Public base to rewrite signed URLs off the internal `kong` host, so `download_url` works for outside callers (set to `NEXT_PUBLIC_SUPABASE_URL`). Unset → the internal URL is returned unchanged. |
 
 > `ffmpeg` must be present in the runtime image — the Dockerfile copies a digest-pinned static `ffmpeg` binary (avoids apt's ffmpeg pulling in vulnerable GPU/TLS libraries).
 > Caller auth is delegated to Supabase (`/auth/v1/user`), so `JWT_SECRET` is **not** needed by this service.

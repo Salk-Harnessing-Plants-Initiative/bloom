@@ -13,6 +13,7 @@ H.264 with VideoWriter -> upload MP4 to the videos bucket -> signed URL ->
 import io
 import logging
 import os
+import re
 import tempfile
 
 import numpy as np
@@ -40,6 +41,19 @@ VIDEOS_BUCKET = os.environ.get("WORKFLOWS_VIDEOS_BUCKET", "videos")
 VIDEO_PATH_PREFIX = "cyl-videos"
 # Record table linking scan_id -> stored video path (upserted per scan).
 VIDEO_TABLE = os.environ.get("WORKFLOWS_VIDEO_TABLE", "cyl_scan_videos")
+
+# Signed URLs come back pointing at the internal gateway (http://kong:8000), which
+# an outside caller can't reach. Rewrite that host to the public base so the
+# returned download_url is usable externally — mirrors web/lib/supabase/storage-url.ts.
+PUBLIC_SUPABASE_URL = os.environ.get("WORKFLOWS_PUBLIC_SUPABASE_URL")
+_INTERNAL_HOST = re.compile(r"^https?://kong:\d+")
+
+
+def _to_public_url(url: str) -> str:
+    """Swap the internal kong host for the public base; no-op if base unset."""
+    if not url or not PUBLIC_SUPABASE_URL:
+        return url
+    return _INTERNAL_HOST.sub(PUBLIC_SUPABASE_URL, url, count=1)
 
 
 def scan_in_experiment(client, experiment_id: int, scan_id: int) -> bool:
@@ -91,11 +105,14 @@ def _recorded_frames(client, scan_id: int):
 
 
 def _signed_url(bucket, path: str) -> str:
-    """Best-effort extraction of the signed URL across supabase-py versions."""
+    """Best-effort extraction of the signed URL across supabase-py versions,
+    rewritten to the public host so external callers can open it."""
     res = bucket.create_signed_url(path, DOWNLOAD_URL_TTL)
     if isinstance(res, dict):
-        return res.get("signedURL") or res.get("signed_url") or res.get("signedUrl")
-    return res
+        url = res.get("signedURL") or res.get("signed_url") or res.get("signedUrl")
+    else:
+        url = res
+    return _to_public_url(url)
 
 
 def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -> dict:

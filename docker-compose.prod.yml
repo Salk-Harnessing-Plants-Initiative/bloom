@@ -214,6 +214,9 @@ services:
       SUPABASE_ANON_KEY: ${ANON_KEY}
       WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
       WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      # Public base for rewriting signed URLs off the internal kong host so
+      # download_url is usable by outside callers.
+      WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
     networks:
       - supanet
     healthcheck:
