@@ -7,6 +7,12 @@
 -- (cyl_trait_sources, cyl_scan_traits, cyl_scan_intermediates) — bloom_workflows stays
 -- least-privilege: read for stage-in, execute-only for write-back.
 --
+-- NOTE: bloom_workflows is currently also the DB identity behind the on-demand cyl-scan
+-- video-generation service (services/workflows, PR #391) — not an A4-dedicated role. This
+-- grant therefore also widens what that service's credential can do if compromised. Reviewed
+-- and accepted by @blm3886 (PR #470) as a shared-role tradeoff rather than provisioning a
+-- second dedicated identity for A4 write-back.
+--
 -- Forward-only: 20260706170000_cyl_writeback_contract_a3.sql is already applied and MUST
 -- NOT be edited (see its own header).
 GRANT EXECUTE ON FUNCTION public.insert_cyl_result_envelope(jsonb) TO bloom_workflows;
