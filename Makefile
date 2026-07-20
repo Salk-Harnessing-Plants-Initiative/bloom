@@ -49,9 +49,20 @@ init: check-uv
 doctor:
 	@sh scripts/doctor.sh
 
+# Ensure bloommcp's bind-mounted data directories are writable before compose
+# brings the container up (issue #472). A .PHONY prerequisite — not folded into
+# `doctor.sh` — so it always runs, including in CI's `DOCTOR_SKIP=1 make dev-up`
+# (see scripts/ensure_bloommcp_data_dirs.sh's header for why), and Make resolves
+# prerequisites before the `dev-up` recipe body regardless of where the
+# prerequisite is listed, so this can never accidentally land after
+# `docker compose up` the way an inline recipe line could.
+.PHONY: ensure-bloommcp-data-dirs
+ensure-bloommcp-data-dirs:
+	@sh scripts/ensure_bloommcp_data_dirs.sh
+
 # Run development stack
 .PHONY: dev-up
-dev-up:
+dev-up: ensure-bloommcp-data-dirs
 	@sh scripts/doctor.sh
 	@echo " Checking frontend dependencies..."
 	@if [ ! -f "./web/package-lock.json" ]; then \
