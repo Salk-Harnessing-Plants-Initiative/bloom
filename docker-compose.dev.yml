@@ -115,6 +115,34 @@ services:
       - kong
     restart: unless-stopped
 
+  # Consumes the cyl_video_generation pgmq queue and generates videos with the
+  # same code as the on-demand route. Same image as workflows; scale by replicas.
+  cyl-video-worker:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+    volumes:
+      - ./services/workflows:/app
+    command: ["python", "worker.py"]
+    networks:
+      - supanet
+    depends_on:
+      - db-dev
+      - kong
+    restart: unless-stopped
+
   bloommcp:
     build:
       context: ./bloommcp

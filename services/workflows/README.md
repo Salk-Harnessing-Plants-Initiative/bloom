@@ -39,7 +39,20 @@ internal-only and not exposed through the public proxy.
 | Method | Path                                          | Auth | Purpose                                   |
 | ------ | --------------------------------------------- | ---- | ----------------------------------------- |
 | GET    | `/health`                                   | none (internal-only) | Liveness — kept for the in-container probe; **not** exposed via the public proxy |
-| POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT | Generate a scan's video, upload to Storage |
+| POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT | On-demand: generate a scan's video, upload to Storage |
+| POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video/queue` | Supabase user JWT | Queued: enqueue the job, return a `job_id`; a worker generates it |
+
+### Queued generation (worker)
+
+`…/video/queue` enqueues a job on the `cyl_video_generation` pgmq queue (via
+`SECURITY DEFINER` wrappers — the service holds no pgmq grants) and returns a
+`job_id` immediately. The `cyl-video-worker` container polls the queue, runs the
+**same** `video.generate_scan_video` as the on-demand route, and updates the
+`cyl_video_jobs` status table (`queued → processing → complete`/`failed`). Poll
+that table for status (authenticated users can read it). On failure a job retries
+via the message visibility timeout and is dead-lettered (archived) after 3
+attempts. Scale throughput by running more `cyl-video-worker` replicas — pgmq's
+claim is concurrency-safe.
 
 ### Video generation
 
@@ -109,6 +122,8 @@ All of the above is set up by the migration `…_create_workflows_role.sql`.
 | `WORKFLOWS_VIDEO_TABLE`        | `cyl_scan_videos`       | Record table (`scan_id -> path`)                     |
 | `WORKFLOWS_RATE_LIMIT`         | `5`                     | Max video requests per user per window, per process (429 over) |
 | `WORKFLOWS_RATE_WINDOW_SECONDS`| `60`                    | Rate-limit window                                    |
+| `WORKFLOWS_WORKER_POLL_SECONDS`| `5`                     | Worker idle sleep between empty queue polls          |
+| `WORKFLOWS_WORKER_VT_SECONDS`  | `120`                   | Per-message visibility timeout (retry window)        |
 
 > `ffmpeg` must be present in the runtime image — the Dockerfile copies a digest-pinned static `ffmpeg` binary (avoids apt's ffmpeg pulling in vulnerable GPU/TLS libraries).
 > Caller auth is delegated to Supabase (`/auth/v1/user`), so `JWT_SECRET` is **not** needed by this service.

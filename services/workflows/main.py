@@ -14,6 +14,12 @@ Endpoints:
                                                        Storage, return a signed
                                                        download URL
                                                        (requires a Supabase user JWT)
+    POST /cyl/experiments/{experiment_id}/scans/{scan_id}/video/queue
+                                                     - queued: enqueue the job and
+                                                       return a job id immediately;
+                                                       a worker generates it and
+                                                       updates cyl_video_jobs
+                                                       (requires a Supabase user JWT)
 """
 
 import os
@@ -24,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from auth import require_supabase_user, enforce_rate_limit
 from video import generate_experiment_scan_video
+from video_queue import enqueue_experiment_scan_video
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -71,3 +78,25 @@ def cyl_experiment_scan_video(
         result["frames"],
     )
     return {"experiment_id": experiment_id, **result}
+
+
+@app.post("/cyl/experiments/{experiment_id}/scans/{scan_id}/video/queue")
+def cyl_experiment_scan_video_queue(
+    experiment_id: int,
+    scan_id: int,
+    user_id: str = Depends(require_supabase_user),
+):
+    """Queued: enqueue a cyl scan's video for the worker to generate.
+
+    Returns immediately with a job id; poll cyl_video_jobs for status. Same auth
+    (Supabase user JWT) and per-user rate limit as the on-demand route.
+    """
+    enforce_rate_limit(user_id)
+    result = enqueue_experiment_scan_video(experiment_id, scan_id)
+    logger.info(
+        "Queued video job %s for experiment %s scan %s",
+        result["job_id"],
+        experiment_id,
+        scan_id,
+    )
+    return {"experiment_id": experiment_id, "scan_id": scan_id, **result}
