@@ -19,7 +19,7 @@ in this repo, just a previously-unfixed instance of it for a different directory
 - **Goal:** a regression here fails CI, not a developer running the dev stack for the first
   time.
 - **Non-goal:** fixing the `volumes/db/data` instance of this pattern (already has a documented
-  workaround for its one known symptom — the `setup-uv` ordering in CI. Whether it has a *write*
+  workaround for its one known symptom — the `setup-uv` ordering in CI. Whether it has a _write_
   problem too is out of scope here).
 - **Non-goal:** fixing or even conclusively diagnosing the prod/staging case — see proposal.md's
   "Out of scope" note.
@@ -27,18 +27,31 @@ in this repo, just a previously-unfixed instance of it for a different directory
 ## Decision
 
 **Pre-create the three directories with permissive local-dev permissions, before
-`docker compose up` runs**, as a preflight step (Makefile target or a small script, mirroring
-`scripts/doctor.sh`'s existing preflight pattern rather than growing `dev-up` inline):
+`docker compose up` runs**, as `scripts/ensure_bloommcp_data_dirs.sh`, wired as a `.PHONY`
+**Makefile prerequisite** of `dev-up` (`dev-up: ensure-bloommcp-data-dirs`) — not an inline
+recipe line (which could accidentally land after the `docker compose up` line the way
+`dev-up`'s existing trailing `@echo` lines are ordered), and not folded into `scripts/
+doctor.sh` (CI runs `DOCTOR_SKIP=1 make dev-up`, which would silently disable an in-doctor
+fix). On each directory: `mkdir -p` if missing, then `chmod 777`; either failing means the
+directory (or its `bloommcp/data` parent) is already root-owned from a pre-fix run, which
+`chmod` cannot self-heal (requires ownership) — the script fails loudly with a `sudo chown`/
+`sudo rm -rf` remedy and aborts `dev-up` rather than silently continuing.
 
-```sh
-mkdir -p bloommcp/data/SLEAP_OUT_CSV bloommcp/data/PLOTS_DIR bloommcp/data/ANALYSIS_OUTPUT
-chmod 777 bloommcp/data/SLEAP_OUT_CSV bloommcp/data/PLOTS_DIR bloommcp/data/ANALYSIS_OUTPUT
-```
+Verified live (not just unit-tested): reproduced the original bug by running `docker
+compose run` directly (bypassing this fix) against a truly fresh `bloommcp/data` — Docker
+created all three directories, and their parent, root-owned; `bloommcp` then either failed
+a plot-tool call with a permission error, or (fully-local storage backend) crashed at boot
+with `RuntimeError: BLOOM_STORAGE_BACKEND=local root /app/data/ANALYSIS_OUTPUT is not
+writable`. Ran `ensure_bloommcp_data_dirs.sh` against that exact root-owned state and
+confirmed it fails loudly with the chown/rm remedy rather than silently proceeding. Applied
+the remedy, re-ran the script (now succeeds, `almoab:almoab` `0777`), then re-ran the
+container: booted clean, and `plot_trait_histograms` through the real MCP transport
+succeeded with the PNG landing on the real bind-mounted `PLOTS_DIR`.
 
 ### Alternatives considered
 
 - **Match the container's UID on the host.** Rejected: `adduser --system --ingroup bloom
-  bloom` in the Dockerfile gets an arbitrary system UID assigned at image-build time, not a
+bloom` in the Dockerfile gets an arbitrary system UID assigned at image-build time, not a
   fixed, predictable one — there's nothing stable to `chown` the host directory to without
   also pinning the `bloom` user's UID/GID in the Dockerfile (a second change, with its own
   risk of colliding with an existing UID on some host), and it still wouldn't help on hosts
@@ -59,15 +72,21 @@ chmod 777 bloommcp/data/SLEAP_OUT_CSV bloommcp/data/PLOTS_DIR bloommcp/data/ANAL
   internal filesystem or any shared/prod host. Flagged explicitly so review can push back if
   this trade-off isn't acceptable.
 
-## Open Questions
+## Resolved Questions
 
-1. **Where should the new plot-tool CI check live?** `make check` (extends "Local Stack
-   Health Verification") is the more natural fit purpose-wise (it already asserts the stack
-   is *actually* healthy, not just that containers booted) but currently has no MCP-calling
-   logic. `live_persistence_smoke.py` already has MCP-calling machinery but is scoped by its
-   own docstring to the `SupabaseResultStore`/`SupabaseReader` write path specifically, which
-   plots don't go through — bolting a plot check on would stretch that scope. A third option:
-   a small new standalone script/`make` target. Needs a decision before task 3 in `tasks.md`.
-2. **Should the prod/staging risk get its own tracked issue now, or wait until someone
-   confirms it's actually a live problem there?** I don't have visibility into how the
-   staging/prod hosts are provisioned outside this repo.
+1. **Where does the new plot-tool CI check live?** A new standalone script
+   (`bloommcp/scripts/live_plot_tool_smoke.py`) + `make bloommcp-plot-smoke`, **not**
+   `live_persistence_smoke.py`. Reason found during implementation, not just a style
+   preference: `live_persistence_smoke.py` runs in-process on the host and deliberately
+   overrides `BLOOM_TRAITS_DIR`/`BLOOM_OUTPUT_DIR`/`BLOOM_PLOTS_DIR` to fresh host temp dirs
+   before `import bloom_mcp` — it never touches the real container, the real bind mount, or
+   the non-root `bloom` user, so a check bolted onto it would pass unconditionally regardless
+   of whether this bug were fixed. The new script is a plain `fastmcp.Client` network call
+   into the already-running container instead — the only way to actually exercise the bind
+   mount this bug lives in. Wired into `pr-checks.yml`'s `dev-stack-smoke` job after `make
+bloommcp-smoke`.
+2. **Prod/staging risk:** left as a documented, not-yet-filed risk (proposal.md's "Out of
+   scope" note now also names `compose-health-check`, which boots `docker-compose.prod.yml`
+   with zero preflight and the identical bind-mount shape) — not filed as a separate issue in
+   this change, since I have no way to confirm from this repo alone whether it's a live
+   problem on the actual staging/prod hosts.

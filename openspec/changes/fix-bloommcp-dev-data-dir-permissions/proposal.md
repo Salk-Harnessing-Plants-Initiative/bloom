@@ -1,71 +1,58 @@
 ## Why
 
-Found while dogfooding PR #438 against the running dev-stack MCP server (issue #472): all 5
-`sleap_roots` plotting tools fail with a permission error writing their output PNG to
-`BLOOM_PLOTS_DIR` (`/app/data/PLOTS_DIR` in the container).
+Found while dogfooding PR #438 against the running dev-stack MCP server (issue #472):
+plotting tools fail with a permission error writing PNGs to `BLOOM_PLOTS_DIR`
+(`/app/data/PLOTS_DIR` in the container). Root cause (see design.md's Context for the
+full mechanism, confirmed by live reproduction — not just a hypothesis): none of
+`bloommcp/data/{SLEAP_OUT_CSV,PLOTS_DIR,ANALYSIS_OUTPUT}` are committed or pre-created,
+so on a fresh clone Docker auto-creates them as root on the first `docker compose up`,
+and the non-root `bloommcp` container user can't write into them. In fully-local
+storage-backend mode this is worse than a tool-call failure — `validate_storage_backend()`
+hard-crashes the container at boot (reproduced live: `RuntimeError: BLOOM_STORAGE_BACKEND=local
+root /app/data/ANALYSIS_OUTPUT is not writable`).
 
-**Root cause, now confirmed (was only a hypothesis in #472):**
-
-1. `docker-compose.dev.yml` (and `docker-compose.prod.yml`, same shape) bind-mount
-   `./bloommcp/data/PLOTS_DIR` (and its siblings `SLEAP_OUT_CSV`, `ANALYSIS_OUTPUT`) onto
-   `/app/data/...`. **None of these three directories are committed to the repo, and
-   nothing in `make init` / `make dev-up` / `scripts/doctor.sh` creates them.** On a fresh
-   clone, the first `docker compose up` is what creates the host-side directory — and Docker
-   creates a missing bind-mount source **as root**.
-2. The `bloommcp` image runs as a non-root system user (`bloom`, from
-   `addgroup --system bloom && adduser --system --ingroup bloom bloom` in the Dockerfile) —
-   it cannot write to a root-owned host directory.
-3. **This exact failure mode is already known in this repo for a different directory**:
-   `.github/workflows/pr-checks.yml`'s `dev-stack-smoke` job has a standing comment — *"Setup
-   uv BEFORE compose starts (the dev stack creates a root-owned volumes/db/data bind mount;
-   setup-uv's lockfile glob would EACCES on it)"* — for the Postgres data dir. Same mechanism,
-   different directory.
-4. **Why CI never caught this for `PLOTS_DIR` specifically:** `make bloommcp-smoke`
-   (`bloommcp-result-store`'s "Live Supabase Persistence Smoke") only drives `qc_clean` /
-   `remove_outliers` / `clustering` — tools whose persistence goes through the
-   `SupabaseResultStore`/`SupabaseReader` ports. In the CI job's default (non-`local`)
-   storage backend, those ports write to Supabase Storage (MinIO), **never touching the local
-   bind-mounted `ANALYSIS_OUTPUT` directory at all**. Plotting is different: `_viz_shared.
-   save_plot()` **always** writes straight to the local `PLOTS_DIR` on disk, regardless of
-   `BLOOM_STORAGE_BACKEND` — there is no Supabase-routed path for plots. So `PLOTS_DIR` is hit
-   by every deployment (not just opt-in fully-local mode), but no CI job ever calls a
-   plotting tool, so this was invisible until manual dogfooding surfaced it.
-
-## What Changes
+## What Changed
 
 - **MODIFY** `development-environment`'s "Fresh-Clone Stack Startup" requirement: a
-  successful `make dev-up` on a fresh clone SHALL also mean the `bloommcp` container's
-  bind-mounted data directories (`SLEAP_OUT_CSV`, `PLOTS_DIR`, `ANALYSIS_OUTPUT`) are
-  writable by its runtime user — not just that `docker compose up` exits 0.
-- **ADD** `development-environment`'s "bloommcp Data Directory Writability" requirement: the
-  three host directories SHALL be created (if missing) with permissions the container's
-  runtime user can write to, **before** `docker compose up` runs — so Docker's default
-  create-as-root behavior for a missing bind-mount source never leaves them unwritable. See
-  design.md for the specific mechanism (permissive local-dev directories vs. UID-matching)
-  and its trade-offs.
-- **ADD** a CI check that exercises at least one plotting tool end-to-end against the running
-  dev stack, closing the coverage gap described in point 4 above, so a regression here fails
-  CI rather than a developer. Where exactly this lives (extend `make check`, extend
-  `live_persistence_smoke.py`, or a new lightweight script) is an implementation decision —
-  see design.md's open question.
+  successful `make dev-up` on a fresh clone now also means the `bloommcp` container's
+  bind-mounted data directories are writable by its runtime user.
+- **ADD** `development-environment`'s "bloommcp Data Directory Writability" requirement,
+  implemented as `scripts/ensure_bloommcp_data_dirs.sh`, wired as a `.PHONY` **prerequisite**
+  of `dev-up` (`dev-up: ensure-bloommcp-data-dirs`) — deliberately not folded into
+  `scripts/doctor.sh`, since CI runs `DOCTOR_SKIP=1 make dev-up` and folding it in there
+  would make CI silently skip the fix. On each of the three directories: `mkdir -p` if
+  missing, then `chmod 777`; if either fails (the directory, or its `bloommcp/data` parent,
+  is already root-owned from a `docker compose up` that ran before this fix existed), it
+  fails loudly with an actionable `sudo chown`/`sudo rm -rf` remedy and aborts `dev-up`
+  before `docker compose up` — it does not silently continue into the bug it exists to
+  prevent, and (confirmed: `chmod` requires ownership) cannot self-heal that state without
+  the caller's own privilege escalation.
+- **ADD** `bloommcp/scripts/live_plot_tool_smoke.py` + `make bloommcp-plot-smoke`: a real
+  MCP-transport call (`fastmcp.Client`) into the already-running `bloommcp` container,
+  calling `plot_trait_histograms` and verifying both the tool's response and that the PNG
+  actually landed on the real bind-mounted `PLOTS_DIR`. Deliberately **not** added to
+  `live_persistence_smoke.py`, whose in-process, host-tempdir-overridden design would never
+  touch the real bind mount and would pass regardless of whether this bug were still
+  present. Wired into `pr-checks.yml`'s `dev-stack-smoke` job, after `make bloommcp-smoke`.
 
 ## Impact
 
-- **Affected specs:** `development-environment` (MODIFIED "Fresh-Clone Stack Startup", ADDED
-  "bloommcp Data Directory Writability").
-- **Affected code:** `Makefile` (`dev-up` target, or a new preflight step it calls — likely
-  mirroring the existing `scripts/doctor.sh` preflight pattern rather than growing `dev-up`
-  inline); possibly `scripts/doctor.sh` itself; `make check` or
-  `bloommcp/scripts/live_persistence_smoke.py` (new writability/plot-tool check, per the
-  design decision); `bloommcp/docs/local-validation.md` / `DEV_SETUP.md` (note the
-  directories are now auto-provisioned).
+- **Affected specs:** `development-environment` (MODIFIED "Fresh-Clone Stack Startup",
+  ADDED "bloommcp Data Directory Writability").
+- **Affected code:** `Makefile` (`ensure-bloommcp-data-dirs` + `bloommcp-plot-smoke`
+  targets), `scripts/ensure_bloommcp_data_dirs.sh` (new), `bloommcp/scripts/
+live_plot_tool_smoke.py` (new), `.github/workflows/pr-checks.yml` (`dev-stack-smoke` job),
+  `tests/unit/test_bloommcp_data_dirs.py` + `test_makefile_bloommcp_data_dirs.py` (new),
+  `tests/unit/test_ci_dev_stack_smoke.py` (new pinning test), `DEV_SETUP.md` +
+  `openspec/project.md` + `bloommcp/docs/{local-validation.md,storage-backends.md}` +
+  `_WIKI/BLOOMMCP/README.md` (docs).
 - **Out of scope, flagged not fixed:** `docker-compose.prod.yml` has the **identical**
-  bind-mount shape for the same three directories, so staging/production may have the same
-  latent issue. I have no visibility from this repo alone into whether the staging/prod
-  hosts already provision these directories correctly outside of what's checked in here
-  (e.g. server setup scripts, Ansible/Terraform, or a one-time manual step). This proposal
-  fixes the **dev** path only (`make dev-up`, this repo's own CI) and calls out the prod/
-  staging risk for whoever owns that deployment to confirm or file a follow-up on.
+  bind-mount shape for the same three directories, and `compose-health-check` (the same
+  `pr-checks.yml` file) boots it with zero preflight — so staging/production, and that CI
+  job, may have the same latent issue. I have no visibility from this repo alone into
+  whether the staging/prod hosts already provision these directories correctly outside of
+  what's checked in here. This proposal fixes the **dev** path only (`make dev-up`, the
+  `dev-stack-smoke` CI job) and calls out the prod/staging/`compose-health-check` risk for
+  whoever owns that deployment to confirm or file a follow-up on.
 - **Branch/PR:** branches off `origin/staging`; this branch
-  (`egao28/bloommcp-plotsdir-permission-fix-472`). No PR opened yet — proposal only, pending
-  review.
+  (`egao28/bloommcp-plotsdir-permission-fix-472`).
