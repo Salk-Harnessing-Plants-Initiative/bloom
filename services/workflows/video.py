@@ -13,7 +13,6 @@ H.264 with VideoWriter -> upload MP4 to the videos bucket -> signed URL ->
 import io
 import logging
 import os
-import re
 import tempfile
 
 import numpy as np
@@ -42,18 +41,23 @@ VIDEO_PATH_PREFIX = "cyl-videos"
 # Record table linking scan_id -> stored video path (upserted per scan).
 VIDEO_TABLE = os.environ.get("WORKFLOWS_VIDEO_TABLE", "cyl_scan_videos")
 
-# Signed URLs come back pointing at the internal gateway (http://kong:8000), which
-# an outside caller can't reach. Rewrite that host to the public base so the
-# returned download_url is usable externally — mirrors web/lib/supabase/storage-url.ts.
+# Signed URLs come back pointing at the internal gateway (SUPABASE_URL, e.g.
+# http://kong:8000), which an outside caller can't reach. Rewrite that host to the
+# public base so the returned download_url is usable externally — mirrors
+# web/lib/supabase/storage-url.ts.
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
 PUBLIC_SUPABASE_URL = os.environ.get("WORKFLOWS_PUBLIC_SUPABASE_URL")
-_INTERNAL_HOST = re.compile(r"^https?://kong:\d+")
 
 
 def _to_public_url(url: str) -> str:
-    """Swap the internal kong host for the public base; no-op if base unset."""
-    if not url or not PUBLIC_SUPABASE_URL:
+    """Swap the internal Supabase host for the public base; no-op if either is
+    unset or the URL isn't on the internal host."""
+    if not url or not PUBLIC_SUPABASE_URL or not SUPABASE_URL:
         return url
-    return _INTERNAL_HOST.sub(PUBLIC_SUPABASE_URL, url, count=1)
+    internal = SUPABASE_URL.rstrip("/")
+    if url.startswith(internal):
+        return PUBLIC_SUPABASE_URL.rstrip("/") + url[len(internal):]
+    return url
 
 
 def scan_in_experiment(client, experiment_id: int, scan_id: int) -> bool:
