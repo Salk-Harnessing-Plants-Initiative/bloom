@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS public.cyl_video_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_cyl_video_jobs_scan ON public.cyl_video_jobs(scan_id);
 CREATE INDEX IF NOT EXISTS idx_cyl_video_jobs_status ON public.cyl_video_jobs(status);
+-- At most one active job per scan — the DB enforces the dedupe that enqueue's
+-- check-then-insert can't guarantee under concurrent calls.
+CREATE UNIQUE INDEX IF NOT EXISTS cyl_video_jobs_one_active_per_scan
+  ON public.cyl_video_jobs(scan_id) WHERE status IN ('queued', 'processing');
 ALTER TABLE public.cyl_video_jobs ENABLE ROW LEVEL SECURITY;
 
 -- Reads: the service (bloom_workflows) and authenticated users (frontend poll).
@@ -70,9 +74,20 @@ BEGIN
     RETURN v_job_id;  -- already queued/processing
   END IF;
 
-  INSERT INTO public.cyl_video_jobs (scan_id, experiment_id, status)
-  VALUES (p_scan_id, p_experiment_id, 'queued')
-  RETURNING id INTO v_job_id;
+  -- Insert the new job. If a concurrent enqueue won the race for this scan, the
+  -- partial unique index raises unique_violation — reuse the winner's job.
+  BEGIN
+    INSERT INTO public.cyl_video_jobs (scan_id, experiment_id, status)
+    VALUES (p_scan_id, p_experiment_id, 'queued')
+    RETURNING id INTO v_job_id;
+  EXCEPTION WHEN unique_violation THEN
+    SELECT id INTO v_job_id
+    FROM public.cyl_video_jobs
+    WHERE scan_id = p_scan_id AND status IN ('queued', 'processing')
+    ORDER BY created_at DESC
+    LIMIT 1;
+    RETURN v_job_id;  -- winner already sent the message; don't enqueue a duplicate
+  END;
 
   SELECT pgmq.send(
     'cyl_video_generation',
