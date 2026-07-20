@@ -40,8 +40,19 @@ def _validate_experiment_name(experiment: str) -> None:
     read-and-persist tool like ``qc_inspect`` the contents could then surface in committed
     artifacts. Require a bare basename. (The cross-tool fix is to centralize this in
     ``load_experiment_data`` so the whole tool family is covered; this guards the QC tools now.)
+
+    ``Path(experiment).name != experiment`` alone is not enough: ``pathlib.Path`` only
+    treats ``\\`` as a separator on Windows, so on POSIX (the deploy target)
+    ``Path("..\\\\secret.csv").name`` equals the input unchanged and the traversal payload
+    would slip past this guard. Check for either separator explicitly (mirrors the fix in
+    ``sections/sleap_roots/analysis/_viz_shared.validate_filename``).
     """
-    if experiment in ("", ".", "..") or Path(experiment).name != experiment:
+    if (
+        experiment in ("", ".", "..")
+        or "/" in experiment
+        or "\\" in experiment
+        or Path(experiment).name != experiment
+    ):
         raise BloomMCPError(
             code="invalid_input",
             message="experiment must be a bare CSV filename (no path separators).",

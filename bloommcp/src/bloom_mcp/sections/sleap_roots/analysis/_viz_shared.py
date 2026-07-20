@@ -45,7 +45,19 @@ def validate_filename(filename: str) -> str | None:
     and return plain strings end-to-end, not ``BloomMCPError`` — nothing here
     catches that exception type, so reusing the raising guard directly would let
     it escape uncaught to FastMCP's generic handler.
+
+    ``Path(filename).name != filename`` alone is not enough: ``pathlib.Path`` only
+    treats ``\\`` as a separator on Windows, so on POSIX (the deploy target)
+    ``Path("..\\\\secret.csv").name`` equals the input unchanged and the traversal
+    payload would fall through to a "file not found" read attempt instead of being
+    rejected here. Check for either separator explicitly so the guard doesn't
+    depend on which platform it runs on.
     """
-    if filename in ("", ".", "..") or Path(filename).name != filename:
+    if (
+        filename in ("", ".", "..")
+        or "/" in filename
+        or "\\" in filename
+        or Path(filename).name != filename
+    ):
         return "filename must be a bare CSV filename (no path separators)."
     return None

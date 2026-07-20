@@ -679,11 +679,26 @@ def test_metadata_only_frame_with_no_traits_is_invalid_input():
 
 
 @pytest.mark.parametrize(
-    "bad", ["../../app/.env", "/etc/passwd", "sub/dir/x.csv", "..", ".", ""]
+    "bad",
+    [
+        "../../app/.env",
+        "/etc/passwd",
+        "sub/dir/x.csv",
+        "..\\..\\app\\.env",
+        "sub\\dir\\x.csv",
+        "..",
+        ".",
+        "",
+    ],
 )
 def test_experiment_path_traversal_is_rejected(injected_ports, bad):
     """A non-bare experiment (separators / .. / absolute / empty) is rejected before any
     read, so this read-and-persist tool can't be turned into an arbitrary-file exfil path.
+
+    Includes backslash-separated variants: ``pathlib.Path`` only treats ``\\`` as a
+    separator on Windows, so on POSIX a naive ``Path(x).name != x`` check alone lets a
+    backslash payload slip through to a "file not found" read attempt instead of being
+    rejected here.
     """
     with pytest.raises(BloomMCPError) as exc:
         qc_inspect(QCInspectParams(experiment=bad))
