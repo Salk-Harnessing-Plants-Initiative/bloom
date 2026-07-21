@@ -15,8 +15,10 @@ import pytest
 from pydantic import ValidationError
 
 from bloom_mcp.contract import RunLinks
-from bloom_mcp.tools.pca_analysis_tool import PCAAnalysisResult
-from bloom_mcp.tools.remove_outliers_tool import RemoveOutliersResult
+from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import PCAAnalysisResult
+from bloom_mcp.sections.sleap_roots.analysis.remove_outliers import (
+    RemoveOutliersResult,
+)
 
 # ---------------------------------------------------------------------------
 # Importability and __all__
@@ -53,7 +55,9 @@ def test_pca_result_is_run_links_subclass():
 
 def test_run_link_fields_not_redeclared_on_pca_result():
     """None of the four RunLinks fields should appear in PCAAnalysisResult.model_fields directly."""
-    pca_own = set(PCAAnalysisResult.model_fields.keys()) - set(RunLinks.model_fields.keys())
+    pca_own = set(PCAAnalysisResult.model_fields.keys()) - set(
+        RunLinks.model_fields.keys()
+    )
     for field in _EXPECTED_FIELDS:
         assert field not in pca_own, (
             f"{field!r} is redeclared directly on PCAAnalysisResult — "
@@ -72,7 +76,9 @@ def test_remove_outliers_result_is_run_links_subclass():
 
 def test_run_link_fields_not_redeclared_on_remove_outliers_result():
     """None of the four RunLinks fields should appear in RemoveOutliersResult.model_fields directly."""
-    ro_own = set(RemoveOutliersResult.model_fields.keys()) - set(RunLinks.model_fields.keys())
+    ro_own = set(RemoveOutliersResult.model_fields.keys()) - set(
+        RunLinks.model_fields.keys()
+    )
     for field in _EXPECTED_FIELDS:
         assert field not in ro_own, (
             f"{field!r} is redeclared directly on RemoveOutliersResult — "
@@ -170,6 +176,6 @@ def test_remove_outliers_result_run_link_fields_appear_first_in_model_dump():
     keys = list(result.model_dump().keys())
     run_link_positions = [keys.index(f) for f in _EXPECTED_FIELDS]
     tool_specific_positions = [keys.index("experiment"), keys.index("n_outliers")]
-    assert max(run_link_positions) < min(tool_specific_positions), (
-        "RunLinks fields must precede tool-specific fields in model_dump() key order"
-    )
+    assert max(run_link_positions) < min(
+        tool_specific_positions
+    ), "RunLinks fields must precede tool-specific fields in model_dump() key order"

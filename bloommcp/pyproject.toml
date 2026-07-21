@@ -37,19 +37,20 @@ dependencies = [
     "sleap-roots-analyze>=0.1.0a5",
     "sleap-roots-contracts[pandas]>=0.1.0a1",
     # Data & analysis. numpy floor is >=2.3.2 because sleap-roots-analyze
-    # requires numpy 2.x. scipy + scikit-learn are retained because shipped
-    # visualization/plot tools (viz_tools, correlation_tools, tools/workflows/
-    # {clustering,dimred}, *_visualization) import them directly for rendering.
-    # statsmodels + umap-learn were pruned in #315: their only importers
-    # (trait_statistics.py, umap_embedding.py) were delegated to
-    # sleap_roots_analyze and deleted (necessary-and-sufficient, #305 AC5).
+    # requires numpy 2.x. statsmodels + umap-learn were pruned in #315; scipy +
+    # scikit-learn + seaborn were pruned in devendor-bloommcp-analysis (#305 AC5,
+    # necessary-and-sufficient completed): their only importers were the vendored
+    # analysis/plotting modules, deleted once every consumer delegated to
+    # sleap_roots_analyze. scikit-learn moves to the `test` extra below (its only
+    # remaining use is test_oracle.py's UMAP-trustworthiness metric); scipy/seaborn
+    # have no importer left at all. matplotlib is retained — the sleap_roots
+    # section's 5 plotting tools import it directly for rendering. Runtime
+    # resolution is unaffected: the sleap-roots-analyze pin pulls scikit-learn/
+    # scipy/seaborn transitively.
     "pandas>=2.0.0",
     "numpy>=2.3.2",
-    "scipy>=1.10.0",
-    "scikit-learn>=1.3.0",
     # Visualization
     "matplotlib>=3.7.0",
-    "seaborn>=0.12.0",
 ]
 
 [project.scripts]
@@ -65,6 +66,9 @@ test = [
     "pytest>=8.3",
     "hypothesis>=6.0",
     "syrupy>=4.0",
+    # test_oracle.py's UMAP-trustworthiness metric is the only remaining user
+    # (devendor-bloommcp-analysis) — kept out of the prod image via `uv sync --no-dev`.
+    "scikit-learn>=1.3.0",
 ]
 
 [build-system]
@@ -82,17 +86,3 @@ markers = [
     "integration: full-fixture statsmodels/umap oracle tests over turface_19 — slow, intermittently stalls in CI containers; excluded from per-PR CI, run via /pre-merge or pytest -m integration",
 ]
 
-[tool.ruff.lint.per-file-ignores]
-# Pre-existing lint debt in the vendored analysis modules (former source/*) and
-# their tool wrappers, carried over verbatim by the Tier 0 package move. These
-# modules are slated for deletion once the analysis is delegated to
-# sleap-roots-analyze (a later tier); suppressed here rather than fixed to keep
-# the move behavior-preserving and reviewable. (The genuine bug — undefined
-# `Any` — was fixed by adding the import.)
-"src/bloom_mcp/cluster_visualization.py" = ["F841"]
-"src/bloom_mcp/clustering.py" = ["F841"]
-"src/bloom_mcp/data_cleanup.py" = ["F811"]
-"src/bloom_mcp/outlier_detection.py" = ["F841"]
-"src/bloom_mcp/outlier_visualization.py" = ["F841"]
-"src/bloom_mcp/visualization.py" = ["E402", "F841"]
-"src/bloom_mcp/tools/correlation_tools.py" = ["F841"]

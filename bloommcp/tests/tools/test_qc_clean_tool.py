@@ -20,19 +20,25 @@ from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools import qc_clean_tool
-from bloom_mcp.tools.qc_clean_tool import QCCleanParams, QCCleanResult, qc_clean
+from bloom_mcp.sections.sleap_roots.analysis import qc_clean as qc_clean_tool
+from bloom_mcp.sections.sleap_roots.analysis.qc_clean import (
+    QCCleanParams,
+    QCCleanResult,
+    qc_clean,
+)
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _RAW = _FIXTURES / "turface_19_raw_data.csv"
-_GOLDEN = json.loads((_FIXTURES / "turface_19_qc_golden.json").read_text())
+_GOLDEN = json.loads(
+    (_FIXTURES / "turface_19_qc_golden.json").read_text(encoding="utf-8")
+)
 
 _EXPERIMENT = "turface_19_raw.csv"
 _MNT = _GOLDEN["cleanup_params"]["max_nans_per_trait"]
 
 
 def _raw_df() -> pd.DataFrame:
-    return pd.read_csv(_RAW)
+    return pd.read_csv(_RAW, encoding="utf-8")
 
 
 @pytest.fixture
@@ -93,8 +99,8 @@ def test_fewer_samples_dropped_than_naive_dropna(injected_ports):
 # ── 3.1 tools/list presence ─────────────────────────────────────────────────
 
 
-def test_qc_clean_appears_in_tools_list_and_workflow_preserved():
-    """3.1 — qc_clean is discoverable; run_qc_workflow is still registered."""
+def test_qc_clean_appears_in_tools_list():
+    """3.1 — qc_clean is discoverable."""
     from fastmcp import Client
 
     from bloom_mcp import server
@@ -104,9 +110,8 @@ def test_qc_clean_appears_in_tools_list_and_workflow_preserved():
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    assert "qc_clean" in tools
-    assert tools["qc_clean"].inputSchema is not None
-    assert "run_qc_workflow" in tools  # additive — workflow not removed
+    assert "sleap_roots_qc_clean" in tools
+    assert tools["sleap_roots_qc_clean"].inputSchema is not None
 
 
 # ── 3.2 schema round-trip ───────────────────────────────────────────────────
@@ -203,14 +208,6 @@ def test_delegates_once_forwards_roles_and_never_calls_vendored_cleanup(
         return real(df, trait_cols=trait_cols, **kwargs)
 
     monkeypatch.setattr(qc_clean_tool, "clean_traits_for_analysis", _spy)
-
-    # The vendored cleanup must never be touched.
-    import bloom_mcp.data_cleanup as vendored
-
-    def _boom(*a, **k):  # pragma: no cover
-        raise AssertionError("qc_clean called the vendored bloom_mcp.data_cleanup")
-
-    monkeypatch.setattr(vendored, "apply_data_cleanup_filters", _boom)
 
     _run()
 
@@ -1020,7 +1017,7 @@ def test_new_override_params_exposed_in_tool_schema():
     tools = {t.name: t for t in asyncio.run(_list())}
     # The contract wrapper nests the model under a single ``params`` arg, so assert the
     # new fields appear anywhere in the (serialized) input schema.
-    schema_json = json.dumps(tools["qc_clean"].inputSchema)
+    schema_json = json.dumps(tools["sleap_roots_qc_clean"].inputSchema)
     assert "sample_id_column" in schema_json
     assert "genotype_column" in schema_json
     assert "exclude_columns" in schema_json
