@@ -15,6 +15,7 @@ import click
 # Alias so the command objects don't shadow the same-named submodules.
 from .datasets import datasets as datasets_cmd
 from .download import download as download_cmd
+from .download_for_predict import download_for_predict as download_for_predict_cmd
 from .ingest import ingest_result as ingest_result_cmd
 
 
@@ -24,5 +25,6 @@ def cyl() -> None:
 
 
 cyl.add_command(download_cmd)
+cyl.add_command(download_for_predict_cmd)
 cyl.add_command(ingest_result_cmd)
 cyl.add_command(datasets_cmd)

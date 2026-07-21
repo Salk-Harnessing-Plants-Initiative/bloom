@@ -92,6 +92,10 @@ volumes/db/data/
 minio/data/
 minio_data/
 
+# bloom-mcp local runtime output (SLEAP_OUT_CSV etc.) + a stray pip-redirect artifact
+bloommcp/data/
+/=0.1.0a4
+
 # temporary/copy files
 nginx/copy.config
 nginx/copy.config_2
@@ -141,3 +145,6 @@ uv.lock
 # agents scratch (claude skill system)
 .agents/
 skills-lock.json
+
+# Serena MCP local memory (removed from tracking 2026-07 — no longer used)
+.serena/

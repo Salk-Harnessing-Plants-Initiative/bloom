@@ -13,6 +13,9 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
   credentials per profile.
 - **[read]** `bloomctl cyl download <out_dir> …` — download a cylinder experiment
   or single scan (metadata `scans.csv` + per-frame images).
+- **[read]** `bloomctl cyl download-for-predict <scan-id> <out>` — stage one scan
+  into the predict-ready layout (see below); produces a **different** output tree
+  than `cyl download` — use this only for A4 pipeline stage-in.
 - **[write]** `bloomctl cyl ingest-result <envelope>` — write a per-scan pipeline
   `ResultEnvelope` back to Bloom (see below).
 - **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets
@@ -23,7 +26,42 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
   create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`).
 
 (Full `login`/`cyl download` usage docs are still forthcoming; run any command
-with `--help` in the meantime.)
+with `--help` in the meantime. `cyl ingest-result` and `cyl download-for-predict`
+are documented in full below.)
+
+## `bloomctl cyl download-for-predict`
+
+Stage one cylinder scan into the layout the warm-predict container expects.
+Unlike `cyl download` (which writes `images/Wave{n}/…` + `scans.csv`), this
+command co-locates frames with a `scan_metadata.json` sidecar so
+`sleap_roots_predict.discover_scans` can find them — use it for A4 per-scan
+pipeline stage-in, not as a replacement for `cyl download`.
+
+```
+bloomctl cyl download-for-predict <scan-id> <out>   [-p/--profile PROFILE]
+```
+
+- Writes frames to `<out>/scan_<scan_id>/<frame_number><ext>`.
+- Authors `<out>/scan_<scan_id>/scan_<scan_id>.scan_metadata.json` with:
+  - `scan_key` — `scan_<scan_id>` (matches the filename stem).
+  - `params` — `{species, mode, age}`, resolved via `sleap-roots-contracts`
+    (`mode` is always `"cylinder"`).
+  - `image_ids` — real `cyl_images.id` values, required for the write-back RPC
+    to resolve the scan (see rationale in design.md / bloom#411).
+  - `images_checksum` — `sha256:<hex>` over the downloaded frame bytes.
+- Exits non-zero with a readable message if the scan isn't found, has no
+  frames, or any frame fails to download — on a frame-download failure, no
+  sidecar is written (successfully-downloaded frames remain on disk).
+- A successful re-run reconciles away any stray frame file left by an earlier
+  failed attempt, so the directory always matches the written sidecar exactly.
+
+Auth: same saved login profile as other `cyl` commands.
+
+Example:
+
+```
+bloomctl cyl download-for-predict 1 ./staged
+```
 
 ## Access & roles
 

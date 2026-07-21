@@ -121,6 +121,11 @@ jobs:
   python-audit:
     name: Python Security Audit for CVEs
     runs-on: ubuntu-latest
+    # A hang anywhere in this job's chain (unit tests, the bloommcp/bloomcli
+    # suites, the wheel build, or pip-audit itself) would otherwise run until
+    # GitHub Actions' 360-minute default cap with zero output (#454). Matches
+    # docker-build (30m) / compose-health-check (30m) / dev-stack-smoke (20m).
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -132,7 +137,10 @@ jobs:
         run: uv run --extra test pytest tests/unit/ -v --tb=short
 
       - name: Run bloom_mcp package tests
-        run: cd bloommcp && uv run --frozen --extra test pytest tests/ -v --tb=short
+        # Excludes the integration-marked full-fixture heritability/UMAP oracle
+        # tests (bloommcp/tests/test_oracle.py) — they're known to intermittently
+        # stall in CI containers (#454) and run instead via /pre-merge.
+        run: cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration" -v --tb=short
         env:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
@@ -142,6 +150,9 @@ jobs:
         # also self-skips at collection time, so this is defense-in-depth.
         run: cd bloomcli && uv run --extra test pytest tests/ -m "not integration" -v --tb=short
 
+      - name: Run workflows service tests
+        run: cd services/workflows && uv run --frozen --extra test pytest tests/ -v --tb=short
+
       - name: Build bloom_mcp wheel and import in a clean env
         run: |
           cd bloommcp
@@ -150,7 +161,7 @@ jobs:
           wheel=$(echo dist/bloommcp-*.whl)
           test -f "$wheel" || { echo "expected exactly one wheel, got: $wheel"; exit 1; }
           uv run --no-project --with "$wheel" \
-            python -c "import bloom_mcp, bloom_mcp.tools, bloom_mcp.storage, bloom_mcp.server; assert 'site-packages' in bloom_mcp.__file__, bloom_mcp.__file__"
+            python -c "import bloom_mcp, bloom_mcp.tools, bloom_mcp.storage, bloom_mcp.server; assert 'site-packages' in bloom_mcp.__file__, bloom_mcp.__file__; bloom_mcp.server.build_app()"
         env:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
@@ -426,8 +437,10 @@ jobs:
 
       # Fails if a PR folds a .trivyignore (CVE-suppression) change into
       # unrelated work — CVE/security changes must ship in their own PR.
+      # Pass the base SHA directly (no fetch needed) — origin/<branch> requires
+      # an extra fetch that can fail with "no merge base" in shallow checkouts.
       - name: Enforce CVE-change PR isolation
-        run: ./scripts/lint_cve_isolation.sh origin/${{ github.base_ref }}
+        run: ./scripts/lint_cve_isolation.sh ${{ github.event.pull_request.base.sha }}
 
   # Runs the new web/ Vitest suite added by the openspec change
   # add-ghcr-image-publishing (proposal/tasks/specs already on this branch).
@@ -742,10 +755,13 @@ jobs:
       # Layer B — runs only on failure. Prints applied-vs-pending state so an
       # on-call engineer can see which migration broke without digging through
       # step logs. `|| true` stops a diagnostic-fetch failure from masking
-      # the original migration error.
+      # the original migration error. Guarded: if: failure() doesn't fire on
+      # a cancelled job, but it DOES fire if an earlier, unrelated step (e.g.
+      # "Install Supabase CLI") fails before .env.ci is ever generated (#455).
       - name: Show migration status on failure
         if: failure()
         run: |
+          [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (an earlier step failed before this ran)"; exit 0; }
           PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
           PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
           echo "::add-mask::$PG_PASSWORD"
@@ -760,9 +776,13 @@ jobs:
       # Layer C — fenced code block of migration state in the run's summary panel.
       # Uses CLI's native text output (the `-o json` flag does NOT exist on
       # `migration list` in the pinned CLI version — see SUPABASE_VERSION above).
+      # Guarded: if: always() fires both when a superseding push cancels this
+      # run and when an earlier step fails, before .env.ci is ever generated
+      # (#455) — skip cleanly instead of crashing on a missing-file error.
       - name: Migration summary
         if: always()
         run: |
+          [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (job canceled or failed before this step ran)"; exit 0; }
           PG_USER=$(grep -E '^POSTGRES_USER=' .env.ci | cut -d= -f2-)
           PG_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' .env.ci | cut -d= -f2-)
           echo "::add-mask::$PG_PASSWORD"
@@ -868,9 +888,13 @@ jobs:
           path: web/playwright-report/
           retention-days: 7
 
+      # Guarded: if: failure() fires if an earlier, unrelated step fails
+      # before .env.ci is ever generated (#455) — same defect class as
+      # "Show migration status on failure" above.
       - name: Debug logs on failure
         if: failure()
         run: |
+          [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (an earlier step failed before this ran)"; exit 0; }
           echo "=== Container Status ==="
           docker compose $COMPOSE_FILES --env-file .env.ci ps
           echo "=== db-prod logs ==="
@@ -886,9 +910,15 @@ jobs:
           echo "=== bloommcp logs ==="
           docker compose $COMPOSE_FILES --env-file .env.ci logs bloommcp --tail=50
 
+      # Guarded: if: always() fires both when a superseding push cancels this
+      # run and when an earlier step fails, before .env.ci is ever generated
+      # (#455) — nothing was ever brought up in that case, so there's nothing
+      # to tear down.
       - name: Cleanup
         if: always()
-        run: docker compose $COMPOSE_FILES --env-file .env.ci down -v
+        run: |
+          [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (job canceled or failed before this step ran)"; exit 0; }
+          docker compose $COMPOSE_FILES --env-file .env.ci down -v
 
   # Exercise the *documented dev workflow* end to end on docker-compose.dev.yml
   # (compose-health-check above uses the prod compose). Self-contained: `make
@@ -933,7 +963,11 @@ jobs:
         run: make init
 
       - name: make dev-up (build + start the dev stack)
-        run: make dev-up
+        # Skip the environment doctor preflight: this Linux runner is known-good
+        # (no /mnt/ repo, tools provisioned above), and the doctor's checks are
+        # for local developer machines. Keeps the required check off the doctor's
+        # false-abort surface. See scripts/doctor.sh.
+        run: DOCTOR_SKIP=1 make dev-up
 
       # No manual waits — this is exactly what a developer types. The robustness
       # lives in the commands: migrate-local bounded-waits for the storage schema
@@ -957,9 +991,13 @@ jobs:
       - name: make bloommcp-smoke (live persistence smoke through real ports)
         run: make bloommcp-smoke
 
+      # Guarded: if: failure() fires if an earlier, unrelated step fails
+      # before .env.dev is ever generated (#455) — same defect class as
+      # compose-health-check's "Debug logs on failure" above.
       - name: Debug logs on failure
         if: failure()
         run: |
+          [ -s .env.dev ] || { echo "::notice::skipping — .env.dev was never generated (an earlier step failed before this ran)"; exit 0; }
           echo "=== Container Status ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev ps
           echo "=== db-dev logs ==="
@@ -975,9 +1013,16 @@ jobs:
           echo "=== langchain-agent logs ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs langchain-agent --tail=50
 
+      # Guarded: if: always() fires both when the workflow-level
+      # cancel-in-progress concurrency group cancels this job and when an
+      # earlier step fails, before "make init" ever generates .env.dev
+      # (#455) — nothing was ever brought up in that case, so there's
+      # nothing to tear down.
       - name: Cleanup
         if: always()
-        run: docker compose -f docker-compose.dev.yml --env-file .env.dev down -v
+        run: |
+          [ -s .env.dev ] || { echo "::notice::skipping — .env.dev was never generated (job canceled or failed before this step ran)"; exit 0; }
+          docker compose -f docker-compose.dev.yml --env-file .env.dev down -v
 
   extract-pinned-images:
     name: Extract Pinned Images

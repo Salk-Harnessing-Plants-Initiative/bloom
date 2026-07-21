@@ -54,3 +54,49 @@ def test_combined_server_exposes_section_tools_namespaced():
         section_tools = asyncio.run(section.list_tools())
         for tool in section_tools:
             assert f"{name}_{tool.name}" in tools
+
+
+# ── sleap_roots (umbrella) + core sections (devendor-bloommcp-analysis P2) ────
+
+
+def test_sleap_roots_and_core_sections_registered():
+    """Both new sections are in the registry and are FastMCP servers."""
+    assert "sleap_roots" in SECTIONS
+    assert "core" in SECTIONS
+    assert isinstance(SECTIONS["sleap_roots"], FastMCP)
+    assert isinstance(SECTIONS["core"], FastMCP)
+
+
+def test_sleap_roots_section_exposes_the_expected_namespaced_tools():
+    """The 5 sleap-roots-analyze consumers + 5 surviving plots are namespaced
+    sleap_roots_<tool> on the combined surface."""
+    import asyncio
+
+    tools = {t.name for t in asyncio.run(server.mcp.list_tools())}
+    expected = {
+        "pca_analysis",
+        "qc_clean",
+        "qc_inspect",
+        "remove_outliers",
+        "clustering",
+        "plot_trait_histograms",
+        "plot_trait_boxplots",
+        "plot_correlation_matrix",
+        "plot_heritability_bar",
+        "plot_variance_decomposition",
+    }
+    for tool in expected:
+        assert f"sleap_roots_{tool}" in tools
+
+
+def test_core_section_exposes_the_expected_namespaced_discovery_tools():
+    """The 3 cross-cutting discovery tools are namespaced core_<tool>."""
+    import asyncio
+
+    tools = {t.name for t in asyncio.run(server.mcp.list_tools())}
+    for tool in (
+        "list_available_experiments",
+        "load_experiment_data",
+        "list_existing_analyses",
+    ):
+        assert f"core_{tool}" in tools

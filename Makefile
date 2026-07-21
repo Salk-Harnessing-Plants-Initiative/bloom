@@ -24,7 +24,7 @@ help:
 	@echo "  make new-migration name=xxx - Create a new migration file"
 	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
 	@echo "  make test-integration - Run integration tests against the local dev stack"
-	@echo "  make bloommcp-smoke   - Live persistence smoke: drive a workflow through real Supabase storage"
+	@echo "  make bloommcp-smoke   - Live persistence smoke: drive granular tools through real Supabase storage"
 	@echo "  make check            - Verify local stack: services, roles, schemas, migrations"
 	@echo "  make verify-dev       - Clean reset -> up -> migrate -> check (destructive)"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
@@ -40,9 +40,19 @@ help:
 init: check-uv
 	@uv run --with pyjwt,python-dotenv python scripts/init_dev.py $(if $(FORCE),--force,)
 
+# Preflight the developer environment BEFORE bring-up (see scripts/doctor.sh).
+# Hard errors (repo on /mnt/, a missing required tool) exit non-zero; advisories
+# (host-port in use, supabase version, CRLF, Windows toolchain leak) print and
+# continue. DOCTOR_SKIP=1 bypasses it (CI sets this on the dev-stack-smoke job,
+# where the environment is known-good).
+.PHONY: doctor
+doctor:
+	@sh scripts/doctor.sh
+
 # Run development stack
 .PHONY: dev-up
 dev-up:
+	@sh scripts/doctor.sh
 	@echo " Checking frontend dependencies..."
 	@if [ ! -f "./web/package-lock.json" ]; then \
 		echo " package-lock.json not found. Installing dependencies..."; \

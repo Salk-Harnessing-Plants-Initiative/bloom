@@ -116,6 +116,8 @@ jobs:
           SECRET_KEY_BASE=${{ secrets.PROD_SECRET_KEY_BASE }}
           MINIO_ROOT_USER=${{ secrets.PROD_MINIO_ROOT_USER }}
           MINIO_ROOT_PASSWORD=${{ secrets.PROD_MINIO_PASSWORD }}
+          WORKFLOWS_SUPABASE_EMAIL=${{ secrets.PROD_WORKFLOWS_SUPABASE_EMAIL }}
+          WORKFLOWS_SUPABASE_PASSWORD=${{ secrets.PROD_WORKFLOWS_SUPABASE_PASSWORD }}
           DASHBOARD_USERNAME=${{ secrets.PROD_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.PROD_DASHBOARD_PASSWORD }}
           BLOOMMCP_API_KEY=${{ secrets.PROD_BLOOMMCP_API_KEY }}
@@ -160,6 +162,7 @@ jobs:
           "
 
       - name: Pull latest code
+        id: pull_prod
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.PROD_DEPLOY_PATH }}
@@ -174,9 +177,15 @@ jobs:
               echo 'Previous deployment remains running.'
               exit 1
             fi
+            BEFORE=\$(git rev-parse HEAD)
             git fetch origin main
             git reset --hard origin/main
-          "
+            AFTER=\$(git rev-parse HEAD)
+            git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- caddy/Caddyfile \
+              && echo 'CADDYFILE_CHANGED=false' || echo 'CADDYFILE_CHANGED=true'
+          " | tee /tmp/pull_prod.out
+          changed=$(grep '^CADDYFILE_CHANGED=' /tmp/pull_prod.out | tail -1 | cut -d= -f2)
+          echo "caddyfile_changed=${changed:-true}" >> "$GITHUB_OUTPUT"
 
       - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
         run: |
@@ -256,6 +265,18 @@ jobs:
           "
         env:
           PROD_DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+
+      # Reload Caddy so bind-mounted Caddyfile changes take effect — `up -d` won't
+      # recreate caddy when its image is unchanged, so config edits are otherwise ignored.
+      - name: Reload Caddy config (production)
+        if: steps.pull_prod.outputs.caddyfile_changed == 'true'
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T caddy \
+              caddy reload --config /etc/caddy/Caddyfile
+          "
 
       # Layer 3 — Crash-loop detection. Caddyfile parse errors and missing
       # modules send caddy into a restart loop; each restart is another
@@ -479,6 +500,7 @@ jobs:
       # rather than letting `supabase db push` fail later with a cryptic URL
       # parse / auth error.
       - name: Apply database migrations (production)
+        id: migrate_prod
         if: steps.check_migrations_prod.outputs.pending != '0'
         env:
           EXPECTED_CLI_VERSION: ${{ env.SUPABASE_VERSION }}
@@ -499,10 +521,27 @@ jobs:
             exit 1
           }
 
+      # Apply bloom_* schema-USAGE grants (supabase/grants/schema_grants.sql) as
+      # supabase_admin — schema grants no-op under `supabase db push`. Mirrors CI/make.
+      - name: Apply schema-USAGE grants (production)
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
+            docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
+              -e PGPASSWORD=\"\$PG_PASSWORD\" db-prod \
+              psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+              < supabase/grants/schema_grants.sql
+          " || {
+            echo '::error title=Schema grants failed (production)::supabase/grants/schema_grants.sql could not be applied — see this step log for the psql error.'
+            exit 1
+          }
+
       # Layer B: diagnostic on any failure upstream. Lists applied vs pending
       # so on-call can see which migration broke without scrolling logs.
       - name: Show migration status on failure (production)
-        if: failure()
+        if: failure() && steps.migrate_prod.outcome == 'failure'
         run: |
           echo "::add-mask::${{ secrets.PROD_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
@@ -640,6 +679,8 @@ jobs:
           SECRET_KEY_BASE=${{ secrets.STAGING_SECRET_KEY_BASE }}
           MINIO_ROOT_USER=${{ secrets.STAGING_MINIO_ROOT_USER }}
           MINIO_ROOT_PASSWORD=${{ secrets.STAGING_MINIO_PASSWORD }}
+          WORKFLOWS_SUPABASE_EMAIL=${{ secrets.STAGING_WORKFLOWS_SUPABASE_EMAIL }}
+          WORKFLOWS_SUPABASE_PASSWORD=${{ secrets.STAGING_WORKFLOWS_SUPABASE_PASSWORD }}
           DASHBOARD_USERNAME=${{ secrets.STAGING_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.STAGING_DASHBOARD_PASSWORD }}
           BLOOMMCP_API_KEY=${{ secrets.STAGING_BLOOMMCP_API_KEY }}
@@ -676,6 +717,7 @@ jobs:
           "
 
       - name: Pull latest code
+        id: pull_staging
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
@@ -690,9 +732,15 @@ jobs:
               echo 'Previous deployment remains running.'
               exit 1
             fi
+            BEFORE=\$(git rev-parse HEAD)
             git fetch origin staging
             git reset --hard origin/staging
-          "
+            AFTER=\$(git rev-parse HEAD)
+            git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- caddy/Caddyfile \
+              && echo 'CADDYFILE_CHANGED=false' || echo 'CADDYFILE_CHANGED=true'
+          " | tee /tmp/pull_staging.out
+          changed=$(grep '^CADDYFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2)
+          echo "caddyfile_changed=${changed:-true}" >> "$GITHUB_OUTPUT"
 
       - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
         run: |
@@ -758,6 +806,18 @@ jobs:
           "
         env:
           STAGING_DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+
+      # Reload Caddy so bind-mounted Caddyfile changes take effect — `up -d` won't
+      # recreate caddy when its image is unchanged, so config edits are otherwise ignored.
+      - name: Reload Caddy config (staging)
+        if: steps.pull_staging.outputs.caddyfile_changed == 'true'
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T caddy \
+              caddy reload --config /etc/caddy/Caddyfile
+          "
 
       # Layer 3 — Crash-loop detection. See deploy-production's equivalent
       # step for rationale.
@@ -955,6 +1015,7 @@ jobs:
           fi
 
       - name: Apply database migrations (staging)
+        id: migrate_staging
         if: steps.check_migrations_staging.outputs.pending != '0'
         env:
           EXPECTED_CLI_VERSION: ${{ env.SUPABASE_VERSION }}
@@ -975,8 +1036,25 @@ jobs:
             exit 1
           }
 
+      # Apply bloom_* schema-USAGE grants (supabase/grants/schema_grants.sql) as
+      # supabase_admin — schema grants no-op under `supabase db push`. Mirrors CI/make.
+      - name: Apply schema-USAGE grants (staging)
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T \
+              -e PGPASSWORD=\"\$PG_PASSWORD\" db-prod \
+              psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+              < supabase/grants/schema_grants.sql
+          " || {
+            echo '::error title=Schema grants failed (staging)::supabase/grants/schema_grants.sql could not be applied — see this step log for the psql error.'
+            exit 1
+          }
+
       - name: Show migration status on failure (staging)
-        if: failure()
+        if: failure() && steps.migrate_staging.outcome == 'failure'
         run: |
           echo "::add-mask::${{ secrets.STAGING_POSTGRES_PASSWORD }}"
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "

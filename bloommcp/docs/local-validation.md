@@ -42,18 +42,12 @@ per-check summary and a non-zero exit — never an unlabelled traceback.
 ## What it validates
 
 The driver first checks the **Tier-0 import-clean guarantee** (`import bloom_mcp` is clean in
-a subprocess with the Supabase env scrubbed), then runs three legs through the real ports:
+a subprocess with the Supabase env scrubbed), then runs three legs through the real ports.
+(A fourth, legacy leg driving `run_clustering_workflow` used to carry the generic v3-provenance
++ version-advance assertions below — retired by `devendor-bloommcp-analysis`; those assertions
+moved onto Leg 2 / `remove_outliers`, the surviving seed-bearing consumer.)
 
-### Leg 1 — clustering (Tier-2 persistence, stochastic)
-
-Drives `run_clustering_workflow("turface.csv", algorithm="kmeans")` (resolves `seed=42`) and
-asserts the committed run's manifest is **schema v3** with a real `seed == 42`,
-`agent == "bloom_agent"`, a populated `environment`, and matching `output_sha256` /
-`output_keys` — and that each recorded `output_sha256` equals the SHA-256 of the bytes
-actually stored. A second run advances `latest` by exactly one version without clobbering the
-first.
-
-### Leg 2 — `qc_clean` (Tier-3 QC foundation, deterministic)
+### Leg 1 — `qc_clean` (Tier-3 QC foundation, deterministic)
 
 Seeds the raw `turface_19_raw_data.csv` fixture as `turface_raw.csv`, then runs
 `qc_clean(experiment="turface_raw.csv", max_nans_per_trait=0.1)` through the real ports and
@@ -67,28 +61,60 @@ asserts:
 - the resolved cleaned frame has **zero NaN cells** in its trait columns
   (`df[trait_cols].isna().sum().sum() == 0`).
 
+As of #403, `qc_clean` also **requires** a resolvable genotype **and** sample-identifier column
+(auto-detected, or named via `genotype_column` / `sample_id_column`) — a frame with neither
+returns a structured `assumption_violated` error and persists nothing. Trait detection delegates to
+`sleap_roots_analyze.get_trait_columns`, so numeric metadata like `Computation.Time.s` is excluded
+from the trait set (turface: 20 detected → 19). The run records an additive `input_validation`
+manifest block and the result surfaces the resolved roles + any `validation_warnings`.
+
 This is the `qc_clean` → `pca_analysis(require_clean=True)` composition proven over the real
 storage round-trip rather than the in-memory fakes.
 
-### Leg 3 — `remove_outliers` (outlier trim, stochastic)
+### Leg 2 — `remove_outliers` (outlier trim, stochastic; also the generic v3-provenance leg)
 
-Immediately after Leg 2 commits a cleaned version, runs
+Immediately after Leg 1 commits a cleaned version, runs
 `remove_outliers(experiment="turface_raw.csv", method="mahalanobis", seed=42)` through the same
 real ports and asserts:
 
 - the committed run's outputs include **`_cleaned.csv`** (the trimmed table) and
   **`outlier_report.json`**;
 - the run's manifest is **`manifest_schema_version == 3`** and records the resolved
-  `seed == 42` (outlier detection is stochastic, unlike `qc_clean`);
+  `seed == 42` (outlier detection is stochastic, unlike `qc_clean`), `tool == "remove_outliers"`;
+- the **generic v3-provenance contract**: `agent == "bloom_agent"`, a populated `environment`,
+  and matching `output_sha256` / `output_keys` maps (the same assertion the retired legacy
+  clustering-workflow leg used to carry);
 - each recorded `output_sha256` matches the actual stored bytes for **both** artifacts;
 - a fresh `SupabaseReader().load_experiment("turface_raw.csv", require_clean=True)` now resolves
   the committed **trimmed** version (`source` is `v<N>_cleaned`, **not** `raw`) with **fewer
-  rows** than the pre-trim clean and **zero NaN** trait cells.
+  rows** than the pre-trim clean and **zero NaN** trait cells;
+- a **second** `remove_outliers` commit advances `latest` by exactly one version without
+  clobbering the first (`get_run(first_ref)` still resolves).
 
 `remove_outliers` persists under the same `qc` tool class, so its trimmed `_cleaned.csv` becomes
 the newest cleaned version the reader resolves — this is the
 `qc_clean` → `remove_outliers` → `require_clean` composition proven end-to-end over the real
 ports.
+
+### Leg 3 — clustering (granular tool, #309/#422, kmeans + hierarchical)
+
+The granular `clustering` tool on the cleaned `turface_raw.csv`. Immediately after Legs 1–2, runs
+`clustering(experiment="turface_raw.csv", method="kmeans", seed=42)` and then
+`clustering(experiment="turface_raw.csv", method="hierarchical")` through the same real ports
+and asserts, for each:
+
+- the tool resolves the latest **cleaned** version via `require_clean=True` (the trim from Leg 2,
+  else the Leg 1 clean; `source` is `v<N>_cleaned`, **not** `raw`);
+- the committed run's outputs are **`labels.csv`** (per-sample cluster labels with identity) and
+  **`cluster_result.json`** (the serialized typed result);
+- the run's manifest is **`manifest_schema_version == 3`** and `tool == "clustering"`; kmeans
+  records the resolved `seed == 42` (stochastic), hierarchical records `seed == None`
+  (deterministic — no RNG);
+- each recorded `output_sha256` matches the actual stored bytes for **both** artifacts.
+
+This is the `qc_clean` → … → `clustering(require_clean=True)` composition proven end-to-end over
+the real ports, in parallel with the `pca_analysis` consumer, for both the stochastic and
+deterministic clustering methods.
 
 > **Note on raw inputs.** The deployed reader currently resolves *raw* experiment inputs from
 > the local `BLOOM_TRAITS_DIR`, so the qc_clean leg seeds `turface_raw.csv` there (matching
@@ -98,9 +124,11 @@ ports.
 A green run ends with:
 
 ```
-SMOKE PASSED ✅ — clustering(kmeans) seed-bearing run, qc_clean cleaned run, AND
-remove_outliers trimmed run all persist full v3 provenance through the real ports;
-the qc_clean → remove_outliers → require_clean composition resolves the trimmed table.
+SMOKE PASSED ✅ — the qc_clean cleaned run, remove_outliers trimmed run (incl. the generic
+v3-provenance + version-advance guarantee), AND the granular clustering(kmeans) and
+clustering(hierarchical) consumers all persist full provenance through the real ports; the
+qc_clean → remove_outliers → clustering(require_clean=True) composition resolves and clusters
+the trimmed table for both stochastic and deterministic methods.
 ```
 
 ## Unit tests (no live stack)
@@ -285,6 +313,13 @@ Captures are saved under **`bloommcp/docs/images/`** with the exact filenames be
   `qc_clean_tool.py`.
 
 **4. `qc_clean` → `pca_analysis(require_clean=True)` composition** — findings **A / B / C**
+_(**RESOLVED** — kept as historical record. **A:** `pca_analysis` is now exposed and does
+accept `require_clean=True` (#308). **B/C:** `run_dimensionality_reduction_workflow` and
+`run_outlier_workflow` — the workflows these bugs lived in — were retired entirely by
+`devendor-bloommcp-analysis`, so the underlying `dimred.py`/`outlier_detection.py` bugs no
+longer have any code path to trigger through. The granular `pca_analysis` / `remove_outliers`
+tools this checklist should use instead do not share those bugs — see their own delegation
+tests.)_
 - **What Claude did:** Attempted the documented composition `pca_analysis(require_clean=True)`
   after `qc_clean`. **No such tool is exposed in the current MCP surface** (finding **A**), so
   Claude used `run_dimensionality_reduction_workflow(method="pca")` — the actually-exposed PCA

@@ -45,6 +45,8 @@ SENSITIVE_INVENTORY = {
     "CLOUDFLARE_API_TOKEN",
     "DEPLOY_PATH",
     "MINIO_DATA_PATH",
+    "WORKFLOWS_SUPABASE_EMAIL",
+    "WORKFLOWS_SUPABASE_PASSWORD",
 }
 
 # Patterns that indicate a secret value (not just a key name). Case-insensitive.

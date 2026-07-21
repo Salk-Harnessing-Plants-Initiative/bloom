@@ -40,8 +40,19 @@ def _validate_experiment_name(experiment: str) -> None:
     read-and-persist tool like ``qc_inspect`` the contents could then surface in committed
     artifacts. Require a bare basename. (The cross-tool fix is to centralize this in
     ``load_experiment_data`` so the whole tool family is covered; this guards the QC tools now.)
+
+    ``Path(experiment).name != experiment`` alone is not enough: ``pathlib.Path`` only
+    treats ``\\`` as a separator on Windows, so on POSIX (the deploy target)
+    ``Path("..\\\\secret.csv").name`` equals the input unchanged and the traversal payload
+    would slip past this guard. Check for either separator explicitly (mirrors the fix in
+    ``sections/sleap_roots/analysis/_viz_shared.validate_filename``).
     """
-    if experiment in ("", ".", "..") or Path(experiment).name != experiment:
+    if (
+        experiment in ("", ".", "..")
+        or "/" in experiment
+        or "\\" in experiment
+        or Path(experiment).name != experiment
+    ):
         raise BloomMCPError(
             code="invalid_input",
             message="experiment must be a bare CSV filename (no path separators).",
@@ -64,14 +75,75 @@ def _role_kwargs(frame: ExperimentFrame) -> dict[str, str]:
 
 
 def _validate_trait_subset(
-    frame: ExperimentFrame, requested: list[str], experiment: str
+    frame: ExperimentFrame,
+    requested: list[str],
+    experiment: str,
+    *,
+    require_certified: bool = False,
 ) -> None:
     """Reject a caller-supplied ``trait_columns`` subset up front with a clear remedy.
 
     Without this an unknown column raises ``KeyError`` (→ opaque ``internal_error``)
     and a non-numeric column silently corrupts the delegate's zero/NaN-fraction
     filtering. Both surface here as a fixable ``invalid_input`` naming the columns.
+
+    Two strictness levels share this one validator:
+
+    * **default (``require_certified=False``)** — the raw-frame **producers** ``qc_clean`` /
+      ``qc_inspect``: a selection is valid if every column exists in the frame and is numeric.
+      An empty list is allowed (falls through to "all detected traits") and duplicates are
+      harmless to those delegates.
+    * **``require_certified=True``** — the cleaned-frame **consumers** ``pca_analysis`` /
+      ``clustering``: additionally require each column to be a member of the certified-clean
+      trait set (``frame.trait_cols``), reject an empty list (it must not silently mean "all
+      certified traits"), and reject duplicates (a delegate that re-selects a repeated column
+      inflates the fitted feature set). The certified-set restriction is what forecloses the
+      silent-``dropna()`` path — a NaN-bearing numeric column ``qc_clean`` did not adopt as a
+      surviving trait cannot be selected. Keeping the *default* behavior byte-identical is what
+      lets ``qc_inspect`` keep consuming this helper unchanged.
     """
+    if require_certified:
+        if not requested:
+            raise BloomMCPError(
+                code="invalid_input",
+                message="trait_columns was given as an empty list.",
+                remedy=(
+                    "Omit trait_columns to analyze all certified-clean traits, or name at "
+                    "least one certified trait column."
+                ),
+            )
+        duplicates = sorted({c for c in requested if requested.count(c) > 1})
+        if duplicates:
+            raise BloomMCPError(
+                code="invalid_input",
+                message=f"trait_columns contains duplicate columns: {duplicates}.",
+                remedy="List each trait column at most once.",
+            )
+        certified = set(frame.trait_cols)
+        outside = [c for c in requested if c not in certified]
+        if outside:
+            raise BloomMCPError(
+                code="invalid_input",
+                message=(
+                    f"trait_columns includes columns that are not certified-clean traits of "
+                    f"{experiment!r}: {outside}."
+                ),
+                remedy=(
+                    "Pass only cleaned trait columns (see load_experiment_data on the cleaned "
+                    "version), or omit trait_columns to use all of them."
+                ),
+            )
+        non_numeric = [
+            c for c in requested if not pd.api.types.is_numeric_dtype(frame.df[c])
+        ]
+        if non_numeric:
+            raise BloomMCPError(
+                code="invalid_input",
+                message=f"trait_columns includes non-numeric columns: {non_numeric}.",
+                remedy="Pass only numeric trait columns; identifiers/metadata cannot be analyzed.",
+            )
+        return
+
     missing = [c for c in requested if c not in frame.df.columns]
     if missing:
         raise BloomMCPError(

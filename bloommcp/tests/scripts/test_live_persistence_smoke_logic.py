@@ -361,3 +361,64 @@ def test_retry_reraises_after_exhausting_attempts():
         assert "never ready" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("retry should have re-raised")
+
+
+# --- clustering leg checks (#309) ---------------------------------------------
+def _good_cl_kwargs():
+    return dict(
+        schema_version=3,
+        seed=42,
+        tool="clustering",
+        source="v3_cleaned",
+        output_keys={
+            "labels.csv": "bloommcp_output/clustering_turface_raw/v1/labels.csv",
+            "cluster_result.json": "bloommcp_output/clustering_turface_raw/v1/cluster_result.json",
+        },
+        output_sha256={"labels.csv": "dead", "cluster_result.json": "beef"},
+        expected_outputs={"labels.csv", "cluster_result.json"},
+    )
+
+
+def test_clustering_persist_checks_all_pass_on_valid_v3_entry():
+    checks = smoke.clustering_persist_checks(**_good_cl_kwargs())
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_clustering_persist_checks_flags_wrong_seed():
+    # clustering is stochastic — a seed != 42 is a reproducibility regression.
+    kwargs = _good_cl_kwargs()
+    kwargs["seed"] = 7
+    checks = smoke.clustering_persist_checks(**kwargs)
+    assert any("seed == 42" in c.name and not c.ok for c in checks)
+
+
+def test_clustering_persist_checks_flags_null_seed():
+    kwargs = _good_cl_kwargs()
+    kwargs["seed"] = None
+    checks = smoke.clustering_persist_checks(**kwargs)
+    assert any("seed == 42" in c.name and not c.ok for c in checks)
+
+
+def test_clustering_persist_checks_flags_wrong_tool():
+    kwargs = _good_cl_kwargs()
+    kwargs["tool"] = "run_clustering_workflow"
+    checks = smoke.clustering_persist_checks(**kwargs)
+    assert any("tool == 'clustering'" in c.name and not c.ok for c in checks)
+
+
+def test_clustering_persist_checks_flags_raw_source():
+    # The consumer must resolve a cleaned version, never the raw input.
+    kwargs = _good_cl_kwargs()
+    kwargs["source"] = "raw"
+    checks = smoke.clustering_persist_checks(**kwargs)
+    assert any("consumed a cleaned source" in c.name and not c.ok for c in checks)
+
+
+def test_clustering_persist_checks_flags_missing_result_artifact():
+    kwargs = _good_cl_kwargs()
+    kwargs["output_keys"] = {
+        k: v for k, v in kwargs["output_keys"].items() if k == "labels.csv"
+    }
+    kwargs["output_sha256"] = {"labels.csv": "dead"}
+    checks = smoke.clustering_persist_checks(**kwargs)
+    assert any("committed outputs include" in c.name and not c.ok for c in checks)
