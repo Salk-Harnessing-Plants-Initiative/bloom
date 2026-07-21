@@ -27,8 +27,8 @@ from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools import clustering_tool
-from bloom_mcp.tools.clustering_tool import (
+from bloom_mcp.sections.sleap_roots.analysis import clustering as clustering_tool
+from bloom_mcp.sections.sleap_roots.analysis.clustering import (
     ClusteringParams,
     ClusteringResult,
     clustering,
@@ -36,7 +36,9 @@ from bloom_mcp.tools.clustering_tool import (
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _FINAL = _FIXTURES / "turface_19_final_data.csv"
-_GOLDEN = json.loads((_FIXTURES / "turface_19_clustering_golden.json").read_text())
+_GOLDEN = json.loads(
+    (_FIXTURES / "turface_19_clustering_golden.json").read_text(encoding="utf-8")
+)
 
 _EXPERIMENT = "turface_19.csv"
 _TRAITS = _GOLDEN[
@@ -50,7 +52,7 @@ _SEED = 42
 
 
 def _final_df() -> pd.DataFrame:
-    return pd.read_csv(_FINAL)
+    return pd.read_csv(_FINAL, encoding="utf-8")
 
 
 @pytest.fixture
@@ -77,7 +79,9 @@ def _labels_of(store, monkeypatch, **overrides) -> list[int]:
     real_commit = store.commit
 
     def _commit(run, outputs):
-        holder["json"] = (run.staging_dir / "cluster_result.json").read_text()
+        holder["json"] = (run.staging_dir / "cluster_result.json").read_text(
+            encoding="utf-8"
+        )
         return real_commit(run, outputs)
 
     monkeypatch.setattr(store, "commit", _commit)
@@ -163,7 +167,7 @@ def test_omitting_trait_columns_uses_full_certified_set(injected_ports):
 # ── 3.1 tools/list presence ─────────────────────────────────────────────────
 
 
-def test_clustering_in_tools_list_and_workflow_preserved():
+def test_clustering_in_tools_list():
     from fastmcp import Client
 
     from bloom_mcp import server
@@ -173,9 +177,8 @@ def test_clustering_in_tools_list_and_workflow_preserved():
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    assert "clustering" in tools
-    assert tools["clustering"].inputSchema is not None
-    assert "run_clustering_workflow" in tools  # additive — legacy not removed
+    assert "sleap_roots_clustering" in tools
+    assert tools["sleap_roots_clustering"].inputSchema is not None
 
 
 # ── 3.2 polymorphic delegation pinning + seed-reaches-fit ───────────────────
@@ -197,16 +200,6 @@ def test_kmeans_delegates_to_kmeans_and_seed_reaches_fit(injected_ports, monkeyp
         raise AssertionError("kmeans call routed to the GMM delegate")
 
     monkeypatch.setattr(clustering_tool, "perform_gmm_clustering", _boom_gmm)
-
-    import bloom_mcp.clustering as vendored
-
-    monkeypatch.setattr(
-        vendored,
-        "perform_kmeans_clustering",
-        lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("clustering called the vendored bloom_mcp.clustering")
-        ),
-    )
 
     _run(method="kmeans", n_clusters=3, seed=_SEED)
     assert captured["n"] == 1
@@ -599,7 +592,7 @@ def test_labels_csv_carries_sample_identity(injected_ports, monkeypatch):
 
     def _commit(run, outputs):
         for name in outputs:
-            captured[name] = (run.staging_dir / name).read_text()
+            captured[name] = (run.staging_dir / name).read_text(encoding="utf-8")
         return real_commit(run, outputs)
 
     monkeypatch.setattr(store, "commit", _commit)
@@ -644,7 +637,9 @@ def test_passes_source_csv_for_input_lineage(injected_ports, monkeypatch):
 # ── Hierarchical (#422) ──────────────────────────────────────────────────────
 
 
-def test_hierarchical_delegates_to_hierarchical_entry_point(injected_ports, monkeypatch):
+def test_hierarchical_delegates_to_hierarchical_entry_point(
+    injected_ports, monkeypatch
+):
     """hierarchical routes to hierarchical_cluster_labels exactly once; kmeans/gmm never called."""
     captured: dict[str, object] = {}
     real = clustering_tool.hierarchical_cluster_labels
@@ -729,7 +724,12 @@ def test_hierarchical_linkage_and_metric_forwarded(injected_ports, monkeypatch):
         return real(data, **kwargs)
 
     monkeypatch.setattr(clustering_tool, "hierarchical_cluster_labels", _spy)
-    _run(method="hierarchical", n_clusters=3, linkage_method="complete", distance_metric="cosine")
+    _run(
+        method="hierarchical",
+        n_clusters=3,
+        linkage_method="complete",
+        distance_metric="cosine",
+    )
     assert captured["method"] == "complete"
     assert captured["metric"] == "cosine"
 
@@ -740,12 +740,18 @@ def test_hierarchical_snapshot_through_the_tool(injected_ports):
     assert result.n_clusters == g["n_clusters"]
     assert result.cluster_sizes == g["cluster_sizes"]
     assert result.silhouette_score == pytest.approx(g["silhouette_score"], abs=_TOL)
-    assert result.davies_bouldin_score == pytest.approx(g["davies_bouldin_score"], abs=_TOL)
-    assert result.calinski_harabasz_score == pytest.approx(g["calinski_harabasz_score"], abs=_TOL)
+    assert result.davies_bouldin_score == pytest.approx(
+        g["davies_bouldin_score"], abs=_TOL
+    )
+    assert result.calinski_harabasz_score == pytest.approx(
+        g["calinski_harabasz_score"], abs=_TOL
+    )
     assert result.linkage_method == g["linkage_method"]
     assert result.distance_metric == g["distance_metric"]
     # I5: dendrogram-specific outputs are also drift-gated
-    assert result.cophenetic_correlation == pytest.approx(g["cophenetic_correlation"], abs=_TOL)
+    assert result.cophenetic_correlation == pytest.approx(
+        g["cophenetic_correlation"], abs=_TOL
+    )
     assert result.cut_height == pytest.approx(g["cut_height"], abs=_TOL)
 
 
@@ -767,12 +773,14 @@ def test_hierarchical_optimization_method_valid_values(injected_ports, monkeypat
     # Pydantic ValidationError to invalid_input (pass a raw dict, not ClusteringParams, so
     # the wrapper's model_validate path is exercised rather than the constructor).
     with pytest.raises(BloomMCPError) as exc:
-        clustering({
-            "experiment": _EXPERIMENT,
-            "method": "hierarchical",
-            "n_clusters": 3,
-            "optimization_method": "calinski_harabasz",
-        })
+        clustering(
+            {
+                "experiment": _EXPERIMENT,
+                "method": "hierarchical",
+                "n_clusters": 3,
+                "optimization_method": "calinski_harabasz",
+            }
+        )
     assert exc.value.code == "invalid_input"
 
 
@@ -787,7 +795,7 @@ def test_hierarchical_in_tools_list_enum(injected_ports):
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    schema = tools["clustering"].inputSchema
+    schema = tools["sleap_roots_clustering"].inputSchema
     method_enum = schema["properties"]["params"]["properties"]["method"]["enum"]
     assert "hierarchical" in method_enum
 
@@ -800,14 +808,17 @@ def test_hierarchical_requires_clean_version():
     _ports.configure(reader=reader, store=store)
     try:
         with pytest.raises(BloomMCPError) as exc:
-            clustering(ClusteringParams(
-                experiment="rawonly.csv", method="hierarchical", n_clusters=3
-            ))
+            clustering(
+                ClusteringParams(
+                    experiment="rawonly.csv", method="hierarchical", n_clusters=3
+                )
+            )
         assert exc.value.code == "tool_error"
         assert "qc_clean" in exc.value.remedy
     finally:
         from bloom_mcp.data_access import SupabaseReader
         from bloom_mcp.result_store import SupabaseResultStore
+
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
@@ -829,7 +840,12 @@ def test_hierarchical_only_controls_rejected_on_kmeans_and_gmm(injected_ports):
 def test_hierarchical_ward_cosine_rejected_before_dispatch(injected_ports):
     """B2: ward+non-euclidean is caught as invalid_input before reaching the try block."""
     with pytest.raises(BloomMCPError) as exc:
-        _run(method="hierarchical", n_clusters=3, linkage_method="ward", distance_metric="cosine")
+        _run(
+            method="hierarchical",
+            n_clusters=3,
+            linkage_method="ward",
+            distance_metric="cosine",
+        )
     assert exc.value.code == "invalid_input"
     assert "ward" in exc.value.message.lower()
     assert "euclidean" in exc.value.message.lower()
@@ -838,7 +854,12 @@ def test_hierarchical_ward_cosine_rejected_before_dispatch(injected_ports):
 def test_hierarchical_ward_cosine_error_not_assumption_violated(injected_ports):
     """B2: the ward+non-euclidean error is a parameter error, not a data-quality accusation."""
     with pytest.raises(BloomMCPError) as exc:
-        _run(method="hierarchical", n_clusters=3, linkage_method="ward", distance_metric="cosine")
+        _run(
+            method="hierarchical",
+            n_clusters=3,
+            linkage_method="ward",
+            distance_metric="cosine",
+        )
     assert exc.value.code != "assumption_violated"
 
 
@@ -854,18 +875,27 @@ def test_hierarchical_default_seed_no_warning(injected_ports):
     assert not any("seed" in w and "ignored" in w for w in result.warnings)
 
 
-def test_hierarchical_degenerate_fit_does_not_leak_backend_internals(injected_ports, monkeypatch):
+def test_hierarchical_degenerate_fit_does_not_leak_backend_internals(
+    injected_ports, monkeypatch
+):
     """I10: internal exception text from hierarchical_cluster_labels is not echoed to the caller."""
+
     def _raise(*a, **k):
         raise ValueError(
             "/home/user/.venv/lib/python3.11/site-packages/scipy/cluster/hierarchy.py:42 "
             "Ward's method only works with Euclidean distance — internal detail"
         )
+
     monkeypatch.setattr(clustering_tool, "hierarchical_cluster_labels", _raise)
     # Trigger via a valid parameter set (non-ward/cosine) so the pre-dispatch guard
     # doesn't fire; the degenerate-fit handler must suppress the raw message.
     with pytest.raises(BloomMCPError) as exc:
-        _run(method="hierarchical", n_clusters=3, linkage_method="complete", distance_metric="cosine")
+        _run(
+            method="hierarchical",
+            n_clusters=3,
+            linkage_method="complete",
+            distance_metric="cosine",
+        )
     assert exc.value.code == "assumption_violated"
     # The raw exception text (file paths, scipy internals) must not appear.
     for fragment in ("site-packages", "hierarchy.py", "internal detail"):

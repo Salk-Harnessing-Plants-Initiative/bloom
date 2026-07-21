@@ -18,6 +18,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && \
     apt-get install -y --no-install-recommends nodejs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# NodeSource's Node 20.x package bundles global npm 10.8.2, which vendors its own
+# tar@6.2.1 (CVE-2026-59873, gzip-bomb DoS) at
+# /usr/lib/node_modules/npm/node_modules/tar — unrelated to this app's own
+# dependencies. Pin npm forward to a version that vendors the fixed tar (confirmed:
+# npm@11.18.0 -> tar@7.5.19). Same fix as web/Dockerfile.bloom-web.prod's runner stage.
+RUN npm install -g npm@11.18.0
+
 # Create bloom user AND pre-create bloom-owned dirs in a single layer BEFORE the
 # venv install, so `uv sync` (and every subsequent COPY) can run as bloom — no
 # trailing `chown -R` over the site-packages tree on source changes.
