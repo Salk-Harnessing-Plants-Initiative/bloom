@@ -39,6 +39,7 @@ FIXTURE = REPO_ROOT / "bloommcp" / "tests" / "fixtures" / "turface_19_raw_data.c
 TRAITS_DIR = REPO_ROOT / "bloommcp" / "data" / "SLEAP_OUT_CSV"
 PLOTS_DIR = REPO_ROOT / "bloommcp" / "data" / "PLOTS_DIR"
 EXPERIMENT = "turface_raw.csv"
+PNG = PLOTS_DIR / "histograms_turface_raw.png"
 
 _CHECKS: list[tuple[str, bool, str]] = []
 
@@ -50,9 +51,19 @@ def _check(name: str, ok: bool, detail: str = "") -> None:
     )
 
 
+def _redact(secret: str, text: str) -> str:
+    return text.replace(secret, "***REDACTED***") if secret else text
+
+
 def _seed_fixture() -> None:
     TRAITS_DIR.mkdir(parents=True, exist_ok=True)
     shutil.copy(FIXTURE, TRAITS_DIR / EXPERIMENT)
+
+
+def _clear_stale_png() -> None:
+    # A PNG left over from an earlier successful run would let the "landed on
+    # PLOTS_DIR" check below pass even if this run's write silently failed.
+    PNG.unlink(missing_ok=True)
 
 
 async def main() -> int:
@@ -70,15 +81,20 @@ async def main() -> int:
         "fixture seeded into the real bind-mounted SLEAP_OUT_CSV",
         (TRAITS_DIR / EXPERIMENT).exists(),
     )
+    _clear_stale_png()
 
     url = f"http://localhost:{port}/mcp"
     try:
-        async with Client(url, auth=api_key) as client:
+        async with Client(url, auth=api_key, timeout=30, init_timeout=15) as client:
             result = await client.call_tool(
                 "sleap_roots_plot_trait_histograms", {"filename": EXPERIMENT}
             )
     except Exception as exc:  # noqa: BLE001 — report, don't hide, the failure
-        _check("sleap_roots_plot_trait_histograms call succeeds", False, repr(exc))
+        _check(
+            "sleap_roots_plot_trait_histograms call succeeds",
+            False,
+            _redact(api_key, repr(exc)),
+        )
         _print_summary()
         return 1
 
@@ -89,11 +105,10 @@ async def main() -> int:
         text,
     )
 
-    png = PLOTS_DIR / "histograms_turface_raw.png"
     _check(
         "the PNG actually landed on the real bind-mounted PLOTS_DIR (not just claimed)",
-        png.exists() and png.stat().st_size > 0,
-        str(png),
+        PNG.exists() and PNG.stat().st_size > 0,
+        str(PNG),
     )
 
     return _print_summary()

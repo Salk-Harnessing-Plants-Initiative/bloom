@@ -48,6 +48,15 @@ the remedy, re-ran the script (now succeeds, `almoab:almoab` `0777`), then re-ra
 container: booted clean, and `plot_trait_histograms` through the real MCP transport
 succeeded with the PNG landing on the real bind-mounted `PLOTS_DIR`.
 
+**Post-verification correction:** this branch was later brought up to date with
+`origin/staging`, which by that point included the unrelated `devendor-bloommcp-analysis`
+restructure — every section tool (this one included) is now mounted on the combined `/mcp`
+surface under a namespace prefix, so the tool from the paragraph above is only reachable as
+`sleap_roots_plot_trait_histograms`, not the bare name. The live verification narrated above
+was accurate against the code as it existed at the time; `live_plot_tool_smoke.py` itself
+was not updated for the rename until a follow-up commit on this same branch (see tasks.md
+1.2's note) — recorded here rather than silently rewriting the original verification claim.
+
 ### Alternatives considered
 
 - **Match the container's UID on the host.** Rejected: `adduser --system --ingroup bloom
@@ -85,8 +94,8 @@ bloom` in the Dockerfile gets an arbitrary system UID assigned at image-build ti
    into the already-running container instead — the only way to actually exercise the bind
    mount this bug lives in. Wired into `pr-checks.yml`'s `dev-stack-smoke` job after `make
 bloommcp-smoke`.
-2. **Prod/staging risk:** left as a documented, not-yet-filed risk (proposal.md's "Out of
-   scope" note now also names `compose-health-check`, which boots `docker-compose.prod.yml`
-   with zero preflight and the identical bind-mount shape) — not filed as a separate issue in
-   this change, since I have no way to confirm from this repo alone whether it's a live
-   problem on the actual staging/prod hosts.
+2. **Prod/staging risk:** documented in proposal.md's "Out of scope" note (which also names
+   `compose-health-check`, which boots `docker-compose.prod.yml` with zero preflight and the
+   identical bind-mount shape) and tracked as issue #474, filed the same day — this change
+   does not attempt to confirm or fix it, since there's no way to tell from this repo alone
+   whether it's a live problem on the actual staging/prod hosts.

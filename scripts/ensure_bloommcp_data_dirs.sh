@@ -23,33 +23,45 @@ set -u
 
 ROOT="${BLOOMMCP_DATA_ROOT:-bloommcp/data}"
 
-# A root-owned leftover can be at the leaf (SLEAP_OUT_CSV/PLOTS_DIR/
+# A root-owned leftover can be at a leaf (SLEAP_OUT_CSV/PLOTS_DIR/
 # ANALYSIS_OUTPUT) OR at $ROOT itself: if $ROOT never existed before a prior
 # `docker compose up` ran without this fix, Docker's own bind-mount setup
 # creates $ROOT AND every leaf as root — confirmed empirically (see this
-# change's tasks.md). One remedy, scoped to the whole tree, covers both.
+# change's tasks.md). $ROOT can also be correctly-owned but merely narrow-mode
+# (e.g. 0700, from something unrelated to Docker) — every leaf under it would
+# then still get created/chmod'd fine (the owner can always write their own
+# directory), and this script would report success, while the container's
+# non-root user still can't traverse $ROOT to reach any leaf. So $ROOT itself
+# is ensured (mkdir + chmod) explicitly below, not just implied by `mkdir -p`'s
+# parent-creation.
 remedy() {
-  printf 'ensure_bloommcp_data_dirs: cannot make %s (or its %s parent) writable —\n' "$1" "$ROOT" >&2
+  printf 'ensure_bloommcp_data_dirs: cannot make %s writable —\n' "$1" >&2
   printf '  likely root-owned from a "docker compose up" that ran before this fix existed\n' >&2
   printf '  (Docker auto-creates a missing bind-mount source, and its parent, as root).\n' >&2
   printf '  Fix: sudo chown -R $(id -u):$(id -g) %s   (or: sudo rm -rf %s && re-run make dev-up)\n' "$ROOT" "$ROOT" >&2
 }
 
-ERRORS=0
-
-for name in SLEAP_OUT_CSV PLOTS_DIR ANALYSIS_OUTPUT; do
-  dir="$ROOT/$name"
+ensure_dir() {
+  dir="$1"
   if [ ! -d "$dir" ]; then
     if ! mkdir -p "$dir" 2>/dev/null; then
       remedy "$dir"
-      ERRORS=$((ERRORS + 1))
-      continue
+      return 1
     fi
   fi
   if ! chmod 777 "$dir" 2>/dev/null; then
     remedy "$dir"
-    ERRORS=$((ERRORS + 1))
+    return 1
   fi
+  return 0
+}
+
+ERRORS=0
+
+ensure_dir "$ROOT" || ERRORS=$((ERRORS + 1))
+
+for name in SLEAP_OUT_CSV PLOTS_DIR ANALYSIS_OUTPUT; do
+  ensure_dir "$ROOT/$name" || ERRORS=$((ERRORS + 1))
 done
 
 if [ "$ERRORS" -gt 0 ]; then

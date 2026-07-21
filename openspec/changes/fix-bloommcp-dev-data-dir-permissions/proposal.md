@@ -29,7 +29,8 @@ root /app/data/ANALYSIS_OUTPUT is not writable`).
   the caller's own privilege escalation.
 - **ADD** `bloommcp/scripts/live_plot_tool_smoke.py` + `make bloommcp-plot-smoke`: a real
   MCP-transport call (`fastmcp.Client`) into the already-running `bloommcp` container,
-  calling `plot_trait_histograms` and verifying both the tool's response and that the PNG
+  calling `sleap_roots_plot_trait_histograms` (the `sleap_roots`-namespaced tool name —
+  see tasks.md 1.2's note) and verifying both the tool's response and that the PNG
   actually landed on the real bind-mounted `PLOTS_DIR`. Deliberately **not** added to
   `live_persistence_smoke.py`, whose in-process, host-tempdir-overridden design would never
   touch the real bind mount and would pass regardless of whether this bug were still
@@ -52,7 +53,7 @@ live_plot_tool_smoke.py` (new), `.github/workflows/pr-checks.yml` (`dev-stack-sm
   job, may have the same latent issue. I have no visibility from this repo alone into
   whether the staging/prod hosts already provision these directories correctly outside of
   what's checked in here. This proposal fixes the **dev** path only (`make dev-up`, the
-  `dev-stack-smoke` CI job) and calls out the prod/staging/`compose-health-check` risk for
-  whoever owns that deployment to confirm or file a follow-up on.
+  `dev-stack-smoke` CI job); the prod/staging/`compose-health-check` risk is tracked
+  separately as issue #474 (filed same day).
 - **Branch/PR:** branches off `origin/staging`; this branch
   (`egao28/bloommcp-plotsdir-permission-fix-472`).

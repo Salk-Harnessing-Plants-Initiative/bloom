@@ -344,7 +344,12 @@ bloommcp-smoke: check-uv
 ## Live plot-tool smoke (issue #472): calls a real plotting tool through the
 ## bloommcp container's actual MCP transport (not an in-process/env-overridden
 ## call like bloommcp-smoke's) — the only way to prove the real bind-mounted
-## PLOTS_DIR write path works. Requires the stack to be up (`make dev-up`).
+## PLOTS_DIR write path works. Requires the stack to be up AND healthy — `make
+## dev-up` alone only starts containers; `docker ps` can show `bloommcp` as
+## `Up ... (health: starting)` well before its MCP endpoint accepts requests.
+## Run `make check` first (or otherwise wait for `bloommcp` to report
+## `healthy`), or this can hang or connection-refuse instead of hitting the
+## guard clauses below.
 .PHONY: bloommcp-plot-smoke
 bloommcp-plot-smoke: check-uv
 	@if [ ! -f .env.dev ]; then \

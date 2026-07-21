@@ -84,12 +84,19 @@ def test_dev_up_aborts_before_bring_up_when_data_dirs_unwritable(tmp_path):
             **os.environ,
             "BLOOMMCP_DATA_ROOT": str(unwritable_parent / "data"),
         }
+        # Bounded on purpose: if `ensure-bloommcp-data-dirs` ever regresses so
+        # it no longer aborts, this would fall through into a real, unbounded
+        # `docker compose up -d --build` against the developer's actual (non-
+        # tmp_path) bloommcp/data bind mounts, from inside a pytest run. The
+        # preflight itself is a single fast shell script, so 30s is generous
+        # for the intended-abort path and still bounds the regression case.
         result = subprocess.run(
             ["make", "dev-up"],
             cwd=REPO_ROOT,
             env=env,
             capture_output=True,
             text=True,
+            timeout=30,
         )
         assert result.returncode != 0
         combined = result.stdout + result.stderr
