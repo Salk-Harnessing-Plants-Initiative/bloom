@@ -75,16 +75,16 @@ async def main() -> int:
     try:
         async with Client(url, auth=api_key) as client:
             result = await client.call_tool(
-                "plot_trait_histograms", {"filename": EXPERIMENT}
+                "sleap_roots_plot_trait_histograms", {"filename": EXPERIMENT}
             )
     except Exception as exc:  # noqa: BLE001 — report, don't hide, the failure
-        _check("plot_trait_histograms call succeeds", False, repr(exc))
+        _check("sleap_roots_plot_trait_histograms call succeeds", False, repr(exc))
         _print_summary()
         return 1
 
     text = result.data if isinstance(result.data, str) else str(result.data)
     _check(
-        "plot_trait_histograms returns a success summary, not a permission error",
+        "sleap_roots_plot_trait_histograms returns a success summary, not a permission error",
         "Plot saved:" in text and "denied" not in text.lower(),
         text,
     )
