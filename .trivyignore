@@ -84,6 +84,14 @@ CVE-2026-42496
 # Reassess on next python:3.11-slim SHA bump.
 CVE-2026-8376
 
+# perl-base 5.40.1-6 (Debian 13.6 in python:3.11-slim) — affects: langchain-agent
+# Signed integer overflow in Perl's Storable module (pre-3.41) during
+# deserialization. The agent does not execute Perl or deserialize Perl Storable
+# data at runtime; perl-base is a transitive Debian base package included by
+# python:3.11-slim, never invoked by application code. No fix available
+# upstream. Reassess on next python:3.11-slim SHA bump.
+CVE-2026-57433
+
 # linux-libc-dev (Debian 13 in python:3.11-slim) — affects: langchain-agent / bloommcp
 # kernel: ksmbd signedness bug. Kernel headers are a build-time-only transitive base
 # package; the container runs no kernel and uses no in-kernel SMB server (ksmbd), so the
