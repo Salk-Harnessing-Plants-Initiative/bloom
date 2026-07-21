@@ -119,9 +119,6 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
-    { name = "seaborn" },
     { name = "sleap-roots-analyze" },
     { name = "sleap-roots-contracts", extra = ["pandas"] },
     { name = "starlette" },
@@ -132,6 +129,7 @@ dependencies = [
 test = [
     { name = "hypothesis" },
     { name = "pytest" },
+    { name = "scikit-learn" },
     { name = "syrupy" },
 ]
 
@@ -149,9 +147,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "python-multipart", specifier = ">=0.0.31" },
-    { name = "scikit-learn", specifier = ">=1.3.0" },
-    { name = "scipy", specifier = ">=1.10.0" },
-    { name = "seaborn", specifier = ">=0.12.0" },
+    { name = "scikit-learn", marker = "extra == 'test'", specifier = ">=1.3.0" },
     { name = "sleap-roots-analyze", specifier = ">=0.1.0a5" },
     { name = "sleap-roots-contracts", extras = ["pandas"], specifier = ">=0.1.0a1" },
     { name = "starlette", specifier = ">=1.1.0" },

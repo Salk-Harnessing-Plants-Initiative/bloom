@@ -25,7 +25,7 @@ _RAW = _FIXTURES / "turface_19_raw_data.csv"
 
 
 def _turface() -> pd.DataFrame:
-    return pd.read_csv(_RAW)
+    return pd.read_csv(_RAW, encoding="utf-8")
 
 
 def test_resolves_turface_roles_and_detects_19_traits():

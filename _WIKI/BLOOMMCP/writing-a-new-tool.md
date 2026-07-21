@@ -1,10 +1,12 @@
 # Writing a new workflow tool
 
-> **Adding a tool to a section (e.g. phenotyping)?** Use
-> [adding-a-section-tool.md](./adding-a-section-tool.md) instead — that's the
-> current pattern (`@as_mcp_tool` + Pydantic input/output). This doc is the
-> older **workflow-tool** style (read CSV → write a versioned output folder,
-> registered with `mcp.tool()`).
+> **RETIRED.** The `tools/workflows/` pattern this doc describes (`run_*_workflow`
+> functions, `_helpers.py`'s `build_writer`, registered with bare `mcp.tool()`) was
+> deleted by `devendor-bloommcp-analysis` (C7) — every code link below is dead. Kept
+> as historical record of *why* the pattern existed and what replaced it, not as a
+> guide to follow. **Use [adding-a-section-tool.md](./adding-a-section-tool.md)** —
+> the current pattern (`@as_mcp_tool` + Pydantic input/output, one file per tool
+> under `sections/<name>/`) — for any new tool.
 
 This doc is the guide for adding a new MCP workflow tool to the bloommcp.(sleap-trait-analyze)
 
