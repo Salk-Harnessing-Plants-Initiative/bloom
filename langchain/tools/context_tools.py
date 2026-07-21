@@ -84,7 +84,7 @@ CONTEXT_GENERIC = """## Generic Database Tools (Supabase/PostgREST)
 
 CONTEXT_MCP = """## CSV Experiment Files (MCP Tools)
 
-Files like cylinder_alfalfa_gwas_wave2, turface_rice_treatment_exp1 are CSV files
+Files like cylinder_traits, turface_traits are CSV files
 on the filesystem — NOT database tables. Never use query_database for these.
 
 ### Discovery (always available)
