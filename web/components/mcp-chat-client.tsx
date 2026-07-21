@@ -8,7 +8,7 @@ import styles from "./mcp-chat-client.module.css";
 
 type Message = { from: "user" | "bot"; text: string };
 type Provider = "local";
-type ToolSet = "all" | "scrna" | "cyl" | "generic" | "";
+type ToolSet = "all" | "scrna" | "cyl" | "generic" | "mcp" | "";
 
 type SuggestionPayload = {
   tool: string;
@@ -45,6 +45,7 @@ const TOOL_SET_OPTIONS: { value: ToolSet; label: string; description: string }[]
   { value: "cyl", label: "Phenotyping", description: "Experiments, plants, scans, traits" },
   { value: "all", label: "All Tools", description: "Full access to all data types" },
   { value: "generic", label: "Generic", description: "Basic database queries only" },
+  { value: "mcp", label: "MCP Only", description: "Only MCP server tools (no native tools)" },
 ];
 
 const AVAILABLE_MODELS_DEFAULT: Record<string, string[]> = {
@@ -258,13 +259,19 @@ export default function MCPChat() {
           return;
         }
         const data = await r.json();
+        // inspect_data_quality was dropped (bloom-mcp devendor-bloommcp-analysis;
+        // redundant with qc_inspect). Matched prefix-aware (exact name or
+        // "<section>_<name>") so the Phase-2 sections migration's namespacing
+        // (e.g. core_list_available_experiments) doesn't silently stop hiding these.
         const HIDDEN_TOOLS = new Set([
           "list_available_experiments",
           "load_experiment_data",
-          "inspect_data_quality",
           "list_existing_analyses",
         ]);
-        setAvailableMcpTools((data.tools || []).filter((t: MCPTool) => !HIDDEN_TOOLS.has(t.name)));
+        const isHidden = (name: string) =>
+          HIDDEN_TOOLS.has(name) ||
+          Array.from(HIDDEN_TOOLS).some((base) => name.endsWith(`_${base}`));
+        setAvailableMcpTools((data.tools || []).filter((t: MCPTool) => !isHidden(t.name)));
       } catch {
         setAvailableMcpTools([]);
       }

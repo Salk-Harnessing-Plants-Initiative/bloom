@@ -4,8 +4,8 @@ Context tools for the LangChain agent.
 Provides on-demand schema, rules, and tool discovery so the system prompt
 stays minimal and tokens are only spent when needed.
 """
-from langchain_core.tools import tool
 
+from langchain_core.tools import tool
 
 # ==================== Context Payloads ====================
 
@@ -84,25 +84,19 @@ CONTEXT_GENERIC = """## Generic Database Tools (Supabase/PostgREST)
 
 CONTEXT_MCP = """## CSV Experiment Files (MCP Tools)
 
-Files like cylinder_alfalfa_gwas_wave2, turface_rice_treatment_exp1 are CSV files
+Files like cylinder_traits, turface_traits are CSV files
 on the filesystem — NOT database tables. Never use query_database for these.
 
 ### Discovery (always available)
 - list_available_experiments: List CSV experiment files
 - load_experiment_data: Show summary of a CSV experiment
-- inspect_data_quality: Check data quality of an experiment
 - list_existing_analyses: List prior analysis runs for an experiment
 
-### Workflow tools (each runs a full analysis pipeline and saves a versioned output dir)
-- run_qc_workflow: Apply data cleanup filters; saves cleaned CSV + log
-- run_outlier_workflow: Detect (and optionally remove) outliers via mahalanobis / isolation_forest / pca / consensus
-- run_descriptive_stats_workflow: Per-trait n / mean / std / median / quartiles / min / max
-- run_dimensionality_reduction_workflow: PCA or UMAP projection + chart
-- run_clustering_workflow: k-means / GMM / hierarchical clustering + chart
-
-### Direct tools (granular, available for ad-hoc use)
-- correlation_tools: 8 cross-experiment correlation tools
-- viz_tools: 7 plotting tools (histograms, boxplots, heatmaps, dendrograms)
+### Analysis and plotting
+Every other MCP tool (QC, outlier detection, PCA, clustering, correlation, plotting)
+is discovered dynamically from the live tool registry — do not rely on a hand-listed
+catalog here; call the discovery tools above to see what is available for a given
+experiment, then call the analysis tool that matches the request.
 """
 
 # Map tool_set → relevant context sections

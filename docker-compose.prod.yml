@@ -191,6 +191,46 @@ services:
     command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5002", "--workers", "4"]
 
   # -------------------
+  # Workflows API
+  # -------------------
+  workflows:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      # Size-capped so the temp MP4 can't exhaust host RAM (sized for the full
+      # video × the 2 workers, with headroom).
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    expose:
+      - "5100"
+    environment:
+      WORKFLOWS_CORS_ORIGINS: ${CORS_ORIGINS}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      # Public base for rewriting signed URLs off the internal kong host so
+      # download_url is usable by outside callers.
+      WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+    networks:
+      - supanet
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5100/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - kong
+      - db-prod
+    restart: unless-stopped
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "2"]
+
+  # -------------------
   # Bloom MCP Server
   # -------------------
   bloommcp:

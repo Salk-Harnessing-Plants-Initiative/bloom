@@ -92,6 +92,10 @@ volumes/db/data/
 minio/data/
 minio_data/
 
+# bloom-mcp local runtime output (SLEAP_OUT_CSV etc.) + a stray pip-redirect artifact
+bloommcp/data/
+/=0.1.0a4
+
 # temporary/copy files
 nginx/copy.config
 nginx/copy.config_2
@@ -104,6 +108,10 @@ prompts/
 # the production code path the agent uses for graph-node prompts).
 !langchain/prompts/
 !langchain/prompts/**
+# ...but keep Python build artifacts ignored (the `**` re-include above is broad
+# enough to otherwise track __pycache__/*.pyc under the prompt module).
+langchain/prompts/**/__pycache__/
+langchain/prompts/**/*.pyc
 .claude/settings.local.json
 .claude/draft-pr/
 langchain/ANALYSIS_OUTPUT/
@@ -125,9 +133,10 @@ reference/
 # supabase CLI session cache
 supabase/.temp/
 
-# Stray uv lockfiles outside the three known service dirs.
-# The tracked service uv.locks (langchain/, bloommcp/, services/video-worker/)
-# are unaffected because gitignore doesn't apply to already-tracked files —
+# Stray uv lockfiles outside the known service dirs.
+# The tracked service uv.locks (langchain/, bloommcp/, services/video-worker/,
+# services/workflows/) are unaffected because gitignore doesn't apply to
+# already-tracked files —
 # `scripts/check-uv-locks.py` enforces those. This rule keeps a one-off
 # `uv.lock` (e.g. from running `uv` at the repo root for the test extra,
 # or in a new subdir) from polluting `git status`.
@@ -136,3 +145,6 @@ uv.lock
 # agents scratch (claude skill system)
 .agents/
 skills-lock.json
+
+# Serena MCP local memory (removed from tracking 2026-07 — no longer used)
+.serena/

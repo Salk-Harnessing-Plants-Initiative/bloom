@@ -44,6 +44,12 @@ Audits each service's full transitive dependency tree via its lockfile. A temp f
 )
 ```
 
+`python-audit`'s per-PR CI run excludes bloommcp's `integration`-marked tests (`bloommcp/tests/test_oracle.py`'s full-fixture `statsmodels`/`umap` heritability/UMAP oracles — known to intermittently stall in CI containers, #454). Run them here instead so numeric drift is still caught before merge:
+
+```bash
+cd bloommcp && uv run --extra test pytest tests/ -m integration -v --tb=short
+```
+
 ## Step 3: Docker Builds (matches `docker-build` job)
 
 Build each image individually. `docker compose build` against `docker-compose.prod.yml` needs a populated `.env.dev` to resolve volume paths, which is not always available locally — the individual `docker build` commands don't.
@@ -76,6 +82,18 @@ uv run --extra test pytest tests/integration/ -v --tb=short
 make prod-down
 ```
 
+### Step 4b: bloommcp live-persistence smoke (bloommcp PRs only — matches the `dev-stack-smoke` job)
+
+Drives a workflow end-to-end through the **real** `SupabaseReader`/`SupabaseResultStore`
+against the dev stack and asserts the committed run is a v3 manifest whose
+`output_sha256` matches the bytes actually stored (issue #326). Same `make bloommcp-smoke`
+target CI runs, so local and CI never drift.
+
+```bash
+make dev-up && make migrate-local && make check && make bloommcp-smoke
+make dev-down
+```
+
 ## Step 5: PR Status on GitHub
 
 ```bash
@@ -88,6 +106,7 @@ Verify these jobs pass:
 - `python-audit`
 - `docker-build`
 - `compose-health-check`
+- `dev-stack-smoke` (includes the bloommcp live-persistence smoke)
 
 ## Step 6: Review Feedback
 
@@ -145,11 +164,16 @@ cd web && npx tsc --noEmit && npm run build && cd ..
     (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit@2.10.0 -r /tmp/reqs.txt) || exit 1
   done
 )
+
+# bloommcp integration-marked oracle tests (if bloommcp/tests/test_oracle.py or
+# delegated statsmodels/umap code touched) — per-PR CI excludes these (#454).
+cd bloommcp && uv run --extra test pytest tests/ -m integration -v --tb=short && cd ..
 ```
 
 ## Pre-Merge Checklist
 
 - [ ] All CI jobs pass (`gh pr checks`)
+- [ ] bloommcp integration-marked oracle tests run if `bloommcp/tests/test_oracle.py` or delegated statsmodels/umap code touched (excluded from per-PR CI, see Step 2)
 - [ ] Code reviewed and approved
 - [ ] Review comments addressed
 - [ ] Branch up to date with the PR's base branch (`gh pr view <PR_NUMBER> --json baseRefName` — usually `staging`)

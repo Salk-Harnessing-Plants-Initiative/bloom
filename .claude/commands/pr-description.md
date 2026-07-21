@@ -45,6 +45,20 @@ Standardized template for Bloom pull request descriptions.
 Closes #<issue_number>
 ```
 
+> **Use real closing keywords — one per issue.** Issues only auto-close when the
+> PR body contains a keyword (`Closes`/`Fixes`/`Resolves`, etc.) immediately
+> before each `#N` — a bare `(#305)` is just a mention and leaves the issue
+> open. Because this repo's flow merges feature PRs into `staging` (not the
+> default branch), GitHub's native auto-close doesn't fire; the
+> `auto-close-issues-on-staging` workflow replicates it, but it reads the **same
+> literal keywords**, so the convention is what makes both work. Notes:
+> - **One keyword per issue:** `Closes #1, closes #2` (not `Closes #1, #2`,
+>   which only closes #1).
+> - **Keywords are literal:** avoid `does not close #5`, and don't put
+>   `Closes #N` inside code blocks or future-work checklists — they'll still
+>   trigger a close.
+> - **Needs a space:** `Closes: #5` works, `Closes:#5` does not.
+
 ## Package-Specific Checklists
 
 ### LangGraph Agent / FastMCP Changes

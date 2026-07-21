@@ -7,11 +7,23 @@ COPY --from=ghcr.io/astral-sh/uv:0.11@sha256:b1e699368d24c57cda93c338a57a8c5a119
 # Venv outside /app so dev compose bind-mounts don't shadow it
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PATH"
 
+# Upgrade base packages to pick up any security patches released after the pinned
+# base image digest. Run before installing anything so upgraded packages are present
+# for all subsequent layers.
+RUN apt-get update && apt-get upgrade -y && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Install Node.js (required for stdio-based MCP servers like web-search) — runs as root
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# NodeSource's Node 20.x package bundles global npm 10.8.2, which vendors its own
+# tar@6.2.1 (CVE-2026-59873, gzip-bomb DoS) at
+# /usr/lib/node_modules/npm/node_modules/tar — unrelated to this app's own
+# dependencies. Pin npm forward to a version that vendors the fixed tar (confirmed:
+# npm@11.18.0 -> tar@7.5.19). Same fix as web/Dockerfile.bloom-web.prod's runner stage.
+RUN npm install -g npm@11.18.0
 
 # Create bloom user AND pre-create bloom-owned dirs in a single layer BEFORE the
 # venv install, so `uv sync` (and every subsequent COPY) can run as bloom — no
