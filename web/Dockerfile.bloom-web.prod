@@ -44,6 +44,13 @@ RUN npm run build
 # ---- Runner Stage ----
 FROM node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c AS runner
 
+# node:20-alpine's bundled global npm (10.8.2) vendors its own tar@6.2.1
+# (CVE-2026-59873, gzip-bomb DoS) at /usr/local/lib/node_modules/npm/node_modules/tar —
+# unrelated to this app's own package-lock.json/node_modules. `npm run start`
+# (the CMD below) invokes this global npm at runtime, so pin it forward to a
+# version that vendors the fixed tar (confirmed: npm@11.18.0 -> tar@7.5.19).
+RUN npm install -g npm@11.18.0
+
 RUN addgroup -S bloom && adduser -S -G bloom bloom
 
 WORKDIR /app/web
