@@ -66,7 +66,7 @@ def test_no_stale_prototype_imports():
     """No module under src/bloom_mcp imports a bare source/tools/storage root."""
     offenders: list[str] = []
     for py in _PKG_ROOT.rglob("*.py"):
-        tree = ast.parse(py.read_text(), filename=str(py))
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -84,7 +84,7 @@ def _shipped_top_level_imports() -> set[str]:
     """Top-level package names imported by any shipped ``src/bloom_mcp`` module."""
     names: set[str] = set()
     for py in _PKG_ROOT.rglob("*.py"):
-        tree = ast.parse(py.read_text(), filename=str(py))
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 names.update(alias.name.split(".")[0] for alias in node.names)
@@ -95,10 +95,12 @@ def _shipped_top_level_imports() -> set[str]:
 
 
 def test_pruned_analysis_deps_not_imported():
-    """statsmodels + umap-learn were delegated to sleap-roots-analyze and pruned (#315),
-    so no shipped module may import them — else the prune regressed."""
+    """statsmodels + umap-learn were delegated to sleap-roots-analyze and pruned (#315);
+    sklearn + scipy + seaborn were pruned by devendor-bloommcp-analysis once the
+    vendored analysis modules that were their only importers were deleted. No shipped
+    module may import any of them — else a prune regressed."""
     imported = _shipped_top_level_imports()
-    leaked = {"statsmodels", "umap"} & imported
+    leaked = {"statsmodels", "umap", "sklearn", "scipy", "seaborn"} & imported
     assert not leaked, (
         f"pruned deps re-imported by shipped code: {sorted(leaked)} — delegate to "
         "sleap_roots_analyze instead, or restore the dependency in pyproject.toml"
@@ -107,19 +109,23 @@ def test_pruned_analysis_deps_not_imported():
 
 def test_retained_heavy_deps_are_each_imported():
     """Necessary-and-sufficient (other direction): every retained heavy dependency is
-    imported by shipped code, so none is an 'unnecessary package' (#305 AC5)."""
+    imported by shipped code, so none is an 'unnecessary package' (#305 AC5).
+
+    Reduced to {matplotlib} by devendor-bloommcp-analysis (C10): scikit-learn, scipy,
+    and seaborn had no shipped importer left once the vendored analysis modules were
+    deleted (their only importers) — see test_pruned_analysis_deps_not_imported for
+    the matching "must not be imported" guard, and pyproject.toml (C11) for the
+    matching runtime-dependency prune.
+    """
     imported = _shipped_top_level_imports()
     # dist name -> import name
     retained = {
-        "scikit-learn": "sklearn",
-        "scipy": "scipy",
         "matplotlib": "matplotlib",
-        "seaborn": "seaborn",
     }
     unused = {dist for dist, mod in retained.items() if mod not in imported}
-    assert not unused, (
-        f"declared deps not imported by shipped code (prune them): {sorted(unused)}"
-    )
+    assert (
+        not unused
+    ), f"declared deps not imported by shipped code (prune them): {sorted(unused)}"
 
 
 # ── Lazy Supabase Environment Validation ────────────────────────────────────
@@ -233,7 +239,7 @@ def test_fastmcp_client_lists_registered_tools():
 
     tools = asyncio.run(_list())
     names = {t.name for t in tools}
-    assert "list_available_experiments" in names
+    assert "core_list_available_experiments" in names
     assert len(names) >= 5
 
 
