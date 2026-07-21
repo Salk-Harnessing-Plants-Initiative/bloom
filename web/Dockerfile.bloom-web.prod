@@ -44,6 +44,9 @@ RUN npm run build
 # ---- Runner Stage ----
 FROM node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c AS runner
 
+# Upgrade npm to 11.x so its bundled tar is >=7.5.19 (CVE-2026-59873); node stays 20.
+RUN npm install -g npm@11.18.0
+
 RUN addgroup -S bloom && adduser -S -G bloom bloom
 
 WORKDIR /app/web
