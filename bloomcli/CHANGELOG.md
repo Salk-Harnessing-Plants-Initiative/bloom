@@ -21,6 +21,9 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   unique traits (`get <name>`, via the `cyl_dataset_trait_names` view), and create one
   via the `create_cyl_dataset` RPC (`--qc-set-name`,
   `--timepoints`). Ports the legacy `cyl datasets` commands (`list`/`create`) and adds `get`.
+- `bloomctl cyl experiments list` — list cylinder experiments (species, name, id),
+  sorted by species then name, with `--json` output. Ports the legacy
+  `cyl experiments list` command.
 - `bloomctl cyl ingest-result <envelope>` — write a per-scan `ResultEnvelope`
   back to Bloom via the `insert_cyl_result_envelope` RPC. Reads from a path or
   stdin (`-`), validates against `sleap-roots-contracts`, sends the original JSON

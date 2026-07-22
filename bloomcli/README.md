@@ -24,6 +24,8 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
   unique traits it contains, via the `cyl_dataset_trait_names` view (`--json` output).
 - **[write]** `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
   create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`).
+- **[read]** `bloomctl cyl experiments list` — list cylinder experiments (species,
+  name, id), sorted by species then name (`--json` for machine-readable output).
 
 (Full `login`/`cyl download` usage docs are still forthcoming; run any command
 with `--help` in the meantime. `cyl ingest-result` and `cyl download-for-predict`
