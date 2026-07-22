@@ -2239,6 +2239,19 @@ export type Database = {
       }
     }
     Views: {
+      cyl_plant_search: {
+        Row: {
+          accession_id: number | null
+          accession_name: string | null
+          experiment_id: number | null
+          experiment_name: string | null
+          plant_id: number | null
+          qr_code: string | null
+          species_id: number | null
+          species_name: string | null
+        }
+        Relationships: []
+      }
       cyl_plants_extended: {
         Row: {
           accession_id: number | null
