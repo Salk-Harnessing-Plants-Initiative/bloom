@@ -154,18 +154,32 @@ workflow: each tier is one OpenSpec PR, TDD, oracle-first.
     Once Tier 2 replaces `SupabaseReader`'s raw tier with a DB fetch, the local-disk
     fallback #476 targets inside `supabase_reader.py` becomes moot on its own — worth
     sequencing #476 alongside or after Tier 2 rather than as fully independent cleanup.
+  - [bloom#474](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/474)
+    (open) — asks whether `docker-compose.prod.yml`'s bind-mount-permission bug (fixed in
+    dev via #472/#473) also hits prod/staging for `SLEAP_OUT_CSV`/`PLOTS_DIR`/
+    `ANALYSIS_OUTPUT`. **Folded into Tier 3 above, not just cross-referenced:** once Tier
+    2/3 land, `SLEAP_OUT_CSV` drops out of #474's prod risk entirely (nothing reads it in
+    the default backend) — `PLOTS_DIR`/`ANALYSIS_OUTPUT` are untouched by this roadmap and
+    stay #474's problem.
+  - [bloom#477](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/477)
+    (open) — asks to confirm `SLEAP_OUT_CSV`/`ANALYSIS_OUTPUT` are dead weight in
+    staging/prod and stop mounting them (or rename for clarity). **This is Tier 3's compose
+    cleanup, verbatim** — see the tier row. Its own findings: `ANALYSIS_OUTPUT` is already
+    "bridge-only, deprecated" per `storage_backend.py`'s own comment (touched only by
+    unrelated `phenotyping_segmentation` demo tools + one legacy plot, not the core
+    pipeline) — entirely orthogonal to this roadmap. `SLEAP_OUT_CSV` is touched by those
+    same demo tools *in addition to* the legacy read-fallback this roadmap retires — so
+    landing Tier 2/3 answers #477's question for the primary pipeline but leaves the
+    demo-tool dependency as a smaller, separate loose end before the mount can be fully
+    dropped.
   - [sleap-roots-analyze#144](https://github.com/talmolab/sleap-roots-analyze/issues/144)
     (open) — Track B's B2 ("analyze consumes the contract"); same cross-repo Track B area,
     distinct task.
-  - **⚠️ bloom PR #339** (open, created 2026-06-23, last pushed 2026-07-08, base `staging`)
-    edits `bloommcp/docs/roadmap.md` directly. **Checked via `gh pr diff`: it does NOT
-    touch the "Deferred" line this roadmap edits** — that line appears as unchanged
-    context in both of #339's hunks, so there is no line-level collision with this PR's
-    two-line edit. The real issue is broader: GitHub already reports
-    `mergeable: false` / `mergeable_state: dirty` for #339 against current `staging`, and
-    the *live* `bloommcp/docs/roadmap.md` already contains content nearly identical to
-    what #339 proposes (the same Tier-3/3b/3c reshape, the same tier statuses) —
-    apparently landed through a different path (folded into the #438-era commits). #339
+  - **bloom PR #339** (edits `bloommcp/docs/roadmap.md` directly). **UPDATE 2026-07-21: no
+    longer a risk** — the Tiers-table restructuring it proposes turned out to be genuinely
+    missing from `staging` (not redundant as first assessed), rebased onto current
+    `staging` and reconciled against live issue state; now reports `mergeable: MERGEABLE`,
+    awaiting a non-author reviewer. Original stale assessment kept below for context: #339
     now looks stale/redundant across the whole file, not narrowly conflicting on one
     line. **Recommend flagging to Elizabeth for likely closure** (not a rebase) — this
     roadmap's own edit is safe regardless, but #339 is dead weight independent of it.
@@ -205,7 +219,7 @@ Status: ✅ done · 🔵 in progress · ⬜ not started.
 |---|---|---|---|---|---|
 | **1 — bulk-read DB migration** | Additive Supabase migration adding a bulk trait-fetch surface for one experiment + `list_experiment_trait_sources(experiment_id_)`, built as a sibling to the shipped `cyl_scan_traits_source`/`_latest` views (reuse the existing `is_latest` logic — don't re-derive latest-selection). Shape (RPC returning long-format all-traits vs. PostgREST embedded-join query) is a Benfica-reviewed decision, same review gate as the shipped migration. Confirm `bloom_agent` grants cover the full join chain, not just the read-surface objects (spot-check only — already broadly granted via `20260414002000_security_groups.sql`'s schema-wide `GRANT SELECT ... TO bloom_agent` + matching RLS `SELECT` policies on all six join tables, confirmed this session; not expected to need a grant change). | One call fetches all 649–880 traits for the bloom#483 cylinder fixture experiment in a single round trip; matches `get_scan_traits`'s existing latest/source_id/run_id semantics byte-for-byte on overlapping rows; migration is **forward-only** with a manual rollback script under `supabase/rollbacks/` (this repo's convention — no auto-generated down-migrations), tested up+down on local Supabase | A2 (nearly done — see Live-state facts) | *(not yet filed — file at kickoff, per the skill's just-in-time issue policy)* | ⬜ |
 | **2 — rewrite `SupabaseReader`'s raw tier to query the DB directly** | Modify `SupabaseReader` (`supabase_reader.py`) **in place** — no new class: (a) `load_experiment`'s raw-tier fallback treats `name` as `str(experiment_id)` and calls Tier 1's bulk fetch + long→wide pivot + canonical-role rename (table above) instead of reading a CSV from `bloommcp_input/`/local disk; `_resolve_versioned_cleaned`'s cleaned-output tiers are untouched. (b) `list_experiments()` — currently scans CSV files/the bucket; rewrite to enumerate Bloom experiments from the DB instead, so the two always-included discovery tools (`list_available_experiments.py`, `list_existing_analyses.py`) keep working. Decide + implement the source/run-selection gap explicitly — either a `SourceSelectable` capability protocol (isinstance-gated, mirroring `RawSourced`) or an equivalent seam — don't leave it silently defaulted. **Extend `Provenance`/`VersionEntry` additively** (v3→v4, mirroring the existing seed/agent/output_sha256 precedent) to carry `source_id`/`source_name`, replacing the file-hash-based `RawSourced` content-address this raw tier no longer has — see Hard constraints. A fake DB row-fetcher injected for the raw-fetch seam; no live DB required for this tier's tests. **Coordinate with Benfica on PR #368 first** (see Live-state facts) — landing it before this tier means reverting her work. | Unit tests against fakes: `load_experiment(str(experiment_id))` returns the expected wide frame + correct roles; `list_experiments()` returns sensible DB-sourced summaries; golden fixture off bloom#483's cylinder data (raw 129×880 or post-QC 123×649) — **bloom#483 is still open and no cylinder fixture files exist in the repo yet, so this tier's TDD plan explicitly depends on either #483 landing first or a hand-built cylinder-shaped fixture as a fallback (don't block on #483 silently)**; multi-source test — never mixes across `source_id`; `require_clean`/`version` resolution unchanged for the cleaned-output tiers; old manifests (pre-v4) still read after the Provenance bump; **two existing tests need outright deletion, not an update** — `tests/data_access/test_local_reader.py`'s `test_same_raw_bytes_yield_same_roles_as_supabase` asserts `SupabaseReader` and `LocalReader` read identical on-disk CSV bytes, a premise a DB-backed raw tier voids; `tests/data_access/test_supabase_reader.py`'s `test_raw_source_path_rejects_path_traversal` guards a local-disk traversal case that no longer applies once the raw tier drops `RawSourced` | Tier 1 (soft — buildable against fakes once the target RPC shape is settled, even pre-merge); **bloom#483** (fixture — see oracle) | *(not yet filed)* | ⬜ |
-| **3 — LLM-facing surface + cleanup** | No new selector/env var needed — `BLOOM_STORAGE_BACKEND`'s existing binary `local`/`supabase` switch is untouched, since Tier 2 changed what `supabase` mode does internally rather than adding a third option. **Update the LLM-facing surface**: the tool schemas' `Field(description=...)` text (`qc_clean.py`, `qc_inspect.py`, `remove_outliers.py`, `clustering.py`, `pca_analysis.py` all currently say "CSV filename"), `list_existing_analyses.py`'s `experiment_filename` param, and `list_available_experiments.py`'s hardcoded "use its filename" response text all actively tell the calling LLM to pass a CSV filename — now wrong under the default `supabase` backend, which expects `str(experiment_id)`; reword to the backend-agnostic `name`/experiment identifier. Retire the now-dead CSV-from-bucket/local-disk raw-tier code Tier 2 replaced (coordinate with bloom#476, which targets the same file). Update `storage-backends.md` to describe `supabase` mode as DB-direct trait reads, not bucket CSVs. | Integration test round-trips a fixture experiment through `SupabaseReader` end-to-end against a **local Supabase instance** (first tier requiring a live DB, not fakes); `LocalReader` tests stay green (untouched); updated tool-schema/docstring text reviewed for accuracy; `storage-backends.md` updated; dead code removed, not left as an unreachable branch | Tier 2 | *(not yet filed)* | ⬜ |
+| **3 — LLM-facing surface + cleanup** | No new selector/env var needed — `BLOOM_STORAGE_BACKEND`'s existing binary `local`/`supabase` switch is untouched, since Tier 2 changed what `supabase` mode does internally rather than adding a third option. **Update the LLM-facing surface**: the tool schemas' `Field(description=...)` text (`qc_clean.py`, `qc_inspect.py`, `remove_outliers.py`, `clustering.py`, `pca_analysis.py` all currently say "CSV filename"), `list_existing_analyses.py`'s `experiment_filename` param, and `list_available_experiments.py`'s hardcoded "use its filename" response text all actively tell the calling LLM to pass a CSV filename — now wrong under the default `supabase` backend, which expects `str(experiment_id)`; reword to the backend-agnostic `name`/experiment identifier. Retire the now-dead CSV-from-bucket/local-disk raw-tier code Tier 2 replaced (coordinate with bloom#476, which targets the same file). Update `storage-backends.md` to describe `supabase` mode as DB-direct trait reads, not bucket CSVs. **Also retire `BLOOM_TRAITS_DIR` from `_REQUIRED_DIRS`/boot validation** (`experiment_utils.py:24-28`) and drop the `SLEAP_OUT_CSV` bind-mount + `BLOOM_TRAITS_DIR` env var from `docker-compose.prod.yml` — once Tier 2 lands, nothing in the default `supabase`-backend path reads that directory, but the container still hard-requires it to exist/be writable at boot regardless of use; leaving that requirement in place keeps [bloom#474](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/474)'s bind-mount-permission risk alive for a directory nothing needs. **This is exactly [bloom#477](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/477)'s ask** (confirm `SLEAP_OUT_CSV` is dead weight in staging/prod, then stop mounting it) — coordinate/close together rather than duplicating. Caveat from #477: `SLEAP_OUT_CSV` is *also* touched by the unrelated `phenotyping_segmentation` demo tools (`compute_median`/`compute_min`/`compute_mode`), so Tier 2/3 landing removes the primary qc_clean→pca_analysis pipeline's use of it but doesn't make it **fully** dead on its own — #477's demo-tool question is a separate, smaller loose end. (`ANALYSIS_OUTPUT`/`PLOTS_DIR`, #477's other two directories, are unaffected by this roadmap — they're `ResultStore`/plot-serving concerns, out of this program's read-only scope.) | Integration test round-trips a fixture experiment through `SupabaseReader` end-to-end against a **local Supabase instance** (first tier requiring a live DB, not fakes); `LocalReader` tests stay green (untouched); updated tool-schema/docstring text reviewed for accuracy; `storage-backends.md` updated; dead code removed, not left as an unreachable branch; `_REQUIRED_DIRS`/compose mount for `SLEAP_OUT_CSV` removed for the `supabase` backend, not just the Python read path | Tier 2 | *(not yet filed; cross-ref [bloom#474](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/474), [bloom#477](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/477))* | ⬜ |
 
 ## Tracking issues
 
@@ -315,3 +329,27 @@ real gap:
 - Consistency check found no stale references to the abandoned `DBReader` design, no
   Tier 2/3 scope drift, and the Reconciliation log's claims all matched the live document
   — no further changes needed.
+
+## Update (2026-07-22) — cross-referenced bloom#474 and bloom#477
+
+Elizabeth asked how the bind-mount-permission follow-up (bloom#474) would change under
+this roadmap. Investigation:
+- Confirmed in `docker-compose.prod.yml` that `SLEAP_OUT_CSV`/`PLOTS_DIR`/`ANALYSIS_OUTPUT`
+  are all actively bind-mounted + env-wired for the bloommcp service today (`BLOOM_TRAITS_DIR:
+  /app/data/SLEAP_OUT_CSV` etc.), and that `BLOOM_TRAITS_DIR` sits in `_REQUIRED_DIRS`
+  (`experiment_utils.py:24-28`) — a boot-time requirement independent of whether the code
+  path actually reads it.
+- Found bloom#477, filed the same day as #474/#476, asking almost exactly this roadmap's
+  Tier 3 question (confirm `SLEAP_OUT_CSV`/`ANALYSIS_OUTPUT` are dead weight in
+  staging/prod, then stop mounting them) — with its own findings that `ANALYSIS_OUTPUT` is
+  already "bridge-only, deprecated" per `storage_backend.py`, touched only by unrelated
+  demo tools, and that `SLEAP_OUT_CSV` is touched by those same demo tools *in addition to*
+  the legacy read-fallback this roadmap retires.
+- **Folded into Tier 3** (not left as a cross-reference): retiring `BLOOM_TRAITS_DIR` from
+  `_REQUIRED_DIRS` + the compose mount is now explicit Tier 3 scope, cross-referencing both
+  issues directly in the tier row, with the demo-tool caveat stated so Tier 3 doesn't
+  overclaim full resolution of #477.
+- Updated the PR #339 bullet above from its original stale "mergeable: false / dirty,
+  looks redundant" assessment to reflect that it was fixed this session (see the separate
+  memory/PR history) — kept the original text below it for context rather than deleting
+  the record of the mistaken initial assessment.
