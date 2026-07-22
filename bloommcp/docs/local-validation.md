@@ -31,7 +31,7 @@ The target bridges the host↔container gap: `.env.dev` points `SUPABASE_URL` at
 in-container gateway (`http://kong:8000`) and `BLOOM_*_DIR` at `/app` paths, so the target
 derives the host gateway from `KONG_HTTP_PORT` (`http://localhost:$KONG_HTTP_PORT`) and seeds
 host temp dirs with the test fixtures before launching
-[`scripts/live_persistence_smoke.py`](../scripts/live_persistence_smoke.py). It fails fast
+[`tests/smoke/live_persistence_smoke.py`](../tests/smoke/live_persistence_smoke.py). It fails fast
 with an actionable message if the stack is down, `.env.dev` is missing, or `BLOOM_AGENT_KEY`
 is empty.
 

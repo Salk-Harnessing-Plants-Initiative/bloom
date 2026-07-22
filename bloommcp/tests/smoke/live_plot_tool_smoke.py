@@ -34,7 +34,7 @@ from pathlib import Path
 
 from fastmcp import Client
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE = REPO_ROOT / "bloommcp" / "tests" / "fixtures" / "turface_19_raw_data.csv"
 TRAITS_DIR = REPO_ROOT / "bloommcp" / "data" / "SLEAP_OUT_CSV"
 PLOTS_DIR = REPO_ROOT / "bloommcp" / "data" / "PLOTS_DIR"
