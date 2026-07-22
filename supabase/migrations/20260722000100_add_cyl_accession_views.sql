@@ -53,8 +53,12 @@ order by sp.common_name, a.name;
 create index if not exists cyl_plants_accession_id_idx on public.cyl_plants (accession_id);
 
 -- Grants mirror the peer read-model views: no anon (all access requires auth), and
--- bloom_writer inherits bloom_user so it is not listed explicitly.
+-- bloom_writer inherits bloom_user so it is not listed explicitly. Supabase's
+-- default privileges auto-grant SELECT to anon on new public views, so omitting
+-- anon from the grant is not enough — revoke it explicitly on both.
 grant select on public.cyl_experiment_accessions
   to authenticated, bloom_user, bloom_admin, bloom_agent;
+revoke all on public.cyl_experiment_accessions from anon;
 grant select on public.cyl_accession_sample_counts
   to authenticated, bloom_user, bloom_admin, bloom_agent;
+revoke all on public.cyl_accession_sample_counts from anon;

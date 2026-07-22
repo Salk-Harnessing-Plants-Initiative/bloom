@@ -30,5 +30,8 @@ where st.trait_id is not null
 order by dt.dataset_id, t.name;
 
 -- No anon (all access requires auth); bloom_writer inherits bloom_user.
+-- Supabase's default privileges auto-grant SELECT to anon on new public views,
+-- so omitting anon from the grant is not enough — revoke it explicitly.
 grant select on public.cyl_dataset_trait_names
   to authenticated, bloom_user, bloom_admin, bloom_agent;
+revoke all on public.cyl_dataset_trait_names from anon;
