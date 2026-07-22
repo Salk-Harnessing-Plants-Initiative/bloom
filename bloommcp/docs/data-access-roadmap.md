@@ -31,6 +31,32 @@ existing binary `local`/`supabase` switch stays exactly as it is; only what `sup
 mode does internally changes. Built tier-by-tier per the `roadmap-driven-pipeline`
 workflow: each tier is one OpenSpec PR, TDD, oracle-first.
 
+## Questions for Benfica (@blm3886)
+
+The asks below are pulled out of the Live-state facts and Tiers sections so they're easy to
+act on without reading the whole doc. Everything else here is optional context.
+
+1. **Sequencing on `supabase_reader.py`/`experiment_utils.py::load_experiment_data`.**
+   Three efforts now touch this same raw-tier code: your open PRs
+   [#368](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/368) and
+   [#413](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/413), and this
+   roadmap's Tier 2. Per the design note below, #413's upload-resolution and Tier 2's
+   DB-resolution are complementary (one class, dispatching on whether `name` is an
+   experiment id or an upload filename) — the open question is just landing order/who
+   touches the file when, plus confirming whether #413 supersedes #368's read-side change
+   (both still open, written a week apart). Your call on how to sequence this.
+2. **Tier 1's RPC shape** (a bulk long-format RPC vs. a PostgREST embedded-join query for
+   fetching an experiment's full trait set in one round trip) needs your review, same gate
+   as the shipped `20260701000000_cyl_trait_read_source_aware.sql` migration.
+3. **Re-confirm the 2026-06-09 auth decision still holds**: shared `bloom_agent` role,
+   no per-user token/RLS for trait reads. Nothing found this session contradicts it, but
+   it's worth an explicit yes before Tier 1's migration ships.
+
+Separately, not blocking this roadmap: issue #406 (verified per-user identity + a
+`bloommcp_usage` table) is still awaiting your reply to the two design questions from my
+2026-07-07 review comment there — flagging since it's in the same neighborhood, not
+re-asking here.
+
 ## Live-state facts (verified 2026-07-21)
 
 - **Gate status: A2 is nearly, not fully, done.** Per the pipeline roadmap: read-path
@@ -254,7 +280,14 @@ Per the `roadmap-driven-pipeline` skill's just-in-time policy, no tier issues ar
 yet — file **one tracking issue per tier** at the point each tier is actually reached
 (not all three upfront), and link it from this table.
 
-## Reconciliation log (adversarial roadmap review, 2026-07-21)
+## Reconciliation log — history/audit trail, not required reading
+
+The entries below record how this doc's own claims were checked and corrected across
+several rounds of review and revision. They matter if you want to see *why* a given line
+reads the way it does, or if you're auditing the process — not for understanding what's
+currently being proposed. The sections above already reflect every correction made here.
+
+### Adversarial roadmap review, 2026-07-21
 
 4-lens review (factual accuracy / dependency & sequencing / completeness /
 scope-consistency-safety), each lens run independently against live `gh` state and the
@@ -357,7 +390,7 @@ real gap:
   Tier 2/3 scope drift, and the Reconciliation log's claims all matched the live document
   — no further changes needed.
 
-## Update (2026-07-22) — cross-referenced bloom#474 and bloom#477
+### Update (2026-07-22) — cross-referenced bloom#474 and bloom#477
 
 Elizabeth asked how the bind-mount-permission follow-up (bloom#474) would change under
 this roadmap. Investigation:
@@ -381,7 +414,7 @@ this roadmap. Investigation:
   memory/PR history) — kept the original text below it for context rather than deleting
   the record of the mistaken initial assessment.
 
-## Update (2026-07-22, continued) — resolved the "why SupabaseReader" question with PR #413
+### Update (2026-07-22, continued) — resolved the "why SupabaseReader" question with PR #413
 
 Following on the `bloommcp_input/`-producer finding: checked #406's current status (still
 open, Benfica hasn't answered the two design questions from my 2026-07-07 review; its
