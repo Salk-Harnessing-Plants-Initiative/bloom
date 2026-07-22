@@ -63,8 +63,9 @@ def test_plant_search_matches_accession_and_species(pg_conn):
 
 def test_plant_search_excludes_soft_deleted_experiments(pg_conn):
     with pg_conn.cursor() as cur:
-        _seed_plant(cur, qr="Q-live")
-        _seed_plant(cur, qr="Q-deleted", deleted=True)
+        # distinct accession names — accessions.name is UNIQUE
+        _seed_plant(cur, qr="Q-live", accession="Acc-live", exp="Exp-live")
+        _seed_plant(cur, qr="Q-deleted", accession="Acc-del", exp="Exp-del", deleted=True)
         cur.execute("SELECT qr_code FROM cyl_plant_search WHERE qr_code IN ('Q-live', 'Q-deleted')")
         got = {r[0] for r in cur.fetchall()}
         assert got == {"Q-live"}  # the deleted-experiment plant is excluded
