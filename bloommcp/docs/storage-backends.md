@@ -18,6 +18,10 @@ MinIO's object store (under `MINIO_DATA_PATH`, in MinIO's own object format) —
 into the container as `BLOOM_OUTPUT_DIR`, but on the default path nothing writes
 new outputs there, which is why it stays empty.
 
+> `./bloommcp/data/{SLEAP_OUT_CSV,ANALYSIS_OUTPUT,PLOTS_DIR}` are provisioned
+> automatically by `make dev-up` — no manual `mkdir`/`chmod` needed. See
+> [DEV_SETUP.md](../../DEV_SETUP.md#bloommcp-data-directories).
+
 ### `BLOOM_OUTPUT_DIR` and `BLOOM_USE_LOCAL` do NOT produce local CSVs
 
 Two env vars look like they'd control this and don't:

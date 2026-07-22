@@ -152,6 +152,7 @@ cd bloommcp && uv run pytest tests/scripts/test_live_persistence_smoke_logic.py
 | `... read-back attempt N/5 failed` then a `FAIL` | Read-after-write lag exceeded the bounded retry; check `storage` / `db-dev` health (`make dev-logs`). |
 | `FAIL qc_clean: require_clean read resolves the cleaned artifact (not raw)` | The reader fell back to the raw input — the `qc` run did not commit or the manifest is unresolvable. |
 | `FAIL remove_outliers: trimmed frame has fewer rows than the pre-trim clean` | The trim removed no rows (or the read resolved the clean, not the trim) — check the `remove_outliers` run committed after `qc_clean` and advanced `latest`. |
+| A plotting tool fails with a permission error writing to `PLOTS_DIR`, or `bloommcp` crashes at boot with `... is not writable` (fully-local storage backend) | `bloommcp/data/{SLEAP_OUT_CSV,PLOTS_DIR,ANALYSIS_OUTPUT}` are root-owned from a `docker compose up` that ran **before** issue #472's fix existed — `chmod` alone can't self-heal that (not the owner). Fix: `sudo chown -R $(id -u):$(id -g) bloommcp/data` (or `sudo rm -rf bloommcp/data`) then re-run `make dev-up`. See [DEV_SETUP.md](../../DEV_SETUP.md#bloommcp-data-directories). |
 
 See also [DEV_SETUP.md](../../DEV_SETUP.md) (host vs container URLs, migrations) and the
 `bloommcp-smoke` target in the repo-root [Makefile](../../Makefile).
