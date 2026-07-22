@@ -252,6 +252,22 @@ jobs:
           fi
           echo "Cloudflare API token is active."
 
+      # Docker auto-creates a missing bind-mount source directory owned by the
+      # daemon's user (root on this host), which the non-root bloommcp container
+      # user then can't write into — the same class of bug fixed for `make
+      # dev-up` by issue #472/PR #473, now closed for staging/production by
+      # issue #474. Reuses the same script unmodified; see openspec/changes/
+      # add-bloommcp-prod-staging-data-dir-preflight/design.md for why chmod 777
+      # (not UID/GID matching) is used here too, and openspec/project.md's
+      # "bloommcp data directories" constraint for the documented exception.
+      - name: Provision bloommcp data directories (production)
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            sh scripts/ensure_bloommcp_data_dirs.sh
+          "
+
       - name: Deploy production stack
         run: |
           : "${PROD_DEPLOY_PATH:?PROD_DEPLOY_PATH secret must be set (empty → would cd to \$HOME)}"
@@ -792,6 +808,22 @@ jobs:
             exit 1
           fi
           echo "Cloudflare API token is active."
+
+      # Docker auto-creates a missing bind-mount source directory owned by the
+      # daemon's user (root on this host), which the non-root bloommcp container
+      # user then can't write into — the same class of bug fixed for `make
+      # dev-up` by issue #472/PR #473, now closed for staging/production by
+      # issue #474. Reuses the same script unmodified; see openspec/changes/
+      # add-bloommcp-prod-staging-data-dir-preflight/design.md for why chmod 777
+      # (not UID/GID matching) is used here too, and openspec/project.md's
+      # "bloommcp data directories" constraint for the documented exception.
+      - name: Provision bloommcp data directories (staging)
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            sh scripts/ensure_bloommcp_data_dirs.sh
+          "
 
       - name: Deploy staging stack
         run: |
