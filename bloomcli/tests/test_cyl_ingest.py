@@ -16,6 +16,9 @@ FIXTURE = Path(__file__).parent / "fixtures" / "scan0K9E8BI.result.json"
 ENVELOPE = json.loads(FIXTURE.read_text(encoding="utf-8"))
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+PREDICTIONS_DIR = Path(__file__).parent / "fixtures" / "predictions_scan0K9E8BI"
+SCAN_KEY = "scan0K9E8BI"
+
 RESULT_OK = {"source_id": 55, "scan_id": 7, "trait_count": 2, "blob_count": 0, "was_noop": False}
 # The RPC returns a null scan_id on a no-op re-delivery (cyl-trait-writeback).
 RESULT_NOOP = {
@@ -462,3 +465,344 @@ def test_map_rpc_error_raise_strings_are_never_swallowed():
     for raw in re.findall(r"RAISE EXCEPTION\s+'([^']+)'", _current_migration_sql()):
         msg = raw.replace("%", "X")  # interpolate placeholders as Postgres would
         assert msg in ing.map_rpc_error(msg), f"RPC message swallowed: {raw!r}"
+
+
+# --- 2.x manifest reading + BlobRef construction (bloom #407) ---------------
+
+
+def test_load_predictions_manifest_reads_fixture():
+    manifest = ing.load_predictions_manifest(PREDICTIONS_DIR, SCAN_KEY)
+    assert manifest.scan_key == SCAN_KEY
+    assert len(manifest.artifacts) == 2
+    root_types = {a.root_type for a in manifest.artifacts}
+    assert root_types == {"primary", "crown"}
+
+
+def test_load_predictions_manifest_missing_file(tmp_path):
+    with pytest.raises(ing.BlobConstructionError) as excinfo:
+        ing.load_predictions_manifest(tmp_path, "no-such-scan")
+    assert "no-such-scan.predictions.json" in str(excinfo.value)
+
+
+def test_load_predictions_manifest_malformed_json(tmp_path):
+    bad = tmp_path / "badscan.predictions.json"
+    bad.write_text("{ not json", encoding="utf-8")
+    with pytest.raises(ing.BlobConstructionError):
+        ing.load_predictions_manifest(tmp_path, "badscan")
+
+
+def test_load_predictions_manifest_fails_schema_validation(tmp_path):
+    bad = tmp_path / "badscan.predictions.json"
+    bad.write_text(json.dumps({"scan_key": "badscan", "artifacts": [{"root_type": "bogus"}]}))
+    with pytest.raises(ing.BlobConstructionError):
+        ing.load_predictions_manifest(tmp_path, "badscan")
+
+
+def test_build_pending_blobs_from_manifest():
+    manifest = ing.load_predictions_manifest(PREDICTIONS_DIR, SCAN_KEY)
+    pending = ing.build_pending_blobs(manifest, PREDICTIONS_DIR, existing_blobs=[])
+    assert len(pending) == 2
+    by_root = {p.blob["root_type"]: p for p in pending}
+    primary = by_root["primary"]
+    assert primary.blob["kind"] == "predictions_slp"
+    assert primary.blob["scan_key"] == SCAN_KEY
+    assert primary.blob["checksum"] == (
+        "032e90ea6effacbc3542381fecc1d72b09390077b1edb2ff0fabc26f7eed0044"
+    )
+    assert primary.blob["file_size"] == 32
+    assert primary.blob["s3_location"] is None
+    assert primary.blob["box_link"] is None
+    assert primary.local_path == PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp"
+
+
+def test_build_pending_blobs_rejects_conflicting_existing_blob():
+    manifest = ing.load_predictions_manifest(PREDICTIONS_DIR, SCAN_KEY)
+    existing = [{"root_type": "primary", "scan_key": SCAN_KEY, "s3_location": "s3://already/there.slp"}]
+    with pytest.raises(ing.BlobConstructionError) as excinfo:
+        ing.build_pending_blobs(manifest, PREDICTIONS_DIR, existing_blobs=existing)
+    assert "primary" in str(excinfo.value)
+    assert SCAN_KEY in str(excinfo.value)
+
+
+# --- 3.x checksum verification (bloom #407) ---------------------------------
+
+
+def test_verify_blob_checksum_matches(tmp_path):
+    p = tmp_path / "a.slp"
+    p.write_bytes(b"hello")
+    import hashlib
+
+    ing.verify_blob_checksum(p, hashlib.sha256(b"hello").hexdigest())  # must not raise
+
+
+def test_verify_blob_checksum_mismatch_names_both(tmp_path):
+    p = tmp_path / "a.slp"
+    p.write_bytes(b"hello")
+    with pytest.raises(ing.BlobConstructionError) as excinfo:
+        ing.verify_blob_checksum(p, "deadbeef")
+    msg = str(excinfo.value)
+    assert "deadbeef" in msg
+    assert str(p) in msg
+
+
+def test_verify_blob_checksum_missing_file(tmp_path):
+    p = tmp_path / "does-not-exist.slp"
+    with pytest.raises(ing.BlobConstructionError) as excinfo:
+        ing.verify_blob_checksum(p, "deadbeef")
+    assert str(p) in str(excinfo.value)
+
+
+# --- 4.x upload + idempotency (bloom #407) ----------------------------------
+
+
+def test_blob_object_path_is_a_plain_string_join():
+    path = ing.blob_object_path("scan0K9E8BI", "idem123", "predictions_slp", "primary")
+    assert path == "scan0K9E8BI/idem123/predictions_slp.primary.slp"
+    assert "\\" not in path  # must never be a pathlib.Path (Windows backslash risk)
+
+
+class _NotFoundBucket:
+    """No object exists yet at any path."""
+
+    def __init__(self):
+        self.uploaded = {}
+
+    def download(self, object_path):
+        from storage3.exceptions import StorageApiError
+
+        raise StorageApiError("Object not found", "404", 404)
+
+    def upload(self, object_path, data):
+        self.uploaded[object_path] = data
+
+
+class _NotFoundStorage:
+    def __init__(self, bucket):
+        self.bucket = bucket
+
+    def from_(self, name):
+        assert name == "cyl-intermediates"
+        return self.bucket
+
+
+class _NotFoundClient:
+    def __init__(self):
+        self.bucket = _NotFoundBucket()
+        self.storage = _NotFoundStorage(self.bucket)
+
+
+def test_upload_blob_first_upload():
+    client = _NotFoundClient()
+    location, skipped = ing.upload_blob(client, PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp", "some/path.slp", "032e90ea6effacbc3542381fecc1d72b09390077b1edb2ff0fabc26f7eed0044")
+    assert skipped is False
+    assert location == "some/path.slp"
+    assert client.bucket.uploaded["some/path.slp"] == (
+        PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp"
+    ).read_bytes()
+
+
+class _ExistingBucket:
+    """An object already exists at `object_path` with `existing_bytes`."""
+
+    def __init__(self, object_path, existing_bytes):
+        self.object_path = object_path
+        self.existing_bytes = existing_bytes
+        self.upload_called = False
+
+    def download(self, object_path):
+        if object_path == self.object_path:
+            return self.existing_bytes
+        from storage3.exceptions import StorageApiError
+
+        raise StorageApiError("Object not found", "404", 404)
+
+    def upload(self, object_path, data):
+        self.upload_called = True
+
+
+def test_upload_blob_skips_when_existing_checksum_matches():
+    data = b"already uploaded bytes"
+    checksum = __import__("hashlib").sha256(data).hexdigest()
+    bucket = _ExistingBucket("some/path.slp", data)
+    client = type("C", (), {"storage": type("S", (), {"from_": lambda self, n: bucket})()})()
+    # local file content doesn't matter for a skip -- only the checksum comparison does
+    location, skipped = ing.upload_blob(client, PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp", "some/path.slp", checksum)
+    assert skipped is True
+    assert location == "some/path.slp"
+    assert bucket.upload_called is False
+
+
+def test_upload_blob_raises_on_path_collision():
+    bucket = _ExistingBucket("some/path.slp", b"different existing bytes")
+    client = type("C", (), {"storage": type("S", (), {"from_": lambda self, n: bucket})()})()
+    with pytest.raises(ing.BlobConstructionError) as excinfo:
+        ing.upload_blob(client, PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp", "some/path.slp", "expectedchecksum")
+    assert "some/path.slp" in str(excinfo.value)
+    assert bucket.upload_called is False
+
+
+def test_upload_pending_blobs_all_succeed():
+    manifest = ing.load_predictions_manifest(PREDICTIONS_DIR, SCAN_KEY)
+    pending = ing.build_pending_blobs(manifest, PREDICTIONS_DIR, existing_blobs=[])
+    client = _NotFoundClient()
+    report = ing.upload_pending_blobs(
+        client, pending, scan_key=SCAN_KEY, idempotency_key="idem123"
+    )
+    assert report.all_ok
+    assert len(report.outcomes) == 2
+    assert not report.failed
+    for outcome, p in zip(report.outcomes, pending):
+        assert outcome.ok
+        assert not outcome.skipped
+        assert p.blob["s3_location"] == outcome.location
+
+
+def test_upload_pending_blobs_one_failure_does_not_abort_the_batch():
+    manifest = ing.load_predictions_manifest(PREDICTIONS_DIR, SCAN_KEY)
+    pending = ing.build_pending_blobs(manifest, PREDICTIONS_DIR, existing_blobs=[])
+    # corrupt the primary artifact's expected checksum so its verify step fails
+    for p in pending:
+        if p.blob["root_type"] == "primary":
+            p.blob["checksum"] = "deliberately-wrong-checksum"
+    client = _NotFoundClient()
+    report = ing.upload_pending_blobs(
+        client, pending, scan_key=SCAN_KEY, idempotency_key="idem123"
+    )
+    assert not report.all_ok
+    assert len(report.failed) == 1
+    assert report.failed[0].root_type == "primary"
+    # the other (crown) blob still got uploaded -- one bad blob doesn't abort the batch
+    crown_outcome = next(o for o in report.outcomes if o.root_type == "crown")
+    assert crown_outcome.ok
+
+
+# --- 5.x wire --predictions-dir into the command (bloom #407) ---------------
+
+
+def test_cli_predictions_dir_omitted_pass_through_unchanged(monkeypatch):
+    """Regression guard: omitting --predictions-dir must not change existing
+    behavior at all (spec: 'No predictions-dir, envelope carrying blobs')."""
+    captured = {}
+
+    def cap(client, env):
+        captured["env"] = env
+        return RESULT_OK
+
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", cap)
+    env = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    env["blobs"] = [
+        {
+            "kind": "predictions_slp",
+            "root_type": "primary",
+            "scan_key": "scan0K9E8BI",
+            "s3_location": "s3://bucket/scan0K9E8BI.primary.slp",
+        }
+    ]
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", "-"], input=json.dumps(env))
+    assert res.exit_code == 0, res.output
+    assert captured["env"]["blobs"] == env["blobs"]
+
+
+def test_cli_predictions_dir_constructs_and_uploads_blobs(monkeypatch):
+    captured = {}
+
+    def cap(client, env):
+        captured["env"] = env
+        return RESULT_OK
+
+    def fake_upload(client, pending, *, scan_key, idempotency_key):
+        for p in pending:
+            p.blob["s3_location"] = f"s3://x/{p.blob['root_type']}.slp"
+        return ing.BlobUploadReport(
+            [ing.BlobUploadOutcome(root_type=p.blob["root_type"], ok=True) for p in pending]
+        )
+
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", cap)
+    monkeypatch.setattr(ing, "upload_pending_blobs", fake_upload)
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "ingest-result", str(FIXTURE), "--predictions-dir", str(PREDICTIONS_DIR)],
+    )
+    assert res.exit_code == 0, res.output
+    assert len(captured["env"]["blobs"]) == 2
+    root_types = {b["root_type"] for b in captured["env"]["blobs"]}
+    assert root_types == {"primary", "crown"}
+    for b in captured["env"]["blobs"]:
+        assert b["s3_location"] == f"s3://x/{b['root_type']}.slp"
+
+
+def test_cli_predictions_dir_upload_failure_makes_no_rpc_call(monkeypatch):
+    called = {"rpc": False}
+
+    def mark_rpc(client, env):
+        called["rpc"] = True
+        return RESULT_OK
+
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", mark_rpc)
+
+    def failing_upload(client, pending, *, scan_key, idempotency_key):
+        return ing.BlobUploadReport(
+            [
+                ing.BlobUploadOutcome(root_type="primary", ok=False, error="boom"),
+                ing.BlobUploadOutcome(root_type="crown", ok=True),
+            ]
+        )
+
+    monkeypatch.setattr(ing, "upload_pending_blobs", failing_upload)
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "ingest-result", str(FIXTURE), "--predictions-dir", str(PREDICTIONS_DIR)],
+    )
+    assert res.exit_code != 0
+    assert not called["rpc"]
+    assert "primary" in res.output
+    assert "boom" in res.output
+
+
+def test_cli_predictions_dir_conflicting_blob_makes_no_upload_or_rpc_call(monkeypatch):
+    called = {"upload": False, "rpc": False}
+
+    def mark_upload(client, pending, *, scan_key, idempotency_key):
+        called["upload"] = True
+        return ing.BlobUploadReport([])
+
+    def mark_rpc(client, env):
+        called["rpc"] = True
+        return RESULT_OK
+
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "upload_pending_blobs", mark_upload)
+    monkeypatch.setattr(ing, "call_insert_envelope", mark_rpc)
+
+    env = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    env["blobs"] = [
+        {"kind": "predictions_slp", "root_type": "primary", "scan_key": "scan0K9E8BI",
+         "s3_location": "s3://already/there.slp"}
+    ]
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "ingest-result", "-", "--predictions-dir", str(PREDICTIONS_DIR)],
+        input=json.dumps(env),
+    )
+    assert res.exit_code != 0
+    assert not called["upload"]
+    assert not called["rpc"]
+
+
+def test_cli_predictions_dir_missing_manifest_makes_no_call(monkeypatch, tmp_path):
+    called = {"auth": False, "rpc": False}
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
+    )
+    monkeypatch.setattr(
+        ing, "call_insert_envelope", lambda c, e: called.__setitem__("rpc", True) or RESULT_OK
+    )
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "ingest-result", str(FIXTURE), "--predictions-dir", str(tmp_path)],
+    )
+    assert res.exit_code != 0
+    assert not called["rpc"]
