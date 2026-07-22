@@ -23,7 +23,7 @@ bloommcp/
 ├── server.py                  # FastMCP entry point. Validates env,
 │                              # registers tools, exposes /health.
 ├── data/                      # runtime artifacts (gitignored bind mount)
-│   ├── SLEAP_OUT_CSV/         # input CSVs from upstream pipelines
+│   ├── TRAITS_DIR/            # input CSVs from upstream pipelines
 │   ├── ANALYSIS_OUTPUT/       # versioned output of each workflow tool
 │   └── PLOTS_DIR/             # plots served at /plots by langchain-agent
 ├── source/                    # analysis primitives (port of sleap-roots-analyze)
