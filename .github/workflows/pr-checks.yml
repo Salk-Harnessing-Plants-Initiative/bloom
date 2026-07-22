@@ -1006,6 +1006,22 @@ jobs:
       - name: make bloommcp-plot-smoke (live plot-tool smoke through the real container)
         run: make bloommcp-plot-smoke
 
+      # Granular per-tool smoke coverage (#483): each test calls a bloommcp tool
+      # through the real running container's MCP transport, over both the turface_19
+      # and cylinder oracle fixtures (see bloommcp/tests/fixtures/README.md). Only the
+      # `live_smoke`-but-not-`live_smoke_slow` (bounded-time) subset runs here; the
+      # full set (including numerically-risky cases like mahalanobis/gmm on cylinder
+      # and the per-trait MixedLM heritability/variance-decomposition plots) runs via
+      # /pre-merge against a locally-brought-up stack instead — see
+      # tests/unit/test_bloommcp_smoke_marker_split.py for the regression guard on
+      # this exact `-m` filter and the live_smoke/live_smoke_slow marker pairing.
+      - name: pytest tests/smoke/ (CI-safe live-smoke subset, both fixtures)
+        run: |
+          BLOOMMCP_PORT=$(sed -n 's/^BLOOMMCP_PORT=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r')
+          BLOOMMCP_API_KEY=$(sed -n 's/^BLOOMMCP_API_KEY=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r')
+          cd bloommcp && BLOOMMCP_PORT="${BLOOMMCP_PORT:-8811}" BLOOMMCP_API_KEY="$BLOOMMCP_API_KEY" \
+            uv run --frozen --extra test pytest tests/smoke/ -m "live_smoke and not live_smoke_slow" -v --tb=short
+
       # Guarded: if: failure() fires if an earlier, unrelated step fails
       # before .env.dev is ever generated (#455) — same defect class as
       # compose-health-check's "Debug logs on failure" above.
