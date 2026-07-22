@@ -50,7 +50,7 @@ def build_sample_count_row(rec: dict[str, Any]) -> list[str]:
     return [
         rec.get("species_name") or "",
         rec.get("accession_name") or "",
-        str(rec.get("plant_count", "")),
+        "" if rec.get("plant_count") is None else str(rec.get("plant_count")),
     ]
 
 
@@ -83,7 +83,7 @@ def fetch_accession_sample_counts(client: Any, species: str | None = None) -> li
     query = client.table("cyl_accession_sample_counts").select(
         "species_name, accession_id, accession_name, plant_count"
     )
-    if species is not None:
+    if species:
         query = query.eq("species_name", species)
     return query.execute().data or []
 
@@ -107,9 +107,14 @@ def fetch_accession_sample_counts(client: Any, species: str | None = None) -> li
 def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
     """List the accessions used in a cylinder experiment."""
     from ..cli import _authed_client
+    from postgrest import APIError
 
     client = _authed_client(profile)
-    data = sorted(fetch_experiment_accessions(client, experiment_id), key=accession_sort_key)
+    try:
+        raw = fetch_experiment_accessions(client, experiment_id)
+    except APIError as exc:
+        raise click.ClickException(getattr(exc, "message", str(exc))) from exc
+    data = sorted(raw, key=accession_sort_key)
 
     if as_json:
         click.echo(json.dumps([build_accession_record(r) for r in data]))
@@ -132,9 +137,14 @@ def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
 def sample_counts(species: str | None, as_json: bool, profile: str) -> None:
     """Show the plant count per accession, per species (one plant = one biological replicate)."""
     from ..cli import _authed_client
+    from postgrest import APIError
 
     client = _authed_client(profile)
-    data = sorted(fetch_accession_sample_counts(client, species), key=sample_count_sort_key)
+    try:
+        raw = fetch_accession_sample_counts(client, species)
+    except APIError as exc:
+        raise click.ClickException(getattr(exc, "message", str(exc))) from exc
+    data = sorted(raw, key=sample_count_sort_key)
 
     if as_json:
         click.echo(json.dumps([build_sample_count_record(r) for r in data]))

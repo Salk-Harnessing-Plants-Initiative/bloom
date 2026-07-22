@@ -213,3 +213,65 @@ def test_accessions_grouped_under_cyl_not_top_level():
     assert "list" in sub.output
     assert "sample-counts" in sub.output
     assert "accessions" in CliRunner().invoke(cli, ["cyl", "--help"]).output
+
+
+# --- edge cases / error handling -------------------------------------------
+
+
+def test_build_sample_count_row_tolerates_null_count():
+    # count(*) never yields NULL, but a null must render as "" not "None".
+    row = acc.build_sample_count_row(
+        {"species_name": "Rice", "accession_name": "IR64", "plant_count": None}
+    )
+    assert row == ["Rice", "IR64", ""]
+
+
+def test_fetch_sample_counts_empty_species_omits_eq():
+    captured = {"eq": None}
+
+    class _Q:
+        def select(self, sel):
+            return self
+
+        def eq(self, col, val):
+            captured["eq"] = (col, val)
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": COUNTS})()
+
+    class _Client:
+        def table(self, name):
+            return _Q()
+
+    # empty --species means "no filter", not .eq("species_name", "")
+    acc.fetch_accession_sample_counts(_Client(), "")
+    assert captured["eq"] is None
+
+
+def test_list_maps_apierror_to_clickexception(monkeypatch):
+    from postgrest import APIError
+
+    _patch_authed(monkeypatch)
+
+    def _boom(client, experiment_id):
+        raise APIError({"message": "permission denied", "code": "42501"})
+
+    monkeypatch.setattr(acc, "fetch_experiment_accessions", _boom)
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "list", "--experiment-id", "7"])
+    assert res.exit_code != 0
+    assert "permission denied" in res.output  # clean message, not a raw traceback
+
+
+def test_sample_counts_maps_apierror_to_clickexception(monkeypatch):
+    from postgrest import APIError
+
+    _patch_authed(monkeypatch)
+
+    def _boom(client, species=None):
+        raise APIError({"message": "permission denied", "code": "42501"})
+
+    monkeypatch.setattr(acc, "fetch_accession_sample_counts", _boom)
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts"])
+    assert res.exit_code != 0
+    assert "permission denied" in res.output
