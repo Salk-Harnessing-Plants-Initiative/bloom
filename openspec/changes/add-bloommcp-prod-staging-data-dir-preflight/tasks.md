@@ -33,18 +33,30 @@ scripts/ensure_bloommcp_data_dirs.sh` on the working branch).
       will fail there exactly as designed, aborting `deploy-production` on the first run after
       merge — expected and correct, not a bug in the preflight.
 
+      **Gap a later PR review caught: this check only covers the three leaf directories, not
+      `bloommcp/data` itself.** `ensure_bloommcp_data_dirs.sh`'s own comments already note
+      Docker can auto-create `bloommcp/data` itself as root, the same mechanism that broke
+      the three leaves — so the parent's ownership needs the same confirmation before task
+      2.2's `chown` is considered complete. Not re-checked by this task as originally
+      scoped; folded into task 2.2's remediation instead.
+
 - [ ] 2.2 Coordinate a one-time manual `chown bloom:bloom` on **production**'s three
       directories (or at minimum `PLOTS_DIR`, per Elizabeth's suggested immediate stopgap)
       BEFORE or immediately after merging section 3, so the new preflight's first run
-      succeeds there rather than failing the deploy. **Staging does not block on this** for
-      `PLOTS_DIR`/`ANALYSIS_OUTPUT` (already `bloom:bloom`); its `TRAITS_DIR`/`SLEAP_OUT_CSV`
-      will still need the same one-time `chown` once the rename in
-      `rename-bloommcp-sleap-out-csv-dir` reaches it, unless task 2.3 below concludes the
-      mount should be dropped instead. **NOT done by this change — needs someone with server
-      `sudo` access; flagged in the PR description as the specific pre-merge/immediate action
-      item, independent of and not blocking this PR's merge per Elizabeth's own suggestion
-      ("that's a one-line stopgap independent of any proposal and doesn't need to wait on
-      it").**
+      succeeds there rather than failing the deploy. **Also `stat bloommcp/data` itself, not
+      just its three children** — a PR review caught that a rename (issue #477's migration
+      step) needs write permission on the _containing_ directory, not the leaf being
+      renamed, and `bloommcp/data`'s own ownership was never checked alongside its
+      children's. If `bloommcp/data` is also root-owned (plausible — same root cause, same
+      May 6 timeline), include it in the same `chown -R`. **Staging does not block on this**
+      for `PLOTS_DIR`/`ANALYSIS_OUTPUT` (already `bloom:bloom`); its `TRAITS_DIR`/
+      `SLEAP_OUT_CSV` (and `bloommcp/data` itself, if root-owned there too) will still need
+      the same one-time `chown` once the rename in `rename-bloommcp-sleap-out-csv-dir`
+      reaches it, unless task 2.3 below concludes the mount should be dropped instead.
+      **NOT done by this change — needs someone with server `sudo` access; flagged in the PR
+      description as the specific pre-merge/immediate action item, independent of and not
+      blocking this PR's merge per Elizabeth's own suggestion ("that's a one-line stopgap
+      independent of any proposal and doesn't need to wait on it").**
 - [x] 2.3 Re-examine whether `TRAITS_DIR`/`SLEAP_OUT_CSV` and `ANALYSIS_OUTPUT` should be
       dropped from `docker-compose.prod.yml` entirely (shrinking the permission surface to
       `PLOTS_DIR` only), given Elizabeth's live observation that neither has been written to

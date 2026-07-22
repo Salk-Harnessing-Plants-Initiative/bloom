@@ -107,11 +107,27 @@ ${{ secrets.PROD_DEPLOY_PATH }}` / `STAGING_DEPLOY_PATH`), immediately before it
     `bloommcp/Dockerfile`, which would let a future change switch prod/staging to proper
     UID/GID matching + `chmod 770` and retire this exception. Out of scope here — it's a
     Dockerfile change with its own review surface, not a workflow preflight.
-  - The trade-off is still narrower than it looks: these three directories hold only
-    non-secret plot/analysis artifacts (gitignored, never committed), and on both prod and
-    staging the directories are Docker bind-mounts on a single-tenant deploy host already
-    trusted at the same privilege level as the deploy user itself — `chmod 777` widens
-    _local-process_ access on that host, not external/network access.
+  - The trade-off is still narrower than it looks on the **confidentiality** axis: none of
+    the three directories hold secrets, credentials, or PII, and all are gitignored, never
+    committed. **Correction from an earlier draft of this section, caught in review**: don't
+    read that as "these are just scratch/analysis artifacts" — `rename-bloommcp-
+sleap-out-csv-dir`'s own investigation established `TRAITS_DIR` is `qc_clean`'s **sole
+    copy** of raw experiment input, with no Supabase Storage backup (see that change's
+    tasks.md task 1.9). Losing or corrupting it is real, unrecoverable data loss for
+    anything not already processed elsewhere — not merely regenerable cache invalidation
+    the way `PLOTS_DIR`/`ANALYSIS_OUTPUT` are. `chmod 777`'s risk here is about
+    **availability/integrity** (any local process can now write into or delete from it),
+    not confidentiality — worth being precise about so a future maintainer doesn't cite
+    "non-secret scratch directory" as precedent for `chmod 777`-ing something where sole-copy
+    data loss would matter even more.
+  - On both prod and staging the directories are Docker bind-mounts on what this design
+    **asserts, but has not independently verified from this diff alone**, is a single-tenant
+    deploy host already trusted at the same privilege level as the deploy user itself —
+    `chmod 777` widens _local-process_ access on that host, not external/network access. This
+    assumption is reasonable given `PROD_SETUP.md`'s description of a dedicated self-hosted
+    runner, but a reviewer with direct access to the Salk deploy host should explicitly
+    confirm it (no other tenants/services with untrusted local processes on the same host)
+    rather than this proposal treating it as established.
 
 ## Risks / Trade-offs
 
@@ -122,8 +138,10 @@ ${{ secrets.PROD_DEPLOY_PATH }}` / `STAGING_DEPLOY_PATH`), immediately before it
 - **Re-running `chmod 777` on every deploy is a silent-clobber risk**: if someone manually
   tightens permissions on the live host for some reason, the next deploy's preflight silently
   re-loosens them back to 777 with no differentiating log signal between "just created,"
-  "already correct," and "just re-loosened." Low-severity (these are non-secret scratch
-  directories) but worth a one-line log distinction if the script is ever revisited.
+  "already correct," and "just re-loosened." Confidentiality risk stays low (no secrets in
+  any of the three directories), but `TRAITS_DIR` specifically holds sole-copy raw data (see
+  "Decisions" above) — worth a one-line log distinction if the script is ever revisited, not
+  dismissed as purely low-severity scratch.
 - If PR #473 hasn't merged by the time this is implemented, this branch has nothing to reuse
   yet — `tasks.md`'s first task is to confirm #473's merge state (or rebase onto its branch)
   before wiring either workflow call site.

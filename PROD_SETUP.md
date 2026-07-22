@@ -30,11 +30,28 @@ the wiki pages linked at the bottom of this doc.
    sudo chmod 755 /var/lib/bloom/minio
    ```
 
-4. **bloommcp data directories:** nothing to do — `bloommcp/data/{TRAITS_DIR,
-PLOTS_DIR,ANALYSIS_OUTPUT}` are provisioned automatically by the deploy
-   workflow's preflight step (see "Deploying" below) before every deploy, no
-   manual `mkdir`/`chown`/`chmod` needed. See `openspec/project.md`'s
-   "bloommcp data directories" constraint for why.
+4. **bloommcp data directories:** on a genuinely fresh host, nothing to do —
+   `bloommcp/data/{TRAITS_DIR,PLOTS_DIR,ANALYSIS_OUTPUT}` are provisioned
+   automatically by the deploy workflow's preflight step (see "Deploying"
+   below) before every deploy, no manual `mkdir`/`chown`/`chmod` needed. See
+   `openspec/project.md`'s "bloommcp data directories" constraint for why.
+
+   **On an existing host that predates this preflight** (i.e., this repo's
+   own production host as of 2026-07): these directories may already exist,
+   root-owned, from Docker's own auto-create-on-first-`docker compose up`
+   behavior — the preflight has no privilege escalation and will fail loudly
+   rather than fix this silently. A one-time manual step is required:
+
+   ```bash
+   sudo chown -R bloom-deploy:bloom-deploy bloommcp/data
+   ```
+
+   Run this on **both directories that back live consumers** — `PLOTS_DIR`
+   (every plotting tool) and `TRAITS_DIR`/`SLEAP_OUT_CSV` (`qc_clean`'s sole
+   source for raw input, not just a cache) — and on `bloommcp/data` itself,
+   not only its three children: a rename (see the migration step below)
+   needs write permission on the _containing_ directory, which Docker's
+   auto-create can also leave root-owned.
 
 5. **Salk DNS — one CNAME record**, published by Salk IT:
 
@@ -80,11 +97,14 @@ Merge a PR to `main`. The `deploy` workflow will:
 1. SSH to the prod host via the self-hosted runner
 2. Concatenate `.env.prod.defaults` + the GitHub Secrets into `.env.prod`
 3. Validate the assembled file has every required key
-4. Provision writable bloommcp data directories (`scripts/ensure_bloommcp_data_dirs.sh`)
-5. Run `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d`
-6. Wait for Caddy to obtain / renew its TLS cert
-7. Run `supabase db push` for any new migrations
-8. Print `docker compose ps` to the workflow log
+4. Migrate a pre-existing `bloommcp/data/SLEAP_OUT_CSV` to `TRAITS_DIR` in place, if present
+   (`scripts/migrate_bloommcp_legacy_traits_dir.sh`) — a one-time rename for hosts that
+   predate issue #477; a no-op on an already-migrated or fresh host
+5. Provision writable bloommcp data directories (`scripts/ensure_bloommcp_data_dirs.sh`)
+6. Run `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d`
+7. Wait for Caddy to obtain / renew its TLS cert
+8. Run `supabase db push` for any new migrations
+9. Print `docker compose ps` to the workflow log
 
 If any step fails, the workflow surfaces logs and stops — the stack is
 left in whatever state the failed step produced. Investigate from the
