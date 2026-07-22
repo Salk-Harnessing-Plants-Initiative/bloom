@@ -88,8 +88,10 @@
       marked `live_smoke_slow`, assertion only checks `"converged" in result` (not
       truthy) per the honesty note above. Verified passing (all 6 combinations).
 - [x] 3.7 Added one smoke test file per plotting tool:
-  - [x] 3.7a `test_plot_trait_histograms_smoke.py` -- passing.
-  - [x] 3.7b `test_plot_trait_boxplots_smoke.py` -- passing.
+  - [x] 3.7a `test_plot_trait_histograms_smoke.py` -- cylinder marked
+        `live_smoke_slow` **(added post-PR-review, see below)**; passing.
+  - [x] 3.7b `test_plot_trait_boxplots_smoke.py` -- cylinder marked `live_smoke_slow`
+        **(added post-PR-review, see below)**; passing.
   - [x] 3.7c `test_plot_correlation_matrix_smoke.py` -- cylinder marked
         `live_smoke_slow`; passing.
   - [x] 3.7d `test_plot_heritability_bar_smoke.py` -- both fixtures marked
@@ -132,3 +134,17 @@
       surfaced and confirmed the fix for the `plot_heritability_bar` pagination bug
       (3.7d). Repo-root `tests/unit/`: 339 passed (includes both new regression
       guards + the existing gate test, all green together).
+- [x] 5.5 **Post-PR-review fix**: PR #507's first real `dev-stack-smoke` CI run
+      (not reproducible locally against `python-audit` -- it needs the actual live
+      stack) failed: `test_plot_trait_boxplots_smoke[cylinder]` exceeded the 120s
+      client timeout in `conftest.py`. Investigated: neither
+      `create_trait_histograms` nor `create_trait_boxplots_by_genotype` paginates
+      (unlike `create_heritability_plot`), so both render all 846 cylinder traits
+      into one figure -- genuinely slow and, per repeated local timing (histograms
+      46-86s, boxplots 109s locally vs. >120s in CI), too variable to be "bounded
+      time" the way design.md originally assumed for rendering-only tools. Fixed by
+      marking both cylinder cases `live_smoke_slow` (matching the reviewer's
+      preferred fix over raising the timeout) and updating design.md/spec.md's
+      enumeration accordingly. Re-verified: CI-safe subset now 15 tests (was 17),
+      passes in ~29s; both updated test files pass in full (all 4 parametrizations);
+      both regression guards + the existing gate test still pass.

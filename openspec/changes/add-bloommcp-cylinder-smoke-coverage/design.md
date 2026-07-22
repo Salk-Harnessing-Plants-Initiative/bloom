@@ -50,6 +50,19 @@ The numerically-risky subset *additionally* gets `@pytest.mark.live_smoke_slow`:
 - `plot_correlation_matrix` on cylinder — an 880×880 correlation matrix + heatmap render;
   not numerically unstable, included for the same "meaningfully more wall-clock work"
   reasoning the issue gives.
+- `plot_trait_histograms` and `plot_trait_boxplots` on cylinder — **added after the
+  first real `dev-stack-smoke` run on this change's own PR** (#507 review): both
+  delegates (`create_trait_histograms`, `create_trait_boxplots_by_genotype`) have no
+  pagination and render all 846 traits into a single figure. This was originally
+  classified CI-safe ("matplotlib rendering over already-computed values" — see the
+  now-corrected list above), which held for turface_19's ~18-20 traits but not for
+  cylinder: observed wall-clock time was variable enough (histograms 46-86s, boxplots
+  109s locally vs. a >120s timeout in CI) to sit right at, and sometimes past, the
+  120s client timeout in `tests/smoke/conftest.py` — not "bounded time" in the sense
+  CI needs. Same root cause as the already-correctly-flagged
+  `plot_heritability_bar`/`plot_variance_decomposition` risk (per-trait fan-out with
+  no pagination at this scale), just missed here because rendering-only tools looked
+  categorically cheaper than statistical model-fitting ones.
 
 `dev-stack-smoke` runs `pytest tests/smoke/ -m "live_smoke and not live_smoke_slow"`
 (bounded-time, both fixtures). `/pre-merge` runs the full `pytest tests/smoke/ -m
@@ -120,6 +133,14 @@ the container/transport/storage wiring should fail the smoke tier.
   under its 20-minute timeout for the new CI-safe smoke step, but the proposal does not
   benchmark the new step itself — re-check actual job duration on the first CI run this
   change lands in, and raise the timeout if margin gets thin.
+- **Materialized**: the first real `dev-stack-smoke` run on this PR failed —
+  `plot_trait_boxplots[cylinder]` exceeded the 120s client timeout, and
+  `plot_trait_histograms[cylinder]` passed but with a tight margin (observed 46-86s
+  across separate local runs). Both were reclassified `live_smoke_slow` (Decision 1)
+  rather than tuning the timeout, since the reviewer-suggested fix — move the
+  genuinely-variable-cost case to the pre-merge-only tier — is more consistent with
+  this proposal's own risk model than papering over CI-observed variance with a
+  bigger number.
 
 ## Migration Plan
 

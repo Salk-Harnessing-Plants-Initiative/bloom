@@ -77,9 +77,10 @@ mocked call).
 
 Every test added under the "Granular Tool Smoke Coverage" requirement MUST carry the
 `live_smoke` pytest marker (`bloommcp/pyproject.toml`). Tests whose delegate is
-numerically ill-conditioned at cylinder's scale — `remove_outliers(method="mahalanobis")`
-on cylinder, `clustering(method="gmm")` on cylinder, `plot_heritability_bar` and
-`plot_variance_decomposition` on either fixture, and `plot_correlation_matrix` on
+numerically ill-conditioned or unreliably slow at cylinder's scale —
+`remove_outliers(method="mahalanobis")` on cylinder, `clustering(method="gmm")` on
+cylinder, `plot_heritability_bar` and `plot_variance_decomposition` on either fixture,
+and `plot_correlation_matrix`, `plot_trait_histograms`, and `plot_trait_boxplots` on
 cylinder — MUST additionally carry `live_smoke_slow`. `python-audit`'s per-PR pytest
 invocation MUST exclude every `live_smoke`-marked test (`-m "not integration and not
 live_smoke"`). The `dev-stack-smoke` CI job MUST run the `live_smoke`-but-not-
@@ -99,7 +100,8 @@ live_smoke"`). The `dev-stack-smoke` CI job MUST run the `live_smoke`-but-not-
 - **THEN** its pytest invocation selects `live_smoke and not live_smoke_slow`, so
   `remove_outliers(method="mahalanobis")` on cylinder, `clustering(method="gmm")` on
   cylinder, `plot_heritability_bar`, `plot_variance_decomposition`, and
-  `plot_correlation_matrix` on cylinder do not run there
+  `plot_correlation_matrix`/`plot_trait_histograms`/`plot_trait_boxplots` on cylinder
+  do not run there
 
 #### Scenario: pre-merge runs the full live-smoke set
 
