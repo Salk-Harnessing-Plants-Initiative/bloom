@@ -1,7 +1,7 @@
 ## Why
 
 Issue #474: `docker-compose.prod.yml` has the **identical** unguarded bind-mount shape
-(`bloommcp/data/{SLEAP_OUT_CSV,PLOTS_DIR,ANALYSIS_OUTPUT}`) as the dev-stack bug fixed —
+(`bloommcp/data/{TRAITS_DIR,PLOTS_DIR,ANALYSIS_OUTPUT}`) as the dev-stack bug fixed —
 dev path only — by #472/PR #473. Verified from the repo alone (not assumed): `bloommcp/data/`
 is entirely gitignored (`.gitignore:96`) with zero tracked files, and neither CI overlay
 (`docker-compose.ci.yml`, `docker-compose.ci-cache.yml`) overrides `bloommcp`'s `volumes:` —

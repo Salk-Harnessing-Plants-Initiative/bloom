@@ -3,7 +3,7 @@
 ### Requirement: Production and staging deploys MUST provision writable bloommcp data directories before `docker compose up`
 
 The `deploy-production` and `deploy-staging` jobs MUST pre-create and make writable the three
-bind-mounted `bloommcp` data directories (`bloommcp/data/{SLEAP_OUT_CSV,PLOTS_DIR,
+bind-mounted `bloommcp` data directories (`bloommcp/data/{TRAITS_DIR,PLOTS_DIR,
 ANALYSIS_OUTPUT}`) before their `docker compose up` command runs, so Docker never auto-creates
 them owned by the daemon user (which the non-root `bloommcp` container user cannot then write
 into). Because these directories persist across deploys on a long-lived host, this requirement
@@ -32,7 +32,7 @@ also covers a directory left in an incorrect state by something other than this 
 
 #### Scenario: Preflight is idempotent on an already-correctly-provisioned host
 
-- **GIVEN** a host where `bloommcp/data/{SLEAP_OUT_CSV,PLOTS_DIR,ANALYSIS_OUTPUT}` already
+- **GIVEN** a host where `bloommcp/data/{TRAITS_DIR,PLOTS_DIR,ANALYSIS_OUTPUT}` already
   exist and are writable by the container's runtime user
 - **WHEN** the preflight step runs again on a subsequent deploy
 - **THEN** it MUST succeed as a no-op (create-if-missing, `chmod` an already-correct

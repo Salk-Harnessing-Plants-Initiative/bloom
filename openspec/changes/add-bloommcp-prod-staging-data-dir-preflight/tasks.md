@@ -3,7 +3,7 @@
 - [x] 1.1 Confirm PR #473 (`egao28/bloommcp-plotsdir-permission-fix-472`) has merged to
       `staging`, or rebase this branch onto it, so `scripts/ensure_bloommcp_data_dirs.sh`
       exists to reuse. Do not proceed past task 3 until this is confirmed true (`test -f
-  scripts/ensure_bloommcp_data_dirs.sh` on the working branch).
+scripts/ensure_bloommcp_data_dirs.sh` on the working branch).
       **Done** — PR #473 merged 2026-07-22 (`bd3bf5f`); branch fast-forwarded onto
       `origin/staging`.
 
@@ -12,7 +12,7 @@
 - [ ] 2.1 Before merging the `deploy.yml` changes in section 3 (NOT required for the
       `pr-checks.yml` change in section 4, which has no persistent-host risk): get someone
       with SSH access to the live Salk staging and production hosts to check current ownership
-      of `bloommcp/data/{SLEAP_OUT_CSV,PLOTS_DIR,ANALYSIS_OUTPUT}`. `scripts/
+      of `bloommcp/data/{TRAITS_DIR,PLOTS_DIR,ANALYSIS_OUTPUT}`. `scripts/
 ensure_bloommcp_data_dirs.sh` has no privilege escalation — if these are already root-owned,
       the preflight will fail loudly on the very first deploy after merge, and **every
       subsequent deploy will fail identically** (deploys fire automatically on every push to
@@ -49,7 +49,7 @@ ensure_bloommcp_data_dirs.sh` has no privilege escalation — if these are alrea
 - [x] 4.1 Add a step calling `scripts/ensure_bloommcp_data_dirs.sh`, placed immediately after
       "Create MinIO data directory" and before the job's main
       `docker compose $COMPOSE_FILES -f docker-compose.ci-cache.yml --env-file .env.ci up -d
-  --build` step (the only steps in between are "Start MinIO and create buckets" and "Start
+--build` step (the only steps in between are "Start MinIO and create buckets" and "Start
       database", neither of which this preflight needs to precede, but placing it right after
       the analogous MinIO step keeps the two preflights adjacent and easy to compare).
 

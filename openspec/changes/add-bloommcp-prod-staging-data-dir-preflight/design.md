@@ -14,7 +14,7 @@ Confirmed via repo inspection, not assumption:
 - `docker-compose.ci.yml` / `docker-compose.ci-cache.yml` (the overlay files layered onto
   `docker-compose.prod.yml` in `compose-health-check`) do not override `bloommcp`'s
   `volumes:` — the bind mounts that job actually uses are `docker-compose.prod.yml`'s
-  unmodified `./bloommcp/data/{SLEAP_OUT_CSV,PLOTS_DIR,ANALYSIS_OUTPUT}` mounts.
+  unmodified `./bloommcp/data/{TRAITS_DIR,PLOTS_DIR,ANALYSIS_OUTPUT}` mounts.
 - Why this isn't already a visible CI failure: `bloommcp` defines no `healthcheck:` in
   `docker-compose.prod.yml`, so `compose-health-check`'s "Wait for services to become
   healthy" step can only fail it via a nonzero container exit code, not a permission problem
