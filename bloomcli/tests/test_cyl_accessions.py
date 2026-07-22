@@ -169,6 +169,17 @@ def test_list_json_sorted(monkeypatch):
     assert [r["accession_name"] for r in payload] == ["Bay-0", "Col-0"]  # sorted by name
 
 
+def test_list_renders_table(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_experiment_accessions", lambda client, eid: EXP_ACC)
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "list", "--experiment-id", "7"])
+    assert res.exit_code == 0, res.output
+    assert "Accessions" in res.output  # table title
+    # names and ids both rendered — fails if a column is dropped/swapped
+    for token in ("Bay-0", "Col-0", "4", "9"):
+        assert token in res.output, f"{token!r} missing from table output"
+
+
 def test_list_empty(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(acc, "fetch_experiment_accessions", lambda client, eid: [])
@@ -189,6 +200,22 @@ def test_sample_counts_json_sorted(monkeypatch):
         ("Rice", "IR64"),
     ]
     assert payload[0]["plant_count"] == 8
+
+
+def test_sample_counts_species_passed_to_fetch(monkeypatch):
+    # the --species option must actually reach fetch (a dropped arg would still
+    # pass the fetch-function test, so assert it at the command level).
+    _patch_authed(monkeypatch)
+    captured = {}
+
+    def _fetch(client, species=None):
+        captured["species"] = species
+        return []
+
+    monkeypatch.setattr(acc, "fetch_accession_sample_counts", _fetch)
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species", "Canola"])
+    assert res.exit_code == 0, res.output
+    assert captured["species"] == "Canola"
 
 
 def test_sample_counts_table(monkeypatch):
