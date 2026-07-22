@@ -24,6 +24,27 @@ def save_plot(fig, plot_name: str) -> str:
     return f"{PLOTS_URL}/{plot_name}"
 
 
+def save_plot_or_plots(fig_or_figs, plot_name: str) -> str:
+    """Save a single figure, or a paginated list of figures, and return the URL(s).
+
+    ``create_heritability_plot`` returns a single ``Figure`` for small trait counts
+    but a ``list[Figure]`` once the trait count exceeds its internal
+    ``traits_per_page`` (currently 50) -- turface_19's ~18-20 traits never crosses
+    that threshold, so this path was never exercised until #483 added a fixture wide
+    enough (cylinder, 846 traits) to reach it. Save each page with a numbered suffix
+    and return a summary of all URLs rather than crashing on ``list.savefig``.
+    """
+    if isinstance(fig_or_figs, list):
+        stem = Path(plot_name).stem
+        suffix = Path(plot_name).suffix
+        urls = [
+            save_plot(fig, f"{stem}_page{i}{suffix}")
+            for i, fig in enumerate(fig_or_figs, start=1)
+        ]
+        return f"{len(urls)} pages: " + ", ".join(urls)
+    return save_plot(fig_or_figs, plot_name)
+
+
 def parse_traits(traits: str, available: list) -> list:
     """Parse comma-separated trait list, return filtered list."""
     if not traits.strip():

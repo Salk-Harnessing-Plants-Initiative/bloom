@@ -139,8 +139,12 @@ jobs:
       - name: Run bloom_mcp package tests
         # Excludes the integration-marked full-fixture heritability/UMAP oracle
         # tests (bloommcp/tests/test_oracle.py) — they're known to intermittently
-        # stall in CI containers (#454) and run instead via /pre-merge.
-        run: cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration" -v --tb=short
+        # stall in CI containers (#454) and run instead via /pre-merge. Also
+        # excludes live_smoke-marked tests (bloommcp/tests/smoke/) — this job never
+        # brings up the dev stack, so they'd fail/hang here regardless of
+        # numerical risk; the CI-safe subset runs in dev-stack-smoke below, the
+        # full set via /pre-merge (#483).
+        run: cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration and not live_smoke" -v --tb=short
         env:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
