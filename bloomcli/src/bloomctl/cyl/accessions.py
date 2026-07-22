@@ -55,8 +55,10 @@ def build_sample_count_row(rec: dict[str, Any]) -> list[str]:
 
 
 def build_sample_count_record(rec: dict[str, Any]) -> dict[str, Any]:
-    """Machine-readable sample-count record."""
+    """Machine-readable sample-count record. Includes accession_id (unique) so this
+    output can be joined to `accessions list --json` on the id, not the ambiguous name."""
     return {
+        "accession_id": rec.get("accession_id"),
         "species": rec.get("species_name"),
         "accession": rec.get("accession_name"),
         "plant_count": rec.get("plant_count"),
@@ -151,4 +153,7 @@ def sample_counts(species: str | None, as_json: bool, profile: str) -> None:
         return
 
     rows = [build_sample_count_row(r) for r in data]
-    print_table("Sample counts per accession", SAMPLE_COUNT_COLUMNS, rows, empty="No sample counts found.")
+    empty = (
+        f"No sample counts found for species '{species}'." if species else "No sample counts found."
+    )
+    print_table("Sample counts per accession", SAMPLE_COUNT_COLUMNS, rows, empty=empty)

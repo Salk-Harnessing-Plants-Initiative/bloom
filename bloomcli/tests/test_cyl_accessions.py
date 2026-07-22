@@ -53,9 +53,14 @@ def test_build_sample_count_row():
 
 def test_build_sample_count_record():
     rec = acc.build_sample_count_record(
-        {"species_name": "Canola", "accession_name": "Bay-0", "plant_count": 5}
+        {"accession_id": 4, "species_name": "Canola", "accession_name": "Bay-0", "plant_count": 5}
     )
-    assert rec == {"species": "Canola", "accession": "Bay-0", "plant_count": 5}
+    assert rec == {
+        "accession_id": 4,
+        "species": "Canola",
+        "accession": "Bay-0",
+        "plant_count": 5,
+    }
 
 
 def test_sample_count_sort_key_species_then_name():
@@ -201,6 +206,16 @@ def test_sample_counts_empty(monkeypatch):
     res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts"])
     assert res.exit_code == 0
     assert "No sample counts found" in res.output
+
+
+def test_sample_counts_empty_echoes_species_filter(monkeypatch):
+    # an empty result with --species should name the filter, so a mistyped /
+    # case-mismatched species is distinguishable from an empty database.
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_accession_sample_counts", lambda client, species=None: [])
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species", "Canola"])
+    assert res.exit_code == 0
+    assert "No sample counts found for species 'Canola'." in res.output
 
 
 # --- grouping ---------------------------------------------------------------
