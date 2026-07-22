@@ -252,6 +252,29 @@ jobs:
           fi
           echo "Cloudflare API token is active."
 
+      # bloommcp/data/ is gitignored, so `git reset --hard` above never renames
+      # it. Without this step, docker-compose.prod.yml's TRAITS_DIR bind mount
+      # would be backed by a fresh empty directory on `compose up`, silently
+      # orphaning a populated legacy SLEAP_OUT_CSV directory from a prior
+      # deploy — breaking bloommcp's qc_clean immediately, since it always
+      # re-derives from raw input rather than only on first run. Idempotent:
+      # no-ops on a fresh host or one already migrated. Must run BEFORE the
+      # data-dir preflight below, so a genuinely fresh host still gets
+      # TRAITS_DIR auto-created there rather than this step failing on a
+      # missing source. (#477)
+      - name: Migrate legacy bloommcp data directory name (production)
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            if [ -d bloommcp/data/SLEAP_OUT_CSV ] && [ ! -e bloommcp/data/TRAITS_DIR ]; then
+              mv bloommcp/data/SLEAP_OUT_CSV bloommcp/data/TRAITS_DIR
+              echo 'Migrated bloommcp/data/SLEAP_OUT_CSV -> bloommcp/data/TRAITS_DIR'
+            else
+              echo 'No migration needed (already migrated or fresh host)'
+            fi
+          "
+
       # Docker auto-creates a missing bind-mount source directory owned by the
       # daemon's user (root on this host), which the non-root bloommcp container
       # user then can't write into — the same class of bug fixed for `make
@@ -808,6 +831,21 @@ jobs:
             exit 1
           fi
           echo "Cloudflare API token is active."
+
+      # See deploy-production's equivalent step for rationale. Must run BEFORE
+      # the data-dir preflight below. (#477)
+      - name: Migrate legacy bloommcp data directory name (staging)
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            if [ -d bloommcp/data/SLEAP_OUT_CSV ] && [ ! -e bloommcp/data/TRAITS_DIR ]; then
+              mv bloommcp/data/SLEAP_OUT_CSV bloommcp/data/TRAITS_DIR
+              echo 'Migrated bloommcp/data/SLEAP_OUT_CSV -> bloommcp/data/TRAITS_DIR'
+            else
+              echo 'No migration needed (already migrated or fresh host)'
+            fi
+          "
 
       # Docker auto-creates a missing bind-mount source directory owned by the
       # daemon's user (root on this host), which the non-root bloommcp container

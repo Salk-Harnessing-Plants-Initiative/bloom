@@ -1,5 +1,5 @@
 """Issue #474: docker-compose.prod.yml has the identical unguarded bloommcp
-bind-mount shape (bloommcp/data/{SLEAP_OUT_CSV,PLOTS_DIR,ANALYSIS_OUTPUT}) that
+bind-mount shape (bloommcp/data/{TRAITS_DIR,PLOTS_DIR,ANALYSIS_OUTPUT}) that
 issue #472/PR #473 fixed for the dev path only. This pins that the same
 scripts/ensure_bloommcp_data_dirs.sh preflight runs, and runs BEFORE the
 compose-up step, at all three additional call sites: deploy.yml's
@@ -7,6 +7,11 @@ deploy-production and deploy-staging jobs (SSH'd onto the real deploy host),
 and pr-checks.yml's compose-health-check job (a fresh GitHub-hosted runner
 every run, so it hits the exact same "Docker auto-creates the missing
 bind-mount source as root" mechanism on every PR).
+
+Also pins issue #477's deploy-host migration step (renaming a pre-existing
+bloommcp/data/SLEAP_OUT_CSV to TRAITS_DIR in place) runs BEFORE the preflight
+above in both deploy.yml jobs — see the ordering rationale in
+test_deploy_jobs_provision_data_dirs_before_compose_up.
 """
 
 from __future__ import annotations
@@ -80,6 +85,29 @@ def test_deploy_jobs_provision_data_dirs_before_compose_up():
             f"{job_name}'s preflight step must `cd` into "
             f"${{{{ secrets.{deploy_path_secret} }}}} — each SSH step is its own "
             "session, so this does not carry over from a prior step."
+        )
+        # Issue #477: bloommcp/data/ is gitignored, so a rename of its
+        # SLEAP_OUT_CSV leaf to TRAITS_DIR is invisible to `git reset --hard`
+        # on the deploy host. The migration step (rename old->new in place if
+        # present) MUST run before the preflight above — otherwise the
+        # preflight's `mkdir -p` would auto-create an empty TRAITS_DIR first,
+        # and the migration's own `[ ! -e bloommcp/data/TRAITS_DIR ]` guard
+        # would then see it already exists and skip renaming the real,
+        # populated legacy directory, silently orphaning it.
+        migrate_idx = _find_step_index(
+            steps, lambda s: "SLEAP_OUT_CSV" in _step_run_text(s) and "mv " in _step_run_text(s)
+        )
+        assert migrate_idx is not None, (
+            f"{job_name} has no step migrating a legacy SLEAP_OUT_CSV directory "
+            "to TRAITS_DIR — issue #477's rename needs this on a real deploy "
+            "host, since bloommcp/data/ is gitignored and `git reset --hard` "
+            "never touches it."
+        )
+        assert migrate_idx < preflight_idx, (
+            f"{job_name}'s legacy-directory migration step (index {migrate_idx}) "
+            f"must run BEFORE the data-dir preflight (index {preflight_idx}), or "
+            "the preflight will auto-create an empty TRAITS_DIR first and the "
+            "migration will then skip renaming the real populated directory."
         )
 
 
