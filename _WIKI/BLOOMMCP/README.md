@@ -59,6 +59,9 @@ were retired/dropped by `devendor-bloommcp-analysis`; see that OpenSpec change f
 This diagram predates the `source/` → `src/bloom_mcp/` package move in other respects
 too — a fuller refresh of the top-level layout is tracked separately.)
 
+`data/` is auto-provisioned by `make dev-up` — see
+[DEV_SETUP.md](../../DEV_SETUP.md#bloommcp-data-directories).
+
 ## Storage
 
 bloommcp uses a dedicated S3 bucket on Supabase, `bloommcp-data`, for
