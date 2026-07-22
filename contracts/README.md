@@ -33,8 +33,10 @@ sequenced it first, and added `read-path` #298); the design doc uses the `A–H`
 | `pin.json`                           | The pin manifest: `package`, `version`, full schema `$id`, `source`, file paths                              | The declared pin                                          |
 | `generated/result-envelope.ts`       | TypeScript types (`ResultEnvelope`/`Provenance`/`TraitValue`/`BlobRef` + sub-defs) generated from the schema | Emitted by codegen — **do not edit by hand**              |
 
-**Currently pinned: `v0.1.0a4`.** These are the _contract_ types (from the JSON Schema), distinct
+**Currently pinned: `v0.1.0a5`.** These are the _contract_ types (from the JSON Schema), distinct
 from the Supabase `database.types.ts` (generated from the database by `make gen-types`).
+
+> Note on `v0.1.0a5`: re-pinned from `v0.1.0a4` for Bloom change `add-cyl-blob-upload` (#407) — an **`$id`-only structural no-op for the JSON Schema** (verified by diffing the fetched `v0.1.0a5` schema against the vendored `a4` schema with the version string normalized out: no other bytes differ). `BlobRef`/`Provenance` are unchanged and the generated TS is byte-identical apart from the `$id` line. The substantive addition in this contracts release is on the Python package side — `sleap_roots_contracts.PredictionArtifact`/`PredictionManifest`, promoted from `sleap-roots-predict` (talmolab/sleap-roots-contracts#22) so `bloomctl cyl ingest-result --predictions-dir` can read predict's per-scan manifest without a PyPI-absent dependency — not a schema field, so it doesn't surface in the drift-guard diff.
 
 > Note on `v0.1.0a4`: re-pinned from `v0.1.0a3` for Bloom change `add-cyl-download-for-predict` (#411) — an **`$id`-only structural no-op for the JSON Schema** (verified by diffing the fetched `v0.1.0a4` schema against the vendored `a3` schema with the version string normalized out: no other bytes differ). `BlobRef`/`Provenance` are unchanged and the generated TS is byte-identical apart from the `$id` line. The substantive addition in this contracts release is on the Python package side — `sleap_roots_contracts.resolve_params`, the canonical species/age-normalization oracle bloomctl now calls when authoring `scan_metadata.json` sidecars for the A4 per-scan pipeline stage-in — not a schema field, so it doesn't surface in the drift-guard diff.
 
