@@ -120,7 +120,7 @@ def test_snapshot_frame_normal():
         captured_path = src
         # CSV exists and is readable while inside the context
         assert src.exists()
-        loaded = pd.read_csv(src)
+        loaded = pd.read_csv(src, encoding="utf-8")
         assert list(loaded.columns) == ["a", "b"]
         assert len(loaded) == 2
 
@@ -137,7 +137,7 @@ def test_snapshot_frame_non_default_index_written_without_index_column():
     df = pd.DataFrame({"a": [1, 2, 3]}, index=[10, 11, 12])
 
     with snapshot_frame(df) as src:
-        loaded = pd.read_csv(src)
+        loaded = pd.read_csv(src, encoding="utf-8")
         assert "Unnamed: 0" not in loaded.columns
         assert list(loaded.columns) == ["a"]
         assert list(loaded["a"]) == [1, 2, 3]
@@ -148,7 +148,7 @@ def test_snapshot_frame_empty_df():
 
     with snapshot_frame(df) as src:
         assert src.exists()
-        loaded = pd.read_csv(src)
+        loaded = pd.read_csv(src, encoding="utf-8")
         assert list(loaded.columns) == ["a", "b"]
         assert len(loaded) == 0
 

@@ -20,19 +20,25 @@ from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools import qc_clean_tool
-from bloom_mcp.tools.qc_clean_tool import QCCleanParams, QCCleanResult, qc_clean
+from bloom_mcp.sections.sleap_roots.analysis import qc_clean as qc_clean_tool
+from bloom_mcp.sections.sleap_roots.analysis.qc_clean import (
+    QCCleanParams,
+    QCCleanResult,
+    qc_clean,
+)
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _RAW = _FIXTURES / "turface_19_raw_data.csv"
-_GOLDEN = json.loads((_FIXTURES / "turface_19_qc_golden.json").read_text())
+_GOLDEN = json.loads(
+    (_FIXTURES / "turface_19_qc_golden.json").read_text(encoding="utf-8")
+)
 
 _EXPERIMENT = "turface_19_raw.csv"
 _MNT = _GOLDEN["cleanup_params"]["max_nans_per_trait"]
 
 
 def _raw_df() -> pd.DataFrame:
-    return pd.read_csv(_RAW)
+    return pd.read_csv(_RAW, encoding="utf-8")
 
 
 @pytest.fixture
@@ -62,7 +68,8 @@ def test_cleaned_table_has_no_nans_and_matches_golden_shape(injected_ports):
     result = _run()
 
     assert result.n_samples_out == _GOLDEN["cleaned_samples"] == 187
-    assert result.n_traits_out == _GOLDEN["cleaned_traits"] == 18
+    # #403: detected traits 20 -> 19 (Computation.Time.s excluded), cleaned 18 -> 17.
+    assert result.n_traits_out == _GOLDEN["cleaned_traits"] == 17
     assert sorted(result.removed_traits) == _GOLDEN["removed_traits"]
 
     # The persisted cleaned table itself has zero NaNs in its kept trait columns.
@@ -92,8 +99,8 @@ def test_fewer_samples_dropped_than_naive_dropna(injected_ports):
 # ── 3.1 tools/list presence ─────────────────────────────────────────────────
 
 
-def test_qc_clean_appears_in_tools_list_and_workflow_preserved():
-    """3.1 — qc_clean is discoverable; run_qc_workflow is still registered."""
+def test_qc_clean_appears_in_tools_list():
+    """3.1 — qc_clean is discoverable."""
     from fastmcp import Client
 
     from bloom_mcp import server
@@ -103,9 +110,8 @@ def test_qc_clean_appears_in_tools_list_and_workflow_preserved():
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    assert "qc_clean" in tools
-    assert tools["qc_clean"].inputSchema is not None
-    assert "run_qc_workflow" in tools  # additive — workflow not removed
+    assert "sleap_roots_qc_clean" in tools
+    assert tools["sleap_roots_qc_clean"].inputSchema is not None
 
 
 # ── 3.2 schema round-trip ───────────────────────────────────────────────────
@@ -170,7 +176,13 @@ def test_provenance_stamped_seed_none_and_links_returned(injected_ports):
 def test_cleaned_is_subset_no_nans_and_bounded(injected_ports):
     _reader, _store = injected_ports
     raw = _raw_df()
-    raw_traits = [c for c in raw.columns if c not in ("Barcode", "geno", "rep")]
+    # #403: get_trait_columns excludes the numeric metadata column Computation.Time.s,
+    # so mirror the tool's detected trait set (n_traits_in == 19) here.
+    raw_traits = [
+        c
+        for c in raw.columns
+        if c not in ("Barcode", "geno", "rep", "Computation.Time.s")
+    ]
     result = _run()
 
     assert set(result.kept_trait_columns).issubset(set(raw_traits))
@@ -197,14 +209,6 @@ def test_delegates_once_forwards_roles_and_never_calls_vendored_cleanup(
 
     monkeypatch.setattr(qc_clean_tool, "clean_traits_for_analysis", _spy)
 
-    # The vendored cleanup must never be touched.
-    import bloom_mcp.data_cleanup as vendored
-
-    def _boom(*a, **k):  # pragma: no cover
-        raise AssertionError("qc_clean called the vendored bloom_mcp.data_cleanup")
-
-    monkeypatch.setattr(vendored, "apply_data_cleanup_filters", _boom)
-
     _run()
 
     assert captured["n_calls"] == 1
@@ -213,51 +217,87 @@ def test_delegates_once_forwards_roles_and_never_calls_vendored_cleanup(
     assert captured["kwargs"]["replicate_col"] == "rep"
 
 
-# ── 3.6 role-column fallback (None must not be forwarded) ────────────────────
+# ── 3.6 required roles supersede the old delegate-default fallback (#403) ────
 
 
-def test_undetected_role_columns_fall_back_to_delegate_defaults(monkeypatch):
-    # A frame with no detectable genotype/replicate/barcode roles.
+def test_missing_required_roles_error_with_no_run(injected_ports):
+    """#403 supersede: a frame with no detectable genotype/sample-id now hard-errors
+    (previously it fell back to the delegate defaults — see the retired
+    ``test_undetected_role_columns_fall_back_to_delegate_defaults``). An untraceable
+    cleaned frame is the root cause of the barcode-less remove_outliers crash, so
+    qc_clean refuses to produce one: a structured error that lists the available
+    columns and names BOTH overrides, and persists nothing."""
+    reader, store = injected_ports
     df = pd.DataFrame(
         {
             "t1": [1.0, 2.0, 3.0, 4.0, 5.0] * 4,
             "t2": [2.0, 4.0, 6.0, 8.0, 10.0] * 4,
         }
     )
-    reader = FakeReader()
-    store = FakeResultStore()
     reader.add_experiment("roleless.csv", df)
-    _ports.configure(reader=reader, store=store)
 
-    captured = {}
-
-    def _spy(df_, trait_cols=None, **kwargs):
-        captured["kwargs"] = kwargs
-        # Return a trivially-clean result so the tool can proceed.
-        return (
-            df_.copy(),
-            list(trait_cols or df_.columns),
-            {
-                "original_samples": len(df_),
-                "final_samples": len(df_),
-                "original_traits": len(trait_cols or df_.columns),
-                "final_traits": len(trait_cols or df_.columns),
-                "removed_traits": [],
-            },
-        )
-
-    monkeypatch.setattr(qc_clean_tool, "clean_traits_for_analysis", _spy)
-    try:
+    with pytest.raises(BloomMCPError) as exc:
         qc_clean(QCCleanParams(experiment="roleless.csv"))
-    finally:
-        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
-    # None must never be forwarded — the kwarg is omitted so the delegate default applies.
-    for role in ("genotype_col", "replicate_col", "barcode_col"):
-        assert (
-            captured["kwargs"].get(role) is not None or role not in captured["kwargs"]
-        )
-        assert captured["kwargs"].get(role, "x") is not None
+    assert exc.value.code == "assumption_violated"
+    assert "t1" in exc.value.message and "t2" in exc.value.message  # lists columns
+    assert "genotype_column" in exc.value.remedy
+    assert "sample_id_column" in exc.value.remedy
+    assert store.list_runs("roleless.csv", "qc") == []
+
+
+def test_only_genotype_missing_error_names_single_role(injected_ports):
+    """G: single-role-missing path — only genotype absent (sample_id present).
+
+    Error message must name 'genotype' only (not ' and sample-identifier'), and
+    the remedy must name genotype_column but not sample_id_column. Guards the
+    ' and '.join(missing) concatenation for the single-item case.
+    """
+    reader, store = injected_ports
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(12)],  # sample_id auto-detects
+            "t1": [float(i) for i in range(12)],
+            "t2": [float(2 * i) for i in range(12)],
+        }
+    )
+    reader.add_experiment("no_geno.csv", df)
+
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment="no_geno.csv"))
+
+    assert exc.value.code == "assumption_violated"
+    assert "genotype" in exc.value.message
+    assert "sample-identifier" not in exc.value.message
+    assert "genotype_column" in exc.value.remedy
+    assert "sample_id_column" not in exc.value.remedy
+    assert store.list_runs("no_geno.csv", "qc") == []
+
+
+def test_only_sample_id_missing_error_names_single_role(injected_ports):
+    """G: single-role-missing path — only sample_id absent (genotype present).
+
+    Error message must name 'sample-identifier' only (not 'genotype and …').
+    """
+    reader, store = injected_ports
+    df = pd.DataFrame(
+        {
+            "geno": (["g1", "g2"] * 6),  # genotype auto-detects
+            "t1": [float(i) for i in range(12)],
+            "t2": [float(2 * i) for i in range(12)],
+        }
+    )
+    reader.add_experiment("no_sample_id.csv", df)
+
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment="no_sample_id.csv"))
+
+    assert exc.value.code == "assumption_violated"
+    assert "sample-identifier" in exc.value.message
+    assert "genotype and" not in exc.value.message
+    assert "sample_id_column" in exc.value.remedy
+    assert "genotype_column" not in exc.value.remedy
+    assert store.list_runs("no_sample_id.csv", "qc") == []
 
 
 # ── 3.7 error envelope ──────────────────────────────────────────────────────
@@ -334,7 +374,7 @@ def test_qc_clean_run_composes_into_require_clean_read(fake_supabase_storage, tm
     # (the FakeResultStore path can't reload, so this real round-trip is the guard).
     assert int(resolved.df[resolved.trait_cols].isna().sum().sum()) == 0
     assert len(resolved.df) == _GOLDEN["cleaned_samples"] == 187
-    assert len(resolved.trait_cols) == _GOLDEN["cleaned_traits"] == 18
+    assert len(resolved.trait_cols) == _GOLDEN["cleaned_traits"] == 17
 
 
 # ── parity: qc_clean output == direct pipeline cleanup step on same fixture ──
@@ -361,7 +401,7 @@ def test_qc_clean_matches_pipeline_cleanup_on_same_fixture(
     """
     from sleap_roots_analyze import clean_traits_for_analysis
 
-    from bloom_mcp.tools.qc_clean_tool import _role_kwargs
+    from bloom_mcp.data_access.columns import resolve_columns
 
     reader = FakeReader()
     reader.add_experiment(_EXPERIMENT, _raw_df())
@@ -372,15 +412,22 @@ def test_qc_clean_matches_pipeline_cleanup_on_same_fixture(
     params = QCCleanParams(experiment=_EXPERIMENT, max_nans_per_trait=_MNT)
     try:
         frame = reader.load_experiment(_EXPERIMENT, version="raw")
+        # Mirror the tool's actual path: resolve_columns → role kwargs inline.
+        # (Previously used _role_kwargs(frame) which reads adapter-detected roles
+        # and would diverge if override priority logic ever changed.)
+        r = resolve_columns(frame.df)
+        expected_role_kwargs = {"barcode_col": r.sample_id, "genotype_col": r.genotype}
+        if r.replicate is not None:
+            expected_role_kwargs["replicate_col"] = r.replicate
         # The pipeline cleanup step, called directly with the tool's own params.
         expected_df, expected_kept, _log = clean_traits_for_analysis(
             frame.df,
-            trait_cols=frame.trait_cols,
+            trait_cols=r.trait_cols,
             max_zeros_per_trait=params.max_zeros_per_trait,
             max_nans_per_trait=params.max_nans_per_trait,
             max_nans_per_sample=params.max_nans_per_sample,
             min_samples_per_trait=params.min_samples_per_trait,
-            **_role_kwargs(frame),
+            **expected_role_kwargs,
         )
 
         result = qc_clean(params)
@@ -431,9 +478,13 @@ def test_qc_clean_matches_full_pipeline_cleanup_step(fake_supabase_storage, tmp_
     from sleap_roots_analyze.pipeline.core import StepResult
     from sleap_roots_analyze.pipeline.steps.cleanup_traits import CleanupTraitsStep
 
+    from bloom_mcp.data_access.columns import resolve_columns
+
     raw = _raw_df()
     meta_cols = ["Barcode", "geno", "rep"]
-    trait_cols = [c for c in raw.columns if c not in meta_cols]
+    # #403: mirror the tool's detected trait set — get_trait_columns excludes numeric
+    # metadata (Computation.Time.s), so feed the pipeline step the same 19 traits.
+    trait_cols = resolve_columns(raw).trait_cols
 
     # ── Full pipeline cleanup step (step 02), driven with the REAL pipeline config.
     # Only config.cleanup / config.columns are consulted by the step; the canonical
@@ -449,15 +500,21 @@ def test_qc_clean_matches_full_pipeline_cleanup_step(fake_supabase_storage, tmp_
         config.cleanup.min_samples_per_trait,
     ) == (0.5, 0.2, 0.0, 10)
 
+    # Feed the step the SAME trait set qc_clean detects (roles + the 19
+    # get_trait_columns traits). The step processes every numeric column it is given,
+    # so without this it would also clean Computation.Time.s — which qc_clean now
+    # (#403) excludes as metadata. Comparing on the shared detected set is the honest
+    # parity: "same cleaning decisions on the analysis trait set".
+    raw_for_step = raw[meta_cols + list(trait_cols)]
     prev = StepResult(
-        data=raw,
+        data=raw_for_step,
         metadata={
             "trait_column_names": trait_cols,
             "metadata_column_names": meta_cols,
         },
     )
     pipe = CleanupTraitsStep().execute(
-        data=raw, config=config, run_dir=tmp_path, prev_result=prev
+        data=raw_for_step, config=config, run_dir=tmp_path, prev_result=prev
     )
     pipe_clean = pipe.data
     # raw → sanitized name map the step applied (only *changed* names are keyed).
@@ -575,8 +632,10 @@ def test_residual_nans_in_kept_columns_are_rejected_before_commit(
 def test_non_default_roles_are_forwarded_overriding_delegate_defaults(monkeypatch):
     # Capitalized Genotype/Replicate differ from the delegate defaults geno/rep,
     # so this distinguishes "forwards detected roles" from "hard-codes defaults".
+    # A sample identifier (Barcode) is included — required as of #403.
     df = pd.DataFrame(
         {
+            "Barcode": [f"b{i}" for i in range(16)],
             "Genotype": (["g1", "g2"] * 8),
             "Replicate": list(range(16)),
             "tA": [float(i) for i in range(16)],
@@ -607,8 +666,7 @@ def test_non_default_roles_are_forwarded_overriding_delegate_defaults(monkeypatc
 
     assert captured["kwargs"]["genotype_col"] == "Genotype"
     assert captured["kwargs"]["replicate_col"] == "Replicate"
-    # sample_id undetected here → barcode_col omitted (not forwarded as None).
-    assert captured["kwargs"].get("barcode_col") != "Genotype"
+    assert captured["kwargs"]["barcode_col"] == "Barcode"
 
 
 # ── second run increments version (latest resolves to it) ───────────────────
@@ -691,3 +749,275 @@ def test_overstrict_thresholds_real_delegate_is_structured_not_internal(injected
     assert exc.value.code == "assumption_violated"
     assert "threshold" in exc.value.remedy.lower()
     assert store.list_runs(_EXPERIMENT, "qc") == []  # nothing persisted
+
+
+# ── #403: contract validation + required traceable roles + overrides ─────────
+
+
+def test_result_carries_resolved_roles_and_validation_findings(injected_ports):
+    """#403: the result surfaces the resolved roles, the excluded metadata, and the
+    (warn-mode) validation warnings — turface resolves geno/Barcode/rep and excludes
+    the numeric metadata column Computation.Time.s from the trait set."""
+    _reader, _store = injected_ports
+    result = _run()
+    assert result.genotype_column == "geno"
+    assert result.sample_id_column == "Barcode"
+    assert result.replicate_column == "rep"
+    assert result.excluded_columns == ["Computation.Time.s"]
+    assert isinstance(result.validation_warnings, list)
+
+
+def test_manifest_carries_input_validation_block(injected_ports):
+    """#403: the persisted run records an additive input_validation block with the
+    exact keys, the provenance-recorded contract_version, and the resolved roles."""
+    _reader, store = injected_ports
+    _run()
+    stored = store.get_run(_EXPERIMENT, "qc", "latest")
+    iv = stored.input_validation
+    assert iv is not None
+    assert set(iv) == {
+        "mode",
+        "contract_version",
+        "resolved_roles",
+        "excluded_columns",
+        "warnings",
+    }
+    assert iv["mode"] == "warn"
+    assert iv["resolved_roles"] == {
+        "genotype": "geno",
+        "sample_id": "Barcode",
+        "replicate": "rep",
+    }
+    assert iv["excluded_columns"] == ["Computation.Time.s"]
+
+
+def test_sample_id_column_override_resolves_and_cleans(injected_ports):
+    """#403: a sample identifier that auto-detection misses is usable via the
+    sample_id_column override; without it the required-role guard fires."""
+    reader, store = injected_ports
+    df = pd.DataFrame(
+        {
+            "my_id": [f"s{i}" for i in range(16)],  # not a SAMPLE_ID_PATTERNS match
+            "geno": (["g1", "g2"] * 8),
+            "tA": [float(i) for i in range(16)],
+            "tB": [float(2 * i) for i in range(16)],
+        }
+    )
+    reader.add_experiment("override.csv", df)
+
+    # No override → sample id unresolved → structured error, no run.
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment="override.csv"))
+    assert exc.value.code == "assumption_violated"
+    assert store.list_runs("override.csv", "qc") == []
+
+    # With the override the named column is used and cleaning succeeds.
+    result = qc_clean(
+        QCCleanParams(experiment="override.csv", sample_id_column="my_id")
+    )
+    assert result.sample_id_column == "my_id"
+
+
+def test_exclude_columns_drops_trait_and_trait_columns_wins(injected_ports):
+    """#403: exclude_columns removes a column from the trait set; an explicit
+    trait_columns allow-list wins over exclude_columns for the same column."""
+    _reader, _store = injected_ports
+    # Exclude a real turface trait → it is dropped from the kept set.
+    excluded = _run(exclude_columns=["Total.Root.Length.mm"])
+    assert "Total.Root.Length.mm" not in excluded.kept_trait_columns
+    assert "Total.Root.Length.mm" in excluded.excluded_columns
+
+    # But an explicit trait_columns allow-list wins even when the same column is
+    # also named in exclude_columns.
+    won = _run(
+        trait_columns=["Total.Root.Length.mm"],
+        exclude_columns=["Total.Root.Length.mm"],
+    )
+    assert won.kept_trait_columns == ["Total.Root.Length.mm"]
+    # B-2: the allow-list winner must NOT also appear in excluded_columns.
+    assert "Total.Root.Length.mm" not in won.excluded_columns
+
+
+def test_exclude_columns_absent_column_is_silent_noop(injected_ports):
+    """I-1 / BLOCK-2: an exclude_columns entry absent from the frame is a no-op —
+    no error, and the trait set is identical to an unparameterized run."""
+    _reader, _store = injected_ports
+    baseline = _run()
+    result = _run(exclude_columns=["NoSuchColumn"])
+    assert result.kept_trait_columns == baseline.kept_trait_columns
+    assert result.n_traits_out == baseline.n_traits_out
+
+
+def test_exclude_columns_role_column_emits_absorbed_warning(injected_ports):
+    """B-3 / BLOCK-4: exclude_columns=[role_col] is absorbed by role assignment and
+    surfaces as a validation_warnings entry — the caller is not silently ignored."""
+    _reader, _store = injected_ports
+    result = _run(exclude_columns=["geno"])  # "geno" is the auto-detected genotype role
+    assert any("absorbed" in w for w in result.validation_warnings)
+
+
+def test_same_column_for_genotype_and_sample_id_is_invalid_input(injected_ports):
+    """B-4: supplying the same column for both genotype_column and sample_id_column
+    raises invalid_input; a single column cannot serve as both roles."""
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                experiment=_EXPERIMENT,
+                genotype_column="geno",
+                sample_id_column="geno",
+            )
+        )
+    assert exc.value.code == "invalid_input"
+    assert "geno" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "qc") == []
+
+
+def test_partial_override_dual_role_collision_is_invalid_input(injected_ports):
+    """BLOCK-2 (post-resolution guard): partial override where genotype_column names a
+    column that is also auto-detected as sample_id must raise invalid_input even though
+    only one param was supplied.
+
+    turface_19: 'Barcode' matches sample_id patterns. Passing genotype_column='Barcode'
+    without sample_id_column causes resolve_columns to assign Barcode to both roles.
+    The post-resolution guard catches this before the run is persisted.
+    """
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                experiment=_EXPERIMENT,
+                genotype_column="Barcode",
+            )
+        )
+    assert exc.value.code == "invalid_input"
+    assert "Barcode" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "qc") == []
+
+
+def test_override_naming_nonexistent_column_is_invalid_input(injected_ports):
+    """#403: an override that names a column absent from the frame is a fixable
+    invalid_input naming it, not a downstream KeyError; nothing is persisted."""
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment=_EXPERIMENT, sample_id_column="NoSuchCol"))
+    assert exc.value.code == "invalid_input"
+    assert "NoSuchCol" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "qc") == []
+
+
+def test_all_nan_genotype_column_is_assumption_violated(injected_ports):
+    """Item 2 / K: a genotype override that resolves to a column whose values are
+    entirely NaN/blank errors with assumption_violated, no run persisted.
+
+    resolved.genotype is non-None (name resolved), but every row is untraceable —
+    the bloommcp guard catches this independently of the contract's warn-mode."""
+    reader, store = injected_ports
+    df = pd.DataFrame(
+        {
+            "my_geno": [float("nan")] * 12,  # all NaN — untraceable
+            "Barcode": [f"b{i}" for i in range(12)],
+            "t1": [float(i) for i in range(12)],
+            "t2": [float(2 * i) for i in range(12)],
+        }
+    )
+    reader.add_experiment("nan_geno.csv", df)
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment="nan_geno.csv", genotype_column="my_geno"))
+    assert exc.value.code == "assumption_violated"
+    assert "my_geno" in exc.value.message
+    assert store.list_runs("nan_geno.csv", "qc") == []
+
+
+def test_role_column_in_trait_columns_is_invalid_input(injected_ports):
+    """Item 3 / A: a caller-supplied trait column that is the resolved genotype
+    role errors with invalid_input; the error names the column and explains it was
+    auto-detected (so an agent knows whether to remap or remove it).
+
+    "geno" must be numeric here so _validate_trait_subset's dtype check doesn't fire
+    first — role detection is name-based regardless of dtype."""
+    reader, store = injected_ports
+    df = pd.DataFrame(
+        {
+            "geno": [0.0, 1.0] * 6,  # numeric; still auto-detects as genotype by name
+            "Barcode": [f"b{i}" for i in range(12)],
+            "t1": [float(i) for i in range(12)],
+            "t2": [float(2 * i) for i in range(12)],
+        }
+    )
+    reader.add_experiment("role_trait.csv", df)
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(experiment="role_trait.csv", trait_columns=["geno", "t1"])
+        )
+    assert exc.value.code == "invalid_input"
+    assert "geno" in exc.value.message
+    assert (
+        "auto-detected" in exc.value.message
+    )  # item 10: explains how column became a role
+    assert store.list_runs("role_trait.csv", "qc") == []
+
+
+def test_warn_mode_structural_failure_is_assumption_violated(injected_ports):
+    """#403: warn mode still RAISES on a universal structural failure (a frame with
+    genotype + sample-id but no numeric trait) — surfaced as assumption_violated, no
+    run."""
+    reader, store = injected_ports
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(12)],
+            "geno": (["g1", "g2"] * 6),
+            "note": ["x"] * 12,  # non-numeric → no numeric trait
+        }
+    )
+    reader.add_experiment("notrait.csv", df)
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment="notrait.csv"))
+    assert exc.value.code == "assumption_violated"
+    assert store.list_runs("notrait.csv", "qc") == []
+
+
+def test_contracts_absent_degrades_but_role_guard_still_enforced(
+    injected_ports, monkeypatch
+):
+    """#403: with sleap-roots-contracts monkeypatched unavailable the contract call is
+    a logged no-op (no ImportError), yet bloommcp's own required-role guard still
+    refuses an untraceable frame — traceability holds without the contracts package."""
+    import sleap_roots_analyze.validation.input_contract as ic
+
+    monkeypatch.setattr(ic, "CONTRACTS_AVAILABLE", False)
+    reader, store = injected_ports
+
+    # Contract absent → turface still cleans, warnings empty (validation no-ops).
+    result = _run()
+    assert result.validation_warnings == []
+
+    # …but the bloommcp guard is independent of the contract: a roleless frame errors.
+    reader.add_experiment(
+        "roleless2.csv",
+        pd.DataFrame({"t1": [1.0] * 12, "t2": [2.0] * 12}),
+    )
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment="roleless2.csv"))
+    assert exc.value.code == "assumption_violated"
+    assert store.list_runs("roleless2.csv", "qc") == []
+
+
+def test_new_override_params_exposed_in_tool_schema():
+    """#403: the agent-facing inputSchema exposes the new override params so a client
+    can discover them."""
+    from fastmcp import Client
+
+    from bloom_mcp import server
+
+    async def _list():
+        async with Client(server.mcp) as client:
+            return await client.list_tools()
+
+    tools = {t.name: t for t in asyncio.run(_list())}
+    # The contract wrapper nests the model under a single ``params`` arg, so assert the
+    # new fields appear anywhere in the (serialized) input schema.
+    schema_json = json.dumps(tools["sleap_roots_qc_clean"].inputSchema)
+    assert "sample_id_column" in schema_json
+    assert "genotype_column" in schema_json
+    assert "exclude_columns" in schema_json

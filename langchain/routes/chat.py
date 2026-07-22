@@ -1,5 +1,6 @@
 """Chat endpoints: synchronous and SSE-streaming variants share the same agent
 factory, validation, and thread-metadata upsert."""
+
 import json
 import logging
 
@@ -16,17 +17,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Foundational MCP tools are always exposed so the agent can discover and load data.
+# inspect_data_quality was dropped (bloom-mcp devendor-bloommcp-analysis; redundant
+# with qc_inspect). Matched prefix-aware (exact name or "<section>_<name>") so the
+# Phase-2 sections migration's namespacing (e.g. core_list_available_experiments)
+# doesn't silently empty this set — see test_tool_name_lists_match_live_registry.
 ALWAYS_INCLUDE_MCP_TOOLS = {
     "list_available_experiments",
     "load_experiment_data",
-    "inspect_data_quality",
     "list_existing_analyses",
 }
+
+
+def _is_always_included(tool_name: str) -> bool:
+    return tool_name in ALWAYS_INCLUDE_MCP_TOOLS or any(
+        tool_name.endswith(f"_{base}") for base in ALWAYS_INCLUDE_MCP_TOOLS
+    )
+
 
 VALID_TOOL_SETS = ["all", "scrna", "cyl", "generic", "mcp"]
 
 
 # ─── Shared helpers ───────────────────────────────────────────────────────────
+
 
 def _resolve_agent(body: ChatRequest, checkpointer) -> tuple[object, str, str]:
     """Validate the request and resolve a cached agent.
@@ -44,16 +56,22 @@ def _resolve_agent(body: ChatRequest, checkpointer) -> tuple[object, str, str]:
 
     tool_set = body.tool_set.lower() if body.tool_set else "all"
     if tool_set not in VALID_TOOL_SETS:
-        raise ValueError(f"Unknown tool_set: {tool_set}. Choose from: {VALID_TOOL_SETS}")
+        raise ValueError(
+            f"Unknown tool_set: {tool_set}. Choose from: {VALID_TOOL_SETS}"
+        )
 
     if body.mcp_tool_names:
-        selected = set(body.mcp_tool_names) | ALWAYS_INCLUDE_MCP_TOOLS
-        filtered = [t for t in deps.mcp_tools if t.name in selected]
+        explicit = set(body.mcp_tool_names)
+        filtered = [
+            t
+            for t in deps.mcp_tools
+            if t.name in explicit or _is_always_included(t.name)
+        ]
     elif tool_set == "mcp":
         # MCP-only mode: expose every connected MCP tool (no foundational filter).
         filtered = list(deps.mcp_tools)
     else:
-        filtered = [t for t in deps.mcp_tools if t.name in ALWAYS_INCLUDE_MCP_TOOLS]
+        filtered = [t for t in deps.mcp_tools if _is_always_included(t.name)]
 
     agent = deps.get_or_create_agent(
         provider=provider,
@@ -65,7 +83,9 @@ def _resolve_agent(body: ChatRequest, checkpointer) -> tuple[object, str, str]:
     return agent, provider, model
 
 
-async def _upsert_thread_metadata(checkpointer, user_id: str, thread_id: str, prompt: str) -> None:
+async def _upsert_thread_metadata(
+    checkpointer, user_id: str, thread_id: str, prompt: str
+) -> None:
     """Best-effort write to chat_threads. Logs warnings, never raises."""
     if not checkpointer or thread_id == "default":
         return
@@ -91,6 +111,7 @@ async def _upsert_thread_metadata(checkpointer, user_id: str, thread_id: str, pr
 
 # ─── Synchronous chat ─────────────────────────────────────────────────────────
 
+
 @router.post("/langchain/chat", response_model=ChatResponse)
 async def chat(
     body: ChatRequest,
@@ -99,7 +120,7 @@ async def chat(
 ):
     """Process a chat message through the LangChain agent. Requires authentication."""
     try:
-        checkpointer = getattr(request.app.state, 'checkpointer', None)
+        checkpointer = getattr(request.app.state, "checkpointer", None)
         agent, provider, model = _resolve_agent(body, checkpointer)
         scoped_thread = f"{user_id}:{body.thread_id}"
 
@@ -114,11 +135,13 @@ async def chat(
         for msg in messages:
             if isinstance(msg, AIMessage) and msg.tool_calls:
                 for tool_call in msg.tool_calls:
-                    tools_used.append(tool_call['name'])
+                    tools_used.append(tool_call["name"])
             elif isinstance(msg, AIMessage) and not msg.tool_calls:
                 final_answer = msg.content
 
-        await _upsert_thread_metadata(checkpointer, user_id, body.thread_id, body.prompt)
+        await _upsert_thread_metadata(
+            checkpointer, user_id, body.thread_id, body.prompt
+        )
 
         return ChatResponse(
             answer=final_answer,
@@ -135,6 +158,7 @@ async def chat(
 
 
 # ─── Streaming chat ───────────────────────────────────────────────────────────
+
 
 @router.post("/langchain/chat/stream")
 async def chat_stream(
@@ -161,13 +185,16 @@ async def chat_stream(
     `error` event because headers have already been flushed by the time the
     agent runs.
     """
+
     async def event_stream():
         try:
-            checkpointer = getattr(request.app.state, 'checkpointer', None)
+            checkpointer = getattr(request.app.state, "checkpointer", None)
             try:
                 agent, _provider, _model = _resolve_agent(body, checkpointer)
             except ValueError as e:
-                logger.warning("Invalid chat stream request for user %s: %s", user_id, e)
+                logger.warning(
+                    "Invalid chat stream request for user %s: %s", user_id, e
+                )
                 yield f"data: {json.dumps({'type': 'error', 'content': 'Invalid request.'})}\n\n"
                 return
 
@@ -201,12 +228,18 @@ async def chat_stream(
                     if "router_internal" in (event.get("tags") or []):
                         continue
                     chunk = event.get("data", {}).get("chunk")
-                    if chunk and isinstance(getattr(chunk, "content", None), str) and chunk.content:
+                    if (
+                        chunk
+                        and isinstance(getattr(chunk, "content", None), str)
+                        and chunk.content
+                    ):
                         yield f"data: {json.dumps({'type': 'token', 'content': chunk.content})}\n\n"
 
             yield f"data: {json.dumps({'type': 'done', 'tools_used': tools_used})}\n\n"
 
-            await _upsert_thread_metadata(checkpointer, user_id, body.thread_id, body.prompt)
+            await _upsert_thread_metadata(
+                checkpointer, user_id, body.thread_id, body.prompt
+            )
 
         except Exception:
             logger.exception(f"Stream error for user {user_id}")

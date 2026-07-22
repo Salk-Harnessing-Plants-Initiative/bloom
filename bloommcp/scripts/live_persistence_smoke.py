@@ -1,4 +1,4 @@
-"""Live persistence smoke — drive a workflow through the REAL ports against the dev stack.
+"""Live persistence smoke — drive granular tools through the REAL ports against the dev stack.
 
 This runs on the **host** against the running dev stack (Supabase + storage-api +
 MinIO), so it must override what ``.env.dev`` configures for in-container processes:
@@ -16,20 +16,12 @@ MinIO), so it must override what ``.env.dev`` configures for in-container proces
 from the environment **at import time**, so the env must be set *before* ``import
 bloom_mcp`` (and we hard-set the module globals afterwards as a belt-and-suspenders).
 
-What it asserts — the provenance the Tier-2 persistence layer (#323) promises, against the
-real `SupabaseResultStore`/`SupabaseReader` round-trip rather than in-memory fakes:
+Before driving any tool, ``import bloom_mcp`` (incl. the ``_ports`` composition root) is
+checked clean with no Supabase env — the Tier-0 lazy-validation contract — in a scrubbed
+subprocess first.
 
-  * ``import bloom_mcp`` (incl. the ``_ports`` composition root) is clean with no Supabase
-    env — the Tier-0 lazy-validation contract — checked in a scrubbed subprocess first;
-  * the committed run's manifest is schema v3 with a non-null real ``seed`` (== 42 for a
-    stochastic clustering/kmeans run), ``agent`` == ``bloom_agent``, populated
-    ``environment``, and matching ``output_sha256`` / ``output_keys`` maps;
-  * each recorded ``output_sha256`` equals the SHA-256 of the bytes actually stored;
-  * ``get_run("latest")`` reads the committed run back, and a second commit advances
-    ``latest`` from ``v1`` to ``v2``.
-
-A second, **Tier-3 ``qc_clean``** leg (#338) drives the granular cleanup tool through the
-same real ports against the raw ``turface`` input:
+A **Tier-3 ``qc_clean``** leg (#338) drives the granular cleanup tool through the real
+ports against the raw ``turface`` input:
 
   * ``qc_clean(experiment="turface_raw.csv", max_nans_per_trait=0.1)`` commits a versioned
     ``qc`` run whose committed outputs include ``_cleaned.csv`` and ``cleanup_log.json``;
@@ -39,21 +31,29 @@ same real ports against the raw ``turface`` input:
     resolves the committed **cleaned** version (source ``v<N>_cleaned``, not ``raw``) and that
     frame has zero NaN cells in its trait columns — the qc_clean → pca_analysis contract.
 
-A third, ``remove_outliers`` leg (#378) trims the cleaned version through the same real ports:
+A ``remove_outliers`` leg (#378) trims the cleaned version through the same real ports. This
+is also where the smoke's generic v3-provenance + version-advance guarantee (originally
+proven on a now-retired ``run_clustering_workflow`` leg — devendor-bloommcp-analysis C11.8
+repointed it here, since ``remove_outliers`` is the surviving seed-bearing consumer) lives:
 
   * ``remove_outliers(experiment="turface_raw.csv", method="mahalanobis", seed=42)`` commits a
     versioned ``qc`` run (same class — its trimmed ``_cleaned.csv`` becomes the newest cleaned
     version) whose outputs include ``_cleaned.csv`` and ``outlier_report.json``, with a schema-v3
     manifest recording the resolved ``seed``, ``tool == "remove_outliers"`` (the composition
     anchor), and matching ``output_sha256`` for both artifacts;
+  * the same manifest is also asserted against the generic v3-provenance contract: schema v3,
+    non-null real ``seed`` (== 42), ``agent`` == ``bloom_agent``, populated ``environment``, and
+    matching ``output_sha256`` / ``output_keys`` maps;
   * a fresh ``require_clean=True`` read then resolves the **trimmed** version (``v<N>_cleaned``)
     with *no more* rows than the pre-trim clean and zero NaN trait cells — proving
     qc_clean → remove_outliers → require_clean end-to-end. (The row bound is ``<=``, not a
     strict ``<``: the smoke cleans at its own threshold, so mahalanobis@seed42 may flag zero
     outliers on that frame — a no-op trim, not a regression; the trim's persistence as the
     resolvable latest is anchored on the ``tool`` provenance check above, not the row delta.)
+  * a second ``remove_outliers`` commit must advance ``latest`` from ``v<N>`` to ``v<N+1>``
+    without clobbering the first — ``get_run(first_ref)`` still resolves it.
 
-A fourth, granular **``clustering``** leg (#309) *consumes* that cleaned version through the
+A third, granular **``clustering``** leg (#309) *consumes* that cleaned version through the
 same real ports:
 
   * ``clustering(experiment="turface_raw.csv", method="kmeans", seed=42)`` resolves the latest
@@ -62,9 +62,8 @@ same real ports:
     ``cluster_result.json``, with a schema-v3 manifest recording the resolved ``seed``,
     ``tool == "clustering"``, and matching ``output_sha256`` for both artifacts — the
     qc_clean → … → clustering(require_clean=True) composition, in parallel with pca_analysis.
-    Its ``clustering`` class is disjoint from the legacy workflow leg (different experiment).
 
-A fifth, **hierarchical clustering** leg (#422) validates the deterministic arm:
+A fourth, **hierarchical clustering** leg (#422) validates the deterministic arm:
 
   * ``clustering(experiment="turface_raw.csv", method="hierarchical")`` resolves the latest
     cleaned version via ``require_clean=True`` and commits a versioned ``clustering`` run whose
@@ -72,7 +71,7 @@ A fifth, **hierarchical clustering** leg (#422) validates the deterministic arm:
     ``seed=None`` (hierarchical is deterministic — no RNG), ``tool == "clustering"``, and
     matching ``output_sha256`` for both artifacts.
 
-Every failure mode (workflow error, hash mismatch, read-after-write timeout, import leak)
+Every failure mode (tool error, hash mismatch, read-after-write timeout, import leak)
 routes through the per-check summary and a non-zero exit — never an unlabelled traceback.
 
 Run via ``make bloommcp-smoke`` (preferred) or, with the dev stack up + migrated and
@@ -96,12 +95,14 @@ from pathlib import Path
 from typing import Callable, NamedTuple, Optional
 
 # --- constants ----------------------------------------------------------------
-EXPERIMENT = "turface.csv"
-TOOL_CLASS = "clustering"
-EXPECTED_SEED = 42  # clustering/kmeans resolves a fixed RANDOM_STATE
+# EXPECTED_SEED backs provenance_checks(), the generic v3-provenance assertion
+# (schema/seed/agent/environment/output-keys) originally proven on the retired
+# legacy run_clustering_workflow leg; C11.8 (devendor-bloommcp-analysis) moved
+# that assertion onto the remove_outliers leg, which also resolves a fixed seed
+# of 42 (see RO_SEED below) — same value, no numeric change.
+EXPECTED_SEED = 42
 EXPECTED_AGENT = "bloom_agent"
 _HERE = Path(__file__).resolve().parent
-FIXTURE = _HERE.parent / "tests" / "fixtures" / "turface_19_final_data.csv"
 
 # --- Tier-3 qc_clean leg constants --------------------------------------------
 # A SECOND experiment, cleaned through the granular ``qc_clean`` tool (#338). Its
@@ -131,10 +132,8 @@ RO_SEED = 42  # remove_outliers is stochastic — resolves this fixed seed
 # --- clustering leg constants (#309) ------------------------------------------
 # The granular clustering tool (#309) *consumes* the cleaned version qc_clean (then
 # remove_outliers) committed, through the SAME real ports, persisting a versioned
-# ``clustering`` run — proving qc_clean -> ... -> clustering(require_clean=True). It
-# shares no namespace with the legacy run_clustering_workflow leg above: that leg
-# persists under (turface.csv, "clustering"); this one under (turface_raw.csv,
-# "clustering") — a different experiment. clustering is stochastic (records the seed).
+# ``clustering`` run — proving qc_clean -> ... -> clustering(require_clean=True).
+# clustering is stochastic (records the seed).
 CL_TOOL_CLASS = "clustering"
 CL_SEED = 42  # clustering/kmeans is stochastic — resolves this fixed seed
 CL_LABELS_NAME = "labels.csv"  # logical key for the per-sample cluster labels
@@ -168,11 +167,12 @@ def summarize(checks: list[Check]) -> tuple[str, int]:
         lines.append(f"SMOKE FAILED: {failed}")
         return "\n".join(lines), 1
     lines.append(
-        "SMOKE PASSED ✅ — the legacy clustering(kmeans) run, qc_clean cleaned run, "
-        "remove_outliers trimmed run, AND the granular clustering(kmeans) and "
-        "clustering(hierarchical) consumers all persist full v3 provenance through the real "
-        "ports; the qc_clean → remove_outliers → clustering(require_clean=True) composition "
-        "resolves and clusters the trimmed table for both stochastic and deterministic methods."
+        "SMOKE PASSED ✅ — the qc_clean cleaned run, remove_outliers trimmed run "
+        "(incl. the generic v3-provenance + version-advance guarantee), AND the granular "
+        "clustering(kmeans) and clustering(hierarchical) consumers all persist full "
+        "provenance through the real ports; the qc_clean → remove_outliers → "
+        "clustering(require_clean=True) composition resolves and clusters the trimmed "
+        "table for both stochastic and deterministic methods."
     )
     return "\n".join(lines), 0
 
@@ -570,15 +570,13 @@ def _configure_live_env() -> None:
     no host litter. Env is set here *before* the first ``import bloom_mcp`` in
     ``main`` because ``experiment_utils`` captures the dir globals at import time.
     """
-    for fx in (FIXTURE, QC_FIXTURE):
-        if not fx.exists():
-            raise FileNotFoundError(f"fixture not found: {fx}")
+    if not QC_FIXTURE.exists():
+        raise FileNotFoundError(f"fixture not found: {QC_FIXTURE}")
     traits = Path(tempfile.mkdtemp(prefix="smoke_traits_"))
     out = Path(tempfile.mkdtemp(prefix="smoke_out_"))
     plots = Path(tempfile.mkdtemp(prefix="smoke_plots_"))
     for d in (traits, out, plots):
         atexit.register(shutil.rmtree, d, ignore_errors=True)
-    shutil.copy(FIXTURE, traits / EXPERIMENT)
     # Seed the raw qc_clean input as turface_raw.csv. The deployed reader resolves
     # raw inputs from BLOOM_TRAITS_DIR (inputs have not yet moved to the
     # bloommcp_input/ bucket), so the qc_clean leg uploads its fixture here.
@@ -619,72 +617,11 @@ def main() -> int:
     from bloom_mcp.tools import _ports  # noqa: E402
 
     _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
-    from bloom_mcp.tools.workflows.clustering import (  # noqa: E402
-        run_clustering_workflow,
-    )
 
     # Bounded-retry each download too: if the manifest is visible but the object
     # still lags in storage-api, retry rather than record a spurious hard FAIL.
     def read_bytes(key: str) -> bytes:
         return retry(lambda: sc.get_storage_client().download(key))
-
-    # 3) First run through the real ports.
-    print(">>> running clustering(kmeans) on turface.csv through real ports ...")
-    resp = run_clustering_workflow(EXPERIMENT, algorithm="kmeans")
-    if not isinstance(resp, dict) or "error" in resp:
-        checks.append(Check("workflow #1 succeeds", False, f"response={resp!r}"))
-        text, code = summarize(checks)
-        print(text)
-        return code
-    checks.append(Check("workflow #1 succeeds", True))
-
-    # 4) Read the committed run back through the port (get_run), with bounded retry.
-    stored = retry(lambda: _ports.store().get_run(EXPERIMENT, TOOL_CLASS, "latest"))
-    first_ref = stored.run_ref
-    checks.append(
-        Check(
-            "get_run('latest') resolves the committed run",
-            bool(first_ref),
-            f"run_ref={first_ref!r}",
-        )
-    )
-
-    # 5) Read the manifest back from storage for the schema-version assertion.
-    manifest = retry(lambda: sc.read_json(stored.manifest_path))
-    checks.extend(
-        provenance_checks(
-            schema_version=manifest.get("manifest_schema_version"),
-            seed=stored.seed,
-            agent=stored.agent,
-            environment=stored.environment,
-            output_keys=stored.output_keys,
-            output_sha256=stored.output_sha256,
-        )
-    )
-
-    # 6) Hash each stored object and compare to the recorded sha256.
-    checks.extend(hash_checks(stored.output_keys, stored.output_sha256, read_bytes))
-
-    # 7) A second run must advance latest by one version without clobbering the
-    #    first: latest moves N -> N+1, and get_run(first_ref) still resolves.
-    print(">>> running clustering(kmeans) a second time to advance latest ...")
-    resp2 = run_clustering_workflow(EXPERIMENT, algorithm="kmeans")
-    if not isinstance(resp2, dict) or "error" in resp2:
-        checks.append(Check("workflow #2 succeeds", False, f"response={resp2!r}"))
-    else:
-        checks.append(Check("workflow #2 succeeds", True))
-        stored2 = retry(
-            lambda: _ports.store().get_run(EXPERIMENT, TOOL_CLASS, "latest")
-        )
-        checks.append(version_advance_check(first_ref, stored2.run_ref))
-        prior = retry(lambda: _ports.store().get_run(EXPERIMENT, TOOL_CLASS, first_ref))
-        checks.append(
-            Check(
-                "prior version still resolves (not clobbered)",
-                prior.run_ref == first_ref,
-                f"first_ref={first_ref!r} resolved={prior.run_ref!r}",
-            )
-        )
 
     # === Tier-3 qc_clean leg ==================================================
     # Drive the granular qc_clean tool (#338) through the SAME real ports: clean
@@ -692,7 +629,10 @@ def main() -> int:
     # require_clean read resolves the committed *cleaned* artifact rather than the
     # raw input — the qc_clean -> pca_analysis(require_clean=True) composition.
     from bloom_mcp.contract import BloomMCPError  # noqa: E402
-    from bloom_mcp.tools.qc_clean_tool import QCCleanParams, qc_clean  # noqa: E402
+    from bloom_mcp.sections.sleap_roots.analysis.qc_clean import (  # noqa: E402
+        QCCleanParams,
+        qc_clean,
+    )
 
     print(
         f">>> running qc_clean on {QC_EXPERIMENT} "
@@ -752,7 +692,7 @@ def main() -> int:
         # through the SAME real ports. remove_outliers persists under the same `qc`
         # class, so its trimmed `_cleaned.csv` becomes the newest cleaned version a
         # require_clean read resolves — proving qc_clean -> remove_outliers -> pca.
-        from bloom_mcp.tools.remove_outliers_tool import (  # noqa: E402
+        from bloom_mcp.sections.sleap_roots.analysis.remove_outliers import (  # noqa: E402
             RemoveOutliersParams,
             remove_outliers,
         )
@@ -791,6 +731,20 @@ def main() -> int:
                     expected_outputs={CLEANED_CSV_NAME, RO_REPORT_NAME},
                 )
             )
+            # Generic v3 provenance (schema/seed/agent/environment/output-keys) —
+            # the same contract the retired legacy clustering-workflow leg used to
+            # prove, now anchored on remove_outliers (#412/devendor-bloommcp-analysis
+            # C11.8: that leg drove run_clustering_workflow, retired in Phase 1).
+            checks.extend(
+                provenance_checks(
+                    schema_version=ro_manifest.get("manifest_schema_version"),
+                    seed=ro_stored.seed,
+                    agent=ro_stored.agent,
+                    environment=ro_stored.environment,
+                    output_keys=ro_stored.output_keys,
+                    output_sha256=ro_stored.output_sha256,
+                )
+            )
             checks.extend(
                 hash_checks(ro_stored.output_keys, ro_stored.output_sha256, read_bytes)
             )
@@ -816,6 +770,45 @@ def main() -> int:
                 )
             )
 
+            # A second remove_outliers commit must advance latest by one version
+            # without clobbering the first: latest moves N -> N+1, and
+            # get_run(first_ref) still resolves. (Moved here from the retired
+            # legacy clustering-workflow leg — C11.8.)
+            first_ro_ref = ro_stored.run_ref
+            print(
+                f">>> running remove_outliers on {QC_EXPERIMENT} a second time "
+                "to advance latest ..."
+            )
+            try:
+                remove_outliers(
+                    RemoveOutliersParams(
+                        experiment=QC_EXPERIMENT, method="mahalanobis", seed=RO_SEED
+                    )
+                )
+                checks.append(Check("remove_outliers run #2 succeeds", True))
+                ro_stored2 = retry(
+                    lambda: _ports.store().get_run(
+                        QC_EXPERIMENT, RO_TOOL_CLASS, "latest"
+                    )
+                )
+                checks.append(version_advance_check(first_ro_ref, ro_stored2.run_ref))
+                ro_prior = retry(
+                    lambda: _ports.store().get_run(
+                        QC_EXPERIMENT, RO_TOOL_CLASS, first_ro_ref
+                    )
+                )
+                checks.append(
+                    Check(
+                        "prior version still resolves (not clobbered)",
+                        ro_prior.run_ref == first_ro_ref,
+                        f"first_ref={first_ro_ref!r} resolved={ro_prior.run_ref!r}",
+                    )
+                )
+            except BloomMCPError as exc:
+                checks.append(
+                    Check("remove_outliers run #2 succeeds", False, f"error={exc!r}")
+                )
+
         # === clustering leg (#309) ============================================
         # Cluster the latest cleaned version (the trim if remove_outliers ran, else
         # the qc_clean clean) through the SAME real ports. clustering is a pure
@@ -823,7 +816,7 @@ def main() -> int:
         # persists a versioned `clustering` run under its own class — the
         # qc_clean -> ... -> clustering(require_clean=True) composition, in parallel
         # with the pca_analysis consumer.
-        from bloom_mcp.tools.clustering_tool import (  # noqa: E402
+        from bloom_mcp.sections.sleap_roots.analysis.clustering import (  # noqa: E402
             ClusteringParams,
             clustering,
         )
@@ -904,7 +897,9 @@ def main() -> int:
                 )
             )
             checks.extend(
-                hash_checks(hier_stored.output_keys, hier_stored.output_sha256, read_bytes)
+                hash_checks(
+                    hier_stored.output_keys, hier_stored.output_sha256, read_bytes
+                )
             )
 
     text, code = summarize(checks)

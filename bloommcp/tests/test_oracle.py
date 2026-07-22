@@ -1,15 +1,20 @@
-"""Cross-tier + shipped-code numeric oracles on the #120 turface_19 fixture.
+"""Cross-tier numeric oracle on the #120 turface_19 fixture.
 
 The input table and golden values are vendored from the talmolab/sleap-roots-analyze
 #120 / PR #146 fixtures (see ``tests/fixtures/README.md``); they are NOT re-derived
-from the code under test, so a numeric drift would fail these tests. Two layers:
+from the code under test, so a numeric drift would fail these tests.
 
-* **Cross-tier** — the external ``sleap_roots_analyze`` reproduces the recorded
-  #120 PCA (proves it is a safe future cutover target).
-* **Shipped-code under numpy 2** — the vendored ``bloom_mcp`` analysis the server
-  actually runs reproduces the same PCA, and produces deterministic clustering /
-  correlation numerics. This guards the numpy >=1.24 -> >=2.3.2 major-version jump
-  that ``sleap-roots-analyze`` pulls in (B1): "doesn't crash" is not "unchanged".
+**Cross-tier** — the external ``sleap_roots_analyze`` reproduces the recorded #120
+PCA. Since devendor-bloommcp-analysis (C8) this is the *only* oracle layer: bloom-mcp
+no longer vendors any analysis code, so "shipped code" IS this external call —
+there is no second, separately-vendored implementation to cross-check against numpy
+2 anymore. The former shipped-code layer's k-means and cross-experiment-correlation
+assertions are deleted outright (dropped capabilities: no surviving bloom-mcp tool
+runs them, and upstream ``cross_experiment_analysis`` has a different contract than
+the deleted vendored copy, so the recorded ``0.9789420001158863`` off-diagonal
+literal would not carry). The granular tools' own delegation-spy tests
+(``test_pca_analysis_tool.py`` etc.) separately prove each tool calls this exact
+upstream path exactly once.
 
 All assertions are explicit with stated tolerances — no auto-generated snapshot.
 """
@@ -25,9 +30,6 @@ import pytest
 from sklearn.manifold import trustworthiness
 from sklearn.preprocessing import StandardScaler
 
-import bloom_mcp.clustering as shipped_clustering
-import bloom_mcp.cross_experiment_correlations as shipped_corr
-import bloom_mcp.pca as shipped_pca
 from sleap_roots_analyze.pca import perform_pca_analysis as library_pca
 from sleap_roots_analyze.statistics import (
     calculate_heritability_estimates as library_heritability,
@@ -53,8 +55,10 @@ _H2_TOL = 1e-5
 
 @pytest.fixture(scope="module")
 def turface_19():
-    df = pd.read_csv(_FIXTURES / "turface_19_final_data.csv")
-    golden = json.loads((_FIXTURES / "turface_19_pca_golden.json").read_text())
+    df = pd.read_csv(_FIXTURES / "turface_19_final_data.csv", encoding="utf-8")
+    golden = json.loads(
+        (_FIXTURES / "turface_19_pca_golden.json").read_text(encoding="utf-8")
+    )
     return df, golden
 
 
@@ -66,75 +70,21 @@ def _cumulative_variance_at_cut(result: dict, n: int) -> float:
 
 
 def test_external_library_pca_matches_recorded_oracle(turface_19):
+    """Cross-tier oracle: also covers the former "shipped code" layer.
+
+    Before devendor-bloommcp-analysis this assertion was duplicated against a
+    separately-vendored `bloom_mcp.pca.perform_pca_analysis` (a numpy-2 drift
+    guard on the vendored copy). bloom-mcp no longer vendors PCA — every granular
+    tool calls this exact `sleap_roots_analyze.pca.perform_pca_analysis` — so the
+    former "shipped" assertion folds into this one; it is no longer a separate
+    numeric claim.
+    """
     df, golden = turface_19
     result = library_pca(df[golden["trait_cols"]], explained_variance_threshold=0.95)
     assert result["n_components_selected"] == golden["n_pca_components"]
     assert _cumulative_variance_at_cut(
         result, golden["n_pca_components"]
     ) == pytest.approx(golden["pca_explained_variance"], abs=_VAR_TOL)
-
-
-# ── Shipped code reproduces the same PCA under numpy 2 (B1) ──────────────────
-
-
-def test_shipped_pca_matches_recorded_oracle(turface_19):
-    """The vendored bloom_mcp.pca the server runs reproduces #120's PCA."""
-    df, golden = turface_19
-    result = shipped_pca.perform_pca_analysis(
-        df[golden["trait_cols"]], explained_variance_threshold=0.95
-    )
-    assert result["n_components_selected"] == golden["n_pca_components"]
-    assert _cumulative_variance_at_cut(
-        result, golden["n_pca_components"]
-    ) == pytest.approx(golden["pca_explained_variance"], abs=_VAR_TOL)
-
-
-def test_shipped_kmeans_is_deterministic_under_numpy2(turface_19):
-    """Fixed-seed k-means gives stable, reproducible labels + inertia."""
-    df, golden = turface_19
-    data = df[golden["trait_cols"]]
-
-    first = shipped_clustering.perform_kmeans_clustering(
-        data, n_clusters=3, random_state=42
-    )
-    second = shipped_clustering.perform_kmeans_clustering(
-        data, n_clusters=3, random_state=42
-    )
-
-    # Discrete cluster sizes are BLAS-robust and the strongest stability signal.
-    sizes = sorted(first["cluster_sizes"])
-    assert sizes == [28, 40, 85]
-    assert sorted(second["cluster_sizes"]) == sizes
-    # Inertia: identical within-process, and pinned to the recorded value with a
-    # relative tolerance that absorbs cross-BLAS noise but catches real drift.
-    assert first["inertia"] == pytest.approx(second["inertia"], rel=1e-9)
-    assert first["inertia"] == pytest.approx(333.4642, rel=1e-3)
-
-
-def test_shipped_correlations_reproduce_recorded_offdiagonal(turface_19):
-    """A pinned off-diagonal Pearson coefficient — a real numpy-2 drift guard.
-
-    Self-correlations (corr(x, x) == 1) are a mathematical identity and would
-    pass even if every off-diagonal value were wrong, so they are not a drift
-    guard. Instead pin a recorded cross-trait coefficient computed by the
-    shipped correlation path over the 19 turface_19 genotype means.
-    """
-    df, golden = turface_19
-    traits = golden["trait_cols"]
-    means = df.groupby(_GENOTYPE_COL)[traits].mean()
-
-    corr = shipped_corr.calculate_cross_experiment_correlations(
-        means, means, traits, traits, min_samples=3
-    )
-    pair = corr[
-        (corr["exp1_trait"] == "Surface Area (mm²)")
-        & (corr["exp2_trait"] == "Volume (mm³)")
-    ]
-    assert len(pair) == 1
-    # Recorded from the shipped path; rel tolerance absorbs BLAS noise but
-    # catches a real numeric regression.
-    assert pair.iloc[0]["correlation"] == pytest.approx(0.9789420001158863, rel=1e-6)
-    assert int(pair.iloc[0]["n_samples"]) == len(means)
 
 
 # ── Delegated paths (heritability, UMAP) reproduce the recorded oracle ───────
@@ -153,6 +103,7 @@ def test_shipped_correlations_reproduce_recorded_offdiagonal(turface_19):
 _WRAPPER_CONSUMED_TRAIT_KEYS = ("heritability", "var_genetic", "var_residual")
 
 
+@pytest.mark.integration
 def test_external_library_heritability_matches_recorded_oracle(turface_19):
     """The delegated heritability path reproduces the recorded #120 mean H².
 
@@ -184,6 +135,7 @@ def test_external_library_heritability_matches_recorded_oracle(turface_19):
     assert sum(1 for v in h2 if v >= 0.5) == golden["heritability_n_above_0.5"]
 
 
+@pytest.mark.integration
 def test_delegated_heritability_returns_wrapper_consumed_keys(turface_19):
     """Delegation-boundary contract: every per-trait result the wrappers plot carries
     the keys they read (heritability, var_genetic, var_residual), non-defaulted.
@@ -199,9 +151,7 @@ def test_delegated_heritability_returns_wrapper_consumed_keys(turface_19):
         genotype_col=_GENOTYPE_COL,
         replicate_col=_REPLICATE_COL,
     )
-    plotted = [
-        t for t in golden["trait_cols"] if "heritability" in results.get(t, {})
-    ]
+    plotted = [t for t in golden["trait_cols"] if "heritability" in results.get(t, {})]
     assert plotted, "fixture should yield at least one plottable trait"
     for trait in plotted:
         r = results[trait]
@@ -256,6 +206,7 @@ def _umap_trustworthiness(df, trait_cols, embedding, n_neighbors=15) -> float:
     return float(trustworthiness(standardized, embedding, n_neighbors=n_neighbors))
 
 
+@pytest.mark.integration
 def test_external_library_umap_is_deterministic_and_structural(turface_19):
     """Fixed-seed UMAP is reproducible AND preserves local structure.
 
@@ -287,6 +238,7 @@ def test_external_library_umap_is_deterministic_and_structural(turface_19):
     assert t == pytest.approx(golden["umap_trustworthiness"], abs=0.05)
 
 
+@pytest.mark.integration
 def test_umap_trustworthiness_floor_rejects_wrong_parameters(turface_19):
     """The structural floor actually discriminates: a wrong n_neighbors collapses it.
 

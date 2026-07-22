@@ -6,4 +6,18 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn>=0.32.0",
+    # Caller-JWT validation via Supabase /auth/v1/user.
+    "httpx>=0.27",
+    # Auth + PostgREST + Storage as the dedicated app user (mirrors bloomctl).
+    "supabase>=2.0.0",
+    # Frame decoding + encoding for scan-to-video.
+    "numpy>=2.0.0",
+    "pillow>=12.0.0",
+    # Security floor for the supabase auth/JWT transitive dep, per repo convention.
+    "cryptography>=48.0.1",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.3",
 ]

@@ -616,7 +616,7 @@ def test_execute_grants_are_exactly_the_sanctioned_roles(pg_conn):
         cur.execute("SELECT has_function_privilege('public', %s, 'EXECUTE')",
                     (f"{RPC}(jsonb)",))
         assert cur.fetchone()[0] is False, "PUBLIC must not execute the RPC"
-        for role in ["bloom_writer", "service_role", "bloom_admin"]:
+        for role in ["bloom_writer", "service_role", "bloom_admin", "bloom_workflows"]:
             cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')",
                         (role, f"{RPC}(jsonb)"))
             assert cur.fetchone()[0] is True, f"{role} should hold EXECUTE"
@@ -624,6 +624,19 @@ def test_execute_grants_are_exactly_the_sanctioned_roles(pg_conn):
             cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')",
                         (role, f"{RPC}(jsonb)"))
             assert cur.fetchone()[0] is False, f"{role} must not hold EXECUTE"
+    pg_conn.rollback()
+
+
+def test_bloom_workflows_can_call_the_writeback_rpc(pg_conn):
+    # The scoped, non-interactive service identity (A4 cluster write-back pods) can call
+    # the RPC exactly like bloom_writer, via the SECURITY DEFINER owner (see
+    # test_rpc_succeeds_as_bloom_writer).
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        cur.execute("SET LOCAL ROLE bloom_workflows")
+        res = _call(cur, _envelope(imgs, idempotency_key="wf", traits=[_trait("t", 1.0)]))
+        assert res["was_noop"] is False and res["trait_count"] == 1
+        cur.execute("RESET ROLE")
     pg_conn.rollback()
 
 
@@ -654,7 +667,7 @@ _DIRECT_WRITE = {
 }
 
 
-@pytest.mark.parametrize("role", ["bloom_writer", "bloom_user"])
+@pytest.mark.parametrize("role", ["bloom_writer", "bloom_user", "bloom_workflows"])
 @pytest.mark.parametrize("table", TABLES)
 def test_direct_write_is_denied(pg_conn, role, table):
     with pg_conn.cursor() as cur:

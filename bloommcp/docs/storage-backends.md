@@ -73,8 +73,8 @@ Resulting on-disk layout (the storage key becomes the path under the root):
 - **Read paths work too:** manifest resolution, the versioned-cleaned lookup, and
   the MCP read tools all resolve against the local files.
 
-To enable it in dev, uncomment the two lines in the `bloommcp` service env block
-of `docker-compose.dev.yml` and restart the service.
+To enable it in dev, uncomment the storage-backend lines in the `bloommcp` service
+env block of `docker-compose.dev.yml` and restart the service.
 
 ### ⚠️ Do not mix backends for one experiment
 
@@ -86,22 +86,45 @@ different lineage. A later read sees only the store the current backend points a
 and is blind to the other's versions. **Pick one backend per experiment and keep
 it stable** for the life of that experiment's analysis history.
 
+## `local` is a fully-local (offline) dev mode — input, output, and boot
+
+`BLOOM_STORAGE_BACKEND=local` is a **single fully-local switch**: it selects local
+output (above) **and** local input, and drops the Supabase boot gate. With it set,
+bloommcp boots and runs a full `qc_clean → pca_analysis` with **no** `SUPABASE_URL`
+/ `BLOOM_AGENT_KEY` and no live Supabase stack.
+
+- **Inputs via `LocalReader`.** Experiment CSVs are read from a local directory —
+  `BLOOM_EXPERIMENT_LOCAL_ROOT` when set, otherwise the already-mounted
+  `BLOOM_TRAITS_DIR` (`./bloommcp/data/SLEAP_OUT_CSV` in dev). `LocalReader`
+  implements the same `ExperimentReader` contract as the Supabase path (same
+  declared roles, same `pd.read_csv` config, same resolution order), reaches no
+  Supabase, and rejects any experiment name that escapes its input root.
+- **Backend-aware boot.** In `local` mode `server.main()` skips
+  `validate_supabase_env()` and validates the local input root instead; the data
+  directories (`BLOOM_*_DIR`, `BLOOM_PLOTS_URL`) and an invalid
+  `BLOOM_STORAGE_BACKEND` value still fail fast in both modes. Production and
+  staging never set `local`, so their boot fail-fast is unchanged.
+- **Reader/store are coupled.** `LocalReader` is wired only when the object-storage
+  backend is also `local`, so a run can't read raw inputs locally while resolving
+  cleaned outputs from Supabase (a split lineage). A mismatch is rejected at boot.
+- **`require_clean` ignores the un-versioned legacy CSV.** The local reader will
+  not satisfy a certified-clean consumer (e.g. PCA) from the un-versioned legacy
+  `qc_<stem>/<stem>_cleaned.csv` — it has no manifest/hash lineage and may not match
+  the current input; only a versioned, manifest-backed cleaned output qualifies.
+
+**This is a dev / power-user path, not a normal-user packaged distribution.**
+Bench scientists use the deployed web product; fully-local mode is for driving
+bloommcp directly from Claude Code / Claude Desktop offline. Packaging it for
+non-technical users (a Claude Desktop bundle / installer) is a separate decision.
+
 ## Scope
 
-This backend selection governs **object storage only**. PostgREST/table reads
-(`get_postgrest_client`, `read_input_csv`) and raw-experiment-input reads from the
-local `BLOOM_TRAITS_DIR` are unaffected by `BLOOM_STORAGE_BACKEND`. Production and
-staging stay on Supabase Storage; `local` is opt-in for local/dev.
-
-### `local` is not a fully-offline mode
-
-`local` changes only **where outputs are written**. bloommcp still boots through
-`validate_supabase_env()` and still reads inputs and database tables via Supabase,
-so **`SUPABASE_URL` / `BLOOM_AGENT_KEY` are still required** to start the server and
-to run any tool that reads a table or a `bloommcp_input/` CSV. It gives you real
-output files on disk for inspection — it does not, on its own, make bloommcp run
-without a Supabase stack. (A fully offline mode would also need inputs sourced
-locally — tracked in #395.)
+PostgREST/table reads (`get_postgrest_client`, `read_input_csv`) remain **out of
+scope** of `BLOOM_STORAGE_BACKEND` — they are the database, not the experiment-read
+port. The fully-local `qc_clean → pca_analysis` path does not touch them (the store
+commit path uses only object-storage helpers routed through the active backend), so
+it is Supabase-free; a tool that reads a database table is not part of that path.
+Production and staging stay on Supabase; `local` is opt-in for local/dev.
 
 Related: this reshapes the same `supabase_client.py` storage boundary that #388
 (user-facing upload/download of bloommcp files) will build signed-URL downloads

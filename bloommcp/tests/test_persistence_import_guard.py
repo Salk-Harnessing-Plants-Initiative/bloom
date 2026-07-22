@@ -13,17 +13,23 @@ from pathlib import Path
 
 _SRC = Path(__file__).resolve().parents[1] / "src" / "bloom_mcp"
 
-# Consumers that must obtain persistence via injected ports.
+# Consumers that must obtain persistence via injected ports. The Phase-1 workflow
+# tools (tools/workflows/*, _helpers.py) are retired by devendor-bloommcp-analysis
+# (C7) — the port-only guarantee they used to (vacuously) cover is now enforced on
+# the real write consumers: the 5 granular persistence-writing tools.
+# tools/correlation_tools.py was dropped in C9 (see test_correlation_tools_absent).
+# Paths repointed to sections/sleap_roots/analysis/ + sections/core/ by the
+# Phase-2 sections migration (P2.2/P2.3) — tools/qc_tools.py, storage_tools.py,
+# and the 5 *_tool.py files are gone.
 _CONSUMERS = [
-    "tools/qc_tools.py",
-    "tools/storage_tools.py",
-    "tools/correlation_tools.py",
-    "tools/workflows/_helpers.py",
-    "tools/workflows/qc.py",
-    "tools/workflows/stats.py",
-    "tools/workflows/dimred.py",
-    "tools/workflows/clustering.py",
-    "tools/workflows/outlier.py",
+    "sections/core/list_available_experiments.py",
+    "sections/core/load_experiment_data.py",
+    "sections/core/list_existing_analyses.py",
+    "sections/sleap_roots/analysis/pca_analysis.py",
+    "sections/sleap_roots/analysis/qc_clean.py",
+    "sections/sleap_roots/analysis/qc_inspect.py",
+    "sections/sleap_roots/analysis/remove_outliers.py",
+    "sections/sleap_roots/analysis/clustering.py",
 ]
 
 # Names that may not be imported by a consumer module.
@@ -49,7 +55,7 @@ def test_consumers_do_not_import_supabase_or_storage_writer():
     for rel in _CONSUMERS:
         path = _SRC / rel
         assert path.exists(), f"guard lists a missing module: {rel}"
-        imported = _imported_names(ast.parse(path.read_text()))
+        imported = _imported_names(ast.parse(path.read_text(encoding="utf-8")))
         hits = imported & _FORBIDDEN
         if hits:
             offenders.append(f"{rel}: {sorted(hits)}")
