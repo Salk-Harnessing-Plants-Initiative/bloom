@@ -16,19 +16,31 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Every file the SLEAP_OUT_CSV -> TRAITS_DIR rename touched. If the old string
-# reappears in any of these, the rename was reverted or a stale reference crept
-# back in (e.g. from a doc copy-paste) — this is the standing version of the
-# one-time grep sweep done when the rename landed.
+# Every file the SLEAP_OUT_CSV -> TRAITS_DIR rename touched that should NEVER legitimately
+# reference the old name again. If the old string reappears in any of these, the rename was
+# reverted or a stale reference crept back in (e.g. from a doc copy-paste) — this is the
+# standing version of the one-time grep sweep done when the rename landed.
+#
+# Deliberately EXCLUDES files that must permanently keep referencing SLEAP_OUT_CSV as part of
+# describing/implementing the legacy-host migration itself (not stale leftovers): .github/
+# workflows/deploy.yml, scripts/migrate_bloommcp_legacy_traits_dir.sh,
+# tests/unit/test_migrate_bloommcp_legacy_traits_dir.py, and PROD_SETUP.md (documents the
+# migration step and the pre-existing-host remediation, both of which name the old directory
+# on purpose).
 RENAMED_FILES = [
     "docker-compose.dev.yml",
     "docker-compose.prod.yml",
     "bloommcp/Dockerfile",
     ".gitignore",
     "bloommcp/docs/storage-backends.md",
+    "bloommcp/docs/local-validation.md",
     "_WIKI/BLOOMMCP/storage-workflow.md",
     "_WIKI/BLOOMMCP/README.md",
     "bloommcp/src/bloom_mcp/storage/analysis_dir.py",
+    "bloommcp/scripts/live_plot_tool_smoke.py",
+    "scripts/ensure_bloommcp_data_dirs.sh",
+    "DEV_SETUP.md",
+    "openspec/project.md",
 ]
 
 

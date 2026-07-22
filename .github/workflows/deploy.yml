@@ -267,12 +267,7 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            if [ -d bloommcp/data/SLEAP_OUT_CSV ] && [ ! -e bloommcp/data/TRAITS_DIR ]; then
-              mv bloommcp/data/SLEAP_OUT_CSV bloommcp/data/TRAITS_DIR
-              echo 'Migrated bloommcp/data/SLEAP_OUT_CSV -> bloommcp/data/TRAITS_DIR'
-            else
-              echo 'No migration needed (already migrated or fresh host)'
-            fi
+            sh scripts/migrate_bloommcp_legacy_traits_dir.sh
           "
 
       # Docker auto-creates a missing bind-mount source directory owned by the
@@ -614,6 +609,15 @@ jobs:
           # on a newer schema than the code being restored. Follow-up tracked
           # in issue #177.
           echo '::warning title=Database schema NOT reverted::Rollback reverts code only. If migrations were applied before failure, manual DB intervention may be required. See https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/177.'
+          # Same class of gap as the DB-schema warning above: if this job's
+          # legacy-directory migration (issue #477) already renamed
+          # bloommcp/data/SLEAP_OUT_CSV -> TRAITS_DIR before a LATER step
+          # failed, this rollback's `git reset --hard` restores the pre-#477
+          # code (and its unrenamed compose file) but does NOT reverse the
+          # directory rename on disk. The reverted bloommcp then looks for
+          # SLEAP_OUT_CSV, finds nothing, and Docker auto-creates an empty one
+          # — the real trait data sits orphaned, invisible, at TRAITS_DIR.
+          echo '::warning title=bloommcp data directory rename NOT reverted::If the bloommcp/data/SLEAP_OUT_CSV -> TRAITS_DIR migration (issue #477) ran earlier in this job, rollback does not reverse it. The restored pre-#477 code expects SLEAP_OUT_CSV and will get a fresh empty one from Docker while the real data sits at bloommcp/data/TRAITS_DIR. If this rollback follows a completed migration, manually rename bloommcp/data/TRAITS_DIR back to bloommcp/data/SLEAP_OUT_CSV on the deploy host.'
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -e
             cd ${{ secrets.PROD_DEPLOY_PATH }}
@@ -839,12 +843,7 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            if [ -d bloommcp/data/SLEAP_OUT_CSV ] && [ ! -e bloommcp/data/TRAITS_DIR ]; then
-              mv bloommcp/data/SLEAP_OUT_CSV bloommcp/data/TRAITS_DIR
-              echo 'Migrated bloommcp/data/SLEAP_OUT_CSV -> bloommcp/data/TRAITS_DIR'
-            else
-              echo 'No migration needed (already migrated or fresh host)'
-            fi
+            sh scripts/migrate_bloommcp_legacy_traits_dir.sh
           "
 
       # Docker auto-creates a missing bind-mount source directory owned by the
@@ -1153,6 +1152,8 @@ jobs:
           # DB state is NOT rolled back by this step. See the matching comment
           # on the production rollback step above and issue #177.
           echo '::warning title=Database schema NOT reverted::Rollback reverts code only. If migrations were applied before failure, manual DB intervention may be required. See https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/177.'
+          # See the matching comment on the production rollback step above (#477).
+          echo '::warning title=bloommcp data directory rename NOT reverted::If the bloommcp/data/SLEAP_OUT_CSV -> TRAITS_DIR migration (issue #477) ran earlier in this job, rollback does not reverse it. The restored pre-#477 code expects SLEAP_OUT_CSV and will get a fresh empty one from Docker while the real data sits at bloommcp/data/TRAITS_DIR. If this rollback follows a completed migration, manually rename bloommcp/data/TRAITS_DIR back to bloommcp/data/SLEAP_OUT_CSV on the deploy host.'
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -e
             cd ${{ secrets.STAGING_DEPLOY_PATH }}

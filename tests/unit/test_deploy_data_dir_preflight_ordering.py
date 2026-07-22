@@ -25,6 +25,7 @@ DEPLOY_YML = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 PR_CHECKS_YML = REPO_ROOT / ".github" / "workflows" / "pr-checks.yml"
 
 PREFLIGHT_MARKER = "ensure_bloommcp_data_dirs.sh"
+MIGRATE_MARKER = "migrate_bloommcp_legacy_traits_dir.sh"
 
 
 def _load(path: Path) -> dict:
@@ -91,23 +92,33 @@ def test_deploy_jobs_provision_data_dirs_before_compose_up():
         # on the deploy host. The migration step (rename old->new in place if
         # present) MUST run before the preflight above — otherwise the
         # preflight's `mkdir -p` would auto-create an empty TRAITS_DIR first,
-        # and the migration's own `[ ! -e bloommcp/data/TRAITS_DIR ]` guard
-        # would then see it already exists and skip renaming the real,
-        # populated legacy directory, silently orphaning it.
+        # and the migration's own already-migrated-or-fresh-host guard would
+        # then see it already exists and skip renaming the real, populated
+        # legacy directory, silently orphaning it.
         migrate_idx = _find_step_index(
-            steps, lambda s: "SLEAP_OUT_CSV" in _step_run_text(s) and "mv " in _step_run_text(s)
+            steps, lambda s: MIGRATE_MARKER in _step_run_text(s)
         )
         assert migrate_idx is not None, (
-            f"{job_name} has no step migrating a legacy SLEAP_OUT_CSV directory "
-            "to TRAITS_DIR — issue #477's rename needs this on a real deploy "
-            "host, since bloommcp/data/ is gitignored and `git reset --hard` "
-            "never touches it."
+            f"{job_name} has no step invoking {MIGRATE_MARKER} — issue #477's "
+            "legacy-directory migration needs this on a real deploy host, "
+            "since bloommcp/data/ is gitignored and `git reset --hard` never "
+            "touches it."
         )
         assert migrate_idx < preflight_idx, (
             f"{job_name}'s legacy-directory migration step (index {migrate_idx}) "
             f"must run BEFORE the data-dir preflight (index {preflight_idx}), or "
             "the preflight will auto-create an empty TRAITS_DIR first and the "
             "migration will then skip renaming the real populated directory."
+        )
+        # Mirrors the preflight's own cd-presence check above — a future edit
+        # that drops the `cd` here would silently defeat the guard (the
+        # migration would run against the SSH session's default working
+        # directory instead of the actual deploy checkout).
+        migrate_run = _step_run_text(steps[migrate_idx])
+        assert f"cd ${{{{ secrets.{deploy_path_secret} }}}}" in migrate_run, (
+            f"{job_name}'s migration step must `cd` into "
+            f"${{{{ secrets.{deploy_path_secret} }}}} — each SSH step is its own "
+            "session, so this does not carry over from a prior step."
         )
 
 
