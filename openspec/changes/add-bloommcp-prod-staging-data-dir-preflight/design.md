@@ -72,9 +72,10 @@ ${{ secrets.PROD_DEPLOY_PATH }}` / `STAGING_DEPLOY_PATH`), immediately before it
   unnecessary — that argument only holds if the directories are _already correctly
   provisioned_. `scripts/ensure_bloommcp_data_dirs.sh` has **no privilege escalation**: on a
   directory it can't `chmod`, it prints a `sudo chown`/`sudo rm -rf` remedy and exits 1. If
-  `bloommcp/data/*` on the live Salk host is already root-owned (plausible — this exact
-  bind-mount shape has been live and unguarded in `deploy.yml` this whole time, with no prior
-  mechanism to have provisioned it correctly), the first deploy after merge fails, and **every
+  `bloommcp/data/*` on the live Salk host is already root-owned — **confirmed, not just
+  plausible**: Elizabeth checked both live containers directly (2026-07-22, see `tasks.md`
+  task 2.1) and production's three directories are genuinely `root:root` mode `755`, unwritable
+  by `bloom`, since the May 6 initial deploy — the first deploy after merge fails, and **every
   subsequent deploy fails identically** until someone with server `sudo` manually intervenes —
   because deploys fire automatically on every push to `main`/`staging`. This is a real
   liveness risk, not a hypothetical one, so `tasks.md` makes confirming current ownership (via
@@ -132,6 +133,18 @@ ${{ secrets.PROD_DEPLOY_PATH }}` / `STAGING_DEPLOY_PATH`), immediately before it
   deploy after merge. Combined with the no-privilege-escalation risk above, this is why
   confirming live host state is a pre-merge gate (see "Decisions"), not a post-merge
   open question.
+- **Confirmed, not hypothetical**: Elizabeth checked both live containers directly
+  (2026-07-22; see `tasks.md` task 2.1 for the full finding) and production's three
+  directories are genuinely `root:root` mode `755` today, unwritable by `bloom`
+  (`uid=100`, not in the `root` group) — meaning `PLOTS_DIR` has been silently broken for
+  every plotting-tool call since the May 6 initial deploy, undetected until now. Without
+  task 2.2's one-time manual `chown` landing first (or at least concurrently), this
+  proposal's `deploy-production` preflight step will correctly fail loudly on the very
+  first deploy after merge — that's the preflight working as designed, not a regression,
+  but it means production stays broken (rather than silently broken) until the manual step
+  happens. Staging is lower-risk: `PLOTS_DIR`/`ANALYSIS_OUTPUT` were already manually
+  `chown`'d there in May, so only `TRAITS_DIR`/`SLEAP_OUT_CSV` (pending §2.3's
+  drop-vs-keep re-examination) carries the same risk on that host.
 
 ## Migration Plan
 
@@ -143,10 +156,20 @@ push to confirm the revert actually works).
 
 ## Open Questions
 
-- Should a live smoke test (mirroring #472's `live_plot_tool_smoke.py`) be added to
-  `compose-health-check` so this failure mode would actually be _caught_ by CI going forward,
-  not just prevented? Proposed as a follow-up issue rather than folded into this change.
 - Once the `bloom` user's UID/GID is pinned in `bloommcp/Dockerfile` (tracked as a follow-up
   issue in `tasks.md`), should this proposal's `chmod 777` calls be revisited in favor of
   proper UID/GID matching + `chmod 770`, closing the `project.md` exception? Left for that
   follow-up to decide, not this change.
+
+**Resolved, no longer open:** whether a live smoke test should be added to
+`compose-health-check`. Elizabeth's review confirmed this is a real, already-demonstrated gap,
+not a hypothetical one: `bloommcp`'s Docker `HEALTHCHECK` (`bloommcp/Dockerfile`) is an HTTP
+`/health` liveness ping only — no filesystem check — and `compose-health-check`'s "Wait for
+services healthy" step only polls container `Health`/`State`, never an actual MCP tool call.
+Dev's equivalent (`dev-stack-smoke`) only catches this class of bug because #473 added a
+dedicated live plot-tool smoke test (`make bloommcp-plot-smoke`); `compose-health-check` has no
+analogue, and production's `PLOTS_DIR` has in fact been broken and undetected since the May 6
+deploy as a direct result. Filed as a follow-up issue (not folded into this change — it needs
+its own design: `bloommcp` is `expose:`-only in `docker-compose.prod.yml`, not host-published
+like dev, so the dev script's approach of connecting directly to
+`http://localhost:$BLOOMMCP_PORT/mcp` doesn't carry over as-is and needs its own review).

@@ -48,6 +48,29 @@ data-dir-preflight`, implemented in the same PR as this change, #495). Re-confir
       rename-only (issue's option 3), not unmounting (issue's option 2) — but the rename requires
       a deploy-time migration step, correctly ordered against #474's preflight, to be safe against
       real staging/prod data (see §2).
+- [x] 1.9 **Re-examine 1.8's conclusion against live evidence.** Elizabeth's direct inspection of
+      both live containers (2026-07-22) found `SLEAP_OUT_CSV`'s directory mtime unchanged since
+      initial deploy on both hosts (May 6 prod, May 27 staging) — i.e., nothing has ever been
+      _written_ into it — and suggested this means "nothing needs it," proposing to drop
+      `TRAITS_DIR`/`ANALYSIS_OUTPUT` entirely rather than rename, keeping only `PLOTS_DIR`
+      mounted.
+      **Resolved — 1.1-1.8's "neither is dead weight" conclusion stands; not a contradiction.**
+      Full re-verification of the actual code (not just the earlier citations):
+      `experiment_utils.load_experiment_data`'s Storage-checking tiers are skipped entirely when
+      `version="raw"` (what `qc_clean` forces) — local disk is the **sole** source for raw reads,
+      not a fallback from anything, because no ingestion pipeline uploads raw CSVs to Supabase
+      Storage first (`supabase_client.read_input_csv()` exists but is dead code, never called;
+      `bloommcp/scripts/live_persistence_smoke.py`'s own comments confirm raw inputs "have not
+      yet migrated to the `bloommcp_input/` bucket"). `qc_inspect.py`'s and `_ports.py`'s reads
+      are gated/graceful (`.exists()`/`is_file()` checks, `None` on miss) but fire on essentially
+      every real call, since the raw CSV is never deleted once `qc_clean` has read it.
+      Elizabeth's mtime evidence is accurate for what it measures — no new files were added or
+      removed — but every one of these consumers only _reads_ `TRAITS_DIR` (open/stat/hash),
+      and a directory's mtime is architecturally incapable of reflecting reads. Docker-compose
+      keeps all three mounts, as already implemented in this change (rename only, no drop). A
+      more reliable live-usage check for the future: `bloommcp_output/qc_<experiment>/
+manifest.json` version timestamps **in Supabase Storage** (not local disk) — a version dated
+      past initial deploy is direct proof `qc_clean` ran and therefore read `TRAITS_DIR`.
 
 ## 2. Deploy-safety prerequisite (BLOCKING — must land before/with the compose rename)
 
@@ -112,7 +135,7 @@ test_deploy_data_dir_preflight_ordering.py` (added alongside #474, shared file) 
       change with #474 actually safe (see proposal.md's "Why").
 - [x] 4.3 Confirm the existing bloommcp suite passes with the rename applied:
       `uv run --frozen --extra test pytest bloommcp/tests/test_storage_backend.py
-  bloommcp/tests/test_local_mode.py bloommcp/tests/test_package_baseline.py -v` — none
+bloommcp/tests/test_local_mode.py bloommcp/tests/test_package_baseline.py -v` — none
       hardcode the literal directory name, so a byte-identical pass/fail count before and after
       is the expected result. Also ran the full `bloommcp/tests/` suite (`-m "not integration"`):
       530 passed, 1 pre-existing failure unrelated to this change

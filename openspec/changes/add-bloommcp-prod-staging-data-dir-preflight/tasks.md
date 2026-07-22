@@ -9,20 +9,60 @@ scripts/ensure_bloommcp_data_dirs.sh` on the working branch).
 
 ## 2. Pre-merge host-state verification (blocking gate for section 3 only)
 
-- [ ] 2.1 Before merging the `deploy.yml` changes in section 3 (NOT required for the
+- [x] 2.1 Before merging the `deploy.yml` changes in section 3 (NOT required for the
       `pr-checks.yml` change in section 4, which has no persistent-host risk): get someone
       with SSH access to the live Salk staging and production hosts to check current ownership
-      of `bloommcp/data/{TRAITS_DIR,PLOTS_DIR,ANALYSIS_OUTPUT}`. `scripts/
-ensure_bloommcp_data_dirs.sh` has no privilege escalation — if these are already root-owned,
-      the preflight will fail loudly on the very first deploy after merge, and **every
-      subsequent deploy will fail identically** (deploys fire automatically on every push to
-      `main`/`staging`) until someone with server `sudo` manually `chown`s them.
-      **NOT done — cannot be done by an agent without SSH access to the Salk deploy host.**
-      Flagged in the PR description as a required check before merge.
-- [ ] 2.2 If task 2.1 finds root-owned (or otherwise incorrect) directories, coordinate a
-      one-time manual `chown`/`chmod` on the live host BEFORE merging section 3, so the new
-      preflight's first run succeeds rather than wedging every subsequent deploy.
-      **NOT done**, contingent on 2.1.
+      of `bloommcp/data/{TRAITS_DIR,PLOTS_DIR,ANALYSIS_OUTPUT}`.
+
+      **Done — confirmed by Elizabeth (direct `docker exec` into both live containers,
+      2026-07-22), and the risk was real, not hypothetical.**
+
+      Production — currently broken: `bloom` runs as `uid=100 gid=101`, not in the `root`
+      group. All three directories are `root:root` mode `755` (owner-only write), dated May 6
+      (initial deploy) and untouched since. `PLOTS_DIR` — the one directory confirmed
+      load-bearing on every storage backend — is empty; any plotting-tool call against prod
+      today fails with a permission error, and has since the May 6 deploy.
+
+      Staging — partially, manually fixed: `PLOTS_DIR` and `ANALYSIS_OUTPUT` were `chown`'d to
+      `bloom:bloom` by hand around 2026-05-27 as a workaround (both have real content dated
+      then) and have worked since. `SLEAP_OUT_CSV`/`TRAITS_DIR` is still `root:root`, untouched
+      — consistent with it not having been exercised on this host.
+
+      This confirms `scripts/ensure_bloommcp_data_dirs.sh`'s no-privilege-escalation failure
+      mode (design.md's "Decisions") is a live risk on production specifically: its `chmod`
+      will fail there exactly as designed, aborting `deploy-production` on the first run after
+      merge — expected and correct, not a bug in the preflight.
+
+- [ ] 2.2 Coordinate a one-time manual `chown bloom:bloom` on **production**'s three
+      directories (or at minimum `PLOTS_DIR`, per Elizabeth's suggested immediate stopgap)
+      BEFORE or immediately after merging section 3, so the new preflight's first run
+      succeeds there rather than failing the deploy. **Staging does not block on this** for
+      `PLOTS_DIR`/`ANALYSIS_OUTPUT` (already `bloom:bloom`); its `TRAITS_DIR`/`SLEAP_OUT_CSV`
+      will still need the same one-time `chown` once the rename in
+      `rename-bloommcp-sleap-out-csv-dir` reaches it, unless task 2.3 below concludes the
+      mount should be dropped instead. **NOT done by this change — needs someone with server
+      `sudo` access; flagged in the PR description as the specific pre-merge/immediate action
+      item, independent of and not blocking this PR's merge per Elizabeth's own suggestion
+      ("that's a one-line stopgap independent of any proposal and doesn't need to wait on
+      it").**
+- [x] 2.3 Re-examine whether `TRAITS_DIR`/`SLEAP_OUT_CSV` and `ANALYSIS_OUTPUT` should be
+      dropped from `docker-compose.prod.yml` entirely (shrinking the permission surface to
+      `PLOTS_DIR` only), given Elizabeth's live observation that neither has been written to
+      since initial deploy on either host.
+      **Resolved — keep all three, per full code re-verification (see
+      `rename-bloommcp-sleap-out-csv-dir`'s tasks.md task 1.9 for the complete finding):**
+      `qc_clean`'s forced `version="raw"` read has **no Storage fallback to fall back from** —
+      when `version="raw"`, `experiment_utils.load_experiment_data` skips the Storage-checking
+      tiers entirely and reads local disk as the **sole** source; there is no ingestion pipeline
+      that uploads raw CSVs to Supabase Storage first (`supabase_client.read_input_csv()` exists
+      but is never called; the repo's own `live_persistence_smoke.py` comments confirm raw
+      inputs "have not yet migrated to the `bloommcp_input/` bucket"). Elizabeth's mtime
+      observation is accurate but not evidence of non-use: every cited consumer only _reads_
+      `TRAITS_DIR` (open/stat/hash), and a directory's mtime does not change on a read — only on
+      an entry being created, deleted, or renamed. A better live-usage check for future
+      reference: `bloommcp_output/qc_<experiment>/manifest.json` **version timestamps in
+      Supabase Storage itself** (not the container's local disk) — a `qc_clean` run past the
+      initial deploy date is direct proof the raw read fired.
 
 ## 3. deploy.yml
 
@@ -89,8 +129,15 @@ ensure_bloommcp_data_dirs.sh` has no privilege escalation — if these are alrea
       (mirroring #473's `live_plot_tool_smoke.py`) that actually boots `bloommcp` against a
       fresh directory and confirms a real write to `PLOTS_DIR` — without it, CI only verifies
       that the preflight step exists and is ordered correctly, never that the underlying bug
-      is actually fixed. Out of scope for this change; tracked separately.
-      **NOT filed** — same reasoning as 5.2.
+      is actually fixed. **Elevated from "maybe" to "should really happen"** — Elizabeth's
+      review confirmed this exact gap is why production's `PLOTS_DIR` broke on May 6 and
+      stayed broken, undetected, for 2.5+ months (see design.md's "Open Questions" —
+      `bloommcp`'s healthcheck is a liveness-only HTTP ping; `compose-health-check` never
+      calls a real tool). Still out of scope for THIS change (needs its own design — `bloommcp`
+      is `expose:`-only in prod compose, unlike dev's host-published port, so the existing dev
+      script's connection approach doesn't carry over as-is). **NOT filed by this change** —
+      filing a new GitHub issue is a visible action; flagged to the PR author/reviewer as a
+      strong recommendation rather than done unprompted.
 
 ## 7. Docs
 
