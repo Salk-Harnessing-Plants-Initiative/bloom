@@ -94,3 +94,65 @@ heritability + UMAP snapshots (with a structural UMAP invariant and a
 wrapper-consumed-key contract); exercises a zero-variance / small-N edge-case branch;
 and checks deterministic `bloom_mcp` clustering / correlation numerics as a numpy-2
 regression guard.
+
+# Cross-tier oracle fixtures (cylinder)
+
+Independently sourced from the same **talmolab/sleap-roots-analyze#120 / PR #146**
+golden fixtures as turface_19 (`tests/fixtures/real/wheat_edpie/`), specifically the
+bundle's previously-unused cylinder arm. Added for #483 to exercise bloommcp against a
+real-world role-column naming convention and trait-table shape genuinely different from
+turface_19's.
+
+- `cylinder_raw_data.csv` — the input trait table
+  (`inputs/raw/cylinder/traits_11DAG_cleaned_qc_scanner_independent.csv`): **129 samples
+  × 880 columns**. Role columns are `plant_qr_code` / `Geno` / `Rep` — distinct from
+  turface_19's `Barcode` / `geno` / `rep` — plus `scan_id` / `plant_id` / `plant_name` /
+  `species_name` / `wave_number` etc. as separate metadata columns. Unlike turface_19's
+  genuinely raw input, this file's own name says "cleaned_qc_scanner_independent" — it
+  was already NaN/zero-filtered by the upstream scanner pipeline before being handed to
+  bloommcp, so (see `cylinder_qc_golden.json` below) bloommcp's own cleanup drops
+  nothing further at canonical thresholds. The interesting characteristic here is
+  **shape**, not missingness: 846 detected trait columns against only 129 samples —
+  inverting turface_19's samples-vs-traits ratio hard.
+- `cylinder_final_data.csv` — the upstream post-QC table
+  (`inputs/post_qc/cylinder_final_data.csv`): **123 samples × 649 columns**. Used
+  directly (not via bloommcp's own cleaning) as the input to the PCA/clustering golden
+  generation below, exactly as `turface_19_final_data.csv` is.
+- `cylinder_qc_golden.json` — characterization snapshot of the `qc_clean` tool
+  (delegating to `clean_traits_for_analysis`) on `cylinder_raw_data.csv` at **canonical
+  default thresholds**, recorded via a **real MCP call** against the running bloommcp
+  dev-stack container (not hand-simulated, and not re-derived from a fixed threshold
+  chosen for a specific NaN-drop demonstration the way turface_19's is). Because the
+  input is already scanner-cleaned, nothing is dropped: 129 samples / 846 traits in,
+  129 / 846 out, zero residual NaNs. Role columns resolve to
+  `plant_qr_code`/`Geno`/`Rep`.
+- `cylinder_qc_inspect_golden.json` — the `qc_inspect` tool's report on the same input
+  at its canonical defaults, also recorded via a real MCP call. Since `qc_clean`'s own
+  run above shows zero drops at these thresholds, this result is numerically identical
+  to inspecting genuinely raw data for this fixture — there is no missingness tradeoff
+  to demonstrate here (contrast turface_19's NaN-heavy-trait recommendation).
+- `cylinder_outlier_golden.json` — characterization snapshot of the `remove_outliers`
+  tool (mahalanobis, seed=42) on the cleaned cylinder frame, recorded via the real
+  `qc_clean` → `remove_outliers` MCP tool path. Flags **9 of 129 → 120 retained**.
+  Cylinder's mahalanobis chi-squared fit is `"poor"` (not turface_19's `"very_poor"`,
+  but still untrustworthy per `fit_is_trustworthy`) — expected given 846 traits vs. 129
+  samples makes the trait-covariance matrix severely rank-deficient. A method+seed
+  characterization pin, not a ground-truth outlier claim.
+- `cylinder_pca_golden.json` — same dual-provenance split as turface_19's:
+  - **PCA** (`pca_explained_variance≈0.7554`, `n_pca_components=4`) is the
+    _independently recorded_ golden from #120's cylinder `viz_pca_metadata.json`, whose
+    own pipeline used a 0.75 variance-threshold selection (not turface_19's 3-component
+    pick). The per-PC `pca_explained_variance_ratio` is a **characterization snapshot**
+    re-derived from `perform_pca_analysis` at that same 0.75 threshold on the upstream
+    `trait_cols` (588 of `cylinder_final_data.csv`'s columns) — its four entries sum to
+    the independent cumulative value above within floating-point tolerance, same
+    convention as turface_19.
+- `cylinder_clustering_golden.json` — per-method **characterization snapshot** (drift
+  gate, NOT an independent oracle — same honest caveat as turface_19's), generated the
+  same way `turface_19_clustering_golden.json` is (`kmeans`/`gmm` fixed at
+  `n_clusters=3`/`n_components=3`, `seed=42`; `hierarchical` via silhouette-optimized
+  ward linkage), restricted to the PCA golden's 588 `trait_cols`. **Read the `gmm`
+  entry's `_note` before trusting it**: at 588 traits vs. 123 samples, `gmm`'s hard
+  cluster assignment is bit-identical to `kmeans`'s and its BIC/AIC are orders of
+  magnitude larger than turface_19's — this is the EM ill-conditioning `design.md`
+  predicts for gmm-on-cylinder, recorded honestly rather than smoothed over.

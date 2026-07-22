@@ -814,3 +814,50 @@ def test_run_commits_without_heatmap_when_summary_plots_fail(
         result.outputs
     )
     assert store.get_run(_EXPERIMENT, "qc_inspect", "latest").run_ref == "v1"
+
+
+# ── cylinder oracle (#483) ───────────────────────────────────────────────────
+#
+# See tests/fixtures/README.md's "Cross-tier oracle fixtures (cylinder)" section.
+# Recorded via a real MCP call at qc_inspect's canonical defaults; since qc_clean's
+# own cylinder golden shows zero drops at those thresholds, this result is
+# numerically identical to inspecting genuinely raw data here -- no missingness
+# tradeoff to demonstrate, unlike turface_19's NaN-heavy-trait recommendation.
+
+_RAW_CYL = _FIXTURES / "cylinder_raw_data.csv"
+_GOLDEN_CYL = json.loads(
+    (_FIXTURES / "cylinder_qc_inspect_golden.json").read_text(encoding="utf-8")
+)
+_EXPERIMENT_CYL = "cylinder_raw.csv"
+
+
+@pytest.fixture
+def injected_ports_cylinder():
+    reader = FakeReader()
+    store = FakeResultStore()
+    reader.add_experiment(_EXPERIMENT_CYL, pd.read_csv(_RAW_CYL, encoding="utf-8"))
+    _ports.configure(reader=reader, store=store)
+    try:
+        yield reader, store
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def test_cylinder_inspect_matches_golden_no_missingness_story(injected_ports_cylinder):
+    result = qc_inspect(QCInspectParams(experiment=_EXPERIMENT_CYL))
+
+    assert result.n_samples == _GOLDEN_CYL["raw_samples"] == 129
+    assert result.n_traits == _GOLDEN_CYL["raw_traits"] == 846
+    assert (
+        result.traits_would_be_removed
+        == _GOLDEN_CYL["at_default_params"]["traits_would_be_removed"]
+        == []
+    )
+    assert (
+        result.samples_lost_at_current_params
+        == _GOLDEN_CYL["at_default_params"]["samples_lost"]
+        == 0
+    )
+    assert result.recommendation.no_change_needed == _GOLDEN_CYL["recommendation"][
+        "no_change_needed"
+    ] is True
