@@ -15,9 +15,9 @@ never touch the actual mount and would pass even if the underlying bind-mount
 permission bug (this script's reason for existing) were still present.
 
 Seeds the raw ``turface_19_raw_data.csv`` fixture into the **real**, host-side
-bind-mounted ``bloommcp/data/SLEAP_OUT_CSV/`` (not a host tempdir) as
+bind-mounted ``bloommcp/data/TRAITS_DIR/`` (not a host tempdir) as
 ``turface_raw.csv``, so the running container can see it at its
-``BLOOM_TRAITS_DIR`` (``/app/data/SLEAP_OUT_CSV``).
+``BLOOM_TRAITS_DIR`` (``/app/data/TRAITS_DIR``).
 
 Env (sourced from ``.env.dev`` by the ``make bloommcp-plot-smoke`` target):
     BLOOMMCP_PORT      host port the bloommcp container publishes 8811 on
@@ -36,7 +36,7 @@ from fastmcp import Client
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = REPO_ROOT / "bloommcp" / "tests" / "fixtures" / "turface_19_raw_data.csv"
-TRAITS_DIR = REPO_ROOT / "bloommcp" / "data" / "SLEAP_OUT_CSV"
+TRAITS_DIR = REPO_ROOT / "bloommcp" / "data" / "TRAITS_DIR"
 PLOTS_DIR = REPO_ROOT / "bloommcp" / "data" / "PLOTS_DIR"
 EXPERIMENT = "turface_raw.csv"
 PNG = PLOTS_DIR / "histograms_turface_raw.png"
@@ -78,7 +78,7 @@ async def main() -> int:
 
     _seed_fixture()
     _check(
-        "fixture seeded into the real bind-mounted SLEAP_OUT_CSV",
+        "fixture seeded into the real bind-mounted TRAITS_DIR",
         (TRAITS_DIR / EXPERIMENT).exists(),
     )
     _clear_stale_png()

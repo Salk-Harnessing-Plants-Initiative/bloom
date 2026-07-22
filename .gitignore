@@ -92,7 +92,7 @@ volumes/db/data/
 minio/data/
 minio_data/
 
-# bloom-mcp local runtime output (SLEAP_OUT_CSV etc.) + a stray pip-redirect artifact
+# bloom-mcp local runtime output (TRAITS_DIR etc.) + a stray pip-redirect artifact
 bloommcp/data/
 /=0.1.0a4
 

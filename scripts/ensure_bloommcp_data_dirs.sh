@@ -23,7 +23,7 @@ set -u
 
 ROOT="${BLOOMMCP_DATA_ROOT:-bloommcp/data}"
 
-# A root-owned leftover can be at a leaf (SLEAP_OUT_CSV/PLOTS_DIR/
+# A root-owned leftover can be at a leaf (TRAITS_DIR/PLOTS_DIR/
 # ANALYSIS_OUTPUT) OR at $ROOT itself: if $ROOT never existed before a prior
 # `docker compose up` ran without this fix, Docker's own bind-mount setup
 # creates $ROOT AND every leaf as root — confirmed empirically (see this
@@ -60,7 +60,7 @@ ERRORS=0
 
 ensure_dir "$ROOT" || ERRORS=$((ERRORS + 1))
 
-for name in SLEAP_OUT_CSV PLOTS_DIR ANALYSIS_OUTPUT; do
+for name in TRAITS_DIR PLOTS_DIR ANALYSIS_OUTPUT; do
   ensure_dir "$ROOT/$name" || ERRORS=$((ERRORS + 1))
 done
 
@@ -70,5 +70,5 @@ if [ "$ERRORS" -gt 0 ]; then
   exit 1
 fi
 
-echo "ensure_bloommcp_data_dirs: SLEAP_OUT_CSV, PLOTS_DIR, ANALYSIS_OUTPUT are writable."
+echo "ensure_bloommcp_data_dirs: TRAITS_DIR, PLOTS_DIR, ANALYSIS_OUTPUT are writable."
 exit 0

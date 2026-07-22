@@ -1,7 +1,7 @@
 name: bloom_v2_dev
 
 services:
-  
+
   bloom-web:
     # web/.env is optional: every var bloom-web needs is already supplied via
     # `environment`/`args` below from the root .env.dev. A fresh clone has no
@@ -26,7 +26,7 @@ services:
     volumes:
       - ./web:/app/web
       - ./packages:/app/packages
-      - /app/node_modules        
+      - /app/node_modules
     networks:
       - supanet
     command: sh -c "apt-get update >/dev/null && apt-get install -y --no-install-recommends socat >/dev/null && socat TCP-LISTEN:8000,fork,reuseaddr TCP:kong:8000 &npm run dev"
@@ -131,7 +131,7 @@ services:
       # in so a future code path can't silently bypass the
       # agent_insert_bloommcp_data / agent_update_bloommcp_data policies.
       BLOOM_AGENT_KEY: ${BLOOM_AGENT_KEY}
-      BLOOM_TRAITS_DIR: /app/data/SLEAP_OUT_CSV
+      BLOOM_TRAITS_DIR: /app/data/TRAITS_DIR
       BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
       BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
@@ -146,14 +146,14 @@ services:
       # ids can collide).
       # BLOOM_STORAGE_BACKEND: local
       # BLOOM_STORAGE_LOCAL_ROOT: /app/data/ANALYSIS_OUTPUT
-      # BLOOM_EXPERIMENT_LOCAL_ROOT: /app/data/SLEAP_OUT_CSV
+      # BLOOM_EXPERIMENT_LOCAL_ROOT: /app/data/TRAITS_DIR
       # Kept in sync with docker-compose.prod.yml for dev/prod parity, even
       # though dev has a writable root FS. See the prod compose for rationale.
       NUMBA_CACHE_DIR: /tmp/numba
       PYTHONPYCACHEPREFIX: /tmp/pycache
     volumes:
       - ./bloommcp:/app
-      - ./bloommcp/data/SLEAP_OUT_CSV:/app/data/SLEAP_OUT_CSV
+      - ./bloommcp/data/TRAITS_DIR:/app/data/TRAITS_DIR
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
       - ./bloommcp/data/ANALYSIS_OUTPUT:/app/data/ANALYSIS_OUTPUT
     networks:
@@ -459,7 +459,7 @@ services:
 
   db-dev:
     image: supabase/postgres:15.8.1.060
-    restart: unless-stopped 
+    restart: unless-stopped
     volumes:
       - ./volumes/db/_supabase.sh:/docker-entrypoint-initdb.d/96-_supabase.sh:Z
       - ./volumes/db/data:/var/lib/postgresql/data:Z
@@ -581,5 +581,3 @@ volumes:
 networks:
   supanet:
     driver: bridge
-
-

@@ -30,7 +30,7 @@ the wiki pages linked at the bottom of this doc.
    sudo chmod 755 /var/lib/bloom/minio
    ```
 
-4. **bloommcp data directories:** nothing to do — `bloommcp/data/{SLEAP_OUT_CSV,
+4. **bloommcp data directories:** nothing to do — `bloommcp/data/{TRAITS_DIR,
 PLOTS_DIR,ANALYSIS_OUTPUT}` are provisioned automatically by the deploy
    workflow's preflight step (see "Deploying" below) before every deploy, no
    manual `mkdir`/`chown`/`chmod` needed. See `openspec/project.md`'s
