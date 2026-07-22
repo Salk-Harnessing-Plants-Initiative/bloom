@@ -19,16 +19,18 @@ def experiments() -> None:
     """Cylinder experiment commands."""
 
 
-def experiment_sort_key(exp: dict[str, Any]) -> tuple[str, str]:
-    """Sort by species common name, then experiment name (matches legacy ordering)."""
+def experiment_sort_key(exp: dict[str, Any]) -> tuple[str, str, int]:
+    """Sort by species common name, then experiment name, then id (id breaks ties so
+    output is deterministic run-to-run)."""
     species = (exp.get("species") or {}).get("common_name") or ""
-    return (species, exp.get("name") or "")
+    return (species, exp.get("name") or "", exp.get("id") or 0)
 
 
 def build_experiment_row(exp: dict[str, Any]) -> list[str]:
     """Shape a cyl_experiments row (with joined species) into a display row."""
     species = (exp.get("species") or {}).get("common_name") or ""
-    return [species, exp.get("name") or "", str(exp.get("id", ""))]
+    eid = exp.get("id")
+    return [species, exp.get("name") or "", "" if eid is None else str(eid)]
 
 
 def build_experiment_record(exp: dict[str, Any]) -> dict[str, Any]:
@@ -40,12 +42,25 @@ def build_experiment_record(exp: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# --- supabase / storage I/O ---
+# --- supabase I/O ---
 
 
 def fetch_experiments(client: Any) -> list[dict[str, Any]]:
-    """All cyl experiments with their joined species relation."""
-    return client.table("cyl_experiments").select("*, species(*)").execute().data or []
+    """Live cyl experiments (soft-deleted excluded) with their joined species relation.
+
+    Filters ``deleted_at IS NULL`` server-side rather than relying on RLS: only the
+    bloom_user policy hides soft-deletes, while bloom_writer/bloom_admin read with
+    ``USING (true)`` and would otherwise see tombstoned experiments.
+    """
+    return (
+        client.table("cyl_experiments")
+        .select("*, species(*)")
+        .is_("deleted_at", "null")
+        .order("id")
+        .execute()
+        .data
+        or []
+    )
 
 
 @experiments.command(name="list")
@@ -65,9 +80,14 @@ def fetch_experiments(client: Any) -> list[dict[str, Any]]:
 def list_experiments(as_json: bool, profile: str) -> None:
     """List cylinder experiments."""
     from ..cli import _authed_client
+    from postgrest import APIError
 
     client = _authed_client(profile)
-    rows_data = sorted(fetch_experiments(client), key=experiment_sort_key)
+    try:
+        raw = fetch_experiments(client)
+    except APIError as exc:
+        raise click.ClickException(getattr(exc, "message", str(exc))) from exc
+    rows_data = sorted(raw, key=experiment_sort_key)
 
     if as_json:
         click.echo(json.dumps([build_experiment_record(e) for e in rows_data]))

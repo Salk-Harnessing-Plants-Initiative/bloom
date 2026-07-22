@@ -42,15 +42,32 @@ def test_sort_key_orders_species_then_name():
     assert [e["id"] for e in ordered] == [3, 1, 2]  # Canola/Alpha, Canola/Beta, Rice/Alpha
 
 
+def test_sort_key_breaks_ties_by_id():
+    # same species AND name → id decides order, so output is deterministic run-to-run.
+    tied = [
+        {"id": 205, "name": "Wave A", "species": {"common_name": "Rice"}},
+        {"id": 101, "name": "Wave A", "species": {"common_name": "Rice"}},
+    ]
+    assert [e["id"] for e in sorted(tied, key=ex.experiment_sort_key)] == [101, 205]
+
+
 # --- query ------------------------------------------------------------------
 
 
 def test_fetch_experiments_builds_query():
-    captured = {}
+    captured = {"is_": None, "order": None}
 
     class _Q:
         def select(self, sel):
             captured["select"] = sel
+            return self
+
+        def is_(self, col, val):
+            captured["is_"] = (col, val)
+            return self
+
+        def order(self, col, **kw):
+            captured["order"] = col
             return self
 
         def execute(self):
@@ -64,7 +81,9 @@ def test_fetch_experiments_builds_query():
     out = ex.fetch_experiments(_Client())
     assert out == EXPS
     assert captured["table"] == "cyl_experiments"
-    assert "species(*)" in captured["select"]
+    assert captured["select"] == "*, species(*)"  # full select: id/name + species
+    assert captured["is_"] == ("deleted_at", "null")  # soft-deleted experiments excluded
+    assert captured["order"] == "id"  # deterministic base order
 
 
 def test_fetch_experiments_empty():
@@ -72,6 +91,12 @@ def test_fetch_experiments_empty():
         def table(self, name):
             class _Q:
                 def select(self, *a):
+                    return self
+
+                def is_(self, *a):
+                    return self
+
+                def order(self, *a, **k):
                     return self
 
                 def execute(self):
@@ -91,7 +116,23 @@ def test_list_renders_table(monkeypatch):
     res = CliRunner().invoke(cli, ["cyl", "experiments", "list"])
     assert res.exit_code == 0, res.output
     assert "Experiments" in res.output  # table title
-    assert "Canola" in res.output and "Rice" in res.output
+    # species, names, and ids all rendered — fails if a column is dropped or swapped
+    for token in ("Canola", "Rice", "Alpha", "Beta", "1", "2", "3"):
+        assert token in res.output, f"{token!r} missing from table output"
+
+
+def test_list_surfaces_api_error(monkeypatch):
+    from postgrest import APIError
+
+    _patch_authed(monkeypatch)
+
+    def _boom(client):
+        raise APIError({"message": "permission denied", "code": "42501"})
+
+    monkeypatch.setattr(ex, "fetch_experiments", _boom)
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list"])
+    assert res.exit_code != 0
+    assert "permission denied" in res.output  # clean message, not a raw traceback
 
 
 def test_list_json_sorted(monkeypatch):
