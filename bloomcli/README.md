@@ -88,7 +88,7 @@ Ingest one per-scan `ResultEnvelope` (emitted by the sleap-roots trait extractor
 into Bloom by calling the `insert_cyl_result_envelope` RPC.
 
 ```
-bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
+bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json] [--predictions-dir DIR]
 ```
 
 - Reads the envelope from a file path, or from **stdin** when the argument is `-`.
@@ -98,6 +98,16 @@ bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
   the envelope's `idempotency_key`), reported as "already ingested" — not an error.
 - `--json` prints the RPC's result object (including `source_id`) to stdout for
   scripting; without it, a human-readable summary line.
+- `--predictions-dir DIR`: construct and upload the envelope's `blobs`. Reads
+  `DIR/{scan_key}.predictions.json` (a `PredictionManifest`, from
+  `sleap-roots-contracts` v0.1.0a5+), verifies each artifact's `.slp` bytes
+  against its declared checksum, uploads them to the `cyl-intermediates`
+  storage bucket, and merges the resulting `BlobRef`s into the envelope before
+  ingesting. Idempotent per-blob (skips re-upload if an identical object
+  already exists at the derived path) and fails fast — before any upload or
+  RPC call — on a missing/malformed manifest, a missing `.slp` file, a
+  checksum mismatch, or a blob already present in the envelope. Omit to
+  forward `blobs` unchanged, exactly as before this flag existed.
 
 The most common real-world error is `inputs.image_ids` not resolving to exactly
 one scan on the target server — the command explains that the scan's images must
