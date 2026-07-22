@@ -6,17 +6,24 @@ credentials. Successor to the Node `@salk-hpi/bloom-cli`. Tracked by issue #347.
 
 ## Commands
 
-`login` is flat; assay-specific commands are grouped by data type (`cyl`):
+`login` is flat; assay-specific commands are grouped by data type (`cyl`). Each
+command is tagged **[read]** or **[write]** — see [Access & roles](#access--roles).
 
 - `bloomctl login` — bootstrap client config from the Bloom server and store
   credentials per profile.
-- `bloomctl cyl download <out_dir> …` — download a cylinder experiment or single
-  scan (metadata `scans.csv` + per-frame images).
-- `bloomctl cyl download-for-predict <scan-id> <out>` — stage one scan into the
-  predict-ready layout (see below); produces a **different** output tree than
-  `cyl download` — use this only for A4 pipeline stage-in.
-- `bloomctl cyl ingest-result <envelope>` — write a per-scan pipeline
+- **[read]** `bloomctl cyl download <out_dir> …` — download a cylinder experiment
+  or single scan (metadata `scans.csv` + per-frame images).
+- **[read]** `bloomctl cyl download-for-predict <scan-id> <out>` — stage one scan
+  into the predict-ready layout (see below); produces a **different** output tree
+  than `cyl download` — use this only for A4 pipeline stage-in.
+- **[write]** `bloomctl cyl ingest-result <envelope>` — write a per-scan pipeline
   `ResultEnvelope` back to Bloom (see below).
+- **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets
+  (`--experiment-id` to scope to one experiment, `--json` for machine-readable output).
+- **[read]** `bloomctl cyl datasets get <name>` — show one dataset's details and the
+  unique traits it contains, via the `cyl_dataset_trait_names` view (`--json` output).
+- **[write]** `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
+  create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`).
 
 (Full `login`/`cyl download` usage docs are still forthcoming; run any command
 with `--help` in the meantime. `cyl ingest-result` and `cyl download-for-predict`
@@ -55,6 +62,23 @@ Example:
 ```
 bloomctl cyl download-for-predict 1 ./staged
 ```
+
+## Access & roles
+
+Commands run **as the logged-in user** — every query and mutation is RLS-enforced
+under the caller's role, not a service key. So the role your `bloomctl login`
+profile maps to determines what works:
+
+| Command tag | Required role | Intended user |
+|---|---|---|
+| **[read]** (`download`, `datasets list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account |
+| **[write]** (`ingest-result`, `datasets create`) | `bloom_writer` / `bloom_admin` | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
+
+A read-only `bloom_user` can `list` datasets but **cannot** `create` one — the
+write path (the `create_cyl_dataset` / `insert_cyl_result_envelope` RPCs and the
+underlying table inserts) is granted to `bloom_writer`/`bloom_admin`. Point the
+**[write]** commands at a profile with write access (e.g. the pipeline's service
+account); a `bloom_user` login will get a clear permission error.
 
 ## `bloomctl cyl ingest-result`
 
