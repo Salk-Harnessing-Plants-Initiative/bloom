@@ -30,7 +30,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "ensure_bloommcp_data_dirs.sh"
 SH = shutil.which("sh")
-DIR_NAMES = ("SLEAP_OUT_CSV", "PLOTS_DIR", "ANALYSIS_OUTPUT")
+DIR_NAMES = ("TRAITS_DIR", "PLOTS_DIR", "ANALYSIS_OUTPUT")
 
 pytestmark = pytest.mark.skipif(
     SH is None, reason="POSIX sh not available (run in WSL on Windows)"
@@ -103,7 +103,7 @@ def test_unwritable_parent_aborts_with_actionable_message(tmp_path):
     try:
         r = _run(root)
         assert r.returncode != 0
-        assert "SLEAP_OUT_CSV" in r.stderr
+        assert "TRAITS_DIR" in r.stderr
     finally:
         parent.chmod(0o755)  # let pytest's tmp_path cleanup remove it
 
@@ -155,4 +155,4 @@ def test_chmod_failure_on_existing_directory_aborts_with_actionable_message(
         text=True,
     )
     assert r.returncode != 0
-    assert "SLEAP_OUT_CSV" in r.stderr
+    assert "TRAITS_DIR" in r.stderr
