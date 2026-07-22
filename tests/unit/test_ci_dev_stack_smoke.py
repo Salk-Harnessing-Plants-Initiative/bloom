@@ -164,3 +164,32 @@ def test_dev_stack_smoke_guard_short_circuits_behaviorally(
                 f"{step_name}'s guard printed no skip message; "
                 f"stdout: {result.stdout!r}"
             )
+
+
+def test_dev_stack_smoke_runs_the_plot_tool_check_after_bloommcp_smoke():
+    """Issue #472: bloommcp-smoke (in-process, env-overridden to host temp dirs)
+    never touches the real bind-mounted PLOTS_DIR, so it cannot catch a
+    regression there. The job must also call `make bloommcp-plot-smoke` — a real
+    MCP-transport call into the running container — after bloommcp-smoke (so the
+    stack, incl. migrations, is fully up first), so a regression in the
+    bind-mounted write path fails CI instead of a developer."""
+    job = _dev_stack_smoke_job()
+    run_lines = [
+        line
+        for step in job.get("steps") or []
+        if isinstance(step.get("run"), str)
+        for line in step["run"].splitlines()
+    ]
+    smoke_idx = next(
+        (i for i, line in enumerate(run_lines) if "make bloommcp-smoke" in line), None
+    )
+    plot_idx = next(
+        (i for i, line in enumerate(run_lines) if "make bloommcp-plot-smoke" in line),
+        None,
+    )
+    assert smoke_idx is not None, "make bloommcp-smoke step not found"
+    assert plot_idx is not None, "make bloommcp-plot-smoke step not found"
+    assert plot_idx > smoke_idx, (
+        "make bloommcp-plot-smoke must run AFTER make bloommcp-smoke, once the "
+        "dev stack is fully migrated and up"
+    )
