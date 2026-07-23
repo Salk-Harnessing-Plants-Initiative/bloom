@@ -106,13 +106,15 @@ whether #429 has merged first — the conflict is mechanical but not free.
         pushes only `sha-<short>` (no `staging` tag mutation from a manual run).
 - [x] 3.2 Write `.github/workflows/docker-build-bloomcli.yml` until 3.1 passes —
       structurally mirror `sleap-roots-predict`'s `docker-build.yml` (Buildx setup,
-      `docker/login-action`, `docker/metadata-action`, `docker/build-push-action`,
-      pinned to this repo's existing `docker/*@vN` tag-pin convention already used in
-      `pr-checks.yml` for the same action family) but with the trigger/tag
-      substitutions and the `validate-tag` job from design.md Decision 3 — no
-      `pull_request` trigger, `staging` not `main`, explicit `type=raw` version-tag
-      derivation instead of `type=semver`, release-tag/version cross-check before any
-      push on the `release` trigger.
+      `docker/login-action`, `docker/metadata-action`, `docker/build-push-action`) but
+      with the trigger/tag substitutions and the `validate-tag` job from design.md
+      Decision 3 — no `pull_request` trigger, `staging` not `main`, explicit `type=raw`
+      version-tag derivation instead of `type=semver`, release-tag/version cross-check
+      before any push on the `release` trigger. **PR-review correction:** SHA-pin the
+      four `docker/*` actions in this file (not `pr-checks.yml`'s existing `@vN`
+      tag-pin style for the same action family) — this job runs `docker/login-action`
+      with live `packages: write` GHCR credentials, a higher-value target than
+      `pr-checks.yml`'s build-only, push-`false` usage of the same actions.
 - [x] 3.3 Confirm `openspec validate add-bloomcli-container-release --strict` still
       passes after adding this file, and re-run the pytest suite from 3.1 (not just the
       validator).
@@ -217,8 +219,9 @@ fixing the changelog, not after (the version bump alone is enough to make it fai
       performed by the user, not by an agent — flagged explicitly per project
       convention.
 - [ ] 8.2 If the first push in §8.1 (or an earlier `workflow_dispatch` test run) fails
-      GHCR auth with `GITHUB_TOKEN` + `packages: write`, fall back to a PAT with
-      `write:packages` scope, stored the same way `GHCR_READ_TOKEN` is stored elsewhere
-      in this repo (per design.md Decision 3's documented fallback) — this is a
+      GHCR auth with `GITHUB_TOKEN` + `packages: write`, fall back to creating a new PAT
+      with `write:packages` scope and storing it as a repo secret (per design.md
+      Decision 3's documented fallback — **note:** no existing `GHCR_READ_TOKEN` secret
+      exists in this repo to mirror; a new one must be created from scratch) — this is a
       plausible first-time-push failure mode since nothing has ever pushed to this GHCR
       namespace before this change.

@@ -10,6 +10,7 @@ apt-get block bloomctl's pure-Python dependency set doesn't need.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent.parent
 DOCKERFILE = REPO_ROOT / "bloomcli" / "Dockerfile"
 DOCKERIGNORE = REPO_ROOT / "bloomcli" / ".dockerignore"
+UV_LOCK = REPO_ROOT / "bloomcli" / "uv.lock"
 
 
 def _lines() -> list[str]:
@@ -86,10 +88,39 @@ def test_no_expose_or_healthcheck():
     assert not any(instr == "HEALTHCHECK" for instr, _ in instrs)
 
 
-def test_dockerignore_exists_and_excludes_tests():
+@pytest.mark.parametrize(
+    "pattern",
+    ["tests/?", r"__pycache__/?", r"\.venv/?", "dist/?"],
+    ids=["tests", "__pycache__", ".venv", "dist"],
+)
+def test_dockerignore_excludes_expected_entries(pattern: str):
     assert DOCKERIGNORE.exists()
     text = DOCKERIGNORE.read_text(encoding="utf-8")
-    assert re.search(r"^tests/?\s*$", text, re.MULTILINE)
+    assert re.search(rf"^{pattern}\s*$", text, re.MULTILINE), (
+        f"bloomcli/.dockerignore is missing an entry matching {pattern!r}"
+    )
+
+
+def test_uv_lock_stays_git_tracked():
+    """Regression guard for a bug that already happened once: bloomcli/uv.lock
+    was never committed to this repo at all (caught by a blanket .gitignore
+    `uv.lock` rule) — `uv sync --frozen` in the Dockerfile would fail on a
+    fresh `actions/checkout` in CI, since untracked/gitignored files aren't
+    restored. Nothing previously guarded against this silently recurring
+    (e.g. via a future `git rm --cached bloomcli/uv.lock` or a stricter
+    .gitignore rule).
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", str(UV_LOCK)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        "bloomcli/uv.lock is not tracked by git — this would break the "
+        "Dockerfile's `uv sync --frozen` on a fresh CI checkout. "
+        f"stderr: {result.stderr}"
+    )
 
 
 if __name__ == "__main__":

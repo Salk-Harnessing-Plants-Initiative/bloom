@@ -177,9 +177,15 @@ build-only path in the new workflow.
 pushes, independent of any Bloom-specific precedent (per the Context correction, this
 repo has no proof this succeeds against this specific org's GHCR namespace yet, since
 nothing has ever pushed there). Treated as a real but manageable risk, not a blocker: if
-the first `workflow_dispatch` run 403s on push, the documented fallback is a PAT with
-`write:packages` (the same shape as the existing `GHCR_READ_TOKEN` used for the *pull*
-side elsewhere), stored the same way. This is safe to treat as fix-forward rather than
+the first `workflow_dispatch` run 403s on push, the documented fallback is to create a
+new PAT with `write:packages` scope and store it as a repo secret (e.g.
+`GHCR_WRITE_TOKEN`). **Correction (caught in PR review):** an earlier draft of this
+paragraph claimed this would reuse "the existing `GHCR_READ_TOKEN`" — that secret does
+**not** exist anywhere in this repo today; it's only a proposed-but-never-implemented
+name still sitting in `add-ghcr-image-publishing`'s own Open Questions
+(design.md:293 of that change) and its still-unchecked `PROD_SETUP.md` documentation
+task. There is no existing pull-side PAT to mirror the shape of — a new one would need
+to be created from scratch if this fallback is ever needed. This is safe to treat as fix-forward rather than
 needing a rollback plan, because the workflow is a leaf — nothing currently consumes its
 pushed tags (Phase 2 hasn't landed) — so a broken run's blast radius is "the image
 doesn't exist or is mistagged," never a broken deploy or a broken `staging` branch; any
@@ -232,15 +238,19 @@ gated by it):
 ```yaml
 jobs:
   validate-tag:
+    name: Validate release tag matches pyproject.toml version
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: bloomcli
+    outputs:
+      version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
-      - name: Validate release tag matches pyproject.toml version
+      - name: Compare release tag to pyproject.toml version
+        id: check
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
@@ -250,11 +260,17 @@ jobs:
             echo "::error::Release tag ($TAG -> $TAG_VERSION) does not match bloomcli/pyproject.toml version ($VERSION) — refusing to push a mistagged GHCR image"
             exit 1
           fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
   build-and-push:
     needs: [validate-tag]
     if: always() && (github.event_name != 'release' || needs.validate-tag.result == 'success')
-    ...
+    # ...steps consume ${{ needs.validate-tag.outputs.version }} for the version tag
 ```
+
+(This snippet is kept byte-accurate to the actual implemented file — see
+`.github/workflows/docker-build-bloomcli.yml` for the full job, including the
+`build-and-push` job's Buildx/login/tag-derivation/build-push steps omitted here for
+brevity.)
 
 **Why not fold into `deploy.yml`'s `build-images` job:** that job's entire purpose (once
 `add-ghcr-image-publishing`'s PR-3 eventually lands) is feeding
@@ -420,6 +436,10 @@ excluding it from the equality check).
 | `bloomcli/uv.lock` drifts silently after future version bumps | Decision 7 adds `bloomcli` to `check-uv-locks.py`/pre-commit so this is caught automatically going forward, not just fixed once here. |
 | `bloomcli/uv.lock` was never tracked in git at all (found during implementation) — `uv sync --frozen` would have failed on the first real CI run | Fixed in Decision 4: force-added once, `.gitignore` comment updated; stays tracked going forward the same way the other 4 services' lockfiles do. |
 | Confusion between this change's `bloomcli-packaging` capability and the unrelated `image-publishing` capability once both are eventually archived | Both `design.md` (this file) and `proposal.md` state explicitly that these are separate, non-overlapping capabilities (different services, different consumers, different trigger semantics) rather than one extending the other — see the capability-boundary note below. |
+| Two staging pushes close together race on the mutable `staging` GHCR tag (found in PR review) | `docker-build-bloomcli.yml` gets a `concurrency: group: docker-build-bloomcli-${{ github.ref }}, cancel-in-progress: true` block, matching the same guard `pr-checks.yml`/`release-bloomcli.yml` already have. |
+| **Accepted, documented (found in PR review): `workflow_dispatch` can push a real `sha-<short>`-tagged image from any ref, not just `staging`** | Gated by GitHub's own default requirement that manual dispatch needs write access to the repo — the same trust boundary `release-bloomcli.yml`'s dispatch path already relies on. Asymmetric with that workflow only in that dispatch here *does* push (release-bloomcli.yml's dispatch is a build-only dry run) — a deliberate choice so `workflow_dispatch` can serve as the documented first-push connectivity test (Decision 3, tasks.md §8.2), not an oversight. |
+| **Accepted, documented (found in PR review): `validate-tag` doesn't verify the release tag's target commit is an ancestor of `staging`** — a Release cut from a stale/arbitrary commit whose `pyproject.toml` happens to already say the right version would still pass and get built/pushed | Mirrors an identical, already-accepted gap in `release-bloomcli.yml`'s own PyPI-publish path (it validates tag-matches-version, not tag-commit-is-on-staging, either). Consistent posture, not a new risk this change introduces; revisit both workflows together if this ever becomes a real incident rather than fixing it asymmetrically here alone. |
+| `.trivyignore`'s existing base-image CVE suppressions now also apply to `bloomcli` (shares `langchain-agent`/`bloommcp`'s `python:3.11-slim` digest) without having been re-attributed (found in PR review) | Each relevant entry's `affects:` comment now lists `bloomcli` explicitly; the existing reasoning (e.g. "does not execute Perl/GnuTLS/SSH at runtime") transfers even more cleanly to a CLI with less runtime surface than a FastAPI service. |
 
 **Capability-boundary note (`bloomcli-packaging` vs. `image-publishing`):** kept as two
 separate capabilities rather than extending `image-publishing`, because (a)

@@ -21,12 +21,36 @@ def _current_version() -> str:
     return match.group(1)
 
 
+def _has_heading_for(changelog_text: str, version: str) -> bool:
+    # Anchored to the start of a line (an actual ATX heading), not a bare
+    # substring match — a version string appearing merely as prose mid-
+    # paragraph must NOT count as a real changelog entry.
+    pattern = rf"^## \[{re.escape(version)}\]"
+    return re.search(pattern, changelog_text, re.MULTILINE) is not None
+
+
 def test_changelog_has_an_entry_for_the_current_version():
     version = _current_version()
     changelog = CHANGELOG.read_text(encoding="utf-8")
-    heading = f"## [{version}]"
-    assert heading in changelog, (
-        f"bloomcli/CHANGELOG.md has no {heading!r} heading matching "
+    assert _has_heading_for(changelog, version), (
+        f"bloomcli/CHANGELOG.md has no '## [{version}]' heading matching "
         f"bloomcli/pyproject.toml's version ({version}) — release-bloomcli.yml's "
         f"validate-release job would reject a Release tagged to this version."
     )
+
+
+def test_a_version_mentioned_only_in_prose_is_not_mistaken_for_a_heading():
+    """Adversarial: the version string appearing mid-paragraph (not as an
+    actual ATX heading at the start of a line) must not satisfy the check.
+    """
+    fake_changelog = (
+        "## [Unreleased]\n\n"
+        "Some text mentions release ## [0.1.0a2] should not count as a "
+        "heading since it isn't at the start of a line.\n"
+    )
+    assert not _has_heading_for(fake_changelog, "0.1.0a2")
+
+
+def test_a_real_heading_is_detected_even_with_a_trailing_date():
+    fake_changelog = "## [Unreleased]\n\n## [0.1.0a2] - 2026-07-23\n\n### Added\n"
+    assert _has_heading_for(fake_changelog, "0.1.0a2")

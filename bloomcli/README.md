@@ -28,6 +28,11 @@ built (not from PyPI), so it's always available immediately after a
 the publishing workflow itself only builds and pushes, it never runs on a
 pull request.
 
+Provenance: `docker/metadata-action` bakes standard OCI labels into every
+image, including `org.opencontainers.image.revision` (the full source
+commit SHA) — recoverable from a running/pulled image with no other
+context via `docker inspect <image> | jq .Config.Labels`.
+
 ```
 docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
   cyl ingest-result path/to/scan.result.json
