@@ -188,6 +188,10 @@ jobs:
       - name: Audit workflows dependencies
         run: cd services/workflows && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
+      # Checks bloomcli (bloomctl CLI) Python packages for vulnerabilities
+      - name: Audit bloomcli dependencies
+        run: cd bloomcli && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+
   docker-build:
     name: Build Docker Images & Scan for CVEs
     runs-on: ubuntu-latest
