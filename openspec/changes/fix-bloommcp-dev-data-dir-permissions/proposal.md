@@ -55,5 +55,8 @@ live_plot_tool_smoke.py` (new), `.github/workflows/pr-checks.yml` (`dev-stack-sm
   what's checked in here. This proposal fixes the **dev** path only (`make dev-up`, the
   `dev-stack-smoke` CI job); the prod/staging/`compose-health-check` risk is tracked
   separately as issue #474 (filed same day).
+  **Resolved** by `openspec/changes/add-bloommcp-prod-staging-data-dir-preflight` — the
+  same `scripts/ensure_bloommcp_data_dirs.sh` now also runs in `deploy.yml`'s
+  `deploy-staging`/`deploy-production` jobs and in `compose-health-check`.
 - **Branch/PR:** branches off `origin/staging`; this branch
   (`egao28/bloommcp-plotsdir-permission-fix-472`).
