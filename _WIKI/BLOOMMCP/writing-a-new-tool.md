@@ -3,7 +3,7 @@
 > **RETIRED.** The `tools/workflows/` pattern this doc describes (`run_*_workflow`
 > functions, `_helpers.py`'s `build_writer`, registered with bare `mcp.tool()`) was
 > deleted by `devendor-bloommcp-analysis` (C7) — every code link below is dead. Kept
-> as historical record of *why* the pattern existed and what replaced it, not as a
+> as historical record of _why_ the pattern existed and what replaced it, not as a
 > guide to follow. **Use [adding-a-section-tool.md](./adding-a-section-tool.md)** —
 > the current pattern (`@as_mcp_tool` + Pydantic input/output, one file per tool
 > under `sections/<name>/`) — for any new tool.
@@ -68,7 +68,7 @@ Step 1: Pick a tool_class
 It controls **where the output lands** in the bucket and **which folder
 the agent reads from** when asking about prior runs.
 
-The canonical set lives in [`bloommcp/src/bloom_mcp/storage/__init__.py`](../../bloommcp/src/bloom_mcp/storage/__init__.py)
+The canonical set lives in [`bloommcp/src/bloom_mcp/manifest/__init__.py`](../../bloommcp/src/bloom_mcp/manifest/__init__.py)
 as `CANONICAL_TOOL_CLASSES`:
 
 ```python
