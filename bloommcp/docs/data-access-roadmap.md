@@ -36,21 +36,20 @@ workflow: each tier is one OpenSpec PR, TDD, oracle-first.
 The asks below are pulled out of the Live-state facts and Tiers sections so they're easy to
 act on without reading the whole doc. Everything else here is optional context.
 
-1. **Sequencing on `supabase_reader.py`/`experiment_utils.py::load_experiment_data`.**
-   Three efforts now touch this same raw-tier code: your open PRs
+1. ~~**Sequencing on `supabase_reader.py`/`experiment_utils.py::load_experiment_data`.**~~
+   **Resolved 2026-07-23** — Benfica closed both
    [#368](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/368) and
-   [#413](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/413), and this
-   roadmap's Tier 2. Per the design note below, #413's upload-resolution and Tier 2's
-   DB-resolution are complementary (one class, dispatching on whether `name` is an
-   experiment id or an upload filename) — the open question is just landing order/who
-   touches the file when, plus confirming whether #413 supersedes #368's read-side change
-   (both still open, written a week apart). Your call on how to sequence this.
+   [#413](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/413) when
+   approving this roadmap: reading `cyl_*` directly makes #368's CSV path redundant, and
+   the upload path isn't being pursued, so Tier 2 now owns `supabase_reader.py`'s raw tier
+   cleanly with no coordination needed.
 2. **Tier 1's RPC shape** (a bulk long-format RPC vs. a PostgREST embedded-join query for
-   fetching an experiment's full trait set in one round trip) needs your review, same gate
-   as the shipped `20260701000000_cyl_trait_read_source_aware.sql` migration.
-3. **Re-confirm the 2026-06-09 auth decision still holds**: shared `bloom_agent` role,
-   no per-user token/RLS for trait reads. Nothing found this session contradicts it, but
-   it's worth an explicit yes before Tier 1's migration ships.
+   fetching an experiment's full trait set in one round trip) needs her review before it
+   ships (confirmed 2026-07-23), same gate as the shipped
+   `20260701000000_cyl_trait_read_source_aware.sql` migration.
+3. ~~**Re-confirm the 2026-06-09 auth decision still holds**~~ **Confirmed 2026-07-23**
+   (Benfica, on this roadmap's approval): shared `bloom_agent` role, no per-user
+   token/RLS for trait reads still holds.
 
 Separately, not blocking this roadmap: issue #406 (verified per-user identity + a
 `bloommcp_usage` table) is still awaiting your reply to the two design questions from my
@@ -109,31 +108,23 @@ re-asking here.
   exists and is actively written by a real pipeline (Bloom's `cyl_*` tables, via the A2
   write-back RPC); the bucket-CSV path is read-ready infrastructure for an input
   mechanism nobody has built yet.
-- **⚠️ Two more Benfica PRs actively build the raw-tier CSV path this program touches —
-  coordinate before Tier 2, don't silently supersede.**
+- **✅ Resolved 2026-07-23 — the two Benfica PRs that touched this same raw-tier code are
+  closed; Tier 2 owns `supabase_reader.py`'s raw tier outright.**
   - [PR #368](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/368) ("read
-    raw input from the `bloommcp_input/` bucket"), open since 2026-06-30. Moves
-    `SupabaseReader`'s raw tier to read `bloommcp_input/<name>` — written against a bucket
-    that, at the time, had **no producer** (see above).
+    raw input from the `bloommcp_input/` bucket"), open 2026-06-30 → **closed 2026-07-23**.
+    Would have moved `SupabaseReader`'s raw tier to read `bloommcp_input/<name>` — written
+    against a bucket that, at the time, had **no producer** (see above); redundant now that
+    the raw tier reads `cyl_*` directly.
   - [PR #413](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/413) ("upload
-    input files to the bloommcp-data bucket"), open since 2026-07-07 — **this is the
-    producer**. Adds `POST /uploads` (≤200MB, server-mediated) and `POST /uploads/sign`
-    (up to 5GB, direct-to-Storage) writing to `bloommcp_input/`, **and** extends
-    `SupabaseReader`/`FakeReader` to resolve an uploaded input by name for analysis. Its own
-    notes defer per-user namespacing to issue #406 (open, stalled — see below).
-  - **#413 likely supersedes #368's read-side change** (#413 came a week later, includes
-    the full write+read round-trip #368's read-only change assumed against nothing;
-    both are still open, so this hasn't been reconciled). Not this roadmap's call to
-    make unilaterally.
-  - **Resolution, not just tension:** per the design note above (two ID shapes, one
-    class), Tier 2's DB-direct resolution and #413's upload resolution are
-    **complementary, not competing** — `SupabaseReader` needs both, dispatching on
-    whether `name` is experiment-id-shaped or upload-filename-shaped. The coordination
-    need is sequencing/ownership of shared code (`supabase_reader.py`,
-    `experiment_utils.py::load_experiment_data`), not picking one approach over the
-    other. **Recommend raising this with Benfica directly** — three efforts (#368, #413,
-    this roadmap's Tier 2) are converging on the same file; she should have visibility
-    before Tier 2 starts, not learn about it after the fact in a roadmap doc.
+    input files to the bloommcp-data bucket"), open 2026-07-07 → **closed 2026-07-23**.
+    Would have added `POST /uploads`/`POST /uploads/sign` writing to `bloommcp_input/` and
+    extended `SupabaseReader`/`FakeReader` to resolve an uploaded input by name; the upload
+    path isn't being pursued, so this resolution no longer applies.
+  - Benfica closed both when approving this roadmap, per her review comment: reading
+    `cyl_*` directly makes #368's CSV path redundant, and since the upload path isn't
+    being pursued, Tier 2 owns this file cleanly. No sequencing/ownership coordination
+    remains — Tier 2 no longer needs a two-ID-shapes dispatch (experiment-id vs.
+    upload-filename); see the design note below, kept for history.
 - **The real `ExperimentReader` port already exists and differs from the vault design's
   proposed shape** (`bloommcp/src/bloom_mcp/data_access/ports.py`, shipped by Phase 2 Tier
   2/#307, confirmed by direct read this session):
@@ -240,8 +231,8 @@ re-asking here.
 ## Hard constraints / decisions carried from the design
 
 - **Auth:** query as the shared `bloom_agent` role, no per-user token/RLS (Benfica,
-  2026-06-09 — reads are not per-user sensitive; re-verify this hasn't been revisited
-  before Tier 1's PR).
+  2026-06-09 — reads are not per-user sensitive; re-confirmed still holds, Benfica,
+  2026-07-23).
 - **One source per frame, never mixed** — every `ExperimentFrame` load ties to exactly one
   resolved `cyl_trait_sources` row; ambiguity is a caller error, not a silent merge.
 - **Provenance — real gap, not "unchanged from the design":** checked
@@ -271,7 +262,7 @@ Status: ✅ done · 🔵 in progress · ⬜ not started.
 | Tier | Goal | Oracle / validation | Depends on | Tracking | Status |
 |---|---|---|---|---|---|
 | **1 — bulk-read DB migration** | Additive Supabase migration adding a bulk trait-fetch surface for one experiment + `list_experiment_trait_sources(experiment_id_)`, built as a sibling to the shipped `cyl_scan_traits_source`/`_latest` views (reuse the existing `is_latest` logic — don't re-derive latest-selection). Shape (RPC returning long-format all-traits vs. PostgREST embedded-join query) is a Benfica-reviewed decision, same review gate as the shipped migration. Confirm `bloom_agent` grants cover the full join chain, not just the read-surface objects (spot-check only — already broadly granted via `20260414002000_security_groups.sql`'s schema-wide `GRANT SELECT ... TO bloom_agent` + matching RLS `SELECT` policies on all six join tables, confirmed this session; not expected to need a grant change). | One call fetches all 649–880 traits for the bloom#483 cylinder fixture experiment in a single round trip; matches `get_scan_traits`'s existing latest/source_id/run_id semantics byte-for-byte on overlapping rows; migration is **forward-only** with a manual rollback script under `supabase/rollbacks/` (this repo's convention — no auto-generated down-migrations), tested up+down on local Supabase | A2 (nearly done — see Live-state facts) | *(not yet filed — file at kickoff, per the skill's just-in-time issue policy)* | ⬜ |
-| **2 — rewrite `SupabaseReader`'s raw tier to query the DB directly** | Modify `SupabaseReader` (`supabase_reader.py`) **in place** — no new class: (a) `load_experiment`'s raw-tier fallback dispatches on the shape of `name` — experiment-id-shaped (`str(experiment_id)`) calls Tier 1's bulk fetch + long→wide pivot + canonical-role rename (table above); upload-filename-shaped (matching PR #413's `input_ref` convention) falls through to whatever read-side resolution #413 lands, since ad-hoc uploads have no DB representation to redirect to (see the two-ID-shapes design note above) — this is **additive dispatch, not a replacement** of #413's contribution. `_resolve_versioned_cleaned`'s cleaned-output tiers are untouched either way. (b) `list_experiments()` — currently scans CSV files/the bucket; rewrite to enumerate Bloom experiments from the DB, **merged with** whatever uploaded-input listing #413 adds, so the two always-included discovery tools (`list_available_experiments.py`, `list_existing_analyses.py`) surface both kinds. Decide + implement the source/run-selection gap explicitly — either a `SourceSelectable` capability protocol (isinstance-gated, mirroring `RawSourced`) or an equivalent seam — don't leave it silently defaulted. **Extend `Provenance`/`VersionEntry` additively** (v3→v4, mirroring the existing seed/agent/output_sha256 precedent) to carry `source_id`/`source_name`, replacing the file-hash-based `RawSourced` content-address this raw tier no longer has — see Hard constraints. A fake DB row-fetcher injected for the raw-fetch seam; no live DB required for this tier's tests. **Coordinate with Benfica on PRs #368/#413 first** (see Live-state facts) — three efforts are touching the same file; sequence, don't collide. | Unit tests against fakes: `load_experiment(str(experiment_id))` returns the expected wide frame + correct roles; `list_experiments()` returns sensible DB-sourced summaries; golden fixture off bloom#483's cylinder data (raw 129×880 or post-QC 123×649) — **bloom#483 is still open and no cylinder fixture files exist in the repo yet, so this tier's TDD plan explicitly depends on either #483 landing first or a hand-built cylinder-shaped fixture as a fallback (don't block on #483 silently)**; multi-source test — never mixes across `source_id`; `require_clean`/`version` resolution unchanged for the cleaned-output tiers; old manifests (pre-v4) still read after the Provenance bump; **two existing tests need outright deletion, not an update** — `tests/data_access/test_local_reader.py`'s `test_same_raw_bytes_yield_same_roles_as_supabase` asserts `SupabaseReader` and `LocalReader` read identical on-disk CSV bytes, a premise a DB-backed raw tier voids; `tests/data_access/test_supabase_reader.py`'s `test_raw_source_path_rejects_path_traversal` guards a local-disk traversal case that no longer applies once the raw tier drops `RawSourced` | Tier 1 (soft — buildable against fakes once the target RPC shape is settled, even pre-merge); **bloom#483** (fixture — see oracle) | *(not yet filed)* | ⬜ |
+| **2 — rewrite `SupabaseReader`'s raw tier to query the DB directly** | Modify `SupabaseReader` (`supabase_reader.py`) **in place** — no new class: (a) `load_experiment`'s raw-tier fallback dispatches on the shape of `name` — experiment-id-shaped (`str(experiment_id)`) calls Tier 1's bulk fetch + long→wide pivot + canonical-role rename (table above); upload-filename-shaped (matching PR #413's `input_ref` convention) falls through to whatever read-side resolution #413 lands, since ad-hoc uploads have no DB representation to redirect to (see the two-ID-shapes design note above) — this is **additive dispatch, not a replacement** of #413's contribution. `_resolve_versioned_cleaned`'s cleaned-output tiers are untouched either way. (b) `list_experiments()` — currently scans CSV files/the bucket; rewrite to enumerate Bloom experiments from the DB, **merged with** whatever uploaded-input listing #413 adds, so the two always-included discovery tools (`list_available_experiments.py`, `list_existing_analyses.py`) surface both kinds. Decide + implement the source/run-selection gap explicitly — either a `SourceSelectable` capability protocol (isinstance-gated, mirroring `RawSourced`) or an equivalent seam — don't leave it silently defaulted. **Extend `Provenance`/`VersionEntry` additively** (v3→v4, mirroring the existing seed/agent/output_sha256 precedent) to carry `source_id`/`source_name`, replacing the file-hash-based `RawSourced` content-address this raw tier no longer has — see Hard constraints. A fake DB row-fetcher injected for the raw-fetch seam; no live DB required for this tier's tests. ~~Coordinate with Benfica on PRs #368/#413 first~~ **No longer needed — both closed 2026-07-23** (see Live-state facts); Tier 2 owns this file outright. | Unit tests against fakes: `load_experiment(str(experiment_id))` returns the expected wide frame + correct roles; `list_experiments()` returns sensible DB-sourced summaries; golden fixture off bloom#483's cylinder data (raw 129×880 or post-QC 123×649) — **bloom#483 is still open and no cylinder fixture files exist in the repo yet, so this tier's TDD plan explicitly depends on either #483 landing first or a hand-built cylinder-shaped fixture as a fallback (don't block on #483 silently)**; multi-source test — never mixes across `source_id`; `require_clean`/`version` resolution unchanged for the cleaned-output tiers; old manifests (pre-v4) still read after the Provenance bump; **two existing tests need outright deletion, not an update** — `tests/data_access/test_local_reader.py`'s `test_same_raw_bytes_yield_same_roles_as_supabase` asserts `SupabaseReader` and `LocalReader` read identical on-disk CSV bytes, a premise a DB-backed raw tier voids; `tests/data_access/test_supabase_reader.py`'s `test_raw_source_path_rejects_path_traversal` guards a local-disk traversal case that no longer applies once the raw tier drops `RawSourced` | Tier 1 (soft — buildable against fakes once the target RPC shape is settled, even pre-merge); **bloom#483** (fixture — see oracle) | *(not yet filed)* | ⬜ |
 | **3 — LLM-facing surface + cleanup** | No new selector/env var needed — `BLOOM_STORAGE_BACKEND`'s existing binary `local`/`supabase` switch is untouched, since Tier 2 changed what `supabase` mode does internally rather than adding a third option. **Update the LLM-facing surface**: the tool schemas' `Field(description=...)` text (`qc_clean.py`, `qc_inspect.py`, `remove_outliers.py`, `clustering.py`, `pca_analysis.py` all currently say "CSV filename"), `list_existing_analyses.py`'s `experiment_filename` param, and `list_available_experiments.py`'s hardcoded "use its filename" response text all actively tell the calling LLM to pass a CSV filename — now wrong under the default `supabase` backend, which expects `str(experiment_id)`; reword to the backend-agnostic `name`/experiment identifier. Retire the now-dead CSV-from-bucket/local-disk raw-tier code Tier 2 replaced (coordinate with bloom#476, which targets the same file). Update `storage-backends.md` to describe `supabase` mode as DB-direct trait reads, not bucket CSVs. **Also retire `BLOOM_TRAITS_DIR` from `_REQUIRED_DIRS`/boot validation** (`experiment_utils.py:24-28`) and drop the `SLEAP_OUT_CSV` bind-mount + `BLOOM_TRAITS_DIR` env var from `docker-compose.prod.yml` — once Tier 2 lands, nothing in the default `supabase`-backend path reads that directory, but the container still hard-requires it to exist/be writable at boot regardless of use; leaving that requirement in place keeps [bloom#474](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/474)'s bind-mount-permission risk alive for a directory nothing needs. **This is exactly [bloom#477](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/477)'s ask** (confirm `SLEAP_OUT_CSV` is dead weight in staging/prod, then stop mounting it) — coordinate/close together rather than duplicating. Caveat from #477: `SLEAP_OUT_CSV` is *also* touched by the unrelated `phenotyping_segmentation` demo tools (`compute_median`/`compute_min`/`compute_mode`), so Tier 2/3 landing removes the primary qc_clean→pca_analysis pipeline's use of it but doesn't make it **fully** dead on its own — #477's demo-tool question is a separate, smaller loose end. (`ANALYSIS_OUTPUT`/`PLOTS_DIR`, #477's other two directories, are unaffected by this roadmap — they're `ResultStore`/plot-serving concerns, out of this program's read-only scope.) | Integration test round-trips a fixture experiment through `SupabaseReader` end-to-end against a **local Supabase instance** (first tier requiring a live DB, not fakes); `LocalReader` tests stay green (untouched); updated tool-schema/docstring text reviewed for accuracy; `storage-backends.md` updated; dead code removed, not left as an unreachable branch; `_REQUIRED_DIRS`/compose mount for `SLEAP_OUT_CSV` removed for the `supabase` backend, not just the Python read path | Tier 2 | *(not yet filed; cross-ref [bloom#474](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/474), [bloom#477](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/477))* | ⬜ |
 
 ## Tracking issues
@@ -436,3 +427,26 @@ scope (additive dispatch alongside whatever #413 lands, not a replacement of it)
 flagged, not resolved: #413 (2026-07-07, full write+read round-trip) likely supersedes
 #368's read-only change (2026-06-30, written against an empty bucket) — both still open,
 not this roadmap's call to reconcile.
+
+### Update (2026-07-23) — Benfica approved the roadmap; #368/#413 closed, auth re-confirmed
+
+Benfica approved this PR, resolving all three open asks:
+
+- **#368/#413 sequencing (Q1): resolved, not just answered.** Reading `cyl_*` directly
+  makes #368's CSV path redundant, and the upload path isn't being pursued, so both PRs
+  are now closed and Tier 2 owns `supabase_reader.py`'s raw tier with no coordination
+  needed. Updated the Q1 entry, the Live-state facts warning bullet, and Tier 2's goal
+  column to drop the now-moot coordination asks; kept the prior "two ID shapes" design
+  note for history rather than deleting it outright, since it explains why the program
+  was scoped that way before this resolution.
+- **Tier 1's RPC shape (Q2): unchanged**, still gated on her review before the migration
+  ships — matches what this doc already said.
+- **Auth decision (Q3): re-confirmed.** Shared `bloom_agent` role, no per-user token/RLS
+  for trait reads still holds as of 2026-07-23.
+
+**Not done in this pass, flagged for a follow-up:** with the upload path (#413) off the
+table, Tier 2's design note on "why `SupabaseReader` needs two raw-tier resolution paths"
+(the experiment-id-shaped vs. upload-filename-shaped dispatch) may now be unnecessary
+complexity — Tier 2 could simplify to DB-direct resolution only, no dispatch. That's a
+scope change to Tier 2 itself, not just a bookkeeping update, so it's left for a deliberate
+follow-up decision rather than folded in here silently.
