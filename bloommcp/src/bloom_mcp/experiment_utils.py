@@ -231,7 +231,7 @@ def _resolve_versioned_cleaned(
     """
     import tempfile
 
-    from bloom_mcp.storage import AnalysisDir, ManifestSchemaError
+    from bloom_mcp.manifest import AnalysisDir, ManifestSchemaError
     from bloom_mcp.supabase_client import download_file, list_prefix
 
     analysis_dir = AnalysisDir("bloommcp_output", f"{stem}.csv", "qc")

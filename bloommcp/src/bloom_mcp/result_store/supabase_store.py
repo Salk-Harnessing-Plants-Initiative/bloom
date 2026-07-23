@@ -1,4 +1,4 @@
-"""Supabase-backed :class:`ResultStore` — wraps the deployed storage layer.
+"""Supabase-backed :class:`ResultStore` — wraps the deployed manifest layer.
 
 Reuses the deployed versioning/staging/manifest/upload primitives
 (``AnalysisDir``, ``versioning``, ``manifest``, ``supabase_client``), but —
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from bloom_mcp import supabase_client as _sc
-from bloom_mcp.storage import (
+from bloom_mcp.manifest import (
     AnalysisDir,
     ExperimentBlock,
     Manifest,

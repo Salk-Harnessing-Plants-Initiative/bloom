@@ -9,7 +9,7 @@ No live Supabase, no live write.
 from __future__ import annotations
 
 from bloom_mcp.contract import Provenance
-from bloom_mcp.storage.schema import CodeVersions, VersionEntry
+from bloom_mcp.manifest.schema import CodeVersions, VersionEntry
 
 
 def _provenance() -> Provenance:

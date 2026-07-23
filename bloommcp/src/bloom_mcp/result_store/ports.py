@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # avoid an import cycle; only used for typing
     from bloom_mcp.contract.provenance import Provenance
-    from bloom_mcp.storage.schema import VersionEntry
+    from bloom_mcp.manifest.schema import VersionEntry
 
 
 class ResultStoreError(Exception):

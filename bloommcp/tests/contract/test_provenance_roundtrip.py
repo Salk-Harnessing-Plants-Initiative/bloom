@@ -13,7 +13,7 @@ import json
 from hypothesis import given, strategies as st
 
 from bloom_mcp.contract import Provenance
-from bloom_mcp.storage.schema import CodeVersions
+from bloom_mcp.manifest.schema import CodeVersions
 
 
 def _make(**overrides) -> Provenance:

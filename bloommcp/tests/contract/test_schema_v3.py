@@ -5,7 +5,7 @@ Maps the spec "Additive Manifest Schema v3" forward-direction scenarios.
 
 from __future__ import annotations
 
-from bloom_mcp.storage.schema import (
+from bloom_mcp.manifest.schema import (
     CURRENT_SCHEMA_VERSION,
     CodeVersions,
     ExperimentBlock,
