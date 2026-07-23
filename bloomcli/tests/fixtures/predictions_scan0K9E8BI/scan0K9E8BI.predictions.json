@@ -1,0 +1,36 @@
+{
+  "schema_version": "1",
+  "scan_key": "scan0K9E8BI",
+  "artifacts": [
+    {
+      "kind": "predictions_slp",
+      "root_type": "primary",
+      "model_id": "rice-primary",
+      "model": {
+        "registry_id": "rice-primary",
+        "version": "123",
+        "sleap_nn_version": "0.3.0",
+        "root_type": "primary",
+        "weights_checksum": null
+      },
+      "slp_path": "scan0K9E8BI.modelrice-primary.rootprimary.slp",
+      "checksum": "032e90ea6effacbc3542381fecc1d72b09390077b1edb2ff0fabc26f7eed0044",
+      "file_size": 32
+    },
+    {
+      "kind": "predictions_slp",
+      "root_type": "crown",
+      "model_id": "rice-crown",
+      "model": {
+        "registry_id": "rice-crown",
+        "version": "123",
+        "sleap_nn_version": "0.3.0",
+        "root_type": "crown",
+        "weights_checksum": null
+      },
+      "slp_path": "scan0K9E8BI.modelrice-crown.rootcrown.slp",
+      "checksum": "8f6e28bc8be320c1c312e4e5dfe37e8e5294c60ac5ed132d9f5bde4717693e73",
+      "file_size": 30
+    }
+  ]
+}
