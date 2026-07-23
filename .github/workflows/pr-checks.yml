@@ -648,6 +648,17 @@ jobs:
       - name: Create MinIO data directory
         run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci
 
+      # bloommcp/data/ is gitignored and untracked, so this fresh checkout never
+      # has it — without this, Docker would auto-create the three bind-mount
+      # leaves as root on the "Start remaining services" up -d --build step
+      # below, unwritable by the non-root bloommcp container user. Same class
+      # of bug as MinIO's directory above (issue #472); closed here for
+      # compose-health-check by issue #474. Reuses the unmodified dev-path
+      # script — see openspec/changes/add-bloommcp-prod-staging-data-dir-preflight/
+      # design.md.
+      - name: Ensure bloommcp data directories are writable
+        run: sh scripts/ensure_bloommcp_data_dirs.sh
+
       - name: Start MinIO and create buckets
         run: |
           docker compose $COMPOSE_FILES --env-file .env.ci up -d supabase-minio
