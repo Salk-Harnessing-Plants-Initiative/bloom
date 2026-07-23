@@ -69,7 +69,7 @@ class AnalysisDir:
     def input_sha256(self, source_csv: Path) -> str:
         """Stream-hash the source CSV; cached on the instance after first call.
 
-        Source CSVs are local (bind-mounted via SLEAP_OUT_CSV); the migration
+        Source CSVs are local (bind-mounted via TRAITS_DIR); the migration
         only moves analysis outputs to Supabase Storage, not raw inputs.
         """
         if self._cached_input_sha256 is not None:

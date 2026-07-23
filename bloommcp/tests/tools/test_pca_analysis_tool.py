@@ -26,8 +26,8 @@ from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools import pca_analysis_tool
-from bloom_mcp.tools.pca_analysis_tool import (
+from bloom_mcp.sections.sleap_roots.analysis import pca_analysis as pca_analysis_tool
+from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import (
     PCAAnalysisParams,
     PCAAnalysisResult,
     pca_analysis,
@@ -35,7 +35,9 @@ from bloom_mcp.tools.pca_analysis_tool import (
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _FINAL = _FIXTURES / "turface_19_final_data.csv"
-_GOLDEN = json.loads((_FIXTURES / "turface_19_pca_golden.json").read_text())
+_GOLDEN = json.loads(
+    (_FIXTURES / "turface_19_pca_golden.json").read_text(encoding="utf-8")
+)
 
 _EXPERIMENT = "turface_19.csv"
 _TRAITS = _GOLDEN["trait_cols"]  # the recorded 8-trait PCA selection
@@ -45,7 +47,7 @@ _VAR_TOL = (
 
 
 def _final_df() -> pd.DataFrame:
-    return pd.read_csv(_FINAL)
+    return pd.read_csv(_FINAL, encoding="utf-8")
 
 
 @pytest.fixture
@@ -96,8 +98,8 @@ def test_no_silent_sample_loss(injected_ports):
 # ── 3.1 tools/list presence ─────────────────────────────────────────────────
 
 
-def test_pca_analysis_in_tools_list_and_workflow_preserved():
-    """3.1 — pca_analysis is discoverable; the dimred workflow is still registered."""
+def test_pca_analysis_in_tools_list():
+    """3.1 — pca_analysis is discoverable."""
     from fastmcp import Client
 
     from bloom_mcp import server
@@ -107,9 +109,8 @@ def test_pca_analysis_in_tools_list_and_workflow_preserved():
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    assert "pca_analysis" in tools
-    assert tools["pca_analysis"].inputSchema is not None
-    assert "run_dimensionality_reduction_workflow" in tools  # additive — not removed
+    assert "sleap_roots_pca_analysis" in tools
+    assert tools["sleap_roots_pca_analysis"].inputSchema is not None
 
 
 # ── 3.2 delegation pinning (spy) ────────────────────────────────────────────
@@ -126,13 +127,6 @@ def test_delegates_once_and_never_calls_vendored_pca(injected_ports, monkeypatch
         return real(data, **kwargs)
 
     monkeypatch.setattr(pca_analysis_tool, "perform_pca_analysis", _spy)
-
-    import bloom_mcp.pca as vendored
-
-    def _boom(*a, **k):  # pragma: no cover
-        raise AssertionError("pca_analysis called the vendored bloom_mcp.pca")
-
-    monkeypatch.setattr(vendored, "perform_pca_analysis", _boom)
 
     _run()
 
@@ -326,7 +320,7 @@ def _capture_staged_outputs(store, monkeypatch) -> dict[str, str]:
 
     def _commit(run, outputs):
         for name in outputs:
-            captured[name] = (run.staging_dir / name).read_text()
+            captured[name] = (run.staging_dir / name).read_text(encoding="utf-8")
         return real_commit(run, outputs)
 
     monkeypatch.setattr(store, "commit", _commit)
@@ -373,7 +367,12 @@ def test_duplicate_trait_columns_is_invalid_input_naming_them(
 # 9.4 — a constant certified trait the delegate would silently drop is surfaced
 
 
-def test_constant_certified_trait_is_assumption_violated(injected_ports):
+def test_constant_certified_trait_is_reported_not_raised(injected_ports):
+    """#412 — a constant trait the delegate silently drops is reported via
+    ``dropped_constant_traits``, not raised as ``assumption_violated``, as long as
+    enough non-constant traits remain to fit (see
+    :func:`test_real_delegate_degenerate_selection_is_assumption_violated` above for
+    the genuine no-non-constant-trait-survives case, which still raises)."""
     reader, store = injected_ports
     # Two varying traits (a real fit is reachable) + one constant trait the delegate drops.
     mixed = pd.DataFrame(
@@ -384,12 +383,15 @@ def test_constant_certified_trait_is_assumption_violated(injected_ports):
         }
     )
     reader.add_cleaned_version("mixed.csv", "v1", mixed, make_latest=True)
-    with pytest.raises(BloomMCPError) as exc:
-        pca_analysis(PCAAnalysisParams(experiment="mixed.csv"))
-    assert exc.value.code == "assumption_violated"
-    assert "tConst" in exc.value.message
-    # The internally inconsistent artifact is never persisted.
-    assert store.list_runs("mixed.csv", "pca") == []
+
+    result = pca_analysis(PCAAnalysisParams(experiment="mixed.csv"))
+
+    assert result.dropped_constant_traits == ["tConst"]
+    assert result.n_features == len(result.feature_names) == 2
+    assert "tConst" not in result.feature_names
+    # The run IS persisted — the artifact is internally consistent (n_features /
+    # feature_names / the persisted loadings all reflect the same post-drop set).
+    assert store.list_runs("mixed.csv", "pca") != []
 
 
 def test_n_features_equals_fitted_feature_count(injected_ports):
@@ -499,7 +501,7 @@ def test_source_snapshot_written_index_false(injected_ports, monkeypatch):
     def _spy(**kwargs):
         src = kwargs.get("source_csv")
         if src is not None:
-            captured["columns"] = list(pd.read_csv(src).columns)
+            captured["columns"] = list(pd.read_csv(src, encoding="utf-8").columns)
         return real_create(**kwargs)
 
     monkeypatch.setattr(store, "create_run", _spy)
@@ -641,8 +643,6 @@ def test_figure_cleanup_get_fignums_empty_on_partial_plotter_failure(
     must not leak the figure(s) already produced by earlier successful plotters. Exercises
     the tool's real try/finally nesting end-to-end (not just the _plots unit helpers)."""
     import matplotlib.pyplot as plt
-
-    from bloom_mcp.tools import pca_analysis_tool
 
     real = pca_analysis_tool._pca_plot_calls
 

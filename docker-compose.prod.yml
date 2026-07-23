@@ -79,7 +79,7 @@ services:
       - supanet
 
   #-------------------
-  # BLOOM WEB 
+  # BLOOM WEB
   #-------------------
   bloom-web:
     build:
@@ -214,6 +214,9 @@ services:
       SUPABASE_ANON_KEY: ${ANON_KEY}
       WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
       WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      # Public base for rewriting signed URLs off the internal kong host so
+      # download_url is usable by outside callers.
+      WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
     networks:
       - supanet
     healthcheck:
@@ -249,7 +252,7 @@ services:
       # JWT langchain-agent uses). SERVICE_ROLE_KEY is deliberately NOT passed
       # in — bloommcp's storage access is gated by the bloom_agent RLS policies, and granting service_role would let a future code path silently bypass them.
       BLOOM_AGENT_KEY: ${BLOOM_AGENT_KEY}
-      BLOOM_TRAITS_DIR: /app/data/SLEAP_OUT_CSV
+      BLOOM_TRAITS_DIR: /app/data/TRAITS_DIR
       BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
       BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
@@ -272,7 +275,7 @@ services:
       # restores the normal caching path.
       PYTHONPYCACHEPREFIX: /tmp/pycache
     volumes:
-      - ./bloommcp/data/SLEAP_OUT_CSV:/app/data/SLEAP_OUT_CSV
+      - ./bloommcp/data/TRAITS_DIR:/app/data/TRAITS_DIR
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
       - ./bloommcp/data/ANALYSIS_OUTPUT:/app/data/ANALYSIS_OUTPUT
     networks:
@@ -479,7 +482,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
 
-  
+
   # -------------------
   # Supabase Storage
   # -------------------
@@ -581,7 +584,7 @@ services:
         "-c",
         "log_min_messages=fatal"
       ]
-  
+
   # -------------------
   # Supavisor (Connection Pooler)
   # -------------------
@@ -742,7 +745,3 @@ volumes:
 networks:
   supanet:
     driver: bridge
-
-
-
-

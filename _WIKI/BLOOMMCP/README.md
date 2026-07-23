@@ -23,7 +23,7 @@ bloommcp/
 ├── server.py                  # FastMCP entry point. Validates env,
 │                              # registers tools, exposes /health.
 ├── data/                      # runtime artifacts (gitignored bind mount)
-│   ├── SLEAP_OUT_CSV/         # input CSVs from upstream pipelines
+│   ├── TRAITS_DIR/            # input CSVs from upstream pipelines
 │   ├── ANALYSIS_OUTPUT/       # versioned output of each workflow tool
 │   └── PLOTS_DIR/             # plots served at /plots by langchain-agent
 ├── source/                    # analysis primitives (port of sleap-roots-analyze)
@@ -38,19 +38,29 @@ bloommcp/
 │   ├── experiment_utils.py
 │   └── supabase_client.py
 ├── storage/
-└── tools/
-    ├── qc_tools.py
-    ├── viz_tools.py
-    ├── correlation_tools.py
-    ├── storage_tools.py       # list_existing_analyses (always-on)
-    └── workflows/             # the consolidated workflow tools (in flight)
-        ├── qc.py
-        ├── stats.py
-        ├── clustering.py
-
-        ├── dimred.py
-        └── outlier.py
+├── tools/                      # shared helpers only — every tool lives in sections/
+│   ├── _ports.py                # composition seam: injected reader/store
+│   ├── _qc_shared.py             # canonical QC thresholds shared by qc_clean/qc_inspect
+│   └── _consumer_utils.py        # RunLinks / output-frame helpers shared by consumers
+└── sections/                   # every MCP tool lives here (devendor-bloommcp-analysis P2)
+    ├── core/                    # list_available_experiments, load_experiment_data,
+    │                            # list_existing_analyses (not sleap-roots-analyze wrappers)
+    ├── sleap_roots/             # umbrella for the sleap-roots pipeline family
+    │   ├── analysis/             # pca_analysis, qc_clean, qc_inspect, remove_outliers,
+    │   │                         # clustering, + 5 plot_*.py — one file per tool,
+    │   │                         # each delegating to sleap_roots_analyze
+    │   └── extraction/           # reserved for future sleap-roots tools (empty)
+    └── phenotyping_segmentation/ # Lin's segmentation tools
 ```
+
+(The Phase-1 `run_*_workflow` tools, `tools/correlation_tools.py` + the 8 correlation
+tools, and the 9 vendored analysis/plotting modules under `source/`/`src/bloom_mcp/`
+were retired/dropped by `devendor-bloommcp-analysis`; see that OpenSpec change for why.
+This diagram predates the `source/` → `src/bloom_mcp/` package move in other respects
+too — a fuller refresh of the top-level layout is tracked separately.)
+
+`data/` is auto-provisioned by `make dev-up` — see
+[DEV_SETUP.md](../../DEV_SETUP.md#bloommcp-data-directories).
 
 ## Storage
 
@@ -150,11 +160,17 @@ role / RLS picture.
 
 ## Coding style for tool calls
 
-**Every workflow tool writes its outputs through the `AnalysisWriter`
-class** (from [`bloommcp/src/bloom_mcp/storage/writer.py`](../../bloommcp/src/bloom_mcp/storage/writer.py)), constructed via the `build_writer` factory in
-[`_helpers.py`](../../bloommcp/src/bloom_mcp/tools/workflows/_helpers.py).
+**Every persistence-writing tool writes through the `ResultStore` port**
+(`bloom_mcp.tools._ports.store()`), never `AnalysisWriter` or `supabase` directly —
+see [`qc_clean.py`](../../bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/qc_clean.py)
+for a worked example (`store().create_run()` → write outputs into the staging dir →
+`store().commit()`). (The Phase-1 workflow tools used to write through
+`AnalysisWriter` via a `build_writer` factory in `tools/workflows/_helpers.py`;
+both are gone — retired by `devendor-bloommcp-analysis`, which also moved this
+file from `tools/qc_clean_tool.py` to its current path.)
 
-`AnalysisWriter` implements a versioned write contract: each `(experiment, tool_class)` pair gets one folder in the `bloommcp-data` bucket containing a `manifest.json` that catalogs every run for that
+The port's real (`SupabaseResultStore`) implementation gives the same versioned write
+contract the diagram below shows: each `(experiment, tool_class)` pair gets one folder in the `bloommcp-data` bucket containing a `manifest.json` that catalogs every run for that
 pair.
 
 Each tool call appends a new `VersionEntry` to the same manifest and a new `v<N>_<date>_<slug>/` subfolder for its outputs.
@@ -178,8 +194,8 @@ Each tool's outputs land in a folder named after its `tool_class`.
 To add a tool to a **section** (the current pattern — e.g. phenotyping), see
 [adding-a-section-tool.md](./adding-a-section-tool.md).
 
-For the older **workflow-tool** style (read CSV → versioned output), see
-[writing-a-new-tool.md](./writing-a-new-tool.md). 
+The older **workflow-tool** style ([writing-a-new-tool.md](./writing-a-new-tool.md))
+is retired — kept as historical record only.
 
 For the underlying schema and the manifest's data model, see
 [storage-workflow.md](./storage-workflow.md).

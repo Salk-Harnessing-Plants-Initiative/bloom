@@ -18,13 +18,17 @@ MinIO's object store (under `MINIO_DATA_PATH`, in MinIO's own object format) —
 into the container as `BLOOM_OUTPUT_DIR`, but on the default path nothing writes
 new outputs there, which is why it stays empty.
 
+> `./bloommcp/data/{TRAITS_DIR,ANALYSIS_OUTPUT,PLOTS_DIR}` are provisioned
+> automatically by `make dev-up` — no manual `mkdir`/`chmod` needed. See
+> [DEV_SETUP.md](../../DEV_SETUP.md#bloommcp-data-directories).
+
 ### `BLOOM_OUTPUT_DIR` and `BLOOM_USE_LOCAL` do NOT produce local CSVs
 
 Two env vars look like they'd control this and don't:
 
 - **`BLOOM_OUTPUT_DIR`** — post-migration this only feeds a startup dir-existence
-  check and a *legacy read* fallback for pre-migration cleaned CSVs. Nothing
-  writes new outputs there. (It *is* reused as the default local root — but only
+  check and a _legacy read_ fallback for pre-migration cleaned CSVs. Nothing
+  writes new outputs there. (It _is_ reused as the default local root — but only
   when you opt into the `local` backend below.)
 - **`BLOOM_USE_LOCAL`** — dead/commented-out, and it was only ever about CLI login
   credentials, never about outputs.
@@ -95,7 +99,7 @@ bloommcp boots and runs a full `qc_clean → pca_analysis` with **no** `SUPABASE
 
 - **Inputs via `LocalReader`.** Experiment CSVs are read from a local directory —
   `BLOOM_EXPERIMENT_LOCAL_ROOT` when set, otherwise the already-mounted
-  `BLOOM_TRAITS_DIR` (`./bloommcp/data/SLEAP_OUT_CSV` in dev). `LocalReader`
+  `BLOOM_TRAITS_DIR` (`./bloommcp/data/TRAITS_DIR` in dev). `LocalReader`
   implements the same `ExperimentReader` contract as the Supabase path (same
   declared roles, same `pd.read_csv` config, same resolution order), reaches no
   Supabase, and rejects any experiment name that escapes its input root.

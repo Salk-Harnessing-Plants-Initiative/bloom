@@ -24,8 +24,11 @@ from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.experiment_utils import detect_columns
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
-from bloom_mcp.tools import _ports, remove_outliers_tool
-from bloom_mcp.tools.remove_outliers_tool import (
+from bloom_mcp.tools import _ports
+from bloom_mcp.sections.sleap_roots.analysis import (
+    remove_outliers as remove_outliers_tool,
+)
+from bloom_mcp.sections.sleap_roots.analysis.remove_outliers import (
     RemoveOutliersParams,
     RemoveOutliersResult,
     remove_outliers,
@@ -33,7 +36,9 @@ from bloom_mcp.tools.remove_outliers_tool import (
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _RAW = _FIXTURES / "turface_19_raw_data.csv"
-_GOLDEN = json.loads((_FIXTURES / "turface_19_outlier_golden.json").read_text())
+_GOLDEN = json.loads(
+    (_FIXTURES / "turface_19_outlier_golden.json").read_text(encoding="utf-8")
+)
 
 _EXPERIMENT = "turface_19.csv"
 
@@ -53,7 +58,7 @@ def _cleaned_df() -> pd.DataFrame:
     Uses the tested upstream ``clean_traits_for_analysis`` (not the code under test)
     with the reader-detected roles/traits, exactly as ``qc_clean`` would produce it.
     """
-    raw = pd.read_csv(_RAW)
+    raw = pd.read_csv(_RAW, encoding="utf-8")
     det = detect_columns(raw)
     cleaned, _kept, _log = clean_traits_for_analysis(
         raw, trait_cols=det["trait_cols"], **_roles(det)
@@ -122,7 +127,7 @@ def test_goodness_of_fit_is_dict_with_fit_quality_and_optional_types(injected_po
 # ── 3.1 tools/list presence ─────────────────────────────────────────────────
 
 
-def test_remove_outliers_appears_in_tools_list_and_workflow_preserved():
+def test_remove_outliers_appears_in_tools_list():
     from fastmcp import Client
 
     from bloom_mcp import server
@@ -132,9 +137,8 @@ def test_remove_outliers_appears_in_tools_list_and_workflow_preserved():
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    assert "remove_outliers" in tools
-    assert tools["remove_outliers"].inputSchema is not None
-    assert "run_outlier_workflow" in tools  # additive — workflow not removed
+    assert "sleap_roots_remove_outliers" in tools
+    assert tools["sleap_roots_remove_outliers"].inputSchema is not None
 
 
 # ── 3.2 schema round-trip ───────────────────────────────────────────────────
@@ -226,15 +230,6 @@ def test_delegates_once_forwards_roles_seed_and_never_calls_vendored(
         return real(df, trait_cols, **kwargs)
 
     monkeypatch.setattr(remove_outliers_tool, "remove_outlier_samples", _spy)
-
-    import bloom_mcp.outlier_detection as vendored
-
-    def _boom(*a, **k):  # pragma: no cover
-        raise AssertionError(
-            "remove_outliers called the vendored bloom_mcp.outlier_detection"
-        )
-
-    monkeypatch.setattr(vendored, "detect_outliers_mahalanobis", _boom)
 
     _run(method="mahalanobis", seed=42)
 
@@ -351,7 +346,9 @@ def test_non_default_roles_are_forwarded_overriding_delegate_defaults(monkeypatc
 
 def test_uncleaned_input_is_assumption_violated_run_qc_first():
     reader = FakeReader()
-    reader.add_experiment("raw_only.csv", pd.read_csv(_RAW))  # raw only, no cleaned
+    reader.add_experiment(
+        "raw_only.csv", pd.read_csv(_RAW, encoding="utf-8")
+    )  # raw only, no cleaned
     store = FakeResultStore()
     _ports.configure(reader=reader, store=store)
     try:
@@ -670,6 +667,21 @@ def test_non_numeric_trait_column_is_invalid_input(injected_ports):
     assert store.list_runs(_EXPERIMENT, "qc") == []
 
 
+def test_non_certified_numeric_column_is_rejected_not_dropped(injected_ports):
+    """Phase 3 / P3.2 — a numeric-but-non-certified column (a role column qc_clean
+    excluded from trait_cols, e.g. the replicate column) must be rejected the same
+    way pca_analysis/clustering reject it, not silently accepted because it happens
+    to be numeric and present. Regression guard for remove_outliers's local
+    _validate_trait_subset, which (unlike its siblings) only checked existence +
+    numeric dtype, not certified-set membership."""
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        _run(trait_columns=["rep"])  # numeric, present, but a replicate role column
+    assert exc.value.code == "invalid_input"
+    assert "rep" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "qc") == []
+
+
 def test_own_guard_rejects_returned_frame_missing_trait_column(
     guard_ports, monkeypatch
 ):
@@ -814,3 +826,57 @@ def test_rows_subset_uses_multiset_containment_under_repeated_barcodes():
     assert remove_outliers_tool._rows_subset(frame, dup) is False
     sub = pd.DataFrame({"Barcode": ["a", "c"], "t1": [1.0, 3.0]})
     assert remove_outliers_tool._rows_subset(frame, sub) is True
+
+
+# ── cylinder oracle (#483) ───────────────────────────────────────────────────
+#
+# See tests/fixtures/README.md's "Cross-tier oracle fixtures (cylinder)" section.
+# Cylinder's mahalanobis fit is "poor" (untrustworthy, like turface_19's "very_poor")
+# -- expected given 846 traits vs 129 samples makes the trait-covariance matrix
+# severely rank-deficient. A method+seed characterization pin, not ground truth.
+
+_RAW_CYL = _FIXTURES / "cylinder_raw_data.csv"
+_GOLDEN_CYL = json.loads(
+    (_FIXTURES / "cylinder_outlier_golden.json").read_text(encoding="utf-8")
+)
+_EXPERIMENT_CYL = "cylinder.csv"
+
+
+def _cleaned_df_cyl() -> pd.DataFrame:
+    raw = pd.read_csv(_RAW_CYL, encoding="utf-8")
+    det = detect_columns(raw)
+    cleaned, _kept, _log = clean_traits_for_analysis(
+        raw, trait_cols=det["trait_cols"], **_roles(det)
+    )
+    return cleaned
+
+
+@pytest.fixture
+def injected_ports_cylinder():
+    reader = FakeReader()
+    store = FakeResultStore()
+    reader.add_cleaned_version(
+        _EXPERIMENT_CYL, "v1", _cleaned_df_cyl(), make_latest=True
+    )
+    _ports.configure(reader=reader, store=store)
+    try:
+        yield reader, store
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def test_cylinder_outlier_removal_matches_golden(injected_ports_cylinder):
+    result = remove_outliers(
+        RemoveOutliersParams(experiment=_EXPERIMENT_CYL, method="mahalanobis", seed=42)
+    )
+
+    assert result.n_input_samples == _GOLDEN_CYL["n_input_samples"] == 129
+    assert result.n_outliers == _GOLDEN_CYL["n_outliers"] == 9
+    assert result.n_output_samples == _GOLDEN_CYL["n_output_samples"] == 120
+    assert sorted(result.outlier_barcodes) == sorted(_GOLDEN_CYL["outlier_barcodes"])
+    assert result.fit_is_trustworthy is False
+    assert (
+        result.goodness_of_fit["fit_quality"]
+        == _GOLDEN_CYL["goodness_of_fit_fit_quality"]
+        == "poor"
+    )

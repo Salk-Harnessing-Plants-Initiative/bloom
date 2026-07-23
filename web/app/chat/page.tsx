@@ -1,5 +1,8 @@
-import MCPChat from "@/components/mcp-chat-client";
+import { redirect } from "next/navigation";
+// Temporarily disabled — Bloom Assistant is a work in progress.
+// import MCPChat from "@/components/mcp-chat-client";
 
 export default function ChatPage() {
-  return <MCPChat />;
+  redirect("/app");
+  // return <MCPChat />;
 }

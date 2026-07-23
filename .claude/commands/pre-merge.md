@@ -87,11 +87,30 @@ make prod-down
 Drives a workflow end-to-end through the **real** `SupabaseReader`/`SupabaseResultStore`
 against the dev stack and asserts the committed run is a v3 manifest whose
 `output_sha256` matches the bytes actually stored (issue #326). Same `make bloommcp-smoke`
-target CI runs, so local and CI never drift.
+target CI runs, so local and CI never drift. `make bloommcp-plot-smoke` similarly calls a
+real plotting tool through the container's actual MCP transport (issue #472) — CI already
+runs both; do the same locally.
 
 ```bash
-make dev-up && make migrate-local && make check && make bloommcp-smoke
+make dev-up && make migrate-local && make check && make bloommcp-smoke && make bloommcp-plot-smoke
 make dev-down
+```
+
+### Step 4c: bloommcp granular tool smoke — full `live_smoke` set (bloommcp PRs only, #483)
+
+Runs every `live_smoke`-marked test under `bloommcp/tests/smoke/` — the CI-safe subset
+`dev-stack-smoke` already runs, **plus** the `live_smoke_slow` cases CI skips
+(mahalanobis/gmm on cylinder, the per-trait MixedLM heritability/variance-decomposition
+plots, correlation-matrix-on-cylinder). Requires `BLOOMMCP_PORT` / `BLOOMMCP_API_KEY`
+from `.env.dev` (same as the Makefile targets above).
+
+```bash
+make dev-up && make migrate-local && make check
+cd bloommcp && \
+  BLOOMMCP_PORT=$(sed -n 's/^BLOOMMCP_PORT=//p' ../.env.dev | head -n1 | tr -d '\r') \
+  BLOOMMCP_API_KEY=$(sed -n 's/^BLOOMMCP_API_KEY=//p' ../.env.dev | head -n1 | tr -d '\r') \
+  uv run --extra test pytest tests/smoke/ -m live_smoke -v --tb=short
+cd .. && make dev-down
 ```
 
 ## Step 5: PR Status on GitHub

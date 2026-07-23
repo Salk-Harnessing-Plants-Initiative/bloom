@@ -25,8 +25,8 @@ from bloom_mcp.data_access import (
 )
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools import qc_inspect_tool
-from bloom_mcp.tools.qc_inspect_tool import (
+from bloom_mcp.sections.sleap_roots.analysis import qc_inspect as qc_inspect_tool
+from bloom_mcp.sections.sleap_roots.analysis.qc_inspect import (
     QCInspectParams,
     QCInspectResult,
     qc_inspect,
@@ -34,13 +34,15 @@ from bloom_mcp.tools.qc_inspect_tool import (
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _RAW = _FIXTURES / "turface_19_raw_data.csv"
-_GOLDEN = json.loads((_FIXTURES / "turface_19_qc_inspect_golden.json").read_text())
+_GOLDEN = json.loads(
+    (_FIXTURES / "turface_19_qc_inspect_golden.json").read_text(encoding="utf-8")
+)
 
 _EXPERIMENT = "turface_19_raw.csv"
 
 
 def _raw_df() -> pd.DataFrame:
-    return pd.read_csv(_RAW)
+    return pd.read_csv(_RAW, encoding="utf-8")
 
 
 @pytest.fixture
@@ -185,7 +187,7 @@ def test_all_nan_trait_is_reported_not_rejected():
 
 
 def test_qc_inspect_appears_in_tools_list_and_siblings_preserved():
-    """3.1 — qc_inspect is discoverable; qc_clean + run_qc_workflow are still registered."""
+    """3.1 — qc_inspect is discoverable; qc_clean is still registered."""
     from fastmcp import Client
 
     from bloom_mcp import server
@@ -195,10 +197,9 @@ def test_qc_inspect_appears_in_tools_list_and_siblings_preserved():
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_list())}
-    assert "qc_inspect" in tools
-    assert tools["qc_inspect"].inputSchema is not None
-    assert "qc_clean" in tools  # additive — sibling not removed
-    assert "run_qc_workflow" in tools
+    assert "sleap_roots_qc_inspect" in tools
+    assert tools["sleap_roots_qc_inspect"].inputSchema is not None
+    assert "sleap_roots_qc_clean" in tools  # additive — sibling not removed
 
 
 # ── 3.2 schema round-trip ───────────────────────────────────────────────────
@@ -224,7 +225,7 @@ def test_default_thresholds_mirror_qc_clean_canonical():
     overlays/recommendation reflect the clean a default qc_clean would apply. Compared
     field-by-field against QCCleanParams (not just literals) so a future qc_clean bump that
     isn't mirrored here fails — the thresholds are single-sourced in _qc_shared."""
-    from bloom_mcp.tools.qc_clean_tool import QCCleanParams
+    from bloom_mcp.sections.sleap_roots.analysis.qc_clean import QCCleanParams
 
     qi = QCInspectParams(experiment="x.csv")
     qc = QCCleanParams(experiment="x.csv")
@@ -319,13 +320,6 @@ def test_delegates_to_analyze_and_never_calls_vendored_cleanup(
     monkeypatch.setattr(qc_inspect_tool, "apply_data_cleanup_filters", _spy_filter)
     monkeypatch.setattr(qc_inspect_tool, "create_trait_eda_plots", _spy_eda)
     monkeypatch.setattr(qc_inspect_tool, "inspect_nan_samples", _spy_inspect)
-
-    import bloom_mcp.data_cleanup as vendored
-
-    def _boom(*a, **k):  # pragma: no cover
-        raise AssertionError("qc_inspect called the vendored bloom_mcp.data_cleanup")
-
-    monkeypatch.setattr(vendored, "apply_data_cleanup_filters", _boom)
 
     _run()
 
@@ -685,11 +679,26 @@ def test_metadata_only_frame_with_no_traits_is_invalid_input():
 
 
 @pytest.mark.parametrize(
-    "bad", ["../../app/.env", "/etc/passwd", "sub/dir/x.csv", "..", ".", ""]
+    "bad",
+    [
+        "../../app/.env",
+        "/etc/passwd",
+        "sub/dir/x.csv",
+        "..\\..\\app\\.env",
+        "sub\\dir\\x.csv",
+        "..",
+        ".",
+        "",
+    ],
 )
 def test_experiment_path_traversal_is_rejected(injected_ports, bad):
     """A non-bare experiment (separators / .. / absolute / empty) is rejected before any
     read, so this read-and-persist tool can't be turned into an arbitrary-file exfil path.
+
+    Includes backslash-separated variants: ``pathlib.Path`` only treats ``\\`` as a
+    separator on Windows, so on POSIX a naive ``Path(x).name != x`` check alone lets a
+    backslash payload slip through to a "file not found" read attempt instead of being
+    rejected here.
     """
     with pytest.raises(BloomMCPError) as exc:
         qc_inspect(QCInspectParams(experiment=bad))
@@ -805,3 +814,50 @@ def test_run_commits_without_heatmap_when_summary_plots_fail(
         result.outputs
     )
     assert store.get_run(_EXPERIMENT, "qc_inspect", "latest").run_ref == "v1"
+
+
+# ── cylinder oracle (#483) ───────────────────────────────────────────────────
+#
+# See tests/fixtures/README.md's "Cross-tier oracle fixtures (cylinder)" section.
+# Recorded via a real MCP call at qc_inspect's canonical defaults; since qc_clean's
+# own cylinder golden shows zero drops at those thresholds, this result is
+# numerically identical to inspecting genuinely raw data here -- no missingness
+# tradeoff to demonstrate, unlike turface_19's NaN-heavy-trait recommendation.
+
+_RAW_CYL = _FIXTURES / "cylinder_raw_data.csv"
+_GOLDEN_CYL = json.loads(
+    (_FIXTURES / "cylinder_qc_inspect_golden.json").read_text(encoding="utf-8")
+)
+_EXPERIMENT_CYL = "cylinder_raw.csv"
+
+
+@pytest.fixture
+def injected_ports_cylinder():
+    reader = FakeReader()
+    store = FakeResultStore()
+    reader.add_experiment(_EXPERIMENT_CYL, pd.read_csv(_RAW_CYL, encoding="utf-8"))
+    _ports.configure(reader=reader, store=store)
+    try:
+        yield reader, store
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def test_cylinder_inspect_matches_golden_no_missingness_story(injected_ports_cylinder):
+    result = qc_inspect(QCInspectParams(experiment=_EXPERIMENT_CYL))
+
+    assert result.n_samples == _GOLDEN_CYL["raw_samples"] == 129
+    assert result.n_traits == _GOLDEN_CYL["raw_traits"] == 846
+    assert (
+        result.traits_would_be_removed
+        == _GOLDEN_CYL["at_default_params"]["traits_would_be_removed"]
+        == []
+    )
+    assert (
+        result.samples_lost_at_current_params
+        == _GOLDEN_CYL["at_default_params"]["samples_lost"]
+        == 0
+    )
+    assert result.recommendation.no_change_needed == _GOLDEN_CYL["recommendation"][
+        "no_change_needed"
+    ] is True

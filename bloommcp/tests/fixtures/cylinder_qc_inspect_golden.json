@@ -1,0 +1,30 @@
+{
+  "_comment": "Oracle for qc_inspect on the cylinder input, using sleap_roots_analyze.apply_data_cleanup_filters (the same delegate the tool wraps) at qc_inspect's CANONICAL defaults -- identical to qc_clean's: max_zeros_per_trait=0.5, max_nans_per_trait=0.2, max_nans_per_sample=0.0, min_samples_per_trait=10. Recorded via a real MCP call; because qc_clean's own run (cylinder_qc_golden.json) shows zero samples/traits are dropped at these thresholds, qc_inspect's result over the already-committed cleaned version is numerically identical to inspecting genuinely raw data for this fixture -- there is no missingness story to demonstrate here, unlike turface_19's NaN-heavy-trait tradeoff.",
+  "_raw_source": "see cylinder_qc_golden.json",
+  "_derivation": "Recorded via a real fastmcp.Client call to sleap_roots_qc_inspect against the running bloommcp dev-stack container, 2026-07-22.",
+  "role_columns": {
+    "barcode_col": "plant_qr_code",
+    "genotype_col": "Geno",
+    "replicate_col": "Rep"
+  },
+  "raw_samples": 129,
+  "raw_traits": 846,
+  "naive_dropna_samples_lost": 0,
+  "default_params": {
+    "max_zeros_per_trait": 0.5,
+    "max_nans_per_trait": 0.2,
+    "max_nans_per_sample": 0.0,
+    "min_samples_per_trait": 10
+  },
+  "at_default_params": {
+    "traits_would_be_removed": [],
+    "samples_lost": 0,
+    "residual_nan_cells": 0
+  },
+  "recommendation": {
+    "no_change_needed": true,
+    "recommended_max_nans_per_trait": null,
+    "would_remove_traits": [],
+    "samples_lost_at_recommendation": 0
+  }
+}

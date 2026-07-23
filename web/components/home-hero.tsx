@@ -60,12 +60,14 @@ export function HomeHero({ firstName, speciesCount, dbCounts }: Props) {
               Explore phenotypes
               <span aria-hidden>→</span>
             </Link>
+            {/* Temporarily disabled — Bloom Assistant is a work in progress.
             <Link
               href="/chat"
               className="inline-flex items-center rounded-md border border-stone-300 px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 hover:border-stone-400 transition-colors"
             >
               Ask the Bloom Assistant
             </Link>
+            */}
           </div>
         </div>
 

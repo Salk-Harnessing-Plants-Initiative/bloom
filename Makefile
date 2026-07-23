@@ -24,7 +24,8 @@ help:
 	@echo "  make new-migration name=xxx - Create a new migration file"
 	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
 	@echo "  make test-integration - Run integration tests against the local dev stack"
-	@echo "  make bloommcp-smoke   - Live persistence smoke: drive a workflow through real Supabase storage"
+	@echo "  make bloommcp-smoke   - Live persistence smoke: drive granular tools through real Supabase storage"
+	@echo "  make bloommcp-plot-smoke - Live plot-tool smoke: real MCP call through the bloommcp container"
 	@echo "  make check            - Verify local stack: services, roles, schemas, migrations"
 	@echo "  make verify-dev       - Clean reset -> up -> migrate -> check (destructive)"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
@@ -49,9 +50,20 @@ init: check-uv
 doctor:
 	@sh scripts/doctor.sh
 
+# Ensure bloommcp's bind-mounted data directories are writable before compose
+# brings the container up (issue #472). A .PHONY prerequisite — not folded into
+# `doctor.sh` — so it always runs, including in CI's `DOCTOR_SKIP=1 make dev-up`
+# (see scripts/ensure_bloommcp_data_dirs.sh's header for why), and Make resolves
+# prerequisites before the `dev-up` recipe body regardless of where the
+# prerequisite is listed, so this can never accidentally land after
+# `docker compose up` the way an inline recipe line could.
+.PHONY: ensure-bloommcp-data-dirs
+ensure-bloommcp-data-dirs:
+	@sh scripts/ensure_bloommcp_data_dirs.sh
+
 # Run development stack
 .PHONY: dev-up
-dev-up:
+dev-up: ensure-bloommcp-data-dirs
 	@sh scripts/doctor.sh
 	@echo " Checking frontend dependencies..."
 	@if [ ! -f "./web/package-lock.json" ]; then \
@@ -328,7 +340,32 @@ bloommcp-smoke: check-uv
 	BLOOM_AGENT_KEY=$$(sed -n 's/^BLOOM_AGENT_KEY=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
 	if [ -z "$$BLOOM_AGENT_KEY" ]; then echo "Error: BLOOM_AGENT_KEY is empty in .env.dev — run 'make init'."; exit 1; fi; \
 	cd bloommcp && SUPABASE_URL="http://localhost:$${KONG_PORT}" BLOOM_AGENT_KEY="$$BLOOM_AGENT_KEY" \
-		uv run python scripts/live_persistence_smoke.py
+		uv run python tests/smoke/live_persistence_smoke.py
+
+## Live plot-tool smoke (issue #472): calls a real plotting tool through the
+## bloommcp container's actual MCP transport (not an in-process/env-overridden
+## call like bloommcp-smoke's) — the only way to prove the real bind-mounted
+## PLOTS_DIR write path works. Requires the stack to be up AND healthy — `make
+## dev-up` alone only starts containers; `docker ps` can show `bloommcp` as
+## `Up ... (health: starting)` well before its MCP endpoint accepts requests.
+## Run `make check` first (or otherwise wait for `bloommcp` to report
+## `healthy`), or this can hang or connection-refuse instead of hitting the
+## guard clauses below.
+.PHONY: bloommcp-plot-smoke
+bloommcp-plot-smoke: check-uv
+	@if [ ! -f .env.dev ]; then \
+		echo "Error: .env.dev not found. Run 'make init' first."; \
+		exit 1; \
+	fi
+	@if ! docker ps | grep -q bloommcp; then \
+		echo "Error: dev stack not running. Start with 'make dev-up'."; \
+		exit 1; \
+	fi
+	@BLOOMMCP_PORT=$$(sed -n 's/^BLOOMMCP_PORT=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); BLOOMMCP_PORT=$${BLOOMMCP_PORT:-8811}; \
+	BLOOMMCP_API_KEY=$$(sed -n 's/^BLOOMMCP_API_KEY=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
+	if [ -z "$$BLOOMMCP_API_KEY" ]; then echo "Error: BLOOMMCP_API_KEY is empty in .env.dev — run 'make init'."; exit 1; fi; \
+	cd bloommcp && BLOOMMCP_PORT="$$BLOOMMCP_PORT" BLOOMMCP_API_KEY="$$BLOOMMCP_API_KEY" \
+		uv run python tests/smoke/live_plot_tool_smoke.py
 
 ## One-shot: clean reset -> up -> migrate -> health check. Destructive (wipes the
 ## local DB). Use to reproduce a fresh-clone init and prove it end to end.

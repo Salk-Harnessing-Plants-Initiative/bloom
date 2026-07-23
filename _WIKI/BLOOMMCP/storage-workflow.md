@@ -1,26 +1,31 @@
 # Tool-call results storage
 
 This doc explains how bloommcp saves analysis results (and how it reads
-them back). If you are about to write a new workflow tool start here.
+them back). If you are about to write a new granular tool start here.
 
 The storage layer lives under
 [bloommcp/src/bloom_mcp/storage/](../../bloommcp/src/bloom_mcp/storage/). Everything below is a view
-of those files plus the two callers that actually use them:
-[`build_writer`](../../bloommcp/src/bloom_mcp/tools/workflows/_helpers.py) (write
-side) and
-[`list_existing_analyses`](../../bloommcp/src/bloom_mcp/tools/storage_tools.py) (read
-side).
+of those files plus the two kinds of callers that actually use them: granular tools writing
+through the `ResultStore` port (e.g.
+[`qc_clean.py`](../../bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/qc_clean.py), via
+[`bloom_mcp/tools/_ports.py`](../../bloommcp/src/bloom_mcp/tools/_ports.py)) and
+[`list_existing_analyses`](../../bloommcp/src/bloom_mcp/sections/core/list_existing_analyses.py)
+(read side). (The Phase-1 `run_*_workflow` tools this doc originally illustrated with —
+`tools/workflows/_helpers.py`'s `build_writer` — were retired by
+`devendor-bloommcp-analysis`, which also moved the granular tools below from
+`tools/*_tool.py` into `sections/`; the granular tools are the workflow tools'
+replacement.)
 
 ## Why this exists
 
-A bloommcp workflow tool (say, `run_qc_workflow`) takes a CSV of plant traits, does something to it (QC, stats, PCA, clustering), and produces
+A bloommcp tool (say, `qc_clean`) takes a CSV of plant traits, does something to it (QC, PCA, clustering, outlier removal), and produces
 output files. We want three things from those outputs:
 
 1. **Persistence** - they outlive the container, so the agent can refer to "the QC run we did yesterday."
 2. **Versioning** - every re-run gets its own `v<N>` folder. We never overwrite a previous run.
 3. **Provenance** - for each run we record the tool, its params, the input file's SHA-256, and the bloommcp version that produced it.
 
-All three live in Supabase Storage, in the `bloommcp-data` bucket. 
+All three live in Supabase Storage, in the `bloommcp-data` bucket.
 
 The storage layer is the thin Python wrapper that makes writing those three things feel like writing to a local folder.
 
@@ -54,7 +59,7 @@ Two rules to internalise:
 
 `tool_class` is one of the strings in `CANONICAL_TOOL_CLASSES` in
 [`storage/__init__.py`](../../bloommcp/src/bloom_mcp/storage/__init__.py): `qc`, `stats`, `dimred`, `clustering`, `outlier`, `viz`, `correlation`,
-`heritability`, `anova`. 
+`heritability`, `anova`.
 
 The experiment stem is `Path(filename).stem` — `plant_traits.csv` → `plant_traits`.
 
@@ -80,35 +85,35 @@ manifest, finds the max `N`, returns `v<max+1>`.
 
 ## The four schema models
 
-`manifest.json` is a strict Pydantic-validated document. 
+`manifest.json` is a strict Pydantic-validated document.
 
 The models live in [`schema.py`](../../bloommcp/src/bloom_mcp/storage/schema.py) and all inherit from `_StrictModel`, which sets `extra="forbid"`.
 
 That means if a writer accidentally adds a field that isn't in the schema, `model_validate`
 raises a `ValidationError` instead of silently writing garbage.
 
-**`Manifest`** is the whole JSON file. It has four fields: `manifest_schema_version` (currently `2`, the constant `CURRENT_SCHEMA_VERSION`), `experiment` (an `ExperimentBlock`), `versions` (a list of `VersionEntry`), and `latest` (the `id` of the most recent version, or `None` if there are no runs yet).
+**`Manifest`** is the whole JSON file. It has four fields: `manifest_schema_version` (currently `3`, the constant `CURRENT_SCHEMA_VERSION`), `experiment` (an `ExperimentBlock`), `versions` (a list of `VersionEntry`), and `latest` (the `id` of the most recent version, or `None` if there are no runs yet).
 
-**`ExperimentBlock`** identifies *which* experiment this manifest catalogs.It has `filename` (e.g. `plant_traits.csv`), `source_path` and `input_sha256` (a stream-hashed digest of the source CSV, so we can detect if the input ever changed under us).
+**`ExperimentBlock`** identifies _which_ experiment this manifest catalogs.It has `filename` (e.g. `plant_traits.csv`), `source_path` and `input_sha256` (a stream-hashed digest of the source CSV, so we can detect if the input ever changed under us).
 
 **`VersionEntry`** is one analysis run — one entry per tool call,
 appended to `Manifest.versions`.
 
-| Field | What it stores |
-|---|---|
-| `id` | `"v1"`, `"v2"`, … — the run's identifier |
-| `created_at` | UTC timestamp, ISO-8601 ending in `Z` |
-| `tool` | The tool function name (e.g. `"run_qc_workflow"`) |
-| `params` | Dict of whatever args the tool was called with |
-| `based_on_version` | Lineage pointer (hardcoded `"raw"` today) |
-| `code_versions` | A `CodeVersions` block — package versions at write time |
-| `outputs` | Dict mapping a short name (`"cleaned"`) to a path relative to the version dir (`"_cleaned.csv"`) |
-| `user_label` | Optional human-readable tag the LLM passed in |
-| `version_dir` | The on-disk folder name for this run (e.g. `"v3_2026-06-07_my_label"`) |
+| Field              | What it stores                                                                                   |
+| ------------------ | ------------------------------------------------------------------------------------------------ |
+| `id`               | `"v1"`, `"v2"`, … — the run's identifier                                                         |
+| `created_at`       | UTC timestamp, ISO-8601 ending in `Z`                                                            |
+| `tool`             | The tool function name (e.g. `"qc_clean"`)                                                       |
+| `params`           | Dict of whatever args the tool was called with                                                   |
+| `based_on_version` | Lineage pointer (hardcoded `"raw"` today)                                                        |
+| `code_versions`    | A `CodeVersions` block — package versions at write time                                          |
+| `outputs`          | Dict mapping a short name (`"cleaned"`) to a path relative to the version dir (`"_cleaned.csv"`) |
+| `user_label`       | Optional human-readable tag the LLM passed in                                                    |
+| `version_dir`      | The on-disk folder name for this run (e.g. `"v3_2026-06-07_my_label"`)                           |
 
 **`CodeVersions`** captures the installed package versions at write
 time, so months later you can tell which release of the code produced a
-given output. 
+given output.
 
 Today it has exactly two fields: `bloommcp` and `supabase` (defaulting to `"unknown"` if the package isn't installed).
 
@@ -116,21 +121,21 @@ Concrete example of a `manifest.json` after one run:
 
 ```json
 {
-  "manifest_schema_version": 2,
+  "manifest_schema_version": 3,
   "experiment": {
     "filename": "plant_traits.csv",
-    "source_path": "/app/data/SLEAP_OUT_CSV/plant_traits.csv",
+    "source_path": "/app/data/TRAITS_DIR/plant_traits.csv",
     "input_sha256": "abc123..."
   },
   "versions": [
     {
       "id": "v1",
       "created_at": "2026-06-05T12:34:56Z",
-      "tool": "run_qc_workflow",
-      "params": {"threshold": 0.1},
+      "tool": "qc_clean",
+      "params": { "threshold": 0.1 },
       "based_on_version": "raw",
-      "code_versions": {"bloommcp": "0.1.0", "supabase": "2.31.0"},
-      "outputs": {"cleaned": "_cleaned.csv"},
+      "code_versions": { "bloommcp": "0.1.0", "supabase": "2.31.0" },
+      "outputs": { "cleaned": "_cleaned.csv" },
       "user_label": "initial_run",
       "version_dir": "v1_2026-06-07_initial_run"
     }
@@ -141,17 +146,22 @@ Concrete example of a `manifest.json` after one run:
 
 ## The write flow
 
-> **Adding a new workflow tool?** Use the guide in [writing-a-new-tool.md](./writing-a-new-tool.md). 
+> **Adding a new granular tool?** Use the guide in
+> [writing-a-new-tool.md](./writing-a-new-tool.md).
 >
-> This section documents what happens *under the hood* during a commit.
+> This section documents what happens _under the hood_ during a commit. (This originally
+> illustrated the retired `run_*_workflow` tools' `build_writer`/`AnalysisWriter` path — that
+> code is gone; the mechanics below are now reached through the `ResultStore` port instead,
+> per `devendor-bloommcp-analysis`.)
 
-Every workflow tool goes through the same machinery:
+Every granular tool goes through the same machinery, via the injected `ResultStore` port
+([`bloom_mcp/tools/_ports.py`](../../bloommcp/src/bloom_mcp/tools/_ports.py)):
 
-[`build_writer`](../../bloommcp/src/bloom_mcp/tools/workflows/_helpers.py) constructs an `AnalysisWriter`, the tool calls `create_version()` to get a tmp
-staging directory, writes outputs into it, then calls `commit({...})` to upload and register.
+`_ports.store().create_run(...)` returns a `RunHandle` with a tmp staging directory, the tool
+writes outputs into it, then calls `store().commit(run, {...})` to upload and register.
 
 What `commit()` does, step by step (see
-[`writer.py`](../../bloommcp/src/bloom_mcp/storage/writer.py)):
+[`supabase_store.py`](../../bloommcp/src/bloom_mcp/result_store/supabase_store.py)):
 
 1. Hashes `source_csv` if it exists (cached on `AnalysisDir`, so re-runs
    don't re-hash).
@@ -279,7 +289,7 @@ Did the JSON shape change in a way that an old reader would mis-parse?
 
 The `validate_schema()` function in
 [`manifest.py`](../../bloommcp/src/bloom_mcp/storage/manifest.py) rejects manifests
-whose version is *newer* than this code knows about — so bumping the
+whose version is _newer_ than this code knows about — so bumping the
 constant is also the signal that this code can read the new shape.
 
 ## Conventions
@@ -287,20 +297,20 @@ constant is also the signal that this code can read the new shape.
 A short reference of the naming and composition rules you will trip
 over otherwise.
 
-| Concept                 | Rule                                                                | Source                                                          |
-| ----------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------- |
-| Bucket name             | `bloommcp-data` (hardcoded constant)                              | [`supabase_client.py`](../../bloommcp/src/bloom_mcp/supabase_client.py) |
-| Input prefix            | `bloommcp_input/` (flat)                                          | same                                                            |
-| Output prefix           | `bloommcp_output/`                                                | same                                                            |
-| Analysis folder         | `<output_root>/<tool_class>_<stem>/`                              | `AnalysisDir.__init__`                                        |
-| Version folder          | `v<N>_<YYYY-MM-DD>[_<slug>]`                                      | `version_dir_name()`                                          |
-| Slug                    | lowercase,`[a-z0-9_]` only, max 32 chars, edges stripped of `_` | `slugify()`                                                   |
-| Version id              | `v<N>`, monotonic, never reused                                   | `next_version_id()`                                           |
-| `created_at`          | UTC, ISO-8601, seconds precision, ends in `Z`                     | `AnalysisWriter.commit`                                       |
-| Object key              | `AnalysisDir.key(rel)` → `<path><rel>`                         | `analysis_dir.py`                                             |
-| Manifest path           | `<analysis_dir>/manifest.json`                                    | `manifest.py`                                                 |
-| `tool_class` registry | `CANONICAL_TOOL_CLASSES` in `storage/__init__.py`               | `__init__.py`                                                 |
-| Upsert flag             | the literal**string** `"true"`, not the bool `True`       | required by the Supabase SDK's `file_options`                 |
+| Concept               | Rule                                                            | Source                                                                  |
+| --------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Bucket name           | `bloommcp-data` (hardcoded constant)                            | [`supabase_client.py`](../../bloommcp/src/bloom_mcp/supabase_client.py) |
+| Input prefix          | `bloommcp_input/` (flat)                                        | same                                                                    |
+| Output prefix         | `bloommcp_output/`                                              | same                                                                    |
+| Analysis folder       | `<output_root>/<tool_class>_<stem>/`                            | `AnalysisDir.__init__`                                                  |
+| Version folder        | `v<N>_<YYYY-MM-DD>[_<slug>]`                                    | `version_dir_name()`                                                    |
+| Slug                  | lowercase,`[a-z0-9_]` only, max 32 chars, edges stripped of `_` | `slugify()`                                                             |
+| Version id            | `v<N>`, monotonic, never reused                                 | `next_version_id()`                                                     |
+| `created_at`          | UTC, ISO-8601, seconds precision, ends in `Z`                   | `AnalysisWriter.commit`                                                 |
+| Object key            | `AnalysisDir.key(rel)` → `<path><rel>`                          | `analysis_dir.py`                                                       |
+| Manifest path         | `<analysis_dir>/manifest.json`                                  | `manifest.py`                                                           |
+| `tool_class` registry | `CANONICAL_TOOL_CLASSES` in `storage/__init__.py`               | `__init__.py`                                                           |
+| Upsert flag           | the literal**string** `"true"`, not the bool `True`             | required by the Supabase SDK's `file_options`                           |
 
 ## Where to look next
 

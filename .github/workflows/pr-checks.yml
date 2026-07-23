@@ -139,8 +139,12 @@ jobs:
       - name: Run bloom_mcp package tests
         # Excludes the integration-marked full-fixture heritability/UMAP oracle
         # tests (bloommcp/tests/test_oracle.py) — they're known to intermittently
-        # stall in CI containers (#454) and run instead via /pre-merge.
-        run: cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration" -v --tb=short
+        # stall in CI containers (#454) and run instead via /pre-merge. Also
+        # excludes live_smoke-marked tests (bloommcp/tests/smoke/) — this job never
+        # brings up the dev stack, so they'd fail/hang here regardless of
+        # numerical risk; the CI-safe subset runs in dev-stack-smoke below, the
+        # full set via /pre-merge (#483).
+        run: cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration and not live_smoke" -v --tb=short
         env:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
@@ -161,7 +165,7 @@ jobs:
           wheel=$(echo dist/bloommcp-*.whl)
           test -f "$wheel" || { echo "expected exactly one wheel, got: $wheel"; exit 1; }
           uv run --no-project --with "$wheel" \
-            python -c "import bloom_mcp, bloom_mcp.tools, bloom_mcp.storage, bloom_mcp.server; assert 'site-packages' in bloom_mcp.__file__, bloom_mcp.__file__"
+            python -c "import bloom_mcp, bloom_mcp.tools, bloom_mcp.storage, bloom_mcp.server; assert 'site-packages' in bloom_mcp.__file__, bloom_mcp.__file__; bloom_mcp.server.build_app()"
         env:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
@@ -644,6 +648,17 @@ jobs:
       - name: Create MinIO data directory
         run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci
 
+      # bloommcp/data/ is gitignored and untracked, so this fresh checkout never
+      # has it — without this, Docker would auto-create the three bind-mount
+      # leaves as root on the "Start remaining services" up -d --build step
+      # below, unwritable by the non-root bloommcp container user. Same class
+      # of bug as MinIO's directory above (issue #472); closed here for
+      # compose-health-check by issue #474. Reuses the unmodified dev-path
+      # script — see openspec/changes/add-bloommcp-prod-staging-data-dir-preflight/
+      # design.md.
+      - name: Ensure bloommcp data directories are writable
+        run: sh scripts/ensure_bloommcp_data_dirs.sh
+
       - name: Start MinIO and create buckets
         run: |
           docker compose $COMPOSE_FILES --env-file .env.ci up -d supabase-minio
@@ -990,6 +1005,33 @@ jobs:
       # host gateway from KONG_HTTP_PORT; no repo secrets are needed.
       - name: make bloommcp-smoke (live persistence smoke through real ports)
         run: make bloommcp-smoke
+
+      # Live plot-tool smoke (issue #472): unlike bloommcp-smoke above (in-process,
+      # env-overridden to host temp dirs), this calls a real plotting tool through
+      # the bloommcp container's actual MCP transport — the only way to prove the
+      # real bind-mounted PLOTS_DIR write path works, since plotting tools always
+      # write straight to disk regardless of storage backend. Proves the
+      # ensure-bloommcp-data-dirs preflight (Makefile `dev-up` prerequisite) is
+      # actually wired in and not silently skipped (e.g. by DOCTOR_SKIP=1, which
+      # this job sets on `make dev-up` above).
+      - name: make bloommcp-plot-smoke (live plot-tool smoke through the real container)
+        run: make bloommcp-plot-smoke
+
+      # Granular per-tool smoke coverage (#483): each test calls a bloommcp tool
+      # through the real running container's MCP transport, over both the turface_19
+      # and cylinder oracle fixtures (see bloommcp/tests/fixtures/README.md). Only the
+      # `live_smoke`-but-not-`live_smoke_slow` (bounded-time) subset runs here; the
+      # full set (including numerically-risky cases like mahalanobis/gmm on cylinder
+      # and the per-trait MixedLM heritability/variance-decomposition plots) runs via
+      # /pre-merge against a locally-brought-up stack instead — see
+      # tests/unit/test_bloommcp_smoke_marker_split.py for the regression guard on
+      # this exact `-m` filter and the live_smoke/live_smoke_slow marker pairing.
+      - name: pytest tests/smoke/ (CI-safe live-smoke subset, both fixtures)
+        run: |
+          BLOOMMCP_PORT=$(sed -n 's/^BLOOMMCP_PORT=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r')
+          BLOOMMCP_API_KEY=$(sed -n 's/^BLOOMMCP_API_KEY=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r')
+          cd bloommcp && BLOOMMCP_PORT="${BLOOMMCP_PORT:-8811}" BLOOMMCP_API_KEY="$BLOOMMCP_API_KEY" \
+            uv run --frozen --extra test pytest tests/smoke/ -m "live_smoke and not live_smoke_slow" -v --tb=short
 
       # Guarded: if: failure() fires if an earlier, unrelated step fails
       # before .env.dev is ever generated (#455) — same defect class as
