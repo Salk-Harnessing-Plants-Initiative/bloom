@@ -1,7 +1,7 @@
 # Local validation — `make bloommcp-smoke`
 
 The Supabase-free unit suite (`uv run pytest`) runs the bloom-mcp tools against in-memory
-fakes. **`make bloommcp-smoke`** is the complementary *live* check: it drives real tools
+fakes. **`make bloommcp-smoke`** is the complementary _live_ check: it drives real tools
 end-to-end through the deployed `SupabaseReader` / `SupabaseResultStore` adapters against a
 running dev stack, so CI and local pre-merge prove the real write/read path — not just the
 fakes. The same target backs the `dev-stack-smoke` CI job, so local and CI never drift.
@@ -44,8 +44,9 @@ per-check summary and a non-zero exit — never an unlabelled traceback.
 The driver first checks the **Tier-0 import-clean guarantee** (`import bloom_mcp` is clean in
 a subprocess with the Supabase env scrubbed), then runs three legs through the real ports.
 (A fourth, legacy leg driving `run_clustering_workflow` used to carry the generic v3-provenance
-+ version-advance assertions below — retired by `devendor-bloommcp-analysis`; those assertions
-moved onto Leg 2 / `remove_outliers`, the surviving seed-bearing consumer.)
+
+- version-advance assertions below — retired by `devendor-bloommcp-analysis`; those assertions
+  moved onto Leg 2 / `remove_outliers`, the surviving seed-bearing consumer.)
 
 ### Leg 1 — `qc_clean` (Tier-3 QC foundation, deterministic)
 
@@ -116,7 +117,7 @@ This is the `qc_clean` → … → `clustering(require_clean=True)` composition 
 the real ports, in parallel with the `pca_analysis` consumer, for both the stochastic and
 deterministic clustering methods.
 
-> **Note on raw inputs.** The deployed reader currently resolves *raw* experiment inputs from
+> **Note on raw inputs.** The deployed reader currently resolves _raw_ experiment inputs from
 > the local `BLOOM_TRAITS_DIR`, so the qc_clean leg seeds `turface_raw.csv` there (matching
 > the clustering leg's fixture-upload pattern). When raw inputs migrate to the
 > `bloommcp_input/` storage prefix, the leg's upload moves to that bucket.
@@ -144,14 +145,15 @@ cd bloommcp && uv run pytest tests/scripts/test_live_persistence_smoke_logic.py
 
 ## Troubleshooting
 
-| Symptom | Likely cause / fix |
-| --- | --- |
-| `Error: dev stack not running` | `make dev-up` (then `make migrate-local`). |
-| `Error: BLOOM_AGENT_KEY is empty in .env.dev` | Run `make init` to (re)generate `.env.dev`. |
-| `FAIL ... sha256 matches stored bytes` | A real write-path regression — bytes stored differ from the recorded hash. |
-| `... read-back attempt N/5 failed` then a `FAIL` | Read-after-write lag exceeded the bounded retry; check `storage` / `db-dev` health (`make dev-logs`). |
-| `FAIL qc_clean: require_clean read resolves the cleaned artifact (not raw)` | The reader fell back to the raw input — the `qc` run did not commit or the manifest is unresolvable. |
-| `FAIL remove_outliers: trimmed frame has fewer rows than the pre-trim clean` | The trim removed no rows (or the read resolved the clean, not the trim) — check the `remove_outliers` run committed after `qc_clean` and advanced `latest`. |
+| Symptom                                                                                                                                                      | Likely cause / fix                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Error: dev stack not running`                                                                                                                               | `make dev-up` (then `make migrate-local`).                                                                                                                                                                                                                                                                                                                                             |
+| `Error: BLOOM_AGENT_KEY is empty in .env.dev`                                                                                                                | Run `make init` to (re)generate `.env.dev`.                                                                                                                                                                                                                                                                                                                                            |
+| `FAIL ... sha256 matches stored bytes`                                                                                                                       | A real write-path regression — bytes stored differ from the recorded hash.                                                                                                                                                                                                                                                                                                             |
+| `... read-back attempt N/5 failed` then a `FAIL`                                                                                                             | Read-after-write lag exceeded the bounded retry; check `storage` / `db-dev` health (`make dev-logs`).                                                                                                                                                                                                                                                                                  |
+| `FAIL qc_clean: require_clean read resolves the cleaned artifact (not raw)`                                                                                  | The reader fell back to the raw input — the `qc` run did not commit or the manifest is unresolvable.                                                                                                                                                                                                                                                                                   |
+| `FAIL remove_outliers: trimmed frame has fewer rows than the pre-trim clean`                                                                                 | The trim removed no rows (or the read resolved the clean, not the trim) — check the `remove_outliers` run committed after `qc_clean` and advanced `latest`.                                                                                                                                                                                                                            |
+| A plotting tool fails with a permission error writing to `PLOTS_DIR`, or `bloommcp` crashes at boot with `... is not writable` (fully-local storage backend) | `bloommcp/data/{TRAITS_DIR,PLOTS_DIR,ANALYSIS_OUTPUT}` are root-owned from a `docker compose up` that ran **before** issue #472's fix existed — `chmod` alone can't self-heal that (not the owner). Fix: `sudo chown -R $(id -u):$(id -g) bloommcp/data` (or `sudo rm -rf bloommcp/data`) then re-run `make dev-up`. See [DEV_SETUP.md](../../DEV_SETUP.md#bloommcp-data-directories). |
 
 See also [DEV_SETUP.md](../../DEV_SETUP.md) (host vs container URLs, migrations) and the
 `bloommcp-smoke` target in the repo-root [Makefile](../../Makefile).
@@ -165,8 +167,8 @@ See also [DEV_SETUP.md](../../DEV_SETUP.md) (host vs container URLs, migrations)
 > and fixed the raw-source bug (finding **D** below): `qc_clean` now reads `version="raw"` so a
 > re-run never re-cleans a prior cleaned artifact.
 
-Where `make bloommcp-smoke` proves the *machine* path (real ports, hashes, provenance), this
-dogfood proves the *agent* path: that a capable model can discover `qc_clean`, call it,
+Where `make bloommcp-smoke` proves the _machine_ path (real ports, hashes, provenance), this
+dogfood proves the _agent_ path: that a capable model can discover `qc_clean`, call it,
 read its structured result, recover from a structured error, and chain it into
 `pca_analysis(require_clean=True)`.
 
@@ -232,7 +234,7 @@ Either client satisfies the dogfood — pick whichever is installed.
       `trait_retention`, `removed_traits`, `cleaned_nan_cells_remaining`, and the links
       (`run_ref` / `manifest_path` / object keys) → `images/qc-clean-success.png`.
 - [ ] Ask Claude to run an **over-strict** threshold (e.g. `min_samples_per_trait=100000`) and
-      capture the `assumption_violated` **structured error** *plus* Claude's **retry with
+      capture the `assumption_violated` **structured error** _plus_ Claude's **retry with
       relaxed thresholds** → `images/qc-clean-structured-error-retry.png`.
 - [ ] Ask Claude to run `pca_analysis` with `require_clean=True` **after** `qc_clean` and
       capture the **composition** (PCA consumes the cleaned run) →
@@ -243,12 +245,12 @@ Either client satisfies the dogfood — pick whichever is installed.
 Captures are saved under **`bloommcp/docs/images/`** with the exact filenames below, from the
 2026-06-29 Claude Code session against the local dev MCP server.
 
-| Step | Image | Status |
-| --- | --- | --- |
-| `qc_clean` in tool list / selected | ![qc_clean in the tool list](images/qc-clean-tool-list.png) | ✅ Captured |
-| Successful clean (retention + links) | ![qc_clean success result](images/qc-clean-success.png) | ✅ Captured |
-| Structured error + relaxed retry | ![assumption_violated error and retry](images/qc-clean-structured-error-retry.png) | ✅ Captured |
-| `pca_analysis(require_clean=True)` composition | ![qc_clean → pca composition](images/qc-clean-pca-composition.png) | ✅ Captured |
+| Step                                           | Image                                                                              | Status      |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------- | ----------- |
+| `qc_clean` in tool list / selected             | ![qc_clean in the tool list](images/qc-clean-tool-list.png)                        | ✅ Captured |
+| Successful clean (retention + links)           | ![qc_clean success result](images/qc-clean-success.png)                            | ✅ Captured |
+| Structured error + relaxed retry               | ![assumption_violated error and retry](images/qc-clean-structured-error-retry.png) | ✅ Captured |
+| `pca_analysis(require_clean=True)` composition | ![qc_clean → pca composition](images/qc-clean-pca-composition.png)                 | ✅ Captured |
 
 ### Observations & improvements
 
@@ -256,9 +258,10 @@ Captures are saved under **`bloommcp/docs/images/`** with the exact filenames be
 > session. Findings that were fixed in-session are marked **(fixed)**.
 
 **1. Tool discovery / selection**
+
 - **What Claude did:** Listed the MCP tools, confirmed `qc_clean` was present in the surface
   (alongside the `run_*_workflow` tools), and selected it to clean `turface_raw.csv`.
-  `list_available_experiments` first returned *"No experiments available"*; Claude seeded the
+  `list_available_experiments` first returned _"No experiments available"_; Claude seeded the
   raw fixture into the server's `BLOOM_TRAITS_DIR` (the way `make bloommcp-smoke` does) and the
   experiment then resolved (187 samples, 18 traits).
 - **What was awkward or unclear:** The server's traits dir was empty, so discovery returned
@@ -272,12 +275,13 @@ Captures are saved under **`bloommcp/docs/images/`** with the exact filenames be
   the "Connecting Claude…" note in this file.
 
 **2. Successful clean (reading the result)** — finding **D** (fixed)
+
 - **What Claude did:** Ran `qc_clean("turface_raw.csv")` with the canonical defaults and read
   a clear structured result — `sample_retention`/`trait_retention` (both 1.0), `removed_traits`
   (`[]`), `cleaned_nan_cells_remaining` (0), plus `run_ref`, `manifest_path`, and the
   `_cleaned.csv` / `cleanup_log.json` object keys. The run committed as **v7**.
 - **What was awkward or unclear:** The result's `source` field reported **`v6_cleaned`** (and on
-  the relaxed retry in scenario 3, **`v7_cleaned`**) — i.e. the *prior cleaned version* — even
+  the relaxed retry in scenario 3, **`v7_cleaned`**) — i.e. the _prior cleaned version_ — even
   though `qc_clean`'s module docstring and the inline comment say it "reads the **raw** frame."
   Root cause: `qc_clean` calls `reader.load_experiment(params.experiment)` **without**
   `version="raw"`, so the default `version="latest"` resolves to the latest cleaned version when
@@ -295,14 +299,15 @@ Captures are saved under **`bloommcp/docs/images/`** with the exact filenames be
   regression test in `tests/tools/test_qc_clean_tool.py`. **(Fixed on this branch.)**
 
 **3. Structured error + relaxed retry**
+
 - **What Claude did:** Ran `qc_clean("turface_raw.csv", min_samples_per_trait=100000)` and got a
-  structured **`[assumption_violated]`** error (not a traceback): *"Cleanup could not produce an
-  analysis-ready table: … no non-constant numeric trait remains after cleanup …"* with the
-  remedy *"Relax the cleanup thresholds … or lower min_samples_per_trait and retry."* Claude
+  structured **`[assumption_violated]`** error (not a traceback): _"Cleanup could not produce an
+  analysis-ready table: … no non-constant numeric trait remains after cleanup …"_ with the
+  remedy _"Relax the cleanup thresholds … or lower min_samples_per_trait and retry."_ Claude
   then retried with `min_samples_per_trait=50`, which succeeded and committed **v8** at full
   retention. The structured error + remedy was enough to recover without guesswork.
 - **What was awkward or unclear:** With 187 samples, `min_samples_per_trait=100000` is trivially
-  impossible, but the error surfaces the *downstream* symptom ("no non-constant numeric trait
+  impossible, but the error surfaces the _downstream_ symptom ("no non-constant numeric trait
   remains") rather than naming the offending threshold relationship
   (`min_samples_per_trait=100000 > n_samples=187`). Minor — it still pointed the retry the right
   way.
@@ -320,11 +325,12 @@ accept `require_clean=True` (#308). **B/C:** `run_dimensionality_reduction_workf
 longer have any code path to trigger through. The granular `pca_analysis` / `remove_outliers`
 tools this checklist should use instead do not share those bugs — see their own delegation
 tests.)_
+
 - **What Claude did:** Attempted the documented composition `pca_analysis(require_clean=True)`
   after `qc_clean`. **No such tool is exposed in the current MCP surface** (finding **A**), so
   Claude used `run_dimensionality_reduction_workflow(method="pca")` — the actually-exposed PCA
   tool, which has no `require_clean` parameter. It crashed with `KeyError:
-  'explained_variance_ratio'` (finding **B**). `run_outlier_workflow(method="pca")` also crashed
+'explained_variance_ratio'` (finding **B**). `run_outlier_workflow(method="pca")` also crashed
   (`detect_outliers_pca() got an unexpected keyword argument 'threshold_percentile'`, finding
   **C**). Claude proved the composition's core claim instead with **`run_clustering_workflow`** —
   a **same-loader substitute** (it loads via the same `load_frame` → `load_experiment` path) —
@@ -336,7 +342,7 @@ tests.)_
     surface**. The exposed PCA tool, `run_dimensionality_reduction_workflow`, has **no
     `require_clean` parameter** — its loader auto-resolves the latest cleaned version
     (resolution order: cleaned manifest → legacy cleaned → raw), so the cleaned-vs-raw guarantee
-    can be observed via the result's `source` but cannot be *requested* or *enforced*.
+    can be observed via the result's `source` but cannot be _requested_ or _enforced_.
   - **B.** `run_dimensionality_reduction_workflow` (PCA) raises a bare
     `KeyError: 'explained_variance_ratio'`: `dimred.py` reads
     `pca_out["variance_df"]["explained_variance_ratio"]`, but that column is not present in the
@@ -346,7 +352,7 @@ tests.)_
     `detect_outliers_pca()`, which does not accept that keyword — another qc-independent
     signature regression. Both B and C block the literal PCA composition demo.
 - **Proposed improvement:** Either expose a granular `pca_analysis` tool that accepts
-  `require_clean=True` (so the composition can be *requested* and a missing-cleaned input fails
+  `require_clean=True` (so the composition can be _requested_ and a missing-cleaned input fails
   loudly), or update this checklist to use the actually-exposed tool and assert the cleaned
   guarantee via the result's `source: v<N>_cleaned`. Independently, fix the `dimred.py`
   `variance_df` key access (B) and the `detect_outliers_pca()` `threshold_percentile` kwarg (C).

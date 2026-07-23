@@ -23,7 +23,7 @@ bloommcp/
 ├── server.py                  # FastMCP entry point. Validates env,
 │                              # registers tools, exposes /health.
 ├── data/                      # runtime artifacts (gitignored bind mount)
-│   ├── SLEAP_OUT_CSV/         # input CSVs from upstream pipelines
+│   ├── TRAITS_DIR/            # input CSVs from upstream pipelines
 │   ├── ANALYSIS_OUTPUT/       # versioned output of each workflow tool
 │   └── PLOTS_DIR/             # plots served at /plots by langchain-agent
 ├── source/                    # analysis primitives (port of sleap-roots-analyze)
@@ -58,6 +58,9 @@ tools, and the 9 vendored analysis/plotting modules under `source/`/`src/bloom_m
 were retired/dropped by `devendor-bloommcp-analysis`; see that OpenSpec change for why.
 This diagram predates the `source/` → `src/bloom_mcp/` package move in other respects
 too — a fuller refresh of the top-level layout is tracked separately.)
+
+`data/` is auto-provisioned by `make dev-up` — see
+[DEV_SETUP.md](../../DEV_SETUP.md#bloommcp-data-directories).
 
 ## Storage
 

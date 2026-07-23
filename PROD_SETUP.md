@@ -23,39 +23,65 @@ the wiki pages linked at the bottom of this doc.
    `docker compose` from there.
 
 3. **MinIO storage directory:**
+
    ```bash
    sudo mkdir -p /var/lib/bloom/minio
    sudo chown -R bloom-deploy:bloom-deploy /var/lib/bloom/minio
    sudo chmod 755 /var/lib/bloom/minio
    ```
 
-4. **Salk DNS — one CNAME record**, published by Salk IT:
+4. **bloommcp data directories:** on a genuinely fresh host, nothing to do —
+   `bloommcp/data/{TRAITS_DIR,PLOTS_DIR,ANALYSIS_OUTPUT}` are provisioned
+   automatically by the deploy workflow's preflight step (see "Deploying"
+   below) before every deploy, no manual `mkdir`/`chown`/`chmod` needed. See
+   `openspec/project.md`'s "bloommcp data directories" constraint for why.
+
+   **On an existing host that predates this preflight** (i.e., this repo's
+   own production host as of 2026-07): these directories may already exist,
+   root-owned, from Docker's own auto-create-on-first-`docker compose up`
+   behavior — the preflight has no privilege escalation and will fail loudly
+   rather than fix this silently. A one-time manual step is required:
+
+   ```bash
+   sudo chown -R bloom-deploy:bloom-deploy bloommcp/data
+   ```
+
+   Run this on **both directories that back live consumers** — `PLOTS_DIR`
+   (every plotting tool) and `TRAITS_DIR`/`SLEAP_OUT_CSV` (`qc_clean`'s sole
+   source for raw input, not just a cache) — and on `bloommcp/data` itself,
+   not only its three children: a rename (see the migration step below)
+   needs write permission on the _containing_ directory, which Docker's
+   auto-create can also leave root-owned.
+
+5. **Salk DNS — one CNAME record**, published by Salk IT:
+
    ```
    _acme-challenge.bloom-dev.salk.edu  CNAME  _acme-challenge.bloom-acme.talmolab.org
    ```
+
    Without this, Caddy cannot complete the DNS-01 ACME challenge and no
    TLS cert is issued. See the Caddy wiki page for the full delegation
    story.
 
-5. **GitHub Secrets** in the repo settings under the `Production`
+6. **GitHub Secrets** in the repo settings under the `Production`
    environment. The deploy workflow refuses to run without all of these:
 
-   | Secret | Purpose |
-   |---|---|
-   | `PROD_POSTGRES_PASSWORD` | Postgres superuser password |
-   | `PROD_JWT_SECRET` | Signs all Supabase JWTs |
-   | `PROD_ANON_KEY` | Anonymous client key |
-   | `PROD_SERVICE_ROLE_KEY` | Server-side service role key |
-   | `PROD_DB_ENC_KEY` | Database column encryption key |
-   | `PROD_MINIO_PASSWORD` | MinIO root password |
-   | `PROD_VAULT_ENC_KEY` | Supabase vault encryption key |
-   | `PROD_SUPAVISOR_ENC_KEY` | Supavisor pooler encryption key |
-   | `PROD_SECRET_KEY_BASE` | Realtime / phoenix secret base |
-   | `PROD_DASHBOARD_PASSWORD` | Supabase Studio dashboard password |
-   | `PROD_BLOOMMCP_API_KEY` | bloommcp tool-auth key |
-   | `PROD_OPENAI_API_KEY` | OpenAI for langchain-agent |
-   | `PROD_LANGCHAIN_API_KEY` | LangSmith tracing key |
-   | `PROD_BLOOM_AGENT_KEY` | Service role for the agent's Supabase access |
+   | Secret                      | Purpose                                                   |
+   | --------------------------- | --------------------------------------------------------- |
+   | `PROD_POSTGRES_PASSWORD`    | Postgres superuser password                               |
+   | `PROD_JWT_SECRET`           | Signs all Supabase JWTs                                   |
+   | `PROD_ANON_KEY`             | Anonymous client key                                      |
+   | `PROD_SERVICE_ROLE_KEY`     | Server-side service role key                              |
+   | `PROD_DB_ENC_KEY`           | Database column encryption key                            |
+   | `PROD_MINIO_PASSWORD`       | MinIO root password                                       |
+   | `PROD_VAULT_ENC_KEY`        | Supabase vault encryption key                             |
+   | `PROD_SUPAVISOR_ENC_KEY`    | Supavisor pooler encryption key                           |
+   | `PROD_SECRET_KEY_BASE`      | Realtime / phoenix secret base                            |
+   | `PROD_DASHBOARD_PASSWORD`   | Supabase Studio dashboard password                        |
+   | `PROD_BLOOMMCP_API_KEY`     | bloommcp tool-auth key                                    |
+   | `PROD_OPENAI_API_KEY`       | OpenAI for langchain-agent                                |
+   | `PROD_LANGCHAIN_API_KEY`    | LangSmith tracing key                                     |
+   | `PROD_BLOOM_AGENT_KEY`      | Service role for the agent's Supabase access              |
    | `PROD_CLOUDFLARE_API_TOKEN` | Caddy DNS-01 ACME token (zone: `bloom-acme.talmolab.org`) |
 
    Non-sensitive values (domains, ports, URLs, flags) live in
@@ -71,10 +97,14 @@ Merge a PR to `main`. The `deploy` workflow will:
 1. SSH to the prod host via the self-hosted runner
 2. Concatenate `.env.prod.defaults` + the GitHub Secrets into `.env.prod`
 3. Validate the assembled file has every required key
-4. Run `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d`
-5. Wait for Caddy to obtain / renew its TLS cert
-6. Run `supabase db push` for any new migrations
-7. Print `docker compose ps` to the workflow log
+4. Migrate a pre-existing `bloommcp/data/SLEAP_OUT_CSV` to `TRAITS_DIR` in place, if present
+   (`scripts/migrate_bloommcp_legacy_traits_dir.sh`) — a one-time rename for hosts that
+   predate issue #477; a no-op on an already-migrated or fresh host
+5. Provision writable bloommcp data directories (`scripts/ensure_bloommcp_data_dirs.sh`)
+6. Run `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d`
+7. Wait for Caddy to obtain / renew its TLS cert
+8. Run `supabase db push` for any new migrations
+9. Print `docker compose ps` to the workflow log
 
 If any step fails, the workflow surfaces logs and stops — the stack is
 left in whatever state the failed step produced. Investigate from the
