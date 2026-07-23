@@ -281,6 +281,21 @@ version and would otherwise silently drift (`bloomcli` is not in
 `scripts/check-uv-locks.py`'s automated `SERVICES` tuple today — Decision 7 fixes that
 gap, but the regeneration itself still needs to happen explicitly in this PR).
 
+**Additional finding made during implementation: `bloomcli/uv.lock` had never been
+committed to this repo at all.** `.gitignore`'s blanket `uv.lock` rule (intended to keep
+one-off root-level lockfiles out of `git status`) also caught `bloomcli/uv.lock` — the
+other four services' lockfiles are unaffected only because they were already tracked
+before that rule existed (gitignore doesn't retroactively untrack committed files), but
+`bloomcli/uv.lock` was never in that position. Confirmed via `git log --all --
+bloomcli/uv.lock` (empty) and by cloning the pre-fix commit into a scratch directory —
+`bloomcli/uv.lock` is genuinely absent after a fresh checkout. Left unfixed, the
+Dockerfile's `uv sync --frozen` (Decision 1) would have failed on the very first real CI
+run, since `actions/checkout` restores only tracked files. **Fix:** `.gitignore`'s
+comment is updated to list `bloomcli/` among the known, now-tracked service dirs, and
+`bloomcli/uv.lock` is force-added once (`git add -f`) — after which it stays tracked
+going forward via the same "gitignore doesn't apply to already-tracked files" mechanism
+the other four services already rely on.
+
 **Why:** this project's convention is proposal + implementation in the same PR; routing
 the version bump through a second, independently-opened automated PR would split it out
 unnecessarily when it's simple enough to include directly. `version-bloomcli.yml` remains
@@ -403,6 +418,7 @@ excluding it from the equality check).
 | Image builds but no PyPI release is ever cut (automation stops at "prepared") | Explicit, intentional: cutting a real PyPI release is irreversible and stays a human action. `tasks.md` documents the exact manual steps so nothing is lost between "prepared" and "done." |
 | Bloomctl's dependency set changes later and needs native build deps after all | `cryptography`'s manylinux wheel coverage is a current fact, not a permanent guarantee; if a future dependency needs native compilation, the Dockerfile gains an `apt-get` block then, the same way `bloommcp`'s did. |
 | `bloomcli/uv.lock` drifts silently after future version bumps | Decision 7 adds `bloomcli` to `check-uv-locks.py`/pre-commit so this is caught automatically going forward, not just fixed once here. |
+| `bloomcli/uv.lock` was never tracked in git at all (found during implementation) — `uv sync --frozen` would have failed on the first real CI run | Fixed in Decision 4: force-added once, `.gitignore` comment updated; stays tracked going forward the same way the other 4 services' lockfiles do. |
 | Confusion between this change's `bloomcli-packaging` capability and the unrelated `image-publishing` capability once both are eventually archived | Both `design.md` (this file) and `proposal.md` state explicitly that these are separate, non-overlapping capabilities (different services, different consumers, different trigger semantics) rather than one extending the other — see the capability-boundary note below. |
 
 **Capability-boundary note (`bloomcli-packaging` vs. `image-publishing`):** kept as two

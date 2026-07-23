@@ -157,6 +157,16 @@ fixing the changelog, not after (the version bump alone is enough to make it fai
 - [ ] 5.4 Regenerate `bloomcli/uv.lock` (`cd bloomcli && uv lock`) so its
       self-referencing package-version entry matches `0.1.0a2`. Run
       `cd bloomcli && uv lock --check` to confirm it's now in sync.
+- [ ] 5.5 **`bloomcli/uv.lock` has never been committed to this repo** —
+      `.gitignore`'s blanket `uv.lock` rule catches it (confirmed via `git log
+      --all -- bloomcli/uv.lock`, empty, and by cloning HEAD into a scratch
+      dir and observing the file is absent after checkout). Left unfixed, the
+      Dockerfile's `uv sync --frozen` (§1) fails on the first real CI run,
+      since `actions/checkout` restores only tracked files. Update
+      `.gitignore`'s comment to list `bloomcli/` among the known, tracked
+      service dirs, then `git add -f bloomcli/uv.lock` once — it stays
+      tracked going forward via the same mechanism the other 4 services rely
+      on (gitignore doesn't apply to already-tracked files).
 
 ## 6. Close the bloomcli CI-audit-tooling gap (design.md Decision 7)
 

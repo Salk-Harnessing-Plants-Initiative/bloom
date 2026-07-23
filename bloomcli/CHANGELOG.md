@@ -8,6 +8,8 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a2] - 2026-07-23
+
 ### Changed
 
 - Commands are now grouped by data type: `bloomctl download` moved under the
