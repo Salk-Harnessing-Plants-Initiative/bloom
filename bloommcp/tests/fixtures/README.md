@@ -107,16 +107,24 @@ turface_19's.
   (`inputs/raw/cylinder/traits_11DAG_cleaned_qc_scanner_independent.csv`): **129 samples
   × 880 columns**. Role columns are `plant_qr_code` / `Geno` / `Rep` — distinct from
   turface_19's `Barcode` / `geno` / `rep`. The remaining metadata columns are present
-  in the raw file but do **not** all round-trip the same way once `qc_clean` runs: per
-  `cylinder_qc_golden.json`'s `excluded_from_traits`, `scan_id` / `plant_id` /
-  `wave_number` (and others) are recognized by bloommcp's own role-matching and
-  reported back to the caller as excluded metadata — visible, even though dropped from
-  the persisted `_cleaned.csv`. `plant_name` / `species_name` (both non-numeric) are
-  instead silently absorbed by upstream `sleap_roots_analyze.get_trait_columns`'s dtype
-  filtering before ever reaching bloommcp's role-matching, so they never appear in
-  `excluded_from_traits` at all — invisible to the agent, not just excluded from
-  analysis. Unlike turface_19's genuinely raw input, this file's own name says
-  "cleaned_qc_scanner_independent" — it was already NaN/zero-filtered by the upstream
+  in the raw file but do **not** all round-trip the same way once `qc_clean` runs, and
+  for two different reasons layered on top of each other. First,
+  `sleap_roots_analyze.get_trait_columns` excludes all of `scan_id` / `plant_id` /
+  `plant_name` / `species_name` / `wave_number` from `trait_cols` via its own
+  case-insensitive substring/suffix pattern list (`"scan_"`, `"_id"`, `"plant_name"`,
+  `"species_"`, `"wave_number"`) — this runs *before* any dtype check, so it isn't a
+  numeric-vs-string distinction at that layer. Second, and separately, bloommcp's own
+  `resolve_columns()` (`bloom_mcp/data_access/columns.py`) decides what to report back
+  to the caller as `excluded_from_traits`: it only adds a non-trait column to that list
+  if the column is numeric-dtype (or was explicitly deny-listed via `exclude_columns`).
+  `scan_id` / `plant_id` / `wave_number` are numeric, so they clear that second gate and
+  show up in `cylinder_qc_golden.json`'s `excluded_from_traits` — visible to the agent,
+  even though none of the five are persisted in `_cleaned.csv`. `plant_name` /
+  `species_name` are non-numeric strings, so they fail that second gate and never
+  appear in `excluded_from_traits` at all — invisible to the agent's report, not merely
+  excluded from analysis, purely because of *bloommcp's* reporting gate, not upstream's
+  trait-detection logic. Unlike turface_19's genuinely raw input, this file's own name
+  says "cleaned_qc_scanner_independent" — it was already NaN/zero-filtered by the upstream
   scanner pipeline before being handed to bloommcp, so bloommcp's own cleanup drops
   nothing further at canonical thresholds. The interesting characteristic here is
   **shape**, not missingness: 846 detected trait columns against only 129 samples —

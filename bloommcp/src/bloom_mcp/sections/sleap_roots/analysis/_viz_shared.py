@@ -14,10 +14,19 @@ import matplotlib.pyplot as plt
 
 from bloom_mcp.experiment_utils import PLOTS_DIR, PLOTS_URL
 
-# Trait count above which a plot tool should switch to its delegate's *_batched
-# variant (list[Figure], one page per batch) instead of rendering every trait into
-# one figure. Matches create_heritability_plot's own internal traits_per_page
-# default (50) for consistency across all plot tools that can hit this scale.
+# Trait count above which plot_trait_histograms/plot_trait_boxplots switch to their
+# delegate's *_batched variant (list[Figure]) instead of rendering every trait into
+# one figure. This only decides WHETHER to batch -- it is not the resulting page
+# size. Each *_batched delegate (create_trait_histograms_batched,
+# create_trait_boxplots_by_genotype_batched) has its own independent batch_size
+# parameter (currently 16), so e.g. cylinder's 846 traits produce 53 pages of ~16
+# traits each, not "TRAIT_BATCH_THRESHOLD traits per page". Set to 50 to match
+# create_heritability_plot's own internal traits_per_page default for consistency
+# across all plot tools that can hit this scale -- see
+# test_trait_batch_threshold_matches_heritability_plot_default in
+# tests/tools/test_viz_tools.py, which asserts this against the live delegate
+# signature so a future sleap-roots-analyze bump that changes that default is
+# caught here rather than silently desyncing the two.
 TRAIT_BATCH_THRESHOLD = 50
 
 

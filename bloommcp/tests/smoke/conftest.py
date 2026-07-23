@@ -29,7 +29,7 @@ from fastmcp import Client
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURES_DIR = REPO_ROOT / "bloommcp" / "tests" / "fixtures"
-TRAITS_DIR = REPO_ROOT / "bloommcp" / "data" / "SLEAP_OUT_CSV"
+TRAITS_DIR = REPO_ROOT / "bloommcp" / "data" / "TRAITS_DIR"
 # Host-side mirror of the container's BLOOM_PLOTS_DIR (/app/data/PLOTS_DIR),
 # bind-mounted from here per docker-compose.dev.yml -- lets a smoke test verify a
 # plot tool's returned URL(s) actually correspond to real, nonempty files, not just

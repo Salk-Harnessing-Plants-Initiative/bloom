@@ -183,3 +183,49 @@
       reading `contract/wrap.py` — it never returns an error disguised as a
       successful dict). Re-verified: 539 fast tests pass (was 535), all 24 live_smoke
       tests pass end-to-end against the live stack, `openspec validate --strict` clean.
+- [x] 5.7 **Round 3 (re-review of commits 6e02f69 + 3b8a21f)**: reviewer confirmed the
+      pagination fix and stronger assertions were correct, retracted the prior round's
+      `.gitignore` finding, but flagged two real blockers and one causal-attribution
+      error:
+  - [x] **Merge conflict with `staging`** — `staging` had independently renamed
+        `bloommcp/data/SLEAP_OUT_CSV` → `TRAITS_DIR` (issue #477, landed after this
+        branch diverged). Merged `origin/staging`; git auto-resolved the 3 files with
+        actual line overlap, but two things needed a manual follow-up fix since they
+        were new-on-this-branch content with no conflicting lines for git to flag:
+        `tests/smoke/conftest.py`'s `TRAITS_DIR` constant (still hardcoded
+        `SLEAP_OUT_CSV`) and `tests/unit/test_bloommcp_data_mount_rename.py`'s
+        `RENAMED_FILES` list (still pointed at the pre-relocation
+        `bloommcp/scripts/live_plot_tool_smoke.py` path). Re-verified against the live
+        stack after recreating the `bloommcp` container to pick up the renamed
+        bind-mount.
+  - [x] **CI had not actually re-run** on either fix commit — confirmed via
+        `gh api .../actions/runs?branch=...`: the only `pr-checks.yml` run on this
+        branch was still the original failing one on `d3a532c`; the checks
+        `gh pr checks` showed passing were an unrelated CodeQL/default-setup scan
+        (`event: dynamic`, not `pull_request`), not `pr-checks.yml`. Root cause
+        undetermined; the merge commit above produces a fresh HEAD/push regardless,
+        which triggers a new `synchronize` run.
+  - [x] **README causal-attribution fix**: the prior round's wording blamed
+        `plant_name`/`species_name`'s invisibility in `excluded_from_traits` on
+        upstream `get_trait_columns`'s "dtype filtering" — reviewer correctly traced
+        this to bloommcp's own `resolve_columns()` (`data_access/columns.py`), whose
+        `excluded_cols` computation only includes a non-trait column if it is
+        numeric-dtype or explicitly deny-listed; `get_trait_columns` itself excludes
+        both columns via substring-pattern matching (`"species_"`, `"plant_name"`),
+        not a dtype check. Verified by reading both functions' source directly, then
+        rewrote the README paragraph to attribute each mechanism to the correct layer.
+  - [x] Also from this round: clarified `TRAIT_BATCH_THRESHOLD`'s docstring (it only
+        decides whether to batch; actual page size is each `*_batched` delegate's own
+        independent `batch_size=16`, so cylinder's 846 traits make 53 pages, not "50
+        traits/page"); added a fast unit test asserting `TRAIT_BATCH_THRESHOLD` against
+        `create_heritability_plot`'s live `traits_per_page` default (guards silent
+        desync on a future `sleap-roots-analyze` bump, since the pin is open-ended
+        `>=`); tightened the two batching-decision tests to assert the full expected
+        page count (was: only page 1/2 of 4); added an explicit boundary test at
+        exactly 50 vs. 51 traits (50 must NOT batch, matching
+        `create_heritability_plot`'s own `<=`/`>` semantics, confirmed by reading its
+        source).
+  - Re-verified: `openspec validate --strict` clean; bloommcp fast suite passes;
+    `test_bloommcp_data_mount_rename.py` passes; `test_viz_tools.py` (27 tests, up
+    from 24) passes; CI-safe smoke subset (15/15) passes against the recreated,
+    renamed-bind-mount dev stack.
