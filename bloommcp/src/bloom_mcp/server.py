@@ -151,6 +151,11 @@ def main() -> None:
     else:
         print("Bloom MCP Server starting without authentication (dev mode)")
 
+    print(
+        f"Bloom MCP Server storage backend: "
+        f"{'local (fully-local/offline)' if fully_local else 'supabase'}"
+    )
+
     import uvicorn
 
     uvicorn.run(build_app(), host="0.0.0.0", port=8811)

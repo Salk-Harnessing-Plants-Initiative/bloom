@@ -77,8 +77,11 @@ Resulting on-disk layout (the storage key becomes the path under the root):
 - **Read paths work too:** manifest resolution, the versioned-cleaned lookup, and
   the MCP read tools all resolve against the local files.
 
-To enable it in dev, uncomment the storage-backend lines in the `bloommcp` service
-env block of `docker-compose.dev.yml` and restart the service.
+To enable it in dev, set `BLOOM_STORAGE_BACKEND=local` in your own `.env.dev` and
+restart the service (`make dev-up`), or run `make dev-up-local` to bring the stack
+up in fully-local mode for one invocation without editing `.env.dev` at all. The
+`bloommcp` service in `docker-compose.dev.yml` sources these vars via `${VAR:-}`
+interpolation — it no longer needs to be edited to toggle this.
 
 ### ⚠️ Do not mix backends for one experiment
 

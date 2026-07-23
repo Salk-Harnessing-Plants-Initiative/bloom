@@ -980,6 +980,19 @@ jobs:
         # false-abort surface. See scripts/doctor.sh.
         run: DOCTOR_SKIP=1 make dev-up
 
+      # Regression guard (#478): docker-compose.dev.yml now sources
+      # BLOOM_STORAGE_BACKEND via ${VAR:-} interpolation instead of literal
+      # commented-out YAML. Plain `make dev-up` (used above, no override) must
+      # never inherit fully-local mode — that's what `make dev-up-local` is for.
+      - name: Verify plain dev-up does not activate the local storage backend
+        run: |
+          VALUE=$(docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T bloommcp sh -c 'echo "${BLOOM_STORAGE_BACKEND:-}"')
+          if [ -n "$VALUE" ]; then
+            echo "::error::plain 'make dev-up' left BLOOM_STORAGE_BACKEND=$VALUE (expected empty)"
+            exit 1
+          fi
+          echo "OK: BLOOM_STORAGE_BACKEND is empty on plain dev-up"
+
       # No manual waits — this is exactly what a developer types. The robustness
       # lives in the commands: migrate-local bounded-waits for the storage schema
       # before pushing, and `make check` bounded-waits for required services to

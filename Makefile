@@ -13,6 +13,7 @@ help:
 	@echo "Usage:"
 	@echo "  make init             - Generate .env.dev from .env.dev.example (FORCE=1 to overwrite)"
 	@echo "  make dev-up           - Run full stack in development mode"
+	@echo "  make dev-up-local     - Run dev stack fully local/offline (BLOOM_STORAGE_BACKEND=local for this run only; don't mix backends per experiment)"
 	@echo "  make dev-down         - Stop development stack"
 	@echo "  make prod-up          - Run full stack in production mode"
 	@echo "  make prod-down        - Stop production stack"
@@ -76,6 +77,14 @@ dev-up: ensure-bloommcp-data-dirs
 	@echo " Bloom Dev Stack running in background"
 	@echo " Access at: http://localhost:3000"
 	@echo " View logs: make dev-logs"
+
+# Run development stack in fully-local/offline mode (BLOOM_STORAGE_BACKEND=local
+# for this invocation only — does not modify .env.dev). Delegates to dev-up so
+# the two never drift apart. Do not mix backends for one experiment — see
+# bloommcp/docs/storage-backends.md.
+.PHONY: dev-up-local
+dev-up-local:
+	BLOOM_STORAGE_BACKEND=local $(MAKE) dev-up
 
 .PHONY: rebuild-dev-fresh
 rebuild-dev-fresh:
