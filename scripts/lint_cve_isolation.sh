@@ -11,7 +11,7 @@
 # Rule:
 #   If a PR modifies `.trivyignore`, it may modify ONLY:
 #     - .trivyignore
-#     - any Dockerfile (Dockerfile, *.Dockerfile)
+#     - any Dockerfile (Dockerfile, *.Dockerfile, Dockerfile.*)
 #     - dependency lockfiles (package-lock.json, uv.lock, poetry.lock)
 #   Any other changed file fails the check.
 #
@@ -35,7 +35,7 @@ BASE_REF="${1:-origin/main}"
 # would make every PR pass the check trivially.
 if [[ "$BASE_REF" == origin/* ]]; then
   remote_branch="${BASE_REF#origin/}"
-  if ! git fetch origin "$remote_branch" 2>/dev/null; then
+  if ! git fetch origin "$remote_branch" --depth=1 2>/dev/null; then
     echo "::error title=lint_cve_isolation: cannot fetch base ref::git fetch origin ${remote_branch} failed. Cannot diff changed files."
     exit 2
   fi
@@ -55,7 +55,7 @@ _is_cve_surface() {
   local f="$1"
   [ "$f" = ".trivyignore" ] && return 0
   case "$(basename "$f")" in
-    Dockerfile | *.Dockerfile | package-lock.json | uv.lock | poetry.lock) return 0 ;;
+    Dockerfile | *.Dockerfile | Dockerfile.* | package-lock.json | uv.lock | poetry.lock) return 0 ;;
   esac
   return 1
 }
@@ -73,7 +73,7 @@ if [ "${#violations[@]}" -ne 0 ]; then
   for f in "${violations[@]}"; do
     echo "::error::  $f"
   done
-  echo "Allowed alongside .trivyignore: Dockerfiles (Dockerfile, *.Dockerfile) and lockfiles (package-lock.json, uv.lock, poetry.lock). Move the .trivyignore change to its own PR."
+  echo "Allowed alongside .trivyignore: Dockerfiles (Dockerfile, *.Dockerfile, Dockerfile.*) and lockfiles (package-lock.json, uv.lock, poetry.lock). Move the .trivyignore change to its own PR."
   exit 1
 fi
 
