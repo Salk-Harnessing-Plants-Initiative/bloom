@@ -806,3 +806,111 @@ def test_cli_predictions_dir_missing_manifest_makes_no_call(monkeypatch, tmp_pat
     )
     assert res.exit_code != 0
     assert not called["rpc"]
+
+
+# --- review follow-ups: PR #508 (bloom #407) -------------------------------
+
+
+def test_cli_predictions_dir_missing_idempotency_key_fails_actionably(monkeypatch, tmp_path):
+    """Regression: PredictionManifest's contract-level default ("") for
+    idempotency_key means an envelope can validly omit it; --predictions-dir
+    must fail fast with a readable message, not a raw KeyError/traceback."""
+    called = {"rpc": False}
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
+    )
+    monkeypatch.setattr(
+        ing, "call_insert_envelope", lambda c, e: called.__setitem__("rpc", True) or RESULT_OK
+    )
+    env = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    del env["provenance"]["idempotency_key"]
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "ingest-result", "-", "--predictions-dir", str(PREDICTIONS_DIR)],
+        input=json.dumps(env),
+    )
+    assert res.exit_code != 0
+    assert not called["rpc"]
+    assert "idempotency_key" in res.output
+    # Must not be a raw traceback -- click.ClickException output starts with "Error:".
+    assert "Traceback" not in res.output
+
+
+def test_upload_pending_blobs_missing_root_type_key_is_recorded_not_raised():
+    """A malformed PendingBlob (missing the 'root_type' key entirely) must be
+    recorded as a failed outcome, not raise an uncaught KeyError that kills
+    the whole batch -- the same 'one bad blob can't abort the batch'
+    guarantee the docstring already promises for every other failure mode."""
+    bad_blob = {
+        "kind": "predictions_slp",
+        "scan_key": SCAN_KEY,
+        "checksum": "irrelevant",
+        "file_size": 1,
+        "s3_location": None,
+        "box_link": None,
+    }
+    pending = [
+        ing.PendingBlob(
+            blob=bad_blob,
+            local_path=PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp",
+        )
+    ]
+    client = _NotFoundClient()
+    report = ing.upload_pending_blobs(
+        client, pending, scan_key=SCAN_KEY, idempotency_key="idem123"
+    )
+    assert not report.all_ok
+    assert len(report.failed) == 1
+    assert "root_type" in report.failed[0].error
+
+
+def test_upload_blob_reraises_non_404_storage_errors():
+    """A non-404 StorageApiError (permission denied, timeout, 5xx) during the
+    pre-upload existence check must propagate, not be silently reinterpreted
+    as 'object doesn't exist' -- that would mask real infra/permission
+    problems as ordinary first uploads."""
+    from storage3.exceptions import StorageApiError
+
+    class _ForbiddenBucket:
+        def download(self, object_path):
+            raise StorageApiError("permission denied", "403", 403)
+
+        def upload(self, object_path, data):
+            raise AssertionError("must not attempt upload after a non-404 existence-check error")
+
+    client = type("C", (), {"storage": type("S", (), {"from_": lambda self, n: _ForbiddenBucket()})()})()
+    with pytest.raises(StorageApiError):
+        ing.upload_blob(
+            client,
+            PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp",
+            "some/path.slp",
+            "irrelevant",
+        )
+
+
+def test_build_pending_blobs_rejects_path_traversal(tmp_path):
+    """A manifest artifact whose slp_path escapes predictions_dir (e.g. a
+    corrupted/malicious manifest pointing at ../../.. or an absolute path)
+    must be rejected before any file is read or uploaded -- predict-produced
+    manifests are trusted pipeline output today, but this is cheap
+    defense-in-depth against a buggy or tampered manifest reaching a shared,
+    multi-reader storage bucket."""
+    manifest_dict = json.loads(
+        (PREDICTIONS_DIR / "scan0K9E8BI.predictions.json").read_text()
+    )
+    manifest_dict["artifacts"][0]["slp_path"] = "../../../../etc/passwd"
+    (tmp_path / "scan0K9E8BI.predictions.json").write_text(json.dumps(manifest_dict))
+    manifest = ing.load_predictions_manifest(tmp_path, SCAN_KEY)
+    with pytest.raises(ing.BlobConstructionError) as excinfo:
+        ing.build_pending_blobs(manifest, tmp_path, existing_blobs=[])
+    assert "slp_path" in str(excinfo.value) or "outside" in str(excinfo.value).lower()
+
+
+def test_blob_object_path_rejects_path_separators_in_scan_key():
+    with pytest.raises(ing.BlobConstructionError):
+        ing.blob_object_path("scan/../evil", "idem123", "predictions_slp", "primary")
+
+
+def test_blob_object_path_rejects_path_separators_in_idempotency_key():
+    with pytest.raises(ing.BlobConstructionError):
+        ing.blob_object_path("scan0K9E8BI", "idem/../evil", "predictions_slp", "primary")

@@ -141,6 +141,18 @@ def build_pending_blobs(
                 f"envelope already has a blobs entry for root_type={artifact.root_type!r} "
                 f"scan_key={manifest.scan_key!r}, which --predictions-dir would also construct"
             )
+        local_path = predictions_dir / artifact.slp_path
+        # Defense-in-depth: predict-produced manifests are trusted pipeline
+        # output today, but slp_path is still externally-produced structured
+        # data flowing into a shared, multi-reader bucket. Refuse anything
+        # that would resolve outside predictions_dir (e.g. a corrupted or
+        # tampered manifest with a traversal path) before ever reading it.
+        resolved_dir = predictions_dir.resolve()
+        if not local_path.resolve().is_relative_to(resolved_dir):
+            raise BlobConstructionError(
+                f"artifact slp_path {artifact.slp_path!r} resolves outside "
+                f"predictions_dir ({predictions_dir}) — refusing to read it"
+            )
         blob = {
             "kind": artifact.kind,
             "root_type": artifact.root_type,
@@ -150,7 +162,7 @@ def build_pending_blobs(
             "s3_location": None,
             "box_link": None,
         }
-        pending.append(PendingBlob(blob=blob, local_path=predictions_dir / artifact.slp_path))
+        pending.append(PendingBlob(blob=blob, local_path=local_path))
     return pending
 
 
@@ -183,6 +195,12 @@ def blob_object_path(scan_key: str, idempotency_key: str, kind: str, root_type: 
     rather than ``source_id`` (cyl_scan_intermediates's own uniqueness anchor),
     because ``source_id`` is assigned by the RPC and unknown until it responds.
     """
+    for name, value in (("scan_key", scan_key), ("idempotency_key", idempotency_key)):
+        if "/" in value or "\\" in value or ".." in value:
+            raise BlobConstructionError(
+                f"{name} {value!r} contains a path separator or '..' — refusing to build "
+                "an object-storage key from it"
+            )
     return "/".join([scan_key, idempotency_key, f"{kind}.{root_type}.slp"])
 
 
@@ -203,7 +221,13 @@ def upload_blob(
     bucket = client.storage.from_("cyl-intermediates")
     try:
         existing = bucket.download(object_path)
-    except StorageApiError:
+    except StorageApiError as exc:
+        # Only a genuine "not found" means no upload has happened yet. Any
+        # other status (permission denied, timeout, 5xx) must propagate --
+        # silently treating it as "doesn't exist" would mask a real
+        # infra/permission problem as an ordinary first upload.
+        if str(getattr(exc, "status", "")) != "404":
+            raise
         existing = None
 
     if existing is not None:
@@ -260,8 +284,12 @@ def upload_pending_blobs(
     """
     outcomes: list[BlobUploadOutcome] = []
     for p in pending:
-        root_type = p.blob["root_type"]
+        # root_type is read inside the try (not before it) so a malformed
+        # blob dict is recorded as a per-blob failure like everything else,
+        # never an uncaught KeyError that kills the whole batch.
+        root_type = "<unknown>"
         try:
+            root_type = p.blob["root_type"]
             verify_blob_checksum(p.local_path, p.blob["checksum"])
             object_path = blob_object_path(scan_key, idempotency_key, p.blob["kind"], root_type)
             location, skipped = upload_blob(client, p.local_path, object_path, p.blob["checksum"])
@@ -412,7 +440,22 @@ def ingest_result(
     # a partially-populated blobs array.
     pending: list[PendingBlob] = []
     if predictions_dir is not None:
+        # scan_key has no contract-level default (Provenance requires it), so
+        # validate_envelope already guarantees it's present; idempotency_key
+        # DOES default to "" in the contract (a producer convenience -- the
+        # model derives it from other fields when blank), so a validated
+        # envelope's raw JSON can genuinely omit it. The RPC already rejects
+        # that case cleanly ("empty or absent idempotency_key"); check it here
+        # too, before spending time uploading blobs for a scheme (Decision 5)
+        # that requires a real key to be correct.
         scan_key = data["provenance"]["scan_key"]
+        idempotency_key = data["provenance"].get("idempotency_key") or ""
+        if not idempotency_key:
+            raise click.ClickException(
+                "envelope's provenance.idempotency_key is empty or absent — required to "
+                "derive the cyl-intermediates object path (see design.md Decision 5); the "
+                "producer must set it before blobs can be uploaded"
+            )
         try:
             manifest = load_predictions_manifest(predictions_dir, scan_key)
             pending = build_pending_blobs(manifest, predictions_dir, data.get("blobs") or [])
@@ -422,7 +465,6 @@ def ingest_result(
     client = _authed_client(profile)
 
     if predictions_dir is not None:
-        idempotency_key = data["provenance"]["idempotency_key"]
         report = upload_pending_blobs(
             client, pending, scan_key=scan_key, idempotency_key=idempotency_key
         )

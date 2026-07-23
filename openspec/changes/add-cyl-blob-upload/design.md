@@ -177,6 +177,21 @@ overwriting or duplicating it would hide a real data-integrity question
   means the grant sits unused until #398/#17/Argo-wiring land — acceptable
   because it's the same trade-off already made (and shipped) for the RPC
   EXECUTE grant in bloom #470.
+- **TOCTOU race between two concurrent runs for the same scan.**
+  `upload_blob`'s existence check (`download()`) and the subsequent `upload()`
+  aren't atomic. If two `ingest-result --predictions-dir` invocations race for
+  the identical `(scan_key, idempotency_key)` — e.g. an accidental double
+  pipeline trigger — both can see "not found" and both call `upload()`; the
+  loser gets a genuine `StorageApiError` from Supabase Storage (no `x-upsert`
+  is set), recorded as a per-blob failure, aborting that run before the RPC
+  call. This is a spurious failure, not data corruption or a silent
+  overwrite — the bytes are identical for the same `idempotency_key`, and a
+  third run's pre-check now sees the winner's object with a matching
+  checksum and skips cleanly. Not fixed here (would need upsert semantics or
+  a catch-and-re-verify retry on the conflict) — reviewed in PR #508 and
+  accepted as a known, self-healing edge case rather than added complexity
+  for a scenario (accidental concurrent re-trigger of the same scan) that
+  isn't the pipeline's normal operating mode.
 
 ## Migration Plan
 
