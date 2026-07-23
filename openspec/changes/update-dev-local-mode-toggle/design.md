@@ -71,10 +71,22 @@ coding.
   shell profile for convenience) has zero effect on `docker compose up` — Compose only
   substitutes tokens that exist in the file. After this change, the token exists, so that same
   leftover export silently redirects *every* subsequent `make dev-up` (or bare `docker compose
-  up`) into fully-local/offline mode, on a per-developer/per-shell basis. Mitigation: the
-  boot-time backend-visibility log line (see `proposal.md`) makes the active backend observable
-  without a manual `docker compose exec ... env | grep`, so the failure mode is "surprising
-  banner in the logs," not "silently wrong data with no way to notice."
+  up`) into fully-local/offline mode, on a per-developer/per-shell basis. Mitigations (both
+  needed — added after PR #513 review):
+  - The boot-time backend-visibility print now runs BEFORE `validate_data_env()`/
+    `validate_supabase_env()`, not after, so it fires even on a fail-fast boot, not just the
+    happy path.
+  - Because `dev-up`/`dev-up-local` both run `docker compose up -d` (detached), a container-log
+    print alone is invisible without a deliberate `make dev-logs`/`docker compose logs` — so
+    `dev-up-local`'s Makefile recipe also prints a foreground `@echo` banner at invocation time,
+    and `.env.dev.example`'s comment now explicitly recommends the one-shot `make dev-up-local`
+    form over setting the var in `.env.dev`/a shell profile, precisely because the latter has this
+    silent-leakage failure mode and the former does not (it's scoped to one invocation).
+  - `docker-compose.dev.yml` uses a single fixed compose project name (`bloom_v2_dev`) for the
+    whole dev stack, shared with plain `dev-up` — `dev-up-local` is not an isolated instance. This
+    was already true before this change (see the `development-environment` spec's "Canonical Local
+    Stack Path" requirement — one dev stack per machine is intentional), so it's not a new risk
+    this change introduces, but the Makefile comment and docs now call it out explicitly.
 - `BLOOM_STORAGE_LOCAL_ROOT` / `BLOOM_EXPERIMENT_LOCAL_ROOT` are left unset by `make
   dev-up-local`, relying on the existing (already-documented, already-implemented) fallback to
   `BLOOM_OUTPUT_DIR` / `BLOOM_TRAITS_DIR`. If a developer wants a different local root, they set it

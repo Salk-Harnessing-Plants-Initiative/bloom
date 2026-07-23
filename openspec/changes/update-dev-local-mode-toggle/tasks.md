@@ -71,20 +71,66 @@
       bring-up in 7.2. Verified: plain render shows all three vars as `""`; with
       `BLOOM_STORAGE_BACKEND=local` prefixed, only that var resolves to `local`, the other two
       stay `""`.
-- [ ] 7.2 `make dev-up-local` brings the stack up with `BLOOM_STORAGE_BACKEND=local` in the
-      running `bloommcp` container's environment (`docker compose exec bloommcp env | grep
-      BLOOM_STORAGE_BACKEND`) and in its boot log (task 4.1's print line), while a plain
-      `make dev-up` (no `.env.dev` overrides) shows it empty/absent — both in the container env
-      and the boot log. **Not run**: this repo's shared dev machine already has a live
-      `bloom_v2_dev` compose project running (3+ days uptime) under the same fixed project name;
-      bringing up another stack against it here would rebuild/restart those containers. Run this
-      manually once the live stack is safe to cycle.
-- [ ] 7.3 Setting `BLOOM_STORAGE_BACKEND=local` directly in a scratch `.env.dev` (no
-      `dev-up-local`) and running plain `make dev-up` also picks it up — proving the `.env.dev`
-      path and the `make dev-up-local` path are both live, not just the latter. **Not run** — same
-      live-stack collision risk as 7.2.
-- [ ] 7.4 Running `make dev-up-local` does not modify `.env.dev` on disk — hash or `mtime` the
-      file before and after and assert it's unchanged. **Not run** — same live-stack collision
-      risk as 7.2.
+- [x] 7.2 Live proof, scoped to avoid the shared dev machine's already-running `bloom_v2_dev`
+      stack (3+ days uptime, same fixed compose project name — a full `make dev-up-local` would
+      have recreated those containers and did in fact collide on host ports the first time it was
+      tried under an isolated project name). Instead: brought up just the `bloommcp` service
+      (`--no-deps`, isolated `-p` project name, alternate host port) with
+      `BLOOM_STORAGE_BACKEND=local`. Confirmed live: `docker exec ... printenv
+      BLOOM_STORAGE_BACKEND` → `local`; container logs show
+      `BLOOM_STORAGE_BACKEND=local is using BLOOM_OUTPUT_DIR as the local storage root...` and the
+      task 4.1 boot-print `Bloom MCP Server storage backend: local (fully-local/offline)`;
+      container reported healthy and served `/health` 200 OK. Torn down and cleaned up afterward
+      (verified 0 leftover containers; shared stack's 16 containers unaffected throughout).
+- [x] 7.3 Setting `BLOOM_STORAGE_BACKEND=local` directly in a copy of the real `.env.dev` (not via
+      `dev-up-local`'s shell prefix) and rendering with `docker compose config` resolves to
+      `BLOOM_STORAGE_BACKEND: local` — confirming the `.env.dev`-direct path resolves identically
+      to the shell-prefix path, not just the latter. (Static config-render check, not a full
+      container bring-up — sufficient here since 7.2 already live-proves the container-level
+      consumption of this same env var once it reaches the container.)
+- [x] 7.4 Static inspection + `tests/unit/test_makefile_dev_up_local.py`'s
+      `test_dev_up_local_delegates_to_dev_up_without_duplicating_it`: `dev-up-local`'s recipe is
+      exactly `BLOOM_STORAGE_BACKEND=local $(MAKE) dev-up` — one line, no file-write commands —
+      so it cannot mutate `.env.dev`. Not re-verified with a live hash/mtime diff (that requires
+      the full `dev-up` bring-up this task's own 7.2 note explains is impractical to repeat here).
 - [x] 7.5 `make help` lists `dev-up-local`.
 - [x] 7.6 `openspec validate update-dev-local-mode-toggle --strict` passes.
+
+## 8. Round-2 fixes (PR #513 review — eberrigan)
+
+- [x] 8.1 **Blocking:** the new CI step's error message contained the literal substring
+      "make dev-up", which `test_dev_stack_smoke_skips_the_doctor_preflight` (tests/unit/
+      test_ci_dev_stack_smoke.py) scans for across every `run:` block in the job, requiring
+      `DOCTOR_SKIP=1` on each match — the new step isn't a `dev-up` invocation and doesn't set
+      it, so it failed deterministically. Reworded to "plain dev-up" throughout.
+- [x] 8.2 Added a bounded-wait/retry (`docker compose exec bloommcp true`, up to 60s) before the
+      real check in that CI step, matching the `migrate-local`/`check` bounded-wait convention
+      elsewhere in the Makefile, instead of assuming the container is immediately exec-able right
+      after `docker compose up -d`.
+- [x] 8.3 Moved the boot-time backend print in `server.py`'s `main()` to BEFORE
+      `validate_data_env()`/`validate_supabase_env()` (was after), so it fires even when
+      validation fails fast, not only on the happy path.
+- [x] 8.4 Added a foreground `@echo` to `dev-up-local`'s Makefile recipe announcing fully-local
+      mode at invocation time — `dev-up`/`dev-up-local` both run `docker compose up -d`
+      (detached), so the container-log print alone is invisible without a separate `make
+      dev-logs`/`docker compose logs` call.
+- [x] 8.5 Documented the shared, fixed `bloom_v2_dev` compose project name in `dev-up-local`'s
+      Makefile comment and `storage-backends.md`: it recreates the same single per-machine dev
+      stack `dev-up` uses, not an isolated instance (pre-existing repo convention — the
+      `development-environment` spec's "Canonical Local Stack Path" requirement — not a new
+      collision mechanism introduced here, but now called out explicitly).
+- [x] 8.6 Fixed the misleading `.env.dev.example` comment claiming `BLOOM_OUTPUT_DIR`/
+      `BLOOM_TRAITS_DIR` are vars "above" in that file — they're `docker-compose.dev.yml`
+      literals, not `.env.dev.example` entries. Also added an explicit warning there recommending
+      the one-shot `make dev-up-local` form over setting the var directly in `.env.dev`/a shell
+      profile, since the latter silently applies to every future plain `make dev-up`.
+- [x] 8.7 Added unit test coverage that didn't exist for any of the three new mechanisms:
+      `tests/unit/test_makefile_dev_up_local.py` (target exists, delegates via `$(MAKE) dev-up`
+      without duplicating `docker compose`, listed in `make help`, `make -n` dry-run resolves
+      correctly), a new test in `tests/unit/test_compose_dev_env_files.py` (the three vars use
+      `${VAR:-}` interpolation, not literals), and three new tests in `bloommcp/tests/
+      test_package_baseline.py` (the boot-print fires for both backends, and fires even when
+      validation fails fast).
+- [x] 8.8 Live proof that `BLOOM_STORAGE_BACKEND=local` actually activates local mode — see 7.2
+      above (isolated `-p` project name + `--no-deps`, so the shared `bloom_v2_dev` stack was
+      never touched).

@@ -81,9 +81,14 @@ dev-up: ensure-bloommcp-data-dirs
 # Run development stack in fully-local/offline mode (BLOOM_STORAGE_BACKEND=local
 # for this invocation only — does not modify .env.dev). Delegates to dev-up so
 # the two never drift apart. Do not mix backends for one experiment — see
-# bloommcp/docs/storage-backends.md.
+# bloommcp/docs/storage-backends.md. Same single canonical per-machine dev
+# stack as `dev-up` (docker-compose.dev.yml's fixed `bloom_v2_dev` project
+# name, per the "Canonical Local Stack Path" convention) — if someone else's
+# `dev-up`/`dev-up-local` is already running on this machine, this recreates
+# those containers in local mode instead of starting a separate stack.
 .PHONY: dev-up-local
 dev-up-local:
+	@echo " Fully-local/offline mode: BLOOM_STORAGE_BACKEND=local for this run only (.env.dev untouched)"
 	BLOOM_STORAGE_BACKEND=local $(MAKE) dev-up
 
 .PHONY: rebuild-dev-fresh
