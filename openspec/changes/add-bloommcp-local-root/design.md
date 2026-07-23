@@ -127,12 +127,59 @@ always resolves through `_resolve_local_root()`. `SupabaseReader.list_experiment
 `raw_source_path()` do read the bare `TRAITS_DIR` global directly, but `SupabaseReader` is only
 ever wired when the backend is *not* local — outside this change's gate.
 
-### Decision 6 — `BLOOM_LOCAL_ROOT`'s own existence is validated once, with one clear error
+### Decision 6 — `BLOOM_LOCAL_ROOT`'s own existence is validated once, with one clear error — and this check raises on not-writable, unlike the legacy per-dir check
 
 Rather than let three independent validators each discover a missing `BLOOM_LOCAL_ROOT` and raise
 three subtly different messages depending on which one runs first, boot validation checks
 `BLOOM_LOCAL_ROOT` exists and is a writable directory once, up front (in `validate_env()`), before
-any of the three subfolder-specific validators run.
+any of the three subfolder-specific validators run. It distinguishes three failure shapes with
+distinct messages: missing, exists-but-not-a-directory, and exists-but-not-writable.
+
+This new check **raises** on not-writable. That is deliberately stricter than `_validate_dirs()`'s
+existing per-dir loop, which only `logger.warning`s (does not raise) when `BLOOM_TRAITS_DIR` /
+`BLOOM_OUTPUT_DIR` / `BLOOM_PLOTS_DIR` is not writable — a long-standing behavior kept for
+backward compatibility with existing, possibly-loose dev setups. `BLOOM_LOCAL_ROOT` is a brand-new,
+opt-in gate with no such compatibility burden, and a not-writable root makes every subsequent
+subfolder auto-create (Decision 4) fail anyway — better to name the real cause immediately than
+let it surface later as a confusing `mkdir` `PermissionError` from a different call site.
+
+### Decision 7 — The `bloommcp-packaging` delta collides with the still-unarchived #390; #390 must archive first, or the collision must be reconciled before either archives
+
+This change's `bloommcp-packaging` spec delta writes `## MODIFIED Requirements` for
+`Server Boot Fail-Fast Preserved`, diffed against the **currently archived**
+`openspec/specs/bloommcp-packaging/spec.md`. But `add-bloommcp-local-experiment-reader` (#390,
+merged in code via PR #405, not yet archived) carries its **own**, independent `## MODIFIED
+Requirements` block for the exact same requirement (renaming its scenario to "Misconfigured
+Supabase-backend deploy fails at boot" and reframing the requirement around a companion `##
+ADDED Requirements` block, `Backend-Aware Boot Gate`, that this change's delta does not currently
+touch at all because it does not yet exist in the archived spec). OpenSpec's archiver replaces a
+requirement wholesale with what a change's delta provides — it does not merge two independent
+pending changes' edits to the same requirement. **Whichever of #390 or this change archives
+second will silently discard the other's edits to `Server Boot Fail-Fast Preserved`.**
+
+Concretely, `Backend-Aware Boot Gate` (from #390, once archived) will itself need a
+`BLOOM_LOCAL_ROOT` carve-out too: its "Fully-local boot still fails fast on a missing data
+directory" scenario asserts `BLOOM_OUTPUT_DIR` / `BLOOM_PLOTS_DIR` / `BLOOM_PLOTS_URL` are
+unconditionally required in fully-local mode — which this change makes conditionally false. This
+delta cannot validly `MODIFIED` a requirement (`Backend-Aware Boot Gate`) that does not yet exist
+in the archived spec, so the fix has to happen at the point #390 archives, not by writing against
+it preemptively here.
+
+**Resolution this proposal expects** (tracked as task 8.1, not silently assumed): #390 SHOULD
+archive before this change. Once it does, this change's `bloommcp-packaging` delta MUST be
+rewritten to (a) MODIFY the newly-archived `Backend-Aware Boot Gate` with the `BLOOM_LOCAL_ROOT`
+carve-out, and (b) MODIFY `Server Boot Fail-Fast Preserved` against #390's post-archive text
+(which already reframes it as backend-aware) rather than the pre-#390 text this delta currently
+targets. If this change must archive before #390 for some other reason, the roles reverse: #390's
+own delta must be rewritten against this change's post-archive text instead. Either way, the two
+changes' authors (both `egao28` today) MUST coordinate the ordering explicitly — this is a known,
+disclosed risk, not a silent one.
+
+- **Alternative considered:** fold this change's `BLOOM_LOCAL_ROOT` carve-out directly into #390's
+  still-open delta files instead of writing a competing `MODIFIED` block here. Rejected for this
+  proposal — #390 and #479 are separate GitHub issues with separate scopes, and blurring one
+  change's files into another's makes both harder to review and archive independently. Sequencing
+  (Decision above) keeps the two changes' file ownership clean while still avoiding data loss.
 
 ## Risks / Trade-offs
 
@@ -152,13 +199,21 @@ any of the three subfolder-specific validators run.
 
 Additive and opt-in — no data migration. `BLOOM_LOCAL_ROOT` unset ⇒ byte-for-byte unchanged
 behavior in every mode (Supabase default, and `local` without `BLOOM_LOCAL_ROOT`). Rollback is
-unsetting the var. **Archive ordering:** `bloommcp-experiment-read`'s archived spec predates #390
-(`LocalReader`, `BLOOM_EXPERIMENT_LOCAL_ROOT`) entirely, so this change's `Local Input Root
-Resolution` requirement is filed as ADDED rather than MODIFIED. #390 (`add-bloommcp-local-
-experiment-reader`) SHOULD archive at or before this change, so a future reader doesn't see this
-change's ADDED requirement as the first-ever mention of `BLOOM_EXPERIMENT_LOCAL_ROOT` once #390
-also archives its own, differently-scoped requirement text. Tracked as a task (5.1), not silently
-assumed.
+unsetting the var. **Archive ordering — two distinct issues, both with #390
+(`add-bloommcp-local-experiment-reader`):**
+
+1. `bloommcp-experiment-read`'s archived spec predates #390 (`LocalReader`,
+   `BLOOM_EXPERIMENT_LOCAL_ROOT`) entirely, so this change's `Local Input Root Resolution`
+   requirement is filed as ADDED rather than MODIFIED — safe (additive), but once #390 also
+   archives its own `LocalReader Adapter` requirement, the capability will carry two overlapping
+   descriptions of the same resolution mechanism, one of them (the 2-tier one) stale. Tracked as
+   task 8.2.
+2. `bloommcp-packaging`'s `Server Boot Fail-Fast Preserved` is independently `MODIFIED` by **both**
+   #390 and this change, with different resulting text — a genuine silent-overwrite risk at
+   archive time, not merely a staleness one. See Decision 7. Tracked as task 8.1, blocking.
+
+#390 SHOULD archive before this change in both cases; task 8.1 is a hard prerequisite for this
+change's own archive, not a soft note.
 
 ## Open Questions
 

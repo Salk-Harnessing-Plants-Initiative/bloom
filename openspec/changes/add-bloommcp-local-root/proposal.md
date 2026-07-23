@@ -16,16 +16,17 @@ env var and its own fallback chain:
   `_REQUIRED_DIRS` / `validate_env()`
   ([experiment_utils.py:24-32,100-113](../../../bloommcp/src/bloom_mcp/experiment_utils.py#L24-L32)),
   and used unconditionally by every plot tool through `_viz_shared.save_plot()`
-  ([\_viz_shared.py:24-30](../../../bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/_viz_shared.py#L24-L30)).
+  ([\_viz_shared.py:18-24](../../../bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/_viz_shared.py#L18-L24)).
 
 This compounds worse than three separate variables: `validate_env()`'s `_REQUIRED_DIRS` check
 unconditionally requires `BLOOM_TRAITS_DIR`, `BLOOM_OUTPUT_DIR`, **and** `BLOOM_PLOTS_DIR` to
 each be individually set and pre-existing, run by `server.main()`'s `validate_data_env()` call
 **before** the fully-local/Supabase branch. So even a user who correctly sets
 `BLOOM_EXPERIMENT_LOCAL_ROOT` + `BLOOM_STORAGE_LOCAL_ROOT` still has to separately create and
-wire the three original, confusingly-named directories (`SLEAP_OUT_CSV`, `ANALYSIS_OUTPUT`,
-`PLOTS_DIR` in the dev compose mounts) before boot succeeds — the exact pain point the issue
-describes for a Claude Desktop / offline user.
+wire the three original directories (`BLOOM_TRAITS_DIR`, `BLOOM_OUTPUT_DIR`, `BLOOM_PLOTS_DIR` —
+mounted in dev as `TRAITS_DIR`, `ANALYSIS_OUTPUT`, `PLOTS_DIR`) before boot succeeds — the same
+pain point the issue describes for a Claude Desktop / offline user (the issue's own wording names
+the pre-rename `SLEAP_OUT_CSV` mount; `bloommcp/data/TRAITS_DIR` is the current name on `staging`).
 
 ## What Changes
 

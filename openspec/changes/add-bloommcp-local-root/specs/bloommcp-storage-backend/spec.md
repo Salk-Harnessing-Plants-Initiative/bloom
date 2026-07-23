@@ -98,3 +98,10 @@ confirming the top-level `BLOOM_LOCAL_ROOT` itself exists and is writable.
   not writable — and the server runs its boot-time validation
 - **THEN** that validation raises a clear error naming the offending path, rather than failing
   on the first write
+
+#### Scenario: A BLOOM_LOCAL_ROOT-derived output subfolder blocked by a non-directory file
+
+- **WHEN** `BLOOM_LOCAL_ROOT` is a valid, writable directory but `<BLOOM_LOCAL_ROOT>/output`
+  already exists as a regular file rather than a directory
+- **THEN** boot raises a clear, caller-safe error rather than letting `mkdir`'s raw
+  `FileExistsError` propagate

@@ -21,7 +21,10 @@ This requirement documents `resolve_experiment_local_root` / `validate_experimen
 the not-yet-archived `add-bloommcp-local-experiment-reader` change (#390) — plus this change's
 `BLOOM_LOCAL_ROOT` tier. It is filed as ADDED rather than MODIFIED because this capability's
 archived spec predates #390 entirely (see the proposal's design.md, Migration Plan, for the
-archive-ordering note).
+archive-ordering note). Once #390 archives its own `LocalReader Adapter` requirement — whose
+normative text embeds a now-superseded 2-tier resolution description — that requirement MUST be
+reconciled against this one so the capability does not carry two overlapping, one-of-them-stale
+descriptions of the same resolution mechanism (tracked as tasks.md task 8.2).
 
 #### Scenario: Explicit BLOOM_EXPERIMENT_LOCAL_ROOT always wins
 
@@ -47,3 +50,10 @@ archive-ordering note).
 - **WHEN** `BLOOM_STORAGE_BACKEND` is unset or `supabase`, and `BLOOM_LOCAL_ROOT` is set
 - **THEN** `SupabaseReader`'s raw-input path still resolves from `BLOOM_TRAITS_DIR`, unaffected
   by `BLOOM_LOCAL_ROOT`
+
+#### Scenario: A BLOOM_LOCAL_ROOT-derived input subfolder blocked by a non-directory file
+
+- **WHEN** `BLOOM_LOCAL_ROOT` is a valid, writable directory but `<BLOOM_LOCAL_ROOT>/input`
+  already exists as a regular file rather than a directory
+- **THEN** boot raises a clear, caller-safe error rather than letting `mkdir`'s raw
+  `FileExistsError` propagate

@@ -49,9 +49,26 @@ stricter contract (must already exist as a directory) regardless of
 
 #### Scenario: An explicit override still requires pre-existence
 
-- **WHEN** `BLOOM_LOCAL_ROOT` is set and `BLOOM_PLOTS_DIR` (or `BLOOM_EXPERIMENT_LOCAL_ROOT` /
-  `BLOOM_STORAGE_LOCAL_ROOT`) is also explicitly set to a path that does not exist
-- **THEN** validation still raises rather than auto-creating the explicitly-named path
+- **WHEN** `BLOOM_LOCAL_ROOT` is set and each of `BLOOM_PLOTS_DIR`, `BLOOM_EXPERIMENT_LOCAL_ROOT`,
+  and `BLOOM_STORAGE_LOCAL_ROOT` is independently tested, explicitly set to a path that does not
+  exist
+- **THEN** validation still raises for each, rather than auto-creating the explicitly-named path
+
+#### Scenario: The default (non-local) backend's directory requirements are unaffected
+
+- **WHEN** `BLOOM_STORAGE_BACKEND` is unset or `supabase`, `BLOOM_LOCAL_ROOT` is set anyway (e.g.
+  left over in a shell profile), and `BLOOM_TRAITS_DIR` / `BLOOM_OUTPUT_DIR` / `BLOOM_PLOTS_DIR`
+  are unset
+- **THEN** `validate_env()` still raises naming the missing variables, exactly as before this
+  change — `BLOOM_LOCAL_ROOT` has no effect outside `BLOOM_STORAGE_BACKEND=local`
+
+#### Scenario: The resolved PLOTS_DIR constant reflects the BLOOM_LOCAL_ROOT default
+
+- **WHEN** `BLOOM_STORAGE_BACKEND=local`, `BLOOM_LOCAL_ROOT` is set, and `BLOOM_PLOTS_DIR` is
+  unset
+- **THEN** the `experiment_utils.PLOTS_DIR` module-level constant itself equals
+  `<BLOOM_LOCAL_ROOT>/plots` (not merely "validation succeeds") — the value every plot tool
+  actually writes to via `_viz_shared.save_plot()`
 
 ### Requirement: Server Boot Fail-Fast Preserved
 
@@ -78,8 +95,30 @@ unwritable, or if an explicitly-set variable's path does not exist.
 - **WHEN** the server starts with the Supabase environment correctly set
 - **THEN** it boots and `/health` returns OK
 
-#### Scenario: Fully-local boot with only BLOOM_LOCAL_ROOT set still fails fast on a bad root
+#### Scenario: Fully-local boot fails fast when BLOOM_LOCAL_ROOT does not exist
 
 - **WHEN** the server starts with `BLOOM_STORAGE_BACKEND=local` and `BLOOM_LOCAL_ROOT` set to a
-  path that does not exist or is not writable
+  path that does not exist
 - **THEN** boot fails fast naming `BLOOM_LOCAL_ROOT`, before the port is bound
+
+#### Scenario: Fully-local boot fails fast when BLOOM_LOCAL_ROOT is a file, not a directory
+
+- **WHEN** the server starts with `BLOOM_STORAGE_BACKEND=local` and `BLOOM_LOCAL_ROOT` set to an
+  existing path that is a regular file rather than a directory
+- **THEN** boot fails fast naming `BLOOM_LOCAL_ROOT`, with a message distinct from the
+  does-not-exist case
+
+#### Scenario: Fully-local boot fails fast when BLOOM_LOCAL_ROOT is not writable
+
+- **WHEN** the server starts with `BLOOM_STORAGE_BACKEND=local` and `BLOOM_LOCAL_ROOT` set to an
+  existing directory without write permission
+- **THEN** boot fails fast naming `BLOOM_LOCAL_ROOT` — this check raises, unlike the legacy
+  per-directory check's warn-only behavior for `BLOOM_TRAITS_DIR` / `BLOOM_OUTPUT_DIR` /
+  `BLOOM_PLOTS_DIR` (see design.md Decision 6)
+
+#### Scenario: A BLOOM_LOCAL_ROOT-derived subfolder blocked by a non-directory file fails clearly
+
+- **WHEN** `BLOOM_LOCAL_ROOT` is valid but `<BLOOM_LOCAL_ROOT>/plots` already exists as a regular
+  file rather than a directory
+- **THEN** boot raises a clear, caller-safe error rather than letting `mkdir`'s raw
+  `FileExistsError` propagate
