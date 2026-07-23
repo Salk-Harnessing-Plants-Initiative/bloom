@@ -28,9 +28,9 @@ const navSections = [
   {
     heading: "Tools",
     items: [
-      { name: "Bloom Assistant", href: "/chat" },
+      // Temporarily disabled — Bloom Assistant is a work in progress.
+      // { name: "Bloom Assistant", href: "/chat" },
       { name: "OrthoBrowser", href: "/app/orthofinder" },
-      { name: "OrthoVec", href: "/app/embedtree" },
     ],
   },
   {
