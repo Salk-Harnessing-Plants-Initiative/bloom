@@ -22,11 +22,12 @@ dependencies = [
     # Security floor for the supabase auth/JWT transitive dep, per repo convention
     # (open floor past the upstream CVE fix; see bloommcp/pyproject.toml).
     "cryptography>=48.0.1",
-    # ResultEnvelope model for `cyl ingest` fail-fast validation. a3 floor matches
-    # the emitters' contract_version (stricter than bloommcp's a1 on purpose); no
-    # [pandas] extra — only the pydantic models are needed (pydantic already present
+    # ResultEnvelope model for `cyl ingest` fail-fast validation, plus (a5+)
+    # PredictionArtifact/PredictionManifest for `cyl ingest-result
+    # --predictions-dir` blob construction (bloom #407). No [pandas] extra —
+    # only the pydantic models are needed (pydantic already present
     # transitively via supabase->postgrest).
-    "sleap-roots-contracts>=0.1.0a4",
+    "sleap-roots-contracts>=0.1.0a5",
 ]
 
 [project.scripts]
