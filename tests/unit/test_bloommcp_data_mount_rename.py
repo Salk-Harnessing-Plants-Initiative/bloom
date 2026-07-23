@@ -37,7 +37,7 @@ RENAMED_FILES = [
     "_WIKI/BLOOMMCP/storage-workflow.md",
     "_WIKI/BLOOMMCP/README.md",
     "bloommcp/src/bloom_mcp/storage/analysis_dir.py",
-    "bloommcp/scripts/live_plot_tool_smoke.py",
+    "bloommcp/tests/smoke/live_plot_tool_smoke.py",
     "scripts/ensure_bloommcp_data_dirs.sh",
     "DEV_SETUP.md",
     "openspec/project.md",

@@ -7,7 +7,7 @@ MinIO), so it must override what ``.env.dev`` configures for in-container proces
     ``http://kong:8000``; the host reaches Kong at ``http://localhost:$KONG_HTTP_PORT``.
     The ``make bloommcp-smoke`` target exports the host value before launching this
     script (it derives the port from ``.env.dev``); we fall back to localhost:8000 only
-    for a bare ``python scripts/live_persistence_smoke.py`` invocation.
+    for a bare ``python tests/smoke/live_persistence_smoke.py`` invocation.
   * ``BLOOM_TRAITS_DIR`` / ``BLOOM_OUTPUT_DIR`` / ``BLOOM_PLOTS_DIR`` — ``.env.dev`` points
     these at in-container ``/app/data/...`` paths; we override them with host temp dirs,
     seeding the traits dir with the ``turface`` fixture.
@@ -75,7 +75,7 @@ Every failure mode (tool error, hash mismatch, read-after-write timeout, import 
 routes through the per-check summary and a non-zero exit — never an unlabelled traceback.
 
 Run via ``make bloommcp-smoke`` (preferred) or, with the dev stack up + migrated and
-``BLOOM_AGENT_KEY`` exported, ``cd bloommcp && uv run python scripts/live_persistence_smoke.py``.
+``BLOOM_AGENT_KEY`` exported, ``cd bloommcp && uv run python tests/smoke/live_persistence_smoke.py``.
 
 See also: DEV_SETUP.md (§API Gateway, host vs container URLs) and the ``bloommcp-smoke``
 target in the repo-root Makefile.
@@ -114,7 +114,7 @@ _HERE = Path(__file__).resolve().parent
 QC_EXPERIMENT = "turface_raw.csv"
 QC_TOOL_CLASS = "qc"
 QC_MAX_NANS_PER_TRAIT = 0.1
-QC_FIXTURE = _HERE.parent / "tests" / "fixtures" / "turface_19_raw_data.csv"
+QC_FIXTURE = _HERE.parent / "fixtures" / "turface_19_raw_data.csv"
 CLEANED_CSV_NAME = (
     "_cleaned.csv"  # logical key qc_clean commits (and the reader resolves)
 )

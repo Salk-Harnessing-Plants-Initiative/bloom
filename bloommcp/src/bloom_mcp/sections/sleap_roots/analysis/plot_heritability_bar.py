@@ -4,6 +4,10 @@ Delegates the heritability calculation to
 ``sleap_roots_analyze.statistics.calculate_heritability_estimates`` and rendering
 to ``sleap_roots_analyze.visualization.create_heritability_plot``; this file owns
 no analysis or plotting logic of its own.
+
+``create_heritability_plot`` returns a single ``Figure`` for small trait counts but
+a ``list[Figure]`` once the trait count exceeds its internal pagination threshold
+(currently 50 traits/page) -- see ``_viz_shared.save_plot_or_plots``.
 """
 
 from pathlib import Path
@@ -12,7 +16,7 @@ from sleap_roots_analyze import statistics as stats_module
 from sleap_roots_analyze.visualization import create_heritability_plot
 from bloom_mcp.experiment_utils import load_experiment_data as _load_data
 
-from ._viz_shared import save_plot, validate_filename
+from ._viz_shared import save_plot_or_plots, validate_filename
 
 
 def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
@@ -58,7 +62,7 @@ def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
     except Exception:
         return "Heritability plot failed: the plot could not be generated for the computed estimates."
 
-    url = save_plot(fig, f"heritability_{stem}.png")
+    url = save_plot_or_plots(fig, f"heritability_{stem}.png")
 
     above = sum(
         1

@@ -1,0 +1,33 @@
+{
+  "_comment": "Characterization snapshot of remove_outliers (mahalanobis, seed=42) on the cylinder frame cleaned at clean_traits_for_analysis CANONICAL DEFAULTS. Recorded via the real MCP tool path (qc_clean -> remove_outliers, matching the reader's 'latest cleaned' composition). Cylinder's mahalanobis chi-squared fit is poor (like turface_19's, though not 'very_poor') -- this is a method+seed characterization pin, not a claim that the flagged samples are ground-truth outliers. p >> n at cylinder's scale (846 traits vs 129 samples) makes the trait-covariance matrix severely rank-deficient, consistent with design.md's prediction for this fixture.",
+  "_raw_source": "tests/fixtures/cylinder_raw_data.csv",
+  "_derivation": "Recorded via a real fastmcp.Client call to sleap_roots_remove_outliers against the running bloommcp dev-stack container, 2026-07-22.",
+  "cleaning_params": {
+    "max_zeros_per_trait": 0.5,
+    "max_nans_per_trait": 0.2,
+    "max_nans_per_sample": 0.0,
+    "min_samples_per_trait": 10
+  },
+  "cleaned_samples": 129,
+  "cleaned_trait_cols_count": 846,
+  "method": "mahalanobis",
+  "seed": 42,
+  "n_input_samples": 129,
+  "n_outliers": 9,
+  "n_output_samples": 120,
+  "removal_fraction": 0.069767,
+  "threshold_type": "chi_squared",
+  "threshold_value": 58.12005973468633,
+  "outlier_barcodes": [
+    "4EPFJP937O",
+    "4O60MX27F2",
+    "78MGQ8R60R",
+    "8VSWIXRD0W",
+    "K505AYXMJW",
+    "ULR4LA8LSF",
+    "W6OKUQK89D",
+    "Y7WFRWBTYU",
+    "ZUZ4D8B3QE"
+  ],
+  "goodness_of_fit_fit_quality": "poor"
+}

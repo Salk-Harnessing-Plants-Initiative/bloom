@@ -826,3 +826,57 @@ def test_rows_subset_uses_multiset_containment_under_repeated_barcodes():
     assert remove_outliers_tool._rows_subset(frame, dup) is False
     sub = pd.DataFrame({"Barcode": ["a", "c"], "t1": [1.0, 3.0]})
     assert remove_outliers_tool._rows_subset(frame, sub) is True
+
+
+# ── cylinder oracle (#483) ───────────────────────────────────────────────────
+#
+# See tests/fixtures/README.md's "Cross-tier oracle fixtures (cylinder)" section.
+# Cylinder's mahalanobis fit is "poor" (untrustworthy, like turface_19's "very_poor")
+# -- expected given 846 traits vs 129 samples makes the trait-covariance matrix
+# severely rank-deficient. A method+seed characterization pin, not ground truth.
+
+_RAW_CYL = _FIXTURES / "cylinder_raw_data.csv"
+_GOLDEN_CYL = json.loads(
+    (_FIXTURES / "cylinder_outlier_golden.json").read_text(encoding="utf-8")
+)
+_EXPERIMENT_CYL = "cylinder.csv"
+
+
+def _cleaned_df_cyl() -> pd.DataFrame:
+    raw = pd.read_csv(_RAW_CYL, encoding="utf-8")
+    det = detect_columns(raw)
+    cleaned, _kept, _log = clean_traits_for_analysis(
+        raw, trait_cols=det["trait_cols"], **_roles(det)
+    )
+    return cleaned
+
+
+@pytest.fixture
+def injected_ports_cylinder():
+    reader = FakeReader()
+    store = FakeResultStore()
+    reader.add_cleaned_version(
+        _EXPERIMENT_CYL, "v1", _cleaned_df_cyl(), make_latest=True
+    )
+    _ports.configure(reader=reader, store=store)
+    try:
+        yield reader, store
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def test_cylinder_outlier_removal_matches_golden(injected_ports_cylinder):
+    result = remove_outliers(
+        RemoveOutliersParams(experiment=_EXPERIMENT_CYL, method="mahalanobis", seed=42)
+    )
+
+    assert result.n_input_samples == _GOLDEN_CYL["n_input_samples"] == 129
+    assert result.n_outliers == _GOLDEN_CYL["n_outliers"] == 9
+    assert result.n_output_samples == _GOLDEN_CYL["n_output_samples"] == 120
+    assert sorted(result.outlier_barcodes) == sorted(_GOLDEN_CYL["outlier_barcodes"])
+    assert result.fit_is_trustworthy is False
+    assert (
+        result.goodness_of_fit["fit_quality"]
+        == _GOLDEN_CYL["goodness_of_fit_fit_quality"]
+        == "poor"
+    )
