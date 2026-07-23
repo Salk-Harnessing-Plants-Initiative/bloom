@@ -4,6 +4,35 @@ Python command-line tool for the Bloom server — download cylinder experiments
 (metadata + images), write per-scan pipeline results back, and manage
 credentials. Successor to the Node `@salk-hpi/bloom-cli`. Tracked by issue #347.
 
+## Container image
+
+`bloomctl` is also published as a container image, for use as a step in
+pipelines (e.g. sleap-roots-pipeline's Argo DAG) rather than a `pip install`:
+
+```
+ghcr.io/salk-harnessing-plants-initiative/bloomctl
+```
+
+- `sha-<short-git-sha>` — immutable, pushed on every commit to `staging` that
+  touches `bloomcli/**`.
+- `staging` — mutable, points at the most recent `staging` build.
+- `<version>` (e.g. `0.1.0a2`) — pushed when a matching GitHub Release is
+  published; guaranteed to match the PyPI-published version of the same name.
+
+The image is built directly from this repo's source at the commit being
+built (not from PyPI), so it's always available immediately after a
+`staging` push regardless of PyPI release timing — see
+`.github/workflows/docker-build-bloomcli.yml`. Every PR touching
+`bloomcli/**` builds and Trivy-scans the Dockerfile via `pr-checks.yml`'s
+`docker-build` job (the same pre-merge gate every other Bloom image gets);
+the publishing workflow itself only builds and pushes, it never runs on a
+pull request.
+
+```
+docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
+  cyl ingest-result path/to/scan.result.json
+```
+
 ## Commands
 
 `login` is flat; assay-specific commands are grouped by data type (`cyl`). Each
