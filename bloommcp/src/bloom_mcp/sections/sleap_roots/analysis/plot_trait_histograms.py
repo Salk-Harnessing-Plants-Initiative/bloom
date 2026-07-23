@@ -1,15 +1,24 @@
 """plot_trait_histograms — histogram plots for trait distributions.
 
-Delegates rendering to ``sleap_roots_analyze.visualization.create_trait_histograms``;
-this file owns no plotting logic of its own.
+Delegates rendering to ``sleap_roots_analyze.visualization.create_trait_histograms``
+(or its ``_batched`` counterpart above ``TRAIT_BATCH_THRESHOLD`` traits); this file
+owns no plotting logic of its own.
 """
 
 from pathlib import Path
 
-from sleap_roots_analyze.visualization import create_trait_histograms
+from sleap_roots_analyze.visualization import (
+    create_trait_histograms,
+    create_trait_histograms_batched,
+)
 from bloom_mcp.experiment_utils import load_experiment_data as _load_data
 
-from ._viz_shared import parse_traits, save_plot, validate_filename
+from ._viz_shared import (
+    TRAIT_BATCH_THRESHOLD,
+    parse_traits,
+    save_plot_or_plots,
+    validate_filename,
+)
 
 
 def plot_trait_histograms(filename: str, traits: str = "") -> str:
@@ -40,11 +49,14 @@ def plot_trait_histograms(filename: str, traits: str = "") -> str:
         return "No valid traits found."
 
     try:
-        fig = create_trait_histograms(df, selected)
+        if len(selected) > TRAIT_BATCH_THRESHOLD:
+            fig_or_figs = create_trait_histograms_batched(df, selected)
+        else:
+            fig_or_figs = create_trait_histograms(df, selected)
     except Exception:
         return "Histogram generation failed: the plot could not be generated for the selected traits."
 
-    url = save_plot(fig, f"histograms_{stem}.png")
+    url = save_plot_or_plots(fig_or_figs, f"histograms_{stem}.png")
     return (
         f"Trait Histograms: {stem} (source: {source})\n"
         f"  {len(selected)} traits plotted\n"
