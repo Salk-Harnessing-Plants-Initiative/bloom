@@ -1,6 +1,6 @@
 ## 0. Pre-check
 
-- [x] 0.1 Confirm PR #464 (#324) status. **Checked 2026-07-17: still OPEN against `staging`, not merged.** Proceeded with implementation per this task's fallback; this change must not merge ahead of #464 (see task 5.4).
+- [x] 0.1 Confirm PR #464 (#324) status. **Checked 2026-07-17: still OPEN against `staging`, not merged.** Proceeded with implementation per this task's fallback, directly on #464's own branch (not a separate later PR) — so the merge-ordering concern this task originally flagged (see former task 5.4) is moot: this change ships in the same PR as #324, not after it.
 
 ## 1. Fix latent ordering bugs in `FakeResultStore.commit` (prerequisite, currently unreachable/untestable in isolation)
 
@@ -42,4 +42,4 @@
 - [x] 5.1 `openspec validate update-bloommcp-resultstore-fake-parity --strict` passes.
 - [x] 5.2 Ran `uv run pytest bloommcp/tests/result_store/test_fake_result_store.py bloommcp/tests/result_store/test_store_parity.py -v` explicitly: 9 passed in `test_fake_result_store.py` (was 4), 10 passed in `test_store_parity.py` (was 4, now 5 scenarios × 2 kinds) — every new scenario present for both `"fake"` and `"supabase"`, none silently skipped.
 - [x] 5.3 Full `bloommcp` unit test suite: **524 passed** (baseline 513 per #324's tasks.md + 11 new: 5 in `test_fake_result_store.py`, 6 in `test_store_parity.py`), no regressions.
-- [ ] 5.4 Confirm PR #464 has merged to `staging` before merging this change (see task 0.1) — **not yet true as of 2026-07-17**; this is the one remaining gate before this change itself can be reviewed/merged.
+- [x] 5.4 **Moot, not applicable**: this change was implemented as commits directly on PR #464's own branch rather than a separate later PR, so there is no independent "#464 merges first" gate to confirm — both land together when #464 merges. (Originally tracked here in case this landed as a stacked, separate PR; it did not.)

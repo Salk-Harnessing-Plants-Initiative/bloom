@@ -1,7 +1,7 @@
 ## 0. Supabase migration — scoped DELETE grant (backs #324 gap A)
 
-- [x] 0.1 Add `supabase/migrations/<timestamp>_grant_bloommcp_agent_output_delete.sql`: `CREATE POLICY agent_delete_bloommcp_output ON storage.objects FOR DELETE TO bloom_agent USING (bucket_id = 'bloommcp-data' AND name LIKE 'bloommcp_output/%')` + `GRANT DELETE ON storage.objects TO bloom_agent`, idempotent (`DROP POLICY IF EXISTS` first) matching `20260605000000`'s pattern. Flag explicitly for RLS-migration-owner review — see design.md's "Disclosed risk."
-- [ ] 0.2 Apply via `make migrate-local` in dev; confirm `bloom_agent` can delete a test object under `bloommcp_output/` and still cannot delete under `bloommcp_input/` or any other bucket. **Not run** — no local Docker/Supabase stack available in the implementation environment; needs to be run before merge.
+- [x] 0.1 Add `supabase/migrations/20260723000000_grant_bloommcp_agent_output_delete.sql` (renamed off an earlier timestamp to avoid a collision with `staging`): `CREATE POLICY agent_delete_bloommcp_output ON storage.objects FOR DELETE TO bloom_agent USING (bucket_id = 'bloommcp-data' AND name ~ '^bloommcp_output/')` + `GRANT DELETE ON storage.objects TO bloom_agent`, idempotent (`DROP POLICY IF EXISTS` first) matching `20260605000000`'s pattern. **Review fix**: the first draft used `LIKE 'bloommcp_output/%'`, whose unescaped `_` is itself a single-character SQL wildcard (also matches `bloommcp-output/`, `bloommcp.output/`, etc.) — switched to a `~` regex anchor, which has no such footgun. Flagged for RLS-migration-owner review — see design.md's "Disclosed risk."
+- [x] 0.2 Applied via `make migrate-local` against the running dev stack; verified live (not just "the SQL doesn't error"): `bloom_agent` deletes an object uploaded to `bloommcp_output/_grant_verify/probe.txt` (the Storage API returns the deleted object), and a delete attempt on `bloommcp_input/_grant_verify_probe.txt` returns an empty result — the object is confirmed still present on a follow-up download, proving RLS silently blocked it rather than the key simply not existing.
 
 ## 1. Bulk-delete storage primitive + test-boundary support
 
@@ -18,25 +18,29 @@
 - [x] 2.2 On exception (upload or manifest write), best-effort `delete_files` the tracked keys via `_cleanup_uploaded`; catch and log (server-side only) any delete failure without altering the raised `CommitFailedError`.
 - [x] 2.3 Test: `test_commit_failure_cleans_up_orphaned_objects_from_partial_upload`.
 - [x] 2.4 Test: `test_cleanup_failure_does_not_mask_original_error` (uses `caplog`).
+- [x] 2.5 Test (added on review): `test_commit_failure_after_all_uploads_before_manifest_write_parity` in `test_store_parity.py` — the boundary where every output is uploaded/recorded but the failure lands before the manifest write; previously untested on either backend despite being the case most relevant to this section's cleanup. Required fixing the shared `_inject_commit_failure` test helper's `write_manifest`-failure stub to be one-shot (it unconditionally raised on every call, so a retry could never succeed).
 
 ## 3. Manifest duplicate-id guard on commit (#324 gap B)
 
-- [x] 3.1 Pre-upload collision check + bounded reallocation (`_MAX_ID_ATTEMPTS = 3`), re-reading the manifest fresh on each attempt.
-- [x] 3.2 Finalized `version_id`/`version_dir` used for `key_for`, hashing, and the upload loop — never rewritten independently afterward.
+- [x] 3.1 Pre-upload collision check + bounded reallocation (`_MAX_ID_ATTEMPTS = 3`), re-reading the manifest fresh **on every attempt** — fixed on review from an earlier draft that read the manifest once before the loop, against which `next_version_id`'s output can never re-collide, making the bound unreachable through real contention (only via an artificial monkeypatch).
+- [x] 3.2 Finalized `version_id`/`version_dir` used for `key_for`, hashing, and the upload loop — never rewritten independently afterward. `RunHandle.version_id` is updated to the finalized id (a stale provisional id was a latent footgun for any future caller reading it post-commit).
 - [x] 3.3 Pre-write freshness check; on late collision, best-effort cleanup + `CommitFailedError` rather than overwriting/relabeling.
 - [x] 3.4 Test: `test_interleaved_commits_get_distinct_ids_with_consistent_provenance`.
 - [x] 3.5 Test: `test_retry_exhaustion_before_upload_raises_with_no_uploads`.
 - [x] 3.6 Test: `test_prewrite_collision_cleans_up_and_retry_succeeds`.
 - [x] 3.7 Test: `test_noncolliding_commit_reads_manifest_twice_with_no_reallocation`.
+- [x] 3.8 **Blocking fix found on review, not in the original plan**: `commit` is dispatched by FastMCP's Starlette server via a thread pool, so two `commit()` calls for the same `(experiment, tool_class)` can genuinely race *within one process* — not just interleave sequentially. Without serialization, both could pass the pre-upload check before either wrote the manifest, compute the *same* deterministic `version_dir` (`version_id` + today's date, no nonce), and upload to the same object keys; the loser's pre-write check would then correctly detect the collision, but its cleanup would delete keys the *winner's already-committed* manifest entry depends on — worse than the bug this change fixes. Added a per-`(output_root, experiment, tool_class)` `threading.Lock` around the whole `commit()` critical section in both `SupabaseResultStore` and `FakeResultStore` (mirrored for parity), making commits for the same key fully mutually exclusive. This is now the primary mechanism closing gap B for same-process concurrency; the two-phase manifest check remains as defense-in-depth.
+- [x] 3.9 Test: `test_concurrent_commits_never_corrupt_each_others_data` (parametrized, `test_store_parity.py`) — two real `threading.Thread`s, synchronized via a `threading.Barrier` so they start together, commit colliding `RunHandle`s concurrently; asserts neither run's bytes are deleted or overwritten regardless of which thread wins. Verified this reproduces the bug without the lock (failed ~50% of runs when the lock was temporarily disabled in a throwaway check) and passes reliably (8/8 runs) with it.
 
 ## 4. Spec + docs
 
 - [ ] 4.1 Update `openspec/specs/bloommcp-result-store/spec.md` per this change's deltas after archival. **Deferred to Stage 3** (archival, a separate PR after deployment) per OpenSpec convention — not done in this implementation pass.
 - [x] 4.2 Updated the persistence design doc's §8 deferred-item bullet for #324 to "adapter-side guard + scoped DELETE grant, shipped," with the residual multi-instance limitation documented.
 - [x] 4.3 Same §8 bullet notes this change is a prerequisite for #325.
+- [x] 4.4 Fixed a stale self-referential merge-gate note in the bundled `update-bloommcp-resultstore-fake-parity` change's `tasks.md`/`design.md`/`proposal.md` (#325): they said "this change must not merge ahead of #464" / "not yet true as of 2026-07-17," written when #325 was expected to land as a separate, later PR. Since #325 was implemented as commits directly on this PR's own branch, that gate is moot — updated the notes to say so instead of leaving a confusing dangling reference for anyone reading them at archival time.
 
 ## 5. Validation
 
-- [x] 5.1 `openspec validate update-bloommcp-result-store-durability --strict` passes.
-- [x] 5.2 Full `bloommcp` unit test suite passes (513 passed), including the 6 new tests above.
-- [ ] 5.3 `make bloommcp-smoke` (live Supabase smoke) — **not run**: no Docker/dev stack available in the implementation environment. Needs to be run (after `make dev-up`, `make migrate-local` including the new migration) before merge.
+- [x] 5.1 `openspec validate update-bloommcp-result-store-durability --strict` passes (and `update-bloommcp-resultstore-fake-parity --strict` after the doc fixes in 4.4).
+- [x] 5.2 Full `bloommcp` unit test suite passes (571 passed, 24 skipped — unrelated), including all new/fixed tests above.
+- [x] 5.3 `make bloommcp-smoke` (live Supabase smoke) — ran against the real dev stack (Postgres + storage-api + MinIO): qc_clean, remove_outliers (incl. a second run advancing `latest`), and clustering (kmeans + hierarchical) all persist full v3 provenance through the real ports; every recorded `output_sha256` matched the actually-stored bytes. Passed cleanly.

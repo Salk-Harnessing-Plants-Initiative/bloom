@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +35,24 @@ if TYPE_CHECKING:
 # independent constant — not imported from supabase_store.py, whose constant
 # is module-private.
 _MAX_ID_ATTEMPTS = 3
+
+# Mirrors SupabaseResultStore's per-key commit lock (see that module's
+# docstring for why this is load-bearing under FastMCP's thread-pool
+# dispatch, not defensive belt-and-suspenders) — same shape, independent
+# registry, so a concurrent-commit test against the fake exercises the same
+# mutual-exclusion property the real adapter provides.
+_LOCKS_GUARD = threading.Lock()
+_COMMIT_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}
+
+
+def _commit_lock(output_root: str, experiment: str, tool_class: str) -> threading.Lock:
+    key = (output_root, experiment, tool_class)
+    with _LOCKS_GUARD:
+        lock = _COMMIT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _COMMIT_LOCKS[key] = lock
+        return lock
 
 # Placeholder timestamp for stub `StoredRun`s seeded via `seed_collision`/
 # `seed_v2_run` — these are test-only synthetic history, never derived from
@@ -121,89 +140,112 @@ class FakeResultStore:
         validate_outputs(outputs)
         state: _FakeRunState = run._backend
         key = (state.experiment, state.tool_class)
-        fail_after = self._fail_next.pop(key, None)
 
-        try:
-            # Finalize version_id + version_dir together, before recording
-            # anything: re-derive `taken` fresh from `self._runs` rather than
-            # trust the provisional id `create_run` saw — a `seed_collision`
-            # call (or, in production, another writer) may have landed since.
-            version_id = state.version_id
-            version_dir = state.version_dir
-            existing = self._runs.get(key, [])
-            taken = {r.run_ref for r in existing}
-            attempts = 0
-            while version_id in taken:
-                attempts += 1
-                if attempts >= _MAX_ID_ATTEMPTS:
-                    raise RuntimeError(
-                        f"could not allocate a free version id after {attempts} "
-                        f"attempts (last tried: {version_id!r})"
-                    )
-                version_id = next_version_id(_manifest_view(existing))
-                version_dir = version_dir_name(version_id, state.user_label)
+        # Mirrors SupabaseResultStore.commit's per-key lock: makes commit()
+        # calls for the same (experiment, tool_class) fully mutually
+        # exclusive, so a concurrent-commit test against the fake exercises
+        # the same guarantee the real adapter provides.
+        lock = _commit_lock(self._output_root, state.experiment, state.tool_class)
+        with lock:
+            fail_after = self._fail_next.pop(key, None)
 
-            def key_for(rel: str) -> str:
-                return f"{state.prefix}{version_dir}/{rel}"
+            try:
+                # Finalize version_id + version_dir together, before
+                # recording anything: re-derive `taken` fresh from
+                # `self._runs` on every attempt (not once, cached) — a stale
+                # snapshot can never re-collide with the id
+                # `next_version_id` just computed from it, which would make
+                # the bound unreachable through real contention. A
+                # `seed_collision` call (or, in production, another writer)
+                # may have landed since `create_run` saw its provisional id.
+                version_id = state.version_id
+                version_dir = state.version_dir
+                attempts = 0
+                while True:
+                    existing = self._runs.get(key, [])
+                    taken = {r.run_ref for r in existing}
+                    if version_id not in taken:
+                        break
+                    attempts += 1
+                    if attempts >= _MAX_ID_ATTEMPTS:
+                        raise RuntimeError(
+                            f"could not allocate a free version id after "
+                            f"{attempts} attempts (last tried: {version_id!r})"
+                        )
+                    version_id = next_version_id(_manifest_view(existing))
+                    version_dir = version_dir_name(version_id, state.user_label)
+                run.version_id = version_id
 
-            output_keys, output_sha256 = hash_outputs(run.staging_dir, outputs, key_for)
+                def key_for(rel: str) -> str:
+                    return f"{state.prefix}{version_dir}/{rel}"
 
-            # Per-output recording loop, mirroring where
-            # SupabaseResultStore.commit's upload loop sits relative to its own
-            # hash_outputs call — a no-op here (nothing external to write to)
-            # except as `fail_next_commit`'s injection checkpoint.
-            recorded = 0
-            for _name in outputs:
-                if fail_after is not None and recorded == fail_after:
-                    raise RuntimeError("simulated commit failure (fail_next_commit)")
-                recorded += 1
-            if fail_after is not None and recorded == fail_after:
-                # fail_after == len(outputs): every output "recorded", fail at
-                # the pre-append/manifest-write-equivalent step.
-                raise RuntimeError("simulated commit failure (fail_next_commit)")
-
-            prov = state.provenance.model_copy(
-                update={
-                    "outputs": dict(outputs),
-                    "output_keys": output_keys,
-                    "output_sha256": output_sha256,
-                    "version_dir": version_dir,
-                    "user_label": state.user_label,
-                }
-            )
-            entry = prov.to_version_entry(version_id=version_id)
-
-            # Pre-append recheck: catches a collision only visible after the
-            # pre-record check above already passed. See `seed_collision`'s
-            # `visible_at="pre_append"` for how a test drives this.
-            fresh_taken = {r.run_ref for r in self._runs.get(key, [])}
-            fresh_taken |= set(self._pending_collisions.pop(key, []))
-            if version_id in fresh_taken:
-                raise RuntimeError(
-                    f"version {version_id!r} was claimed by another writer "
-                    f"during commit"
+                output_keys, output_sha256 = hash_outputs(
+                    run.staging_dir, outputs, key_for
                 )
 
-            stored = StoredRun.from_version_entry(
-                entry,
-                tool_class=state.tool_class,
-                experiment=state.experiment,
-                manifest_path=run.manifest_path,
-            )
-        except Exception as exc:
-            # Leave the handle open and the staging dir intact so the caller
-            # can retry — a retry re-enters commit() and re-derives `taken`
-            # against then-current state.
-            raise CommitFailedError(
-                f"commit failed for {state.tool_class}/{_stem(state.experiment)} "
-                f"(transient — retry)"
-            ) from exc
+                # Per-output recording loop, mirroring where
+                # SupabaseResultStore.commit's upload loop sits relative to
+                # its own hash_outputs call — a no-op here (nothing external
+                # to write to) except as `fail_next_commit`'s injection
+                # checkpoint.
+                recorded = 0
+                for _name in outputs:
+                    if fail_after is not None and recorded == fail_after:
+                        raise RuntimeError(
+                            "simulated commit failure (fail_next_commit)"
+                        )
+                    recorded += 1
+                if fail_after is not None and recorded == fail_after:
+                    # fail_after == len(outputs): every output "recorded",
+                    # fail at the pre-append/manifest-write-equivalent step.
+                    raise RuntimeError("simulated commit failure (fail_next_commit)")
 
-        # Success only: tear down staging and seal the handle.
-        shutil.rmtree(run.staging_dir, ignore_errors=True)
-        self._open.discard(id(run))
-        self._runs.setdefault(key, []).append(stored)
-        return stored
+                prov = state.provenance.model_copy(
+                    update={
+                        "outputs": dict(outputs),
+                        "output_keys": output_keys,
+                        "output_sha256": output_sha256,
+                        "version_dir": version_dir,
+                        "user_label": state.user_label,
+                    }
+                )
+                entry = prov.to_version_entry(version_id=version_id)
+
+                # Pre-append recheck: catches a collision only visible after
+                # the pre-record check above already passed. See
+                # `seed_collision`'s `visible_at="pre_append"` for how a test
+                # drives this. Under the lock above, no *other* commit() call
+                # can be mid-flight for this same key — this remains as
+                # defense-in-depth (and as the fake's hook for simulating the
+                # still-open multi-instance case).
+                fresh_taken = {r.run_ref for r in self._runs.get(key, [])}
+                fresh_taken |= set(self._pending_collisions.pop(key, []))
+                if version_id in fresh_taken:
+                    raise RuntimeError(
+                        f"version {version_id!r} was claimed by another writer "
+                        f"during commit"
+                    )
+
+                stored = StoredRun.from_version_entry(
+                    entry,
+                    tool_class=state.tool_class,
+                    experiment=state.experiment,
+                    manifest_path=run.manifest_path,
+                )
+            except Exception as exc:
+                # Leave the handle open and the staging dir intact so the
+                # caller can retry — a retry re-enters commit() and
+                # re-derives `taken` against then-current state.
+                raise CommitFailedError(
+                    f"commit failed for {state.tool_class}/{_stem(state.experiment)} "
+                    f"(transient — retry)"
+                ) from exc
+
+            # Success only: tear down staging and seal the handle.
+            shutil.rmtree(run.staging_dir, ignore_errors=True)
+            self._open.discard(id(run))
+            self._runs.setdefault(key, []).append(stored)
+            return stored
 
     def list_runs(self, experiment: str, tool_class: str) -> list[StoredRun]:
         return list(self._runs.get((experiment, tool_class), []))

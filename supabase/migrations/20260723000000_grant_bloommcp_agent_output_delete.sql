@@ -25,11 +25,16 @@
 
 BEGIN;
 
+-- `name` is matched with a regex anchor, not LIKE: an unescaped `_` in a LIKE
+-- pattern is itself a single-character wildcard, so `LIKE 'bloommcp_output/%'`
+-- would also match `bloommcp-output/`, `bloommcp.output/`, etc. — silently
+-- widening the policy beyond the exact prefix this comment and design.md
+-- claim. `~ '^bloommcp_output/'` has no such footgun.
 DROP POLICY IF EXISTS agent_delete_bloommcp_output ON storage.objects;
 CREATE POLICY agent_delete_bloommcp_output
   ON storage.objects
   FOR DELETE TO bloom_agent
-  USING (bucket_id = 'bloommcp-data' AND name LIKE 'bloommcp_output/%');
+  USING (bucket_id = 'bloommcp-data' AND name ~ '^bloommcp_output/');
 
 -- Table-level GRANT is checked before RLS (see 20260605000000's note on this).
 GRANT DELETE ON storage.objects TO bloom_agent;

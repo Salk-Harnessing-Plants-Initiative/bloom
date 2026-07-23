@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -47,6 +48,30 @@ _OUTPUT_PREFIX = "bloommcp_output"
 # the pre-upload collision check (see `commit`); exhausting it there is a
 # cheap failure since nothing has been uploaded yet.
 _MAX_ID_ATTEMPTS = 3
+
+# `commit` is dispatched by FastMCP's Starlette server via a thread pool, so
+# two calls for the same (output_root, experiment, tool_class) can genuinely
+# run concurrently *within this one process* — not just a hypothetical future
+# multi-instance deployment. Without serializing them, both can pass the
+# pre-upload collision check before either writes the manifest, compute the
+# *same* deterministic version_dir (version_id + today's date, no nonce), and
+# upload to the same object keys; whichever loses the manifest race then
+# "cleans up" keys the winner's now-committed manifest entry depends on —
+# deleting already-committed data. A per-key lock makes `commit` calls for the
+# same manifest fully mutually exclusive, so the second call's pre-upload
+# check always sees the first's fresh entry *before* uploading anything.
+_LOCKS_GUARD = threading.Lock()
+_COMMIT_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}
+
+
+def _commit_lock(output_root: str, experiment: str, tool_class: str) -> threading.Lock:
+    key = (output_root, experiment, tool_class)
+    with _LOCKS_GUARD:
+        lock = _COMMIT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _COMMIT_LOCKS[key] = lock
+        return lock
 
 
 @dataclass
@@ -104,110 +129,126 @@ class SupabaseResultStore:
         validate_outputs(outputs)
         adir = state.adir
 
-        uploaded_keys: list[str] = []
-        try:
-            # Finalize version_id + version_dir together, before any upload:
-            # both are derived from version_id, so choosing them separately
-            # (e.g. relabeling the id after uploading) would leave a committed
-            # entry pointing at a version_dir/keys that disagree with its own
-            # id. Re-read fresh here rather than trust the manifest `create_run`
-            # saw — another writer may have committed since.
-            version_id = state.version_id
-            version_dir = state.version_dir
-            existing = adir.read_manifest()
-            attempts = 0
-            while existing is not None and any(
-                v.id == version_id for v in existing.versions
-            ):
-                attempts += 1
-                if attempts >= _MAX_ID_ATTEMPTS:
+        # Serializes every commit for this (output_root, experiment, tool_class)
+        # within this process — see the lock's module-level docstring for why
+        # this is load-bearing, not defensive belt-and-suspenders.
+        lock = _commit_lock(self._output_root, adir.experiment_filename, adir.tool_class)
+        with lock:
+            uploaded_keys: list[str] = []
+            try:
+                # Finalize version_id + version_dir together, before any
+                # upload: both are derived from version_id, so choosing them
+                # separately (e.g. relabeling the id after uploading) would
+                # leave a committed entry pointing at a version_dir/keys that
+                # disagree with its own id. Re-read fresh on every attempt
+                # (not once, cached) — a stale snapshot can never re-collide
+                # with the id `next_version_id` just computed from it, which
+                # would make the bound unreachable through real contention.
+                version_id = state.version_id
+                version_dir = state.version_dir
+                attempts = 0
+                while True:
+                    existing = adir.read_manifest()
+                    if existing is None or not any(
+                        v.id == version_id for v in existing.versions
+                    ):
+                        break
+                    attempts += 1
+                    if attempts >= _MAX_ID_ATTEMPTS:
+                        raise RuntimeError(
+                            f"could not allocate a free version id after "
+                            f"{attempts} attempts (last tried: {version_id!r})"
+                        )
+                    version_id = next_version_id(existing)
+                    version_dir = version_dir_name(version_id, state.user_label)
+                run.version_id = version_id
+
+                def key_for(rel: str) -> str:
+                    return adir.key(f"{version_dir}/{rel}")
+
+                output_keys, output_sha256 = hash_outputs(
+                    run.staging_dir, outputs, key_for
+                )
+                # Upload the same staged bytes that were just hashed.
+                for _name, rel in outputs.items():
+                    key = key_for(rel)
+                    _sc.upload_file(key, run.staging_dir / rel)
+                    uploaded_keys.append(key)
+
+                prov = state.provenance.model_copy(
+                    update={
+                        "outputs": dict(outputs),
+                        "output_keys": output_keys,
+                        "output_sha256": output_sha256,
+                        "version_dir": version_dir,
+                        "user_label": state.user_label,
+                    }
+                )
+                entry = prov.to_version_entry(version_id=version_id)
+
+                sha = ""
+                if state.source_csv is not None and Path(state.source_csv).exists():
+                    sha = adir.input_sha256(Path(state.source_csv))
+
+                # Re-read once more immediately before writing: guards against
+                # a writer that claimed this exact version_id while this
+                # commit's upload was in flight. Under the lock above, no
+                # *other* commit() call can be mid-flight for this same key —
+                # this remains as defense-in-depth against a caller that
+                # bypasses the lock (e.g. a future direct manifest writer) and
+                # against the still-open multi-instance case documented below.
+                fresh = adir.read_manifest()
+                if fresh is not None and any(v.id == version_id for v in fresh.versions):
                     raise RuntimeError(
-                        f"could not allocate a free version id after {attempts} "
-                        f"attempts (last tried: {version_id!r})"
+                        f"version {version_id!r} was claimed by another writer "
+                        f"during upload"
                     )
-                version_id = next_version_id(existing)
-                version_dir = version_dir_name(version_id, state.user_label)
 
-            def key_for(rel: str) -> str:
-                return adir.key(f"{version_dir}/{rel}")
+                if fresh is None:
+                    manifest = Manifest(
+                        experiment=ExperimentBlock(
+                            filename=adir.experiment_filename,
+                            source_path=str(state.source_csv) if state.source_csv else "",
+                            input_sha256=sha,
+                        ),
+                        versions=[entry],
+                        latest=entry.id,
+                    )
+                else:
+                    fresh.versions.append(entry)
+                    fresh.latest = entry.id
+                    if not fresh.experiment.input_sha256 and sha:
+                        fresh.experiment.input_sha256 = sha
+                    manifest = fresh
 
-            output_keys, output_sha256 = hash_outputs(run.staging_dir, outputs, key_for)
-            # Upload the same staged bytes that were just hashed.
-            for _name, rel in outputs.items():
-                key = key_for(rel)
-                _sc.upload_file(key, run.staging_dir / rel)
-                uploaded_keys.append(key)
-
-            prov = state.provenance.model_copy(
-                update={
-                    "outputs": dict(outputs),
-                    "output_keys": output_keys,
-                    "output_sha256": output_sha256,
-                    "version_dir": version_dir,
-                    "user_label": state.user_label,
-                }
-            )
-            entry = prov.to_version_entry(version_id=version_id)
-
-            sha = ""
-            if state.source_csv is not None and Path(state.source_csv).exists():
-                sha = adir.input_sha256(Path(state.source_csv))
-
-            # Re-read once more immediately before writing: guards against a
-            # writer that claimed this exact version_id while this commit's
-            # upload was in flight. On collision this is treated like any
-            # other commit failure (cleanup + retry-by-caller) rather than
-            # overwriting or relabeling the entry that got there first.
-            fresh = adir.read_manifest()
-            if fresh is not None and any(v.id == version_id for v in fresh.versions):
-                raise RuntimeError(
-                    f"version {version_id!r} was claimed by another writer "
-                    f"during upload"
+                # Manifest is written last: an upload failure above leaves
+                # `latest` un-advanced rather than pointing at a half-written
+                # version.
+                write_manifest(adir.path, manifest)
+            except Exception as exc:
+                self._cleanup_uploaded(uploaded_keys, adir)
+                # Leave the handle open and the staging dir intact so the
+                # caller can retry — a retry re-enters commit() and
+                # re-allocates a fresh id against a then-current manifest. The
+                # detail is logged server-side only; the agent-facing message
+                # carries no Supabase URL / object path.
+                logger.exception(
+                    "ResultStore.commit failed for %s/%s", adir.tool_class, adir.stem
                 )
+                raise CommitFailedError(
+                    f"commit failed for {adir.tool_class}/{adir.stem} "
+                    f"(transient — retry)"
+                ) from exc
 
-            if fresh is None:
-                manifest = Manifest(
-                    experiment=ExperimentBlock(
-                        filename=adir.experiment_filename,
-                        source_path=str(state.source_csv) if state.source_csv else "",
-                        input_sha256=sha,
-                    ),
-                    versions=[entry],
-                    latest=entry.id,
-                )
-            else:
-                fresh.versions.append(entry)
-                fresh.latest = entry.id
-                if not fresh.experiment.input_sha256 and sha:
-                    fresh.experiment.input_sha256 = sha
-                manifest = fresh
-
-            # Manifest is written last: an upload failure above leaves `latest`
-            # un-advanced rather than pointing at a half-written version.
-            write_manifest(adir.path, manifest)
-        except Exception as exc:
-            self._cleanup_uploaded(uploaded_keys, adir)
-            # Leave the handle open and the staging dir intact so the caller can
-            # retry — a retry re-enters commit() and re-allocates a fresh id
-            # against a then-current manifest. The detail is logged server-side
-            # only; the agent-facing message carries no Supabase URL / object
-            # path.
-            logger.exception(
-                "ResultStore.commit failed for %s/%s", adir.tool_class, adir.stem
+            # Success only: tear down staging and seal the handle.
+            shutil.rmtree(run.staging_dir, ignore_errors=True)
+            state.committed = True
+            return StoredRun.from_version_entry(
+                entry,
+                tool_class=adir.tool_class,
+                experiment=adir.experiment_filename,
+                manifest_path=run.manifest_path,
             )
-            raise CommitFailedError(
-                f"commit failed for {adir.tool_class}/{adir.stem} (transient — retry)"
-            ) from exc
-
-        # Success only: tear down staging and seal the handle.
-        shutil.rmtree(run.staging_dir, ignore_errors=True)
-        state.committed = True
-        return StoredRun.from_version_entry(
-            entry,
-            tool_class=adir.tool_class,
-            experiment=adir.experiment_filename,
-            manifest_path=run.manifest_path,
-        )
 
     @staticmethod
     def _cleanup_uploaded(keys: list[str], adir: AnalysisDir) -> None:
