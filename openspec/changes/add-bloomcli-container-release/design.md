@@ -86,9 +86,8 @@
   independent of PyPI release timing.
 - The image is published to GHCR with the tag scheme `image-publishing` *specifies*
   (`sha-<short>` + mutable branch tag), so Phase 2 can pin an immutable reference the
-  same way the predict/traits containers are pinned — understood as adopting that
-  capability's intended design, not as following a proven local pattern (see Context
-  correction above).
+  same way the predict/traits containers are pinned (adopting that capability's
+  specified design, not proven local behavior — see Context).
 - `bloomcli/CHANGELOG.md` and `bloomcli/pyproject.toml` accurately reflect everything
   that's shipped, ready for a real GitHub Release.
 - CI shape (Dockerfile + workflow) is fenced by pytest tests, matching this repo's
@@ -173,14 +172,18 @@ every PR, so adding `bloomcli` there gets Dockerfile validation, CVE scanning, *
 pre-merge gate for free from an already-proven pattern, instead of duplicating a
 build-only path in the new workflow.
 
-**Auth:** `secrets.GITHUB_TOKEN` + `packages: write` — the standard GitHub Actions
-mechanism for first-party GHCR pushes, independent of any Bloom-specific precedent. Per
-the Context correction above, this repo has no proof this succeeds against this
-specific org's GHCR namespace yet (nothing has ever pushed there). This is treated as a
-real but manageable risk, not a blocker: if the first `workflow_dispatch` run 403s on
-push, the documented fallback is a PAT with `write:packages` (the same shape as the
-existing `GHCR_READ_TOKEN` used for the *pull* side elsewhere), stored the same way. See
-the Risks table.
+**Auth, and the rollback/fix-forward posture that goes with it:** `secrets.GITHUB_TOKEN`
++ `packages: write` — the standard GitHub Actions mechanism for first-party GHCR
+pushes, independent of any Bloom-specific precedent (per the Context correction, this
+repo has no proof this succeeds against this specific org's GHCR namespace yet, since
+nothing has ever pushed there). Treated as a real but manageable risk, not a blocker: if
+the first `workflow_dispatch` run 403s on push, the documented fallback is a PAT with
+`write:packages` (the same shape as the existing `GHCR_READ_TOKEN` used for the *pull*
+side elsewhere), stored the same way. This is safe to treat as fix-forward rather than
+needing a rollback plan, because the workflow is a leaf — nothing currently consumes its
+pushed tags (Phase 2 hasn't landed) — so a broken run's blast radius is "the image
+doesn't exist or is mistagged," never a broken deploy or a broken `staging` branch; any
+fix is a follow-up commit or `workflow_dispatch` re-run, never an emergency revert.
 
 **Tag derivation — do NOT use `docker/metadata-action`'s `type=semver`:** bloomctl
 versions are PEP 440 (`0.1.0a2`), not semver — strict-semver parsing would not reliably
@@ -200,6 +203,46 @@ than relying on `docker/metadata-action` to parse an arbitrary ref:
 - On `workflow_dispatch`: `sha-<short>` only (no `staging` mutation, so a manual
   dispatch can't accidentally move the `staging` pointer).
 
+**A malformed release tag must not push a mistagged image (found in round-2 review):**
+`release-bloomcli.yml`'s `validate-release` job strips the same prefix and compares the
+result against `pyproject.toml`'s actual version, aborting before `build-and-publish` on
+a mismatch. `docker-build-bloomcli.yml` fires independently off the same `release:
+published` event with no cross-workflow dependency — without an equivalent check, a
+Release cut with the wrong tag (e.g. `bloomctl-v0.1.0a3` while `pyproject.toml` still
+says `0.1.0a2`) would correctly fail to publish to PyPI, but would still let
+`docker-build-bloomcli.yml` build the actual current source and push a GHCR image
+mistagged `0.1.0a3`. **Fix:** add a `validate-tag` job to `docker-build-bloomcli.yml`,
+gating `build-and-push` via `needs:` — but *only* on the `release` trigger (the
+`staging`/`workflow_dispatch` paths have no tag to validate against and must not be
+gated by it):
+
+```yaml
+jobs:
+  validate-tag:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bloomcli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+      - name: Validate release tag matches pyproject.toml version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION=$(uv version | awk '{print $NF}')
+          TAG_VERSION="${TAG#bloomctl-v}"; TAG_VERSION="${TAG_VERSION#v}"
+          if [ "$TAG_VERSION" != "$VERSION" ]; then
+            echo "::error::Release tag ($TAG -> $TAG_VERSION) does not match bloomcli/pyproject.toml version ($VERSION) — refusing to push a mistagged GHCR image"
+            exit 1
+          fi
+  build-and-push:
+    needs: [validate-tag]
+    if: always() && (github.event_name != 'release' || needs.validate-tag.result == 'success')
+    ...
+```
+
 **Why not fold into `deploy.yml`'s `build-images` job:** that job's entire purpose (once
 `add-ghcr-image-publishing`'s PR-3 eventually lands) is feeding
 `docker-compose.prod.yml`'s `pull`/`up` steps for services actually deployed via
@@ -208,23 +251,12 @@ compose. `bloomctl` is not a compose-deployed service — its consumer is
 conflate two unrelated consumers in one workflow and, worse, would couple this change's
 landing to a job that doesn't exist in `deploy.yml` yet.
 
-**Why not mirror `sleap-roots-predict`'s branch triggers literally:** its `main` is that
-repo's single integration branch (analogous to *this* repo's `staging`), not this
-repo's `main` (a separate, slower-moving production/consolidation branch, 492+ commits
-behind `staging` at design time). `image-publishing`'s own (unshipped, but specified)
-design already establishes staging-only build triggers with no `main` trigger for custom
-images; this change follows that specified intent for consistency with what the rest of
-the program is aiming for, while being explicit (per the Context correction) that it
-isn't following proven local behavior.
-
-**Rollback / fix-forward posture (new, added in response to review):** because this is
-the first workflow of its kind in the repo, there is no working sibling to fall back on
-if something is subtly wrong (bad `permissions:`, a malformed tag, an auth failure).
-Mitigation: the workflow is a leaf — nothing currently consumes its pushed tags (Phase 2
-hasn't landed), so a broken run's blast radius is "the image doesn't exist or is
-mistagged," not a broken deploy or a broken `staging` branch. Fix is always
-fix-forward (a follow-up commit or `workflow_dispatch` re-run), never an emergency
-revert. This is stated explicitly rather than left implicit.
+**Why not mirror `sleap-roots-predict`'s branch triggers literally:** its `main` plays
+*this* repo's `staging` role (single integration branch), not this repo's `main`
+(production/consolidation, 492+ commits behind `staging` at design time — see Context).
+`image-publishing`'s specified-but-unshipped design already establishes staging-only
+build triggers for custom images with no `main` trigger; this change follows that
+specified intent for consistency with the rest of the program.
 
 ### Decision 4: Version bump lands in this PR directly; cutting the Release does not
 
@@ -270,9 +302,31 @@ going forward.
 
 ### Decision 6: CVE scanning + PR-time validation — extend `pr-checks.yml`'s existing `docker-build` job, don't build a parallel path
 
-**Chosen:** add `bloomcli` as a sixth entry to `pr-checks.yml`'s `docker-build` job
-(`context: ./bloomcli`, `file: ./bloomcli/Dockerfile`, `push: false, load: true`),
-reusing its existing Trivy-scan step for the new image.
+**Chosen:** add `bloomcli` as a sixth entry to `pr-checks.yml`'s `docker-build` job.
+**This job is not a single reusable Trivy step — each of the 5 existing images gets
+three separate step blocks, exactly mirrored for `bloomcli`:**
+1. **Build** — `context: ./bloomcli`, `file: ./bloomcli/Dockerfile`,
+   `tags: bloomcli:ci`, `push: false, load: true`.
+2. **Report-only scan** — Trivy against `bloomcli:ci`, `severity: 'CRITICAL,HIGH'`,
+   `exit-code: '0'`, `output: 'trivy-bloomcli.txt'` (does not fail the job).
+3. **Blocking gate** — a *separate* Trivy step, `severity: 'CRITICAL'`,
+   `exit-code: '1'` — **this is the step that actually blocks merge on a CRITICAL CVE.
+   Omitting it (e.g. by only adding steps 1–2) would silently make bloomctl's scan
+   non-enforcing while every sibling image's is.**
+
+`bloomcli` also needs appending to the two `for img in bloom-web langchain bloommcp
+caddy workflows` shell loops inside the job's "Generate Trivy report" step. (Today, only
+CRITICAL severity blocks merge for any of the 5 images — HIGH is report-only; `bloomcli`
+inherits the same policy, not a new one.)
+
+**Verification, not just a manual read:** extend `tests/unit/test_pr_checks_workflow_shape.py`
+(or add a sibling file) with an automated assertion that all three `bloomcli` step
+blocks exist with the right shape, `bloomcli` appears in both `for img in ...` loops,
+and — mirroring that same test file's existing `test_overlay_build_context_matches_prod`
+pattern for `docker-compose.ci.yml`/`docker-compose.prod.yml` — a parametrized check
+that the `bloomcli` build step's `context`/`file` values are byte-identical between
+`pr-checks.yml` and `docker-build-bloomcli.yml`, so the two build paths can't silently
+diverge over time (e.g. one gains a build-arg the other doesn't).
 
 **Why:** this achieves two things at once, using an already-proven pattern instead of
 two new ones: (1) Trivy CVE scanning for `bloomctl`'s dependencies
@@ -285,6 +339,13 @@ merges to `staging`, `docker-build-bloomcli.yml`'s push-only job can trust that 
 Dockerfile just built and scanned clean in `pr-checks.yml` on that same code — this is
 the same trust model this repo already uses (and that `image-publishing`'s eventual
 `build-images` job will also use) between PR-time validation and post-merge publish.
+
+**Implementer note — real merge-conflict risk, not hypothetical:** as of round-2 review,
+open PR #429 (`fix/trivy-report-clean-scan-count`) rewrites the exact `for img in
+bloom-web langchain bloommcp caddy workflows` loop this decision also touches. Rebase
+onto `staging` immediately before implementing this section, and check whether #429 has
+merged first — the conflict is mechanical (adjacent lines in the same loop) but not
+free.
 
 ### Decision 7: Close the bloomcli CI-audit-tooling gap in this PR
 
@@ -302,6 +363,20 @@ it's a small, mechanical, four-file addition, and (b) it directly closes the loo
 Decision 4's `uv.lock`-drift concern — without this, a *future* bloomctl dependency bump
 would silently go unaudited the same way this one almost did.
 
+**A fix without a sync-guard test only fixes today (found in round-2 review):** adding
+`bloomcli` to the four locations once doesn't stop a *future* new service from being
+added to only some of them. `tests/unit/test_check_uv_locks.py` does **not** cover this
+— it exercises `check_uv_locks.py`'s control flow against its own hardcoded local
+fixture tuple, never the real `SERVICES` tuple or the other three files. **Fix:** add a
+new `tests/unit/test_service_audit_tooling_sync.py` that imports the real `SERVICES`
+tuple from `scripts/check-uv-locks.py`, parses `.pre-commit-config.yaml`'s
+`uv-lock-check` hook's `files:` regex into a service set, greps `pr-checks.yml`'s
+`python-audit` job for `Audit <service> dependencies` step names, and greps
+`.claude/commands/pre-merge.md`'s Step 2 loop — then asserts all four derived sets are
+equal (call out `services/workflows`'s pre-existing absence from `pre-merge.md`'s loop
+as a named, documented exception if it isn't fixed here too, rather than silently
+excluding it from the equality check).
+
 ## Risks / Trade-offs
 
 | Risk | Mitigation |
@@ -309,6 +384,8 @@ would silently go unaudited the same way this one almost did.
 | `bloomcli/CHANGELOG.md`'s `[Unreleased]` section is stale/incomplete relative to what's actually merged | `tasks.md` §0 cross-checks it against the canonical PR/issue list (#397/#408, #411/#458, #407/#508, #433) before bumping the version — corrected first if any gap is found. |
 | **This is the first GHCR-push workflow in the repo — no proven local auth/tag pattern to fall back on** (corrected from the original draft, which incorrectly claimed working prior art; see Context) | Treated explicitly as a real, first-of-its-kind risk: `GITHUB_TOKEN` + `packages: write` is the standard mechanism independent of Bloom-specific history; a documented PAT fallback exists if the first push 403s; blast radius is contained (nothing consumes the pushed tags yet) so any failure is fix-forward, never an emergency rollback (Decision 3). |
 | `docker/metadata-action`'s `type=semver` would silently mishandle bloomctl's PEP 440 versions | Decision 3: tags are derived explicitly via the same prefix-stripping shell logic `release-bloomcli.yml` already uses, fed to `metadata-action` as `type=raw`, not `type=semver`. |
+| A malformed/mismatched release tag pushes a mistagged GHCR image even though `release-bloomcli.yml` correctly aborts | Decision 3's `validate-tag` job gates `build-and-push` on the `release` trigger only, replicating `release-bloomcli.yml`'s own tag/version check. |
+| `bloomcli` is added to the 4 CI-audit locations once but a future new service repeats the same gap | Decision 7's sync-guard test (`test_service_audit_tooling_sync.py`) asserts all 4 locations stay equal going forward, not just today. |
 | New workflow's push/release-triggered paths can't be exercised by PR CI | Matches the exact justification already accepted for `release-bloomcli.yml`/`version-bloomcli.yml`: pytest shape tests are the pre-merge gate for the push-only workflow; Dockerfile build+CVE-scan validation itself happens via the `pr-checks.yml` extension (Decision 6), which unlike the workflow-shape tests genuinely does exercise a real build on every PR. |
 | Image builds but no PyPI release is ever cut (automation stops at "prepared") | Explicit, intentional: cutting a real PyPI release is irreversible and stays a human action. `tasks.md` documents the exact manual steps so nothing is lost between "prepared" and "done." |
 | Bloomctl's dependency set changes later and needs native build deps after all | `cryptography`'s manylinux wheel coverage is a current fact, not a permanent guarantee; if a future dependency needs native compilation, the Dockerfile gains an `apt-get` block then, the same way `bloommcp`'s did. |

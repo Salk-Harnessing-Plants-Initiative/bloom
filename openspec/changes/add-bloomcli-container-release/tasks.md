@@ -1,6 +1,6 @@
 Commit-granularity note (applies throughout): squash each task-group's failing-test +
 implementation pair into a single commit before pushing (e.g. 1.1+1.2 together,
-2.1+2.2 together) rather than pushing the red state separately — `pr-checks.yml`'s
+3.1+3.2 together) rather than pushing the red state separately — `pr-checks.yml`'s
 `python-audit` job runs the full `tests/unit/` suite unconditionally on every push, so a
 red-only intermediate commit produces needless failing CI runs.
 
@@ -14,7 +14,7 @@ red-only intermediate commit produces needless failing CI runs.
       unmerged/inaccurate, and the `### Changed` bullet for the CLI reorg cites `(#433)`
       (it currently doesn't — add the citation while this section is already being
       touched). Fix the changelog text first if any gap is found — do this before
-      touching the version number, since §4 below assumes the `[Unreleased]` content is
+      touching the version number, since §5 below assumes the `[Unreleased]` content is
       correct.
 
 ## 1. Dockerfile (shape tests first)
@@ -39,124 +39,174 @@ red-only intermediate commit produces needless failing CI runs.
 - [ ] 1.3 Manually build the image locally (`docker build -f bloomcli/Dockerfile -t
       bloomctl:local bloomcli/`) and run `docker run --rm bloomctl:local --version`.
       Confirm it prints a version string and exits 0. Report the result — this is a
-      one-time manual smoke check, in addition to (not instead of) §1.4's ongoing
+      one-time manual smoke check, in addition to (not instead of) §2's ongoing
       pre-merge gate.
 
-## 1.4 Pre-merge validation + CVE scanning (extend the existing job, per design.md Decision 6)
+## 2. Pre-merge validation + CVE scanning — extend the existing job (design.md Decision 6)
 
-- [ ] 1.4.1 Add `bloomcli` as a sixth image to `pr-checks.yml`'s `docker-build` job
-      (`context: ./bloomcli`, `file: ./bloomcli/Dockerfile`, `push: false, load: true`),
-      reusing the job's existing Trivy-scan step for the new image — mirror the exact
-      shape of the five existing image entries in that job.
-- [ ] 1.4.2 Confirm (by reading the job, and — if feasible locally — a dry run) that the
-      new entry is wired into the same matrix/step structure the other five use, not a
-      bespoke one-off block.
+**Read design.md Decision 6 in full before starting** — `pr-checks.yml`'s `docker-build`
+job is NOT a single reusable Trivy step; each existing image gets three separate step
+blocks, and it's easy to add only some of them.
 
-## 2. GHCR publishing workflow — push-only (shape tests first)
+**Rebase-first note:** open PR #429 (`fix/trivy-report-clean-scan-count`) rewrites the
+exact `for img in bloom-web langchain bloommcp caddy workflows` loop this section also
+touches. Rebase onto `staging` immediately before starting this section and check
+whether #429 has merged first — the conflict is mechanical but not free.
 
-- [ ] 2.1 Write failing tests in `tests/unit/test_docker_build_bloomcli_workflow_shape.py`
+- [ ] 2.1 Write failing tests (extend `tests/unit/test_pr_checks_workflow_shape.py`, or
+      add a sibling file if that one is already large) asserting `pr-checks.yml`'s
+      `docker-build` job has, for `bloomcli`, all three of: (a) a build step
+      (`context: ./bloomcli`, `file: ./bloomcli/Dockerfile`, `tags: bloomcli:ci`,
+      `push: false, load: true`); (b) a report-only Trivy step (`severity:
+      'CRITICAL,HIGH'`, `exit-code: '0'`); and (c) a **separate** blocking Trivy step
+      (`severity: 'CRITICAL'`, `exit-code: '1'`) — assert this third step exists
+      distinctly from (b), since omitting it would silently make bloomctl's scan
+      non-enforcing. Also assert `bloomcli` appears in **both** `for img in ...` loops
+      inside the "Generate Trivy report" step. Add a parametrized assertion (mirroring
+      this same test file's existing `test_overlay_build_context_matches_prod`
+      pattern) that the `bloomcli` build step's `context`/`file` values are identical
+      between `pr-checks.yml` and (once §3 exists) `docker-build-bloomcli.yml`, so the
+      two build paths can't silently diverge later.
+- [ ] 2.2 Wire `bloomcli` into `pr-checks.yml`'s `docker-build` job until 2.1 passes —
+      diff the new block against `bloommcp`'s three corresponding steps and confirm
+      identical shape apart from image name/context/tag. Locally reproduce before
+      pushing: `docker build -f bloomcli/Dockerfile -t bloomcli:ci bloomcli/ && trivy
+      image bloomcli:ci --severity CRITICAL,HIGH`.
+
+## 3. GHCR publishing workflow — push-only (shape tests first)
+
+- [ ] 3.1 Write failing tests in `tests/unit/test_docker_build_bloomcli_workflow_shape.py`
       (pytest + PyYAML, mirroring `tests/unit/test_release_bloomcli_workflow_shape.py`'s
       style exactly):
       - `on` triggers are exactly `push` (branches: `[staging]`, `paths: [bloomcli/**]`
         — assert **exact equality** on the paths list, not a loose "contains" check),
         `release` (`types: [published]`), and `workflow_dispatch` — **no `pull_request`
-        trigger at all** (PR validation lives in `pr-checks.yml` per §1.4), and no
+        trigger at all** (PR validation lives in `pr-checks.yml` per §2), and no
         `push.branches` entry other than `staging` (explicitly assert `main` is absent).
       - The job requests `packages: write` permission; no PAT/secret other than
         `secrets.GITHUB_TOKEN` is referenced anywhere in the file.
       - Tag derivation does **not** use `docker/metadata-action`'s `type=semver` tag
         type anywhere in the file (grep for the literal string `type=semver` and assert
-        it's absent) — assert instead that a step computes a bare version by stripping
-        a `bloomctl-v`/`v` prefix (mirror `release-bloomcli.yml`'s existing
-        `TAG_VERSION="${TAG#bloomctl-v}"` / `TAG_VERSION="${TAG_VERSION#v}"` pattern —
-        write a small pytest that feeds sample tags `bloomctl-v0.1.0a2`, `v0.1.0a2`,
-        `0.1.0a2` through the identical shell-equivalent Python logic and asserts each
-        resolves to `0.1.0a2`), and that this value is fed to `docker/metadata-action`
-        as `type=raw,value=...` on the `release` trigger only.
+        it's absent). Assert the workflow's raw text contains the literal
+        prefix-stripping substrings `TAG#bloomctl-v` and `TAG_VERSION#v}` (proving the
+        real file embeds this exact shell logic, not just a same-shaped duplicate) —
+        **and separately**, write a small parametrized pytest that re-implements the
+        identical stripping logic in Python and feeds it sample tags
+        `bloomctl-v0.1.0a2`, `v0.1.0a2`, `0.1.0a2`, asserting each resolves to
+        `0.1.0a2` (defense-in-depth for edge cases the raw-text grep can't catch).
+      - A `validate-tag` job exists, gated `if: github.event_name == 'release'`, that
+        derives the release tag's stripped version and compares it against
+        `bloomcli/pyproject.toml`'s version, failing the job on a mismatch; the
+        `build-and-push` job (or equivalent) has `needs: [validate-tag]` with an `if:`
+        condition that only requires `validate-tag` to have succeeded when the trigger
+        is `release` (the `staging`/`workflow_dispatch` paths must not be blocked by a
+        job that only runs on `release`).
       - The image name resolves to `ghcr.io/salk-harnessing-plants-initiative/bloomctl`.
       - The `staging`/`sha-` tags are pushed on the `push` trigger; `workflow_dispatch`
         pushes only `sha-<short>` (no `staging` tag mutation from a manual run).
-- [ ] 2.2 Write `.github/workflows/docker-build-bloomcli.yml` until 2.1 passes —
+- [ ] 3.2 Write `.github/workflows/docker-build-bloomcli.yml` until 3.1 passes —
       structurally mirror `sleap-roots-predict`'s `docker-build.yml` (Buildx setup,
       `docker/login-action`, `docker/metadata-action`, `docker/build-push-action`,
       pinned to this repo's existing `docker/*@vN` tag-pin convention already used in
       `pr-checks.yml` for the same action family) but with the trigger/tag
-      substitutions from design.md Decision 3 — no `pull_request` trigger, `staging`
-      not `main`, explicit `type=raw` version-tag derivation instead of `type=semver`.
-- [ ] 2.3 Confirm `openspec validate add-bloomcli-container-release --strict` still
-      passes after adding this file, and re-run the pytest suite from 2.1 (not just the
+      substitutions and the `validate-tag` job from design.md Decision 3 — no
+      `pull_request` trigger, `staging` not `main`, explicit `type=raw` version-tag
+      derivation instead of `type=semver`, release-tag/version cross-check before any
+      push on the `release` trigger.
+- [ ] 3.3 Confirm `openspec validate add-bloomcli-container-release --strict` still
+      passes after adding this file, and re-run the pytest suite from 3.1 (not just the
       validator).
 
-## 3. Docs
+## 4. Docs
 
-- [ ] 3.1 Add a short "Container image" section to `bloomcli/README.md` documenting the
+- [ ] 4.1 Add a short "Container image" section to `bloomcli/README.md` documenting the
       new `ghcr.io/salk-harnessing-plants-initiative/bloomctl` image, its tag scheme
       (`sha-<short>` / `staging` / a version tag per release), and that it's built from
       monorepo source (not `pip install`d) and validated pre-merge via `pr-checks.yml`
       (not the push-only publishing workflow) — matching the level of detail the two
       prior `cyl` CLI changes' README updates used.
-- [ ] 3.2 Add a bullet under `[Unreleased]`'s existing `### Added` heading in
+- [ ] 4.2 Add a bullet under `[Unreleased]`'s existing `### Added` heading in
       `bloomcli/CHANGELOG.md` for the new Dockerfile + GHCR publishing (do this *before*
-      §4 moves `[Unreleased]` to `[0.1.0a2]`, so the entry ships as part of that
+      §5 moves `[Unreleased]` to `[0.1.0a2]`, so the entry ships as part of that
       version, not left behind in an empty `[Unreleased]`).
-- [ ] 3.3 Add a short note to `bloomcli/RELEASE_PROCESS.md`'s "Cutting a release"
+- [ ] 4.3 Add a short note to `bloomcli/RELEASE_PROCESS.md`'s "Cutting a release"
       section (step 4) that publishing a Release also fires `docker-build-bloomcli.yml`
-      alongside `release-bloomcli.yml`, pushing a matching GHCR version tag —
-      cross-reference `bloomcli/README.md`'s new "Container image" section for the tag
-      scheme rather than re-describing it.
+      alongside `release-bloomcli.yml` (including the new `validate-tag` check),
+      pushing a matching GHCR version tag — cross-reference `bloomcli/README.md`'s new
+      "Container image" section for the tag scheme rather than re-describing it.
 
-## 4. Version bump (directly on this branch — see design.md Decision 4)
+## 5. Version bump (directly on this branch — see design.md Decision 4)
 
-- [ ] 4.1 Bump `bloomcli/pyproject.toml`'s `version` field from `0.1.0a1` to `0.1.0a2`.
-- [ ] 4.2 Rename `bloomcli/CHANGELOG.md`'s `## [Unreleased]` heading to
-      `## [0.1.0a2] - 2026-07-23`, leaving all its content (including §3.2's new
+**TDD ordering matters here** — write and observe the changelog-sync test fail *before*
+fixing the changelog, not after (the version bump alone is enough to make it fail, since
+`0.1.0a1`'s heading already exists today).
+
+- [ ] 5.1 Bump `bloomcli/pyproject.toml`'s `version` field from `0.1.0a1` to `0.1.0a2`.
+- [ ] 5.2 Write `bloomcli/tests/test_changelog_version_sync.py` asserting
+      `bloomcli/pyproject.toml`'s `version` field has a matching `## [<version>]`
+      heading in `bloomcli/CHANGELOG.md` — the same check `release-bloomcli.yml`'s
+      `validate-release` job performs at release time, now exercised as a **standing
+      regression guard**. Run it now and confirm it **fails** (per 5.1, `pyproject.toml`
+      says `0.1.0a2` but the changelog still has `[Unreleased]`, not `[0.1.0a2]`).
+- [ ] 5.3 Rename `bloomcli/CHANGELOG.md`'s `## [Unreleased]` heading to
+      `## [0.1.0a2] - 2026-07-23`, leaving all its content (including §4.2's new
       bullet) intact underneath, and add a fresh empty `## [Unreleased]` heading above
-      it so future changes have somewhere to land.
-- [ ] 4.3 Write a failing test in `bloomcli/tests/test_changelog_version_sync.py`
-      asserting `bloomcli/pyproject.toml`'s `version` field has a matching
-      `## [<version>]` heading in `bloomcli/CHANGELOG.md` — the same check
-      `release-bloomcli.yml`'s `validate-release` job performs at release time, now
-      exercised as a **standing regression guard**, not a one-off manual check. Confirm
-      it passes after 4.1/4.2, and confirm it would fail if either were reverted
-      individually (sanity-check the test actually exercises both directions).
-- [ ] 4.4 Regenerate `bloomcli/uv.lock` (`cd bloomcli && uv lock`) so its
+      it so future changes have somewhere to land. Re-run 5.2's test and confirm it now
+      **passes**. Sanity-check both directions: temporarily revert 5.1 or 5.3
+      individually and confirm the test goes red each time, then restore both.
+- [ ] 5.4 Regenerate `bloomcli/uv.lock` (`cd bloomcli && uv lock`) so its
       self-referencing package-version entry matches `0.1.0a2`. Run
       `cd bloomcli && uv lock --check` to confirm it's now in sync.
 
-## 5. Close the bloomcli CI-audit-tooling gap (design.md Decision 7)
+## 6. Close the bloomcli CI-audit-tooling gap (design.md Decision 7)
 
-- [ ] 5.1 Add `bloomcli` to `.pre-commit-config.yaml`'s `uv-lock-check` hook `files:`
+- [ ] 6.1 Add `bloomcli` to `.pre-commit-config.yaml`'s `uv-lock-check` hook `files:`
       regex (currently `^(langchain|bloommcp|services/video-worker|services/workflows)/...`).
-- [ ] 5.2 Add `bloomcli` to `scripts/check-uv-locks.py`'s `SERVICES` tuple.
-- [ ] 5.3 Add a "Audit bloomcli dependencies" `uvx pip-audit@2.10.0` step to
+- [ ] 6.2 Add `bloomcli` to `scripts/check-uv-locks.py`'s `SERVICES` tuple.
+- [ ] 6.3 Add a "Audit bloomcli dependencies" `uvx pip-audit@2.10.0` step to
       `pr-checks.yml`'s `python-audit` job, mirroring the existing four services' steps
       exactly (same action version, same invocation shape).
-- [ ] 5.4 Add `bloomcli` to `.claude/commands/pre-merge.md`'s per-service audit loop
-      (Step 2) and Docker-build list (Step 3).
-- [ ] 5.5 Run the existing `tests/unit/test_check_uv_locks.py` (and any other test that
-      enumerates the audited-services list) to confirm nothing broke, and that
-      `bloomcli` is now picked up.
+- [ ] 6.4 Add `bloomcli` to `.claude/commands/pre-merge.md`'s per-service audit loop
+      (Step 2) and Docker-build list (Step 3) — for Step 3's smoke-test line, note that
+      `bloomcli`'s image has `ENTRYPOINT ["bloomctl"]`, not a Python entrypoint, so the
+      correct smoke line is `docker run --rm bloomcli:test --version`, **without** the
+      `--entrypoint python` override the existing Python-service entries use.
+- [ ] 6.5 Write `tests/unit/test_service_audit_tooling_sync.py`: import the real
+      `SERVICES` tuple from `scripts/check-uv-locks.py`; parse
+      `.pre-commit-config.yaml`'s `uv-lock-check` hook's `files:` regex into a service
+      set; grep `pr-checks.yml`'s `python-audit` job for `Audit <service> dependencies`
+      step names; grep `.claude/commands/pre-merge.md`'s Step 2 loop — assert all four
+      derived sets are equal (name `services/workflows`'s pre-existing absence from
+      `pre-merge.md`'s loop as a documented, explicit exception if it's still missing
+      there, rather than silently excluding it from the equality check). This is a
+      **standing guard for the next service added**, not just a one-time confirmation
+      that `bloomcli` landed correctly — `tests/unit/test_check_uv_locks.py` does NOT
+      cover this (it only exercises `check_uv_locks.py`'s control flow against its own
+      unrelated hardcoded fixture tuple).
+- [ ] 6.6 Run the new test from 6.5 and the existing `tests/unit/test_check_uv_locks.py`
+      to confirm both pass and nothing broke.
 
-## 6. Pre-merge
+## 7. Pre-merge
 
-- [ ] 6.1 Run `/pre-merge`. Confirm it now covers `bloomcli` automatically (per §5's
-      fix) as well as: the new pytest files (§1.1, §2.1, §4.3) plus the full existing
-      `tests/unit/` suite (regression-guard the other workflow-shape tests aren't
-      broken by incidental changes); `openspec validate
+- [ ] 7.1 Run `/pre-merge`. Confirm it now covers `bloomcli` automatically (per §6's
+      fix) as well as: all new pytest files (§1.1, §2.1, §3.1, §5.2, §6.5) plus the
+      full existing `tests/unit/` suite (regression-guard the other workflow-shape
+      tests aren't broken by incidental changes); `openspec validate
       add-bloomcli-container-release --strict`; `cd bloomcli && uv lock --check` and
-      `uvx pip-audit@2.10.0` (now automated per §5, but worth confirming manually once
+      `uvx pip-audit@2.10.0` (now automated per §6, but worth confirming manually once
       here too). Fix anything flagged.
 
-## 7. Manual follow-up (NOT part of this PR — do not automate)
+## 8. Manual follow-up (NOT part of this PR — do not automate)
 
-- [ ] 7.1 After this PR merges to `staging` and CI is green: create a GitHub Release
+- [ ] 8.1 After this PR merges to `staging` and CI is green: create a GitHub Release
       tagged `bloomctl-v0.1.0a2` (or `v0.1.0a2`/`0.1.0a2`), marked **pre-release**
       (matches the `aN` PEP 440 convention). Publishing it fires `release-bloomcli.yml`
-      (→ real PyPI) and `docker-build-bloomcli.yml` (→ the `0.1.0a2` GHCR tag,
-      correctly derived per §2's prefix-stripping logic regardless of which tag format
-      is used). This is an irreversible, externally-visible action performed by the
-      user, not by an agent — flagged explicitly per project convention.
-- [ ] 7.2 If the first push in §7.1 (or an earlier `workflow_dispatch` test run) fails
+      (→ real PyPI) and `docker-build-bloomcli.yml` (→ the `0.1.0a2` GHCR tag, gated by
+      §3's `validate-tag` job, which will correctly fail if the chosen tag doesn't match
+      `pyproject.toml`'s version). This is an irreversible, externally-visible action
+      performed by the user, not by an agent — flagged explicitly per project
+      convention.
+- [ ] 8.2 If the first push in §8.1 (or an earlier `workflow_dispatch` test run) fails
       GHCR auth with `GITHUB_TOKEN` + `packages: write`, fall back to a PAT with
       `write:packages` scope, stored the same way `GHCR_READ_TOKEN` is stored elsewhere
       in this repo (per design.md Decision 3's documented fallback) — this is a

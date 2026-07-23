@@ -62,7 +62,10 @@ build and push on a published GitHub Release, adding a tag equal to the release'
 version (derived by stripping any `bloomctl-v`/`v` prefix from the release tag — never
 via strict-semver parsing, since bloomctl's versions are PEP 440, not semver), and on
 `workflow_dispatch`. This publishing workflow MUST NOT trigger on a pull request (PR-time
-validation is a separate requirement, above) and MUST NOT trigger on push to `main`.
+validation is a separate requirement, above) and MUST NOT trigger on push to `main`. On
+the `release` trigger, the workflow MUST verify the release tag's stripped version
+matches `bloomcli/pyproject.toml`'s actual version before pushing any image, so a
+mismatched release tag cannot produce a mistagged GHCR image.
 
 #### Scenario: Push to staging builds and pushes both tags
 
@@ -79,6 +82,16 @@ validation is a separate requirement, above) and MUST NOT trigger on push to `ma
 - **THEN** `ghcr.io/salk-harnessing-plants-initiative/bloomctl:0.1.0a2` exists (the
   `bloomctl-v` prefix stripped, matching `release-bloomcli.yml`'s own tag-parsing logic)
 - **AND** no strict-semver tag-matching rule is relied upon to produce this tag
+
+#### Scenario: A release tag that doesn't match pyproject.toml's version does not push a mistagged GHCR tag
+
+- **GIVEN** a GitHub Release is published with a tag whose stripped version does not
+  equal `bloomcli/pyproject.toml`'s current version
+- **WHEN** the workflow runs
+- **THEN** no image is pushed to `ghcr.io/salk-harnessing-plants-initiative/bloomctl`
+  under the mismatched version tag
+- **AND** the workflow run fails with an error naming both the tag-derived version and
+  the `pyproject.toml` version
 
 #### Scenario: docker-build-bloomcli.yml never triggers on a pull request
 
