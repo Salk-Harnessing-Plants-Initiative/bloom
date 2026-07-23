@@ -1,0 +1,123 @@
+name: docker-build-bloomcli
+
+# Publishes the bloomctl container image to GHCR. Push-only — PR-time
+# Dockerfile validation + CVE scanning happens in pr-checks.yml's
+# docker-build job instead (see
+# openspec/changes/add-bloomcli-container-release/design.md Decision 6).
+#
+# Trigger: push to staging (path-filtered to bloomcli/**), a published
+# GitHub Release, or a manual workflow_dispatch. No pull_request trigger.
+# No push trigger for any branch other than staging — this repo's
+# image-publishing capability's specified (not yet shipped) design already
+# establishes that custom images build only on push to staging; main plays
+# a separate, slower production/consolidation role and is never a build
+# trigger for any Bloom image.
+#
+# Tag scheme: sha-<short-git-sha> (immutable) on every trigger; the mutable
+# `staging` tag additionally, but ONLY on the push trigger — never on a
+# release, since a Release could be tagged from a commit other than
+# staging's current tip, and moving the mutable staging pointer from a
+# release build would silently corrupt what "staging" is supposed to mean;
+# a version tag (bare, prefix-stripped) additionally on a published Release,
+# gated on the version actually matching bloomcli/pyproject.toml (see
+# validate-tag below).
+#
+# bloomctl's versions are PEP 440 (e.g. 0.1.0a2), not strict semver, so the
+# version tag is derived explicitly via the same prefix-stripping shell logic
+# release-bloomcli.yml already uses, fed to docker/metadata-action as a raw
+# value rather than relying on the action's own semver-pattern tag type,
+# which would not reliably parse a PEP 440 pre-release identifier.
+
+on:
+  push:
+    branches: [staging]
+    paths: [bloomcli/**]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # A malformed/mismatched release tag must not push a mistagged image:
+  # release-bloomcli.yml aborts before publishing to PyPI on a tag/version
+  # mismatch, but this workflow fires independently off the same `release:
+  # published` event — without this job, a bad tag would still let the
+  # build below push a GHCR image mistagged with the wrong version.
+  validate-tag:
+    name: Validate release tag matches pyproject.toml version
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bloomcli
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+
+      # Untrusted input (the release tag) goes through env, never
+      # interpolated into the script text, so a crafted tag can't break out
+      # of the command — same discipline as release-bloomcli.yml.
+      - name: Compare release tag to pyproject.toml version
+        id: check
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION=$(uv version | awk '{print $NF}')
+          TAG_VERSION="${TAG#bloomctl-v}"
+          TAG_VERSION="${TAG_VERSION#v}"
+          if [ "$TAG_VERSION" != "$VERSION" ]; then
+            echo "::error::Release tag ($TAG -> $TAG_VERSION) does not match bloomcli/pyproject.toml version ($VERSION) — refusing to push a mistagged GHCR image"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    name: Build and push GHCR image
+    needs: [validate-tag]
+    # On push/workflow_dispatch, validate-tag is skipped (its `if:` only
+    # matches `release`) — this job must still run in that case. On
+    # release, it must wait for validate-tag to actually succeed.
+    if: always() && (github.event_name != 'release' || needs.validate-tag.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Derive image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/salk-harnessing-plants-initiative/bloomctl
+          tags: |
+            type=raw,value=sha-${{ steps.sha.outputs.short }}
+            type=raw,value=staging,enable=${{ github.event_name == 'push' }}
+            type=raw,value=${{ needs.validate-tag.outputs.version }},enable=${{ github.event_name == 'release' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./bloomcli
+          file: bloomcli/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

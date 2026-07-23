@@ -193,15 +193,28 @@ than relying on `docker/metadata-action` to parse an arbitrary ref:
 
 - On push to `staging`: `sha-<short-git-sha>` (`git rev-parse --short HEAD`, matching
   `image-publishing`'s specified scheme) + the mutable literal tag `staging`.
-- On `release: published`: same as above, **plus** a tag equal to the release's bare
-  version — computed with the identical shell logic `release-bloomcli.yml` already uses
+- On `release: published`: `sha-<short-git-sha>` (of whatever commit the release
+  actually points to) **plus** a tag equal to the release's bare version — computed with
+  the identical shell logic `release-bloomcli.yml` already uses
   (`TAG_VERSION="${TAG#bloomctl-v}"; TAG_VERSION="${TAG_VERSION#v}"`) — fed to
-  `docker/metadata-action` as `type=raw,value=${{ steps.version.outputs.tag }}`, not
-  `type=semver`. This guarantees the GHCR version tag and the PyPI-published version are
-  always the same string, regardless of which of `bloomctl-vX.Y.Z`/`vX.Y.Z`/`X.Y.Z` was
-  used to tag the Release.
+  `docker/metadata-action` as `type=raw,value=<derived-version>`, not `type=semver`.
+  This guarantees the GHCR version tag and the PyPI-published version are always the
+  same string, regardless of which of `bloomctl-vX.Y.Z`/`vX.Y.Z`/`X.Y.Z` was used to tag
+  the Release. **Does NOT push the `staging` tag** (correction made during
+  implementation — see the note below).
 - On `workflow_dispatch`: `sha-<short>` only (no `staging` mutation, so a manual
   dispatch can't accidentally move the `staging` pointer).
+
+**Why the release trigger never pushes the `staging` tag (implementation-time
+correction):** the original draft of this decision said the release trigger pushes
+"the same as the push trigger, plus" a version tag — implying `staging` moves too. A
+Release's tag can point at any commit, not necessarily `staging`'s current tip (e.g. if
+several more commits land on `staging` between this PR merging and someone actually
+cutting the Release). Moving the mutable `staging` pointer from a release build could
+silently move it *backward* or to an unintended commit relative to what "staging" is
+supposed to mean (the latest `staging`-branch build). The implemented workflow's
+`staging` tag is therefore `enable`d only when `github.event_name == 'push'` — the
+release trigger only ever pushes `sha-<short>` + the version tag.
 
 **A malformed release tag must not push a mistagged image (found in round-2 review):**
 `release-bloomcli.yml`'s `validate-release` job strips the same prefix and compares the

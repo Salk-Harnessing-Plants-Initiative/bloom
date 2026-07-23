@@ -82,6 +82,8 @@ mismatched release tag cannot produce a mistagged GHCR image.
 - **THEN** `ghcr.io/salk-harnessing-plants-initiative/bloomctl:0.1.0a2` exists (the
   `bloomctl-v` prefix stripped, matching `release-bloomcli.yml`'s own tag-parsing logic)
 - **AND** no strict-semver tag-matching rule is relied upon to produce this tag
+- **AND** the mutable `staging` tag is NOT modified (a Release may be tagged from a
+  commit other than `staging`'s current tip)
 
 #### Scenario: A release tag that doesn't match pyproject.toml's version does not push a mistagged GHCR tag
 
