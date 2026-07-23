@@ -279,6 +279,17 @@ jobs:
           cache-from: type=gha,scope=workflows
           cache-to: type=gha,mode=max,scope=workflows
 
+      - name: Build bloomcli image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./bloomcli
+          file: bloomcli/Dockerfile
+          tags: bloomcli:ci
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=bloomcli
+          cache-to: type=gha,mode=max,scope=bloomcli
+
       # Scan built images for CVEs and generate markdown report
       - name: Scan bloom-web image
         uses: aquasecurity/trivy-action@v0.35.0
@@ -330,6 +341,16 @@ jobs:
           output: 'trivy-workflows.txt'
           trivyignores: '.trivyignore'
 
+      - name: Scan bloomcli image
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'bloomcli:ci'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-bloomcli.txt'
+          trivyignores: '.trivyignore'
+
       - name: Generate Trivy report
         if: always()
         run: |
@@ -338,7 +359,7 @@ jobs:
             echo ""
             echo "| Image | Critical | High |"
             echo "|-------|----------|------|"
-            for img in bloom-web langchain bloommcp caddy workflows; do
+            for img in bloom-web langchain bloommcp caddy workflows bloomcli; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
                 crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || echo 0)
@@ -347,7 +368,7 @@ jobs:
               fi
             done
             echo ""
-            for img in bloom-web langchain bloommcp caddy workflows; do
+            for img in bloom-web langchain bloommcp caddy workflows bloomcli; do
               file="trivy-${img}.txt"
               if [ -f "$file" ] && [ -s "$file" ]; then
                 cves=$(grep -oP 'CVE-\d+-\d+' "$file" | sort -u | tr '\n' ', ' | sed 's/,$//')
@@ -404,6 +425,14 @@ jobs:
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'workflows:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+
+      - name: Check bloomcli for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'bloomcli:ci'
           severity: 'CRITICAL'
           exit-code: '1'
           trivyignores: '.trivyignore'
