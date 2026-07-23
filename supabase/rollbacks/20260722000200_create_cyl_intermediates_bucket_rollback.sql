@@ -9,8 +9,21 @@
 -- DROP through, this rollback explicitly REFUSES when the bucket is non-empty —
 -- an operator must clear objects out of MinIO/Storage first (a deliberate,
 -- reviewed step), not have this script do it for them.
+--
+-- Newer Supabase Storage versions (storage-api >= the release adding
+-- migrations/tenant/0055-prevent-direct-deletes.sql; confirmed present in this
+-- repo's prod/CI image pin storage-api:v1.48.14, absent in dev's older
+-- storage-api:v1.25.7) install a BEFORE DELETE trigger on storage.buckets/
+-- storage.objects that raises unless the session-local
+-- storage.allow_delete_query setting is 'true' -- a deliberate guard against
+-- orphaning S3 bytes via raw SQL. SET LOCAL scopes the exemption to this
+-- transaction only; it's a harmless no-op on images without the trigger
+-- (Postgres permits setting any dotted/namespaced GUC whether or not an
+-- extension has registered it).
 
 BEGIN;
+
+SET LOCAL storage.allow_delete_query = 'true';
 
 DO $$
 BEGIN

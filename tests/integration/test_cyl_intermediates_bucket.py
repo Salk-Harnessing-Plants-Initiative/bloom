@@ -188,9 +188,19 @@ def test_admin_has_full_access(pg_conn):
     # grants on storage.prefixes, unlike bloom_writer/authenticated/
     # service_role), not something this migration introduces or is scoped to
     # fix. INSERT/DELETE don't touch that trigger path.
+    #
+    # Newer Supabase Storage versions install a BEFORE DELETE trigger
+    # (storage.protect_delete, migrations/tenant/0055-prevent-direct-deletes.sql)
+    # on storage.buckets/storage.objects that raises InsufficientPrivilege
+    # unless the session-local storage.allow_delete_query setting is 'true' --
+    # a deliberate guard against orphaning S3 bytes via raw SQL. Present in
+    # this repo's prod/CI image pin (storage-api:v1.48.14), absent in dev's
+    # older pin (storage-api:v1.25.7) -- reproduced locally by installing the
+    # real trigger by hand to confirm this fix before it ever hit CI.
     with pg_conn.cursor() as cur:
         _seed_bucket(cur)
         cur.execute("SET LOCAL ROLE bloom_admin")
+        cur.execute("SET LOCAL storage.allow_delete_query = 'true'")
         oid = _insert_object(cur, "admin-full-access-test.slp")
         cur.execute("SELECT 1 FROM storage.objects WHERE id = %s", (oid,))
         assert cur.fetchone() == (1,)
