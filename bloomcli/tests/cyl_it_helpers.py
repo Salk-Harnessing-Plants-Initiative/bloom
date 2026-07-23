@@ -43,7 +43,23 @@ def envelope_for(fixture_path, img_ids):
 
 
 def cleanup(cur, scan_id, idem):
-    """Delete the written rows (by idempotency_key) then the seeded scan/images (FK-safe)."""
+    """Delete the written rows (by idempotency_key) then the seeded scan/images (FK-safe).
+
+    Also deletes any cyl-intermediates storage.objects rows this run's blob
+    upload created — the object key embeds ``idem`` (bloom #407:
+    ``{scan_key}/{idempotency_key}/{kind}.{root_type}.slp``), so a prefix
+    match on ``idem`` finds exactly this run's objects. This is a direct
+    metadata-table delete (this DSN connects with admin/owner privileges),
+    not a real Storage API call, so it doesn't reclaim the underlying MinIO
+    bytes -- but it's enough to keep the bucket's *rows* clean for other
+    tests/runs (e.g. the RLS suite's non-empty-bucket rollback check), which
+    is all this harness needs.
+    """
+    cur.execute(
+        "DELETE FROM storage.objects WHERE bucket_id = 'cyl-intermediates' "
+        "AND name LIKE '%%/' || %s || '/%%'",
+        (idem,),
+    )
     cur.execute(
         "DELETE FROM cyl_scan_traits WHERE source_id IN "
         "(SELECT id FROM cyl_trait_sources WHERE idempotency_key = %s)",

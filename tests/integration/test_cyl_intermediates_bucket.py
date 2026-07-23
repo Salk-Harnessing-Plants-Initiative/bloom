@@ -100,6 +100,33 @@ def test_writer_roles_can_upload_and_read_back(pg_conn, role):
     pg_conn.rollback()
 
 
+def test_writer_can_update(pg_conn):
+    """Functional UPDATE test for bloom_writer -- the RLS drift-detector
+    (test_expected_bucket_scoped_policy_set) only checks the policy exists
+    in pg_policies, which doesn't prove UPDATE actually works: RLS UPDATE
+    denial silently filters to zero affected rows rather than raising (see
+    test_no_non_admin_role_can_delete's docstring), so a missing/broken
+    policy could pass the drift-detector's catalog check yet still not
+    function. bloom_writer inherits `authenticated`, which holds the
+    storage.prefixes grants Supabase Storage's rename-maintenance trigger
+    needs -- unlike bloom_admin/bloom_workflows, which don't (see
+    test_admin_has_full_access's docstring; empirically confirmed
+    bloom_workflows hits the identical pre-existing storage.prefixes gap,
+    not something this migration introduces or is scoped to fix)."""
+    with pg_conn.cursor() as cur:
+        _seed_bucket(cur)
+        cur.execute("SET LOCAL ROLE bloom_writer")
+        oid = _insert_object(cur, "writer-update-test.slp")
+        cur.execute(
+            "UPDATE storage.objects SET name = %s WHERE id = %s",
+            ("writer-update-test-renamed.slp", oid),
+        )
+        assert cur.rowcount == 1
+        cur.execute("SELECT name FROM storage.objects WHERE id = %s", (oid,))
+        assert cur.fetchone() == ("writer-update-test-renamed.slp",)
+    pg_conn.rollback()
+
+
 @pytest.mark.parametrize("role", ["bloom_agent", "bloom_user"])
 def test_readonly_roles_can_select(pg_conn, role):
     with pg_conn.cursor() as cur:
