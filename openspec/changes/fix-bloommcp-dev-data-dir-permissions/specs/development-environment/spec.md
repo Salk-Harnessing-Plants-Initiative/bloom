@@ -7,7 +7,7 @@ developer having to hand-create any file that `make init` does not generate. Any
 `env_file` a dev service references that is not committed and not produced by
 `make init` (e.g. `web/.env`) SHALL be marked optional (`required: false`) so a
 missing file does not abort `docker compose up` (issue #123). "Succeed" SHALL include the
-`bloommcp` container's bind-mounted data directories (`SLEAP_OUT_CSV`, `PLOTS_DIR`,
+`bloommcp` container's bind-mounted data directories (`TRAITS_DIR`, `PLOTS_DIR`,
 `ANALYSIS_OUTPUT`) being writable by its runtime user immediately after bring-up — not just
 that `docker compose up` itself exits 0 — per the "bloommcp Data Directory Writability"
 requirement below.
@@ -24,7 +24,7 @@ requirement below.
 
 ### Requirement: bloommcp Data Directory Writability
 
-The three host directories `bloommcp` bind-mounts (`bloommcp/data/SLEAP_OUT_CSV`,
+The three host directories `bloommcp` bind-mounts (`bloommcp/data/TRAITS_DIR`,
 `bloommcp/data/PLOTS_DIR`, `bloommcp/data/ANALYSIS_OUTPUT`) SHALL exist and be writable by
 the `bloommcp` container's runtime user **before** `docker compose up` runs, on every fresh
 clone. This SHALL NOT rely on Docker's default behavior for a missing bind-mount source
@@ -37,7 +37,7 @@ tool that writes to local disk (the 5 `sleap_roots` plotting tools always do, re
 
 - **WHEN** `make dev-up` runs on a fresh clone where `bloommcp/data/` does not yet exist on
   the host
-- **THEN** `bloommcp/data/{SLEAP_OUT_CSV,PLOTS_DIR,ANALYSIS_OUTPUT}` exist and are writable
+- **THEN** `bloommcp/data/{TRAITS_DIR,PLOTS_DIR,ANALYSIS_OUTPUT}` exist and are writable
   by the `bloommcp` container's runtime user before `docker compose up` starts the container
 - **AND** no plotting or fully-local-backend analysis tool call fails with a permission error
   as a result of directory ownership
