@@ -68,6 +68,33 @@ def _spy(monkeypatch, module, name: str):
     return calls
 
 
+# ── save_plot_or_plots (#483 follow-up) ──────────────────────────────────────
+#
+# Direct, fast, unmarked coverage of the exact bug PR #507 found and fixed
+# (`create_heritability_plot` returning `list[Figure]` past its pagination
+# threshold crashed `save_plot`'s unconditional `fig.savefig()`) -- this was
+# previously only exercised by the live_smoke_slow-only cylinder smoke tests,
+# which never run in per-PR CI.
+
+
+def test_save_plot_or_plots_single_figure_behaves_like_save_plot(viz_env):
+    fig = plt.figure()
+    url = _viz_shared.save_plot_or_plots(fig, "single.png")
+    assert url.endswith("/single.png")
+    assert (viz_env / "single.png").is_file()
+    assert plt.get_fignums() == []  # closed, not leaked
+
+
+def test_save_plot_or_plots_list_saves_each_page_and_summarizes(viz_env):
+    figs = [plt.figure(), plt.figure(), plt.figure()]
+    url = _viz_shared.save_plot_or_plots(figs, "multi.png")
+    assert url.startswith("3 pages: ")
+    for i in (1, 2, 3):
+        assert (viz_env / f"multi_page{i}.png").is_file()
+        assert f"multi_page{i}.png" in url
+    assert plt.get_fignums() == []  # all three closed, not leaked
+
+
 def test_plot_trait_histograms_delegates_and_saves_png(viz_env, monkeypatch):
     calls = _spy(monkeypatch, plot_trait_histograms_mod, "create_trait_histograms")
 
@@ -91,6 +118,75 @@ def test_plot_trait_boxplots_delegates_and_saves_png(viz_env, monkeypatch):
     png = viz_env / f"boxplots_{Path(_EXPERIMENT).stem}.png"
     assert png.is_file()
     assert calls["n"] == 1
+    assert plt.get_fignums() == []
+
+
+def _seed_wide_experiment(traits_dir: Path, n_traits: int, filename: str) -> None:
+    """Write a synthetic experiment with `n_traits` trait columns into `traits_dir`.
+
+    Cheap stand-in for cylinder's real 846-trait shape -- exercises the same
+    ``TRAIT_BATCH_THRESHOLD``-crossing decision in ``plot_trait_histograms``/
+    ``plot_trait_boxplots`` without needing the real fixture, so this runs fast and
+    unmarked in every PR (the live cylinder case only runs via live_smoke_slow).
+    """
+    n_samples = 12
+    data = {"geno": [f"G{i % 3}" for i in range(n_samples)]}
+    for t in range(n_traits):
+        data[f"trait_{t}"] = [float(i + t) for i in range(n_samples)]
+    pd.DataFrame(data).to_csv(traits_dir / filename, index=False)
+
+
+def test_plot_trait_histograms_uses_batched_delegate_above_threshold(
+    viz_env, monkeypatch
+):
+    """#483 follow-up: create_trait_histograms has no pagination of its own, so a
+    trait count above TRAIT_BATCH_THRESHOLD must route to
+    create_trait_histograms_batched (list[Figure]) via save_plot_or_plots, not the
+    single-Figure delegate save_plot would crash on."""
+    wide_experiment = "wide.csv"
+    _seed_wide_experiment(eu.TRAITS_DIR, n_traits=60, filename=wide_experiment)
+
+    unbatched_calls = _spy(
+        monkeypatch, plot_trait_histograms_mod, "create_trait_histograms"
+    )
+    batched_calls = _spy(
+        monkeypatch, plot_trait_histograms_mod, "create_trait_histograms_batched"
+    )
+
+    result = plot_trait_histograms_mod.plot_trait_histograms(wide_experiment)
+
+    assert unbatched_calls["n"] == 0
+    assert batched_calls["n"] == 1
+    assert "pages:" in result
+    stem = Path(wide_experiment).stem
+    assert (viz_env / f"histograms_{stem}_page1.png").is_file()
+    assert (viz_env / f"histograms_{stem}_page2.png").is_file()
+    assert plt.get_fignums() == []
+
+
+def test_plot_trait_boxplots_uses_batched_delegate_above_threshold(
+    viz_env, monkeypatch
+):
+    wide_experiment = "wide.csv"
+    _seed_wide_experiment(eu.TRAITS_DIR, n_traits=60, filename=wide_experiment)
+
+    unbatched_calls = _spy(
+        monkeypatch, plot_trait_boxplots_mod, "create_trait_boxplots_by_genotype"
+    )
+    batched_calls = _spy(
+        monkeypatch,
+        plot_trait_boxplots_mod,
+        "create_trait_boxplots_by_genotype_batched",
+    )
+
+    result = plot_trait_boxplots_mod.plot_trait_boxplots(wide_experiment)
+
+    assert unbatched_calls["n"] == 0
+    assert batched_calls["n"] == 1
+    assert "pages:" in result
+    stem = Path(wide_experiment).stem
+    assert (viz_env / f"boxplots_{stem}_page1.png").is_file()
+    assert (viz_env / f"boxplots_{stem}_page2.png").is_file()
     assert plt.get_fignums() == []
 
 

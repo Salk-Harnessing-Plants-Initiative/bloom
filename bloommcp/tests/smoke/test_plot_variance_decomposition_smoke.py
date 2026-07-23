@@ -17,10 +17,9 @@ pytestmark = [pytest.mark.live_smoke, pytest.mark.live_smoke_slow]
 
 
 def test_plot_variance_decomposition_smoke(
-    call_plot_tool, seeded_experiment: str
+    call_plot_tool, assert_plot_success, seeded_experiment: str
 ) -> None:
     text = call_plot_tool(
         "sleap_roots_plot_variance_decomposition", filename=seeded_experiment
     )
-    assert "Plot saved:" in text
-    assert "denied" not in text.lower()
+    assert_plot_success(text)

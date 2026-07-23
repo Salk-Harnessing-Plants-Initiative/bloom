@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,16 @@ from fastmcp import Client
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURES_DIR = REPO_ROOT / "bloommcp" / "tests" / "fixtures"
 TRAITS_DIR = REPO_ROOT / "bloommcp" / "data" / "SLEAP_OUT_CSV"
+# Host-side mirror of the container's BLOOM_PLOTS_DIR (/app/data/PLOTS_DIR),
+# bind-mounted from here per docker-compose.dev.yml -- lets a smoke test verify a
+# plot tool's returned URL(s) actually correspond to real, nonempty files, not just
+# a well-formed success string.
+PLOTS_DIR = REPO_ROOT / "bloommcp" / "data" / "PLOTS_DIR"
+
+# Excludes trailing "," from the character class: save_plot_or_plots's multi-page
+# summary joins URLs with ", " (comma immediately after the URL, no space before it),
+# so a bare \S+ would swallow the comma into the "filename".
+_URL_RE = re.compile(r"https?://[^\s,]+")
 
 # Filenames as seeded into TRAITS_DIR -- distinct from the fixtures' on-disk names in
 # tests/fixtures/ so a smoke run never collides with a developer's own experiment files.
@@ -121,6 +132,35 @@ def call_plot_tool():
     filename=...)`` -- see ``_call_plot_tool_sync`` for why this is a separate helper
     from ``call_tool``."""
     return _call_plot_tool_sync
+
+
+def _assert_plot_success(text: str) -> None:
+    """Assert a plot tool's return text represents a real, non-empty saved plot.
+
+    Stronger than a bare ``"Plot saved:" in text`` substring check: extracts every
+    URL in the text (single-page or ``save_plot_or_plots``'s ``"N pages: url1,
+    url2, ..."`` summary alike) and verifies each corresponds to a real file on the
+    host-side bind-mounted PLOTS_DIR with nonzero size -- catching a tool that
+    claims success while writing nothing (or an empty file) that a bare substring
+    match would miss.
+    """
+    assert "Plot saved:" in text, f"expected a success summary, got: {text!r}"
+    assert "denied" not in text.lower(), f"unexpected permission error: {text!r}"
+
+    urls = _URL_RE.findall(text)
+    assert urls, f"no URL found in the tool's success text: {text!r}"
+    for url in urls:
+        name = url.rsplit("/", 1)[-1]
+        path = PLOTS_DIR / name
+        assert path.is_file(), f"{url} claims success but {path} does not exist"
+        assert path.stat().st_size > 0, f"{path} exists but is empty"
+
+
+@pytest.fixture
+def assert_plot_success():
+    """Injectable callable: ``assert_plot_success(text)`` -- see
+    ``_assert_plot_success`` for what it checks."""
+    return _assert_plot_success
 
 
 @pytest.fixture(params=["turface_19", "cylinder"])

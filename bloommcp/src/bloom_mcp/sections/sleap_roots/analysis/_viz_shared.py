@@ -14,6 +14,12 @@ import matplotlib.pyplot as plt
 
 from bloom_mcp.experiment_utils import PLOTS_DIR, PLOTS_URL
 
+# Trait count above which a plot tool should switch to its delegate's *_batched
+# variant (list[Figure], one page per batch) instead of rendering every trait into
+# one figure. Matches create_heritability_plot's own internal traits_per_page
+# default (50) for consistency across all plot tools that can hit this scale.
+TRAIT_BATCH_THRESHOLD = 50
+
 
 def save_plot(fig, plot_name: str) -> str:
     """Save figure and return URL."""

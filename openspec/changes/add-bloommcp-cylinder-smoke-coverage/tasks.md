@@ -148,3 +148,38 @@
       enumeration accordingly. Re-verified: CI-safe subset now 15 tests (was 17),
       passes in ~29s; both updated test files pass in full (all 4 parametrizations);
       both regression guards + the existing gate test still pass.
+- [x] 5.6 **Second round of PR review fixes**: a reviewer correctly pushed back that
+      5.5's `live_smoke_slow` marking alone "hides the hang from CI, it doesn't fix the
+      tool for a real user calling it on a wide dataset." Investigated:
+      `sleap_roots_analyze.visualization` already ships
+      `create_trait_histograms_batched` / `create_trait_boxplots_by_genotype_batched`
+      counterparts (unused until now). Both `plot_trait_histograms.py` and
+      `plot_trait_boxplots.py` now route through the batched delegate + the existing
+      `save_plot_or_plots` helper once trait count exceeds a new
+      `TRAIT_BATCH_THRESHOLD` (50, matching `create_heritability_plot`'s own default)
+      -- fixing the same class of bug as 3.7d for real users, not just hiding it from
+      CI. Confirmed empirically that batching does NOT meaningfully reduce wall-clock
+      time (still ~63-111s locally for cylinder), so the `live_smoke_slow` marking from
+      5.5 stays correct on its own "genuinely slow at this scale" merits. Also, per the
+      same review: added 2 fast unit tests directly exercising `save_plot_or_plots`
+      (the exact code path that crashed) and 2 more confirming the batched-delegate
+      routing decision with a synthetic wide fixture (no live stack needed -- this
+      closes the gap that the pagination code was previously only exercised by
+      `live_smoke_slow`-tier tests); strengthened all 5 plot-tool smoke tests from a
+      bare `"Plot saved:" in text` substring check to a real file-existence assertion
+      (`conftest.py`'s new `assert_plot_success`, which parses every URL out of a
+      single- or multi-page success summary and checks the corresponding file exists
+      with nonzero size on the host-side bind-mounted `PLOTS_DIR`); and corrected
+      `tests/fixtures/README.md`'s cylinder metadata-column claim (`plant_name` /
+      `species_name` are silently dropped by upstream dtype filtering before reaching
+      bloommcp's role-matching, unlike `scan_id` / `plant_id` / `wave_number`, which are
+      recognized and reported back via `excluded_from_traits` even though also not
+      persisted). Two reviewer claims were investigated and found factually incorrect
+      (not fixed, pushed back on with evidence): `conftest.py`'s "gitignored" claim
+      (`bloommcp/data/` — covering both `SLEAP_OUT_CSV` and `PLOTS_DIR` — is genuinely
+      in `.gitignore`, confirmed via `git check-ignore -v`), and the claim that a
+      server-side tool error surfaces as an opaque `KeyError` (`as_mcp_tool` always
+      raises `BloomMCPError` → a real `fastmcp.exceptions.ToolError`, confirmed by
+      reading `contract/wrap.py` — it never returns an error disguised as a
+      successful dict). Re-verified: 539 fast tests pass (was 535), all 24 live_smoke
+      tests pass end-to-end against the live stack, `openspec validate --strict` clean.
