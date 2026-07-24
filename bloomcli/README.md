@@ -61,7 +61,7 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - **[read]** `bloomctl cyl experiments list` — list cylinder experiments (species,
   name, id), sorted by species then name (`--json` for machine-readable output).
 
-(Full `login`/`cyl download` usage docs are still forthcoming; run any command
+(Full `cyl download` usage docs are still forthcoming; run any command
 with `--help` in the meantime. `cyl ingest-result` and `cyl download-for-predict`
 are documented in full below.)
 
