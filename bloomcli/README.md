@@ -40,8 +40,7 @@ bloomctl login
 ```
 
 `login` prompts for your Bloom email + password, bootstraps the server's public
-client config, and writes credentials to `~/.bloom/credentials.txt`. Commands
-then run **as your Bloom user** (RLS-enforced — see [Access & roles](#access--roles)).
+client config, and writes credentials to `~/.bloom/credentials.txt`.
 
 - **Non-prod servers:** `bloomctl login --server <url>`, or supply config
   directly with `--api-url` + `--anon-key` when `/client-info` isn't reachable.
