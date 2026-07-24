@@ -37,7 +37,7 @@ bloommcp/
 │   ├── visualization.py
 │   ├── experiment_utils.py
 │   └── supabase_client.py
-├── storage/
+├── manifest/                   # versioned-run bookkeeping (renamed from storage/, #487)
 ├── tools/                      # shared helpers only — every tool lives in sections/
 │   ├── _ports.py                # composition seam: injected reader/store
 │   ├── _qc_shared.py             # canonical QC thresholds shared by qc_clean/qc_inspect
@@ -189,7 +189,7 @@ Each tool's outputs land in a folder named after its `tool_class`.
 `tool_class` is one of the 9 canonical classes — `qc`, `stats`,
 `dimred`, `clustering`, `outlier`, `viz`, `correlation`,
 `heritability`, `anova` — registered in
-[`CANONICAL_TOOL_CLASSES`](../../bloommcp/src/bloom_mcp/storage/__init__.py).
+[`CANONICAL_TOOL_CLASSES`](../../bloommcp/src/bloom_mcp/manifest/__init__.py).
 
 To add a tool to a **section** (the current pattern — e.g. phenotyping), see
 [adding-a-section-tool.md](./adding-a-section-tool.md).

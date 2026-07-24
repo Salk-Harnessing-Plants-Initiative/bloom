@@ -1,4 +1,4 @@
-"""Supabase-backed :class:`ResultStore` — wraps the deployed storage layer.
+"""Supabase-backed :class:`ResultStore` — wraps the deployed manifest layer.
 
 Reuses the deployed versioning/staging/manifest/upload primitives
 (``AnalysisDir``, ``versioning``, ``manifest``, ``supabase_client``), but —
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from bloom_mcp import supabase_client as _sc
-from bloom_mcp.storage import (
+from bloom_mcp.manifest import (
     AnalysisDir,
     ExperimentBlock,
     Manifest,
@@ -71,13 +71,17 @@ class SupabaseResultStore:
         source_csv: Optional[Path] = None,
     ) -> RunHandle:
         adir = AnalysisDir(self._output_root, experiment, tool_class)
-        # Single-writer assumption (see AnalysisWriter docstring): version_id is
-        # allocated from the current manifest now and the manifest is re-read at
-        # commit without a compare-and-set, so two interleaved runs can allocate
-        # the same v<N>. Safe under bloommcp's one-container topology; a
-        # compare-and-set (or re-allocate-at-commit) is on the roadmap.
+        # Single-writer assumption (see _WIKI/BLOOMMCP/storage-workflow.md):
+        # version_id is allocated from the current manifest now and the manifest
+        # is re-read at commit without a compare-and-set, so two interleaved runs
+        # can allocate the same v<N>. Safe under bloommcp's one-container
+        # topology; a compare-and-set (or re-allocate-at-commit) is on the
+        # roadmap (#324).
         version_id = next_version_id(adir.read_manifest())
         version_dir = version_dir_name(version_id, user_label)
+        # No orphan cleanup if commit() is never reached (crash, or the tool errors
+        # before committing) — the deleted AnalysisWriter had a best-effort __del__
+        # for this; RunHandle has no equivalent yet. Pre-existing gap, tracked by #464.
         staging = Path(tempfile.mkdtemp(prefix="bloommcp_v_"))
         return RunHandle(
             version_id=version_id,

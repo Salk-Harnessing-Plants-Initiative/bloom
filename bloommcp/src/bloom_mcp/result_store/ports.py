@@ -1,7 +1,7 @@
 """Backend-agnostic result-persistence port and its value types.
 
-Tools depend on :class:`ResultStore`, never on ``AnalysisWriter``,
-``AnalysisDir``, or ``supabase``. Backend-specific concepts — the
+Tools depend on :class:`ResultStore`, never on ``AnalysisDir`` or
+``supabase`` directly. Backend-specific concepts — the
 ``<tool_class>_<stem>`` directory scheme, ``v<N>`` ids, the ``latest`` pointer,
 object keys — live inside the adapter; the port speaks in an **opaque**
 ``run_ref`` so a future orchestrator-owned / per-user-identity writer can
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # avoid an import cycle; only used for typing
     from bloom_mcp.contract.provenance import Provenance
-    from bloom_mcp.storage.schema import VersionEntry
+    from bloom_mcp.manifest.schema import VersionEntry
 
 
 class ResultStoreError(Exception):

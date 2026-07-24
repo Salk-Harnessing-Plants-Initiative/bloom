@@ -3,8 +3,11 @@
 This doc explains how bloommcp saves analysis results (and how it reads
 them back). If you are about to write a new granular tool start here.
 
-The storage layer lives under
-[bloommcp/src/bloom_mcp/storage/](../../bloommcp/src/bloom_mcp/storage/). Everything below is a view
+The manifest/bookkeeping layer lives under
+[bloommcp/src/bloom_mcp/manifest/](../../bloommcp/src/bloom_mcp/manifest/) (renamed from
+`storage/` per [#487](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/487) —
+it's about versioned-run bookkeeping, not physical storage backend selection, which lives in
+the sibling `bloom_mcp.storage_backend`). Everything below is a view
 of those files plus the two kinds of callers that actually use them: granular tools writing
 through the `ResultStore` port (e.g.
 [`qc_clean.py`](../../bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/qc_clean.py), via
@@ -58,7 +61,7 @@ Two rules to internalise:
 - They never mix.
 
 `tool_class` is one of the strings in `CANONICAL_TOOL_CLASSES` in
-[`storage/__init__.py`](../../bloommcp/src/bloom_mcp/storage/__init__.py): `qc`, `stats`, `dimred`, `clustering`, `outlier`, `viz`, `correlation`,
+[`manifest/__init__.py`](../../bloommcp/src/bloom_mcp/manifest/__init__.py): `qc`, `stats`, `dimred`, `clustering`, `outlier`, `viz`, `correlation`,
 `heritability`, `anova`.
 
 The experiment stem is `Path(filename).stem` — `plant_traits.csv` → `plant_traits`.
@@ -70,7 +73,7 @@ Every `bloommcp_output/<tool_class>_<stem>/` folder has the same shape:
 - One `manifest.json` at the top — the cumulative catalog of every run
   that has ever happened for this `(tool_class, experiment)` pair.
 - One subfolder per run, named `v<N>_<YYYY-MM-DD>[_<slug>]/` (see
-  `version_dir_name()` in [`versioning.py`](../../bloommcp/src/bloom_mcp/storage/versioning.py)).
+  `version_dir_name()` in [`versioning.py`](../../bloommcp/src/bloom_mcp/manifest/versioning.py)).
 - The optional slug is a 32-char-max lowercase `_`-separated version of the
   `user_label`.
 - Inside each subfolder, whatever output files that run produced.
@@ -80,14 +83,14 @@ Every `bloommcp_output/<tool_class>_<stem>/` folder has the same shape:
 `v<N>` is monotonic and never reused. If you delete `v2/` from the
 bucket by hand, the next run is still `v3`. That logic lives in
 `next_version_id()` in
-[`versioning.py`](../../bloommcp/src/bloom_mcp/storage/versioning.py) — it scans the
+[`versioning.py`](../../bloommcp/src/bloom_mcp/manifest/versioning.py) — it scans the
 manifest, finds the max `N`, returns `v<max+1>`.
 
 ## The four schema models
 
 `manifest.json` is a strict Pydantic-validated document.
 
-The models live in [`schema.py`](../../bloommcp/src/bloom_mcp/storage/schema.py) and all inherit from `_StrictModel`, which sets `extra="forbid"`.
+The models live in [`schema.py`](../../bloommcp/src/bloom_mcp/manifest/schema.py) and all inherit from `_StrictModel`, which sets `extra="forbid"`.
 
 That means if a writer accidentally adds a field that isn't in the schema, `model_validate`
 raises a `ValidationError` instead of silently writing garbage.
@@ -174,9 +177,9 @@ What `commit()` does, step by step (see
    absent), appends the new entry, updates `latest`.
 5. Calls `write_manifest(prefix, manifest)`, which serializes to JSON
    and uploads with `upsert: "true"`.
-6. `shutil.rmtree`s the tmp staging dir. Each `AnalysisWriter` commits
-   exactly once — calling `commit()` twice is a bug; calling it before
-   `create_version()` raises `RuntimeError`.
+6. `shutil.rmtree`s the tmp staging dir. Each `RunHandle` commits
+   exactly once — calling `commit()` twice, or on a handle `create_run()`
+   never returned, is a `RunStateError`.
 
 If the process dies between `create_version()` and `commit()`, the
 staging dir is best-effort cleaned by `__del__`. Nothing has been
@@ -186,7 +189,7 @@ uploaded to Supabase yet, so the bucket is unchanged.
 
 Reads only touch the manifest. The two main read entry points are
 `AnalysisDir.list_versions()` and `AnalysisDir.get_version(version_id)`
-in [`analysis_dir.py`](../../bloommcp/src/bloom_mcp/storage/analysis_dir.py).
+in [`analysis_dir.py`](../../bloommcp/src/bloom_mcp/manifest/analysis_dir.py).
 
 When the agent calls the MCP tool
 `list_existing_analyses(experiment_filename)` (in
@@ -219,8 +222,8 @@ its version id.
 
 ## The single-writer assumption
 
-> **Warning.** `AnalysisWriter` has no `fcntl.flock` and no
-> compare-and-swap on the manifest. The whole storage layer assumes
+> **Warning.** `SupabaseResultStore`'s manifest writes have no `fcntl.flock` and no
+> compare-and-swap ([#324](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/324) tracks adding it). The whole storage layer assumes
 > there is exactly **one** bloommcp container per environment (one in
 > `staging`, one in `prod`) and **one** FastMCP process inside it. If
 > you run two writers against the same Supabase project at the same
@@ -255,9 +258,9 @@ There are two distinct kinds of change. Don't confuse them.
 **Adding a field to `CodeVersions`.** Do this when you start depending
 on a new pip-installed package whose version actually changes the
 output. Add the field with a `= "unknown"` default in
-[`schema.py`](../../bloommcp/src/bloom_mcp/storage/schema.py), then add a
+[`schema.py`](../../bloommcp/src/bloom_mcp/manifest/schema.py), then add a
 `_version_or_unknown("<package>")` call to `get_code_versions()` in
-[`code_versions.py`](../../bloommcp/src/bloom_mcp/storage/code_versions.py). Because
+[`code_versions.py`](../../bloommcp/src/bloom_mcp/manifest/code_versions.py). Because
 the default is `"unknown"`, old manifests still parse — no schema bump
 needed.
 
@@ -288,7 +291,7 @@ Did the JSON shape change in a way that an old reader would mis-parse?
 ```
 
 The `validate_schema()` function in
-[`manifest.py`](../../bloommcp/src/bloom_mcp/storage/manifest.py) rejects manifests
+[`manifest.py`](../../bloommcp/src/bloom_mcp/manifest/manifest.py) rejects manifests
 whose version is _newer_ than this code knows about — so bumping the
 constant is also the signal that this code can read the new shape.
 
@@ -306,10 +309,10 @@ over otherwise.
 | Version folder        | `v<N>_<YYYY-MM-DD>[_<slug>]`                                    | `version_dir_name()`                                                    |
 | Slug                  | lowercase,`[a-z0-9_]` only, max 32 chars, edges stripped of `_` | `slugify()`                                                             |
 | Version id            | `v<N>`, monotonic, never reused                                 | `next_version_id()`                                                     |
-| `created_at`          | UTC, ISO-8601, seconds precision, ends in `Z`                   | `AnalysisWriter.commit`                                                 |
+| `created_at`          | UTC, ISO-8601, seconds precision, ends in `Z`                   | `SupabaseResultStore.commit`                                            |
 | Object key            | `AnalysisDir.key(rel)` → `<path><rel>`                          | `analysis_dir.py`                                                       |
 | Manifest path         | `<analysis_dir>/manifest.json`                                  | `manifest.py`                                                           |
-| `tool_class` registry | `CANONICAL_TOOL_CLASSES` in `storage/__init__.py`               | `__init__.py`                                                           |
+| `tool_class` registry | `CANONICAL_TOOL_CLASSES` in `manifest/__init__.py`              | `__init__.py`                                                           |
 | Upsert flag           | the literal**string** `"true"`, not the bool `True`             | required by the Supabase SDK's `file_options`                           |
 
 ## Where to look next

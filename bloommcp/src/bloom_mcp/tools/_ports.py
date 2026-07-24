@@ -1,7 +1,7 @@
 """Composition seam: the injected persistence ports for the tools layer.
 
-Tools depend on :func:`reader` / :func:`store` here — never on Supabase,
-``AnalysisWriter``, or ``AnalysisDir`` directly. Defaults to the Supabase
+Tools depend on :func:`reader` / :func:`store` here — never on Supabase or
+``AnalysisDir`` directly. Defaults to the Supabase
 adapters; :func:`configure` swaps them at server boot or in tests. This module
 is the one place that knows the concrete adapters (the composition root).
 """
