@@ -21,7 +21,9 @@ JOIN cyl_waves       w  ON w.id  = p.wave_id
 JOIN cyl_experiments e  ON e.id  = w.experiment_id
 LEFT JOIN accessions a  ON a.id  = p.accession_id
 LEFT JOIN species    sp ON sp.id = e.species_id
-WHERE e.deleted_at IS NULL;
+-- sp is LEFT-joined: IS NULL also passes plants with no species, and excludes soft-deleted ones.
+WHERE e.deleted_at IS NULL
+  AND sp.deleted_at IS NULL;
 
 GRANT SELECT ON cyl_plant_search TO authenticated;
 GRANT SELECT ON cyl_plant_search TO bloom_user;
