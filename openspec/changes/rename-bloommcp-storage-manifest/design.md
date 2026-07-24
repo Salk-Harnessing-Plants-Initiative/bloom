@@ -19,7 +19,7 @@ The actual import graph today (verified against `bloommcp/src/bloom_mcp/`):
   `read_manifest`/`write_manifest`, and stays after the deletion.
 - `supabase_client.py`'s five helpers (`upload_file`, `download_file`, `write_json`,
   `read_json`, `list_prefix`) each **lazily** import `active_backend` from
-  `bloom_mcp.storage_backend` *inside the function body* — deliberately, per the
+  `bloom_mcp.storage_backend` _inside the function body_ — deliberately, per the
   `bloommcp-storage-backend` spec's side-effect-free-import contract.
 
 So the real chain is `storage/manifest.py → supabase_client.py → storage_backend.py`. Moving
@@ -100,7 +100,18 @@ verified overlap (checked via `gh pr diff 464 --name-only`), not a hypothetical 
 ## Migration / Rollout
 
 Single PR, mechanical: `git mv storage manifest`, delete `manifest/writer.py` and its
-`__init__.py` re-export, update the ~5 files that import `bloom_mcp.storage.*`, update the CI
-gate string, update the three affected spec deltas, correct the roadmap line, delete
-`AnalysisWriter`'s dedicated test. No feature flag or staged rollout needed — this is an
-atomic rename with no external consumers of `bloom_mcp` as a library.
+`__init__.py` re-export, repoint every file that imports `bloom_mcp.storage.*` (the corrected,
+verified list is in `proposal.md`'s Impact section), update the CI gate string and the two
+repo-root regression-guard tests that hardcode the old name/path, update the four affected spec
+deltas, correct the roadmap/wiki/README references. No feature flag or staged rollout needed —
+this is an atomic rename.
+
+**"No external consumers" is a claim about a private service, not just a repo-internal grep.**
+`bloom_mcp` is not published anywhere a sibling could depend on it as a library: `bloommcp/pyproject.toml`
+declares no `[project.scripts]`/publish config beyond the internal `uv` build-backend, there is no
+PyPI/GHCR package-publish workflow for it (only container image builds, which don't expose the
+Python package), and a grep of every other service in this monorepo (`langchain/`, `bloomcli/`,
+`services/*`) for `bloom_mcp` returns zero hits — they talk to bloommcp over HTTP/MCP, never via
+Python import. That rules out every consumer this repository could see. It cannot rule out an
+external, out-of-repo fork or vendored copy, which is why this is still called out explicitly as
+**BREAKING** in `proposal.md` rather than asserted away.

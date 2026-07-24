@@ -1,7 +1,7 @@
 """Backend-agnostic result-persistence port and its value types.
 
-Tools depend on :class:`ResultStore`, never on ``AnalysisWriter``,
-``AnalysisDir``, or ``supabase``. Backend-specific concepts — the
+Tools depend on :class:`ResultStore`, never on ``AnalysisDir`` or
+``supabase`` directly. Backend-specific concepts — the
 ``<tool_class>_<stem>`` directory scheme, ``v<N>`` ids, the ``latest`` pointer,
 object keys — live inside the adapter; the port speaks in an **opaque**
 ``run_ref`` so a future orchestrator-owned / per-user-identity writer can
