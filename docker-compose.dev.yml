@@ -147,6 +147,13 @@ services:
       # BLOOM_STORAGE_BACKEND: local
       # BLOOM_STORAGE_LOCAL_ROOT: /app/data/ANALYSIS_OUTPUT
       # BLOOM_EXPERIMENT_LOCAL_ROOT: /app/data/TRAITS_DIR
+      # Single-var alternative (#479) to the three lines above: BLOOM_LOCAL_ROOT
+      # supplies the same defaults (input/output/plots) under one root. Needs its
+      # own bind mount below (uncomment the matching volume line) — none of the
+      # three mounts above cover the <root>/{input,output,plots} layout the code
+      # derives, so without it the auto-created subfolders would live only in the
+      # container's writable layer and vanish on the next rebuild.
+      # BLOOM_LOCAL_ROOT: /app/data/LOCAL_ROOT
       # Kept in sync with docker-compose.prod.yml for dev/prod parity, even
       # though dev has a writable root FS. See the prod compose for rationale.
       NUMBA_CACHE_DIR: /tmp/numba
@@ -156,6 +163,7 @@ services:
       - ./bloommcp/data/TRAITS_DIR:/app/data/TRAITS_DIR
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
       - ./bloommcp/data/ANALYSIS_OUTPUT:/app/data/ANALYSIS_OUTPUT
+      # - ./bloommcp/data/LOCAL_ROOT:/app/data/LOCAL_ROOT
     networks:
       - supanet
     healthcheck:

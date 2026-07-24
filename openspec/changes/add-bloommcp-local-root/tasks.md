@@ -1,29 +1,29 @@
 ## 1. Input root precedence (experiment_utils.py)
 
-- [ ] 1.1a Write failing tests: `resolve_experiment_local_root()`'s 3-tier precedence
+- [x] 1.1a Write failing tests: `resolve_experiment_local_root()`'s 3-tier precedence
       (`BLOOM_EXPERIMENT_LOCAL_ROOT` explicit > `<BLOOM_LOCAL_ROOT>/input` > `BLOOM_TRAITS_DIR`
       fallback), each gated on `is_local_backend()`.
-- [ ] 1.1b Implement: extend `resolve_experiment_local_root()` with the middle tier.
+- [x] 1.1b Implement: extend `resolve_experiment_local_root()` with the middle tier.
 
 ## 2. Output root precedence (storage_backend.py)
 
-- [ ] 2.1a Write failing tests: `_resolve_local_root()`'s 3-tier precedence
+- [x] 2.1a Write failing tests: `_resolve_local_root()`'s 3-tier precedence
       (`BLOOM_STORAGE_LOCAL_ROOT` explicit > `<BLOOM_LOCAL_ROOT>/output` > `BLOOM_OUTPUT_DIR`
       bridge fallback).
-- [ ] 2.1b Implement: extend `_resolve_local_root()` with the middle tier.
+- [x] 2.1b Implement: extend `_resolve_local_root()` with the middle tier.
 
 ## 3. Plots default (experiment_utils.py)
 
-- [ ] 3.1a Write failing tests: `PLOTS_DIR`'s `BLOOM_LOCAL_ROOT`-aware default (only when
+- [x] 3.1a Write failing tests: `PLOTS_DIR`'s `BLOOM_LOCAL_ROOT`-aware default (only when
       `is_local_backend()`, itself only consulted when `BLOOM_LOCAL_ROOT` is set) — include a
       spy-based unit test (monkeypatch `storage_backend.is_local_backend` with a
       raise-if-called stub) proving it is **not called at all** when `BLOOM_LOCAL_ROOT` is
       unset, not just that import "succeeds."
-- [ ] 3.1b Implement: make the `PLOTS_DIR` module constant `BLOOM_LOCAL_ROOT`-aware.
+- [x] 3.1b Implement: make the `PLOTS_DIR` module constant `BLOOM_LOCAL_ROOT`-aware.
 
 ## 4. BLOOM_LOCAL_ROOT top-level validation + auto-create
 
-- [ ] 4.1a Write failing tests for the top-level check: `BLOOM_LOCAL_ROOT` missing → fails
+- [x] 4.1a Write failing tests for the top-level check: `BLOOM_LOCAL_ROOT` missing → fails
       fast; `BLOOM_LOCAL_ROOT` exists as a **file, not a directory** → fails fast with a
       distinct message; `BLOOM_LOCAL_ROOT` exists as a directory but is **not writable**
       (POSIX-only — guard with the same `try`/`except`/`pytest.skip` pattern
@@ -31,32 +31,32 @@
       fast. Note this top-level check RAISES on not-writable, deliberately stricter than the
       legacy per-dir check's warn-only behavior for `BLOOM_TRAITS_DIR`/`BLOOM_OUTPUT_DIR`/
       `BLOOM_PLOTS_DIR` (see design.md Decision 6).
-- [ ] 4.1b Implement: the new top-level `BLOOM_LOCAL_ROOT` validation.
-- [ ] 4.2a Write failing tests: `validate_env()` succeeds when `BLOOM_STORAGE_BACKEND=local`,
+- [x] 4.1b Implement: the new top-level `BLOOM_LOCAL_ROOT` validation.
+- [x] 4.2a Write failing tests: `validate_env()` succeeds when `BLOOM_STORAGE_BACKEND=local`,
       `BLOOM_LOCAL_ROOT` is set to an existing writable dir, and `BLOOM_TRAITS_DIR` /
       `BLOOM_OUTPUT_DIR` / `BLOOM_PLOTS_DIR` are **unset** (not merely pointed at a bad path —
       this must prove the "missing required env var" check itself is skipped, distinct from
       the auto-create tests in 4.3).
-- [ ] 4.2b Implement: drop the three vars from `validate_env()`'s required-vars check in that
+- [x] 4.2b Implement: drop the three vars from `validate_env()`'s required-vars check in that
       specific combination.
-- [ ] 4.3a Write failing tests: the `input/`, `output/`, `plots/` subfolders are created when
+- [x] 4.3a Write failing tests: the `input/`, `output/`, `plots/` subfolders are created when
       missing under `BLOOM_LOCAL_ROOT`; and a subfolder path that already exists as a
       **non-directory file** (e.g. `<BLOOM_LOCAL_ROOT>/input` is a regular file) raises a
       clear, caller-safe error rather than an uncaught `FileExistsError` from `mkdir`.
-- [ ] 4.3b Implement: `validate_experiment_local_root()`, `validate_storage_backend()`, and
+- [x] 4.3b Implement: `validate_experiment_local_root()`, `validate_storage_backend()`, and
       `_validate_dirs()` each `mkdir(parents=True, exist_ok=True)` their own
       `BLOOM_LOCAL_ROOT`-derived subfolder, catching/re-raising `FileExistsError` clearly.
-- [ ] 4.4 Write regression tests: each of the three explicit vars
+- [x] 4.4 Write regression tests: each of the three explicit vars
       (`BLOOM_EXPERIMENT_LOCAL_ROOT`, `BLOOM_STORAGE_LOCAL_ROOT`, `BLOOM_PLOTS_DIR`),
       **independently** (not "or" — all three), set to a path that does not exist while
       `BLOOM_LOCAL_ROOT` is also set to a valid dir → each still fails fast, no auto-create.
 
 ## 5. Default-path + import-purity regression coverage
 
-- [ ] 5.1 Write test: `BLOOM_STORAGE_BACKEND` unset/`supabase` with `BLOOM_LOCAL_ROOT` set
+- [x] 5.1 Write test: `BLOOM_STORAGE_BACKEND` unset/`supabase` with `BLOOM_LOCAL_ROOT` set
       anyway → behavior byte-for-byte unchanged (the three legacy vars remain required, all
       three resolvers ignore `BLOOM_LOCAL_ROOT`, `PLOTS_DIR` resolves exactly as today).
-- [ ] 5.2 Extend the subprocess import-purity tests
+- [x] 5.2 Extend the subprocess import-purity tests
       (`test_ports_import_is_pure_without_supabase_env`,
       `test_server_import_is_pure_including_experiment_local_root`): import still succeeds
       with `BLOOM_LOCAL_ROOT` unset (unchanged baseline); add a companion proving import still
@@ -64,22 +64,22 @@
       `BLOOM_STORAGE_BACKEND` value (mirrors `test_server_import_is_pure_with_invalid_backend`,
       extended for the new opt-in read path — `is_local_backend()` never raises, so this must
       hold).
-- [ ] 5.3 Confirm the pre-existing `test_fully_local_qc_clean_to_pca_no_supabase`
+- [x] 5.3 Confirm the pre-existing `test_fully_local_qc_clean_to_pca_no_supabase`
       (`test_local_mode.py`) is unmodified and stays green — a named regression checkpoint,
       not an assumed side effect.
-- [ ] 5.4 Extend the fully-local end-to-end test to a variant driven by **only**
+- [x] 5.4 Extend the fully-local end-to-end test to a variant driven by **only**
       `BLOOM_STORAGE_BACKEND=local` + `BLOOM_LOCAL_ROOT` (no `BLOOM_TRAITS_DIR` /
       `BLOOM_OUTPUT_DIR` / `BLOOM_PLOTS_DIR` / `BLOOM_EXPERIMENT_LOCAL_ROOT` /
       `BLOOM_STORAGE_LOCAL_ROOT`), asserting the `qc_clean → pca_analysis` round-trip
       succeeds and plots land under `<BLOOM_LOCAL_ROOT>/plots`.
-- [ ] 5.5 Write a mixed-precedence test: `BLOOM_EXPERIMENT_LOCAL_ROOT` explicitly set (input
+- [x] 5.5 Write a mixed-precedence test: `BLOOM_EXPERIMENT_LOCAL_ROOT` explicitly set (input
       override) while `BLOOM_STORAGE_LOCAL_ROOT` and `BLOOM_PLOTS_DIR` are both unset with
       `BLOOM_LOCAL_ROOT` set → input honors the explicit override; output/plots still resolve
       to and auto-create under `BLOOM_LOCAL_ROOT`, in the same boot.
 
 ## 6. Docs + compose
 
-- [ ] 6.1 `bloommcp/docs/storage-backends.md`: replace the current prose-per-variable
+- [x] 6.1 `bloommcp/docs/storage-backends.md`: replace the current prose-per-variable
       local-mode sections with a single 3-tier precedence table covering all three subpaths;
       **correct** (not just supplement) the "Backend-aware boot... the data directories
       (`BLOOM_*_DIR`, `BLOOM_PLOTS_URL`) ... still fail fast in both modes" sentence, which
@@ -87,11 +87,11 @@
       two clearly-labeled examples (the `docker-compose.dev.yml` container-path form, and the
       bare-host-path form for a native Claude Desktop / Claude Code run), each with its own
       persistence caveat (see 6.3).
-- [ ] 6.2 `_WIKI/BLOOMMCP/README.md`: its "Storage backend (`local` opt-in)" section
+- [x] 6.2 `_WIKI/BLOOMMCP/README.md`: its "Storage backend (`local` opt-in)" section
       independently restates the fallback chain (and is already stale re: #390's
       `BLOOM_EXPERIMENT_LOCAL_ROOT`) — replace it with a one-line pointer to
       `storage-backends.md`'s precedence table instead of re-deriving the chain a third time.
-- [ ] 6.3 `docker-compose.dev.yml`: add `BLOOM_LOCAL_ROOT` to the existing commented
+- [x] 6.3 `docker-compose.dev.yml`: add `BLOOM_LOCAL_ROOT` to the existing commented
       local-mode block as a **literal path value** (e.g. `BLOOM_LOCAL_ROOT:
       /app/data/LOCAL_ROOT`), matching the existing `BLOOM_STORAGE_LOCAL_ROOT` /
       `BLOOM_EXPERIMENT_LOCAL_ROOT` style — **not** `${BLOOM_LOCAL_ROOT}` interpolation, which
@@ -104,11 +104,14 @@
 
 ## 7. Verification
 
-- [ ] 7.1 `cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration"` —
-      full suite green, including the unmodified `test_fully_local_qc_clean_to_pca_no_supabase`
-      and all of `test_local_mode.py` / `test_storage_backend.py`.
-- [ ] 7.2 `uv run ruff check` and `uv run ruff format --check` clean on all changed files.
-- [ ] 7.3 `openspec validate add-bloommcp-local-root --strict` passes.
+- [x] 7.1 `cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration"` —
+      full suite green (560 passed, 4 deselected), including the unmodified
+      `test_fully_local_qc_clean_to_pca_no_supabase` and all of `test_local_mode.py` /
+      `test_storage_backend.py` (78 passed).
+- [x] 7.2 `ruff check` (pinned v0.9.9, matching `.pre-commit-config.yaml`), `ruff format --check`,
+      and `black --check` clean on all changed files; `uv lock --check` clean (no dependency
+      change); `prettier --check` clean on the two changed docs files.
+- [x] 7.3 `openspec validate add-bloommcp-local-root --strict` passes.
 
 ## 8. Cross-change coordination (process — no code commit)
 
