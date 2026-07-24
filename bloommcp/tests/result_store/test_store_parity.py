@@ -17,7 +17,7 @@ from bloom_mcp.result_store import (
     RunStateError,
     SupabaseResultStore,
 )
-from bloom_mcp.storage import AnalysisDir
+from bloom_mcp.manifest import AnalysisDir
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 

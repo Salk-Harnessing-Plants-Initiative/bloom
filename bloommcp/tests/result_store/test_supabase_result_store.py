@@ -318,7 +318,7 @@ def test_prewrite_collision_cleans_up_and_retry_succeeds(
     fake_supabase_storage, monkeypatch
 ):
     """#324 gap B: a collision that appears mid-upload fails safely and retries clean."""
-    from bloom_mcp.storage.schema import ExperimentBlock, Manifest, VersionEntry
+    from bloom_mcp.manifest.schema import ExperimentBlock, Manifest, VersionEntry
 
     store = SupabaseResultStore()
     run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
