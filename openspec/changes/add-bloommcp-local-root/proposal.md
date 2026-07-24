@@ -87,8 +87,22 @@ the pre-rename `SLEAP_OUT_CSV` mount; `bloommcp/data/TRAITS_DIR` is the current 
     `PLOTS_DIR` module-level default.
   - `bloommcp/src/bloom_mcp/storage_backend.py` — `_resolve_local_root()`,
     `validate_storage_backend()`.
-  - `docker-compose.dev.yml`, `bloommcp/docs/storage-backends.md`.
-  - Tests under `bloommcp/tests/test_local_mode.py`, `bloommcp/tests/test_storage_backend.py`.
+  - `bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/qc_inspect.py` — its self-computed
+    report-run `source_csv` read a bare `TRAITS_DIR` directly instead of routing through
+    `_ports.raw_source_for` (mirrors `_ports.start_run`), so it silently dropped provenance under
+    the exact `BLOOM_LOCAL_ROOT`-only combination this change makes newly supported. Found and
+    fixed during PR review — routed through the active reader instead.
+  - `bloommcp/src/bloom_mcp/sections/phenotyping_segmentation/_demo_stats.py` (the
+    compute_min/median/mode demo tools) — read/wrote the bare `TRAITS_DIR`/`OUTPUT_DIR` module
+    globals directly, so they would silently read/write relative to the process CWD in the same
+    combination. Found and fixed during PR review — the input side now uses
+    `resolve_experiment_local_root()`; the output side gained a small `BLOOM_LOCAL_ROOT`-aware
+    resolver mirroring `_resolve_local_root()`'s middle tier (this demo has no
+    `BLOOM_STORAGE_LOCAL_ROOT`-equivalent explicit override of its own).
+  - `docker-compose.dev.yml`, `.env.dev.example`, `bloommcp/docs/storage-backends.md`,
+    `_WIKI/BLOOMMCP/README.md`.
+  - Tests under `bloommcp/tests/test_local_mode.py`, `bloommcp/tests/test_storage_backend.py`,
+    `bloommcp/tests/test_phenotyping_demo_tools.py`, `bloommcp/tests/tools/test_qc_inspect_tool.py`.
 
 ## Scope / Non-Goals
 
