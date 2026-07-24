@@ -57,12 +57,13 @@ and are marked as a pre-release on GitHub.
 
 ### Project URLs
 
-The committed `[project.urls]` in `bloomcli/pyproject.toml` point at `main` (the
-source of truth). At publish time `release-bloomcli.yml` rewrites them in the
+The committed repo links point at `main` (the source of truth): the
+`[project.urls]` in `bloomcli/pyproject.toml` and the "project repository" link
+in `README.pypi.md`. At publish time `release-bloomcli.yml` rewrites both in the
 build checkout to the release tag (`.../tree/bloomctl-vX.Y.Z/bloomcli`) so the
-PyPI sidebar links resolve to the exact commit that version shipped, never a
-moving branch. This is automatic — no per-release edit — and the change is never
-committed back.
+PyPI sidebar links and the rendered long-description link resolve to the exact
+commit that version shipped, never a moving branch. This is automatic — no
+per-release edit — and the change is never committed back.
 
 ## Setup requirements (one-time, before the first release)
 
