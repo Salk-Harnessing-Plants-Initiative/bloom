@@ -50,6 +50,11 @@ function parseQuery(input: string): { list: string[] | null; text: string } {
   return { list: null, text: raw };
 }
 
+// Escape ILIKE wildcards so user input matches literally, not as a pattern.
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 // Cap the pasted barcode batch so an oversized list can't hit PostgREST unbounded.
 const MAX_BATCH = 200;
 
@@ -96,11 +101,12 @@ export default function SearchComponent() {
     setErrorMsg('');
     const { list, text } = parseQuery(searchQuery);
     if (!list && text) {
-      // Exact species name -> species page.
+      // Exact species name -> species page. Escape %/_ so they match literally
+      // rather than as ilike wildcards (ilike keeps case-insensitivity).
       const { data: sp } = await supabase
         .from('species' as any)
         .select('id')
-        .ilike('common_name', text);
+        .ilike('common_name', escapeLike(text));
       if (sp && sp.length === 1) {
         router.push(`/app/phenotypes/${(sp[0] as any).id}`);
         return;
