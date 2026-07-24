@@ -50,6 +50,9 @@ function parseQuery(input: string): { list: string[] | null; text: string } {
   return { list: null, text: raw };
 }
 
+// Cap the pasted barcode batch so an oversized list can't hit PostgREST unbounded.
+const MAX_BATCH = 200;
+
 export default function SearchComponent() {
   const [searchQuery, setSearchQuery] = useState('');
   const [speciesResults, setSpeciesResults] = useState<any[]>([]);
@@ -159,13 +162,15 @@ export default function SearchComponent() {
     setLoading(true);
     const { list, text } = parseQuery(query);
 
-    // Batch barcode list -> plants only.
+    // Batch barcode list -> plants only. Cap the list so an oversized paste
+    // can't send an unbounded .in(...) straight to PostgREST from the browser.
     if (list) {
+      const capped = list.slice(0, MAX_BATCH);
       const { data, error } = await supabase
         .from('cyl_plant_search' as any)
         .select('*')
-        .in('qr_code', list)
-        .limit(200)
+        .in('qr_code', capped)
+        .limit(MAX_BATCH)
         .abortSignal(signal);
       if (signal.aborted) return;
       if (error) {
@@ -175,6 +180,11 @@ export default function SearchComponent() {
         setLoading(false);
         return;
       }
+      setErrorMsg(
+        list.length > MAX_BATCH
+          ? `Too many barcodes — searching the first ${MAX_BATCH}.`
+          : '',
+      );
       setSpeciesResults([]);
       setPlantResults(data || []);
       setLoading(false);
