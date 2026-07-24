@@ -165,7 +165,7 @@ jobs:
           wheel=$(echo dist/bloommcp-*.whl)
           test -f "$wheel" || { echo "expected exactly one wheel, got: $wheel"; exit 1; }
           uv run --no-project --with "$wheel" \
-            python -c "import bloom_mcp, bloom_mcp.tools, bloom_mcp.storage, bloom_mcp.server; assert 'site-packages' in bloom_mcp.__file__, bloom_mcp.__file__; bloom_mcp.server.build_app()"
+            python -c "import bloom_mcp, bloom_mcp.tools, bloom_mcp.manifest, bloom_mcp.server; assert 'site-packages' in bloom_mcp.__file__, bloom_mcp.__file__; bloom_mcp.server.build_app()"
         env:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""

@@ -15,7 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Optional
 
-from bloom_mcp.storage.versioning import next_version_id, version_dir_name
+from bloom_mcp.manifest.versioning import version_dir_name
 
 from ._artifacts import hash_outputs, validate_outputs
 from ._locks import KeyedLock
