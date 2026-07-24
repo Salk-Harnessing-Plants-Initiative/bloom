@@ -10,15 +10,32 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import Literal
+
+Status = Literal["ok", "skipped", "failed"]
+_VALID_STATUSES: frozenset[str] = frozenset({"ok", "skipped", "failed"})
 
 
 @dataclass
 class ScanResult:
-    """Outcome of staging or ingesting one item in a batch."""
+    """Outcome of staging or ingesting one item in a batch.
+
+    Validates ``status`` at construction time (not just via the ``Literal`` type hint, which
+    nothing enforces at runtime since this package doesn't run mypy in CI) — a typo'd status
+    string would otherwise silently fail to count as a failure anywhere that checks
+    ``status == "failed"``/``!= "failed"``, per a PR review finding.
+    """
 
     scan_key: str
-    status: str  # "ok" | "skipped" | "failed"
+    status: Status
     error: str = ""
+
+    def __post_init__(self) -> None:
+        if self.status not in _VALID_STATUSES:
+            raise ValueError(
+                f"invalid ScanResult status {self.status!r}; must be one of "
+                f"{sorted(_VALID_STATUSES)}"
+            )
 
 
 @dataclass
@@ -30,7 +47,7 @@ class BatchResult:
     @property
     def ok(self) -> bool:
         """True iff no scan failed (skipped/ok scans are fine)."""
-        return all(s.status != "failed" for s in self.scans)
+        return all(s.status in ("ok", "skipped") for s in self.scans)
 
 
 def format_summary(result: BatchResult, *, verb: str, noun: str, destination: str) -> str:

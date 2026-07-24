@@ -1228,6 +1228,57 @@ def test_batch_ingest_cli_json_all_ok(monkeypatch, tmp_path):
     assert all(entry["status"] == "ok" for entry in payload)
 
 
+def test_batch_ingest_cli_mixed_statuses_json_output(monkeypatch, tmp_path):
+    """Review finding: this scenario (a batch with all three statuses at once — the normal
+    case in a real run, not an edge case) had no test on the ingest side, asymmetric with the
+    download side's equivalent test."""
+    _patch_batch_authed(monkeypatch)
+
+    def _selective_call(client, env):
+        scan_key = env["provenance"]["scan_key"]
+        if scan_key == "scan_2":
+            return RESULT_NOOP
+        if scan_key == "scan_3":
+            raise _api_error("unresolvable image_ids: matched 1 of 2 to a scan")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _selective_call)
+    for key in ("scan_1", "scan_2", "scan_3"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_1"]["status"] == "ok"
+    assert payload["scan_2"]["status"] == "skipped"
+    assert payload["scan_3"]["status"] == "failed"
+    assert "cyl_images" in payload["scan_3"]["error"]
+
+
+def test_batch_ingest_cli_mixed_statuses_default_output(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+
+    def _selective_call(client, env):
+        scan_key = env["provenance"]["scan_key"]
+        if scan_key == "scan_2":
+            return RESULT_NOOP
+        if scan_key == "scan_3":
+            raise _api_error("unresolvable image_ids: matched 1 of 2 to a scan")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _selective_call)
+    for key in ("scan_1", "scan_2", "scan_3"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "1 skipped" in result.output.lower()
+    assert "1 failed" in result.output.lower()
+    assert "scan_3" in result.output
+
+
 def test_batch_ingest_cli_isolates_one_bad_envelope(monkeypatch, tmp_path):
     """Always runs (mocked, no importorskip) — the core isolation guarantee."""
     _patch_batch_authed(monkeypatch)

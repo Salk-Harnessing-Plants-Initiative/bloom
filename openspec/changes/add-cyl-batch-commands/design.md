@@ -142,14 +142,38 @@ Read in full before this design: `bloomcli/src/bloomctl/cyl/download_for_predict
 - **New shared `_batch.py` module for `ScanResult`/`BatchResult`.** One small new file rather than
   duplicating the dataclass + JSON/human report rendering in both `download_for_predict.py` and
   `ingest.py`. Shape matches `sleap_roots_predict.batch.ScanResult`/`BatchResult` exactly
-  (`status`: `ok`/`skipped`/`failed`; `BatchResult.ok` = `all(s.status != "failed" ...)`) rather
-  than `trait_extractor.extractor.BatchResult`'s `succeeded`/`failed`-list shape,
-  since the three-state enum is what both new commands need (write-back's RPC `was_noop` maps
-  naturally to `"skipped"`; stage-in's resume maps to `"skipped"` too) and the traits-side shape
-  can't represent a skip at all.
+  (`status`: `ok`/`skipped`/`failed`) rather than `trait_extractor.extractor.BatchResult`'s
+  `succeeded`/`failed`-list shape, since the three-state enum is what both new commands need
+  (write-back's RPC `was_noop` maps naturally to `"skipped"`; stage-in's resume maps to
+  `"skipped"` too) and the traits-side shape can't represent a skip at all.
+
+- **`ScanResult.status` validates at construction, not just a `Literal` type hint.** (Added after
+  PR review.) `status: Status` (`Literal["ok", "skipped", "failed"]`) documents the contract
+  statically, but nothing runs mypy in this package's CI, so the hint alone enforces nothing at
+  runtime. `__post_init__` raises `ValueError` for any other value. Without this, a typo'd status
+  string wouldn't just miscount — `BatchResult.ok`'s membership check (`status in ("ok",
+  "skipped")`, changed from a negative `!= "failed"` match for the same reason) would silently
+  report a genuinely-failed batch as a success.
 
 ## Risks / Trade-offs
 
+- **PR review (bloom #532) found and fixed two real bugs post-implementation**, both confirmed by
+  direct code reading before fixing, each with a RED-then-GREEN regression test: (1)
+  `stage_one_scan`/`ingest_one_envelope` didn't catch unexpected exceptions (network/auth errors
+  beyond the specific types already handled), which could crash the whole batch instead of
+  isolating one item — the exact guarantee this proposal exists to provide; (2) the
+  `--predictions-dir` batch path built a local directory from the envelope's own
+  `provenance.scan_key` (producer-supplied, no path-safety constraint), which became the
+  containment root passed into `build_pending_blobs`'s own traversal guard, neutralizing it. Both
+  now wrap the per-item body in a catch-all and validate `scan_key` before using it as a path
+  segment, mirroring `blob_object_path`'s existing guard.
+- **Concurrent invocations against the same `out_dir` can race** (PR review finding, deferred as a
+  follow-up, not fixed in this proposal): `scan_is_already_staged` → `clear_scan_dir` has no
+  lock/lease, so a stale Argo retry pod and a fresh one can both pass the skip check and clobber
+  each other's in-progress writes. The right fix belongs with the not-yet-built
+  `cyl_pipeline_run_scans` dispatch worker and Argo's `retryStrategy` (the infrastructure meant to
+  own retry/attempt semantics) rather than a bolted-on file lock here. Tracked as
+  [bloom #533](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/533).
 - **Exit-code policy is unvalidated against a real Argo retry yet** (see Decisions) — if the
   eventual Argo wiring needs a different contract, this may need a follow-up change. Mitigated by
   keeping the contract identical to what's already documented as intended for predict/traits, so

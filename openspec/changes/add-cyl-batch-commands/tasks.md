@@ -174,11 +174,14 @@ checks against the branch as a whole, plus PR-description content.
 ## 8. Verify
 
 - [x] 8.1 `uv run --extra test pytest` green in `bloomcli/` (full suite, not just the new files) —
-      271 passed, 6 skipped (the 4 oracle tests + 2 pre-existing, environment-specific failures
-      unrelated to this change: `test_saved_file_is_owner_only` (POSIX file-mode check, doesn't
-      apply on this Windows dev machine) and `test_list_renders_rows` (rich-table terminal-width
-      truncation on this machine) — both in files this change doesn't touch, confirmed failing
-      identically before this branch's work started.
+      271 passed, 2 failed, 6 skipped (corrected wording — a PR-review finding caught the original
+      note here conflating failures with skips). The 2 failures are pre-existing and
+      environment-specific, unrelated to this change and in files it doesn't touch:
+      `test_saved_file_is_owner_only` (POSIX file-mode check, doesn't apply on this Windows dev
+      machine) and `test_list_renders_rows` (rich-table terminal-width truncation on this
+      machine) — confirmed failing identically before this branch's work started. The 6 skips are
+      the 4 oracle tests plus 2 pre-existing `psycopg`-import skips
+      (`test_cyl_ingest_integration.py`, `test_dev_stack_smoke.py`), also unrelated.
 - [x] 8.2 Run `uvx ruff@0.9.9 check bloomcli/` locally before every push. **This is not redundant
       with CI** — `pr-checks.yml` runs no lint step at all for `bloomcli`, and
       `.pre-commit-config.yaml`'s `ruff-format`/`black` hooks exclude `bloomcli/`; the only ruff
@@ -196,7 +199,53 @@ checks against the branch as a whole, plus PR-description content.
       in this exact venv). Running this for real needs a venv with `sleap_roots_predict`'s and
       `sleap_roots`'s full dependencies installed (e.g. their own `.venv`s, already present
       alongside this checkout) — left for whoever has that environment set up, before merge.
-- [ ] 8.4 `/review-openspec` before requesting approval; `/review-pr` (5-subagent) before merge.
-- [ ] 8.5 Obtain the required non-author approving review before merge (branch protection on
-      `staging` has `enforce_admins=true` — this is a hard merge gate, separate from both 1.2's
-      Benfica heads-up and 8.4's automated `/review-pr` skill run).
+- [x] 8.4 `/review-openspec` before requesting approval (done pre-implementation, all findings
+      fixed — see the earlier "Revised during implementation"/"Added after review" annotations
+      throughout this file and design.md); `/review-pr` (5-subagent) run on
+      [bloom #532](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/532) — found 2
+      confirmed BLOCKING bugs (each independently flagged by 2 of the 5 lenses, each verified by
+      direct code reading before being accepted), both fixed in follow-up commits with regression
+      tests; see section 9.
+- [x] 8.5 Non-author approving review obtained: @blm3886 approved
+      [bloom #532](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/532) (branch
+      protection on `staging` has `enforce_admins=true` — this satisfies that hard merge gate).
+      Note: her approval landed in parallel with the `/review-pr` pass above and predates the 2
+      blocking bugs it found — those were fixed afterward regardless of the existing approval,
+      since an approval doesn't retroactively clear bugs found after it was given.
+
+## 9. Post-PR-review hardening (found via `/review-pr` on #532, fixed same PR)
+
+- [x] 9.1 RED: `ScanResult("scan_1", "faild")` (typo'd status) must raise `ValueError`, not
+      silently construct — a typo'd status wouldn't just miscount, `BatchResult.ok`'s old
+      negative-match check (`!= "failed"`) would report a genuinely-failed batch as success.
+      GREEN: `ScanResult.__post_init__` validates against the three known statuses;
+      `BatchResult.ok` changed to an explicit membership check; `status` typed as
+      `Literal["ok", "skipped", "failed"]`.
+- [x] 9.2 RED: `stage_one_scan`/`ingest_one_envelope` must isolate an unexpected exception
+      (network/auth error beyond the specific types already handled) into a `failed` `ScanResult`,
+      not raise — confirmed this was previously uncaught (would crash the whole batch) both at the
+      function level and through the batch CLI with other items present. GREEN: wrapped the whole
+      per-item body in a catch-all in both functions, mirroring `download_images`'s existing
+      per-frame "record and continue" discipline.
+- [x] 9.3 RED: an envelope with `provenance.scan_key` containing `/`, `\`, or `..` (path
+      traversal) must be rejected before any local filesystem access when `--predictions-dir` is
+      given — confirmed the batch path's `predictions_dir / scan_key` construction had no such
+      guard, unlike `blob_object_path`'s existing one for the object-storage key. GREEN: added the
+      same character check before constructing `scan_predictions_dir`.
+- [x] 9.4 Also fixed (no test needed — pure passthrough): `ingest_one_envelope` silently dropped
+      the `profile` kwarg when calling `map_rpc_error`, losing the actionable `(profile 'x')` hint
+      the single-scan command includes on permission errors.
+- [x] 9.5 Closed 2 test-coverage gaps the review found (both passed immediately once written —
+      coverage gaps, not bugs): a mixed ok/skipped/failed batch test for `batch-ingest-result`
+      (`--json` and default output), previously asymmetric with `batch-download-for-predict`'s
+      equivalent; and an end-to-end "malformed sidecar triggers full redownload" test (via
+      `stage_one_scan` and the batch CLI), previously only unit-tested at the
+      `scan_is_already_staged` boolean-helper level.
+- [x] 9.6 Filed [bloom #533](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/533)
+      for the one deferred IMPORTANT finding: concurrent invocations against the same `out_dir`
+      can race (`scan_is_already_staged` → `clear_scan_dir` has no lock/lease). Deliberately not
+      fixed here — the real fix belongs with the not-yet-built `cyl_pipeline_run_scans` dispatch
+      worker and Argo's `retryStrategy`, not a bolted-on file lock. See design.md's Risks section.
+- [ ] 9.7 Remaining SUGGESTIONS from the review (NDJSON for very large `--json` batches,
+      scan-key/idempotency indistinguishability in batch reports) left as-is — polish, not
+      correctness, and not worth further delay on this PR.

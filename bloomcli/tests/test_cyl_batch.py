@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 import bloomctl.cyl._batch as batch
 
 
@@ -16,6 +18,14 @@ def test_scan_result_accepts_all_three_statuses():
     for status in ("ok", "skipped", "failed"):
         r = batch.ScanResult("scan_1", status)
         assert r.status == status
+
+
+def test_scan_result_rejects_invalid_status():
+    """Review finding: status was a bare str with no runtime check, so a typo'd status
+    string (e.g. "faild") would silently fail to count as a failure anywhere that checks
+    `status == "failed"` or `status != "failed"` — construction must reject it loudly instead."""
+    with pytest.raises(ValueError, match="faild"):
+        batch.ScanResult("scan_1", "faild")
 
 
 def test_scan_result_carries_error_message():

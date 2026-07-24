@@ -804,6 +804,47 @@ def test_stage_one_scan_already_staged_is_skipped(tmp_path, monkeypatch):
     assert result.status == "skipped"
 
 
+def test_stage_one_scan_malformed_sidecar_triggers_full_redownload(tmp_path, monkeypatch):
+    """Review finding: `scan_is_already_staged` returning False for a malformed/mismatched
+    sidecar was only unit-tested at the helper level — nothing confirmed `stage_one_scan`
+    actually goes on to clear and successfully redownload, end to end."""
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text("{ not json", encoding="utf-8")
+    stale = scan_dir / "0.png"
+    stale.write_bytes(b"stale content from a previous run's malformed sidecar")
+
+    _patch_batch(monkeypatch)
+    client = _FakeClient()
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+
+    assert result.status == "ok"
+    sidecar_path = scan_dir / "scan_1.scan_metadata.json"
+    assert json.loads(sidecar_path.read_text(encoding="utf-8"))["scan_key"] == "scan_1"
+    assert stale.read_bytes() != b"stale content from a previous run's malformed sidecar"
+
+
+def test_batch_cli_malformed_sidecar_triggers_full_redownload(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    scan_dir = out / "scan_1"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_999"}), encoding="utf-8"
+    )
+
+    _patch_batch(monkeypatch)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    sidecar = json.loads((scan_dir / "scan_1.scan_metadata.json").read_text())
+    assert sidecar["scan_key"] == "scan_1"
+
+
 # --- batch: command wiring -----------------------------------------------------
 
 
