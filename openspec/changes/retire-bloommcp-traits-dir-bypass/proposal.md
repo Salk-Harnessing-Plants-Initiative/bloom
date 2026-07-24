@@ -11,8 +11,16 @@ legacy local `BLOOM_TRAITS_DIR` disk-read path. Two call sites still bypass the 
   re-does that one-line fix on `staging` directly so it isn't hostage to #479's merge
   order.
 - `bloommcp/src/bloom_mcp/data_access/supabase_reader.py` — `SupabaseReader`'s raw-tier
-  read still comes from local `BLOOM_TRAITS_DIR` and says so in its own docstring
-  (**"deprecated"**, `_LOCAL_RAW_DEPRECATION`, `raw_source_path`, lines 1-9/31-35/76-92).
+  read still comes from local `BLOOM_TRAITS_DIR`. Two of its three doc sites are stale in
+  different ways, not the same way: the **module docstring** (lines 1-9) explicitly says
+  the `DeprecationWarning` exists "so the follow-up that migrates inputs into
+  `bloommcp_input/` can remove it" — citing the specific bucket-migration plan that's since
+  been closed (see below). `_LOCAL_RAW_DEPRECATION` (lines 31-35), the message actually
+  raised at runtime, doesn't mention the bucket at all — it says "the path is promoted,
+  not slated for removal," which is a *different* problem: that framing contradicts this
+  proposal's own decision to treat the fallback as having a tracked Tier 2 retirement path.
+  `raw_source_path`'s docstring (lines 76-92) is pure path-traversal-security documentation
+  (guards `../secrets.csv`-style escapes) — unrelated to either issue, no change needed.
 
 Investigating this second site surfaced that it's not simply "unfinished cleanup":
 `bloommcp/docs/data-access-roadmap.md` (DRAFT, Live-state facts) already traced the full
@@ -28,10 +36,12 @@ That same roadmap doc already cross-references #476 and recommends sequencing it
 "alongside or after Tier 2," not as fully independent cleanup.
 
 So `SupabaseReader`'s local-disk raw-tier read is genuinely load-bearing on the default
-(Supabase) backend today — it is the only thing serving raw reads, not dead code —
-and its own documentation is now stale: it still describes the closed bucket-migration
-plan as the reason it'll go away. Left as-is, that stale docstring risks a third attempt
-at the same rejected fix.
+(Supabase) backend today — it is the only thing serving raw reads, not dead code — and
+its documentation has two distinct problems: the module docstring still describes the
+closed bucket-migration plan as the reason it'll go away (risking a third attempt at the
+same rejected fix), and the runtime deprecation message's "not slated for removal"
+framing simply doesn't match this proposal's decision that the fallback does have a
+tracked retirement path (Tier 2).
 
 ## What Changes
 
@@ -41,14 +51,19 @@ at the same rejected fix.
   already the pattern `qc_clean.py` uses). Drop the now-unused
   `from bloom_mcp.experiment_utils import TRAITS_DIR` import and update the stale
   `# ... flows into TRAITS_DIR / experiment` comment at line 421.
-- **`supabase_reader.py`** — correct the module docstring, `_LOCAL_RAW_DEPRECATION`
-  message, and `raw_source_path`'s docstring so they name the actual tracked retirement
-  path (`data-access-roadmap.md`'s Tier 2 DB-direct rewrite) instead of the closed
-  bucket-upload plan. **No behavior change**: the `DeprecationWarning` still fires under
-  the same condition (`source_label == "raw"`), and the raw-tier read still resolves from
-  `BLOOM_TRAITS_DIR` exactly as today — wiring it to `read_input_csv`/`bloommcp_input/`
-  instead would make raw reads 404 in every environment today (bucket confirmed empty),
-  repeating #368/#413's mistake.
+- **`supabase_reader.py`** — two distinct, per-site doc fixes (not one blanket edit):
+  - The **module docstring** (lines 1-9): stop citing the closed bucket-upload plan as
+    the removal trigger; name `data-access-roadmap.md`'s Tier 2 DB-direct rewrite instead.
+  - **`_LOCAL_RAW_DEPRECATION`** (lines 31-35): drop the "promoted, not slated for
+    removal" framing — it contradicts the fallback having a tracked retirement path — and
+    name Tier 2 there too.
+  - `raw_source_path`'s docstring (lines 76-92) is unrelated (path-traversal security) and
+    is **not** touched by this change.
+  **No behavior change**: the `DeprecationWarning` still fires under the same condition
+  (`source_label == "raw"`), and the raw-tier read still resolves from `BLOOM_TRAITS_DIR`
+  exactly as today — wiring it to `read_input_csv`/`bloommcp_input/` instead would make
+  raw reads 404 in every environment today (bucket confirmed empty), repeating #368/#413's
+  mistake.
 - **`bloommcp-experiment-read` spec** — MODIFIED, two requirements:
   - `ExperimentReader Port`: its "consumers go through the port" scenarios still name
     `qc_tools.py`/`storage_tools.py`/`correlation_tools`/`tools/workflows/*` — all retired

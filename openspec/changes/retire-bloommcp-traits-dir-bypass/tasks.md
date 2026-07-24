@@ -15,16 +15,27 @@
 
 ## 2. `supabase_reader.py` documentation/warning accuracy
 
-- [ ] 2.1a Write a failing test asserting the `DeprecationWarning` message text (and/or the
-      module docstring) no longer claims removal is pending "the follow-up that migrates
-      inputs into `bloommcp_input/`" — that plan (bloom PR #368) is closed — and instead
-      references the actual tracked plan (`data-access-roadmap.md`'s Tier 2 DB-direct
-      rewrite of the raw tier).
-- [ ] 2.1b Implement: rewrite `supabase_reader.py`'s module docstring (lines 1-9), the
-      `_LOCAL_RAW_DEPRECATION` message (lines 31-35), and `raw_source_path`'s docstring
-      (lines 76-92) to name the correct plan. Keep the `DeprecationWarning` category and
-      trigger condition (`source_label == "raw"`) unchanged.
-- [ ] 2.2 Confirm the existing deprecation test
+- [ ] 2.1a Write a failing test asserting `supabase_reader.py`'s **module docstring**
+      names `data-access-roadmap.md`'s Tier 2 DB-direct rewrite as the retirement path and
+      no longer claims removal is pending "the follow-up that migrates inputs into
+      `bloommcp_input/`" (bloom PR #368, closed). Assert what the corrected text should
+      say, not just the absence of the old phrase — a test that only checks
+      `"bloommcp_input" not in docstring` would pass trivially without the Tier 2 mention
+      actually being added.
+- [ ] 2.1b Implement: rewrite the module docstring (lines 1-9) per 2.1a.
+- [ ] 2.2a Write a failing test asserting the runtime **`_LOCAL_RAW_DEPRECATION`** message
+      (lines 31-35) — the string actually passed to `warnings.warn` — names Tier 2 as the
+      tracked retirement path and no longer describes the fallback as "promoted, not
+      slated for removal" (that framing predates this proposal and contradicts having a
+      tracked retirement path at all; it never mentioned the bucket, so this is a distinct
+      fix from 2.1a, not the same edit applied twice).
+- [ ] 2.2b Implement: rewrite `_LOCAL_RAW_DEPRECATION` per 2.2a. Keep the
+      `DeprecationWarning` category and trigger condition (`source_label == "raw"`)
+      unchanged.
+- [ ] 2.3 No change to `raw_source_path`'s docstring (lines 76-92) — confirmed unrelated
+      (path-traversal-security documentation, not a migration-plan citation). Leave as-is;
+      do not touch it under this task.
+- [ ] 2.4 Confirm the existing deprecation test
       (`bloommcp/tests/data_access/test_supabase_reader.py:~25`,
       `pytest.warns(DeprecationWarning)`) still passes unmodified — a named regression
       checkpoint proving the trigger condition didn't change, only the message.
@@ -39,9 +50,11 @@
       `sections/sleap_roots/analysis/*` locations, and add a scenario for the
       `qc_inspect.py` provenance fix (Task 1).
 - [ ] 3.2 Write the MODIFIED `SupabaseReader Adapter` requirement: update its intro and
-      deprecation-signal scenario to match the corrected message/plan reference (Task 2),
-      and add a scenario asserting the deprecation signal doesn't cite the superseded
-      bucket-migration plan.
+      deprecation-signal scenario to match the corrected message/plan reference, and add
+      two distinct scenarios matching Task 2's two separate fixes — one for the module
+      docstring no longer citing the closed bucket-migration plan, one for
+      `_LOCAL_RAW_DEPRECATION` no longer using the "promoted, not slated for removal"
+      framing.
 
 ## 4. Verification
 

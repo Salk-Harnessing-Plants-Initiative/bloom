@@ -61,12 +61,17 @@ The system SHALL provide a `SupabaseReader` adapter implementing `ExperimentRead
 #### Scenario: Falls back to the local raw input with a deprecation signal
 
 - **WHEN** `SupabaseReader.load_experiment(name)` is called for an experiment with no cleaned output, and only a raw CSV under `BLOOM_TRAITS_DIR` exists
-- **THEN** it returns the raw frame and emits a deprecation signal naming `data-access-roadmap.md`'s Tier 2 DB-direct rewrite as the tracked retirement path — not a bucket-upload migration
+- **THEN** it returns the raw frame and emits a `DeprecationWarning`
 
-#### Scenario: Deprecation signal does not cite a superseded migration plan
+#### Scenario: Module docstring does not cite the superseded bucket-migration plan
 
-- **WHEN** the deprecation warning/docstring text is inspected
-- **THEN** it does not claim removal is pending "the follow-up that migrates inputs into `bloommcp_input/`" — that plan (bloom PR #368) is closed — and instead points at the currently tracked plan (`data-access-roadmap.md` Tier 2)
+- **WHEN** `supabase_reader.py`'s module docstring is inspected
+- **THEN** it does not claim the `DeprecationWarning` exists "so the follow-up that migrates inputs into `bloommcp_input/` can remove it" — that plan (bloom PR #368) is closed — and instead names `data-access-roadmap.md`'s Tier 2 DB-direct rewrite as the tracked retirement path
+
+#### Scenario: Deprecation message states a tracked retirement path, not an open-ended promotion
+
+- **WHEN** the runtime `DeprecationWarning` message (`_LOCAL_RAW_DEPRECATION`) is inspected
+- **THEN** it does not describe the local raw-tier read as merely "promoted, not slated for removal" — a framing that never cited the bucket plan but contradicts this adapter having a tracked retirement path at all — and instead names `data-access-roadmap.md`'s Tier 2 DB-direct rewrite as that path
 
 #### Scenario: Adapter tests do not touch the network
 

@@ -28,9 +28,12 @@ through `ExperimentReader`, or (b) delete them if provably unreachable.
 - Goals:
   - Fix site (a) now — it's genuinely independent, low-risk, and already validated by
     #479's implementation.
-  - Stop `supabase_reader.py`'s own documentation from pointing at a closed migration plan
-    as the reason the fallback will disappear, since that's precisely the belief that
-    already produced two wrong-direction PRs.
+  - Fix `supabase_reader.py`'s two distinct doc problems: the module docstring citing the
+    closed bucket-migration plan as the removal trigger (the same belief that already
+    produced two wrong-direction PRs), and `_LOCAL_RAW_DEPRECATION`'s "promoted, not
+    slated for removal" framing, which contradicts this proposal's own decision that the
+    fallback has a tracked retirement path. These are two separate sentences with two
+    separate problems, not one blanket "stop citing the bucket" edit.
 - Non-Goals:
   - Implementing `data-access-roadmap.md`'s Tier 1/2 (DB-direct rewrite).
   - Changing `SupabaseReader`'s raw-tier read behavior, return values, or `RawSourced`
