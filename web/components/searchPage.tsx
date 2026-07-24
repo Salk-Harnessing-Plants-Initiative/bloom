@@ -10,8 +10,6 @@ import { createClientSupabaseClient } from "@/lib/supabase/client";
 import PlantAdvancedSearch from './plant-advanced-search';
 import { fieldHrefs, FieldLink } from './plant-search-links';
 
-// A comma or newline in the input means "batch barcode list"; otherwise the
-// input is a single free-text term.
 function parseQuery(input: string): { list: string[] | null; text: string } {
   const raw = input.trim();
   if (/[\n,]/.test(raw)) {
