@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError
 
-import bloom_mcp.storage.code_versions as cv
+import bloom_mcp.manifest.code_versions as cv
 
 
 def test_installed_distributions_recorded_no_unknown():

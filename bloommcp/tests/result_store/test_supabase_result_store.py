@@ -10,8 +10,8 @@ import pytest
 
 from bloom_mcp.contract import Provenance
 from bloom_mcp.result_store import CommitFailedError, SupabaseResultStore
-from bloom_mcp.storage import AnalysisDir
-from bloom_mcp.storage.schema import CodeVersions
+from bloom_mcp.manifest import AnalysisDir
+from bloom_mcp.manifest.schema import CodeVersions
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 

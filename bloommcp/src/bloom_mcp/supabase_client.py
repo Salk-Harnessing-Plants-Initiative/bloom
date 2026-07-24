@@ -17,12 +17,12 @@ Public surface (exactly three functions):
                                        `bloommcp_input/{name}` in the
                                        `bloommcp-data` bucket.
 
-For tool outputs, use `AnalysisWriter` instead — it routes through the
-versioned `bloommcp_output/<tool_class>_<stem>/v<N>_<date>_<slug>/`
-prefix and updates `manifest.json`. The generic storage helpers below
-(`upload_file`, `write_json`, etc.) take a fully-qualified `key` and are
-called by `AnalysisWriter.commit()`; they are not meant for direct use
-by tools.
+For tool outputs, go through the `ResultStore` port (`bloom_mcp.result_store`)
+instead — its `SupabaseResultStore` adapter routes through the versioned
+`bloommcp_output/<tool_class>_<stem>/v<N>_<date>_<slug>/` prefix and updates
+`manifest.json`. The generic storage helpers below (`upload_file`,
+`write_json`, etc.) take a fully-qualified `key` and are called by
+`SupabaseResultStore.commit()`; they are not meant for direct use by tools.
 
 `name` for `read_input_csv` is always a basename (no slashes). The
 helper prepends the input prefix. Passing a key that contains `/` raises
@@ -129,8 +129,8 @@ def read_input_csv(name: str) -> pd.DataFrame:
 
 # ─── Generic storage helpers ──────────────────────────────────────────────────
 #
-# These six helpers are the storage primitives AnalysisWriter uses to store
-# the versioned-output catalog. They take an object `key` that
+# These six helpers are the storage primitives SupabaseResultStore uses to
+# store the versioned-output catalog. They take an object `key` that
 # includes any prefix structure (e.g. `bloommcp_output/qc_my_exp/v1_.../_cleaned.csv`)
 
 

@@ -1,15 +1,23 @@
 """Guard: read/write consumers depend only on the ports, not Supabase/storage.
 
-After the repoint (tasks.md §4) no consumer imports `supabase`, `AnalysisWriter`,
-or `AnalysisDir` directly — persistence comes via the injected ports. The scan is
-AST-based (real Import/ImportFrom nodes), not a substring match, so a comment or
-docstring mentioning a forbidden name doesn't trip it and a typo'd path fails loudly.
+After the repoint (tasks.md §4) no consumer imports `supabase` or `AnalysisDir`
+directly — persistence comes via the injected ports. The scan is AST-based (real
+Import/ImportFrom nodes), not a substring match, so a comment or docstring
+mentioning a forbidden name doesn't trip it and a typo'd path fails loudly.
+
+Also guards the `storage/`→`manifest/` rename's BREAKING contract (#487)
+permanently: `bloom_mcp.storage` must stay gone (no compatibility alias) and
+`AnalysisWriter` must never resurface, so a future partial revert is caught by
+CI rather than a manual check.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib
 from pathlib import Path
+
+import pytest
 
 _SRC = Path(__file__).resolve().parents[1] / "src" / "bloom_mcp"
 
@@ -33,7 +41,7 @@ _CONSUMERS = [
 ]
 
 # Names that may not be imported by a consumer module.
-_FORBIDDEN = {"supabase", "AnalysisWriter", "AnalysisDir"}
+_FORBIDDEN = {"supabase", "AnalysisDir"}
 
 
 def _imported_names(tree: ast.AST) -> set[str]:
@@ -60,3 +68,34 @@ def test_consumers_do_not_import_supabase_or_storage_writer():
         if hits:
             offenders.append(f"{rel}: {sorted(hits)}")
     assert not offenders, f"consumers still import persistence directly: {offenders}"
+
+
+def test_manifest_package_rename_is_permanent():
+    """The `storage/`→`manifest/` rename (#487) has no compatibility alias."""
+    import bloom_mcp.manifest as manifest
+
+    for name in (
+        "AnalysisDir",
+        "Manifest",
+        "VersionEntry",
+        "get_code_versions",
+        "next_version_id",
+        "slugify",
+        "version_dir_name",
+        "read_manifest",
+        "write_manifest",
+        "validate_schema",
+    ):
+        assert hasattr(manifest, name), f"bloom_mcp.manifest lost re-export: {name}"
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("bloom_mcp.storage")
+
+
+def test_analysis_writer_is_gone():
+    """The dead `AnalysisWriter` class (and its module) must never resurface."""
+    assert not hasattr(
+        __import__("bloom_mcp.manifest", fromlist=["manifest"]), "AnalysisWriter"
+    )
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("bloom_mcp.manifest.writer")
