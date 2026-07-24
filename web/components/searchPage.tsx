@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import NextLink from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { TextField, Box, CircularProgress, List, Divider, Typography, Link as MuiLink, InputAdornment, IconButton } from '@mui/material';
@@ -59,6 +59,8 @@ export default function SearchComponent() {
   const supabase = createClientSupabaseClient();
   const router = useRouter();
   const pathname = usePathname();
+  // Cancels the in-flight search so a slower, older response can't overwrite newer results.
+  const abortRef = useRef<AbortController | null>(null);
 
   const clearResults = () => {
     setSpeciesResults([]);
@@ -66,7 +68,9 @@ export default function SearchComponent() {
   };
 
   // Clear the query + results on navigation (search bar persists across the layout).
+  // Abort any in-flight search so a late response can't repopulate on the new page.
   useEffect(() => {
+    abortRef.current?.abort();
     setSearchQuery('');
     setSpeciesResults([]);
     setPlantResults([]);
@@ -146,6 +150,12 @@ export default function SearchComponent() {
   // species itself (not its thousands of plants); a barcode/accession match
   // surfaces the plants, with species/experiment as context.
   const fetchResults = async (query: string) => {
+    // Supersede any in-flight search: abort it, then run this one under a fresh signal.
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const { signal } = controller;
+
     setLoading(true);
     const { list, text } = parseQuery(query);
 
@@ -155,7 +165,9 @@ export default function SearchComponent() {
         .from('cyl_plant_search' as any)
         .select('*')
         .in('qr_code', list)
-        .limit(200);
+        .limit(200)
+        .abortSignal(signal);
+      if (signal.aborted) return;
       setSpeciesResults([]);
       setPlantResults(data || []);
       setLoading(false);
@@ -169,16 +181,19 @@ export default function SearchComponent() {
         .from('species' as any)
         .select('id, common_name, genus, species')
         .ilike('common_name', `%${term}%`)
-        .limit(8),
+        .limit(8)
+        .abortSignal(signal),
       // Deliberately NOT matching species_name here — species matches belong in
       // the Species group, not as a flood of plant rows.
       supabase
         .from('cyl_plant_search' as any)
         .select('*')
         .or(`qr_code.ilike.%${term}%,accession_name.ilike.%${term}%`)
-        .limit(100),
+        .limit(100)
+        .abortSignal(signal),
     ]);
 
+    if (signal.aborted) return;
     setSpeciesResults(sp.data || []);
     setPlantResults(pl.data || []);
     setLoading(false);
