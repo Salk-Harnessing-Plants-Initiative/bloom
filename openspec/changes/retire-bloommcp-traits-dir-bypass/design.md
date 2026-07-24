@@ -3,11 +3,11 @@
 Issue #476 asks to audit two `BLOOM_TRAITS_DIR` read bypasses and either (a) route them
 through `ExperimentReader`, or (b) delete them if provably unreachable.
 
-- **Site (a), `qc_inspect.py:503`**, is cheap and safe: `_ports.raw_source_for` already
-  exists and is already the pattern `qc_clean.py`/`_ports.start_run` use for the identical
-  provenance-sourcing problem. #479's PR review independently found and fixed this same
-  line (for a different reason — fully-local-mode provenance), but that branch is
-  unmerged, so `staging` still has the bare `TRAITS_DIR` read today.
+- **Site (a), `qc_inspect.py:503`**, is already resolved — not this change's scope. #479's
+  PR review independently found and fixed this same line (for a different reason —
+  fully-local-mode provenance), and that work merged into `staging` as
+  [PR #526](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/526). See the
+  Reconciliation note below for how this was caught.
 - **Site (b), `supabase_reader.py`'s raw-tier fallback**, is not a simple bypass to route
   or delete — it is the *only* thing serving raw experiment reads on the default
   (Supabase) backend today. `bloommcp/docs/data-access-roadmap.md`'s Live-state facts
@@ -26,8 +26,6 @@ through `ExperimentReader`, or (b) delete them if provably unreachable.
 ## Goals / Non-Goals
 
 - Goals:
-  - Fix site (a) now — it's genuinely independent, low-risk, and already validated by
-    #479's implementation.
   - Fix `supabase_reader.py`'s two distinct doc problems: the module docstring citing the
     closed bucket-migration plan as the removal trigger (the same belief that already
     produced two wrong-direction PRs), and `_LOCAL_RAW_DEPRECATION`'s "promoted, not
@@ -35,6 +33,8 @@ through `ExperimentReader`, or (b) delete them if provably unreachable.
     fallback has a tracked retirement path. These are two separate sentences with two
     separate problems, not one blanket "stop citing the bucket" edit.
 - Non-Goals:
+  - Re-implementing `qc_inspect.py`'s provenance-source fix — already shipped by
+    #479/PR #526; nothing to do here.
   - Implementing `data-access-roadmap.md`'s Tier 1/2 (DB-direct rewrite).
   - Changing `SupabaseReader`'s raw-tier read behavior, return values, or `RawSourced`
     contract.
@@ -70,13 +70,21 @@ through `ExperimentReader`, or (b) delete them if provably unreachable.
   anything."** Mitigation: the value is specifically preventing a third wrong-direction
   attempt at the bucket-wiring fix (two already closed) — that's a real, if narrow,
   outcome, not busywork.
+- **Keeping the fallback alive indefinitely assumes `BLOOM_TRAITS_DIR` is complete.**
+  Treating the local-disk raw-tier read as a stable "load-bearing interim adapter" (rather
+  than wiring it to the empty bucket) is the right call given #368/#413's closures, but it
+  leaves an unstated assumption: a Supabase-backend deployment's `BLOOM_TRAITS_DIR`
+  actually contains every experiment a user might request a raw read for. If it doesn't,
+  those reads 404 silently, indefinitely — `data-access-roadmap.md` Tier 2 isn't filed yet
+  and has no timeline. Mitigation: state this explicitly in `proposal.md`'s Scope section
+  rather than leave it implicit; this change does not resolve the risk, only stops
+  documenting past it.
 
 ## Migration Plan
 
-None — no data or schema migration. The `qc_inspect.py` change only alters the resolved
-`source_csv` path when a non-default input root is configured (e.g. a custom
-`BLOOM_EXPERIMENT_LOCAL_ROOT`); on the default Supabase backend with no such override, the
-resolved path is unchanged.
+None — no data or schema migration, and no runtime behavior change at all in this
+revision (doc/warning-text only, `qc_inspect.py` having dropped out of scope per the
+Reconciliation note below).
 
 ## Open Questions
 
@@ -84,3 +92,32 @@ resolved path is unchanged.
   `data-access-roadmap.md` Tier 2, or split into a new tracking issue for the
   `SupabaseReader` DB-direct rewrite specifically? This proposal assumes "kept open,
   re-scoped" as the default — recommend Evelyn/Elizabeth confirm at review time.
+
+## Follow-ups (not this change)
+
+- `bloommcp/tests/test_persistence_import_guard.py`'s AST-based import guard currently
+  forbids only `{"supabase", "AnalysisDir"}`, not `TRAITS_DIR` — it would not catch a
+  future PR silently reintroducing a `TRAITS_DIR`-based bypass elsewhere (the same class
+  of bug #476 itself is about). Worth extending in a follow-up; out of scope here since
+  this change makes no code changes to guard.
+
+## Reconciliation note (5-agent review, 2026-07-24)
+
+A 5-subagent review (Code Quality / Testing / Scientific Rigor / Security / Behavioural
+Correctness) independently converged on the same blocking finding: the first two
+revisions of this proposal targeted `qc_inspect.py:503` as work still to do, but by the
+time PR #530 was opened, [PR #526](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/526)
+(#479's implementation) had already merged into `staging` — fixing that exact line for an
+unrelated reason (fully-local-mode provenance) — 34 seconds before this PR opened, per the
+review's own timestamp check. The proposal's citations (line 64's import, line 421's
+comment, a "failing test to write") no longer matched the file at all: the import was
+already gone, the comment already documented the fix, and the regression test
+(`test_source_csv_honors_local_root_only_mode`) already existed.
+
+**Resolved:** rebased this branch onto the current `staging` tip (which now includes
+#526), dropped the `qc_inspect.py` site from scope entirely rather than rescoping it to a
+confirmation step (per the review's own Suggestion — there is nothing left to confirm
+that the merged test doesn't already cover), and reworded `proposal.md`/`design.md`'s
+"Why"/Context to state the site is resolved via #526, citing the PR number the way #368/
+#413 already were. This is exactly the kind of drift the roadmap docs' own reconciliation
+logs exist to catch — recorded here for the same reason.
