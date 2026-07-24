@@ -55,6 +55,7 @@ export default function SearchComponent() {
   const [speciesResults, setSpeciesResults] = useState<any[]>([]);
   const [plantResults, setPlantResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
   const supabase = createClientSupabaseClient();
   const router = useRouter();
   const pathname = usePathname();
@@ -69,11 +70,19 @@ export default function SearchComponent() {
     setSearchQuery('');
     setSpeciesResults([]);
     setPlantResults([]);
+    setErrorMsg('');
   }, [pathname]);
 
   // Enter / magnifier: jump straight to the species page when the text is
   // exactly one species name; otherwise just run the normal results search.
   const handleSubmit = async () => {
+    // Empty submit: prompt the user instead of matching every row via ILIKE '%%'.
+    if (searchQuery.trim() === '') {
+      setErrorMsg('Enter a barcode, accession, or species to search.');
+      clearResults();
+      return;
+    }
+    setErrorMsg('');
     const { list, text } = parseQuery(searchQuery);
     if (!list && text) {
       // Exact species name -> species page.
@@ -186,7 +195,12 @@ export default function SearchComponent() {
         multiline
         maxRows={6}
         value={searchQuery}
-        onChange={(e) => setSearchQuery(e.target.value)}
+        error={errorMsg !== ''}
+        helperText={errorMsg || undefined}
+        onChange={(e) => {
+          setSearchQuery(e.target.value);
+          if (errorMsg) setErrorMsg('');
+        }}
         onKeyDown={(e) => {
           // Enter submits (jump-or-search); Shift+Enter adds a newline for lists.
           if (e.key === 'Enter' && !e.shiftKey) {
