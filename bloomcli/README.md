@@ -1,8 +1,6 @@
 # bloomctl
 
-Python command-line tool for the Bloom server — download cylinder experiments
-(metadata + images), write per-scan pipeline results back, and manage
-credentials. Successor to the Node `@salk-hpi/bloom-cli`. Tracked by issue #347.
+Python command-line tool for the Bloom Database by Salk HPI.
 
 ## Install
 
