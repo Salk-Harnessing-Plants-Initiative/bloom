@@ -26,8 +26,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from bloom_mcp.storage.code_versions import get_code_versions
-from bloom_mcp.storage.schema import CodeVersions, VersionEntry
+from bloom_mcp.manifest.code_versions import get_code_versions
+from bloom_mcp.manifest.schema import CodeVersions, VersionEntry
 
 # Set at container build to the image digest (`sha256:…`); the tightest
 # exact-environment identifier when bloom-mcp runs containerized.

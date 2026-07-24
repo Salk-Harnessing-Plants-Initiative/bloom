@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from bloom_mcp.storage.manifest import ManifestSchemaError, validate_schema
-from bloom_mcp.storage.schema import Manifest
+from bloom_mcp.manifest.manifest import ManifestSchemaError, validate_schema
+from bloom_mcp.manifest.schema import Manifest
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "manifest_v2.json"
 

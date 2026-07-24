@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 # Make bloommcp's flat-package layout importable. bloommcp ships with its
-# packages (`source`, `tools`, `storage`) directly under bloommcp/ rather
+# packages (`source`, `tools`, `manifest`) directly under bloommcp/ rather
 # than nested under a top-level `bloommcp` namespace, so tests must add
 # that directory to sys.path before importing.
 _BLOOMMCP_DIR = Path(__file__).resolve().parents[2] / "bloommcp" / "src"
@@ -46,7 +46,7 @@ os.environ.setdefault("BLOOM_PLOTS_URL", "http://test.invalid")
 
 from pydantic import ValidationError  # noqa: E402
 
-from bloom_mcp.storage import (  # noqa: E402
+from bloom_mcp.manifest import (  # noqa: E402
     AnalysisDir,
     CodeVersions,
     ExperimentBlock,

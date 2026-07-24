@@ -97,6 +97,23 @@ def test_render_fills_every_placeholder():
     assert not leftover, f"placeholders left unfilled: {leftover}"
 
 
+def test_render_leaves_opt_in_storage_backend_vars_empty():
+    """BLOOM_STORAGE_BACKEND/_LOCAL_ROOT/_EXPERIMENT_LOCAL_ROOT are opt-in (off by
+    default) — they must survive render() as empty values, not CHANGEME'd, not
+    dropped, so a fresh .env.dev requires no un-commenting to discover or use them.
+    """
+    template = (REPO_ROOT / ".env.dev.example").read_text(encoding="utf-8")
+    out = init_dev.render(template, init_dev.generate_secrets())
+    values = _value_lines(out)
+    for key in (
+        "BLOOM_STORAGE_BACKEND",
+        "BLOOM_STORAGE_LOCAL_ROOT",
+        "BLOOM_EXPERIMENT_LOCAL_ROOT",
+    ):
+        assert key in values, f"{key} missing from rendered .env.dev"
+        assert values[key] == "", f"{key} should stay empty but got {values[key]!r}"
+
+
 def test_render_tolerates_crlf_template():
     crlf = "POSTGRES_PASSWORD=CHANGEME\r\n# comment\r\nPOSTGRES_DB=postgres\r\n"
     out = init_dev.render(crlf, init_dev.generate_secrets())
