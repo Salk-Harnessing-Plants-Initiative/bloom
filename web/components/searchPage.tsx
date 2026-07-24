@@ -8,39 +8,7 @@ import { green } from '@mui/material/colors';
 import SearchIcon from '@mui/icons-material/Search';
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import PlantAdvancedSearch from './plant-advanced-search';
-
-// Per-field deep links: species -> species page, experiment -> experiment page,
-// accession/barcode -> the accession-in-wave page. Null when ids are missing.
-function fieldHrefs(item: any) {
-  const { species_id, experiment_id, wave_id, accession_id } = item;
-  const species =
-    species_id != null ? `/app/phenotypes/${species_id}` : null;
-  const experiment =
-    species != null && experiment_id != null
-      ? `/app/phenotypes/${species_id}/${experiment_id}`
-      : null;
-  const accession =
-    experiment != null && wave_id != null && accession_id != null
-      ? `/app/phenotypes/${species_id}/${experiment_id}/${wave_id}/${accession_id}`
-      : null;
-  return { species, experiment, accession };
-}
-
-// One result field, linked to its page when a destination exists.
-function FieldLink({ href, label, value }: { href: string | null; label: string; value: any }) {
-  const body = (<><b>{label}: </b>{value}</>);
-  return (
-    <h1>
-      {href ? (
-        <MuiLink component={NextLink} href={href} underline="hover" color="inherit">
-          {body}
-        </MuiLink>
-      ) : (
-        body
-      )}
-    </h1>
-  );
-}
+import { fieldHrefs, FieldLink } from './plant-search-links';
 
 // A comma or newline in the input means "batch barcode list"; otherwise the
 // input is a single free-text term.
