@@ -85,16 +85,31 @@ export default function SearchComponent() {
         router.push(`/app/phenotypes/${(sp[0] as any).id}`);
         return;
       }
-      // Exact barcode -> that plant's accession page.
+      // Exact barcode -> that plant's page (eq, not ilike: barcodes contain '_').
       const { data: pl } = await supabase
         .from('cyl_plant_search' as any)
         .select('*')
-        .ilike('qr_code', text)
-        .limit(2);
+        .eq('qr_code', text)
+        .limit(1);
       if (pl && pl.length === 1) {
         const href = fieldHrefs(pl[0]).accession;
         if (href) {
           router.push(href);
+          return;
+        }
+      }
+      // Exact accession -> its accession page, when it maps to a single one.
+      const { data: acc } = await supabase
+        .from('cyl_plant_search' as any)
+        .select('species_id, experiment_id, wave_id, accession_id')
+        .eq('accession_name', text)
+        .limit(500);
+      if (acc && acc.length > 0) {
+        const dests = Array.from(
+          new Set(acc.map((r: any) => fieldHrefs(r).accession).filter(Boolean)),
+        );
+        if (dests.length === 1) {
+          router.push(dests[0] as string);
           return;
         }
       }
