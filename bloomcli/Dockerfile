@@ -20,7 +20,7 @@ WORKDIR /app
 USER bloom
 
 # Install dependencies only (cached independently of source code changes).
-COPY --chown=bloom:bloom pyproject.toml uv.lock README.md ./
+COPY --chown=bloom:bloom pyproject.toml uv.lock README.pypi.md ./
 RUN uv sync --frozen --no-dev --no-cache --no-install-project
 
 COPY --chown=bloom:bloom . .
