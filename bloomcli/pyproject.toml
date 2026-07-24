@@ -2,7 +2,9 @@
 name = "bloomctl"
 version = "0.1.0a2"
 description = "Bloom command-line tool for Bloom Database"
-readme = "README.md"
+# PyPI project page renders README.pypi.md (a lean user-facing landing page);
+# README.md is the fuller in-repo doc.
+readme = "README.pypi.md"
 requires-python = ">=3.11"
 license = "BSD-2-Clause"
 authors = [{ name = "Salk Harnessing Plants Initiative" }]

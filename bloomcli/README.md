@@ -1,52 +1,42 @@
 # bloomctl
 
-Python command-line tool for the Bloom Database by Salk HPI.
+Python command-line tool for the Bloom server — download cylinder experiments
+(metadata + images), write per-scan pipeline results back, and manage
+credentials. Successor to the Node `@salk-hpi/bloom-cli`. Tracked by issue #347.
 
-## Install
+## Container image
 
-`bloomctl` is published to PyPI as **`bloomctl`**. Install it as a standalone
-tool (recommended) or into an existing environment:
+`bloomctl` is also published as a container image, for use as a step in
+pipelines (e.g. sleap-roots-pipeline's Argo DAG) rather than a `pip install`:
 
-```bash
-uv tool install bloomctl     # isolated CLI tool (recommended)
-uvx bloomctl --help          # one-off, no install
-pip install bloomctl         # into the active environment
+```
+ghcr.io/salk-harnessing-plants-initiative/bloomctl
 ```
 
-`bloomctl` is published to PyPI as **`bloomctl`**. Releases are currently
-**pre-releases** (`0.1.0aN`) while the command set is still being ported, and
-plain installs skip pre-releases — so install with the pre-release opt-in to get
-the full set of commands:
+- `sha-<short-git-sha>` — immutable, pushed on every commit to `staging` that
+  touches `bloomcli/**`.
+- `staging` — mutable, points at the most recent `staging` build.
+- `<version>` (e.g. `0.1.0a2`) — pushed when a matching GitHub Release is
+  published; guaranteed to match the PyPI-published version of the same name.
 
-```bash
-uv tool install bloomctl --prerelease allow
-uvx --prerelease allow bloomctl --help
-pip install --pre bloomctl
+The image is built directly from this repo's source at the commit being
+built (not from PyPI), so it's always available immediately after a
+`staging` push regardless of PyPI release timing — see
+`.github/workflows/docker-build-bloomcli.yml`. Every PR touching
+`bloomcli/**` builds and Trivy-scans the Dockerfile via `pr-checks.yml`'s
+`docker-build` job (the same pre-merge gate every other Bloom image gets);
+the publishing workflow itself only builds and pushes, it never runs on a
+pull request.
+
+Provenance: `docker/metadata-action` bakes standard OCI labels into every
+image, including `org.opencontainers.image.revision` (the full source
+commit SHA) — recoverable from a running/pulled image with no other
+context via `docker inspect <image> | jq .Config.Labels`.
+
 ```
-
-Verify it:
-
-```bash
-bloomctl --version
+docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
+  cyl ingest-result path/to/scan.result.json
 ```
-
-## Getting started
-
-Authenticate once, then run commands against Bloom:
-
-```bash
-bloomctl login
-```
-
-`login` prompts for your Bloom email + password, bootstraps the server's public
-client config, and writes credentials to `~/.bloom/credentials.txt`.
-
-- **Profiles:** `-p/--profile <name>` keeps separate logins side by side
-  (`credentials.<name>.txt`); the default profile is `prod`. Pass the same
-  `--profile` to any command to use that login.
-
-Run `bloomctl --help` or `bloomctl <command> --help` at any time for the full,
-authoritative option list.
 
 ## Commands
 
@@ -71,7 +61,7 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - **[read]** `bloomctl cyl experiments list` — list cylinder experiments (species,
   name, id), sorted by species then name (`--json` for machine-readable output).
 
-(Full `cyl download` usage docs are still forthcoming; run any command
+(Full `login`/`cyl download` usage docs are still forthcoming; run any command
 with `--help` in the meantime. `cyl ingest-result` and `cyl download-for-predict`
 are documented in full below.)
 
@@ -111,15 +101,20 @@ bloomctl cyl download-for-predict 1 ./staged
 
 ## Access & roles
 
-Commands run **as the logged-in user** — every query and mutation is enforced
-under the caller's role,So the role your `bloomctl login`
+Commands run **as the logged-in user** — every query and mutation is RLS-enforced
+under the caller's role, not a service key. So the role your `bloomctl login`
 profile maps to determines what works:
 
-| Command tag | Intended user |
+| Command tag | Required role | Intended user |
 |---|---|---|
-| **[read]**  |(any authenticated user) | anyone with a Bloom account |
-| **[write]**| automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
+| **[read]** (`download`, `datasets list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account |
+| **[write]** (`ingest-result`, `datasets create`) | `bloom_writer` / `bloom_admin` | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
 
+A read-only `bloom_user` can `list` datasets but **cannot** `create` one — the
+write path (the `create_cyl_dataset` / `insert_cyl_result_envelope` RPCs and the
+underlying table inserts) is granted to `bloom_writer`/`bloom_admin`. Point the
+**[write]** commands at a profile with write access (e.g. the pipeline's service
+account); a `bloom_user` login will get a clear permission error.
 
 ## `bloomctl cyl ingest-result`
 
