@@ -43,11 +43,13 @@ export async function runAdvancedSearch(supabase: any, f: AdvancedFilters): Prom
   let rows: any[] = [];
   if (f.barcodes.length) {
     for (const c of chunk(f.barcodes, CHUNK)) {
-      const { data } = await build(c);
+      const { data, error } = await build(c);
+      if (error) throw error;
       if (data) rows.push(...data);
     }
   } else {
-    const { data } = await build();
+    const { data, error } = await build();
+    if (error) throw error;
     rows = data || [];
   }
 

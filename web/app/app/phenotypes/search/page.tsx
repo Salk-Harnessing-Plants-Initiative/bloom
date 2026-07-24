@@ -17,22 +17,33 @@ function Results() {
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const key = searchParams.toString();
 
   useEffect(() => {
     const filters: AdvancedFilters = paramsToFilters(new URLSearchParams(key));
     if (filtersEmpty(filters)) {
-      setRows([]); setNotFound([]); setEmpty(true); setLoading(false);
+      setRows([]); setNotFound([]); setEmpty(true); setError(null); setLoading(false);
       return;
     }
     setEmpty(false);
+    setError(null);
     setLoading(true);
     let active = true;
-    runAdvancedSearch(supabase, filters).then((r) => {
-      if (!active) return;
-      setRows(r.rows); setNotFound(r.notFound); setTruncated(r.truncated); setLoading(false);
-    });
+    runAdvancedSearch(supabase, filters)
+      .then((r) => {
+        if (!active) return;
+        setRows(r.rows); setNotFound(r.notFound); setTruncated(r.truncated);
+      })
+      .catch((e) => {
+        if (!active) return;
+        setError(e?.message ?? 'Search failed');
+        setRows([]); setNotFound([]); setTruncated(false);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
     return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
@@ -57,6 +68,14 @@ function Results() {
 
   if (loading) {
     return <CircularProgress />;
+  }
+
+  if (error) {
+    return (
+      <Typography color="error">
+        Couldn’t run the search — {error}. Please try again.
+      </Typography>
+    );
   }
 
   return (
