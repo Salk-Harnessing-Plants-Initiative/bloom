@@ -76,13 +76,27 @@ export default function SearchComponent() {
   const handleSubmit = async () => {
     const { list, text } = parseQuery(searchQuery);
     if (!list && text) {
-      const { data } = await supabase
+      // Exact species name -> species page.
+      const { data: sp } = await supabase
         .from('species' as any)
         .select('id')
         .ilike('common_name', text);
-      if (data && data.length === 1) {
-        router.push(`/app/phenotypes/${(data[0] as any).id}`);
+      if (sp && sp.length === 1) {
+        router.push(`/app/phenotypes/${(sp[0] as any).id}`);
         return;
+      }
+      // Exact barcode -> that plant's accession page.
+      const { data: pl } = await supabase
+        .from('cyl_plant_search' as any)
+        .select('*')
+        .ilike('qr_code', text)
+        .limit(2);
+      if (pl && pl.length === 1) {
+        const href = fieldHrefs(pl[0]).accession;
+        if (href) {
+          router.push(href);
+          return;
+        }
       }
     }
     fetchResults(searchQuery);
