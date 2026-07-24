@@ -4,6 +4,56 @@ Python command-line tool for the Bloom server — download cylinder experiments
 (metadata + images), write per-scan pipeline results back, and manage
 credentials. Successor to the Node `@salk-hpi/bloom-cli`. Tracked by issue #347.
 
+## Install
+
+`bloomctl` is published to PyPI as **`bloomctl`**. Install it as a standalone
+tool (recommended) or into an existing environment:
+
+```bash
+uv tool install bloomctl     # isolated CLI tool (recommended)
+uvx bloomctl --help          # one-off, no install
+pip install bloomctl         # into the active environment
+```
+
+Releases are currently **pre-releases** (`0.1.0aN`) while the command set is
+still being ported, so plain installs skip them — opt in explicitly:
+
+```bash
+uv tool install bloomctl --prerelease allow
+uvx --prerelease allow bloomctl --help
+pip install --pre bloomctl
+```
+
+Verify it:
+
+```bash
+bloomctl --version
+```
+
+For pipeline use, a container image is published instead — see
+[Container image](#container-image).
+
+## Getting started
+
+Authenticate once, then run commands against Bloom:
+
+```bash
+bloomctl login
+```
+
+`login` prompts for your Bloom email + password, bootstraps the server's public
+client config, and writes credentials to `~/.bloom/credentials.txt`. Commands
+then run **as your Bloom user** (RLS-enforced — see [Access & roles](#access--roles)).
+
+- **Non-prod servers:** `bloomctl login --server <url>`, or supply config
+  directly with `--api-url` + `--anon-key` when `/client-info` isn't reachable.
+- **Profiles:** `-p/--profile <name>` keeps separate logins side by side
+  (`credentials.<name>.txt`); the default profile is `prod`. Pass the same
+  `--profile` to any command to use that login.
+
+Run `bloomctl --help` or `bloomctl <command> --help` at any time for the full,
+authoritative option list.
+
 ## Container image
 
 `bloomctl` is also published as a container image, for use as a step in
@@ -61,7 +111,7 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - **[read]** `bloomctl cyl experiments list` — list cylinder experiments (species,
   name, id), sorted by species then name (`--json` for machine-readable output).
 
-(Full `login`/`cyl download` usage docs are still forthcoming; run any command
+(Full `cyl download` usage docs are still forthcoming; run any command
 with `--help` in the meantime. `cyl ingest-result` and `cyl download-for-predict`
 are documented in full below.)
 

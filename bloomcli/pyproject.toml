@@ -30,6 +30,11 @@ dependencies = [
     "sleap-roots-contracts>=0.1.0a5",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/tree/main/bloomcli"
+Repository = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom"
+Changelog = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/main/bloomcli/CHANGELOG.md"
+
 [project.scripts]
 bloomctl = "bloomctl.cli:cli"
 
