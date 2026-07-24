@@ -298,33 +298,38 @@ def stage_one_scan(client: Any, scan_id: Any, out_dir: Path) -> ScanResult:
     if scan_is_already_staged(scan_dir, scan_key):
         return ScanResult(scan_key, "skipped")
 
-    scan = fetch_scan(client, scan_id)
-    if scan is None:
-        return ScanResult(scan_key, "failed", f"Scan {scan_id} not found.")
-
-    images = fetch_images(client, scan_id)
-    if not images:
-        return ScanResult(scan_key, "failed", f"No frames found for scan {scan_id}.")
-
     try:
-        validate_frame_numbers(images)
-        params = resolve_sidecar_params(scan)
-    except ValueError as exc:
-        return ScanResult(scan_key, "failed", f"Scan {scan_id}: {exc}")
+        scan = fetch_scan(client, scan_id)
+        if scan is None:
+            return ScanResult(scan_key, "failed", f"Scan {scan_id} not found.")
 
-    clear_scan_dir(scan_dir)
-    result, frame_bytes = download_frames_for_predict(client, scan, images, scan_dir)
-    if result.failed:
-        return ScanResult(
-            scan_key,
-            "failed",
-            f"{result.failed} of {result.total} frames failed to download for scan {scan_id}.",
-        )
+        images = fetch_images(client, scan_id)
+        if not images:
+            return ScanResult(scan_key, "failed", f"No frames found for scan {scan_id}.")
 
-    sidecar = build_sidecar(scan, images, frame_bytes, params)
-    sidecar_path = scan_dir / f"{scan_key}.scan_metadata.json"
-    write_sidecar(sidecar, sidecar_path)
-    return ScanResult(scan_key, "ok")
+        try:
+            validate_frame_numbers(images)
+            params = resolve_sidecar_params(scan)
+        except ValueError as exc:
+            return ScanResult(scan_key, "failed", f"Scan {scan_id}: {exc}")
+
+        clear_scan_dir(scan_dir)
+        result, frame_bytes = download_frames_for_predict(client, scan, images, scan_dir)
+        if result.failed:
+            return ScanResult(
+                scan_key,
+                "failed",
+                f"{result.failed} of {result.total} frames failed to download for scan {scan_id}.",
+            )
+
+        sidecar = build_sidecar(scan, images, frame_bytes, params)
+        sidecar_path = scan_dir / f"{scan_key}.scan_metadata.json"
+        write_sidecar(sidecar, sidecar_path)
+        return ScanResult(scan_key, "ok")
+    except Exception as exc:  # batch isolation: a transient network/auth/OS error on one
+        # scan must never abort the rest of the batch (review finding: this was previously
+        # uncaught, mirroring download_images's own per-frame "record and continue" discipline).
+        return ScanResult(scan_key, "failed", str(exc))
 
 
 # --- batch: command -----------------------------------------------------------

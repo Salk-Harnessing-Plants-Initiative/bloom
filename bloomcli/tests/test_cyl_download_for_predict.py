@@ -734,6 +734,60 @@ def test_stage_one_scan_partial_frame_failure(monkeypatch, tmp_path):
     assert not (tmp_path / "scan_1" / "scan_1.scan_metadata.json").exists()
 
 
+def test_stage_one_scan_isolates_unexpected_network_error(monkeypatch, tmp_path):
+    """A transient network/auth error from fetch_scan/fetch_images (not just the ValueError
+    validation cases already handled) must be isolated into a failed ScanResult, never raised —
+    review finding: this was previously uncaught and would crash the whole batch."""
+    _patch_batch(monkeypatch)
+
+    def _boom(client, scan_id):
+        raise ConnectionError("simulated transient network failure")
+
+    monkeypatch.setattr(dfp, "fetch_scan", _boom)
+    result = dfp.stage_one_scan(object(), 1, tmp_path)
+    assert result.status == "failed"
+    assert result.scan_key == "scan_1"
+    assert "simulated transient network failure" in result.error
+
+
+def test_stage_one_scan_isolates_unexpected_error_from_fetch_images(monkeypatch, tmp_path):
+    _patch_batch(monkeypatch)
+
+    def _boom(client, scan_id):
+        raise RuntimeError("simulated auth token expiry")
+
+    monkeypatch.setattr(dfp, "fetch_images", _boom)
+    result = dfp.stage_one_scan(object(), 1, tmp_path)
+    assert result.status == "failed"
+    assert "simulated auth token expiry" in result.error
+
+
+def test_batch_cli_isolates_unexpected_network_error_among_several(tmp_path, monkeypatch):
+    """The batch command itself must not crash if one scan's fetch raises something other
+    than the already-handled cases — the other scans must still be processed and reported."""
+    _patch_batch(monkeypatch)
+
+    def _flaky_fetch_scan(client, scan_id):
+        if scan_id == 2:
+            raise ConnectionError("simulated transient network failure")
+        return {**SCAN, "scan_id": scan_id}
+
+    monkeypatch.setattr(dfp, "fetch_scan", _flaky_fetch_scan)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1, 2, 3]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code != 0
+    assert (out / "scan_1" / "scan_1.scan_metadata.json").exists()
+    assert (out / "scan_3" / "scan_3.scan_metadata.json").exists()
+    assert "scan_2" in result.output
+    assert "simulated transient network failure" in result.output
+
+
 def test_stage_one_scan_already_staged_is_skipped(tmp_path, monkeypatch):
     scan_dir = tmp_path / "scan_1"
     scan_dir.mkdir()
