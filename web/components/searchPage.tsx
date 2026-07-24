@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect } from 'react';
 import NextLink from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { TextField, Box, CircularProgress, List, Divider, Typography, Link as MuiLink, InputAdornment, IconButton } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import { createClientSupabaseClient } from "@/lib/supabase/client";
@@ -57,11 +57,19 @@ export default function SearchComponent() {
   const [loading, setLoading] = useState(false);
   const supabase = createClientSupabaseClient();
   const router = useRouter();
+  const pathname = usePathname();
 
   const clearResults = () => {
     setSpeciesResults([]);
     setPlantResults([]);
   };
+
+  // Clear the query + results on navigation (search bar persists across the layout).
+  useEffect(() => {
+    setSearchQuery('');
+    setSpeciesResults([]);
+    setPlantResults([]);
+  }, [pathname]);
 
   // Enter / magnifier: jump straight to the species page when the text is
   // exactly one species name; otherwise just run the normal results search.
