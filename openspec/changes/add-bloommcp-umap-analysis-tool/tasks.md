@@ -276,7 +276,39 @@ real gaps beyond the relocation. Addressed:
   pure paranoia with no reachable failure case, so left as-is.
 - [x] 5.10 Re-ran `openspec validate --strict`, full test suite, and `black`/`ruff` after
   the relocation + fixes — see the PR description for final counts.
-- [ ] 5.11 Force-pushed the rewritten branch history to `egao28/bloommcp-umap-analysis-425`
+- [x] 5.11 Force-pushed the rewritten branch history to `egao28/bloommcp-umap-analysis-425`
   (the original 3-commit history was rebuilt against current `staging` rather than rebased,
   since the branch's original fork point predates extensive, unrelated history on
-  `staging`); PR #463 updated.
+  `staging`); PR #463 updated. `gh pr view --json mergeable` confirmed `MERGEABLE`
+  (`mergeStateStatus: BLOCKED` only on the required-review branch-protection rule, not a
+  real conflict).
+
+## 6. PR #463 review round 3 — minor/non-blocking follow-ups
+
+A second 5-lens review pass (after §5) confirmed every BLOCKING/Important item resolved
+and approved, with five non-blocking follow-ups. All five addressed:
+
+- [x] 6.1 Added `test_n_components_equals_max_succeeds` — `n_components=50` (the `le=50`
+  ceiling's own boundary) must succeed; only 51 was previously tested as rejected and 1 as
+  the lower-bound success case, leaving the upper boundary itself unverified.
+- [x] 6.2 Added a spec.md scenario ("Internal PCA call failure is a structured,
+  non-leaking assumption_violated") under "Top-traits plot consumes an internal,
+  non-persisted PCA call" — the implementation and test
+  (`test_top_traits_internal_pca_failure_is_assumption_violated`) already existed from §5.3
+  but the spec had no corresponding scenario.
+- [x] 6.3 Added `test_delegate_failure_logs_original_exception_at_debug_level` and
+  `test_top_traits_internal_pca_failure_logs_original_exception` (via `caplog.at_level`) —
+  the §5.7 `logger.debug(...)` additions had no dedicated coverage; these confirm the
+  original exception type/message is actually captured, not just that the code calls a
+  logging function.
+- [x] 6.4 Fixed `bloommcp/tests/smoke/test_umap_analysis_smoke.py`'s docstring: it claimed
+  coverage of only the turface_19 fixture, but `seeded_experiment`'s dependency on the
+  session-wide `fixture_name` fixture (`params=["turface_19", "cylinder"]`) already
+  parametrizes every test using it over both fixtures with no explicit mark needed. Added
+  the reasoning for why neither fixture needs `live_smoke_slow` here (UMAP has no
+  full-covariance step the way GMM does, and the default `n_neighbors=15` is comfortably
+  below both fixtures' sample counts — verified: turface_19's raw fixture has 187 samples,
+  cylinder's has 129).
+- [x] 6.5 PR description/comment test-count mismatch: reconciled against the actual
+  collected count (56, up from 43, reflecting parametrized cases — see the updated PR
+  description).

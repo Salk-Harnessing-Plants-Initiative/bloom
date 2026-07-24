@@ -225,3 +225,12 @@ own versioned run.
 
 - **WHEN** `umap_analysis` is called with `plots` including `create_umap_colored_by_top_traits`
 - **THEN** no `tool_class="pca"` run is created or committed as a side effect
+
+#### Scenario: Internal PCA call failure is a structured, non-leaking assumption_violated
+
+- **WHEN** the internal `perform_pca_analysis` call raises because the certified-clean
+  selection is degenerate for PCA (even though it already fit the UMAP embedding
+  successfully — PCA's standardization/eigendecomposition is stricter about near-constant
+  columns than UMAP is)
+- **THEN** `umap_analysis` raises a structured `assumption_violated` error naming the
+  degeneracy, without leaking the delegate's raw exception text, and commits no run

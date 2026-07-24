@@ -362,6 +362,14 @@ def test_n_components_above_max_is_invalid_input(injected_ports, monkeypatch):
     assert exc.value.code == "invalid_input"
 
 
+def test_n_components_equals_max_succeeds(injected_ports):
+    """The le=50 ceiling's own boundary: 50 must succeed (only 51 is rejected, 2.8e) —
+    otherwise an off-by-one in the Pydantic constraint would silently reject a legitimate
+    edge value."""
+    result = _run(n_components=50)
+    assert result.n_components == 50
+
+
 def test_n_components_equals_one_succeeds(injected_ports):
     result = _run(n_components=1)
     assert result.n_components == 1
@@ -493,6 +501,30 @@ def test_degenerate_fit_does_not_leak_backend_internals(
     msg = f"{exc.value.message} {exc.value.remedy}"
     assert "/var" not in msg and "db.internal" not in msg
     assert store.list_runs(_EXPERIMENT, "umap") == []
+
+
+def test_delegate_failure_logs_original_exception_at_debug_level(
+    injected_ports, monkeypatch, caplog
+):
+    """The original exception type/message is captured server-side (debug level) before
+    translation to assumption_violated — not leaked to the caller (see the no-leak test
+    above), but not silently discarded either, so a genuinely new upstream failure mode is
+    diagnosable without reproducing the call."""
+
+    def _boom(*a, **k):
+        raise ValueError("secret path /var/secrets/key and host db.internal")
+
+    monkeypatch.setattr(umap_analysis_tool, "perform_umap_analysis", _boom)
+    with (
+        caplog.at_level(
+            "DEBUG", logger="bloom_mcp.sections.sleap_roots.analysis.umap_analysis"
+        ),
+        pytest.raises(BloomMCPError),
+    ):
+        _run()
+    assert any(
+        "ValueError" in r.message and "db.internal" in r.message for r in caplog.records
+    )
 
 
 def test_non_finite_embedding_is_assumption_violated_before_persistence(
@@ -751,6 +783,30 @@ def test_top_traits_internal_pca_failure_is_assumption_violated(
     msg = f"{exc.value.message} {exc.value.remedy}"
     assert "/var" not in msg
     assert store.list_runs(_EXPERIMENT, "umap") == []
+
+
+def test_top_traits_internal_pca_failure_logs_original_exception(
+    injected_ports, monkeypatch, caplog
+):
+    """Same server-side diagnosability guarantee as the main delegate call (see
+    test_delegate_failure_logs_original_exception_at_debug_level), applied to the
+    internal, non-persisted perform_pca_analysis call."""
+
+    def _boom(*a, **k):
+        raise ValueError("secret backend detail /var/lib/whatever")
+
+    monkeypatch.setattr(umap_analysis_tool, "perform_pca_analysis", _boom)
+    with (
+        caplog.at_level(
+            "DEBUG", logger="bloom_mcp.sections.sleap_roots.analysis.umap_analysis"
+        ),
+        pytest.raises(BloomMCPError),
+    ):
+        _run(include_plots=True, plots=["create_umap_colored_by_top_traits"])
+    assert any(
+        "ValueError" in r.message and "/var/lib/whatever" in r.message
+        for r in caplog.records
+    )
 
 
 def test_plots_subset_generates_only_requested(injected_ports, monkeypatch):
