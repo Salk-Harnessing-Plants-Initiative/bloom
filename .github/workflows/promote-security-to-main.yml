@@ -97,7 +97,9 @@ jobs:
           gh label create "${LABEL}" --color B60205 --description "Batched security fixes promoted from staging to main" 2>/dev/null || true
 
           title="Promote ${{ steps.build.outputs.promoted }} security fix(es) to production"
-          existing=$(gh pr list --base "${BASE_BRANCH}" --head "${PROMO_BRANCH}" --state open --json number --jq '.[0].number')
+          # `// empty` so the no-PR case is a blank string, not the literal
+          # "null" (which is truthy in bash and always took the edit path).
+          existing=$(gh pr list --base "${BASE_BRANCH}" --head "${PROMO_BRANCH}" --state open --json number --jq '.[0].number // empty')
 
           if [ -n "$existing" ]; then
             gh pr edit "$existing" --title "$title" --body-file "${{ steps.build.outputs.body_file }}"
