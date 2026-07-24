@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import NextLink from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { TextField, Box, CircularProgress, List, Divider, Typography, Link as MuiLink, InputAdornment, IconButton, Button } from '@mui/material';
@@ -7,23 +7,25 @@ import { createTheme, ThemeProvider, useTheme } from '@mui/material/styles';
 import { green } from '@mui/material/colors';
 import SearchIcon from '@mui/icons-material/Search';
 import { createClientSupabaseClient } from "@/lib/supabase/client";
+import {
+  fieldHrefs,
+  parseQuery,
+  escapeLike,
+  ilikeAnyFilter,
+  resolveJumpTarget,
+  batchNotice,
+  MAX_BATCH,
+  MAX_JUMP_MATCHES,
+} from './searchPage.helpers';
+import { FieldLink } from './plant-search-links';
 import PlantAdvancedSearch from './plant-advanced-search';
-import { fieldHrefs, FieldLink } from './plant-search-links';
-
-function parseQuery(input: string): { list: string[] | null; text: string } {
-  const raw = input.trim();
-  if (/[\n,]/.test(raw)) {
-    const list = raw.split(/[\s,]+/).map((t) => t.trim()).filter(Boolean);
-    return { list, text: raw };
-  }
-  return { list: null, text: raw };
-}
 
 export default function SearchComponent() {
   const [searchQuery, setSearchQuery] = useState('');
   const [speciesResults, setSpeciesResults] = useState<any[]>([]);
   const [plantResults, setPlantResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const supabase = createClientSupabaseClient();
   const router = useRouter();
@@ -33,6 +35,8 @@ export default function SearchComponent() {
     () => createTheme(baseTheme, { palette: { primary: { main: green[700], light: green[500], dark: green[800] } } }),
     [baseTheme],
   );
+  // Cancels the in-flight search so a slower, older response can't overwrite newer results.
+  const abortRef = useRef<AbortController | null>(null);
 
   const clearResults = () => {
     setSpeciesResults([]);
@@ -40,55 +44,79 @@ export default function SearchComponent() {
   };
 
   // Clear the query + results on navigation (search bar persists across the layout).
+  // Abort any in-flight search so a late response can't repopulate on the new page.
   useEffect(() => {
+    abortRef.current?.abort();
     setSearchQuery('');
     setSpeciesResults([]);
     setPlantResults([]);
+    setErrorMsg('');
   }, [pathname]);
 
   // Enter / magnifier: jump straight to the species page when the text is
   // exactly one species name; otherwise just run the normal results search.
   const handleSubmit = async () => {
+    // Empty submit: prompt the user instead of matching every row via ILIKE '%%'.
+    if (searchQuery.trim() === '') {
+      setErrorMsg('Enter a barcode, accession, or species to search.');
+      clearResults();
+      return;
+    }
+    setErrorMsg('');
+
+    // Take the abort slot before the jump queries: a newer search started while
+    // they run supersedes this submit, so the stale text captured in this
+    // closure can't overwrite fresher results on the way out.
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const { signal } = controller;
+
     const { list, text } = parseQuery(searchQuery);
     if (!list && text) {
-      // Exact species name -> species page.
-      const { data: sp } = await supabase
-        .from('species' as any)
-        .select('id')
-        .ilike('common_name', text);
-      if (sp && sp.length === 1) {
-        router.push(`/app/phenotypes/${(sp[0] as any).id}`);
+      // Each jump candidate fetches at most MAX_JUMP_MATCHES + 1 rows so a
+      // truncated set is detectable; resolveJumpTarget owns the priority order
+      // and the dedupe/truncation rules.
+      const dest = await resolveJumpTarget({
+        // Escape %/_ so they match literally rather than as ilike wildcards
+        // (ilike keeps case-insensitivity).
+        species: async () =>
+          (
+            await supabase
+              .from('species' as any)
+              .select('id')
+              .ilike('common_name', escapeLike(text))
+              .is('deleted_at', null)
+              .abortSignal(signal)
+          ).data,
+        // eq, not ilike: barcodes contain '_'. Barcodes are unique per wave
+        // only, so one can match across waves.
+        barcode: async () =>
+          (
+            await supabase
+              .from('cyl_plant_search' as any)
+              .select('species_id, experiment_id, wave_id, accession_id')
+              .eq('qr_code', text)
+              .limit(MAX_JUMP_MATCHES + 1)
+              .abortSignal(signal)
+          ).data,
+        accession: async () =>
+          (
+            await supabase
+              .from('cyl_plant_search' as any)
+              .select('species_id, experiment_id, wave_id, accession_id')
+              .eq('accession_name', text)
+              .limit(MAX_JUMP_MATCHES + 1)
+              .abortSignal(signal)
+          ).data,
+      });
+      if (signal.aborted) return;
+      if (dest) {
+        router.push(dest);
         return;
       }
-      // Exact barcode -> that plant's page (eq, not ilike: barcodes contain '_').
-      const { data: pl } = await supabase
-        .from('cyl_plant_search' as any)
-        .select('*')
-        .eq('qr_code', text)
-        .limit(1);
-      if (pl && pl.length === 1) {
-        const href = fieldHrefs(pl[0]).accession;
-        if (href) {
-          router.push(href);
-          return;
-        }
-      }
-      // Exact accession -> its accession page, when it maps to a single one.
-      const { data: acc } = await supabase
-        .from('cyl_plant_search' as any)
-        .select('species_id, experiment_id, wave_id, accession_id')
-        .eq('accession_name', text)
-        .limit(500);
-      if (acc && acc.length > 0) {
-        const dests = Array.from(
-          new Set(acc.map((r: any) => fieldHrefs(r).accession).filter(Boolean)),
-        );
-        if (dests.length === 1) {
-          router.push(dests[0] as string);
-          return;
-        }
-      }
     }
+    if (signal.aborted) return;
     fetchResults(searchQuery);
   };
 
@@ -108,39 +136,68 @@ export default function SearchComponent() {
   // species itself (not its thousands of plants); a barcode/accession match
   // surfaces the plants, with species/experiment as context.
   const fetchResults = async (query: string) => {
+    // Supersede any in-flight search: abort it, then run this one under a fresh signal.
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const { signal } = controller;
+
     setLoading(true);
     const { list, text } = parseQuery(query);
 
-    // Batch barcode list -> plants only.
+    // Batch barcode list -> plants only. Cap the list so an oversized paste
+    // can't send an unbounded .in(...) straight to PostgREST from the browser.
     if (list) {
-      const { data } = await supabase
+      const capped = list.slice(0, MAX_BATCH);
+      const { data, error } = await supabase
         .from('cyl_plant_search' as any)
         .select('*')
-        .in('qr_code', list)
-        .limit(200);
+        .in('qr_code', capped)
+        .limit(MAX_BATCH)
+        .abortSignal(signal);
+      if (signal.aborted) return;
+      if (error) {
+        console.error('Plant search failed:', error.message);
+        setErrorMsg('Search failed, please try again.');
+        clearResults();
+        setLoading(false);
+        return;
+      }
+      setErrorMsg(batchNotice(list.length, data?.length ?? 0));
       setSpeciesResults([]);
       setPlantResults(data || []);
       setLoading(false);
       return;
     }
 
-    // Strip characters that would break the PostgREST .or() grammar.
-    const term = text.replace(/[(),]/g, ' ').trim();
+    // Substring search: escape %/_ so a term containing them matches literally
+    // instead of over-matching as a wildcard.
     const [sp, pl] = await Promise.all([
       supabase
         .from('species' as any)
         .select('id, common_name, genus, species')
-        .ilike('common_name', `%${term}%`)
-        .limit(8),
+        .ilike('common_name', `%${escapeLike(text)}%`)
+        .is('deleted_at', null)
+        .limit(8)
+        .abortSignal(signal),
       // Deliberately NOT matching species_name here — species matches belong in
       // the Species group, not as a flood of plant rows.
       supabase
         .from('cyl_plant_search' as any)
         .select('*')
-        .or(`qr_code.ilike.%${term}%,accession_name.ilike.%${term}%`)
-        .limit(100),
+        .or(ilikeAnyFilter(['qr_code', 'accession_name'], text))
+        .limit(100)
+        .abortSignal(signal),
     ]);
 
+    if (signal.aborted) return;
+    if (sp.error || pl.error) {
+      console.error('Search failed:', sp.error?.message ?? pl.error?.message);
+      setErrorMsg('Search failed, please try again.');
+      clearResults();
+      setLoading(false);
+      return;
+    }
     setSpeciesResults(sp.data || []);
     setPlantResults(pl.data || []);
     setLoading(false);
@@ -158,7 +215,12 @@ export default function SearchComponent() {
         multiline
         maxRows={6}
         value={searchQuery}
-        onChange={(e) => setSearchQuery(e.target.value)}
+        error={errorMsg !== ''}
+        helperText={errorMsg || undefined}
+        onChange={(e) => {
+          setSearchQuery(e.target.value);
+          if (errorMsg) setErrorMsg('');
+        }}
         onKeyDown={(e) => {
           // Enter submits (jump-or-search); Shift+Enter adds a newline for lists.
           if (e.key === 'Enter' && !e.shiftKey) {

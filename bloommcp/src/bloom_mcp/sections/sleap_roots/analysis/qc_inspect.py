@@ -61,7 +61,6 @@ from sleap_roots_analyze import (
 from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
-from bloom_mcp.experiment_utils import TRAITS_DIR
 from bloom_mcp.tools import _ports
 
 # Canonical thresholds + shared helpers are single-sourced in _qc_shared so qc_inspect's
@@ -418,7 +417,7 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
     reader = _ports.reader()
     store = _ports.store()
 
-    # Bare-filename guard before any read — experiment flows into TRAITS_DIR / experiment.
+    # Bare-filename guard before any read — experiment flows into the reader's input root.
     _validate_experiment_name(params.experiment)
 
     # Read the RAW frame — qc_inspect inspects the raw missingness (no require_clean).
@@ -500,13 +499,16 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
 
     # Persist a versioned REPORT run under tool class `qc_inspect` (never `qc`, never
     # CLEANED_CSV_NAME) so the reader cannot resolve it as a cleaned version.
-    local_src = TRAITS_DIR / params.experiment
+    # Source-CSV provenance goes through the active reader (mirrors _ports.start_run)
+    # so a custom BLOOM_EXPERIMENT_LOCAL_ROOT / BLOOM_LOCAL_ROOT input root is
+    # honoured rather than a hard-coded TRAITS_DIR, which is unused/empty under
+    # fully-local mode's BLOOM_LOCAL_ROOT-only configuration (#479).
     run = store.create_run(
         experiment=params.experiment,
         tool_class=_TOOL_CLASS,
         provenance=provenance,
         user_label=params.user_label,
-        source_csv=local_src if local_src.exists() else None,
+        source_csv=_ports.raw_source_for(params.experiment),
     )
     # Render + persist under the run's staging dir; on any partial failure remove the
     # staging dir so a long-lived server does not leak a half-written temp run.

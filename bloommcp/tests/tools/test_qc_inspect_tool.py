@@ -858,6 +858,53 @@ def test_cylinder_inspect_matches_golden_no_missingness_story(injected_ports_cyl
         == _GOLDEN_CYL["at_default_params"]["samples_lost"]
         == 0
     )
-    assert result.recommendation.no_change_needed == _GOLDEN_CYL["recommendation"][
-        "no_change_needed"
-    ] is True
+    assert (
+        result.recommendation.no_change_needed
+        == _GOLDEN_CYL["recommendation"]["no_change_needed"]
+        is True
+    )
+
+
+# ── BLOOM_LOCAL_ROOT-only mode (#479 regression) ─────────────────────────────
+#
+# qc_inspect self-computes its report run's source_csv rather than calling
+# _ports.start_run; it must route that through the active reader
+# (_ports.raw_source_for), not a bare BLOOM_TRAITS_DIR read — the latter
+# resolves to Path("") (CWD) when BLOOM_TRAITS_DIR is unset, which is now a
+# supported combination when BLOOM_STORAGE_BACKEND=local + BLOOM_LOCAL_ROOT.
+
+
+def test_source_csv_honors_local_root_only_mode(tmp_path, monkeypatch):
+    import bloom_mcp.experiment_utils as eu
+    import bloom_mcp.storage_backend as sb
+    from bloom_mcp.data_access import LocalReader
+
+    root = tmp_path / "local_root"
+    (root / "input").mkdir(parents=True)
+    raw_path = root / "input" / _EXPERIMENT
+    _raw_df().to_csv(raw_path, index=False)
+
+    monkeypatch.delenv("BLOOM_TRAITS_DIR", raising=False)
+    monkeypatch.delenv("BLOOM_EXPERIMENT_LOCAL_ROOT", raising=False)
+    monkeypatch.setattr(eu, "TRAITS_DIR", Path("/should-not-be-used"))
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(root))
+    sb.reset_backend_for_tests()
+
+    store = FakeResultStore()
+    captured = {}
+    real_create_run = store.create_run
+
+    def _spy(**kwargs):
+        captured.update(kwargs)
+        return real_create_run(**kwargs)
+
+    monkeypatch.setattr(store, "create_run", _spy)
+    _ports.configure(reader=LocalReader(), store=store)
+    try:
+        _run()
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert captured["source_csv"] == raw_path
+    assert captured["source_csv"].exists()

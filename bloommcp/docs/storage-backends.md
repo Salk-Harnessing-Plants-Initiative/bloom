@@ -28,8 +28,9 @@ Two env vars look like they'd control this and don't:
 
 - **`BLOOM_OUTPUT_DIR`** — post-migration this only feeds a startup dir-existence
   check and a _legacy read_ fallback for pre-migration cleaned CSVs. Nothing
-  writes new outputs there. (It _is_ reused as the default local root — but only
-  when you opt into the `local` backend below.)
+  writes new outputs there. (It _is_ reused as a fallback local root — but only
+  when you opt into the `local` backend below, and only as the last-resort tier;
+  see the precedence table there.)
 - **`BLOOM_USE_LOCAL`** — dead/commented-out, and it was only ever about CLI login
   credentials, never about outputs.
 
@@ -43,42 +44,106 @@ Two env vars look like they'd control this and don't:
 
 ## Opt-in: the `local` backend (real files on disk)
 
-Set `BLOOM_STORAGE_BACKEND=local` to write outputs as real files, laid out by
-storage key under a root directory:
+Set `BLOOM_STORAGE_BACKEND=local` to run fully offline — local input, local
+output, no Supabase boot gate. Three subpaths resolve independently, each with
+the same 3-tier precedence (highest wins):
+
+| Subpath | 1. Explicit override          | 2. `BLOOM_LOCAL_ROOT`-derived | 3. Legacy fallback                     |
+| ------- | ----------------------------- | ----------------------------- | -------------------------------------- |
+| Input   | `BLOOM_EXPERIMENT_LOCAL_ROOT` | `<BLOOM_LOCAL_ROOT>/input`    | `BLOOM_TRAITS_DIR`                     |
+| Output  | `BLOOM_STORAGE_LOCAL_ROOT`    | `<BLOOM_LOCAL_ROOT>/output`   | `BLOOM_OUTPUT_DIR` (deprecated bridge) |
+| Plots   | `BLOOM_PLOTS_DIR`             | `<BLOOM_LOCAL_ROOT>/plots`    | _(none — required)_                    |
+
+`BLOOM_LOCAL_ROOT` is inert unless `BLOOM_STORAGE_BACKEND=local`; tier 3 is
+unchanged if you never set it — this is purely additive, for anyone who wants
+the split, three-variable setup this replaces for the common case.
+
+**Two ways to use it:**
+
+Inside `docker-compose.dev.yml` (container paths — needs its own bind mount if
+you point `BLOOM_LOCAL_ROOT` somewhere not already mounted, or the
+auto-created subfolders below won't survive `docker compose down`):
+
+```
+BLOOM_STORAGE_BACKEND: local
+BLOOM_LOCAL_ROOT: /app/data/LOCAL_ROOT
+```
+
+Running `bloommcp` directly — e.g. Claude Desktop / Claude Code offline, no
+Docker (host paths):
 
 ```
 BLOOM_STORAGE_BACKEND=local
-# optional — defaults to BLOOM_OUTPUT_DIR when unset:
-BLOOM_STORAGE_LOCAL_ROOT=/app/data/ANALYSIS_OUTPUT
+BLOOM_LOCAL_ROOT=/Users/you/bloommcp-data
 ```
 
-Resulting on-disk layout (the storage key becomes the path under the root):
+Drop input CSVs in `bloommcp-data/input/`; outputs and plots appear under
+`bloommcp-data/output/` and `bloommcp-data/plots/` — one folder to create by
+hand, nothing else to pre-create (see auto-create below).
+
+Resulting on-disk output layout (the storage key becomes the path under the
+output root):
 
 ```
-<root>/bloommcp_output/qc_<stem>/manifest.json
-<root>/bloommcp_output/qc_<stem>/v1_2026-07-02/_cleaned.csv
-<root>/bloommcp_output/qc_<stem>/v1_2026-07-02/cleanup_log.json
+<output root>/bloommcp_output/qc_<stem>/manifest.json
+<output root>/bloommcp_output/qc_<stem>/v1_2026-07-02/_cleaned.csv
+<output root>/bloommcp_output/qc_<stem>/v1_2026-07-02/cleanup_log.json
 ```
 
-- **Root resolution:** `BLOOM_STORAGE_LOCAL_ROOT` if set, otherwise
-  `BLOOM_OUTPUT_DIR` (already required and, in dev, mounted at
-  `./bloommcp/data/ANALYSIS_OUTPUT`) — so in dev, `BLOOM_STORAGE_BACKEND=local`
-  needs no second variable and finally populates that folder.
-- **Same semantics as Supabase:** manifest/versioning are unchanged; the backend
-  overwrites in place, copies bytes verbatim (so the recorded `output_sha256`
-  matches the file on disk), and reads resolve back through the same
-  manifest/versioned-cleaned path.
+- **Auto-create:** only the top-level `BLOOM_LOCAL_ROOT` folder must pre-exist
+  and be writable — boot fails fast if it doesn't. Its three subfolders
+  (`input/`, `output/`, `plots/`) are created automatically at boot if missing.
+  An **explicitly-set** granular var (`BLOOM_EXPERIMENT_LOCAL_ROOT` /
+  `BLOOM_STORAGE_LOCAL_ROOT` / `BLOOM_PLOTS_DIR`) keeps the stricter
+  "must already exist" contract — auto-create applies only to the
+  `BLOOM_LOCAL_ROOT`-derived default, so a typo'd override still fails loudly
+  instead of silently creating a directory at the wrong path.
+- **Same output semantics as Supabase:** manifest/versioning are unchanged; the
+  backend overwrites in place, copies bytes verbatim (so the recorded
+  `output_sha256` matches the file on disk), and reads resolve back through the
+  same manifest/versioned-cleaned path.
 - **Atomic writes (POSIX):** on POSIX filesystems the backend writes a temp file,
   `fsync`s it, then `os.replace`s it into place, so a crash mid-write never leaves
   a truncated `manifest.json`. **On Windows/NTFS** `os.replace` over an existing
   file is **not** guaranteed atomic (and can fail if a reader holds the target
   open) — acceptable for this dev-only backend, but don't rely on crash-atomicity
   there. (Crash-atomic, not power-loss-durable beyond a best-effort dir `fsync`.)
+- **Inputs via `LocalReader`.** `LocalReader` implements the same
+  `ExperimentReader` contract as the Supabase path (same declared roles, same
+  `pd.read_csv` config, same resolution order), reaches no Supabase, and
+  rejects any experiment name that escapes its input root.
+- **Backend-aware boot.** In `local` mode `server.main()` skips
+  `validate_supabase_env()` and validates the local input root instead.
+  `BLOOM_TRAITS_DIR` / `BLOOM_OUTPUT_DIR` / `BLOOM_PLOTS_DIR` are required
+  **unless** `BLOOM_LOCAL_ROOT` is also set, in which case only
+  `BLOOM_LOCAL_ROOT` itself must exist and be writable — an invalid
+  `BLOOM_STORAGE_BACKEND` value still fails fast in every mode. Production and
+  staging never set `local`, so their boot fail-fast is unchanged.
+- **Reader/store are coupled.** `LocalReader` is wired only when the object-storage
+  backend is also `local`, so a run can't read raw inputs locally while resolving
+  cleaned outputs from Supabase (a split lineage). A mismatch is rejected at boot.
+- **`require_clean` ignores the un-versioned legacy CSV.** The local reader will
+  not satisfy a certified-clean consumer (e.g. PCA) from the un-versioned legacy
+  `qc_<stem>/<stem>_cleaned.csv` — it has no manifest/hash lineage and may not match
+  the current input; only a versioned, manifest-backed cleaned output qualifies.
 - **Read paths work too:** manifest resolution, the versioned-cleaned lookup, and
   the MCP read tools all resolve against the local files.
 
-To enable it in dev, uncomment the storage-backend lines in the `bloommcp` service
-env block of `docker-compose.dev.yml` and restart the service.
+To enable it in dev, run `make dev-up-local` — it brings the stack up in
+fully-local mode for one invocation (`BLOOM_STORAGE_BACKEND=local` set only for
+that run) without touching `.env.dev`. The `bloommcp` service in
+`docker-compose.dev.yml` sources these vars via `${VAR:-}` interpolation — it no
+longer needs to be edited to toggle this. You can also set
+`BLOOM_STORAGE_BACKEND=local` directly in your own `.env.dev`, but prefer the
+one-shot `make dev-up-local` form: a value left set in `.env.dev` (or exported in
+a shell profile) silently applies to every subsequent plain `make dev-up` too,
+with no prompt or confirmation.
+
+`docker-compose.dev.yml` uses a single, fixed compose project name
+(`bloom_v2_dev`) for the whole dev stack — the same one `make dev-up` uses. If
+someone else (or another terminal) already has the dev stack running on this
+machine, `make dev-up-local` recreates those same containers into fully-local
+mode rather than starting an independent stack; it isn't isolated per-invocation.
 
 ### ⚠️ Do not mix backends for one experiment
 
@@ -89,32 +154,6 @@ and re-allocates `v1`: version ids collide and each store's `latest` points at a
 different lineage. A later read sees only the store the current backend points at
 and is blind to the other's versions. **Pick one backend per experiment and keep
 it stable** for the life of that experiment's analysis history.
-
-## `local` is a fully-local (offline) dev mode — input, output, and boot
-
-`BLOOM_STORAGE_BACKEND=local` is a **single fully-local switch**: it selects local
-output (above) **and** local input, and drops the Supabase boot gate. With it set,
-bloommcp boots and runs a full `qc_clean → pca_analysis` with **no** `SUPABASE_URL`
-/ `BLOOM_AGENT_KEY` and no live Supabase stack.
-
-- **Inputs via `LocalReader`.** Experiment CSVs are read from a local directory —
-  `BLOOM_EXPERIMENT_LOCAL_ROOT` when set, otherwise the already-mounted
-  `BLOOM_TRAITS_DIR` (`./bloommcp/data/TRAITS_DIR` in dev). `LocalReader`
-  implements the same `ExperimentReader` contract as the Supabase path (same
-  declared roles, same `pd.read_csv` config, same resolution order), reaches no
-  Supabase, and rejects any experiment name that escapes its input root.
-- **Backend-aware boot.** In `local` mode `server.main()` skips
-  `validate_supabase_env()` and validates the local input root instead; the data
-  directories (`BLOOM_*_DIR`, `BLOOM_PLOTS_URL`) and an invalid
-  `BLOOM_STORAGE_BACKEND` value still fail fast in both modes. Production and
-  staging never set `local`, so their boot fail-fast is unchanged.
-- **Reader/store are coupled.** `LocalReader` is wired only when the object-storage
-  backend is also `local`, so a run can't read raw inputs locally while resolving
-  cleaned outputs from Supabase (a split lineage). A mismatch is rejected at boot.
-- **`require_clean` ignores the un-versioned legacy CSV.** The local reader will
-  not satisfy a certified-clean consumer (e.g. PCA) from the un-versioned legacy
-  `qc_<stem>/<stem>_cleaned.csv` — it has no manifest/hash lineage and may not match
-  the current input; only a versioned, manifest-backed cleaned output qualifies.
 
 **This is a dev / power-user path, not a normal-user packaged distribution.**
 Bench scientists use the deployed web product; fully-local mode is for driving

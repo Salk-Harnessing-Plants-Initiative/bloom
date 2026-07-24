@@ -1,8 +1,10 @@
 [project]
 name = "bloomctl"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Bloom command-line tool for Bloom Database"
-readme = "README.md"
+# PyPI project page renders README.pypi.md (a lean user-facing landing page);
+# README.md is the fuller in-repo doc.
+readme = "README.pypi.md"
 requires-python = ">=3.11"
 license = "BSD-2-Clause"
 authors = [{ name = "Salk Harnessing Plants Initiative" }]
@@ -29,6 +31,11 @@ dependencies = [
     # transitively via supabase->postgrest).
     "sleap-roots-contracts>=0.1.0a5",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/tree/main/bloomcli"
+Repository = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom"
+Changelog = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/main/bloomcli/CHANGELOG.md"
 
 [project.scripts]
 bloomctl = "bloomctl.cli:cli"

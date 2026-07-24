@@ -317,17 +317,137 @@ def test_read_permission_error_is_redacted(tmp_path, monkeypatch):
     assert key in msg
 
 
+def test_local_delete_files_removes_existing_and_ignores_missing(tmp_path):
+    b = _local(tmp_path)
+    src = _seed_file(tmp_path)
+    b.upload_file("bloommcp_output/qc_x/v1/a.csv", src)
+    b.upload_file("bloommcp_output/qc_x/v1/b.csv", src)
+    assert (tmp_path / "bloommcp_output/qc_x/v1/a.csv").exists()
+
+    b.delete_files(
+        [
+            "bloommcp_output/qc_x/v1/a.csv",
+            "bloommcp_output/qc_x/v1/missing.csv",  # never existed — no error
+        ]
+    )
+    assert not (tmp_path / "bloommcp_output/qc_x/v1/a.csv").exists()
+    assert (tmp_path / "bloommcp_output/qc_x/v1/b.csv").exists()  # untouched
+
+
+def test_local_delete_files_empty_list_is_noop(tmp_path):
+    b = _local(tmp_path)
+    b.delete_files([])  # must not raise
+
+
+def test_supabase_backend_delete_files_calls_bucket_remove(monkeypatch):
+    calls = []
+
+    class _FakeClient:
+        def remove(self, paths):
+            calls.append(list(paths))
+
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client",
+        lambda **_kwargs: _FakeClient(),
+    )
+
+    backend = sb.SupabaseStorageBackend()
+    backend.delete_files(
+        ["bloommcp_output/qc_x/v1/a.csv", "bloommcp_output/qc_x/v1/b.csv"]
+    )
+    assert calls == [["bloommcp_output/qc_x/v1/a.csv", "bloommcp_output/qc_x/v1/b.csv"]]
+
+
+def test_supabase_backend_delete_files_passes_timeout_override(monkeypatch):
+    captured = {}
+
+    class _FakeClient:
+        def remove(self, paths):
+            return paths
+
+    def _fake_get_storage_client(**kwargs):
+        captured.update(kwargs)
+        return _FakeClient()
+
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", _fake_get_storage_client
+    )
+
+    sb.SupabaseStorageBackend().delete_files(["k"], timeout_seconds=5.0)
+    assert captured == {"timeout_seconds": 5.0}
+
+
+def test_supabase_backend_delete_files_empty_list_skips_client(monkeypatch):
+    def _boom(**_kwargs):
+        raise AssertionError("get_storage_client called for an empty delete")
+
+    monkeypatch.setattr("bloom_mcp.supabase_client.get_storage_client", _boom)
+    sb.SupabaseStorageBackend().delete_files([])  # must not raise / not call the client
+
+
+class _FakeSbClient:
+    """Stand-in for `supabase.Client`, minimal enough for `.storage.from_()`."""
+
+    class storage:  # noqa: N801 - mirrors the real client's attribute name
+        @staticmethod
+        def from_(_bucket):
+            return "bucket-proxy"
+
+
+def test_get_storage_client_default_passes_no_options_override(monkeypatch):
+    import bloom_mcp.supabase_client as sc
+
+    captured = {}
+
+    def _fake_create_client(url, key, options=None):
+        captured["options"] = options
+        return _FakeSbClient()
+
+    monkeypatch.setenv("SUPABASE_URL", "http://x")
+    monkeypatch.setenv("BLOOM_AGENT_KEY", "k")
+    monkeypatch.setattr(sc.supabase, "create_client", _fake_create_client)
+
+    sc.get_storage_client()
+    assert captured["options"] is None
+
+
+def test_get_storage_client_timeout_override_builds_client_options(monkeypatch):
+    import bloom_mcp.supabase_client as sc
+
+    captured = {}
+
+    def _fake_create_client(url, key, options=None):
+        captured["options"] = options
+        return _FakeSbClient()
+
+    monkeypatch.setenv("SUPABASE_URL", "http://x")
+    monkeypatch.setenv("BLOOM_AGENT_KEY", "k")
+    monkeypatch.setattr(sc.supabase, "create_client", _fake_create_client)
+
+    sc.get_storage_client(timeout_seconds=5.0)
+    assert captured["options"].storage_client_timeout == 5.0
+
+
 # ─── 3. Root resolution + startup validation ──────────────────────────────────
 
 
 def test_root_prefers_dedicated_var(monkeypatch, tmp_path):
+    # Explicit BLOOM_STORAGE_LOCAL_ROOT wins outright — assert that holds even
+    # with BLOOM_LOCAL_ROOT also set (#479's middle tier), not just when it
+    # happens to be unset in the ambient test environment.
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path / "other"))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path / "unused"))
     assert sb._resolve_local_root() == tmp_path
 
 
 def test_root_falls_back_to_output_dir(monkeypatch, tmp_path):
+    # Explicitly clear BLOOM_LOCAL_ROOT so this exercises the true 2-tier
+    # fallback regardless of ambient env (e.g. a dev's shell profile) — a
+    # BLOOM_LOCAL_ROOT left set there would otherwise silently divert this to
+    # the #479 middle tier instead of BLOOM_OUTPUT_DIR.
     monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path))
     assert sb._resolve_local_root() == tmp_path
 
@@ -554,3 +674,71 @@ def test_resolve_versioned_cleaned_via_local_list_prefix_fallback(
     assert path is not None
     assert path.read_bytes() == b"trait,value\n1,2\n"
     assert label == "v1_cleaned"
+
+
+# ─── 6. BLOOM_LOCAL_ROOT (#479) ─────────────────────────────────────────────────
+
+
+def test_local_root_supplies_output_default_when_dedicated_unset(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.delenv("BLOOM_OUTPUT_DIR", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    assert sb._resolve_local_root() == tmp_path / "output"
+
+
+def test_dedicated_var_wins_over_local_root(monkeypatch, tmp_path):
+    dedicated = tmp_path / "dedicated"
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(dedicated))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    assert sb._resolve_local_root() == dedicated
+
+
+def test_local_root_inert_when_backend_not_local(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path / "unused"))
+    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)  # defaults to supabase
+    assert sb._resolve_local_root() == tmp_path
+
+
+def test_local_root_falls_back_to_output_dir_when_both_unset(monkeypatch, tmp_path):
+    """Existing 2-tier fallback is unchanged when BLOOM_LOCAL_ROOT is also unset."""
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path))
+    assert sb._resolve_local_root() == tmp_path
+
+
+def test_validate_storage_backend_creates_output_subfolder(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    sb.reset_backend_for_tests()
+    assert not (tmp_path / "output").exists()
+    sb.validate_storage_backend()
+    assert (tmp_path / "output").is_dir()
+
+
+def test_validate_storage_backend_explicit_override_still_strict(monkeypatch, tmp_path):
+    missing = tmp_path / "nope"
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(missing))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))  # set but must not rescue
+    sb.reset_backend_for_tests()
+    with pytest.raises(RuntimeError, match="does not exist"):
+        sb.validate_storage_backend()
+
+
+def test_validate_storage_backend_output_subfolder_blocked_by_file(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    (tmp_path / "output").write_text("blocking file")
+    sb.reset_backend_for_tests()
+    with pytest.raises(RuntimeError, match="output root.*not a directory"):
+        sb.validate_storage_backend()

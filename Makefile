@@ -13,6 +13,7 @@ help:
 	@echo "Usage:"
 	@echo "  make init             - Generate .env.dev from .env.dev.example (FORCE=1 to overwrite)"
 	@echo "  make dev-up           - Run full stack in development mode"
+	@echo "  make dev-up-local     - Run dev stack fully local/offline (BLOOM_STORAGE_BACKEND=local for this run only; don't mix backends per experiment)"
 	@echo "  make dev-down         - Stop development stack"
 	@echo "  make prod-up          - Run full stack in production mode"
 	@echo "  make prod-down        - Stop production stack"
@@ -64,6 +65,13 @@ ensure-bloommcp-data-dirs:
 # Run development stack
 .PHONY: dev-up
 dev-up: ensure-bloommcp-data-dirs
+	@BACKEND="$${BLOOM_STORAGE_BACKEND:-$$(sed -n 's/^BLOOM_STORAGE_BACKEND=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r')}"; \
+	if [ -n "$$BACKEND" ]; then \
+		echo " NOTE: BLOOM_STORAGE_BACKEND=$$BACKEND is set (shell env or .env.dev) — this"; \
+		echo " dev-up will boot bloommcp in that backend, not the default Supabase-backed"; \
+		echo " mode. Use 'make dev-up-local' for a one-shot local run, or unset"; \
+		echo " BLOOM_STORAGE_BACKEND (shell and .env.dev) to restore the default."; \
+	fi
 	@sh scripts/doctor.sh
 	@echo " Checking frontend dependencies..."
 	@if [ ! -f "./web/package-lock.json" ]; then \
@@ -77,6 +85,19 @@ dev-up: ensure-bloommcp-data-dirs
 	@echo " Bloom Dev Stack running in background"
 	@echo " Access at: http://localhost:3000"
 	@echo " View logs: make dev-logs"
+
+# Run development stack in fully-local/offline mode (BLOOM_STORAGE_BACKEND=local
+# for this invocation only — does not modify .env.dev). Delegates to dev-up so
+# the two never drift apart. Do not mix backends for one experiment — see
+# bloommcp/docs/storage-backends.md. Same single canonical per-machine dev
+# stack as `dev-up` (docker-compose.dev.yml's fixed `bloom_v2_dev` project
+# name, per the "Canonical Local Stack Path" convention) — if someone else's
+# `dev-up`/`dev-up-local` is already running on this machine, this recreates
+# those containers in local mode instead of starting a separate stack.
+.PHONY: dev-up-local
+dev-up-local:
+	@echo " Fully-local/offline mode: BLOOM_STORAGE_BACKEND=local for this run only (.env.dev untouched)"
+	BLOOM_STORAGE_BACKEND=local $(MAKE) dev-up
 
 .PHONY: rebuild-dev-fresh
 rebuild-dev-fresh:
