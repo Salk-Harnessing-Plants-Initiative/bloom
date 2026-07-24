@@ -19,7 +19,7 @@ import pytest
 psycopg = pytest.importorskip("psycopg")
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-_TS = "20260724000000_add_cyl_plant_search_rpc"
+_TS = "20260724000200_add_cyl_plant_search_rpc"
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TS}.sql"
 SIG = "cyl_plant_search_query(text[], bigint[], bigint[], bigint[], integer)"
 
@@ -139,6 +139,97 @@ def test_limit_zero_returns_no_rows_but_true_total(pg_conn):
         res = _call(cur, experiment_ids=[ids["exp_id"]], limit=0)
         assert res["rows"] == []
         assert res["total"] == 1
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# Server-side clamps. The RPC is callable directly through PostgREST by any
+# holder of a bloom-role JWT, so neither the page size nor the filter sizes can
+# be trusted from the caller.
+# --------------------------------------------------------------------------- #
+
+
+def _seed_many(cur, exp_id, token, n):
+    """Add n extra plants on exp_id's existing wave (qr_code is unique per wave)."""
+    cur.execute(
+        "INSERT INTO cyl_plants (wave_id, qr_code) "
+        "SELECT w.id, 'Q-' || g || '-' || %s FROM cyl_waves w, generate_series(1, %s) g "
+        "WHERE w.experiment_id = %s",
+        (token, n, exp_id),
+    )
+
+
+def test_limit_above_ceiling_is_clamped(pg_conn):
+    # A direct caller asking for everything still gets one capped page, while
+    # `total` keeps reporting the true size.
+    t = _tok()
+    with pg_conn.cursor() as cur:
+        ids = _seed_plant(cur, qr=f"Q-0-{t}", species=f"Sp-{t}", exp=f"E-{t}")
+        _seed_many(cur, ids["exp_id"], t, 600)
+        res = _call(cur, experiment_ids=[ids["exp_id"]], limit=99999)
+        assert res["total"] == 601
+        assert len(res["rows"]) == 500
+    pg_conn.rollback()
+
+
+def test_default_limit_is_the_ceiling(pg_conn):
+    t = _tok()
+    with pg_conn.cursor() as cur:
+        ids = _seed_plant(cur, qr=f"Q-0-{t}", species=f"Sp-{t}", exp=f"E-{t}")
+        _seed_many(cur, ids["exp_id"], t, 600)
+        cur.execute(
+            "SELECT cyl_plant_search_query(p_experiment_ids := %s::bigint[])", ([ids["exp_id"]],)
+        )
+        res = cur.fetchone()[0]
+        res = json.loads(res) if isinstance(res, str) else res
+        assert len(res["rows"]) == 500
+    pg_conn.rollback()
+
+
+def test_negative_limit_returns_no_rows_but_true_total(pg_conn):
+    t = _tok()
+    with pg_conn.cursor() as cur:
+        ids = _seed_plant(cur, qr=f"Q-{t}", species=f"Sp-{t}", exp=f"E-{t}")
+        res = _call(cur, experiment_ids=[ids["exp_id"]], limit=-5)
+        assert res["rows"] == []
+        assert res["total"] == 1
+    pg_conn.rollback()
+
+
+def test_oversized_filter_raises_rather_than_truncating(pg_conn):
+    # Silently dropping barcodes past the cap would report them as "not found" —
+    # the exact false negative this RPC exists to prevent — so it must raise.
+    with pg_conn.cursor() as cur:
+        with pytest.raises(Exception, match="filter list too large"):
+            _call(cur, barcodes=[f"B-{i}" for i in range(5001)])
+    pg_conn.rollback()
+
+
+def test_filter_at_the_cap_is_accepted(pg_conn):
+    t = _tok()
+    with pg_conn.cursor() as cur:
+        _seed_plant(cur, qr=f"Q-{t}", species=f"Sp-{t}", exp=f"E-{t}")
+        res = _call(cur, barcodes=[f"Q-{t}"] + [f"B-{i}" for i in range(4999)])
+        assert res["total"] == 1
+        assert len(res["not_found"]) == 4999
+    pg_conn.rollback()
+
+
+def test_null_array_is_treated_as_unfiltered(pg_conn):
+    # A NULL from a direct caller would make every filter test NULL and return
+    # nothing; it must behave like an empty array instead.
+    t = _tok()
+    with pg_conn.cursor() as cur:
+        ids = _seed_plant(cur, qr=f"Q-{t}", species=f"Sp-{t}", exp=f"E-{t}")
+        cur.execute(
+            "SELECT cyl_plant_search_query("
+            "p_barcodes := NULL::text[], p_experiment_ids := %s::bigint[])",
+            ([ids["exp_id"]],),
+        )
+        res = cur.fetchone()[0]
+        res = json.loads(res) if isinstance(res, str) else res
+        assert res["total"] == 1
+        assert res["not_found"] == []
     pg_conn.rollback()
 
 
