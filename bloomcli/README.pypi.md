@@ -9,8 +9,8 @@ experiments (metadata + images), and work with cylinder trait datasets.
 pre-releases (`0.1.0aN`), so opt in explicitly:
 
 ```bash
-uv tool install bloomctl --prerelease allow    # isolated CLI tool (recommended)
-uvx --prerelease allow bloomctl --help         # one-off, no install
+uv tool install bloomctl --prerelease=allow    # isolated CLI tool (recommended)
+uvx --prerelease=allow bloomctl --help         # one-off, no install
 pip install --pre bloomctl                     # into the active environment
 ```
 
