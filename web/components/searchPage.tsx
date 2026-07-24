@@ -85,16 +85,20 @@ export default function SearchComponent() {
         router.push(`/app/phenotypes/${(sp[0] as any).id}`);
         return;
       }
-      // Exact barcode -> that plant's page (eq, not ilike: barcodes contain '_').
+      // Exact barcode -> accession page (eq, not ilike: barcodes contain '_').
+      // Barcodes are unique per wave only, so one can match across waves; only
+      // auto-jump when all matches share a destination (mirrors accession below).
       const { data: pl } = await supabase
         .from('cyl_plant_search' as any)
-        .select('*')
+        .select('species_id, experiment_id, wave_id, accession_id')
         .eq('qr_code', text)
-        .limit(1);
-      if (pl && pl.length === 1) {
-        const href = fieldHrefs(pl[0]).accession;
-        if (href) {
-          router.push(href);
+        .limit(500);
+      if (pl && pl.length > 0) {
+        const dests = Array.from(
+          new Set(pl.map((r: any) => fieldHrefs(r).accession).filter(Boolean)),
+        );
+        if (dests.length === 1) {
+          router.push(dests[0] as string);
           return;
         }
       }
