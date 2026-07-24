@@ -40,8 +40,9 @@
 # Exit codes:
 #   0  success (threshold met and branch built) OR --dry-run
 #   2  misconfiguration (cannot fetch a ref)
-#   3  below threshold — nothing to do
-#   4  cherry-pick conflict — branch left mid-pick for inspection
+#   3  below threshold, or nothing applied cleanly — nothing to do
+# Cherry-pick conflicts are never fatal: the pick is aborted and the commit is
+# listed for manual promotion, so the branch is never left mid-pick.
 # =============================================================================
 
 set -euo pipefail
@@ -222,7 +223,7 @@ fi
   echo
   echo "Batches **${NPICKED}** security commit(s) that landed on \`${SOURCE_BRANCH}\` but are not yet in production. Opened automatically because the pending count exceeded ${MIN}."
   echo
-  echo "Each commit is a CVE remediation or dependency security bump. Review and merge to ship these to production."
+  echo "Each commit is a CVE remediation or dependency security bump. Commits are auto-selected because they touch **only** CVE-fix files (\`.trivyignore\` / Dockerfiles / lockfiles) — selection is by file *path*, not diff *content*, so please read the actual Dockerfile/lockfile diffs before merging rather than rubber-stamping on the \"security\" framing."
   echo
   echo "### Promoted (${NPICKED})"
   for sha in "${PICKED[@]}"; do
