@@ -991,9 +991,12 @@ jobs:
       - name: Verify plain dev-up does not activate the local storage backend
         run: |
           for i in $(seq 1 30); do
-            docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T bloommcp true 2>/dev/null && break
+            if docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T bloommcp true 2>/tmp/dev_up_exec_wait.err; then
+              break
+            fi
             if [ "$i" -eq 30 ]; then
-              echo "::error::bloommcp container never became exec-able after 60s"
+              echo "::error::bloommcp container never became exec-able after 60s. Last stderr:"
+              tail -5 /tmp/dev_up_exec_wait.err 2>/dev/null
               exit 1
             fi
             sleep 2

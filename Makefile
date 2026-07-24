@@ -64,6 +64,13 @@ ensure-bloommcp-data-dirs:
 # Run development stack
 .PHONY: dev-up
 dev-up: ensure-bloommcp-data-dirs
+	@BACKEND="$${BLOOM_STORAGE_BACKEND:-$$(sed -n 's/^BLOOM_STORAGE_BACKEND=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r')}"; \
+	if [ -n "$$BACKEND" ]; then \
+		echo " NOTE: BLOOM_STORAGE_BACKEND=$$BACKEND is set (shell env or .env.dev) — this"; \
+		echo " dev-up will boot bloommcp in that backend, not the default Supabase-backed"; \
+		echo " mode. Use 'make dev-up-local' for a one-shot local run, or unset"; \
+		echo " BLOOM_STORAGE_BACKEND (shell and .env.dev) to restore the default."; \
+	fi
 	@sh scripts/doctor.sh
 	@echo " Checking frontend dependencies..."
 	@if [ ! -f "./web/package-lock.json" ]; then \

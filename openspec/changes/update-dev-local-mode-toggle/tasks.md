@@ -74,10 +74,13 @@
 - [x] 7.2 Live proof, scoped to avoid the shared dev machine's already-running `bloom_v2_dev`
       stack (3+ days uptime, same fixed compose project name — a full `make dev-up-local` would
       have recreated those containers and did in fact collide on host ports the first time it was
-      tried under an isolated project name). Instead: brought up just the `bloommcp` service
-      (`--no-deps`, isolated `-p` project name, alternate host port) with
-      `BLOOM_STORAGE_BACKEND=local`. Confirmed live: `docker exec ... printenv
-      BLOOM_STORAGE_BACKEND` → `local`; container logs show
+      tried under a different `-p` project name). Instead: brought up just the `bloommcp` service
+      (`--no-deps`, a different compose `-p` project name, alternate host port) with
+      `BLOOM_STORAGE_BACKEND=local`. Note: `-p` isolates the container/network namespace, not host
+      bind-mount paths — this run's bind mounts were naturally separate because it ran from a
+      separate git worktree (its own `./bloommcp/data/...`), not because of `-p` itself; a same-
+      worktree run under a different `-p` would still share the host paths. Confirmed live: `docker
+      exec ... printenv BLOOM_STORAGE_BACKEND` → `local`; container logs show
       `BLOOM_STORAGE_BACKEND=local is using BLOOM_OUTPUT_DIR as the local storage root...` and the
       task 4.1 boot-print `Bloom MCP Server storage backend: local (fully-local/offline)`;
       container reported healthy and served `/health` 200 OK. Torn down and cleaned up afterward
@@ -134,3 +137,38 @@
 - [x] 8.8 Live proof that `BLOOM_STORAGE_BACKEND=local` actually activates local mode — see 7.2
       above (isolated `-p` project name + `--no-deps`, so the shared `bloom_v2_dev` stack was
       never touched).
+
+## 9. Round-3 fixes (PR #513 re-review — eberrigan)
+
+- [x] 9.1 The reordered `server.py` boot-print only closed the fail-fast-visibility half of the
+      shell-leakage scenario; the happy-path case (a stray shell export silently redirecting a
+      plain `make dev-up`, which boots fine since `local` is a valid backend) was still print-to-
+      detached-container-logs-only. Added a foreground check to `dev-up`'s own recipe (not just
+      `dev-up-local`'s) that resolves `BLOOM_STORAGE_BACKEND` the same way Compose does (shell env,
+      falling back to `.env.dev`) and prints a NOTE naming the value before the doctor
+      preflight/build steps if it's non-empty. Covered by 4 new parametrized tests in
+      `tests/unit/test_makefile_dev_up_local.py` (`.env.dev`-sourced, shell-sourced, empty-both,
+      key-absent-from-file).
+- [x] 9.2 Loosened `test_dev_up_local_dry_run_prefixes_backend_before_delegating`'s assertion from
+      one exact concatenated substring to two independent substring checks (var assignment,
+      delegated target) — GNU Make's exact `-n` echo formatting isn't a documented cross-platform
+      contract, so the precise joined string was fragile on a non-GNU-Make/non-Linux `make`.
+- [x] 9.3 The CI regression-check step's bounded-wait loop silenced `docker compose exec` stderr
+      (`2>/dev/null`); a genuine crash-loop would only say "never became exec-able" with no root
+      cause. Now captures stderr to a temp file and tails it on the failure path, matching the
+      `migrate_storage_wait.err` pattern already used by `make migrate-local`.
+- [x] 9.4 Softened `tasks.md` §7.2's "isolated" wording: compose `-p` isolates the
+      container/network namespace, not host bind-mount paths — that run's bind mounts were
+      separate because it ran from a different git worktree, not because of `-p` itself.
+- [x] 9.5 Not changed (verified against repo convention, not applicable):
+      - The shared fixed compose project name / no runtime collision guard for `dev-up-local` is
+        the same pre-existing property plain `dev-up` already has (not a regression this PR
+        introduces) — documentation (already added in round 2) is the proportionate fix here;
+        adding actual collision-detection machinery would be new scope beyond this issue.
+      - The `@echo " Fully-local/offline mode: ..."` leading space flagged as cosmetic actually
+        matches every other execution-time `@echo` in this Makefile (`" Checking frontend
+        dependencies..."`, `" Starting Bloom Dev Stack..."`, etc.) — changing it would make this
+        line the odd one out.
+- [x] 9.6 Updated the PR description: it said live bring-up was "not run" and cited a stale
+      "53/53 pass" bloommcp test count from before the round-2 test additions — both now reflect
+      the current state (live-verified per 7.2/8.8; current pass counts).

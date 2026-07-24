@@ -63,6 +63,17 @@ file — not as literal, commented-out YAML — so enabling bloommcp's fully-loc
   in the default Supabase-backed mode exactly as it does today with the line
   commented out
 
+#### Scenario: Pre-set backend is announced at `dev-up` invocation time
+
+- **WHEN** a developer runs plain `make dev-up` with `BLOOM_STORAGE_BACKEND`
+  resolving non-empty from either the shell environment or `.env.dev`
+- **THEN** a foreground NOTE is printed before the doctor preflight/build steps,
+  naming the resolved value and pointing at `make dev-up-local` or unsetting the
+  var to restore the default — so externalizing the toggle (making it newly
+  overridable by a stray shell export or a forgotten `.env.dev` value) doesn't
+  silently redirect a plain `dev-up` with the only cue buried in detached
+  container logs
+
 ### Requirement: Discoverable `make dev-up-local` Entrypoint
 
 The project SHALL provide a `make dev-up-local` target, listed in `make help`,
