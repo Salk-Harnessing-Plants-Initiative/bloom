@@ -2,9 +2,7 @@
 -- with its barcode, accession, species, and experiment. security_invoker so
 -- RLS on the base tables is enforced with the caller's role.
 
-DROP VIEW IF EXISTS cyl_plant_search;
-
-CREATE VIEW cyl_plant_search
+CREATE OR REPLACE VIEW cyl_plant_search
 WITH (security_invoker = true) AS
 SELECT
   p.id           AS plant_id,
