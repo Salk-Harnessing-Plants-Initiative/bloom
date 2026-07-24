@@ -3,6 +3,7 @@ import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import NextLink from 'next/link';
 import { Box, Stack, Typography, CircularProgress, Link as MuiLink } from '@mui/material';
+import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { fieldHrefs } from "@/components/plant-search-links";
 import { paramsToFilters, runAdvancedSearch, filtersEmpty, AdvancedFilters } from "@/lib/cyl-plant-search";
@@ -71,29 +72,50 @@ function Results() {
           <Typography variant="overline" color="text.secondary">
             {sp} ({group.length})
           </Typography>
-          <Stack spacing={0.75} sx={{ mt: 0.5 }}>
+          <Stack spacing={1} sx={{ mt: 0.75 }}>
             {group.map((item) => {
               const href = fieldHrefs(item).accession;
-              const line = (
-                <>
-                  <Typography component="span" variant="body2" sx={{ fontWeight: 600 }}>
-                    {item.qr_code}
-                  </Typography>
-                  <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+              const bar = (
+                <Box
+                  sx={{
+                    bgcolor: 'common.white',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    borderRadius: 1.5,
+                    px: 2,
+                    py: 1.25,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    transition: 'box-shadow 120ms ease, border-color 120ms ease',
+                    '&:hover': { boxShadow: 2, borderColor: 'success.main' },
+                    '&:hover .bar-arrow': { opacity: 1 },
+                  }}
+                >
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>{item.qr_code}</Typography>
+                  <Typography variant="caption" color="text.secondary">
                     {item.experiment_name} · {item.accession_name}
                   </Typography>
-                </>
-              );
-              return (
-                <Box key={item.plant_id}>
-                  {href ? (
-                    <MuiLink component={NextLink} href={href} underline="hover" color="inherit">
-                      {line}
-                    </MuiLink>
-                  ) : (
-                    line
-                  )}
+                  <ArrowForwardIcon
+                    className="bar-arrow"
+                    fontSize="small"
+                    sx={{ ml: 'auto', color: 'success.main', opacity: 0, transition: 'opacity 120ms ease' }}
+                  />
                 </Box>
+              );
+              return href ? (
+                <MuiLink
+                  key={item.plant_id}
+                  component={NextLink}
+                  href={href}
+                  underline="none"
+                  color="inherit"
+                  sx={{ display: 'block' }}
+                >
+                  {bar}
+                </MuiLink>
+              ) : (
+                <Box key={item.plant_id}>{bar}</Box>
               );
             })}
           </Stack>
