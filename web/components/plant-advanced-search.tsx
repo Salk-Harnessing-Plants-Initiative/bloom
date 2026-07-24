@@ -25,7 +25,7 @@ export default function PlantAdvancedSearch() {
     let active = true;
     (async () => {
       const [sp, ex, ac] = await Promise.all([
-        supabase.from('species' as any).select('id, common_name').order('common_name'),
+        supabase.from('species' as any).select('id, common_name').is('deleted_at', null).order('common_name'),
         supabase.from('cyl_experiments' as any).select('id, name').is('deleted_at', null).order('name'),
         supabase.from('accessions' as any).select('id, name').order('name'),
       ]);
