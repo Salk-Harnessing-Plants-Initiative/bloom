@@ -161,13 +161,20 @@ export default function SearchComponent() {
 
     // Batch barcode list -> plants only.
     if (list) {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('cyl_plant_search' as any)
         .select('*')
         .in('qr_code', list)
         .limit(200)
         .abortSignal(signal);
       if (signal.aborted) return;
+      if (error) {
+        console.error('Plant search failed:', error.message);
+        setErrorMsg('Search failed, please try again.');
+        clearResults();
+        setLoading(false);
+        return;
+      }
       setSpeciesResults([]);
       setPlantResults(data || []);
       setLoading(false);
@@ -194,6 +201,13 @@ export default function SearchComponent() {
     ]);
 
     if (signal.aborted) return;
+    if (sp.error || pl.error) {
+      console.error('Search failed:', sp.error?.message ?? pl.error?.message);
+      setErrorMsg('Search failed, please try again.');
+      clearResults();
+      setLoading(false);
+      return;
+    }
     setSpeciesResults(sp.data || []);
     setPlantResults(pl.data || []);
     setLoading(false);
