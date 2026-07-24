@@ -59,8 +59,9 @@
 
 ## 4. Follow-up (process — no code commit)
 
-- [ ] 4.1 Post a comment on #476 (from this PR) linking `data-access-roadmap.md` Tier 2
+- [x] 4.1 Post a comment on #476 (from this PR) linking `data-access-roadmap.md` Tier 2
       and this change, explicitly recommending #476 stay **open**, re-scoped to depend on
       that tier, rather than being closed when this PR merges — a concrete, checkable
       artifact instead of a free-floating "confirm at review time" reminder. See
-      `design.md` Open Questions for the reasoning.
+      `design.md` Open Questions for the reasoning. Done:
+      https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/476#issuecomment-5075068236
