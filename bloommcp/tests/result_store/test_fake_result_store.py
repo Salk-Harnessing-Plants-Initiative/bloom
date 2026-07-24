@@ -9,6 +9,7 @@ import pytest
 
 from bloom_mcp.contract import Provenance
 from bloom_mcp.result_store import (
+    CommitFailedError,
     FakeResultStore,
     RunNotFoundError,
     RunStateError,
@@ -86,3 +87,106 @@ def test_double_commit_rejected():
     store.commit(run, {"o": "o.csv"})
     with pytest.raises(RunStateError):
         store.commit(run, {"o": "o.csv"})
+
+
+def test_commit_failure_is_retryable_and_does_not_leak():
+    """#325: fake mirror of test_supabase_result_store's retry contract."""
+    store = FakeResultStore()
+    run = store.create_run(experiment="e.csv", tool_class="qc", provenance=_prov())
+    _write(run.staging_dir, "o.csv", b"x")
+
+    store.fail_next_commit("e.csv", "qc", after_outputs=0)
+    with pytest.raises(CommitFailedError):
+        store.commit(run, {"o": "o.csv"})
+
+    # Failure is recoverable: nothing recorded, staging retained, handle live.
+    assert store.list_runs("e.csv", "qc") == []
+    assert run.staging_dir.exists()
+
+    # Retry on the same handle succeeds (one-shot injection already cleared).
+    stored = store.commit(run, {"o": "o.csv"})
+    assert stored.run_ref == "v1"
+    assert store.get_run("e.csv", "qc", "latest").run_ref == "v1"
+    assert not run.staging_dir.exists()
+
+
+def test_commit_failure_after_partial_recording_leaves_no_partial_state():
+    """#325: fake mirror of test_commit_failure_cleans_up_orphaned_objects_from_
+    partial_upload, reinterpreted for an in-memory store as "no partial state
+    survives" (there is nothing external to leak an orphan into)."""
+    store = FakeResultStore()
+    run = store.create_run(experiment="e.csv", tool_class="qc", provenance=_prov())
+    _write(run.staging_dir, "a.csv", b"a")
+    _write(run.staging_dir, "b.csv", b"b")
+
+    store.fail_next_commit("e.csv", "qc", after_outputs=1)
+    with pytest.raises(CommitFailedError):
+        store.commit(run, {"a": "a.csv", "b": "b.csv"})
+
+    assert store.list_runs("e.csv", "qc") == []
+
+    stored = store.commit(run, {"a": "a.csv", "b": "b.csv"})
+    assert stored.run_ref == "v1"
+    assert set(stored.outputs) == {"a", "b"}
+
+
+def test_interleaved_commits_get_distinct_ids_with_consistent_provenance():
+    """#325: fake mirror — a seeded collision reallocates to a free id."""
+    store = FakeResultStore()
+    run1 = store.create_run(
+        experiment="e.csv", tool_class="qc", provenance=_prov(seed=1)
+    )
+    _write(run1.staging_dir, "o.csv", b"first")
+
+    # Simulate a second writer's commit having already landed at v1.
+    store.seed_collision("e.csv", "qc", "v1")
+
+    stored1 = store.commit(run1, {"o": "o.csv"})
+
+    assert stored1.run_ref == "v2"  # reallocated around the seeded v1
+    assert store.get_run("e.csv", "qc", "v1").tool == "interloper"
+    assert store.get_run("e.csv", "qc", "v2").run_ref == "v2"
+    assert [r.run_ref for r in store.list_runs("e.csv", "qc")] == ["v1", "v2"]
+
+
+def test_retry_exhaustion_before_recording_raises_with_nothing_recorded(monkeypatch):
+    """#325: fake mirror of test_retry_exhaustion_before_upload_raises_with_
+    no_uploads — every reallocation attempt still collides."""
+    import bloom_mcp.result_store.fake_store as _fake_mod
+
+    store = FakeResultStore()
+    run = store.create_run(experiment="e.csv", tool_class="qc", provenance=_prov())
+    _write(run.staging_dir, "o.csv", b"x")
+
+    store.seed_collision("e.csv", "qc", run.version_id)
+    monkeypatch.setattr(_fake_mod, "next_version_id", lambda manifest: run.version_id)
+
+    with pytest.raises(CommitFailedError):
+        store.commit(run, {"o": "o.csv"})
+
+    # Only the seeded interloper is recorded — this attempt recorded nothing.
+    runs = store.list_runs("e.csv", "qc")
+    assert [r.run_ref for r in runs] == [run.version_id]
+    assert runs[0].tool == "interloper"
+
+
+def test_prewrite_collision_cleans_up_and_retry_succeeds():
+    """#325: fake mirror of test_prewrite_collision_cleans_up_and_retry_
+    succeeds — a collision visible only to the pre-append recheck."""
+    store = FakeResultStore()
+    run = store.create_run(experiment="e.csv", tool_class="qc", provenance=_prov())
+    _write(run.staging_dir, "o.csv", b"x")
+
+    store.seed_collision("e.csv", "qc", run.version_id, visible_at="pre_append")
+
+    with pytest.raises(CommitFailedError):
+        store.commit(run, {"o": "o.csv"})
+
+    # The pending collision was never actually recorded (it only existed for
+    # the pre-append recheck), so nothing landed from this failed attempt.
+    assert store.list_runs("e.csv", "qc") == []
+
+    # Retry finds a genuinely free id and succeeds.
+    stored = store.commit(run, {"o": "o.csv"})
+    assert stored.run_ref == run.version_id
+    assert store.get_run("e.csv", "qc", "latest").run_ref == run.version_id
