@@ -10,17 +10,11 @@ export type AdvancedFilters = {
 export type AdvancedResult = {
   rows: any[];
   notFound: string[];
+  total: number;
   truncated: boolean;
 };
 
 const CAP = 500;
-const CHUNK = 150;
-
-const chunk = (arr: string[], n: number): string[][] => {
-  const out: string[][] = [];
-  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
-  return out;
-};
 
 export const parseBarcodes = (s: string): string[] =>
   s.split(/[\s,]+/).map((t) => t.trim()).filter(Boolean);
@@ -28,37 +22,21 @@ export const parseBarcodes = (s: string): string[] =>
 export const filtersEmpty = (f: AdvancedFilters): boolean =>
   !f.barcodes.length && !f.accessionIds.length && !f.speciesIds.length && !f.experimentIds.length;
 
-// AND across fields; OR within a field (.in). Exact match for list values
-// (barcodes contain '_', a LIKE wildcard). Barcode lists are chunked.
+// One server-side call: AND across fields, OR within a field. The RPC returns
+// the capped page, the true total (for the "showing N of M" note), and the
+// pasted barcodes that don't exist. RLS applies via the security_invoker view.
 export async function runAdvancedSearch(supabase: any, f: AdvancedFilters): Promise<AdvancedResult> {
-  const build = (barcodeChunk?: string[]) => {
-    let q: any = supabase.from('cyl_plant_search').select('*');
-    if (barcodeChunk) q = q.in('qr_code', barcodeChunk);
-    if (f.accessionIds.length) q = q.in('accession_id', f.accessionIds);
-    if (f.speciesIds.length) q = q.in('species_id', f.speciesIds);
-    if (f.experimentIds.length) q = q.in('experiment_id', f.experimentIds);
-    return q.limit(CAP);
-  };
-
-  let rows: any[] = [];
-  if (f.barcodes.length) {
-    for (const c of chunk(f.barcodes, CHUNK)) {
-      const { data, error } = await build(c);
-      if (error) throw error;
-      if (data) rows.push(...data);
-    }
-  } else {
-    const { data, error } = await build();
-    if (error) throw error;
-    rows = data || [];
-  }
-
-  const seen = new Set<number>();
-  rows = rows.filter((r) => (seen.has(r.plant_id) ? false : (seen.add(r.plant_id), true)));
-
-  const matched = new Set(rows.map((r) => r.qr_code));
-  const notFound = f.barcodes.filter((b) => !matched.has(b));
-  return { rows: rows.slice(0, CAP), notFound, truncated: rows.length > CAP };
+  const { data, error } = await supabase.rpc('cyl_plant_search_query', {
+    p_barcodes: f.barcodes,
+    p_accession_ids: f.accessionIds,
+    p_species_ids: f.speciesIds,
+    p_experiment_ids: f.experimentIds,
+    p_limit: CAP,
+  });
+  if (error) throw error;
+  const rows: any[] = data?.rows ?? [];
+  const total: number = data?.total ?? 0;
+  return { rows, notFound: data?.not_found ?? [], total, truncated: total > rows.length };
 }
 
 export function filtersToParams(f: AdvancedFilters): URLSearchParams {
@@ -72,7 +50,7 @@ export function filtersToParams(f: AdvancedFilters): URLSearchParams {
 
 export function paramsToFilters(sp: URLSearchParams): AdvancedFilters {
   const nums = (v: string | null) =>
-    v ? v.split(',').map(Number).filter((n) => !Number.isNaN(n)) : [];
+    v ? v.split(',').map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
   const bc = sp.get('barcodes');
   return {
     barcodes: bc ? bc.split(',').map((s) => s.trim()).filter(Boolean) : [],

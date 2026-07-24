@@ -15,6 +15,7 @@ function Results() {
   const [rows, setRows] = useState<any[]>([]);
   const [notFound, setNotFound] = useState<string[]>([]);
   const [truncated, setTruncated] = useState(false);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,12 +35,12 @@ function Results() {
     runAdvancedSearch(supabase, filters)
       .then((r) => {
         if (!active) return;
-        setRows(r.rows); setNotFound(r.notFound); setTruncated(r.truncated);
+        setRows(r.rows); setNotFound(r.notFound); setTruncated(r.truncated); setTotal(r.total);
       })
       .catch((e) => {
         if (!active) return;
         setError(e?.message ?? 'Search failed');
-        setRows([]); setNotFound([]); setTruncated(false);
+        setRows([]); setNotFound([]); setTruncated(false); setTotal(0);
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -82,7 +83,7 @@ function Results() {
     <Box>
       <Typography variant="h6" sx={{ mb: 0.5 }}>Search results</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        {rows.length} found{truncated ? ' (showing first 500)' : ''}
+        {total} found{truncated ? ` (showing first ${rows.length})` : ''}
         {notFound.length ? ` · ${notFound.length} not found` : ''}
       </Typography>
 
