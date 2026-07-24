@@ -18,9 +18,10 @@ checks against the branch as a whole, plus PR-description content.
 
 - [x] 1.1 `openspec validate add-cyl-batch-commands --strict` passes (proposal.md, design.md,
       tasks.md, both spec deltas already written).
-- [ ] 1.2 Open the PR (draft is fine) as soon as section 2 lands, and tag @blm3886 (Benfica) /
-      Bloom EPIC #9 for CLI-shape feedback before merge (per the roadmap's canonical-scope split —
-      Bloom impl detail is her call). This is a courtesy heads-up, distinct from 8.5 below.
+- [x] 1.2 Open the PR and tag @blm3886 (Benfica) for CLI-shape feedback before merge (per the
+      roadmap's canonical-scope split — Bloom impl detail is her call) — opened as
+      [bloom #532](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/532), Benfica
+      added as reviewer. This is a courtesy heads-up, distinct from 8.5 below.
 - [x] 1.3 File the Bloom EPIC #9 sub-issue for "batch-capable bloomctl commands" — filed as
       [bloom #529](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/529).
 
