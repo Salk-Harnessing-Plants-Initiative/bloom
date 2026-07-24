@@ -68,7 +68,7 @@ def test_sleap_roots_and_core_sections_registered():
 
 
 def test_sleap_roots_section_exposes_the_expected_namespaced_tools():
-    """The 5 sleap-roots-analyze consumers + 5 surviving plots are namespaced
+    """The 6 sleap-roots-analyze consumers + 5 surviving plots are namespaced
     sleap_roots_<tool> on the combined surface."""
     import asyncio
 
@@ -79,6 +79,7 @@ def test_sleap_roots_section_exposes_the_expected_namespaced_tools():
         "qc_inspect",
         "remove_outliers",
         "clustering",
+        "umap_analysis",
         "plot_trait_histograms",
         "plot_trait_boxplots",
         "plot_correlation_matrix",
