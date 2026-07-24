@@ -432,13 +432,22 @@ def test_get_storage_client_timeout_override_builds_client_options(monkeypatch):
 
 
 def test_root_prefers_dedicated_var(monkeypatch, tmp_path):
+    # Explicit BLOOM_STORAGE_LOCAL_ROOT wins outright — assert that holds even
+    # with BLOOM_LOCAL_ROOT also set (#479's middle tier), not just when it
+    # happens to be unset in the ambient test environment.
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path / "other"))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path / "unused"))
     assert sb._resolve_local_root() == tmp_path
 
 
 def test_root_falls_back_to_output_dir(monkeypatch, tmp_path):
+    # Explicitly clear BLOOM_LOCAL_ROOT so this exercises the true 2-tier
+    # fallback regardless of ambient env (e.g. a dev's shell profile) — a
+    # BLOOM_LOCAL_ROOT left set there would otherwise silently divert this to
+    # the #479 middle tier instead of BLOOM_OUTPUT_DIR.
     monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path))
     assert sb._resolve_local_root() == tmp_path
 

@@ -400,11 +400,14 @@ def _ensure_subfolder(path: Path, label: str) -> None:
     """
     if path.exists() and not path.is_dir():
         raise RuntimeError(f"BLOOM_LOCAL_ROOT's {label} exists but is not a directory.")
+    existed = path.exists()
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         logger.error("could not create BLOOM_LOCAL_ROOT's %s: %s", label, path)
         raise RuntimeError(f"Could not create BLOOM_LOCAL_ROOT's {label}.") from exc
+    if not existed:
+        logger.info("created BLOOM_LOCAL_ROOT's %s: %s", label, path)
 
 
 def _unrecognized_backend_error(name: str) -> RuntimeError:

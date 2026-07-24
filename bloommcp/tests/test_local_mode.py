@@ -487,6 +487,22 @@ def test_plots_subfolder_blocked_by_file_raises_clearly(monkeypatch, tmp_path):
         eu.validate_env()
 
 
+def test_plots_subfolder_not_writable_raises_at_boot(monkeypatch, tmp_path):
+    """A pre-existing, non-writable plots/ dir must fail at boot (like input and
+    output already do), not surface a raw PermissionError later in save_plot()."""
+    root = _local_root_env(monkeypatch, tmp_path)
+    plots = root / "plots"
+    plots.mkdir()
+    try:
+        plots.chmod(0o500)
+        if os.access(plots, os.W_OK):
+            pytest.skip("cannot restrict write access on this platform/privilege")
+        with pytest.raises(RuntimeError, match="plots root.*not writable"):
+            eu.validate_env()
+    finally:
+        plots.chmod(0o700)
+
+
 # ── default-path regression: BLOOM_LOCAL_ROOT is inert without local backend ──
 
 
@@ -568,6 +584,46 @@ def test_is_local_backend_not_consulted_when_local_root_unset(monkeypatch):
     monkeypatch.setattr(sb, "is_local_backend", _boom)
     assert eu._resolve_plots_dir() == os.getenv("BLOOM_PLOTS_DIR", "")
     assert eu._fully_local_root() is None
+
+
+def test_plots_dir_module_constant_reflects_local_root_at_real_import(tmp_path):
+    """Exercises the REAL import-time wiring of PLOTS_DIR in a fresh interpreter
+    — every other test either calls _resolve_plots_dir() directly or manually
+    monkeypatches PLOTS_DIR to the value it should resolve to, neither of which
+    would catch a regression in the actual `PLOTS_DIR = Path(_resolve_plots_dir())`
+    module-level binding itself (verified by fault injection: reverting that line
+    to the pre-#479 `Path(os.getenv("BLOOM_PLOTS_DIR", ""))` form leaves every
+    other test in this file green)."""
+    root = tmp_path / "local_root"
+    root.mkdir()
+    strip = (
+        "BLOOM_TRAITS_DIR",
+        "BLOOM_OUTPUT_DIR",
+        "BLOOM_PLOTS_DIR",
+        "BLOOM_PLOTS_URL",
+        "BLOOM_STORAGE_LOCAL_ROOT",
+        "BLOOM_EXPERIMENT_LOCAL_ROOT",
+        "SUPABASE_URL",
+        "BLOOM_AGENT_KEY",
+    )
+    env = {k: v for k, v in os.environ.items() if k not in strip}
+    env["BLOOM_STORAGE_BACKEND"] = "local"
+    env["BLOOM_LOCAL_ROOT"] = str(root)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import bloom_mcp.experiment_utils as eu; "
+            "import pathlib, os; "
+            "expected = pathlib.Path(os.environ['BLOOM_LOCAL_ROOT']) / 'plots'; "
+            "assert eu.PLOTS_DIR == expected, (eu.PLOTS_DIR, expected)",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 # ── fully-local end-to-end via BLOOM_LOCAL_ROOT alone ───────────────────────

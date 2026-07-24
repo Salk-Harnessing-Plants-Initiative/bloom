@@ -82,11 +82,14 @@ def _ensure_subfolder(path: Path, label: str) -> None:
     """
     if path.exists() and not path.is_dir():
         raise RuntimeError(f"BLOOM_LOCAL_ROOT's {label} exists but is not a directory.")
+    existed = path.exists()
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         logger.error("could not create BLOOM_LOCAL_ROOT's %s: %s", label, path)
         raise RuntimeError(f"Could not create BLOOM_LOCAL_ROOT's {label}.") from exc
+    if not existed:
+        logger.info("created BLOOM_LOCAL_ROOT's %s: %s", label, path)
 
 
 def _validate_local_root_dir(root: Path) -> None:
@@ -94,14 +97,21 @@ def _validate_local_root_dir(root: Path) -> None:
 
     Runs once, early (from ``validate_env``), so a bad ``BLOOM_LOCAL_ROOT``
     surfaces as one clear error before any of the three subfolder-specific
-    validators (input/output/plots) run.
+    validators (input/output/plots) run. The absolute path is logged
+    server-side only, not included in the raised message — mirrors
+    ``_ensure_subfolder`` and ``validate_experiment_local_root``'s no-host-path
+    -leak convention for boot errors that can appear in LLM-agent-visible
+    tracebacks.
     """
     if not root.exists():
-        raise RuntimeError(f"BLOOM_LOCAL_ROOT={root} does not exist.")
+        logger.error("BLOOM_LOCAL_ROOT does not exist: %s", root)
+        raise RuntimeError("BLOOM_LOCAL_ROOT does not exist.")
     if not root.is_dir():
-        raise RuntimeError(f"BLOOM_LOCAL_ROOT={root} is not a directory.")
+        logger.error("BLOOM_LOCAL_ROOT is not a directory: %s", root)
+        raise RuntimeError("BLOOM_LOCAL_ROOT is not a directory.")
     if not os.access(root, os.W_OK):
-        raise RuntimeError(f"BLOOM_LOCAL_ROOT={root} is not writable.")
+        logger.error("BLOOM_LOCAL_ROOT is not writable: %s", root)
+        raise RuntimeError("BLOOM_LOCAL_ROOT is not writable.")
 
 
 def resolve_experiment_local_root() -> Path:
@@ -109,13 +119,16 @@ def resolve_experiment_local_root() -> Path:
 
     Precedence: ``BLOOM_EXPERIMENT_LOCAL_ROOT`` when explicitly set; otherwise
     ``<BLOOM_LOCAL_ROOT>/input`` when the single ``BLOOM_LOCAL_ROOT`` variable
-    supplies a default (#479); otherwise the already-required, already-mounted
-    ``BLOOM_TRAITS_DIR`` — mirroring how the object-storage ``local`` backend
-    resolves its root (``BLOOM_STORAGE_LOCAL_ROOT`` → ``<BLOOM_LOCAL_ROOT>/output``
-    → ``BLOOM_OUTPUT_DIR``). Read via the module-level ``TRAITS_DIR`` so tests that
-    monkeypatch it are honoured. Unlike the storage-backend bridge fallback,
-    ``BLOOM_TRAITS_DIR`` is a **supported** default here — this change promotes the
-    local input path rather than retiring it.
+    supplies a default (#479); otherwise ``BLOOM_TRAITS_DIR`` — mirroring how the
+    object-storage ``local`` backend resolves its root
+    (``BLOOM_STORAGE_LOCAL_ROOT`` → ``<BLOOM_LOCAL_ROOT>/output`` →
+    ``BLOOM_OUTPUT_DIR``). ``BLOOM_TRAITS_DIR`` is required only when neither of
+    the first two tiers applies (the default Supabase path, or fully-local mode
+    without ``BLOOM_LOCAL_ROOT``) — see ``validate_env``'s conditional-optional
+    handling. Read via the module-level ``TRAITS_DIR`` so tests that monkeypatch
+    it are honoured. Unlike the storage-backend bridge fallback,
+    ``BLOOM_TRAITS_DIR`` is a **supported** default here — this change promotes
+    the local input path rather than retiring it.
     """
     explicit = os.getenv("BLOOM_EXPERIMENT_LOCAL_ROOT")
     if explicit:
@@ -184,6 +197,14 @@ def _validate_dirs() -> None:
                 continue
             if name == "BLOOM_PLOTS_DIR" and not os.getenv(name):
                 _ensure_subfolder(path, "plots root")
+                # Post-create writability recheck — mirrors the fall-through
+                # checks validate_experiment_local_root (readable) and
+                # validate_storage_backend (writable) both perform after their
+                # own _ensure_subfolder call; plots are a write destination
+                # (_viz_shared.save_plot), so a raw PermissionError there
+                # should surface at boot, not mid-analysis.
+                if not os.access(path, os.W_OK):
+                    raise RuntimeError("BLOOM_LOCAL_ROOT's plots root is not writable.")
                 continue
         if not path.exists():
             raise RuntimeError(
