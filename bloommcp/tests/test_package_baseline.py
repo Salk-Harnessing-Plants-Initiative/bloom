@@ -224,6 +224,71 @@ def test_boot_validation_fails_fast_on_missing_data_dirs(monkeypatch):
     assert called["run"] is False
 
 
+# ── Backend Selection Boot Visibility (#478) ────────────────────────────────
+
+
+def _boot_env(monkeypatch, tmp_path, *, local: bool) -> None:
+    for var in ("BLOOM_TRAITS_DIR", "BLOOM_OUTPUT_DIR", "BLOOM_PLOTS_DIR"):
+        d = tmp_path / var
+        d.mkdir()
+        monkeypatch.setenv(var, str(d))
+    monkeypatch.setenv("BLOOM_PLOTS_URL", "http://localhost/plots")
+    if local:
+        monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("BLOOM_AGENT_KEY", raising=False)
+    else:
+        monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+        monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
+        monkeypatch.setenv("BLOOM_AGENT_KEY", "fake-jwt")
+
+
+def test_main_prints_active_backend_before_uvicorn_run_supabase(monkeypatch, tmp_path, capsys):
+    """server.main() must print which storage backend is active (#478) — the
+    supabase branch — so a stray shell-exported BLOOM_STORAGE_BACKEND=local
+    (newly possible now the compose toggle is ${VAR:-}-interpolated, not
+    commented-out literal YAML) is visible instead of silent."""
+    import bloom_mcp.server as server
+
+    _boot_env(monkeypatch, tmp_path, local=False)
+    monkeypatch.setattr("uvicorn.run", lambda *a, **k: None)
+
+    server.main()
+
+    assert "storage backend: supabase" in capsys.readouterr().out
+
+
+def test_main_prints_active_backend_before_uvicorn_run_local(monkeypatch, tmp_path, capsys):
+    """Same as above, fully-local branch."""
+    import bloom_mcp.server as server
+
+    _boot_env(monkeypatch, tmp_path, local=True)
+    monkeypatch.setattr("uvicorn.run", lambda *a, **k: None)
+
+    server.main()
+
+    assert "storage backend: local" in capsys.readouterr().out
+
+
+def test_main_prints_active_backend_even_when_validation_fails_fast(
+    monkeypatch, tmp_path, capsys
+):
+    """The backend print must happen BEFORE validate_data_env()/
+    validate_supabase_env(), so a misconfigured deploy still reveals which
+    backend it attempted instead of failing silently on that point."""
+    import bloom_mcp.server as server
+
+    _boot_env(monkeypatch, tmp_path, local=False)
+    monkeypatch.delenv("BLOOM_TRAITS_DIR", raising=False)  # forces fail-fast
+
+    with pytest.raises(RuntimeError, match="BLOOM_TRAITS_DIR"):
+        server.main()
+
+    assert "storage backend: supabase" in capsys.readouterr().out, (
+        "the backend print must fire before the fail-fast validator raises"
+    )
+
+
 # ── FastMCP Client smoke (no live Supabase) ─────────────────────────────────
 
 

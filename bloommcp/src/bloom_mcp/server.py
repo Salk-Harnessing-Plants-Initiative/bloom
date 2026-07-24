@@ -119,8 +119,16 @@ def main() -> None:
     from bloom_mcp.experiment_utils import validate_experiment_local_root
     from bloom_mcp.storage_backend import is_local_backend
 
-    validate_data_env()
+    # Printed before validation (not after) so the active backend is visible
+    # even when validate_data_env()/validate_supabase_env() fails fast below —
+    # otherwise a misconfigured deploy never reveals which backend it tried.
     fully_local = is_local_backend()
+    print(
+        f"Bloom MCP Server storage backend: "
+        f"{'local (fully-local/offline)' if fully_local else 'supabase'}"
+    )
+
+    validate_data_env()
     if fully_local:
         validate_experiment_local_root()
     else:
