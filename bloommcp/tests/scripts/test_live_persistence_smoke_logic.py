@@ -14,9 +14,9 @@ import hashlib
 import importlib.util
 from pathlib import Path
 
-# Load the driver by path — `scripts/` is not an importable package (no __init__).
+# Load the driver by path — `tests/smoke/` is not an importable package (no __init__).
 _DRIVER_PATH = (
-    Path(__file__).resolve().parents[2] / "scripts" / "live_persistence_smoke.py"
+    Path(__file__).resolve().parents[1] / "smoke" / "live_persistence_smoke.py"
 )
 _spec = importlib.util.spec_from_file_location("live_persistence_smoke", _DRIVER_PATH)
 assert _spec and _spec.loader

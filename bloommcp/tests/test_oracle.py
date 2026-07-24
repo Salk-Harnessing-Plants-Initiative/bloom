@@ -62,6 +62,18 @@ def turface_19():
     return df, golden
 
 
+@pytest.fixture(scope="module")
+def cylinder():
+    """#483 second fixture -- inverted samples-vs-traits ratio (123 x 649 post-QC),
+    plant_qr_code/Geno/Rep role columns. See tests/fixtures/README.md's "Cross-tier
+    oracle fixtures (cylinder)" section."""
+    df = pd.read_csv(_FIXTURES / "cylinder_final_data.csv", encoding="utf-8")
+    golden = json.loads(
+        (_FIXTURES / "cylinder_pca_golden.json").read_text(encoding="utf-8")
+    )
+    return df, golden
+
+
 def _cumulative_variance_at_cut(result: dict, n: int) -> float:
     return float(result["cumulative_variance_ratio"][n - 1])
 
@@ -81,6 +93,22 @@ def test_external_library_pca_matches_recorded_oracle(turface_19):
     """
     df, golden = turface_19
     result = library_pca(df[golden["trait_cols"]], explained_variance_threshold=0.95)
+    assert result["n_components_selected"] == golden["n_pca_components"]
+    assert _cumulative_variance_at_cut(
+        result, golden["n_pca_components"]
+    ) == pytest.approx(golden["pca_explained_variance"], abs=_VAR_TOL)
+
+
+def test_external_library_pca_matches_recorded_oracle_cylinder(cylinder):
+    """Cylinder counterpart (#483) -- inverted samples-vs-traits ratio (123 x 649).
+
+    Upstream's own viz pipeline used a 0.75 variance-threshold selection for this
+    fixture (not turface_19's 0.95), which is why it lands on 4 components / ~0.755
+    cumulative rather than turface_19's 3 / ~0.96 -- see cylinder_pca_golden.json's
+    _pca_evr_source and tests/fixtures/README.md.
+    """
+    df, golden = cylinder
+    result = library_pca(df[golden["trait_cols"]], explained_variance_threshold=0.75)
     assert result["n_components_selected"] == golden["n_pca_components"]
     assert _cumulative_variance_at_cut(
         result, golden["n_pca_components"]

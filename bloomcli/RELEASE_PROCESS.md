@@ -43,10 +43,15 @@ and are marked as a pre-release on GitHub.
 2. Add a `## [X.Y.Z] - YYYY-MM-DD` entry to `bloomcli/CHANGELOG.md`.
 3. Create a **GitHub Release** whose tag matches the version (`bloomctl-vX.Y.Z`,
    `vX.Y.Z`, or `X.Y.Z`). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.
-4. Publishing the Release runs `release-bloomcli.yml`:
-   - `validate-release`: tag ↔ version match, changelog entry exists, lint + tests.
-   - `build-and-publish`: `uv build`, import the wheel + run `bloomctl --version`,
-     then `uv publish`.
+4. Publishing the Release runs two workflows:
+   - `release-bloomcli.yml`:
+     - `validate-release`: tag ↔ version match, changelog entry exists, lint + tests.
+     - `build-and-publish`: `uv build`, import the wheel + run `bloomctl --version`,
+       then `uv publish`.
+   - `docker-build-bloomcli.yml`: validates the same tag ↔ version match
+     independently, then builds and pushes a matching GHCR version tag (see
+     `bloomcli/README.md`'s "Container image" section for the image and tag
+     scheme).
 5. Verify on PyPI: `uvx bloomctl --version` (stable) or
    `uvx --prerelease=allow bloomctl --version` (pre-release).
 

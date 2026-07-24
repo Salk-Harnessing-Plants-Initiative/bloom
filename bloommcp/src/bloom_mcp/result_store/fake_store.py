@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from bloom_mcp.storage.versioning import version_dir_name
+from bloom_mcp.manifest.versioning import version_dir_name
 
 from ._artifacts import hash_outputs, validate_outputs
 from .ports import (

@@ -14,6 +14,21 @@ import matplotlib.pyplot as plt
 
 from bloom_mcp.experiment_utils import PLOTS_DIR, PLOTS_URL
 
+# Trait count above which plot_trait_histograms/plot_trait_boxplots switch to their
+# delegate's *_batched variant (list[Figure]) instead of rendering every trait into
+# one figure. This only decides WHETHER to batch -- it is not the resulting page
+# size. Each *_batched delegate (create_trait_histograms_batched,
+# create_trait_boxplots_by_genotype_batched) has its own independent batch_size
+# parameter (currently 16), so e.g. cylinder's 846 traits produce 53 pages of ~16
+# traits each, not "TRAIT_BATCH_THRESHOLD traits per page". Set to 50 to match
+# create_heritability_plot's own internal traits_per_page default for consistency
+# across all plot tools that can hit this scale -- see
+# test_trait_batch_threshold_matches_heritability_plot_default in
+# tests/tools/test_viz_tools.py, which asserts this against the live delegate
+# signature so a future sleap-roots-analyze bump that changes that default is
+# caught here rather than silently desyncing the two.
+TRAIT_BATCH_THRESHOLD = 50
+
 
 def save_plot(fig, plot_name: str) -> str:
     """Save figure and return URL."""
@@ -22,6 +37,27 @@ def save_plot(fig, plot_name: str) -> str:
     fig.savefig(plot_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return f"{PLOTS_URL}/{plot_name}"
+
+
+def save_plot_or_plots(fig_or_figs, plot_name: str) -> str:
+    """Save a single figure, or a paginated list of figures, and return the URL(s).
+
+    ``create_heritability_plot`` returns a single ``Figure`` for small trait counts
+    but a ``list[Figure]`` once the trait count exceeds its internal
+    ``traits_per_page`` (currently 50) -- turface_19's ~18-20 traits never crosses
+    that threshold, so this path was never exercised until #483 added a fixture wide
+    enough (cylinder, 846 traits) to reach it. Save each page with a numbered suffix
+    and return a summary of all URLs rather than crashing on ``list.savefig``.
+    """
+    if isinstance(fig_or_figs, list):
+        stem = Path(plot_name).stem
+        suffix = Path(plot_name).suffix
+        urls = [
+            save_plot(fig, f"{stem}_page{i}{suffix}")
+            for i, fig in enumerate(fig_or_figs, start=1)
+        ]
+        return f"{len(urls)} pages: " + ", ".join(urls)
+    return save_plot(fig_or_figs, plot_name)
 
 
 def parse_traits(traits: str, available: list) -> list:

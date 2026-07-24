@@ -79,8 +79,9 @@ def fetch_experiments(client: Any) -> list[dict[str, Any]]:
 )
 def list_experiments(as_json: bool, profile: str) -> None:
     """List cylinder experiments."""
-    from ..cli import _authed_client
     from postgrest import APIError
+
+    from ..cli import _authed_client
 
     client = _authed_client(profile)
     try:

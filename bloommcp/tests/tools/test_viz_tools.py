@@ -68,6 +68,49 @@ def _spy(monkeypatch, module, name: str):
     return calls
 
 
+# ── save_plot_or_plots (#483 follow-up) ──────────────────────────────────────
+#
+# Direct, fast, unmarked coverage of the exact bug PR #507 found and fixed
+# (`create_heritability_plot` returning `list[Figure]` past its pagination
+# threshold crashed `save_plot`'s unconditional `fig.savefig()`) -- this was
+# previously only exercised by the live_smoke_slow-only cylinder smoke tests,
+# which never run in per-PR CI.
+
+
+def test_save_plot_or_plots_single_figure_behaves_like_save_plot(viz_env):
+    fig = plt.figure()
+    url = _viz_shared.save_plot_or_plots(fig, "single.png")
+    assert url.endswith("/single.png")
+    assert (viz_env / "single.png").is_file()
+    assert plt.get_fignums() == []  # closed, not leaked
+
+
+def test_save_plot_or_plots_list_saves_each_page_and_summarizes(viz_env):
+    figs = [plt.figure(), plt.figure(), plt.figure()]
+    url = _viz_shared.save_plot_or_plots(figs, "multi.png")
+    assert url.startswith("3 pages: ")
+    for i in (1, 2, 3):
+        assert (viz_env / f"multi_page{i}.png").is_file()
+        assert f"multi_page{i}.png" in url
+    assert plt.get_fignums() == []  # all three closed, not leaked
+
+
+def test_trait_batch_threshold_matches_heritability_plot_default():
+    """#483 follow-up: TRAIT_BATCH_THRESHOLD is set to match
+    create_heritability_plot's own internal traits_per_page default (50) "for
+    consistency across all plot tools" -- assert that against the live delegate
+    signature so a future sleap-roots-analyze bump that changes that default is
+    caught here, not silently desynced (the pin is `>=`, open-ended)."""
+    import inspect
+
+    from sleap_roots_analyze.visualization import create_heritability_plot
+
+    default = inspect.signature(create_heritability_plot).parameters[
+        "traits_per_page"
+    ].default
+    assert default == _viz_shared.TRAIT_BATCH_THRESHOLD
+
+
 def test_plot_trait_histograms_delegates_and_saves_png(viz_env, monkeypatch):
     calls = _spy(monkeypatch, plot_trait_histograms_mod, "create_trait_histograms")
 
@@ -91,6 +134,120 @@ def test_plot_trait_boxplots_delegates_and_saves_png(viz_env, monkeypatch):
     png = viz_env / f"boxplots_{Path(_EXPERIMENT).stem}.png"
     assert png.is_file()
     assert calls["n"] == 1
+    assert plt.get_fignums() == []
+
+
+def _seed_wide_experiment(traits_dir: Path, n_traits: int, filename: str) -> None:
+    """Write a synthetic experiment with `n_traits` trait columns into `traits_dir`.
+
+    Cheap stand-in for cylinder's real 846-trait shape -- exercises the same
+    ``TRAIT_BATCH_THRESHOLD``-crossing decision in ``plot_trait_histograms``/
+    ``plot_trait_boxplots`` without needing the real fixture, so this runs fast and
+    unmarked in every PR (the live cylinder case only runs via live_smoke_slow).
+    """
+    n_samples = 12
+    data = {"geno": [f"G{i % 3}" for i in range(n_samples)]}
+    for t in range(n_traits):
+        data[f"trait_{t}"] = [float(i + t) for i in range(n_samples)]
+    pd.DataFrame(data).to_csv(traits_dir / filename, index=False)
+
+
+# create_trait_histograms_batched / create_trait_boxplots_by_genotype_batched's own
+# batch_size default -- independent of TRAIT_BATCH_THRESHOLD, which only decides
+# WHETHER to batch (see _viz_shared.py's comment on TRAIT_BATCH_THRESHOLD).
+_DELEGATE_BATCH_SIZE = 16
+
+
+def _expected_pages(n_traits: int) -> int:
+    return -(-n_traits // _DELEGATE_BATCH_SIZE)  # ceil division, no float rounding
+
+
+def test_plot_trait_histograms_uses_batched_delegate_above_threshold(
+    viz_env, monkeypatch
+):
+    """#483 follow-up: create_trait_histograms has no pagination of its own, so a
+    trait count above TRAIT_BATCH_THRESHOLD must route to
+    create_trait_histograms_batched (list[Figure]) via save_plot_or_plots, not the
+    single-Figure delegate save_plot would crash on."""
+    wide_experiment = "wide.csv"
+    n_traits = 60
+    _seed_wide_experiment(eu.TRAITS_DIR, n_traits=n_traits, filename=wide_experiment)
+
+    unbatched_calls = _spy(
+        monkeypatch, plot_trait_histograms_mod, "create_trait_histograms"
+    )
+    batched_calls = _spy(
+        monkeypatch, plot_trait_histograms_mod, "create_trait_histograms_batched"
+    )
+
+    result = plot_trait_histograms_mod.plot_trait_histograms(wide_experiment)
+
+    assert unbatched_calls["n"] == 0
+    assert batched_calls["n"] == 1
+    expected = _expected_pages(n_traits)
+    assert result.startswith(f"{expected} pages: ") or f"{expected} pages: " in result
+    stem = Path(wide_experiment).stem
+    for i in range(1, expected + 1):
+        assert (viz_env / f"histograms_{stem}_page{i}.png").is_file()
+    assert plt.get_fignums() == []
+
+
+def test_plot_trait_boxplots_uses_batched_delegate_above_threshold(
+    viz_env, monkeypatch
+):
+    wide_experiment = "wide.csv"
+    n_traits = 60
+    _seed_wide_experiment(eu.TRAITS_DIR, n_traits=n_traits, filename=wide_experiment)
+
+    unbatched_calls = _spy(
+        monkeypatch, plot_trait_boxplots_mod, "create_trait_boxplots_by_genotype"
+    )
+    batched_calls = _spy(
+        monkeypatch,
+        plot_trait_boxplots_mod,
+        "create_trait_boxplots_by_genotype_batched",
+    )
+
+    result = plot_trait_boxplots_mod.plot_trait_boxplots(wide_experiment)
+
+    assert unbatched_calls["n"] == 0
+    assert batched_calls["n"] == 1
+    expected = _expected_pages(n_traits)
+    assert f"{expected} pages: " in result
+    stem = Path(wide_experiment).stem
+    for i in range(1, expected + 1):
+        assert (viz_env / f"boxplots_{stem}_page{i}.png").is_file()
+    assert plt.get_fignums() == []
+
+
+@pytest.mark.parametrize(
+    "n_traits, expect_batched",
+    [(50, False), (51, True)],  # boundary: TRAIT_BATCH_THRESHOLD == 50, "> 50" batches
+)
+def test_plot_trait_histograms_batching_boundary(
+    viz_env, monkeypatch, n_traits, expect_batched
+):
+    """Pins the off-by-one boundary explicitly: exactly TRAIT_BATCH_THRESHOLD traits
+    must NOT batch (matches create_heritability_plot's own `> traits_per_page`
+    semantics), one more must."""
+    experiment = "boundary.csv"
+    _seed_wide_experiment(eu.TRAITS_DIR, n_traits=n_traits, filename=experiment)
+
+    unbatched_calls = _spy(
+        monkeypatch, plot_trait_histograms_mod, "create_trait_histograms"
+    )
+    batched_calls = _spy(
+        monkeypatch, plot_trait_histograms_mod, "create_trait_histograms_batched"
+    )
+
+    plot_trait_histograms_mod.plot_trait_histograms(experiment)
+
+    if expect_batched:
+        assert unbatched_calls["n"] == 0
+        assert batched_calls["n"] == 1
+    else:
+        assert unbatched_calls["n"] == 1
+        assert batched_calls["n"] == 0
     assert plt.get_fignums() == []
 
 

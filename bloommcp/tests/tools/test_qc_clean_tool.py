@@ -1021,3 +1021,60 @@ def test_new_override_params_exposed_in_tool_schema():
     assert "sample_id_column" in schema_json
     assert "genotype_column" in schema_json
     assert "exclude_columns" in schema_json
+
+
+# ── cylinder oracle (#483) ───────────────────────────────────────────────────
+#
+# Second fixture with a genuinely different role-column naming convention
+# (plant_qr_code/Geno/Rep vs turface_19's Barcode/geno/rep) and an inverted
+# samples-vs-traits ratio (129 samples x 846 traits). The golden was recorded via a
+# real MCP call against the running dev stack (see
+# tests/fixtures/README.md's "Cross-tier oracle fixtures (cylinder)" section), at
+# qc_clean's canonical default thresholds -- unlike turface_19's raw input, cylinder's
+# raw fixture was already scanner-cleaned, so nothing is dropped at those defaults.
+
+_RAW_CYL = _FIXTURES / "cylinder_raw_data.csv"
+_GOLDEN_CYL = json.loads(
+    (_FIXTURES / "cylinder_qc_golden.json").read_text(encoding="utf-8")
+)
+_EXPERIMENT_CYL = "cylinder_raw.csv"
+
+
+def _raw_df_cyl() -> pd.DataFrame:
+    return pd.read_csv(_RAW_CYL, encoding="utf-8")
+
+
+@pytest.fixture
+def injected_ports_cylinder():
+    """FakeReader serving the raw cylinder fixture + FakeResultStore."""
+    reader = FakeReader()
+    store = FakeResultStore()
+    reader.add_experiment(_EXPERIMENT_CYL, _raw_df_cyl())
+    _ports.configure(reader=reader, store=store)
+    try:
+        yield reader, store
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def test_cylinder_cleaned_table_matches_golden_shape_and_roles(injected_ports_cylinder):
+    """qc_clean at canonical defaults on cylinder matches the recorded golden: zero
+    samples/traits dropped (the raw fixture is already scanner-cleaned), and role
+    columns resolve to plant_qr_code/Geno/Rep -- distinct from turface_19's."""
+    result = qc_clean(QCCleanParams(experiment=_EXPERIMENT_CYL))
+
+    assert result.n_samples_out == _GOLDEN_CYL["cleaned_samples"] == 129
+    assert result.n_traits_out == _GOLDEN_CYL["cleaned_traits"] == 846
+    assert result.removed_traits == _GOLDEN_CYL["removed_traits"] == []
+    assert result.cleaned_nan_cells_remaining == _GOLDEN_CYL["cleaned_trait_nans"] == 0
+
+    assert result.sample_id_column == _GOLDEN_CYL["role_columns"]["barcode_col"] == (
+        "plant_qr_code"
+    )
+    assert result.genotype_column == _GOLDEN_CYL["role_columns"]["genotype_col"] == "Geno"
+    assert (
+        result.replicate_column == _GOLDEN_CYL["role_columns"]["replicate_col"] == "Rep"
+    )
+    assert sorted(result.excluded_columns) == sorted(
+        _GOLDEN_CYL["excluded_from_traits"]
+    )

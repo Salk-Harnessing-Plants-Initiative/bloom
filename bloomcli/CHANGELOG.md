@@ -8,11 +8,13 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a2] - 2026-07-23
+
 ### Changed
 
 - Commands are now grouped by data type: `bloomctl download` moved under the
   `cyl` group as `bloomctl cyl download` (both cylinder commands now live in
-  `bloomctl.cyl`, one file per command), matching the legacy CLI's layout.
+  `bloomctl.cyl`, one file per command), matching the legacy CLI's layout (#433).
 
 ### Added
 
@@ -30,11 +32,26 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   (preserving the producer's `idempotency_key`), reports the first-writer-wins
   no-op distinctly from an error, maps RPC validation failures to actionable
   messages, and supports `--json` output (#397).
+- `bloomctl cyl ingest-result --predictions-dir DIR` — construct and upload the
+  envelope's `blobs`: reads predict's `{scan_key}.predictions.json`
+  (`PredictionArtifact`/`PredictionManifest`, promoted into
+  `sleap-roots-contracts` v0.1.0a5 for this), verifies each `.slp`'s checksum,
+  uploads to the new `cyl-intermediates` storage bucket (idempotent per-blob;
+  fails fast before any upload or RPC call on a missing/malformed manifest,
+  missing file, checksum mismatch, or conflicting existing blob). Bumped the
+  `sleap-roots-contracts` floor to `>=0.1.0a5` (#407).
 - `bloomctl cyl download-for-predict <scan-id> <out>` — stage one cylinder scan
   into the layout `sleap_roots_predict.discover_scans` expects (frames beside a
   `scan_metadata.json` sidecar authored from live DB metadata), for A4 per-scan
   pipeline stage-in. Distinct from `cyl download`'s legacy `images/Wave{n}/…` +
   `scans.csv` layout (#411).
+- `bloomcli/Dockerfile` + GHCR publishing — `bloomctl` is now built as a
+  container image from monorepo source and published to
+  `ghcr.io/salk-harnessing-plants-initiative/bloomctl` (`sha-<short>` on every
+  `staging` push, `staging` mutable tag, a matching version tag per GitHub
+  Release). PR-time Dockerfile validation + CVE scanning ride
+  `pr-checks.yml`'s existing `docker-build` job; the publishing workflow
+  itself is push-only.
 
 ## [0.1.0a1] - 2026-06-30
 
