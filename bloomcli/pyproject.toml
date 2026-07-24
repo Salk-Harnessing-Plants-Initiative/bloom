@@ -33,9 +33,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/tree/main/bloomcli"
+Homepage = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/tree/staging/bloomcli"
 Repository = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom"
-Changelog = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/main/bloomcli/CHANGELOG.md"
+Changelog = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/staging/bloomcli/CHANGELOG.md"
 
 [project.scripts]
 bloomctl = "bloomctl.cli:cli"
