@@ -14,8 +14,14 @@ def _tok() -> str:
     return uuid.uuid4().hex[:10]
 
 
-def _seed_plant(cur, *, qr, accession="Acc", species="Sp", exp="Exp", deleted=False):
-    cur.execute("INSERT INTO species (common_name) VALUES (%s) RETURNING id", (species,))
+def _seed_plant(cur, *, qr, accession="Acc", species="Sp", exp="Exp", deleted=False, species_deleted=False):
+    if species_deleted:
+        cur.execute(
+            "INSERT INTO species (common_name, deleted_at) VALUES (%s, now()) RETURNING id",
+            (species,),
+        )
+    else:
+        cur.execute("INSERT INTO species (common_name) VALUES (%s) RETURNING id", (species,))
     species_id = cur.fetchone()[0]
     if deleted:
         cur.execute(
@@ -84,6 +90,21 @@ def test_plant_search_excludes_soft_deleted_experiments(pg_conn):
         cur.execute("SELECT qr_code FROM cyl_plant_search WHERE qr_code IN (%s, %s)", (live, deleted))
         got = {r[0] for r in cur.fetchall()}
         assert got == {live}  # the deleted-experiment plant is excluded
+    pg_conn.rollback()
+
+
+def test_plant_search_excludes_soft_deleted_species(pg_conn):
+    t = _tok()
+    live, deleted = f"Q-splive-{t}", f"Q-spdel-{t}"
+    with pg_conn.cursor() as cur:
+        _seed_plant(cur, qr=live, accession=f"Acc-live-{t}", species=f"Sp-live-{t}", exp=f"Exp-live-{t}")
+        _seed_plant(
+            cur, qr=deleted, accession=f"Acc-del-{t}", species=f"Sp-del-{t}",
+            exp=f"Exp-del-{t}", species_deleted=True,
+        )
+        cur.execute("SELECT qr_code FROM cyl_plant_search WHERE qr_code IN (%s, %s)", (live, deleted))
+        got = {r[0] for r in cur.fetchall()}
+        assert got == {live}  # the soft-deleted-species plant is excluded
     pg_conn.rollback()
 
 

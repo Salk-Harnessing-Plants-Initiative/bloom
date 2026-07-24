@@ -74,7 +74,8 @@ export default function SearchComponent() {
       const { data: sp } = await supabase
         .from('species' as any)
         .select('id')
-        .ilike('common_name', escapeLike(text));
+        .ilike('common_name', escapeLike(text))
+        .is('deleted_at', null);
       if (sp && sp.length === 1) {
         router.push(`/app/phenotypes/${(sp[0] as any).id}`);
         return;
@@ -178,6 +179,7 @@ export default function SearchComponent() {
         .from('species' as any)
         .select('id, common_name, genus, species')
         .ilike('common_name', `%${term}%`)
+        .is('deleted_at', null)
         .limit(8)
         .abortSignal(signal),
       // Deliberately NOT matching species_name here — species matches belong in
