@@ -14,8 +14,6 @@ export type AdvancedResult = {
   truncated: boolean;
 };
 
-const CAP = 500;
-
 export const parseBarcodes = (s: string): string[] =>
   s.split(/[\s,]+/).map((t) => t.trim()).filter(Boolean);
 
@@ -25,13 +23,14 @@ export const filtersEmpty = (f: AdvancedFilters): boolean =>
 // One server-side call: AND across fields, OR within a field. The RPC returns
 // the capped page, the true total (for the "showing N of M" note), and the
 // pasted barcodes that don't exist. RLS applies via the security_invoker view.
+// p_limit is left to the function's own default so the page size lives in one
+// place — the RPC clamps it regardless of what a caller asks for.
 export async function runAdvancedSearch(supabase: any, f: AdvancedFilters): Promise<AdvancedResult> {
   const { data, error } = await supabase.rpc('cyl_plant_search_query', {
     p_barcodes: f.barcodes,
     p_accession_ids: f.accessionIds,
     p_species_ids: f.speciesIds,
     p_experiment_ids: f.experimentIds,
-    p_limit: CAP,
   });
   if (error) throw error;
   const rows: any[] = data?.rows ?? [];
