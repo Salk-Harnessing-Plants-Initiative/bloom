@@ -1,10 +1,13 @@
 "use client";
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import NextLink from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
-import { TextField, Box, CircularProgress, List, Divider, Typography, Link as MuiLink, InputAdornment, IconButton } from '@mui/material';
+import { TextField, Box, CircularProgress, List, Divider, Typography, Link as MuiLink, InputAdornment, IconButton, Button } from '@mui/material';
+import { createTheme, ThemeProvider, useTheme } from '@mui/material/styles';
+import { green } from '@mui/material/colors';
 import SearchIcon from '@mui/icons-material/Search';
 import { createClientSupabaseClient } from "@/lib/supabase/client";
+import PlantAdvancedSearch from './plant-advanced-search';
 
 // Per-field deep links: species -> species page, experiment -> experiment page,
 // accession/barcode -> the accession-in-wave page. Null when ids are missing.
@@ -55,9 +58,15 @@ export default function SearchComponent() {
   const [speciesResults, setSpeciesResults] = useState<any[]>([]);
   const [plantResults, setPlantResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const supabase = createClientSupabaseClient();
   const router = useRouter();
   const pathname = usePathname();
+  const baseTheme = useTheme();
+  const greenTheme = useMemo(
+    () => createTheme(baseTheme, { palette: { primary: { main: green[700], light: green[500], dark: green[800] } } }),
+    [baseTheme],
+  );
 
   const clearResults = () => {
     setSpeciesResults([]);
@@ -174,6 +183,7 @@ export default function SearchComponent() {
   const hasResults = speciesResults.length > 0 || plantResults.length > 0;
 
   return (
+    <ThemeProvider theme={greenTheme}>
     <Box sx={{ width: '100%', maxWidth: 1200, mx: 'auto', mt: 4, mb: 4 }}>
       <TextField
         fullWidth
@@ -200,6 +210,13 @@ export default function SearchComponent() {
           ),
         }}
       />
+
+      <Box sx={{ mt: 1 }}>
+        <Button size="small" onClick={() => setShowAdvanced((v) => !v)}>
+          {showAdvanced ? 'Hide advanced search' : 'Advanced search'}
+        </Button>
+      </Box>
+      {showAdvanced && <PlantAdvancedSearch />}
 
       { hasResults && <Box
         sx={{
@@ -253,5 +270,6 @@ export default function SearchComponent() {
         )}
       </Box>}
     </Box>
+    </ThemeProvider>
   );
 }
