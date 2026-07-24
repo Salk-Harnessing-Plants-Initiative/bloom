@@ -94,6 +94,7 @@ function Results() {
           <Stack spacing={1} sx={{ mt: 0.75 }}>
             {group.map((item) => {
               const href = fieldHrefs(item).accession;
+              const clickable = href != null;
               const bar = (
                 <Box
                   sx={{
@@ -107,19 +108,23 @@ function Results() {
                     alignItems: 'center',
                     gap: 1,
                     transition: 'box-shadow 120ms ease, border-color 120ms ease',
-                    '&:hover': { boxShadow: 2, borderColor: 'success.main' },
-                    '&:hover .bar-arrow': { opacity: 1 },
+                    ...(clickable && {
+                      '&:hover': { boxShadow: 2, borderColor: 'success.main' },
+                      '&:hover .bar-arrow': { opacity: 1 },
+                    }),
                   }}
                 >
                   <Typography variant="body2" sx={{ fontWeight: 600 }}>{item.qr_code}</Typography>
                   <Typography variant="caption" color="text.secondary">
                     {item.experiment_name} · {item.accession_name}
                   </Typography>
-                  <ArrowForwardIcon
-                    className="bar-arrow"
-                    fontSize="small"
-                    sx={{ ml: 'auto', color: 'success.main', opacity: 0, transition: 'opacity 120ms ease' }}
-                  />
+                  {clickable && (
+                    <ArrowForwardIcon
+                      className="bar-arrow"
+                      fontSize="small"
+                      sx={{ ml: 'auto', color: 'success.main', opacity: 0, transition: 'opacity 120ms ease' }}
+                    />
+                  )}
                 </Box>
               );
               return href ? (
