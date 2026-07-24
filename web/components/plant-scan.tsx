@@ -1,19 +1,14 @@
 "use client";
 
-// import { cookies } from "next/headers";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
-// import { createServerSupabaseClient } from '@/lib/supabase/server'
-// import Image from "next/image";
-import { Database } from "@/lib/database.types";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CylScanWithImages } from "@/lib/custom.types";
-// import { get } from "http";
 import Link from "next/link";
 
 async function getImageUrl(path: string, thumb: boolean, height: number) {
   const supabase = createClientSupabaseClient();
 
-  const { data, error } = await supabase.storage.from("images").createSignedUrl(
+  const { data } = await supabase.storage.from("images").createSignedUrl(
     path,
     120,
     thumb
@@ -26,8 +21,7 @@ async function getImageUrl(path: string, thumb: boolean, height: number) {
       : {}
   );
 
-  const signedUrl = data?.signedUrl ?? "";
-  return signedUrl;
+  return data?.signedUrl ?? "";
 }
 
 async function getVideoUrl(scan: CylScanWithImages) {
@@ -35,12 +29,11 @@ async function getVideoUrl(scan: CylScanWithImages) {
 
   const path = `cyl-videos/${scan.id}.mp4`;
 
-  const { data, error } = await supabase.storage
+  const { data } = await supabase.storage
     .from("videos")
     .createSignedUrl(path, 3600);
 
-  const signedUrl = data?.signedUrl ?? "";
-  return signedUrl;
+  return data?.signedUrl ?? "";
 }
 
 const defaultHeight = 100;
@@ -64,38 +57,55 @@ export default function PlantScan({
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [imageIsLoaded, setImageIsLoaded] = useState<boolean>(false);
+  const [frameIndex, setFrameIndex] = useState<number>(0);
 
-  // Guard for scans with no attached cyl_images (e.g. demo / seed data,
-  // or a real scan whose images haven't been uploaded yet). Without this,
-  // scan.cyl_images[0].object_path threw "Cannot read properties of
-  // undefined (reading 'object_path')".
-  const firstImagePath = scan?.cyl_images?.[0]?.object_path ?? null;
+  // Renderable frames (have an object_path), ordered by frame_number.
+  const frames = useMemo(
+    () =>
+      (scan?.cyl_images ?? [])
+        .filter((img) => img?.object_path)
+        .sort((a, b) => (a.frame_number ?? 0) - (b.frame_number ?? 0)),
+    [scan]
+  );
+  const total = frames.length;
+  const currentPath = frames[frameIndex]?.object_path ?? null;
+
+  // Reset to the first frame when the scan (frame set) changes.
+  useEffect(() => {
+    setFrameIndex(0);
+  }, [frames]);
 
   useEffect(() => {
-    if (firstImagePath === null) {
+    if (currentPath === null) {
       setLoading(false);
       return;
     }
-    getImageUrl(firstImagePath, thumb, height || defaultHeight).then((url) => {
+    let active = true;
+    setLoading(true);
+    getImageUrl(currentPath, thumb, height || defaultHeight).then((url) => {
+      if (!active) return;
       setObjectUrl(url);
       setLoading(false);
     });
-    getVideoUrl(scan).then((url) => {
-      setVideoUrl(url);
-    });
-  }, [scan, firstImagePath]);
+    return () => {
+      active = false;
+    };
+  }, [currentPath, thumb, height]);
 
-  // The scan record carries no cyl_images row, OR the row carries no
-  // object_path. Either way the client can't resolve a signed URL, so we
-  // surface that to the user honestly rather than pretending the image
-  // doesn't exist (it might exist upstream — we just can't fetch it).
-  if (!loading && firstImagePath === null) {
+  useEffect(() => {
+    getVideoUrl(scan).then(setVideoUrl);
+  }, [scan]);
+
+  // No renderable frame — the image may exist upstream but we can't fetch it.
+  if (!loading && total === 0) {
     return (
       <div className="rounded-lg border-2 border-dashed border-stone-300 bg-stone-50 px-4 py-6 text-sm text-stone-500 italic">
         Unable to retrieve scan image.
       </div>
     );
   }
+
+  const showNav = !thumb && total > 1;
 
   return (
     <div className="group">
@@ -143,10 +153,40 @@ export default function PlantScan({
               />
             </Link>
           ) : (
-            <img src={objectUrl} className="rounded-md" />
+            <img
+              src={objectUrl}
+              className="rounded-md"
+              onLoad={() => setImageIsLoaded(true)}
+            />
           )
         ) : null}
       </div>
+
+      {showNav && (
+        <div className="mt-2 flex items-center justify-center gap-4 select-none">
+          <button
+            type="button"
+            onClick={() => setFrameIndex((i) => Math.max(0, i - 1))}
+            disabled={frameIndex === 0}
+            aria-label="Previous frame"
+            className="rounded-md border border-stone-300 bg-white px-3 py-1 text-lg leading-none text-stone-600 hover:bg-stone-100 disabled:opacity-40 disabled:hover:bg-white"
+          >
+            ‹
+          </button>
+          <span className="text-sm tabular-nums text-stone-500">
+            {frameIndex + 1} / {total}
+          </span>
+          <button
+            type="button"
+            onClick={() => setFrameIndex((i) => Math.min(total - 1, i + 1))}
+            disabled={frameIndex === total - 1}
+            aria-label="Next frame"
+            className="rounded-md border border-stone-300 bg-white px-3 py-1 text-lg leading-none text-stone-600 hover:bg-stone-100 disabled:opacity-40 disabled:hover:bg-white"
+          >
+            ›
+          </button>
+        </div>
+      )}
     </div>
   );
 }

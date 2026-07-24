@@ -134,6 +134,7 @@ async function getScan(scanId: number) {
     .from("cyl_scans")
     .select("*, cyl_images(*), cyl_plants(*, cyl_waves(*))")
     .eq("id", scanId)
+    .order("frame_number", { referencedTable: "cyl_images", ascending: true })
     .single();
 
   return data;
