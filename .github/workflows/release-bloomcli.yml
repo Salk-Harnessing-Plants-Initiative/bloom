@@ -131,6 +131,11 @@ jobs:
       - name: Build sdist + wheel
         run: uv build
 
+      # Validate packaging metadata (e.g. long-description rendering) so a
+      # malformed README/metadata fails here, before the immutable PyPI upload.
+      - name: Check package metadata
+        run: uvx twine check dist/*
+
       # Immutable-upload insurance: prove the built wheel imports and the CLI
       # entry point runs from an isolated install BEFORE publishing.
       - name: Verify wheel imports
