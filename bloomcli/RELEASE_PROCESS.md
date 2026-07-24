@@ -43,12 +43,27 @@ and are marked as a pre-release on GitHub.
 2. Add a `## [X.Y.Z] - YYYY-MM-DD` entry to `bloomcli/CHANGELOG.md`.
 3. Create a **GitHub Release** whose tag matches the version (`bloomctl-vX.Y.Z`,
    `vX.Y.Z`, or `X.Y.Z`). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.
-4. Publishing the Release runs `release-bloomcli.yml`:
-   - `validate-release`: tag ↔ version match, changelog entry exists, lint + tests.
-   - `build-and-publish`: `uv build`, import the wheel + run `bloomctl --version`,
-     then `uv publish`.
+4. Publishing the Release runs two workflows:
+   - `release-bloomcli.yml`:
+     - `validate-release`: tag ↔ version match, changelog entry exists, lint + tests.
+     - `build-and-publish`: `uv build`, import the wheel + run `bloomctl --version`,
+       then `uv publish`.
+   - `docker-build-bloomcli.yml`: validates the same tag ↔ version match
+     independently, then builds and pushes a matching GHCR version tag (see
+     `bloomcli/README.md`'s "Container image" section for the image and tag
+     scheme).
 5. Verify on PyPI: `uvx bloomctl --version` (stable) or
    `uvx --prerelease=allow bloomctl --version` (pre-release).
+
+### Project URLs
+
+The committed repo links point at `main` (the source of truth): the
+`[project.urls]` in `bloomcli/pyproject.toml` and the "project repository" link
+in `README.pypi.md`. At publish time `release-bloomcli.yml` rewrites both in the
+build checkout to the release tag (`.../tree/bloomctl-vX.Y.Z/bloomcli`) so the
+PyPI sidebar links and the rendered long-description link resolve to the exact
+commit that version shipped, never a moving branch. This is automatic — no
+per-release edit — and the change is never committed back.
 
 ## Setup requirements (one-time, before the first release)
 

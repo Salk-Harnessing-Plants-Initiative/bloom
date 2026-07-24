@@ -37,7 +37,7 @@ Audits each service's full transitive dependency tree via its lockfile. A temp f
 # the temp file when `exit 1` fired mid-loop).
 (
   trap "rm -f /tmp/reqs.txt" EXIT
-  for svc in langchain bloommcp services/video-worker; do
+  for svc in langchain bloommcp services/video-worker bloomcli; do
     echo "=== Auditing $svc ==="
     (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit@2.10.0 -r /tmp/reqs.txt) || exit 1
   done
@@ -62,6 +62,7 @@ docker build -f web/Dockerfile.bloom-web.prod \
   -t bloom-web:test .
 docker build -f langchain/Dockerfile -t langchain:test ./langchain
 docker build -f bloommcp/Dockerfile -t bloommcp:test ./bloommcp
+docker build -f bloomcli/Dockerfile -t bloomcli:test ./bloomcli
 ```
 
 Smoke-test that each Python image's non-root user can import its key packages (catches venv ownership / PATH issues before CI):
@@ -69,6 +70,13 @@ Smoke-test that each Python image's non-root user can import its key packages (c
 ```bash
 docker run --rm --entrypoint python langchain:test -c "import langchain; import langgraph; import fastapi"
 docker run --rm --entrypoint python bloommcp:test -c "import fastmcp; import statsmodels; import umap"
+```
+
+`bloomcli`'s image has `ENTRYPOINT ["bloomctl"]` (a CLI, not a service) — smoke-test it
+directly rather than overriding the entrypoint to `python`:
+
+```bash
+docker run --rm bloomcli:test --version
 ```
 
 ## Step 4: Integration Tests (matches `compose-health-check` job)
@@ -179,7 +187,7 @@ cd web && npx tsc --noEmit && npm run build && cd ..
 # Subshell + EXIT trap so /tmp/reqs.txt is cleaned up on success AND failure.
 (
   trap "rm -f /tmp/reqs.txt" EXIT
-  for svc in langchain bloommcp services/video-worker; do
+  for svc in langchain bloommcp services/video-worker bloomcli; do
     (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit@2.10.0 -r /tmp/reqs.txt) || exit 1
   done
 )
