@@ -432,13 +432,22 @@ def test_get_storage_client_timeout_override_builds_client_options(monkeypatch):
 
 
 def test_root_prefers_dedicated_var(monkeypatch, tmp_path):
+    # Explicit BLOOM_STORAGE_LOCAL_ROOT wins outright — assert that holds even
+    # with BLOOM_LOCAL_ROOT also set (#479's middle tier), not just when it
+    # happens to be unset in the ambient test environment.
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path / "other"))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path / "unused"))
     assert sb._resolve_local_root() == tmp_path
 
 
 def test_root_falls_back_to_output_dir(monkeypatch, tmp_path):
+    # Explicitly clear BLOOM_LOCAL_ROOT so this exercises the true 2-tier
+    # fallback regardless of ambient env (e.g. a dev's shell profile) — a
+    # BLOOM_LOCAL_ROOT left set there would otherwise silently divert this to
+    # the #479 middle tier instead of BLOOM_OUTPUT_DIR.
     monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path))
     assert sb._resolve_local_root() == tmp_path
 
@@ -665,3 +674,71 @@ def test_resolve_versioned_cleaned_via_local_list_prefix_fallback(
     assert path is not None
     assert path.read_bytes() == b"trait,value\n1,2\n"
     assert label == "v1_cleaned"
+
+
+# ─── 6. BLOOM_LOCAL_ROOT (#479) ─────────────────────────────────────────────────
+
+
+def test_local_root_supplies_output_default_when_dedicated_unset(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.delenv("BLOOM_OUTPUT_DIR", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    assert sb._resolve_local_root() == tmp_path / "output"
+
+
+def test_dedicated_var_wins_over_local_root(monkeypatch, tmp_path):
+    dedicated = tmp_path / "dedicated"
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(dedicated))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    assert sb._resolve_local_root() == dedicated
+
+
+def test_local_root_inert_when_backend_not_local(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path / "unused"))
+    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)  # defaults to supabase
+    assert sb._resolve_local_root() == tmp_path
+
+
+def test_local_root_falls_back_to_output_dir_when_both_unset(monkeypatch, tmp_path):
+    """Existing 2-tier fallback is unchanged when BLOOM_LOCAL_ROOT is also unset."""
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path))
+    assert sb._resolve_local_root() == tmp_path
+
+
+def test_validate_storage_backend_creates_output_subfolder(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    sb.reset_backend_for_tests()
+    assert not (tmp_path / "output").exists()
+    sb.validate_storage_backend()
+    assert (tmp_path / "output").is_dir()
+
+
+def test_validate_storage_backend_explicit_override_still_strict(monkeypatch, tmp_path):
+    missing = tmp_path / "nope"
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(missing))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))  # set but must not rescue
+    sb.reset_backend_for_tests()
+    with pytest.raises(RuntimeError, match="does not exist"):
+        sb.validate_storage_backend()
+
+
+def test_validate_storage_backend_output_subfolder_blocked_by_file(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    (tmp_path / "output").write_text("blocking file")
+    sb.reset_backend_for_tests()
+    with pytest.raises(RuntimeError, match="output root.*not a directory"):
+        sb.validate_storage_backend()
