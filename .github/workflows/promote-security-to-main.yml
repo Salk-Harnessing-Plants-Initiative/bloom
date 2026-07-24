@@ -84,9 +84,15 @@ jobs:
 
       - name: Push promotion branch
         if: steps.build.outputs.rc == '0'
-        # --force-with-lease refreshes the standing branch daily but refuses to
-        # clobber commits a reviewer pushed to resolve a flagged conflict.
-        run: git push --force-with-lease origin "HEAD:${PROMO_BRANCH}"
+        # Fetch the standing branch first so --force-with-lease has a
+        # remote-tracking ref to compare against — a bare lease against a remote
+        # branch that was never fetched is rejected as "stale info", which broke
+        # every run after the first. The branch is rebuilt from origin/main each
+        # run, so a reviewer's conflict fix must be pushed to `staging`, not onto
+        # this branch (it would be discarded on the next rebuild).
+        run: |
+          git fetch origin "${PROMO_BRANCH}" 2>/dev/null || true
+          git push --force-with-lease origin "HEAD:${PROMO_BRANCH}"
 
       - name: Open or update promotion PR
         if: steps.build.outputs.rc == '0'
