@@ -401,7 +401,11 @@ def call_insert_envelope(client: Any, envelope: dict[str, Any]) -> dict[str, Any
 
 
 def ingest_one_envelope(
-    client: Any, envelope_path: str | Path, *, predictions_dir: str | Path | None = None
+    client: Any,
+    envelope_path: str | Path,
+    *,
+    predictions_dir: str | Path | None = None,
+    profile: str | None = None,
 ) -> ScanResult:
     """Ingest one envelope file, isolating any failure into a `ScanResult` instead of raising.
 
@@ -430,53 +434,74 @@ def ingest_one_envelope(
     except EnvelopeValidationError as exc:
         return ScanResult(scan_key, "failed", str(exc))
 
-    pending: list[PendingBlob] = []
-    idempotency_key = ""
-    if predictions_dir is not None:
-        idempotency_key = data["provenance"].get("idempotency_key") or ""
-        if not idempotency_key:
-            return ScanResult(
-                scan_key,
-                "failed",
-                "envelope's provenance.idempotency_key is empty or absent — required to derive "
-                "the cyl-intermediates object path; the producer must set it before blobs can be "
-                "uploaded",
-            )
-        scan_predictions_dir = Path(predictions_dir) / scan_key
-        try:
-            manifest = load_predictions_manifest(scan_predictions_dir, scan_key)
-            pending = build_pending_blobs(manifest, scan_predictions_dir, data.get("blobs") or [])
-        except BlobConstructionError as exc:
-            return ScanResult(scan_key, "failed", str(exc))
-
-    client_for_rpc = client
-    if predictions_dir is not None:
-        report = upload_pending_blobs(
-            client_for_rpc, pending, scan_key=scan_key, idempotency_key=idempotency_key
-        )
-        if not report.all_ok:
-            details = "; ".join(f"{o.root_type}: {o.error}" for o in report.failed)
-            return ScanResult(
-                scan_key,
-                "failed",
-                f"blob upload failed for {len(report.failed)} of {len(report.outcomes)} "
-                f"blob(s): {details}",
-            )
-        data["blobs"] = [*(data.get("blobs") or []), *(p.blob for p in pending)]
-
-    from postgrest import APIError
-
     try:
-        result = call_insert_envelope(client, data)
-    except APIError as exc:
-        return ScanResult(scan_key, "failed", map_rpc_error(getattr(exc, "message", None)))
+        pending: list[PendingBlob] = []
+        idempotency_key = ""
+        if predictions_dir is not None:
+            idempotency_key = data["provenance"].get("idempotency_key") or ""
+            if not idempotency_key:
+                return ScanResult(
+                    scan_key,
+                    "failed",
+                    "envelope's provenance.idempotency_key is empty or absent — required to "
+                    "derive the cyl-intermediates object path; the producer must set it before "
+                    "blobs can be uploaded",
+                )
+            # scan_key is producer-supplied JSON content (no path-safety constraint from
+            # sleap-roots-contracts) and is about to become a directory *segment*, not just a
+            # string embedded in a filename — reject the same unsafe characters
+            # blob_object_path already rejects for the object-storage key, before any local
+            # filesystem access (review finding: this was a path-traversal gap).
+            if "/" in scan_key or "\\" in scan_key or ".." in scan_key:
+                return ScanResult(
+                    scan_key,
+                    "failed",
+                    f"provenance.scan_key {scan_key!r} contains a path separator or '..' — "
+                    "refusing to build a local predictions-dir path from it",
+                )
+            scan_predictions_dir = Path(predictions_dir) / scan_key
+            try:
+                manifest = load_predictions_manifest(scan_predictions_dir, scan_key)
+                pending = build_pending_blobs(
+                    manifest, scan_predictions_dir, data.get("blobs") or []
+                )
+            except BlobConstructionError as exc:
+                return ScanResult(scan_key, "failed", str(exc))
 
-    if not isinstance(result, dict):
-        return ScanResult(scan_key, "failed", f"unexpected RPC response shape: {result!r}")
+            report = upload_pending_blobs(
+                client, pending, scan_key=scan_key, idempotency_key=idempotency_key
+            )
+            if not report.all_ok:
+                details = "; ".join(f"{o.root_type}: {o.error}" for o in report.failed)
+                return ScanResult(
+                    scan_key,
+                    "failed",
+                    f"blob upload failed for {len(report.failed)} of {len(report.outcomes)} "
+                    f"blob(s): {details}",
+                )
+            data["blobs"] = [*(data.get("blobs") or []), *(p.blob for p in pending)]
 
-    if result.get("was_noop"):
-        return ScanResult(scan_key, "skipped")
-    return ScanResult(scan_key, "ok")
+        from postgrest import APIError
+
+        try:
+            result = call_insert_envelope(client, data)
+        except APIError as exc:
+            return ScanResult(
+                scan_key,
+                "failed",
+                map_rpc_error(getattr(exc, "message", None), profile=profile),
+            )
+
+        if not isinstance(result, dict):
+            return ScanResult(scan_key, "failed", f"unexpected RPC response shape: {result!r}")
+
+        if result.get("was_noop"):
+            return ScanResult(scan_key, "skipped")
+        return ScanResult(scan_key, "ok")
+    except Exception as exc:  # batch isolation: a transient network/auth error on one
+        # envelope must never abort the rest of the batch (review finding: this was
+        # previously uncaught for anything other than postgrest.APIError/BlobConstructionError).
+        return ScanResult(scan_key, "failed", str(exc))
 
 
 # --- command ----------------------------------------------------------------
@@ -649,7 +674,7 @@ def batch_ingest_result(
 
     batch_result = BatchResult(
         [
-            ingest_one_envelope(client, path, predictions_dir=predictions_dir)
+            ingest_one_envelope(client, path, predictions_dir=predictions_dir, profile=profile)
             for path in envelope_paths
         ]
     )

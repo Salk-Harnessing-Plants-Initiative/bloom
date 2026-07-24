@@ -1024,6 +1024,45 @@ def test_ingest_one_envelope_rpc_error_is_mapped(monkeypatch, tmp_path):
     assert "cyl_images" in result.error
 
 
+def test_ingest_one_envelope_isolates_unexpected_error(monkeypatch, tmp_path):
+    """A non-APIError exception (e.g. a gotrue auth error or httpx timeout, not just the
+    already-handled postgrest.APIError) must be isolated into a failed ScanResult, never
+    raised — review finding: this was previously uncaught and would crash the whole batch."""
+    _skip_contract_validation(monkeypatch)
+    path = _write_envelope(tmp_path, "scan_timeout")
+
+    def boom(client, env):
+        raise TimeoutError("simulated network timeout")
+
+    monkeypatch.setattr(ing, "call_insert_envelope", boom)
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "failed"
+    assert result.scan_key == "scan_timeout"
+    assert "simulated network timeout" in result.error
+
+
+def test_batch_ingest_cli_isolates_unexpected_network_error_among_several(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+
+    def _flaky_call(client, env):
+        if env["provenance"]["scan_key"] == "scan_2":
+            raise TimeoutError("simulated network timeout")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _flaky_call)
+    for key in ("scan_1", "scan_2", "scan_3"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_1"]["status"] == "ok"
+    assert payload["scan_2"]["status"] == "failed"
+    assert "simulated network timeout" in payload["scan_2"]["error"]
+    assert payload["scan_3"]["status"] == "ok"
+
+
 def test_ingest_one_envelope_sends_envelope_unchanged(monkeypatch, tmp_path):
     _skip_contract_validation(monkeypatch)
     captured = {}
@@ -1069,6 +1108,39 @@ def test_ingest_one_envelope_predictions_dir_missing_manifest(monkeypatch, tmp_p
 
     result = ing.ingest_one_envelope(object(), path, predictions_dir=tmp_path / "predictions")
     assert result.status == "failed"
+
+
+@pytest.mark.parametrize(
+    "malicious_scan_key",
+    ["../../evil", "..\\..\\evil", "/etc/passwd", "a/../../b"],
+)
+def test_ingest_one_envelope_rejects_path_traversal_scan_key(
+    monkeypatch, tmp_path, malicious_scan_key
+):
+    """Review finding: provenance.scan_key is producer-supplied JSON content with no
+    path-safety constraint from sleap-roots-contracts. Using it as a directory segment
+    (predictions_dir / scan_key) must be rejected before any local filesystem access, the
+    same way blob_object_path already rejects it for the object-storage key."""
+    _skip_contract_validation(monkeypatch)
+    env = _envelope_for("scan_ok")
+    env["provenance"]["scan_key"] = malicious_scan_key
+    path = tmp_path / "scan_ok.result.json"
+    path.write_text(json.dumps(env), encoding="utf-8")
+
+    called = {"manifest": False}
+
+    def _boom(*a, **k):
+        called["manifest"] = True
+        raise AssertionError("must not read any predictions manifest for an unsafe scan_key")
+
+    monkeypatch.setattr(ing, "load_predictions_manifest", _boom)
+
+    result = ing.ingest_one_envelope(
+        object(), path, predictions_dir=tmp_path / "predictions"
+    )
+    assert result.status == "failed"
+    assert not called["manifest"]
+    assert "scan_key" in result.error
 
 
 def test_ingest_one_envelope_predictions_dir_uploads_blobs(tmp_path, monkeypatch):
