@@ -231,3 +231,58 @@ def test_already_in_base_is_skipped(stack):
     log = _git(work, "log", "--oneline", "origin/main..HEAD").stdout
     # The already-present commit's subject must not be re-added.
     assert "ignore CVE-2026-0001" not in log, log
+
+
+def test_cherry_pick_conflict_is_flagged(tmp_path):
+    """A selected commit that conflicts on a diverged file is flagged, not fatal.
+
+    main diverges from staging on a shared lockfile line, so cherry-picking the
+    staging security bump for that line conflicts. The clean security commits
+    must still promote; the conflicting one lands in the PR body's manual bucket.
+    """
+    origin = tmp_path / "origin.git"
+    _run(["git", "init", "--bare", "--initial-branch=main", str(origin)], cwd=tmp_path)
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "--initial-branch=main")
+    _git(seed, "remote", "add", "origin", str(origin))
+    _commit(seed, {"langchain/uv.lock": "# lock\nshared = 0\n", ".trivyignore": "# seed\n"}, "seed main")
+    _git(seed, "push", "origin", "main")
+
+    # staging: two clean security commits + one that edits the shared lock line.
+    _git(seed, "checkout", "-b", "staging")
+    _commit(seed, {".trivyignore": "# seed\nCVE-1\n"}, "ci(security): ignore CVE-1")
+    _commit(seed, {"web/Dockerfile.prod": "FROM node:20\n"}, "fix(security): pin node base")
+    _commit(seed, {"langchain/uv.lock": "# lock\nshared = 111\n"}, "chore(deps): bump for CVE on shared line")
+    _git(seed, "push", "origin", "staging")
+
+    # main independently edits the SAME lock line (not on staging) -> conflict.
+    _git(seed, "checkout", "main")
+    _commit(seed, {"langchain/uv.lock": "# lock\nshared = 999\n"}, "chore: main-only lock change")
+    _git(seed, "push", "origin", "main")
+
+    work = tmp_path / "work"
+    _run(["git", "clone", str(origin), str(work)], cwd=tmp_path)
+    _git(work, "checkout", "main")
+    dest = work / "scripts" / "promote_security_to_main.sh"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(PROMO_SCRIPT.read_text())
+    dest.chmod(0o755)
+
+    result = _promote(work, "--min", "1")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    # Clean picks promoted; the conflicting lockfile bump is NOT on the branch.
+    log = _git(work, "log", "--format=%s", "origin/main..HEAD").stdout
+    assert "ci(security): ignore CVE-1" in log, log
+    assert "fix(security): pin node base" in log, log
+    assert "bump for CVE on shared line" not in log, log
+
+    # The branch is clean (not left mid-pick).
+    assert not _git(work, "diff", "--name-only", "--diff-filter=U").stdout.strip()
+
+    # PR body flags the conflict for manual promotion, naming the file.
+    body = (work / "body.md").read_text()
+    assert "Cherry-pick conflicts" in body, body
+    assert "langchain/uv.lock" in body, body
