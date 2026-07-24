@@ -35,7 +35,7 @@ BASE_REF="${1:-origin/main}"
 # would make every PR pass the check trivially.
 if [[ "$BASE_REF" == origin/* ]]; then
   remote_branch="${BASE_REF#origin/}"
-  if ! git fetch origin "$remote_branch" --depth=1 2>/dev/null; then
+  if ! git fetch origin "$remote_branch" 2>/dev/null; then
     echo "::error title=lint_cve_isolation: cannot fetch base ref::git fetch origin ${remote_branch} failed. Cannot diff changed files."
     exit 2
   fi
