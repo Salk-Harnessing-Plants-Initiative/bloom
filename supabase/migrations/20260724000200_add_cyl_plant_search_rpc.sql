@@ -1,8 +1,10 @@
--- Server-side advanced plant search. One call returns the page of matches, the
--- true total (so the UI can say "showing 500 of 5000"), and which pasted
--- barcodes do not exist. security_invoker so RLS on cyl_plant_search applies
--- with the caller's role. Empty array = field not filtered; AND across fields,
--- OR within a field.
+-- Server-side barcode search RPC. Returns one jsonb object:
+--   {
+--     "total": 5000,                        -- full match count, not rows' length
+--     "rows": [ ...up to 500 cyl_plant_search rows... ],
+--     "not_found": ["QR-9"]                 -- pasted barcodes that don't exist
+--   }
+-- Empty array = field not filtered; AND across fields, OR within a field.
 
 CREATE OR REPLACE FUNCTION cyl_plant_search_query(
   p_barcodes       text[]   DEFAULT '{}',
