@@ -53,6 +53,10 @@ function parseQuery(input: string): { list: string[] | null; text: string } {
 // Cap the pasted barcode batch so an oversized list can't hit PostgREST unbounded.
 const MAX_BATCH = 200;
 
+// Auto-jump reads up to this many matches; we fetch +1 to detect truncation and,
+// when the set is truncated, fall back to the dropdown instead of jumping on it.
+const MAX_JUMP_MATCHES = 500;
+
 export default function SearchComponent() {
   const [searchQuery, setSearchQuery] = useState('');
   const [speciesResults, setSpeciesResults] = useState<any[]>([]);
@@ -108,8 +112,9 @@ export default function SearchComponent() {
         .from('cyl_plant_search' as any)
         .select('species_id, experiment_id, wave_id, accession_id')
         .eq('qr_code', text)
-        .limit(500);
-      if (pl && pl.length > 0) {
+        .limit(MAX_JUMP_MATCHES + 1);
+      // Only auto-jump on the complete match set; if truncated, show the dropdown.
+      if (pl && pl.length > 0 && pl.length <= MAX_JUMP_MATCHES) {
         const dests = Array.from(
           new Set(pl.map((r: any) => fieldHrefs(r).accession).filter(Boolean)),
         );
@@ -123,8 +128,9 @@ export default function SearchComponent() {
         .from('cyl_plant_search' as any)
         .select('species_id, experiment_id, wave_id, accession_id')
         .eq('accession_name', text)
-        .limit(500);
-      if (acc && acc.length > 0) {
+        .limit(MAX_JUMP_MATCHES + 1);
+      // Only auto-jump on the complete match set; if truncated, show the dropdown.
+      if (acc && acc.length > 0 && acc.length <= MAX_JUMP_MATCHES) {
         const dests = Array.from(
           new Set(acc.map((r: any) => fieldHrefs(r).accession).filter(Boolean)),
         );
