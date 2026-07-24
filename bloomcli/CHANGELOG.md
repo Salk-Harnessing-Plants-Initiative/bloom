@@ -8,11 +8,13 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a2] - 2026-07-23
+
 ### Changed
 
 - Commands are now grouped by data type: `bloomctl download` moved under the
   `cyl` group as `bloomctl cyl download` (both cylinder commands now live in
-  `bloomctl.cyl`, one file per command), matching the legacy CLI's layout.
+  `bloomctl.cyl`, one file per command), matching the legacy CLI's layout (#433).
 
 ### Added
 
@@ -43,6 +45,13 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   `scan_metadata.json` sidecar authored from live DB metadata), for A4 per-scan
   pipeline stage-in. Distinct from `cyl download`'s legacy `images/Wave{n}/…` +
   `scans.csv` layout (#411).
+- `bloomcli/Dockerfile` + GHCR publishing — `bloomctl` is now built as a
+  container image from monorepo source and published to
+  `ghcr.io/salk-harnessing-plants-initiative/bloomctl` (`sha-<short>` on every
+  `staging` push, `staging` mutable tag, a matching version tag per GitHub
+  Release). PR-time Dockerfile validation + CVE scanning ride
+  `pr-checks.yml`'s existing `docker-build` job; the publishing workflow
+  itself is push-only.
 
 ## [0.1.0a1] - 2026-06-30
 

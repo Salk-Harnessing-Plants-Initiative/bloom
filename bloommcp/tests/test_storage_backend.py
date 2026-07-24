@@ -317,6 +317,117 @@ def test_read_permission_error_is_redacted(tmp_path, monkeypatch):
     assert key in msg
 
 
+def test_local_delete_files_removes_existing_and_ignores_missing(tmp_path):
+    b = _local(tmp_path)
+    src = _seed_file(tmp_path)
+    b.upload_file("bloommcp_output/qc_x/v1/a.csv", src)
+    b.upload_file("bloommcp_output/qc_x/v1/b.csv", src)
+    assert (tmp_path / "bloommcp_output/qc_x/v1/a.csv").exists()
+
+    b.delete_files(
+        [
+            "bloommcp_output/qc_x/v1/a.csv",
+            "bloommcp_output/qc_x/v1/missing.csv",  # never existed — no error
+        ]
+    )
+    assert not (tmp_path / "bloommcp_output/qc_x/v1/a.csv").exists()
+    assert (tmp_path / "bloommcp_output/qc_x/v1/b.csv").exists()  # untouched
+
+
+def test_local_delete_files_empty_list_is_noop(tmp_path):
+    b = _local(tmp_path)
+    b.delete_files([])  # must not raise
+
+
+def test_supabase_backend_delete_files_calls_bucket_remove(monkeypatch):
+    calls = []
+
+    class _FakeClient:
+        def remove(self, paths):
+            calls.append(list(paths))
+
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client",
+        lambda **_kwargs: _FakeClient(),
+    )
+
+    backend = sb.SupabaseStorageBackend()
+    backend.delete_files(
+        ["bloommcp_output/qc_x/v1/a.csv", "bloommcp_output/qc_x/v1/b.csv"]
+    )
+    assert calls == [["bloommcp_output/qc_x/v1/a.csv", "bloommcp_output/qc_x/v1/b.csv"]]
+
+
+def test_supabase_backend_delete_files_passes_timeout_override(monkeypatch):
+    captured = {}
+
+    class _FakeClient:
+        def remove(self, paths):
+            return paths
+
+    def _fake_get_storage_client(**kwargs):
+        captured.update(kwargs)
+        return _FakeClient()
+
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", _fake_get_storage_client
+    )
+
+    sb.SupabaseStorageBackend().delete_files(["k"], timeout_seconds=5.0)
+    assert captured == {"timeout_seconds": 5.0}
+
+
+def test_supabase_backend_delete_files_empty_list_skips_client(monkeypatch):
+    def _boom(**_kwargs):
+        raise AssertionError("get_storage_client called for an empty delete")
+
+    monkeypatch.setattr("bloom_mcp.supabase_client.get_storage_client", _boom)
+    sb.SupabaseStorageBackend().delete_files([])  # must not raise / not call the client
+
+
+class _FakeSbClient:
+    """Stand-in for `supabase.Client`, minimal enough for `.storage.from_()`."""
+
+    class storage:  # noqa: N801 - mirrors the real client's attribute name
+        @staticmethod
+        def from_(_bucket):
+            return "bucket-proxy"
+
+
+def test_get_storage_client_default_passes_no_options_override(monkeypatch):
+    import bloom_mcp.supabase_client as sc
+
+    captured = {}
+
+    def _fake_create_client(url, key, options=None):
+        captured["options"] = options
+        return _FakeSbClient()
+
+    monkeypatch.setenv("SUPABASE_URL", "http://x")
+    monkeypatch.setenv("BLOOM_AGENT_KEY", "k")
+    monkeypatch.setattr(sc.supabase, "create_client", _fake_create_client)
+
+    sc.get_storage_client()
+    assert captured["options"] is None
+
+
+def test_get_storage_client_timeout_override_builds_client_options(monkeypatch):
+    import bloom_mcp.supabase_client as sc
+
+    captured = {}
+
+    def _fake_create_client(url, key, options=None):
+        captured["options"] = options
+        return _FakeSbClient()
+
+    monkeypatch.setenv("SUPABASE_URL", "http://x")
+    monkeypatch.setenv("BLOOM_AGENT_KEY", "k")
+    monkeypatch.setattr(sc.supabase, "create_client", _fake_create_client)
+
+    sc.get_storage_client(timeout_seconds=5.0)
+    assert captured["options"].storage_client_timeout == 5.0
+
+
 # ─── 3. Root resolution + startup validation ──────────────────────────────────
 
 
