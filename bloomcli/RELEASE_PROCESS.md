@@ -55,6 +55,15 @@ and are marked as a pre-release on GitHub.
 5. Verify on PyPI: `uvx bloomctl --version` (stable) or
    `uvx --prerelease=allow bloomctl --version` (pre-release).
 
+### Project URLs
+
+The committed `[project.urls]` in `bloomcli/pyproject.toml` point at `main` (the
+source of truth). At publish time `release-bloomcli.yml` rewrites them in the
+build checkout to the release tag (`.../tree/bloomctl-vX.Y.Z/bloomcli`) so the
+PyPI sidebar links resolve to the exact commit that version shipped, never a
+moving branch. This is automatic — no per-release edit — and the change is never
+committed back.
+
 ## Setup requirements (one-time, before the first release)
 
 ### PyPI trusted publishing
