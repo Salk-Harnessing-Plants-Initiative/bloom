@@ -99,7 +99,21 @@ jobs:
         env:
           REVIEWERS: ${{ vars.SECURITY_PROMOTION_REVIEWERS }}
           PROMOTED: ${{ steps.build.outputs.promoted }}
+          HAS_PAT: ${{ secrets.PROMOTION_PAT != '' }}
         run: |
+          body="${{ steps.build.outputs.body_file }}"
+          # Without a PROMOTION_PAT the PR opens with GITHUB_TOKEN, which does NOT
+          # trigger pr-checks (CVE scans). Flag that on the PR itself so a
+          # promotion isn't merged to prod assuming the scans ran.
+          if [ "${HAS_PAT}" != "true" ]; then
+            {
+              echo "> [!WARNING]"
+              echo "> Opened with the default \`GITHUB_TOKEN\`, so pr-checks (CVE scans) did **not** run automatically. Re-run the required checks before merging to production."
+              echo
+              cat "$body"
+            } > "${body}.tmp" && mv "${body}.tmp" "$body"
+          fi
+
           gh label create "${LABEL}" --color B60205 --description "Batched security fixes promoted from staging to main" 2>/dev/null || true
 
           title="Promote ${{ steps.build.outputs.promoted }} security fix(es) to production"
@@ -108,7 +122,7 @@ jobs:
           existing=$(gh pr list --base "${BASE_BRANCH}" --head "${PROMO_BRANCH}" --state open --json number --jq '.[0].number // empty')
 
           if [ -n "$existing" ]; then
-            gh pr edit "$existing" --title "$title" --body-file "${{ steps.build.outputs.body_file }}"
+            gh pr edit "$existing" --title "$title" --body-file "$body"
             echo "Updated existing PR #$existing."
           else
             reviewer_args=""
@@ -117,7 +131,7 @@ jobs:
               --base "${BASE_BRANCH}" \
               --head "${PROMO_BRANCH}" \
               --title "$title" \
-              --body-file "${{ steps.build.outputs.body_file }}" \
+              --body-file "$body" \
               --label "${LABEL}" \
               ${reviewer_args}
           fi
