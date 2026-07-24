@@ -41,6 +41,13 @@ volumes/pooler/** text eol=lf
 # reproducible cross-platform. (The vendored schema is already covered by *.json.)
 contracts/generated/*.ts text eol=lf
 
+# cyl-blob-upload predictions fixture (bloom #407): these placeholder .slp
+# files' exact bytes are sha256-checksummed in the sibling
+# scan0K9E8BI.predictions.json fixture. Real .slp files are binary (HDF5);
+# marking these `binary` disables the `* text=auto` CRLF conversion that
+# would otherwise silently break the checksum on a Windows checkout.
+bloomcli/tests/fixtures/predictions_scan0K9E8BI/*.slp binary
+
 # Jupyter notebooks
 *.ipynb text eol=lf
 

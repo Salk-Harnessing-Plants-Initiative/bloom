@@ -16,10 +16,11 @@ here. Sections (namespace -> tools):
     (list_available_experiments, load_experiment_data, list_existing_analyses)
   - sleap_roots: umbrella for the sleap-roots pipeline family. analysis/
     populated (qc_clean, qc_inspect, pca_analysis, remove_outliers, clustering,
-    + 5 plotting tools — histograms, boxplots, correlation matrix, heritability
-    bar, variance decomposition — each delegating all analysis/plotting math
-    to sleap_roots_analyze, never re-implementing it); extraction/ reserved
-    for future sleap-roots trait-extraction tools (not built here).
+    umap_analysis, + 5 plotting tools — histograms, boxplots, correlation
+    matrix, heritability bar, variance decomposition — each delegating all
+    analysis/plotting math to sleap_roots_analyze, never re-implementing it);
+    extraction/ reserved for future sleap-roots trait-extraction tools (not
+    built here).
   - phenotyping_segmentation: Lin's segmentation tools (empty scaffold today)
 
 (The Phase-1 `run_*_workflow` tools — qc, outlier, stats, dimred, clustering —
@@ -119,16 +120,24 @@ def main() -> None:
     from bloom_mcp.experiment_utils import validate_experiment_local_root
     from bloom_mcp.storage_backend import is_local_backend
 
-    validate_data_env()
+    # Printed before validation (not after) so the active backend is visible
+    # even when validate_data_env()/validate_supabase_env() fails fast below —
+    # otherwise a misconfigured deploy never reveals which backend it tried.
     fully_local = is_local_backend()
+    print(
+        f"Bloom MCP Server storage backend: "
+        f"{'local (fully-local/offline)' if fully_local else 'supabase'}"
+    )
+
+    validate_data_env()
     if fully_local:
         validate_experiment_local_root()
     else:
         validate_supabase_env()
 
     # Composition root: inject the persistence adapters into the tools layer.
-    # Tools depend on the ports (bloom_mcp.tools._ports), never on Supabase /
-    # AnalysisWriter directly. The reader is coupled to the object-storage backend
+    # Tools depend on the ports (bloom_mcp.tools._ports), never on Supabase
+    # directly. The reader is coupled to the object-storage backend
     # (both local in fully-local mode) so inputs and outputs never split stores.
     # NOTE: the store is SupabaseResultStore() in *both* branches on purpose — in
     # fully-local mode its object-storage ops route through the active local backend

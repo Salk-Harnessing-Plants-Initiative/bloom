@@ -101,6 +101,21 @@ def test_trivyignore_with_dockerfile_and_lockfile_passes(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_trivyignore_with_prefix_style_dockerfile_passes(tmp_path):
+    """.trivyignore alongside a prefix-named Dockerfile (Dockerfile.bloom-web.prod) is allowed.
+
+    This repo names some Dockerfiles prefix-style (Dockerfile.<name>), which the
+    *.Dockerfile suffix glob does not match; the whitelist must accept them too.
+    """
+    _set_up_base(tmp_path)
+    _feature_branch(tmp_path)
+    _modify(tmp_path, ".trivyignore", "# seed\nCVE-2026-59873\n")
+    _modify(tmp_path, "web/Dockerfile.bloom-web.prod", "FROM node:20\nRUN npm i -g npm@11.18.0\n")
+    _commit(tmp_path, "pin npm + suppress node-tar CVE")
+    result = _run_lint(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_trivyignore_with_app_code_fails(tmp_path):
     """.trivyignore folded into an unrelated app change is rejected."""
     _set_up_base(tmp_path)

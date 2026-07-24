@@ -23,7 +23,7 @@ repos:
     rev: 2c8dce6094fa2b4b668e74f694ca63ceffd38614  # v0.9.9
     hooks:
       - id: ruff
-        files: ^(langchain|bloommcp|services/workflows)/
+        files: ^(langchain|bloommcp|services/workflows|bloomcli)/
         args: [--fix]
       - id: ruff-format
         files: ^(langchain|bloommcp|services/workflows)/
@@ -49,8 +49,8 @@ repos:
   - repo: local
     hooks:
       - id: uv-lock-check
-        name: uv lock --check (langchain, bloommcp, video-worker, workflows)
+        name: uv lock --check (langchain, bloommcp, video-worker, workflows, bloomcli)
         entry: python scripts/check-uv-locks.py
         language: python
-        files: ^(langchain|bloommcp|services/video-worker|services/workflows)/(pyproject\.toml|uv\.lock|\.python-version)$
+        files: ^(langchain|bloommcp|services/video-worker|services/workflows|bloomcli)/(pyproject\.toml|uv\.lock|\.python-version)$
         pass_filenames: false

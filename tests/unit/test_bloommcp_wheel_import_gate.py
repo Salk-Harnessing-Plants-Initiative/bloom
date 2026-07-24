@@ -39,7 +39,7 @@ JOB = "python-audit"
 REQUIRED_IMPORTS = (
     "bloom_mcp",
     "bloom_mcp.tools",
-    "bloom_mcp.storage",
+    "bloom_mcp.manifest",
     "bloom_mcp.server",
 )
 EMPTY_ENV_VARS = ("SUPABASE_URL", "BLOOM_AGENT_KEY")

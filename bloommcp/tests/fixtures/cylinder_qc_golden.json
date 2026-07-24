@@ -1,0 +1,42 @@
+{
+  "_comment": "Characterization snapshot of sleap_roots_analyze.clean_traits_for_analysis (cleanup+validate only) on the raw cylinder input, called with the reader-detected role + trait columns exactly as the qc_clean tool calls it, at qc_clean's CANONICAL default thresholds (max_zeros_per_trait=0.5, max_nans_per_trait=0.2, max_nans_per_sample=0.0, min_samples_per_trait=10). Unlike turface_19's genuinely-raw input, cylinder_raw_data.csv (upstream `traits_11DAG_cleaned_qc_scanner_independent.csv`) was already NaN/zero-filtered by the scanner pipeline before being handed to bloommcp -- so at these thresholds nothing is dropped: samples and traits in == out, zero residual NaNs. Role columns resolve to plant_qr_code/Geno/Rep, distinct from turface_19's Barcode/geno/rep. excluded_from_traits lists the metadata columns bloommcp's role-matching excludes; a further set of non-numeric columns (species_name, crown, lateral, plant_name, etc.) is excluded by upstream sleap_roots_analyze.get_trait_columns's own dtype filtering, the same way Computation.Time.s is handled for turface_19 -- not re-listed here.",
+  "_raw_source": "talmolab/sleap-roots-analyze@main:tests/fixtures/real/wheat_edpie/inputs/raw/cylinder/traits_11DAG_cleaned_qc_scanner_independent.csv",
+  "_derivation": "Recorded via a real fastmcp.Client call to sleap_roots_qc_clean against the running bloommcp dev-stack container (not hand-simulated), 2026-07-22.",
+  "role_columns": {
+    "barcode_col": "plant_qr_code",
+    "genotype_col": "Geno",
+    "replicate_col": "Rep"
+  },
+  "cleanup_params": {
+    "max_zeros_per_trait": 0.5,
+    "max_nans_per_trait": 0.2,
+    "max_nans_per_sample": 0.0,
+    "min_samples_per_trait": 10
+  },
+  "raw_samples": 129,
+  "raw_traits": 846,
+  "excluded_from_traits": [
+    "QC_SLEAP",
+    "QC_Code",
+    "Date_QC",
+    "Outlier_Harvest_Only",
+    "scan_id",
+    "accession_id",
+    "experiment_id",
+    "germ_day",
+    "germ_day_color",
+    "phenotyper_id",
+    "plant_age_days",
+    "plant_id",
+    "scanner_id",
+    "species_id",
+    "wave_id",
+    "wave_name",
+    "wave_number"
+  ],
+  "naive_dropna_samples": 129,
+  "cleaned_samples": 129,
+  "cleaned_traits": 846,
+  "cleaned_trait_nans": 0,
+  "removed_traits": []
+}

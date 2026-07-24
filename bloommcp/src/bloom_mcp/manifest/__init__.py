@@ -1,4 +1,9 @@
-"""Versioned, append-only storage layer for phenotyping analysis artifacts."""
+"""Versioned-run manifest/bookkeeping primitives for phenotyping analysis artifacts.
+
+Renamed from `storage/` to `manifest/` (#487) — this package is about versioned-run
+bookkeeping (manifests, directories, code versions), not physical storage backend
+selection, which lives in the sibling `bloom_mcp.storage_backend`.
+"""
 
 from .analysis_dir import AnalysisDir
 from .code_versions import get_code_versions
@@ -17,7 +22,6 @@ from .schema import (
     VersionEntry,
 )
 from .versioning import next_version_id, slugify, version_dir_name
-from .writer import AnalysisWriter
 
 CANONICAL_TOOL_CLASSES: tuple[str, ...] = (
     "qc",
@@ -33,7 +37,6 @@ CANONICAL_TOOL_CLASSES: tuple[str, ...] = (
 
 __all__ = [
     "AnalysisDir",
-    "AnalysisWriter",
     "CANONICAL_TOOL_CLASSES",
     "CURRENT_SCHEMA_VERSION",
     "CodeVersions",

@@ -385,7 +385,7 @@
       "type": "object"
     }
   },
-  "$id": "https://github.com/talmolab/sleap-roots-contracts/schema/v0.1.0a4/result_envelope.schema.json",
+  "$id": "https://github.com/talmolab/sleap-roots-contracts/schema/v0.1.0a5/result_envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "One per-scan result: 1 envelope : 1 source row : 1 scan.",
   "properties": {

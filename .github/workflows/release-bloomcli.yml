@@ -100,8 +100,41 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
 
+      # Freeze repo links to the release tag so both PyPI's sidebar links
+      # ([project.urls]) and the rendered long-description link (README.pypi.md)
+      # resolve to the exact immutable commit this version shipped, not a moving
+      # branch. Rewrites the build checkout only — committed files stay on `main`.
+      # No-op if no matching link exists; skipped on workflow_dispatch dry runs.
+      # Untrusted release tag goes through env, never inlined into script text.
+      - name: Pin repo links to the release tag
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os, re, pathlib
+          tag = os.environ["TAG"]
+          subs = [
+              (r'/tree/[^/]+/bloomcli', f'/tree/{tag}/bloomcli'),
+              (r'/blob/[^/]+/bloomcli/CHANGELOG\.md', f'/blob/{tag}/bloomcli/CHANGELOG.md'),
+          ]
+          for name in ("pyproject.toml", "README.pypi.md"):
+              p = pathlib.Path(name)
+              s = p.read_text()
+              for pat, repl in subs:
+                  s = re.sub(pat, repl, s)
+              p.write_text(s)
+              print(f"--- {name} ---")
+              print(s)
+          PY
+
       - name: Build sdist + wheel
         run: uv build
+
+      # Validate packaging metadata (e.g. long-description rendering) so a
+      # malformed README/metadata fails here, before the immutable PyPI upload.
+      - name: Check package metadata
+        run: uvx twine check dist/*
 
       # Immutable-upload insurance: prove the built wheel imports and the CLI
       # entry point runs from an isolated install BEFORE publishing.

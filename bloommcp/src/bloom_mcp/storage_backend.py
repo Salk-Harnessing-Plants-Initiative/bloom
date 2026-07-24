@@ -1,9 +1,9 @@
 """Object-storage backend selection for bloommcp.
 
-The five object-storage helpers in :mod:`bloom_mcp.supabase_client`
+The six object-storage helpers in :mod:`bloom_mcp.supabase_client`
 (``upload_file`` / ``download_file`` / ``write_json`` / ``read_json`` /
-``list_prefix``) delegate to the *active* backend selected here. Two backends
-exist:
+``list_prefix`` / ``delete_files``) delegate to the *active* backend selected
+here. Two backends exist:
 
 * :class:`SupabaseStorageBackend` — the deployed default (Supabase Storage in the
   ``bloommcp-data`` bucket). Its method bodies are the pre-backend
@@ -24,7 +24,7 @@ touches no filesystem at import, so ``import bloom_mcp`` stays side-effect-free.
 root fails fast at boot rather than mid-run.
 
 Out of scope: PostgREST/table access (``get_postgrest_client``) and
-``read_input_csv``, which rides that client — neither is one of the five swapped
+``read_input_csv``, which rides that client — neither is one of the six swapped
 helpers, so both are unaffected by the selected backend.
 """
 
@@ -50,7 +50,7 @@ _TMP_PREFIX = ".tmp-"
 
 @runtime_checkable
 class StorageBackend(Protocol):
-    """The five object-storage operations bloommcp's write/read paths use."""
+    """The six object-storage operations bloommcp's write/read paths use."""
 
     def upload_file(self, key: str, local_path: Path) -> None: ...
 
@@ -61,6 +61,10 @@ class StorageBackend(Protocol):
     def read_json(self, key: str) -> dict: ...
 
     def list_prefix(self, prefix: str) -> list[str]: ...
+
+    def delete_files(
+        self, keys: list[str], *, timeout_seconds: Optional[float] = None
+    ) -> None: ...
 
 
 def _json_bytes(payload: dict) -> bytes:
@@ -169,6 +173,16 @@ class SupabaseStorageBackend:
         client = get_storage_client()
         items = client.list(prefix)
         return [item["name"] for item in items]
+
+    def delete_files(
+        self, keys: list[str], *, timeout_seconds: Optional[float] = None
+    ) -> None:
+        from bloom_mcp.supabase_client import get_storage_client
+
+        if not keys:
+            return
+        client = get_storage_client(timeout_seconds=timeout_seconds)
+        client.remove(list(keys))
 
 
 # ─── Local filesystem backend (opt-in) ────────────────────────────────────────
@@ -293,6 +307,24 @@ class LocalStorageBackend:
         # os.replace can orphan a `.tmp-*`, which never appears in the Supabase
         # backend — filtering keeps cross-backend list parity.
         return sorted(n for n in names if not n.startswith(_TMP_PREFIX))
+
+    def delete_files(
+        self, keys: list[str], *, timeout_seconds: Optional[float] = None
+    ) -> None:
+        # timeout_seconds is a Supabase-backend concept (network round-trip);
+        # local deletes are synchronous filesystem calls, so it's accepted
+        # for Protocol parity and otherwise ignored.
+        del timeout_seconds
+        first_error: Optional[StorageBackendError] = None
+        for key in keys:
+            try:
+                self._resolve(key).unlink(missing_ok=True)
+            except OSError as exc:
+                # Best-effort, matching the Supabase backend's single bulk
+                # call: one bad key must not abort deleting the rest.
+                first_error = first_error or _redacted_io_error(key, exc)
+        if first_error is not None:
+            raise first_error
 
 
 # ─── Selection ────────────────────────────────────────────────────────────────

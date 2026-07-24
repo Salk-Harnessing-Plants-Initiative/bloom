@@ -129,8 +129,21 @@ output root):
 - **Read paths work too:** manifest resolution, the versioned-cleaned lookup, and
   the MCP read tools all resolve against the local files.
 
-To enable it in dev, uncomment the storage-backend lines in the `bloommcp` service
-env block of `docker-compose.dev.yml` and restart the service.
+To enable it in dev, run `make dev-up-local` — it brings the stack up in
+fully-local mode for one invocation (`BLOOM_STORAGE_BACKEND=local` set only for
+that run) without touching `.env.dev`. The `bloommcp` service in
+`docker-compose.dev.yml` sources these vars via `${VAR:-}` interpolation — it no
+longer needs to be edited to toggle this. You can also set
+`BLOOM_STORAGE_BACKEND=local` directly in your own `.env.dev`, but prefer the
+one-shot `make dev-up-local` form: a value left set in `.env.dev` (or exported in
+a shell profile) silently applies to every subsequent plain `make dev-up` too,
+with no prompt or confirmation.
+
+`docker-compose.dev.yml` uses a single, fixed compose project name
+(`bloom_v2_dev`) for the whole dev stack — the same one `make dev-up` uses. If
+someone else (or another terminal) already has the dev stack running on this
+machine, `make dev-up-local` recreates those same containers into fully-local
+mode rather than starting an independent stack; it isn't isolated per-invocation.
 
 ### ⚠️ Do not mix backends for one experiment
 

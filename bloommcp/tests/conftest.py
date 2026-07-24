@@ -28,7 +28,7 @@ os.environ.setdefault("BLOOM_PLOTS_URL", "http://localhost/plots")
 # --- In-memory Supabase Storage boundary (Tier 2 adapter tests) ---------------
 #
 # The storage stack funnels every read/write through the six bloom_mcp.supabase_client
-# helpers (+ the names re-bound into bloom_mcp.storage.manifest). This fixture
+# helpers (+ the names re-bound into bloom_mcp.manifest.manifest). This fixture
 # fakes that boundary in memory so SupabaseReader / SupabaseResultStore run with
 # no live Supabase and no `supabase.create_client` call.
 
@@ -72,6 +72,11 @@ class _InMemoryObjectStore:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(self.objects[key])
 
+    def delete_files(self, keys: list[str], *, timeout_seconds: float | None = None) -> None:
+        del timeout_seconds  # in-memory: no network round-trip to bound
+        for key in keys:
+            self.objects.pop(key, None)
+
 
 @pytest.fixture
 def fake_supabase_storage(monkeypatch):
@@ -79,7 +84,7 @@ def fake_supabase_storage(monkeypatch):
 
     Returns the store so tests can seed/inspect objects directly.
     """
-    import bloom_mcp.storage.manifest as _manifest
+    import bloom_mcp.manifest.manifest as _manifest
     import bloom_mcp.supabase_client as _sc
 
     store = _InMemoryObjectStore()
@@ -89,6 +94,7 @@ def fake_supabase_storage(monkeypatch):
         "write_json",
         "upload_file",
         "download_file",
+        "delete_files",
     ):
         monkeypatch.setattr(_sc, name, getattr(store, name))
     for name in ("list_prefix", "read_json", "write_json"):
