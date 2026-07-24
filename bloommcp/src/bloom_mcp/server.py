@@ -127,8 +127,8 @@ def main() -> None:
         validate_supabase_env()
 
     # Composition root: inject the persistence adapters into the tools layer.
-    # Tools depend on the ports (bloom_mcp.tools._ports), never on Supabase /
-    # AnalysisWriter directly. The reader is coupled to the object-storage backend
+    # Tools depend on the ports (bloom_mcp.tools._ports), never on Supabase
+    # directly. The reader is coupled to the object-storage backend
     # (both local in fully-local mode) so inputs and outputs never split stores.
     # NOTE: the store is SupabaseResultStore() in *both* branches on purpose — in
     # fully-local mode its object-storage ops route through the active local backend

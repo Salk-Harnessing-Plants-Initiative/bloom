@@ -8,7 +8,7 @@ digest takes precedence when present; otherwise a non-empty fallback resolves
 from __future__ import annotations
 
 from bloom_mcp.contract.provenance import resolve_environment
-from bloom_mcp.storage.code_versions import get_code_versions
+from bloom_mcp.manifest.code_versions import get_code_versions
 
 
 def test_image_digest_takes_precedence(monkeypatch):

@@ -509,7 +509,7 @@ def test_resolve_versioned_cleaned_via_local_list_prefix_fallback(
     list leg end-to-end in the read path (the qc round-trip never hits it because
     writers always set version_dir)."""
     from bloom_mcp import experiment_utils as eu
-    from bloom_mcp.storage import (
+    from bloom_mcp.manifest import (
         ExperimentBlock,
         Manifest,
         VersionEntry,
