@@ -28,9 +28,6 @@ Verify it:
 bloomctl --version
 ```
 
-For pipeline use, a container image is published instead — see
-[Container image](#container-image).
-
 ## Getting started
 
 Authenticate once, then run commands against Bloom:
