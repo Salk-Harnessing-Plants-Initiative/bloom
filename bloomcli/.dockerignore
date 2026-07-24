@@ -1,0 +1,10 @@
+.git
+__pycache__
+.venv
+.env*
+*.pyc
+.mypy_cache
+.pytest_cache
+dist/
+# Tests + fixtures aren't needed at runtime; keep them out of the image.
+tests/

@@ -63,19 +63,19 @@ def test_fresh_interpreter_imports_server_with_no_bloom_env():
 
 
 def test_no_stale_prototype_imports():
-    """No module under src/bloom_mcp imports a bare source/tools/storage root."""
+    """No module under src/bloom_mcp imports a bare source/tools/manifest root."""
     offenders: list[str] = []
     for py in _PKG_ROOT.rglob("*.py"):
         tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name.split(".")[0] in {"source", "tools", "storage"}:
+                    if alias.name.split(".")[0] in {"source", "tools", "manifest"}:
                         offenders.append(f"{py.name}: import {alias.name}")
             elif isinstance(node, ast.ImportFrom):
                 # level > 0 is a relative import (from . import x) — never stale.
                 if node.level == 0 and node.module:
-                    if node.module.split(".")[0] in {"source", "tools", "storage"}:
+                    if node.module.split(".")[0] in {"source", "tools", "manifest"}:
                         offenders.append(f"{py.name}: from {node.module}")
     assert not offenders, "stale prototype imports remain:\n" + "\n".join(offenders)
 

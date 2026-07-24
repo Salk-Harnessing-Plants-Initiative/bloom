@@ -26,6 +26,7 @@ help:
 	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
 	@echo "  make test-integration - Run integration tests against the local dev stack"
 	@echo "  make bloommcp-smoke   - Live persistence smoke: drive granular tools through real Supabase storage"
+	@echo "  make bloommcp-plot-smoke - Live plot-tool smoke: real MCP call through the bloommcp container"
 	@echo "  make check            - Verify local stack: services, roles, schemas, migrations"
 	@echo "  make verify-dev       - Clean reset -> up -> migrate -> check (destructive)"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
@@ -360,7 +361,7 @@ bloommcp-smoke: check-uv
 	BLOOM_AGENT_KEY=$$(sed -n 's/^BLOOM_AGENT_KEY=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
 	if [ -z "$$BLOOM_AGENT_KEY" ]; then echo "Error: BLOOM_AGENT_KEY is empty in .env.dev — run 'make init'."; exit 1; fi; \
 	cd bloommcp && SUPABASE_URL="http://localhost:$${KONG_PORT}" BLOOM_AGENT_KEY="$$BLOOM_AGENT_KEY" \
-		uv run python scripts/live_persistence_smoke.py
+		uv run python tests/smoke/live_persistence_smoke.py
 
 ## Live plot-tool smoke (issue #472): calls a real plotting tool through the
 ## bloommcp container's actual MCP transport (not an in-process/env-overridden
@@ -385,7 +386,7 @@ bloommcp-plot-smoke: check-uv
 	BLOOMMCP_API_KEY=$$(sed -n 's/^BLOOMMCP_API_KEY=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
 	if [ -z "$$BLOOMMCP_API_KEY" ]; then echo "Error: BLOOMMCP_API_KEY is empty in .env.dev — run 'make init'."; exit 1; fi; \
 	cd bloommcp && BLOOMMCP_PORT="$$BLOOMMCP_PORT" BLOOMMCP_API_KEY="$$BLOOMMCP_API_KEY" \
-		uv run python scripts/live_plot_tool_smoke.py
+		uv run python tests/smoke/live_plot_tool_smoke.py
 
 ## One-shot: clean reset -> up -> migrate -> health check. Destructive (wipes the
 ## local DB). Use to reproduce a fresh-clone init and prove it end to end.
