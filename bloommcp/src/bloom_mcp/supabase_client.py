@@ -159,9 +159,14 @@ def get_storage_client(*, timeout_seconds: float | None = None):
     wait.
     """
     url, key = _require_env()
-    options = None
-    if timeout_seconds is not None:
-        options = supabase.ClientOptions(storage_client_timeout=timeout_seconds)
+    if timeout_seconds is None:
+        # No override: call create_client exactly as every other accessor in
+        # this module does (positional url/key, no options kwarg) — several
+        # tests monkeypatch `supabase.create_client` with a 2-arg stub, so an
+        # unconditional `options=` kwarg here would break them for no benefit
+        # on the common path.
+        return supabase.create_client(url, key).storage.from_(BUCKET)
+    options = supabase.ClientOptions(storage_client_timeout=timeout_seconds)
     return supabase.create_client(url, key, options=options).storage.from_(BUCKET)
 
 
