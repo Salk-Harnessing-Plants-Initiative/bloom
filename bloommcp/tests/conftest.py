@@ -72,7 +72,8 @@ class _InMemoryObjectStore:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(self.objects[key])
 
-    def delete_files(self, keys: list[str]) -> None:
+    def delete_files(self, keys: list[str], *, timeout_seconds: float | None = None) -> None:
+        del timeout_seconds  # in-memory: no network round-trip to bound
         for key in keys:
             self.objects.pop(key, None)
 

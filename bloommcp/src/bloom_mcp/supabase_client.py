@@ -148,10 +148,21 @@ def _guess_content_type(path: Path) -> str:
     return _CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
 
 
-def get_storage_client():
-    """Return a fresh Supabase storage client with access to `bloommcp-data`."""
+def get_storage_client(*, timeout_seconds: float | None = None):
+    """Return a fresh Supabase storage client with access to `bloommcp-data`.
+
+    `timeout_seconds`, when given, overrides the client's default network
+    timeout (storage3's `DEFAULT_TIMEOUT`, 20s) for every request made
+    through the returned client. Used by the best-effort cleanup path (see
+    `delete_files`) so a hung delete can't hold up surfacing the commit
+    failure that triggered it for as long as a real upload might reasonably
+    wait.
+    """
     url, key = _require_env()
-    return supabase.create_client(url, key).storage.from_(BUCKET)
+    options = None
+    if timeout_seconds is not None:
+        options = supabase.ClientOptions(storage_client_timeout=timeout_seconds)
+    return supabase.create_client(url, key, options=options).storage.from_(BUCKET)
 
 
 # The six helpers below delegate to the process's active storage backend
@@ -214,13 +225,15 @@ def download_file(key: str, local_path: Path) -> None:
     active_backend().download_file(key, local_path)
 
 
-def delete_files(keys: list[str]) -> None:
+def delete_files(keys: list[str], *, timeout_seconds: float | None = None) -> None:
     """Delete every object in `keys`. Missing keys are a no-op, not an error.
 
     Best-effort by design: callers (see `SupabaseResultStore.commit`) use this
     to clean up after a failed upload and must not let a delete failure mask
-    the original error.
+    the original error. `timeout_seconds` overrides the network timeout on
+    the Supabase backend (see `get_storage_client`); the local backend has no
+    network round-trip and ignores it.
     """
     from bloom_mcp.storage_backend import active_backend
 
-    active_backend().delete_files(keys)
+    active_backend().delete_files(keys, timeout_seconds=timeout_seconds)

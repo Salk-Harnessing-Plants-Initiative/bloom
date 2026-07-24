@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -29,6 +28,7 @@ from bloom_mcp.storage import (
 )
 
 from ._artifacts import hash_outputs, validate_outputs
+from ._locks import KeyedLock
 from .ports import (
     CommitFailedError,
     RunHandle,
@@ -49,6 +49,13 @@ _OUTPUT_PREFIX = "bloommcp_output"
 # cheap failure since nothing has been uploaded yet.
 _MAX_ID_ATTEMPTS = 3
 
+# Network timeout for the best-effort cleanup delete, shorter than the
+# default (20s, storage3's DEFAULT_TIMEOUT) a real upload might reasonably
+# wait on: cleanup is best-effort, so a hung delete should give up and let
+# the original, actionable CommitFailedError surface promptly rather than
+# hold the caller for as long as a load-bearing call would.
+_CLEANUP_TIMEOUT_SECONDS = 5.0
+
 # `commit` is dispatched by FastMCP's Starlette server via a thread pool, so
 # two calls for the same (output_root, experiment, tool_class) can genuinely
 # run concurrently *within this one process* — not just a hypothetical future
@@ -57,21 +64,15 @@ _MAX_ID_ATTEMPTS = 3
 # *same* deterministic version_dir (version_id + today's date, no nonce), and
 # upload to the same object keys; whichever loses the manifest race then
 # "cleans up" keys the winner's now-committed manifest entry depends on —
-# deleting already-committed data. A per-key lock makes `commit` calls for the
-# same manifest fully mutually exclusive, so the second call's pre-upload
-# check always sees the first's fresh entry *before* uploading anything.
-_LOCKS_GUARD = threading.Lock()
-_COMMIT_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}
-
-
-def _commit_lock(output_root: str, experiment: str, tool_class: str) -> threading.Lock:
-    key = (output_root, experiment, tool_class)
-    with _LOCKS_GUARD:
-        lock = _COMMIT_LOCKS.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _COMMIT_LOCKS[key] = lock
-        return lock
+# deleting already-committed data. A per-key lock (`KeyedLock`, shared with
+# `FakeResultStore` — see `_locks.py`) makes `commit` calls for the same
+# manifest fully mutually exclusive, so the second call's pre-upload check
+# always sees the first's fresh entry *before* uploading anything.
+def _commit_lock(output_root: str, experiment: str, tool_class: str) -> KeyedLock:
+    # "supabase" namespaces this adapter's keys apart from FakeResultStore's
+    # in the shared registry — the two must never contend on each other's
+    # locks even if given identical (output_root, experiment, tool_class).
+    return KeyedLock(("supabase", output_root, experiment, tool_class))
 
 
 @dataclass
@@ -260,7 +261,7 @@ class SupabaseResultStore:
         if not keys:
             return
         try:
-            _sc.delete_files(keys)
+            _sc.delete_files(keys, timeout_seconds=_CLEANUP_TIMEOUT_SECONDS)
         except Exception:
             logger.warning(
                 "ResultStore.commit cleanup failed for %s/%s — %d object(s) "

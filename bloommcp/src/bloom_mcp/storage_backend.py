@@ -62,7 +62,9 @@ class StorageBackend(Protocol):
 
     def list_prefix(self, prefix: str) -> list[str]: ...
 
-    def delete_files(self, keys: list[str]) -> None: ...
+    def delete_files(
+        self, keys: list[str], *, timeout_seconds: Optional[float] = None
+    ) -> None: ...
 
 
 def _json_bytes(payload: dict) -> bytes:
@@ -172,12 +174,14 @@ class SupabaseStorageBackend:
         items = client.list(prefix)
         return [item["name"] for item in items]
 
-    def delete_files(self, keys: list[str]) -> None:
+    def delete_files(
+        self, keys: list[str], *, timeout_seconds: Optional[float] = None
+    ) -> None:
         from bloom_mcp.supabase_client import get_storage_client
 
         if not keys:
             return
-        client = get_storage_client()
+        client = get_storage_client(timeout_seconds=timeout_seconds)
         client.remove(list(keys))
 
 
@@ -304,12 +308,23 @@ class LocalStorageBackend:
         # backend — filtering keeps cross-backend list parity.
         return sorted(n for n in names if not n.startswith(_TMP_PREFIX))
 
-    def delete_files(self, keys: list[str]) -> None:
+    def delete_files(
+        self, keys: list[str], *, timeout_seconds: Optional[float] = None
+    ) -> None:
+        # timeout_seconds is a Supabase-backend concept (network round-trip);
+        # local deletes are synchronous filesystem calls, so it's accepted
+        # for Protocol parity and otherwise ignored.
+        del timeout_seconds
+        first_error: Optional[StorageBackendError] = None
         for key in keys:
             try:
                 self._resolve(key).unlink(missing_ok=True)
             except OSError as exc:
-                raise _redacted_io_error(key, exc) from None
+                # Best-effort, matching the Supabase backend's single bulk
+                # call: one bad key must not abort deleting the rest.
+                first_error = first_error or _redacted_io_error(key, exc)
+        if first_error is not None:
+            raise first_error
 
 
 # ─── Selection ────────────────────────────────────────────────────────────────

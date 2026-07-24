@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +18,7 @@ from typing import TYPE_CHECKING, Optional
 from bloom_mcp.storage.versioning import next_version_id, version_dir_name
 
 from ._artifacts import hash_outputs, validate_outputs
+from ._locks import KeyedLock
 from .ports import (
     CommitFailedError,
     RunHandle,
@@ -38,21 +38,14 @@ _MAX_ID_ATTEMPTS = 3
 
 # Mirrors SupabaseResultStore's per-key commit lock (see that module's
 # docstring for why this is load-bearing under FastMCP's thread-pool
-# dispatch, not defensive belt-and-suspenders) — same shape, independent
-# registry, so a concurrent-commit test against the fake exercises the same
-# mutual-exclusion property the real adapter provides.
-_LOCKS_GUARD = threading.Lock()
-_COMMIT_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}
+# dispatch, not defensive belt-and-suspenders) — same shared `KeyedLock`
+# (see `_locks.py`), so a concurrent-commit test against the fake exercises
+# the same mutual-exclusion property the real adapter provides.
+def _commit_lock(output_root: str, experiment: str, tool_class: str) -> KeyedLock:
+    # "fake" namespaces this adapter's keys apart from SupabaseResultStore's
+    # in the shared registry — see supabase_store.py's identical note.
+    return KeyedLock(("fake", output_root, experiment, tool_class))
 
-
-def _commit_lock(output_root: str, experiment: str, tool_class: str) -> threading.Lock:
-    key = (output_root, experiment, tool_class)
-    with _LOCKS_GUARD:
-        lock = _COMMIT_LOCKS.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _COMMIT_LOCKS[key] = lock
-        return lock
 
 # Placeholder timestamp for stub `StoredRun`s seeded via `seed_collision`/
 # `seed_v2_run` — these are test-only synthetic history, never derived from
