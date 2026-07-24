@@ -7,16 +7,18 @@ import { createTheme, ThemeProvider, useTheme } from '@mui/material/styles';
 import { green } from '@mui/material/colors';
 import SearchIcon from '@mui/icons-material/Search';
 import { createClientSupabaseClient } from "@/lib/supabase/client";
-import { fieldHrefs, parseQuery, escapeLike } from './searchPage.helpers';
+import {
+  fieldHrefs,
+  parseQuery,
+  escapeLike,
+  ilikeAnyFilter,
+  resolveJumpTarget,
+  batchNotice,
+  MAX_BATCH,
+  MAX_JUMP_MATCHES,
+} from './searchPage.helpers';
 import { FieldLink } from './plant-search-links';
 import PlantAdvancedSearch from './plant-advanced-search';
-
-// Cap the pasted barcode batch so an oversized list can't hit PostgREST unbounded.
-const MAX_BATCH = 200;
-
-// Auto-jump reads up to this many matches; we fetch +1 to detect truncation and,
-// when the set is truncated, fall back to the dropdown instead of jumping on it.
-const MAX_JUMP_MATCHES = 500;
 
 export default function SearchComponent() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -61,54 +63,60 @@ export default function SearchComponent() {
       return;
     }
     setErrorMsg('');
+
+    // Take the abort slot before the jump queries: a newer search started while
+    // they run supersedes this submit, so the stale text captured in this
+    // closure can't overwrite fresher results on the way out.
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const { signal } = controller;
+
     const { list, text } = parseQuery(searchQuery);
     if (!list && text) {
-      // Exact species name -> species page. Escape %/_ so they match literally
-      // rather than as ilike wildcards (ilike keeps case-insensitivity).
-      const { data: sp } = await supabase
-        .from('species' as any)
-        .select('id')
-        .ilike('common_name', escapeLike(text))
-        .is('deleted_at', null);
-      if (sp && sp.length === 1) {
-        router.push(`/app/phenotypes/${(sp[0] as any).id}`);
+      // Each jump candidate fetches at most MAX_JUMP_MATCHES + 1 rows so a
+      // truncated set is detectable; resolveJumpTarget owns the priority order
+      // and the dedupe/truncation rules.
+      const dest = await resolveJumpTarget({
+        // Escape %/_ so they match literally rather than as ilike wildcards
+        // (ilike keeps case-insensitivity).
+        species: async () =>
+          (
+            await supabase
+              .from('species' as any)
+              .select('id')
+              .ilike('common_name', escapeLike(text))
+              .is('deleted_at', null)
+              .abortSignal(signal)
+          ).data,
+        // eq, not ilike: barcodes contain '_'. Barcodes are unique per wave
+        // only, so one can match across waves.
+        barcode: async () =>
+          (
+            await supabase
+              .from('cyl_plant_search' as any)
+              .select('species_id, experiment_id, wave_id, accession_id')
+              .eq('qr_code', text)
+              .limit(MAX_JUMP_MATCHES + 1)
+              .abortSignal(signal)
+          ).data,
+        accession: async () =>
+          (
+            await supabase
+              .from('cyl_plant_search' as any)
+              .select('species_id, experiment_id, wave_id, accession_id')
+              .eq('accession_name', text)
+              .limit(MAX_JUMP_MATCHES + 1)
+              .abortSignal(signal)
+          ).data,
+      });
+      if (signal.aborted) return;
+      if (dest) {
+        router.push(dest);
         return;
       }
-      // Exact barcode -> accession page (eq, not ilike: barcodes contain '_').
-      // Barcodes are unique per wave only, so one can match across waves; only
-      // auto-jump when all matches share a destination (mirrors accession below).
-      const { data: pl } = await supabase
-        .from('cyl_plant_search' as any)
-        .select('species_id, experiment_id, wave_id, accession_id')
-        .eq('qr_code', text)
-        .limit(MAX_JUMP_MATCHES + 1);
-      // Only auto-jump on the complete match set; if truncated, show the dropdown.
-      if (pl && pl.length > 0 && pl.length <= MAX_JUMP_MATCHES) {
-        const dests = Array.from(
-          new Set(pl.map((r: any) => fieldHrefs(r).accession).filter(Boolean)),
-        );
-        if (dests.length === 1) {
-          router.push(dests[0] as string);
-          return;
-        }
-      }
-      // Exact accession -> its accession page, when it maps to a single one.
-      const { data: acc } = await supabase
-        .from('cyl_plant_search' as any)
-        .select('species_id, experiment_id, wave_id, accession_id')
-        .eq('accession_name', text)
-        .limit(MAX_JUMP_MATCHES + 1);
-      // Only auto-jump on the complete match set; if truncated, show the dropdown.
-      if (acc && acc.length > 0 && acc.length <= MAX_JUMP_MATCHES) {
-        const dests = Array.from(
-          new Set(acc.map((r: any) => fieldHrefs(r).accession).filter(Boolean)),
-        );
-        if (dests.length === 1) {
-          router.push(dests[0] as string);
-          return;
-        }
-      }
     }
+    if (signal.aborted) return;
     fetchResults(searchQuery);
   };
 
@@ -155,24 +163,20 @@ export default function SearchComponent() {
         setLoading(false);
         return;
       }
-      setErrorMsg(
-        list.length > MAX_BATCH
-          ? `Too many barcodes — searching the first ${MAX_BATCH}.`
-          : '',
-      );
+      setErrorMsg(batchNotice(list.length, data?.length ?? 0));
       setSpeciesResults([]);
       setPlantResults(data || []);
       setLoading(false);
       return;
     }
 
-    // Strip characters that would break the PostgREST .or() grammar.
-    const term = text.replace(/[(),]/g, ' ').trim();
+    // Substring search: escape %/_ so a term containing them matches literally
+    // instead of over-matching as a wildcard.
     const [sp, pl] = await Promise.all([
       supabase
         .from('species' as any)
         .select('id, common_name, genus, species')
-        .ilike('common_name', `%${term}%`)
+        .ilike('common_name', `%${escapeLike(text)}%`)
         .is('deleted_at', null)
         .limit(8)
         .abortSignal(signal),
@@ -181,7 +185,7 @@ export default function SearchComponent() {
       supabase
         .from('cyl_plant_search' as any)
         .select('*')
-        .or(`qr_code.ilike.%${term}%,accession_name.ilike.%${term}%`)
+        .or(ilikeAnyFilter(['qr_code', 'accession_name'], text))
         .limit(100)
         .abortSignal(signal),
     ]);
