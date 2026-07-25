@@ -52,16 +52,16 @@ export function ilikeAnyFilter(columns: string[], term: string): string {
 // What cyl_plant_search_navigate answers with: a species page, one plant's
 // accession page, or nothing unambiguous.
 export type NavTarget =
-  | { kind: 'species'; species_id: number }
-  | { kind: 'plant'; species_id: number; experiment_id: number; wave_id: number; accession_id: number }
-  | { kind: 'none' };
+  | { target: 'species'; species_id: number }
+  | { target: 'plant'; species_id: number; experiment_id: number; wave_id: number; accession_id: number }
+  | { target: 'none' };
 
 // Turn the RPC's answer into an href. The RPC returns ids only — route shape
 // stays here — and null means "show the dropdown instead of jumping".
-export function navigateHref(target: NavTarget | null | undefined): string | null {
-  if (!target) return null;
-  if (target.kind === 'species') return fieldHrefs({ species_id: target.species_id }).species;
-  if (target.kind === 'plant') return fieldHrefs(target).accession;
+export function navigateHref(nav: NavTarget | null | undefined): string | null {
+  if (!nav) return null;
+  if (nav.target === 'species') return fieldHrefs({ species_id: nav.species_id }).species;
+  if (nav.target === 'plant') return fieldHrefs(nav).accession;
   return null;
 }
 

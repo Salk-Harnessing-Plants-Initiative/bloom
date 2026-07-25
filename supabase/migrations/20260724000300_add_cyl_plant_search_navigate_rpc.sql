@@ -1,8 +1,8 @@
 -- Resolves where the search bar should navigate for an exact term. Returns one
 -- jsonb object:
---   {"kind": "species", "species_id": 7}
---   {"kind": "plant", "species_id": 1, "experiment_id": 2, "wave_id": 3, "accession_id": 4}
---   {"kind": "none"}
+--   {"target": "species", "species_id": 7}
+--   {"target": "plant", "species_id": 1, "experiment_id": 2, "wave_id": 3, "accession_id": 4}
+--   {"target": "none"}
 -- Ids only, never a URL — route shape stays in the client.
 --
 -- Priority: exact species name, then exact barcode, then exact accession. Each
@@ -63,16 +63,16 @@ AS $$
   )
   SELECT CASE
     WHEN (SELECT count(*) FROM species_hit) = 1 THEN
-      jsonb_build_object('kind', 'species', 'species_id', (SELECT id FROM species_hit))
+      jsonb_build_object('target', 'species', 'species_id', (SELECT id FROM species_hit))
     WHEN (SELECT count(*) FROM resolved) = 1 THEN
       (SELECT jsonb_build_object(
-                'kind', 'plant',
+                'target', 'plant',
                 'species_id', r.species_id,
                 'experiment_id', r.experiment_id,
                 'wave_id', r.wave_id,
                 'accession_id', r.accession_id)
        FROM resolved r)
-    ELSE jsonb_build_object('kind', 'none')
+    ELSE jsonb_build_object('target', 'none')
   END;
 $$;
 

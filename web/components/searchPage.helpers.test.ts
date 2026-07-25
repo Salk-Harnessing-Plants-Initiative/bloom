@@ -139,13 +139,13 @@ describe("ilikeAnyFilter", () => {
 
 describe("navigateHref", () => {
   it("maps a species answer to the species page", () => {
-    expect(navigateHref({ kind: "species", species_id: 7 })).toBe("/app/phenotypes/7");
+    expect(navigateHref({ target: "species", species_id: 7 })).toBe("/app/phenotypes/7");
   });
 
   it("maps a plant answer to the accession-in-wave page", () => {
     expect(
       navigateHref({
-        kind: "plant",
+        target: "plant",
         species_id: 1,
         experiment_id: 2,
         wave_id: 3,
@@ -155,7 +155,7 @@ describe("navigateHref", () => {
   });
 
   it("returns null for an explicit 'none' answer (show the dropdown)", () => {
-    expect(navigateHref({ kind: "none" })).toBeNull();
+    expect(navigateHref({ target: "none" })).toBeNull();
   });
 
   it("returns null when the RPC returned nothing at all", () => {
@@ -167,7 +167,7 @@ describe("navigateHref", () => {
     // Shouldn't happen — the RPC filters these out — but a malformed answer
     // must not produce a broken route.
     expect(
-      navigateHref({ kind: "plant", species_id: 1, experiment_id: 2 } as any),
+      navigateHref({ target: "plant", species_id: 1, experiment_id: 2 } as any),
     ).toBeNull();
   });
 });

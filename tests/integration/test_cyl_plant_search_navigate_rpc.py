@@ -73,7 +73,7 @@ def test_exact_species_name_resolves_to_species(pg_conn):
     t = _tok()
     with pg_conn.cursor() as cur:
         ids = _seed(cur, species=f"Sp-{t}", exp=f"E-{t}")
-        assert _nav(cur, f"Sp-{t}") == {"kind": "species", "species_id": ids["species_id"]}
+        assert _nav(cur, f"Sp-{t}") == {"target": "species", "species_id": ids["species_id"]}
     pg_conn.rollback()
 
 
@@ -91,7 +91,7 @@ def test_species_wins_over_a_matching_barcode(pg_conn):
     term = f"Amb-{t}"
     with pg_conn.cursor() as cur:
         ids = _seed(cur, species=term, exp=f"E-{t}", accession=f"A-{t}", barcodes=[term])
-        assert _nav(cur, term) == {"kind": "species", "species_id": ids["species_id"]}
+        assert _nav(cur, term) == {"target": "species", "species_id": ids["species_id"]}
     pg_conn.rollback()
 
 
@@ -100,7 +100,7 @@ def test_barcode_in_one_wave_resolves_to_that_plant(pg_conn):
     with pg_conn.cursor() as cur:
         ids = _seed(cur, species=f"Sp-{t}", exp=f"E-{t}", accession=f"A-{t}", barcodes=[f"Q-{t}"])
         assert _nav(cur, f"Q-{t}") == {
-            "kind": "plant",
+            "target": "plant",
             "species_id": ids["species_id"],
             "experiment_id": ids["exp_id"],
             "wave_id": ids["wave_ids"][0],
@@ -122,7 +122,7 @@ def test_barcode_across_two_waves_is_ambiguous(pg_conn):
             accession=f"A-{t}",
             barcodes=[f"Q-{t}", f"Q-{t}"],
         )
-        assert _nav(cur, f"Q-{t}") == {"kind": "none"}
+        assert _nav(cur, f"Q-{t}") == {"target": "none"}
     pg_conn.rollback()
 
 
@@ -130,7 +130,7 @@ def test_accession_in_one_wave_resolves_to_that_plant(pg_conn):
     t = _tok()
     with pg_conn.cursor() as cur:
         ids = _seed(cur, species=f"Sp-{t}", exp=f"E-{t}", accession=f"A-{t}", barcodes=[f"Q-{t}"])
-        assert _nav(cur, f"A-{t}")["kind"] == "plant"
+        assert _nav(cur, f"A-{t}")["target"] == "plant"
         assert _nav(cur, f"A-{t}")["accession_id"] == ids["accession_id"]
     pg_conn.rollback()
 
@@ -146,7 +146,7 @@ def test_accession_spanning_two_waves_is_ambiguous(pg_conn):
             accession=f"A-{t}",
             barcodes=[f"Q1-{t}", f"Q2-{t}"],
         )
-        assert _nav(cur, f"A-{t}") == {"kind": "none"}
+        assert _nav(cur, f"A-{t}") == {"target": "none"}
     pg_conn.rollback()
 
 
@@ -163,7 +163,7 @@ def test_resolution_is_exact_beyond_any_row_cap(pg_conn):
             (ids["wave_ids"][0], ids["accession_id"], t),
         )
         assert _nav(cur, f"A-{t}") == {
-            "kind": "plant",
+            "target": "plant",
             "species_id": ids["species_id"],
             "experiment_id": ids["exp_id"],
             "wave_id": ids["wave_ids"][0],
@@ -179,14 +179,14 @@ def test_resolution_is_exact_beyond_any_row_cap(pg_conn):
 
 def test_unknown_term_resolves_to_none(pg_conn):
     with pg_conn.cursor() as cur:
-        assert _nav(cur, f"no-such-thing-{_tok()}") == {"kind": "none"}
+        assert _nav(cur, f"no-such-thing-{_tok()}") == {"target": "none"}
     pg_conn.rollback()
 
 
 @pytest.mark.parametrize("term", ["", "   ", None])
 def test_blank_input_resolves_to_none(pg_conn, term):
     with pg_conn.cursor() as cur:
-        assert _nav(cur, term) == {"kind": "none"}
+        assert _nav(cur, term) == {"target": "none"}
     pg_conn.rollback()
 
 
@@ -197,7 +197,7 @@ def test_wildcards_are_literal_not_patterns(pg_conn, term):
     t = _tok()
     with pg_conn.cursor() as cur:
         _seed(cur, species=f"Sp-{t}", exp=f"E-{t}", accession=f"A-{t}", barcodes=[f"Q-{t}"])
-        assert _nav(cur, term) == {"kind": "none"}
+        assert _nav(cur, term) == {"target": "none"}
     pg_conn.rollback()
 
 
@@ -207,7 +207,7 @@ def test_soft_deleted_species_is_not_navigable(pg_conn):
         cur.execute(
             "INSERT INTO species (common_name, deleted_at) VALUES (%s, now())", (f"Sp-{t}",)
         )
-        assert _nav(cur, f"Sp-{t}") == {"kind": "none"}
+        assert _nav(cur, f"Sp-{t}") == {"target": "none"}
     pg_conn.rollback()
 
 
@@ -230,7 +230,7 @@ def test_soft_deleted_experiment_barcode_is_not_navigable(pg_conn):
         cur.execute(
             "INSERT INTO cyl_plants (wave_id, qr_code) VALUES (%s, %s)", (wave_id, f"Q-{t}")
         )
-        assert _nav(cur, f"Q-{t}") == {"kind": "none"}
+        assert _nav(cur, f"Q-{t}") == {"target": "none"}
     pg_conn.rollback()
 
 
@@ -239,7 +239,7 @@ def test_plant_without_an_accession_yields_no_destination(pg_conn):
     t = _tok()
     with pg_conn.cursor() as cur:
         _seed(cur, species=f"Sp-{t}", exp=f"E-{t}", accession=None, barcodes=[f"Q-{t}"])
-        assert _nav(cur, f"Q-{t}") == {"kind": "none"}
+        assert _nav(cur, f"Q-{t}") == {"target": "none"}
     pg_conn.rollback()
 
 
