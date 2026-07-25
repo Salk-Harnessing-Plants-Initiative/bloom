@@ -39,7 +39,10 @@ function Results() {
       })
       .catch((e) => {
         if (!active) return;
-        setError(e?.message ?? 'Search failed');
+        // Log the real error; show a generic one — raw Postgres text is noise to
+        // a scientist and leaks schema detail.
+        console.error('Advanced search failed:', e);
+        setError('Search failed, please try again.');
         setRows([]); setNotFound([]); setTruncated(false); setTotal(0);
       })
       .finally(() => {

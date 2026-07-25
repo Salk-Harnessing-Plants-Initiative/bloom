@@ -181,7 +181,6 @@ export default function SearchComponent() {
   const hasResults = speciesResults.length > 0 || plantResults.length > 0;
 
   return (
-    <ThemeProvider theme={greenTheme}>
     <Box sx={{ width: '100%', maxWidth: 1200, mx: 'auto', mt: 4, mb: 4 }}>
       <TextField
         fullWidth
@@ -214,12 +213,16 @@ export default function SearchComponent() {
         }}
       />
 
-      <Box sx={{ mt: 1 }}>
-        <Button size="small" onClick={() => setShowAdvanced((v) => !v)}>
-          {showAdvanced ? 'Hide advanced search' : 'Advanced search'}
-        </Button>
-      </Box>
-      {showAdvanced && <PlantAdvancedSearch />}
+      {/* Scoped to the advanced-search subtree only — wrapping the whole
+          component would recolour the search box and spinner as a side effect. */}
+      <ThemeProvider theme={greenTheme}>
+        <Box sx={{ mt: 1 }}>
+          <Button size="small" onClick={() => setShowAdvanced((v) => !v)}>
+            {showAdvanced ? 'Hide advanced search' : 'Advanced search'}
+          </Button>
+        </Box>
+        {showAdvanced && <PlantAdvancedSearch />}
+      </ThemeProvider>
 
       { hasResults && <Box
         sx={{
@@ -273,6 +276,5 @@ export default function SearchComponent() {
         )}
       </Box>}
     </Box>
-    </ThemeProvider>
   );
 }

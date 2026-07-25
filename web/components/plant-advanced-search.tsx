@@ -1,7 +1,7 @@
 "use client";
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Box, Stack, TextField, Autocomplete, Button } from '@mui/material';
+import { Box, Stack, TextField, Autocomplete, Button, Alert } from '@mui/material';
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { parseBarcodes, filtersToParams, filtersEmpty } from "@/lib/cyl-plant-search";
 
@@ -20,16 +20,27 @@ export default function PlantAdvancedSearch() {
   const [speciesOpts, setSpeciesOpts] = useState<Opt[]>([]);
   const [experimentOpts, setExperimentOpts] = useState<Opt[]>([]);
 
+  const [optsError, setOptsError] = useState('');
+
   // Load the select options once (small reference tables; no new schema).
   useEffect(() => {
     let active = true;
     (async () => {
       const [sp, ex, ac] = await Promise.all([
-        supabase.from('species' as any).select('id, common_name').is('deleted_at', null).order('common_name'),
-        supabase.from('cyl_experiments' as any).select('id, name').is('deleted_at', null).order('name'),
-        supabase.from('accessions' as any).select('id, name').order('name'),
+        supabase.from('species').select('id, common_name').is('deleted_at', null).order('common_name'),
+        supabase.from('cyl_experiments').select('id, name').is('deleted_at', null).order('name'),
+        supabase.from('accessions').select('id, name').order('name'),
       ]);
       if (!active) return;
+      // Without this an RLS denial or network failure just renders empty
+      // dropdowns, indistinguishable from "there is nothing to pick".
+      const failure = sp.error ?? ex.error ?? ac.error;
+      if (failure) {
+        console.error('Could not load advanced-search options:', failure.message);
+        setOptsError('Could not load filter options — try reloading the page.');
+        return;
+      }
+      setOptsError('');
       setSpeciesOpts((sp.data || []).map((r: any) => ({ id: r.id, label: r.common_name })));
       setExperimentOpts((ex.data || []).map((r: any) => ({ id: r.id, label: r.name })));
       setAccessionOpts((ac.data || []).map((r: any) => ({ id: r.id, label: r.name })));
@@ -44,14 +55,21 @@ export default function PlantAdvancedSearch() {
     setExperiments([]);
   };
 
-  const apply = () => {
-    const filters = {
+  const filters = useMemo(
+    () => ({
       barcodes: parseBarcodes(barcodes),
       accessionIds: accessions.map((a) => a.id),
       speciesIds: species.map((s) => s.id),
       experimentIds: experiments.map((e) => e.id),
-    };
-    if (filtersEmpty(filters)) return;
+    }),
+    [barcodes, accessions, species, experiments],
+  );
+  // Drives the Apply button's disabled state, so an empty search reads as
+  // "nothing to apply" rather than a button that does nothing when pressed.
+  const canApply = !filtersEmpty(filters);
+
+  const apply = () => {
+    if (!canApply) return;
     router.push(`/app/phenotypes/search?${filtersToParams(filters).toString()}`);
   };
 
@@ -69,6 +87,7 @@ export default function PlantAdvancedSearch() {
       }}
     >
       <Stack spacing={1.25}>
+        {optsError && <Alert severity="warning">{optsError}</Alert>}
         <TextField
           size="small"
           label="Barcodes"
@@ -115,7 +134,15 @@ export default function PlantAdvancedSearch() {
         />
         <Stack direction="row" spacing={1} justifyContent="flex-end">
           <Button size="small" color="inherit" onClick={clear}>Clear</Button>
-          <Button size="small" variant="contained" disableElevation onClick={apply}>Apply</Button>
+          <Button
+            size="small"
+            variant="contained"
+            disableElevation
+            disabled={!canApply}
+            onClick={apply}
+          >
+            Apply
+          </Button>
         </Stack>
       </Stack>
     </Box>

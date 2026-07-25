@@ -47,12 +47,24 @@ export function filtersToParams(f: AdvancedFilters): URLSearchParams {
   return p;
 }
 
+// Mirrors the RPC's own per-field ceiling. The database is the real guard; this
+// only stops a hand-edited URL building a huge request just to be refused.
+export const MAX_FILTER_ENTRIES = 5000;
+
 export function paramsToFilters(sp: URLSearchParams): AdvancedFilters {
   const nums = (v: string | null) =>
-    v ? v.split(',').map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+    v
+      ? v
+          .split(',')
+          .map(Number)
+          .filter((n) => Number.isInteger(n) && n > 0)
+          .slice(0, MAX_FILTER_ENTRIES)
+      : [];
   const bc = sp.get('barcodes');
   return {
-    barcodes: bc ? bc.split(',').map((s) => s.trim()).filter(Boolean) : [],
+    barcodes: bc
+      ? bc.split(',').map((s) => s.trim()).filter(Boolean).slice(0, MAX_FILTER_ENTRIES)
+      : [],
     accessionIds: nums(sp.get('acc')),
     speciesIds: nums(sp.get('sp')),
     experimentIds: nums(sp.get('exp')),
