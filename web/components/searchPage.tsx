@@ -74,15 +74,17 @@ export default function SearchComponent() {
 
     const { list, text } = parseQuery(searchQuery);
     if (!list && text) {
-      // The RPC resolves species/barcode/accession priority and the
-      // one-destination-or-many question server-side, so a jump is never
-      // decided from a capped row sample deduped in the browser.
-      // `as any` until database.types.ts is regenerated, matching how the
-      // cyl_plant_search view is referenced elsewhere in this file.
-      const { data: target } = await supabase
+      // Ask the DB where to jump: a species page, one plant's page, or nowhere.
+      const { data: target, error } = await supabase
         .rpc('cyl_plant_search_navigate' as any, { p_text: text })
         .abortSignal(signal);
       if (signal.aborted) return;
+      if (error) {
+        console.error('Navigation lookup failed:', error.message);
+        setErrorMsg('Search failed, please try again.');
+        clearResults();
+        return;
+      }
       const dest = navigateHref(target as NavTarget | null);
       if (dest) {
         router.push(dest);
