@@ -4,10 +4,6 @@
 // Cap the pasted barcode batch so an oversized list can't hit PostgREST unbounded.
 export const MAX_BATCH = 200;
 
-// Auto-jump reads up to this many matches; we fetch +1 to detect truncation and,
-// when the set is truncated, fall back to the dropdown instead of jumping on it.
-export const MAX_JUMP_MATCHES = 500;
-
 // Per-field deep links: species -> species page, experiment -> experiment page,
 // accession/barcode -> the accession-in-wave page. Null when ids are missing.
 export function fieldHrefs(item: any) {
@@ -53,39 +49,20 @@ export function ilikeAnyFilter(columns: string[], term: string): string {
   return columns.map((c) => `${c}.ilike.${pattern}`).join(',');
 }
 
-// The one destination every matched row shares, or null when the set is empty,
-// truncated (the rest are unknown), or spans more than one destination.
-export function singleDestination(
-  rows: any[] | null,
-  max: number = MAX_JUMP_MATCHES,
-): string | null {
-  if (!rows || rows.length === 0 || rows.length > max) return null;
-  const dests = Array.from(
-    new Set(rows.map((r) => fieldHrefs(r).accession).filter(Boolean)),
-  );
-  return dests.length === 1 ? (dests[0] as string) : null;
-}
+// What cyl_plant_search_navigate answers with: a species page, one plant's
+// accession page, or nothing unambiguous.
+export type NavTarget =
+  | { kind: 'species'; species_id: number }
+  | { kind: 'plant'; species_id: number; experiment_id: number; wave_id: number; accession_id: number }
+  | { kind: 'none' };
 
-export type JumpFetchers = {
-  species: () => Promise<any[] | null>;
-  barcode: () => Promise<any[] | null>;
-  accession: () => Promise<any[] | null>;
-};
-
-// Enter/magnifier jump order: exact species -> exact barcode -> exact accession.
-// Each fetcher runs only if the earlier ones found nothing, so a species hit
-// costs one query. Null means "no unambiguous target" — show the dropdown.
-export async function resolveJumpTarget(
-  fetchers: JumpFetchers,
-  max: number = MAX_JUMP_MATCHES,
-): Promise<string | null> {
-  const species = await fetchers.species();
-  if (species && species.length === 1) {
-    return fieldHrefs({ species_id: (species[0] as any).id }).species;
-  }
-  const barcode = singleDestination(await fetchers.barcode(), max);
-  if (barcode) return barcode;
-  return singleDestination(await fetchers.accession(), max);
+// Turn the RPC's answer into an href. The RPC returns ids only — route shape
+// stays here — and null means "show the dropdown instead of jumping".
+export function navigateHref(target: NavTarget | null | undefined): string | null {
+  if (!target) return null;
+  if (target.kind === 'species') return fieldHrefs({ species_id: target.species_id }).species;
+  if (target.kind === 'plant') return fieldHrefs(target).accession;
+  return null;
 }
 
 // Cap notice for a batch search: the pasted list was trimmed before querying,

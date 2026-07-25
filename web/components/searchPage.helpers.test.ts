@@ -4,27 +4,17 @@
  * detection and the correct-page navigation.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
   parseQuery,
   fieldHrefs,
   escapeLike,
   quoteOrValue,
   ilikeAnyFilter,
-  singleDestination,
-  resolveJumpTarget,
+  navigateHref,
   batchNotice,
   MAX_BATCH,
-  MAX_JUMP_MATCHES,
 } from "./searchPage.helpers";
-
-// A jump-candidate row: only the id fields fieldHrefs reads.
-const row = (species: number, experiment: number, wave: number, accession: number) => ({
-  species_id: species,
-  experiment_id: experiment,
-  wave_id: wave,
-  accession_id: accession,
-});
 
 describe("parseQuery", () => {
   it("treats a plain term as free text (no list)", () => {
@@ -147,108 +137,38 @@ describe("ilikeAnyFilter", () => {
   });
 });
 
-describe("singleDestination", () => {
-  it("returns the shared destination when every row agrees", () => {
-    expect(singleDestination([row(1, 2, 3, 4), row(1, 2, 3, 4)])).toBe(
-      "/app/phenotypes/1/2/3/4",
-    );
+describe("navigateHref", () => {
+  it("maps a species answer to the species page", () => {
+    expect(navigateHref({ kind: "species", species_id: 7 })).toBe("/app/phenotypes/7");
   });
 
-  it("returns null when rows span more than one destination", () => {
-    expect(singleDestination([row(1, 2, 3, 4), row(1, 2, 9, 4)])).toBeNull();
+  it("maps a plant answer to the accession-in-wave page", () => {
+    expect(
+      navigateHref({
+        kind: "plant",
+        species_id: 1,
+        experiment_id: 2,
+        wave_id: 3,
+        accession_id: 4,
+      }),
+    ).toBe("/app/phenotypes/1/2/3/4");
   });
 
-  it("returns null for an empty match set", () => {
-    expect(singleDestination([])).toBeNull();
+  it("returns null for an explicit 'none' answer (show the dropdown)", () => {
+    expect(navigateHref({ kind: "none" })).toBeNull();
   });
 
-  it("returns null for a null match set (a failed query)", () => {
-    expect(singleDestination(null)).toBeNull();
+  it("returns null when the RPC returned nothing at all", () => {
+    expect(navigateHref(null)).toBeNull();
+    expect(navigateHref(undefined)).toBeNull();
   });
 
-  it("returns null when the set is truncated, even if the rows seen agree", () => {
-    const rows = Array.from({ length: 4 }, () => row(1, 2, 3, 4));
-    expect(singleDestination(rows, 3)).toBeNull();
-  });
-
-  it("still resolves at exactly the cap (truncation is > max, not >=)", () => {
-    const rows = Array.from({ length: 3 }, () => row(1, 2, 3, 4));
-    expect(singleDestination(rows, 3)).toBe("/app/phenotypes/1/2/3/4");
-  });
-
-  it("ignores rows with no derivable destination", () => {
-    expect(singleDestination([row(1, 2, 3, 4), { species_id: null }])).toBe(
-      "/app/phenotypes/1/2/3/4",
-    );
-  });
-
-  it("defaults its cap to MAX_JUMP_MATCHES", () => {
-    const rows = Array.from({ length: MAX_JUMP_MATCHES + 1 }, () => row(1, 2, 3, 4));
-    expect(singleDestination(rows)).toBeNull();
-  });
-});
-
-describe("resolveJumpTarget", () => {
-  const fetchers = (species: any[], barcode: any[], accession: any[]) => ({
-    species: vi.fn(async () => species),
-    barcode: vi.fn(async () => barcode),
-    accession: vi.fn(async () => accession),
-  });
-
-  it("prefers an exact species match over barcode and accession", async () => {
-    const f = fetchers([{ id: 7 }], [row(1, 2, 3, 4)], [row(1, 2, 3, 4)]);
-    expect(await resolveJumpTarget(f)).toBe("/app/phenotypes/7");
-  });
-
-  it("does not query barcode or accession once species resolves", async () => {
-    const f = fetchers([{ id: 7 }], [], []);
-    await resolveJumpTarget(f);
-    expect(f.barcode).not.toHaveBeenCalled();
-    expect(f.accession).not.toHaveBeenCalled();
-  });
-
-  it("falls through to barcode when species is ambiguous", async () => {
-    const f = fetchers([{ id: 7 }, { id: 8 }], [row(1, 2, 3, 4)], []);
-    expect(await resolveJumpTarget(f)).toBe("/app/phenotypes/1/2/3/4");
-  });
-
-  it("does not query accession once barcode resolves", async () => {
-    const f = fetchers([], [row(1, 2, 3, 4)], []);
-    await resolveJumpTarget(f);
-    expect(f.accession).not.toHaveBeenCalled();
-  });
-
-  it("falls through to accession when the barcode spans several destinations", async () => {
-    const f = fetchers([], [row(1, 2, 3, 4), row(1, 2, 9, 4)], [row(5, 6, 7, 8)]);
-    expect(await resolveJumpTarget(f)).toBe("/app/phenotypes/5/6/7/8");
-  });
-
-  it("falls through to accession when the barcode set is truncated", async () => {
-    const barcode = Array.from({ length: 4 }, () => row(1, 2, 3, 4));
-    const f = fetchers([], barcode, [row(5, 6, 7, 8)]);
-    expect(await resolveJumpTarget(f, 3)).toBe("/app/phenotypes/5/6/7/8");
-  });
-
-  it("returns null when nothing resolves to a single destination", async () => {
-    const f = fetchers([], [], []);
-    expect(await resolveJumpTarget(f)).toBeNull();
-  });
-
-  it("returns null when every step's query failed", async () => {
-    const f = {
-      species: vi.fn(async () => null),
-      barcode: vi.fn(async () => null),
-      accession: vi.fn(async () => null),
-    };
-    expect(await resolveJumpTarget(f)).toBeNull();
-  });
-
-  it("consults every step in priority order when none resolve", async () => {
-    const f = fetchers([], [], []);
-    await resolveJumpTarget(f);
-    expect(f.species).toHaveBeenCalled();
-    expect(f.barcode).toHaveBeenCalled();
-    expect(f.accession).toHaveBeenCalled();
+  it("returns null for a plant answer missing an id in the href", () => {
+    // Shouldn't happen — the RPC filters these out — but a malformed answer
+    // must not produce a broken route.
+    expect(
+      navigateHref({ kind: "plant", species_id: 1, experiment_id: 2 } as any),
+    ).toBeNull();
   });
 });
 

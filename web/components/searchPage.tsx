@@ -12,11 +12,11 @@ import {
   parseQuery,
   escapeLike,
   ilikeAnyFilter,
-  resolveJumpTarget,
+  navigateHref,
   batchNotice,
   MAX_BATCH,
-  MAX_JUMP_MATCHES,
 } from './searchPage.helpers';
+import type { NavTarget } from './searchPage.helpers';
 import { FieldLink } from './plant-search-links';
 import PlantAdvancedSearch from './plant-advanced-search';
 
@@ -74,43 +74,16 @@ export default function SearchComponent() {
 
     const { list, text } = parseQuery(searchQuery);
     if (!list && text) {
-      // Each jump candidate fetches at most MAX_JUMP_MATCHES + 1 rows so a
-      // truncated set is detectable; resolveJumpTarget owns the priority order
-      // and the dedupe/truncation rules.
-      const dest = await resolveJumpTarget({
-        // Escape %/_ so they match literally rather than as ilike wildcards
-        // (ilike keeps case-insensitivity).
-        species: async () =>
-          (
-            await supabase
-              .from('species' as any)
-              .select('id')
-              .ilike('common_name', escapeLike(text))
-              .is('deleted_at', null)
-              .abortSignal(signal)
-          ).data,
-        // eq, not ilike: barcodes contain '_'. Barcodes are unique per wave
-        // only, so one can match across waves.
-        barcode: async () =>
-          (
-            await supabase
-              .from('cyl_plant_search' as any)
-              .select('species_id, experiment_id, wave_id, accession_id')
-              .eq('qr_code', text)
-              .limit(MAX_JUMP_MATCHES + 1)
-              .abortSignal(signal)
-          ).data,
-        accession: async () =>
-          (
-            await supabase
-              .from('cyl_plant_search' as any)
-              .select('species_id, experiment_id, wave_id, accession_id')
-              .eq('accession_name', text)
-              .limit(MAX_JUMP_MATCHES + 1)
-              .abortSignal(signal)
-          ).data,
-      });
+      // The RPC resolves species/barcode/accession priority and the
+      // one-destination-or-many question server-side, so a jump is never
+      // decided from a capped row sample deduped in the browser.
+      // `as any` until database.types.ts is regenerated, matching how the
+      // cyl_plant_search view is referenced elsewhere in this file.
+      const { data: target } = await supabase
+        .rpc('cyl_plant_search_navigate' as any, { p_text: text })
+        .abortSignal(signal);
       if (signal.aborted) return;
+      const dest = navigateHref(target as NavTarget | null);
       if (dest) {
         router.push(dest);
         return;
