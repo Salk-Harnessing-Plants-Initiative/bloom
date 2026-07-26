@@ -363,16 +363,21 @@ def is_local_backend() -> bool:
 def _resolve_local_root() -> Path:
     """The local root for the ``local`` backend.
 
-    ``BLOOM_STORAGE_LOCAL_ROOT`` when set. Otherwise falls back to
-    ``BLOOM_OUTPUT_DIR`` — a **bridge-only, deprecated** default that reuses the
-    already-mounted dev dir so ``BLOOM_STORAGE_BACKEND=local`` needs no second var
-    in dev. Prefer setting ``BLOOM_STORAGE_LOCAL_ROOT`` explicitly; the fallback is
-    logged (not silent) so a fourth overlapping use of ``BLOOM_OUTPUT_DIR`` stays
-    observable.
+    Precedence: ``BLOOM_STORAGE_LOCAL_ROOT`` when explicitly set; otherwise
+    ``<BLOOM_LOCAL_ROOT>/output`` when the single ``BLOOM_LOCAL_ROOT`` variable
+    supplies a default (#479); otherwise ``BLOOM_OUTPUT_DIR`` — a **bridge-only,
+    deprecated** default that reuses the already-mounted dev dir so
+    ``BLOOM_STORAGE_BACKEND=local`` needs no second var in dev. Prefer setting
+    ``BLOOM_STORAGE_LOCAL_ROOT`` (or ``BLOOM_LOCAL_ROOT``) explicitly; the
+    ``BLOOM_OUTPUT_DIR`` fallback is logged (not silent) so a fourth overlapping
+    use of it stays observable.
     """
     explicit = os.environ.get("BLOOM_STORAGE_LOCAL_ROOT")
     if explicit:
         return Path(explicit)
+    local_root = os.environ.get("BLOOM_LOCAL_ROOT")
+    if local_root and is_local_backend():
+        return Path(local_root) / "output"
     fallback = os.environ.get("BLOOM_OUTPUT_DIR", "")
     if fallback:
         logger.warning(
@@ -381,6 +386,28 @@ def _resolve_local_root() -> Path:
             "is a deprecated dev bridge — set BLOOM_STORAGE_LOCAL_ROOT explicitly."
         )
     return Path(fallback)
+
+
+def _ensure_subfolder(path: Path, label: str) -> None:
+    """Auto-create a ``BLOOM_LOCAL_ROOT``-derived subfolder, failing clearly if blocked.
+
+    Duplicated from ``experiment_utils._ensure_subfolder`` (not imported) — this
+    module deliberately imports nothing from ``experiment_utils`` to avoid a
+    two-way module dependency (``experiment_utils`` already imports from this
+    module via ``is_local_backend``). Only the top-level ``BLOOM_LOCAL_ROOT``
+    folder must pre-exist; its subfolders auto-create here. ``label`` names the
+    subfolder in the raised error without leaking the absolute host path.
+    """
+    if path.exists() and not path.is_dir():
+        raise RuntimeError(f"BLOOM_LOCAL_ROOT's {label} exists but is not a directory.")
+    existed = path.exists()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.error("could not create BLOOM_LOCAL_ROOT's %s: %s", label, path)
+        raise RuntimeError(f"Could not create BLOOM_LOCAL_ROOT's {label}.") from exc
+    if not existed:
+        logger.info("created BLOOM_LOCAL_ROOT's %s: %s", label, path)
 
 
 def _unrecognized_backend_error(name: str) -> RuntimeError:
@@ -434,24 +461,36 @@ def validate_storage_backend() -> None:
     Called from ``experiment_utils.validate_env`` (which ``server.main()`` runs
     before binding the port). Raising here names the offending value / root, so a
     misconfigured deploy fails at boot rather than on the first storage call.
+    When the root is the ``BLOOM_LOCAL_ROOT``-derived default
+    (``BLOOM_STORAGE_LOCAL_ROOT`` unset), it is auto-created if missing rather
+    than required to pre-exist; an explicitly-set ``BLOOM_STORAGE_LOCAL_ROOT`` (or
+    the ``BLOOM_OUTPUT_DIR`` bridge fallback when ``BLOOM_LOCAL_ROOT`` is also
+    unset) keeps the stricter must-exist contract.
     """
     name = _selected_backend_name()
     if name not in VALID_BACKENDS:
         raise _unrecognized_backend_error(name)
     if name == "local":
         root = _resolve_local_root()
-        # Only Path("") has empty .parts; Path(".").parts == (".",) and refers
-        # to CWD, which is not a safe output root for production use.
-        if not root.parts or str(root) == ".":
-            raise RuntimeError(
-                "BLOOM_STORAGE_BACKEND=local but neither BLOOM_STORAGE_LOCAL_ROOT "
-                "nor BLOOM_OUTPUT_DIR is set."
-            )
-        if not root.exists() or not root.is_dir():
-            raise RuntimeError(
-                f"BLOOM_STORAGE_BACKEND=local root {root} does not exist or is not "
-                f"a directory."
-            )
+        explicit = os.environ.get("BLOOM_STORAGE_LOCAL_ROOT")
+        derived_from_local_root = not explicit and bool(
+            os.environ.get("BLOOM_LOCAL_ROOT")
+        )
+        if derived_from_local_root:
+            _ensure_subfolder(root, "output root")
+        else:
+            # Only Path("") has empty .parts; Path(".").parts == (".",) and refers
+            # to CWD, which is not a safe output root for production use.
+            if not root.parts or str(root) == ".":
+                raise RuntimeError(
+                    "BLOOM_STORAGE_BACKEND=local but neither BLOOM_STORAGE_LOCAL_ROOT "
+                    "nor BLOOM_OUTPUT_DIR is set."
+                )
+            if not root.exists() or not root.is_dir():
+                raise RuntimeError(
+                    f"BLOOM_STORAGE_BACKEND=local root {root} does not exist or is not "
+                    f"a directory."
+                )
         if not os.access(root, os.W_OK):
             raise RuntimeError(
                 f"BLOOM_STORAGE_BACKEND=local root {root} is not writable."
