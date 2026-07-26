@@ -188,17 +188,21 @@ checks against the branch as a whole, plus PR-description content.
       gate is in `release-bloomcli.yml`, which runs after merge at release-cut time. This is the
       exact gap that caused the `#521` incident — do not skip this step assuming CI will catch it.
       Result: all checks passed.
-- [ ] 8.3 Manually run all 4 oracle tests (4.3, 6.3, plus the existing single-command oracle tests
-      to confirm no regression) and confirm the pasted output matches expectations; paste into the
-      PR description (same convention as `add-cyl-download-for-predict`'s manual oracle note).
-      **Attempted, environment-limited:** confirmed `sleap_roots_predict` is genuinely importable
-      from its sibling checkout (`c:\repos\sleap-roots-predict`) once on `PYTHONPATH`, but its
-      `__init__.py` eagerly imports `imageio` and (transitively) the rest of its ML dependency
-      stack (torch/sleap-nn), none of which are installed in bloomcli's own minimal venv — the
-      same limitation the *existing* single-command oracle test already has here (it also skips
-      in this exact venv). Running this for real needs a venv with `sleap_roots_predict`'s and
-      `sleap_roots`'s full dependencies installed (e.g. their own `.venv`s, already present
-      alongside this checkout) — left for whoever has that environment set up, before merge.
+- [x] 8.3 Manually run all oracle tests and confirm no regression; paste the passing output into
+      the PR description (same convention as `add-cyl-download-for-predict`'s manual oracle note).
+      **Actually run, not just attempted** — the first pass wrongly concluded "environment-limited"
+      by trying to inject deps into bloomcli's own minimal venv (which deliberately doesn't carry
+      them). The real fix: `sleap-roots-predict`/`sleap-roots` already have their own `.venv`s
+      checked out alongside this repo (`c:\repos\sleap-roots-predict`, `c:\repos\sleap-roots`),
+      each missing only 1-2 packages (`python-dotenv`; `sleap-roots-contracts` pinned older than
+      bloomcli's floor). Installed those into each sibling venv, ran the real test files with that
+      interpreter (`PYTHONPATH` pointed at `bloomcli/src`), then restored both venvs to their own
+      lockfile-pinned state via `uv sync` afterward (confirmed clean — no residue left in either
+      sibling repo). Results: `test_cyl_download_for_predict.py` 88/88 passed against the real
+      `sleap_roots_predict` (all 3 oracle-gated tests included, not just the 2 new batch ones);
+      `test_cyl_ingest.py` 118/118 passed against the real `trait_extractor` (needed bumping that
+      venv's `sleap-roots-contracts` copy to `0.1.0a5` first — reverted after). Genuine end-to-end
+      confirmation that both new commands produce output the real upstream packages accept.
 - [x] 8.4 `/review-openspec` before requesting approval (done pre-implementation, all findings
       fixed — see the earlier "Revised during implementation"/"Added after review" annotations
       throughout this file and design.md); `/review-pr` (5-subagent) run on
