@@ -45,27 +45,13 @@ describe("parseQuery", () => {
     expect(parseQuery("A1").list).toBeNull();
   });
 
-  it("splits a space-separated batch into a list", () => {
-    // The case that silently did nothing before: pasting barcodes separated by
-    // spaces fell through to a free-text search for the whole string.
-    expect(parseQuery("SOY-W1-001 SOY-W1-002").list).toEqual([
-      "SOY-W1-001",
-      "SOY-W1-002",
-    ]);
-  });
-
-  it("splits a tab-separated batch into a list", () => {
-    expect(parseQuery("A1\tB2\tC3").list).toEqual(["A1", "B2", "C3"]);
-  });
-
   it("splits on a mix of separators", () => {
     expect(parseQuery("A1, B2\tC3\nD4").list).toEqual(["A1", "B2", "C3", "D4"]);
   });
 
-  it("treats a multi-word term as a list, not one term", () => {
-    // Accepted trade-off of splitting on spaces: a multi-word species name
-    // becomes a barcode list and finds nothing — the UI says "No matches found."
-    expect(parseQuery("Red Oak").list).toEqual(["Red", "Oak"]);
+  it("keeps a name containing a space as one term", () => {
+    expect(parseQuery("GH 221")).toEqual({ list: null, text: "GH 221" });
+    expect(parseQuery("Red Oak")).toEqual({ list: null, text: "Red Oak" });
   });
 
   it("still lists a single entry when a comma or newline is present", () => {

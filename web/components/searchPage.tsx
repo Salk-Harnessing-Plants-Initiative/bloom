@@ -123,6 +123,7 @@ export default function SearchComponent() {
     const { signal } = controller;
 
     setLoading(true);
+    setNoMatches(false);
     const { list, text } = parseQuery(query);
 
     // Batch barcode list -> plants only. Cap the list so an oversized paste
@@ -135,7 +136,12 @@ export default function SearchComponent() {
         .in('qr_code', capped)
         .limit(MAX_BATCH)
         .abortSignal(signal);
-      if (signal.aborted) return;
+      // Only clear the spinner if no newer search has taken the slot — that one
+      // owns `loading` now. Without the guard an abort-on-navigate leaves it stuck.
+      if (signal.aborted) {
+        if (abortRef.current === controller) setLoading(false);
+        return;
+      }
       if (error) {
         console.error('Plant search failed:', error.message);
         setErrorMsg('Search failed, please try again.');
@@ -171,7 +177,10 @@ export default function SearchComponent() {
         .abortSignal(signal),
     ]);
 
-    if (signal.aborted) return;
+    if (signal.aborted) {
+      if (abortRef.current === controller) setLoading(false);
+      return;
+    }
     if (sp.error || pl.error) {
       console.error('Search failed:', sp.error?.message ?? pl.error?.message);
       setErrorMsg('Search failed, please try again.');
