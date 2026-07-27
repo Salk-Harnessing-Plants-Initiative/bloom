@@ -61,8 +61,9 @@ def build_sample_count_row(rec: dict[str, Any]) -> list[str]:
 
 
 def build_sample_count_record(rec: dict[str, Any]) -> dict[str, Any]:
-    """Machine-readable sample-count record. Includes accession_id (unique) so this
-    output can be joined to `accessions list --json` on the id, not the ambiguous name."""
+    """Machine-readable sample-count record. Includes accession_id (the stable primary
+    key) so this output can be joined to `accessions list --json` on the id, without
+    depending on the human-editable name."""
     return {
         "accession_id": rec.get("accession_id"),
         "species": rec.get("species_name"),
@@ -71,7 +72,7 @@ def build_sample_count_record(rec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# --- supabase / storage I/O ---
+# --- supabase I/O ---
 
 
 def fetch_experiment_accessions(client: Any, experiment_id: int) -> list[dict[str, Any]]:
@@ -100,6 +101,7 @@ def fetch_accession_sample_counts(client: Any, species: str | None = None) -> li
 @click.option(
     "--experiment-id",
     "--experiment_id",
+    "experiment_id",
     type=int,
     required=True,
     help="List the accessions used in this experiment (id).",
@@ -122,7 +124,7 @@ def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
     try:
         raw = fetch_experiment_accessions(client, experiment_id)
     except APIError as exc:
-        raise click.ClickException(getattr(exc, "message", str(exc))) from exc
+        raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
     data = sorted(raw, key=accession_sort_key)
 
     if as_json:
@@ -130,7 +132,9 @@ def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
         return
 
     rows = [build_accession_row(r) for r in data]
-    print_table("Accessions", ACCESSION_COLUMNS, rows, empty="No accessions found for that experiment.")
+    print_table(
+        "Accessions", ACCESSION_COLUMNS, rows, empty="No accessions found for that experiment."
+    )
 
 
 @accessions.command(name="sample-counts")
@@ -148,11 +152,14 @@ def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
     help="Credentials profile to use.",
 )
 def sample_counts(species: str | None, as_json: bool, profile: str) -> None:
-    """Show the plant count per accession, per species (one plant = one biological replicate).
+    """Show the plant count per accession, per species (one plant = one individual grown).
 
-    Counts are across all experiments in the database (not scoped to one
-    experiment, unlike `accessions list`). Plants not assigned to an accession
-    are excluded, so summing the counts can be lower than the total plant count.
+    Counts are pooled across all experiments in the database (not scoped to one
+    experiment, unlike `accessions list`), so this is a total headcount, not a
+    per-condition replicate count. An accession grown under more than one species
+    appears as multiple rows, so a per-name total must sum across those rows.
+    Plants not assigned to an accession are excluded, so summing the counts can be
+    lower than the total plant count.
     """
     from postgrest import APIError
 
@@ -162,7 +169,7 @@ def sample_counts(species: str | None, as_json: bool, profile: str) -> None:
     try:
         raw = fetch_accession_sample_counts(client, species)
     except APIError as exc:
-        raise click.ClickException(getattr(exc, "message", str(exc))) from exc
+        raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
     data = sorted(raw, key=sample_count_sort_key)
 
     if as_json:

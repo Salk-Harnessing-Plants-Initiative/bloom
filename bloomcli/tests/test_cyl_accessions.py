@@ -72,6 +72,35 @@ def test_sample_count_sort_key_species_then_name():
     ]
 
 
+def test_accession_sort_key_orders_by_name():
+    unsorted = [
+        {"accession_id": 9, "accession_name": "Col-0"},
+        {"accession_id": 4, "accession_name": "Bay-0"},
+    ]
+    ordered = sorted(unsorted, key=acc.accession_sort_key)
+    assert [r["accession_name"] for r in ordered] == ["Bay-0", "Col-0"]
+
+
+def test_accession_sort_key_breaks_name_ties_by_id():
+    # same name, different id → id decides order (deterministic run-to-run).
+    tied = [
+        {"accession_id": 20, "accession_name": "Col-0"},
+        {"accession_id": 7, "accession_name": "Col-0"},
+    ]
+    ordered = sorted(tied, key=acc.accession_sort_key)
+    assert [r["accession_id"] for r in ordered] == [7, 20]
+
+
+def test_sample_count_sort_key_breaks_ties_by_id():
+    # same species AND name, different id → id decides order.
+    tied = [
+        {"species_name": "Rice", "accession_id": 30, "accession_name": "IR64", "plant_count": 1},
+        {"species_name": "Rice", "accession_id": 3, "accession_name": "IR64", "plant_count": 1},
+    ]
+    ordered = sorted(tied, key=acc.sample_count_sort_key)
+    assert [r["accession_id"] for r in ordered] == [3, 30]
+
+
 # --- query shape ------------------------------------------------------------
 
 
@@ -126,6 +155,9 @@ def test_fetch_sample_counts_species_filter():
     acc.fetch_accession_sample_counts(_Client(), "Canola")
     assert captured["table"] == "cyl_accession_sample_counts"
     assert captured["eq"] == ("species_name", "Canola")
+    # a dropped column would silently blank the output — assert the select carries them.
+    for col in ("species_name", "accession_id", "accession_name", "plant_count"):
+        assert col in captured["select"], f"{col!r} missing from select"
 
 
 def test_fetch_sample_counts_no_filter_omits_eq():
@@ -188,6 +220,15 @@ def test_list_empty(monkeypatch):
     assert "No accessions found" in res.output
 
 
+def test_list_json_empty_is_empty_array(monkeypatch):
+    # --json must always emit parseable JSON, even when empty (not the human message).
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_experiment_accessions", lambda client, eid: [])
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "list", "--experiment-id", "7", "--json"])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output) == []
+
+
 def test_sample_counts_json_sorted(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(acc, "fetch_accession_sample_counts", lambda client, species=None: COUNTS)
@@ -233,6 +274,14 @@ def test_sample_counts_empty(monkeypatch):
     res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts"])
     assert res.exit_code == 0
     assert "No sample counts found" in res.output
+
+
+def test_sample_counts_json_empty_is_empty_array(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_accession_sample_counts", lambda client, species=None: [])
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--json"])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output) == []
 
 
 def test_sample_counts_empty_echoes_species_filter(monkeypatch):
@@ -317,3 +366,35 @@ def test_sample_counts_maps_apierror_to_clickexception(monkeypatch):
     res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts"])
     assert res.exit_code != 0
     assert "permission denied" in res.output
+
+
+def test_list_apierror_without_message_falls_back(monkeypatch):
+    # APIError.message is None when the body has no "message" key; fall back to str(exc)
+    # so the diagnostic (code/details) survives instead of printing "Error: None".
+    from postgrest import APIError
+
+    _patch_authed(monkeypatch)
+
+    def _boom(client, experiment_id):
+        raise APIError({"code": "42P01", "details": "relation does not exist"})
+
+    monkeypatch.setattr(acc, "fetch_experiment_accessions", _boom)
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "list", "--experiment-id", "7"])
+    assert res.exit_code != 0
+    assert "None" not in res.output  # not "Error: None"
+    assert "42P01" in res.output or "relation does not exist" in res.output
+
+
+def test_sample_counts_apierror_without_message_falls_back(monkeypatch):
+    from postgrest import APIError
+
+    _patch_authed(monkeypatch)
+
+    def _boom(client, species=None):
+        raise APIError({"code": "42P01", "details": "relation does not exist"})
+
+    monkeypatch.setattr(acc, "fetch_accession_sample_counts", _boom)
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts"])
+    assert res.exit_code != 0
+    assert "None" not in res.output
+    assert "42P01" in res.output or "relation does not exist" in res.output
