@@ -384,15 +384,22 @@ def test_no_hand_listed_foundational_tool_names_in_web_client():
         "load_experiment_data",
         "list_existing_analyses",
     }
-    # Array/Set literals in this file don't nest (no `[...[...]...]`), so a
-    # non-nested bracket-span regex safely captures each one whole.
-    for literal in re.findall(r"\[([^\[\]]*)\]", text, re.DOTALL):
-        found = set(re.findall(r'"([^"]+)"', literal))
-        assert foundational_names - found, (
-            "mcp-chat-client.tsx hand-lists all 3 foundational tool names "
-            f"together in one literal — reintroduces the retired HIDDEN_TOOLS "
-            f"duplication: {literal[:200]!r}"
-        )
+    # Scan both array/Set literals (`[...]`) and object literals (`{...}`) —
+    # a hand-list could be reintroduced as either. Innermost-span regexes
+    # (no nested brackets/braces within a captured span) are enough: a
+    # hand-authored name list has no internal nesting, so if the three
+    # names co-occur anywhere, they co-occur within some innermost span.
+    for pattern, kind in (
+        (r"\[([^\[\]]*)\]", "array/Set"),
+        (r"\{([^{}]*)\}", "object"),
+    ):
+        for literal in re.findall(pattern, text, re.DOTALL):
+            found = set(re.findall(r'"([^"]+)"', literal))
+            assert foundational_names - found, (
+                f"mcp-chat-client.tsx hand-lists all 3 foundational tool names "
+                f"together in one {kind} literal — reintroduces the retired "
+                f"HIDDEN_TOOLS duplication: {literal[:200]!r}"
+            )
 
 
 def test_expected_tool_surface():
