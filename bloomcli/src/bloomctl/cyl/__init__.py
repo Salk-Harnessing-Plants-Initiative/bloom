@@ -9,6 +9,7 @@ One file per entity (grouped by entity; verbs live inside each entity):
   - datasets.py             `cyl datasets`                     list/get/create cylinder trait datasets
   - experiments.py          `cyl experiments`                  list cylinder experiments
   - accessions.py           `cyl accessions`                   list accessions per experiment; sample counts
+  - qc.py                   `cyl qc`                           list cylinder QC sets
   - _batch.py               shared ScanResult/BatchResult reporting for the batch-* commands (no CLI of its own)
 
 Add a command: new file here, register it below.
@@ -27,6 +28,7 @@ from .download_for_predict import download_for_predict as download_for_predict_c
 from .experiments import experiments as experiments_cmd
 from .ingest import batch_ingest_result as batch_ingest_result_cmd
 from .ingest import ingest_result as ingest_result_cmd
+from .qc import qc as qc_cmd
 
 
 @click.group(name="cyl")
@@ -42,3 +44,4 @@ cyl.add_command(batch_ingest_result_cmd)
 cyl.add_command(datasets_cmd)
 cyl.add_command(experiments_cmd)
 cyl.add_command(accessions_cmd)
+cyl.add_command(qc_cmd)
