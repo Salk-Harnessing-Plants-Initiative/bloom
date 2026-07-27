@@ -12,7 +12,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import click
 
@@ -90,28 +90,83 @@ def image_dest(out_dir: Path, scan: dict[str, Any], image: dict[str, Any]) -> Pa
 # --- supabase / storage I/O -------------------------------------------------
 
 
+# Max values per IN() filter. A barcode/accession list is sent inside the PostgREST
+# request URL, which proxies (Kong/nginx) cap at a few KB — so a large --barcodes-file
+# is split across several requests and the rows are merged. 100 keeps each URL small.
+_IN_CHUNK = 100
+
+
+def _chunked(values: Sequence[Any], size: int = _IN_CHUNK) -> list[list[Any]]:
+    """Split into chunks of at most `size` (whole list as one chunk when small)."""
+    values = list(values)
+    return [values[i : i + size] for i in range(0, len(values), size)] or [[]]
+
+
 def fetch_scans(
     client: Any,
     experiment_id: int,
     *,
-    plant_qr_code: str | None = None,
+    plant_qr_codes: Sequence[str] | None = None,
+    accession_ids: Sequence[int] | None = None,
     plant_age_min: int = 0,
     plant_age_max: int = 1000,
     limit: int = 100000,
 ) -> list[dict[str, Any]]:
-    """Query cyl_scans_extended for an experiment (legacy filter semantics)."""
-    query = (
-        client.table("cyl_scans_extended")
-        .select("*")
-        .eq("experiment_id", experiment_id)
-    )
-    if plant_qr_code:
-        query = query.eq("qr_code", plant_qr_code)
-    else:
-        query = query.gte("plant_age_days", plant_age_min).lte(
-            "plant_age_days", plant_age_max
+    """Query cyl_scans_extended for an experiment, optionally subsetting a batch.
+
+    Batch selectors are additive: a list of ``plant_qr_codes`` (barcodes) and/or
+    ``accession_ids`` narrows the experiment to just those plants (server-side ``IN``).
+    A long barcode list is split into chunks (see ``_IN_CHUNK``) so no single request
+    URL exceeds proxy limits; the chunks' rows are merged and de-duplicated by scan_id.
+    The plant-age window always applies (its 0..1000 default is a no-op unless narrowed).
+    """
+
+    def base():
+        return (
+            client.table("cyl_scans_extended")
+            .select("*")
+            .eq("experiment_id", experiment_id)
+            .gte("plant_age_days", plant_age_min)
+            .lte("plant_age_days", plant_age_max)
         )
-    return query.limit(limit).execute().data or []
+
+    # No batch selectors → a single whole-experiment query (unchanged behaviour).
+    if not plant_qr_codes and not accession_ids:
+        return base().limit(limit).execute().data or []
+
+    # Chunk the larger selector (barcodes if present) to keep each request URL small;
+    # apply the other selector in full on every chunk. Merge/de-dup by scan_id.
+    seen: dict[Any, dict[str, Any]] = {}
+    if plant_qr_codes:
+        for chunk in _chunked(plant_qr_codes):
+            query = base().in_("qr_code", chunk)
+            if accession_ids:
+                query = query.in_("accession_id", list(accession_ids))
+            for row in query.limit(limit).execute().data or []:
+                seen[row.get("scan_id")] = row
+    else:
+        for chunk in _chunked(accession_ids):
+            for row in base().in_("accession_id", chunk).limit(limit).execute().data or []:
+                seen[row.get("scan_id")] = row
+    return list(seen.values())
+
+
+def read_barcodes_file(path: Path) -> list[str]:
+    """Read a barcode list from a file: one per line, or comma/whitespace separated.
+
+    Blank lines and ``#`` comments are ignored; order is preserved and duplicates dropped,
+    so a user can paste a messy list and get a clean batch.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        line = line.split("#", 1)[0]
+        for token in line.replace(",", " ").split():
+            if token and token not in seen:
+                seen.add(token)
+                out.append(token)
+    return out
 
 
 def fetch_scan(client: Any, scan_id: Any) -> dict[str, Any] | None:
@@ -331,11 +386,29 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     help="Write scans.csv only; skip image download.",
 )
 @click.option(
+    "--barcode",
     "--plant-qr-code",
     "--plant_qr_code",
-    "plant_qr_code",
+    "plant_qr_codes",
+    multiple=True,
+    help="Plant barcode (a.k.a. QR code — the qr_code column). Repeatable; "
+    "or pass many at once with --barcodes-file.",
+)
+@click.option(
+    "--barcodes-file",
+    "--barcodes_file",
+    "barcodes_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=None,
-    help="Restrict to a single plant QR code.",
+    help="File of barcodes (same as --barcode, in bulk): one per line, or comma/space separated.",
+)
+@click.option(
+    "--accession-id",
+    "--accession_id",
+    "accession_ids",
+    type=int,
+    multiple=True,
+    help="Restrict to these accession ids (repeatable). See `cyl accessions list`.",
 )
 @click.option(
     "--plant-age-min",
@@ -376,20 +449,37 @@ def download(
     scan_id: int | None,
     profile: str,
     meta_only: bool,
-    plant_qr_code: str | None,
+    plant_qr_codes: tuple[str, ...],
+    barcodes_file: Path | None,
+    accession_ids: tuple[int, ...],
     plant_age_min: int,
     plant_age_max: int,
     limit: int,
     workers: int,
 ) -> None:
     """Download a cylinder experiment (--experiment-id) or a single scan (--scan-id):
-    metadata (scans.csv) and per-frame images."""
+    metadata (scans.csv) and per-frame images.
+
+    Batch selectors (--barcode/--barcodes-file, --accession-id) subset an
+    experiment to a chosen set of plants, fetched in one round-trip.
+    """
     from .. import auth
     from ..credentials import load_credentials
 
     # Exactly one of --experiment-id / --scan-id.
     if (experiment_id is None) == (scan_id is None):
         raise click.UsageError("Pass exactly one of --experiment-id or --scan-id.")
+
+    # Barcodes come from --plant-qr-code and/or a file; merge, de-dup, keep order.
+    barcodes = list(plant_qr_codes)
+    if barcodes_file is not None:
+        barcodes.extend(read_barcodes_file(barcodes_file))
+    barcodes = list(dict.fromkeys(barcodes))
+    if scan_id is not None and (barcodes or accession_ids):
+        raise click.UsageError(
+            "Batch selectors (--plant-qr-code / --barcodes-file / --accession-id) "
+            "apply to --experiment-id, not --scan-id."
+        )
 
     try:
         creds = load_credentials(profile)
@@ -409,7 +499,8 @@ def download(
         scans = fetch_scans(
             client,
             experiment_id,
-            plant_qr_code=plant_qr_code,
+            plant_qr_codes=barcodes or None,
+            accession_ids=list(accession_ids) or None,
             plant_age_min=plant_age_min,
             plant_age_max=plant_age_max,
             limit=limit,

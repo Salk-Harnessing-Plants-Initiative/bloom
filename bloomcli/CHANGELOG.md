@@ -8,6 +8,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Added
+
+- `bloomctl cyl download` batch selectors — subset an experiment to a chosen set of
+  plants by barcode or accession: `--barcode` (repeatable; alias `--plant-qr-code`),
+  `--barcodes-file` for a long list (one per line, or comma/space separated, `#`
+  comments ignored), and `--accession-id` (repeatable). Long barcode/accession lists
+  are chunked across requests so the `IN()` filter never exceeds request-URL limits.
+
 ### Changed
 
 - `bloomctl cyl download` now downloads image frames **concurrently** via a thread
