@@ -8,6 +8,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Changed
+
+- `bloomctl cyl download` now downloads image frames **concurrently** via a thread
+  pool (`-n/--workers`, default 8; `1` restores sequential). Large cylinder
+  experiments (hundreds of thousands of frames) previously downloaded one frame at
+  a time over many hours; per-frame failures are still recorded and don't abort the
+  run, and output order is unchanged (#534).
+
 ## [0.1.0a2] - 2026-07-23
 
 ### Changed

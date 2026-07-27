@@ -46,7 +46,8 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - `bloomctl login` — bootstrap client config from the Bloom server and store
   credentials per profile.
 - **[read]** `bloomctl cyl download <out_dir> …` — download a cylinder experiment
-  or single scan (metadata `scans.csv` + per-frame images).
+  or single scan (metadata `scans.csv` + per-frame images). Images download
+  concurrently; tune with `-n/--workers` (default 8, `1` = sequential).
 - **[read]** `bloomctl cyl download-for-predict <scan-id> <out>` — stage one scan
   into the predict-ready layout (see below); produces a **different** output tree
   than `cyl download` — use this only for A4 pipeline stage-in.

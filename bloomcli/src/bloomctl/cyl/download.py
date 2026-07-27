@@ -7,6 +7,7 @@ so the contract is unit-testable without a live server.
 from __future__ import annotations
 
 import csv
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,11 @@ from typing import Any
 import click
 
 from ..credentials import DEFAULT_PROFILE
+
+# Default concurrent image downloads. Image fetches are I/O-bound (one HTTP round-trip
+# to Storage each), so a thread pool overlaps request latency; 8 is a modest default
+# that cuts large-experiment download time without hammering the server (see #534).
+DEFAULT_WORKERS = 8
 
 # scans.csv schema: (output column, source key in a cyl_scans_extended row).
 # Order matches the legacy CLI's predict-container contract; `genotype` is
@@ -175,30 +181,56 @@ class DownloadResult:
         return len(self.frames)
 
 
-def download_images(client: Any, scans: list[dict[str, Any]], out_dir: Path) -> DownloadResult:
+def download_frame(
+    bucket: Any, scan: dict[str, Any], image: dict[str, Any], out_dir: Path
+) -> FrameResult:
+    """Download one frame to its destination, returning a FrameResult.
+
+    Self-contained and exception-safe: any failure (missing object, transient 5xx,
+    write error) is captured on the result, never raised — so one bad frame can't
+    abort a concurrent run. Safe to call from a worker thread.
+    """
+    object_path = image.get("object_path", "")
+    result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
+    try:
+        data = bucket.download(object_path)
+        if data is None:
+            raise ValueError("empty response from storage")
+        dest = image_dest(out_dir, scan, image)
+        dest.parent.mkdir(parents=True, exist_ok=True)  # mkdir(exist_ok) is race-safe
+        dest.write_bytes(data)
+        result.ok = True
+    except Exception as exc:  # per-frame: record and continue
+        result.error = str(exc)
+    return result
+
+
+def download_images(
+    client: Any,
+    scans: list[dict[str, Any]],
+    out_dir: Path,
+    *,
+    workers: int = DEFAULT_WORKERS,
+) -> DownloadResult:
     """Download every frame for every scan from Storage bucket `images`.
 
-    Each frame is downloaded independently: a failure is recorded, not raised, so
-    one bad frame (missing object, transient 5xx) can't abort the whole run.
-    Signs server-side via Supabase Storage (no MinIO secrets, no legacy Lambda).
+    Frames are listed per scan (ordered), then downloaded concurrently across a thread
+    pool of ``workers`` — the per-frame HTTP round-trips are the bottleneck on large
+    experiments, and being I/O-bound they overlap well (see #534). ``workers <= 1`` runs
+    sequentially (identical to the original behaviour). Results preserve scan/frame order,
+    so the download log is deterministic. The Supabase client's underlying httpx client is
+    thread-safe, so the one bucket handle is shared across workers.
     """
     bucket = client.storage.from_("images")
-    frames: list[FrameResult] = []
-    for scan in scans:
-        for image in fetch_images(client, scan["scan_id"]):
-            object_path = image.get("object_path", "")
-            result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
-            try:
-                data = bucket.download(object_path)
-                if data is None:
-                    raise ValueError("empty response from storage")
-                dest = image_dest(out_dir, scan, image)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
-                result.ok = True
-            except Exception as exc:  # per-frame: record and continue
-                result.error = str(exc)
-            frames.append(result)
+    work: list[tuple[dict[str, Any], dict[str, Any]]] = [
+        (scan, image) for scan in scans for image in fetch_images(client, scan["scan_id"])
+    ]
+    if workers <= 1:
+        frames = [download_frame(bucket, scan, image, out_dir) for scan, image in work]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # map preserves input order → log stays in scan/frame order.
+            frames = list(pool.map(lambda si: download_frame(bucket, si[0], si[1], out_dir), work))
     return DownloadResult(frames)
 
 
@@ -207,7 +239,9 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for f in result.frames:
-        line = f"{'OK  ' if f.ok else 'FAIL'} scan={f.scan_id} frame={f.frame_number} {f.object_path}"
+        line = (
+            f"{'OK  ' if f.ok else 'FAIL'} scan={f.scan_id} frame={f.frame_number} {f.object_path}"
+        )
         if not f.ok:
             line += f"  error={f.error}"
         lines.append(line)
@@ -282,6 +316,14 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     show_default=True,
     help="Maximum number of scans to fetch.",
 )
+@click.option(
+    "-n",
+    "--workers",
+    type=int,
+    default=DEFAULT_WORKERS,
+    show_default=True,
+    help="Concurrent image downloads (I/O-bound). 1 = sequential.",
+)
 def download(
     out_dir: Path,
     experiment_id: int | None,
@@ -292,6 +334,7 @@ def download(
     plant_age_min: int,
     plant_age_max: int,
     limit: int,
+    workers: int,
 ) -> None:
     """Download a cylinder experiment (--experiment-id) or a single scan (--scan-id):
     metadata (scans.csv) and per-frame images."""
@@ -301,6 +344,8 @@ def download(
     # Exactly one of --experiment-id / --scan-id.
     if (experiment_id is None) == (scan_id is None):
         raise click.UsageError("Pass exactly one of --experiment-id or --scan-id.")
+    if workers < 1:
+        raise click.UsageError("--workers must be >= 1.")
 
     try:
         creds = load_credentials(profile)
@@ -336,7 +381,7 @@ def download(
     if meta_only:
         return
 
-    result = download_images(client, scans, out)
+    result = download_images(client, scans, out, workers=workers)
     log_path = out / "download_log.txt"
     write_download_log(result, log_path)
     click.echo(
