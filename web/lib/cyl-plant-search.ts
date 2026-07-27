@@ -47,26 +47,28 @@ export function filtersToParams(f: AdvancedFilters): URLSearchParams {
   return p;
 }
 
-// Mirrors the RPC's own per-field ceiling. The database is the real guard; this
-// only stops a hand-edited URL building a huge request just to be refused.
+// The RPC's own per-field ceiling. Nothing here trims a list down to it — a
+// dropped barcode would come back as "not found" and read as "this plant does
+// not exist". Oversized searches are refused instead, same as the RPC does.
 export const MAX_FILTER_ENTRIES = 5000;
 
 export function paramsToFilters(sp: URLSearchParams): AdvancedFilters {
   const nums = (v: string | null) =>
-    v
-      ? v
-          .split(',')
-          .map(Number)
-          .filter((n) => Number.isInteger(n) && n > 0)
-          .slice(0, MAX_FILTER_ENTRIES)
-      : [];
+    v ? v.split(',').map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
   const bc = sp.get('barcodes');
   return {
-    barcodes: bc
-      ? bc.split(',').map((s) => s.trim()).filter(Boolean).slice(0, MAX_FILTER_ENTRIES)
-      : [],
+    barcodes: bc ? bc.split(',').map((s) => s.trim()).filter(Boolean) : [],
     accessionIds: nums(sp.get('acc')),
     speciesIds: nums(sp.get('sp')),
     experimentIds: nums(sp.get('exp')),
   };
+}
+
+// The field that puts this search over the ceiling, or null if it's fine.
+export function overCapField(f: AdvancedFilters): string | null {
+  if (f.barcodes.length > MAX_FILTER_ENTRIES) return 'barcodes';
+  if (f.accessionIds.length > MAX_FILTER_ENTRIES) return 'accessions';
+  if (f.speciesIds.length > MAX_FILTER_ENTRIES) return 'species';
+  if (f.experimentIds.length > MAX_FILTER_ENTRIES) return 'experiments';
+  return null;
 }

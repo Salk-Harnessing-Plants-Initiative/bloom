@@ -6,7 +6,14 @@ import { Box, Stack, Typography, CircularProgress, Link as MuiLink } from '@mui/
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { fieldHrefs } from "@/components/plant-search-links";
-import { paramsToFilters, runAdvancedSearch, filtersEmpty, AdvancedFilters } from "@/lib/cyl-plant-search";
+import {
+  paramsToFilters,
+  runAdvancedSearch,
+  filtersEmpty,
+  overCapField,
+  MAX_FILTER_ENTRIES,
+  AdvancedFilters,
+} from "@/lib/cyl-plant-search";
 
 function Results() {
   const searchParams = useSearchParams();
@@ -28,6 +35,16 @@ function Results() {
       setRows([]); setNotFound([]); setEmpty(true); setError(null); setLoading(false);
       return;
     }
+    // A link can carry more than the panel would let you submit. Refuse it rather
+    // than search part of the list and report the rest as absent.
+    const overCap = overCapField(filters);
+    if (overCap) {
+      setRows([]); setNotFound([]); setEmpty(false); setLoading(false);
+      setError(
+        `Too many ${overCap} — the limit is ${MAX_FILTER_ENTRIES} per field.`,
+      );
+      return;
+    }
     setEmpty(false);
     setError(null);
     setLoading(true);
@@ -42,7 +59,7 @@ function Results() {
         // Log the real error; show a generic one — raw Postgres text is noise to
         // a scientist and leaks schema detail.
         console.error('Advanced search failed:', e);
-        setError('Search failed, please try again.');
+        setError('Couldn’t run the search. Please try again.');
         setRows([]); setNotFound([]); setTruncated(false); setTotal(0);
       })
       .finally(() => {
@@ -75,11 +92,8 @@ function Results() {
   }
 
   if (error) {
-    return (
-      <Typography color="error">
-        Couldn’t run the search — {error}. Please try again.
-      </Typography>
-    );
+    // Callers set a complete sentence; wrapping one here doubled it up.
+    return <Typography color="error">{error}</Typography>;
   }
 
   return (

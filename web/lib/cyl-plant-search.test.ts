@@ -8,6 +8,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseBarcodes,
   filtersEmpty,
+  overCapField,
   filtersToParams,
   paramsToFilters,
   MAX_FILTER_ENTRIES,
@@ -86,24 +87,37 @@ describe("filtersToParams / paramsToFilters", () => {
     expect(f.accessionIds).toEqual([1, 3]);
   });
 
-  it("caps each id field so a crafted URL can't build an unbounded list", () => {
-    const many = Array.from({ length: MAX_FILTER_ENTRIES + 50 }, (_, i) => i + 1).join(",");
-    expect(paramsToFilters(new URLSearchParams(`acc=${many}`)).accessionIds).toHaveLength(
-      MAX_FILTER_ENTRIES,
-    );
-  });
-
-  it("caps the barcode field the same way", () => {
+  it("reads an oversized list back whole rather than trimming it", () => {
+    // Trimming here would drop barcodes that then never get searched and never
+    // appear under "not found" — overCapField refuses the search instead.
     const many = Array.from({ length: MAX_FILTER_ENTRIES + 50 }, (_, i) => `B${i}`).join(",");
     expect(paramsToFilters(new URLSearchParams(`barcodes=${many}`)).barcodes).toHaveLength(
-      MAX_FILTER_ENTRIES,
+      MAX_FILTER_ENTRIES + 50,
     );
   });
+});
 
-  it("keeps a barcode list of exactly the cap intact", () => {
-    const many = Array.from({ length: MAX_FILTER_ENTRIES }, (_, i) => `B${i}`).join(",");
-    expect(paramsToFilters(new URLSearchParams(`barcodes=${many}`)).barcodes).toHaveLength(
-      MAX_FILTER_ENTRIES,
-    );
+describe("overCapField", () => {
+  const over = (n: number) => Array.from({ length: n }, (_, i) => `B${i}`);
+
+  it("passes a search within the cap", () => {
+    expect(overCapField(filters({ barcodes: over(MAX_FILTER_ENTRIES) }))).toBeNull();
+  });
+
+  it("names the field that went over", () => {
+    expect(overCapField(filters({ barcodes: over(MAX_FILTER_ENTRIES + 1) }))).toBe("barcodes");
+  });
+
+  it.each([
+    ["accessions", "accessionIds"],
+    ["species", "speciesIds"],
+    ["experiments", "experimentIds"],
+  ])("catches an oversized %s list", (name, key) => {
+    const ids = Array.from({ length: MAX_FILTER_ENTRIES + 1 }, (_, i) => i + 1);
+    expect(overCapField(filters({ [key]: ids } as any))).toBe(name);
+  });
+
+  it("passes an empty search", () => {
+    expect(overCapField(filters())).toBeNull();
   });
 });

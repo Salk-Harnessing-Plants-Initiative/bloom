@@ -3,7 +3,13 @@ import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Box, Stack, TextField, Autocomplete, Button, Alert } from '@mui/material';
 import { createClientSupabaseClient } from "@/lib/supabase/client";
-import { parseBarcodes, filtersToParams, filtersEmpty } from "@/lib/cyl-plant-search";
+import {
+  parseBarcodes,
+  filtersToParams,
+  filtersEmpty,
+  overCapField,
+  MAX_FILTER_ENTRIES,
+} from "@/lib/cyl-plant-search";
 
 type Opt = { id: number; label: string };
 
@@ -64,9 +70,12 @@ export default function PlantAdvancedSearch() {
     }),
     [barcodes, accessions, species, experiments],
   );
-  // Drives the Apply button's disabled state, so an empty search reads as
-  // "nothing to apply" rather than a button that does nothing when pressed.
-  const canApply = !filtersEmpty(filters);
+  // Refuse an oversized search rather than trimming it: searching part of a list
+  // and reporting the rest as absent is the failure this whole feature avoids.
+  const overCap = overCapField(filters);
+  // Drives the Apply button's disabled state, so an empty or oversized search
+  // reads as "nothing to apply" rather than a button that does nothing.
+  const canApply = !filtersEmpty(filters) && overCap === null;
 
   const apply = () => {
     if (!canApply) return;
@@ -88,6 +97,12 @@ export default function PlantAdvancedSearch() {
     >
       <Stack spacing={1.25}>
         {optsError && <Alert severity="warning">{optsError}</Alert>}
+        {overCap && (
+          <Alert severity="warning">
+            Too many {overCap} — the limit is {MAX_FILTER_ENTRIES} per field.
+            Narrow the list and search again.
+          </Alert>
+        )}
         <TextField
           size="small"
           label="Barcodes"
