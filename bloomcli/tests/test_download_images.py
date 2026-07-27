@@ -135,6 +135,62 @@ def test_download_images_workers_one_is_sequential(tmp_path, monkeypatch):
     result = dl.download_images(_FakeClient(), [SCAN], tmp_path, workers=1)
 
     assert result.ok == 2 and result.total == 2
+    assert [f.frame_number for f in result.frames] == [0, 1]  # sequential path preserves order
+
+
+SCAN2 = {**SCAN, "scan_id": 2, "qr_code": "QR-2", "plant_age_days": 21}
+
+
+def test_download_images_preserves_cross_scan_order_concurrent(tmp_path, monkeypatch):
+    # The real-world case: multiple scans, concurrent. Order must be scan1-frames then
+    # scan2-frames (input order), independent of which worker finishes first.
+    per_scan = {
+        1: [
+            {"frame_number": 0, "object_path": "a/0.png"},
+            {"frame_number": 1, "object_path": "a/1.png"},
+        ],
+        2: [
+            {"frame_number": 0, "object_path": "b/0.png"},
+            {"frame_number": 1, "object_path": "b/1.png"},
+        ],
+    }
+    monkeypatch.setattr(dl, "fetch_images", lambda client, scan_id: per_scan[scan_id])
+
+    result = dl.download_images(_FakeClient(), [SCAN, SCAN2], tmp_path, workers=8)
+
+    assert result.ok == 4
+    assert [(f.scan_id, f.frame_number) for f in result.frames] == [(1, 0), (1, 1), (2, 0), (2, 1)]
+
+
+def test_download_images_empty_scans(tmp_path):
+    result = dl.download_images(_FakeClient(), [], tmp_path, workers=8)
+    assert result.total == 0 and result.ok == 0 and result.failed == 0
+
+
+def test_download_images_list_failure_is_recorded_not_raised(tmp_path, monkeypatch):
+    # A scan whose frame listing raises becomes one recorded failure, not a crash — so
+    # the partial-download exit + log still apply.
+    def _boom_list(client, scan_id):
+        raise RuntimeError("503 listing images")
+
+    monkeypatch.setattr(dl, "fetch_images", _boom_list)
+
+    result = dl.download_images(_FakeClient(), [SCAN], tmp_path, workers=4)
+
+    assert result.total == 1 and result.failed == 1 and result.ok == 0
+    assert "503 listing images" in result.frames[0].error
+
+
+def test_download_frame_leaves_no_temp_files(tmp_path, monkeypatch):
+    # atomic write: a successful download leaves exactly the frame, no .dl-*.tmp litter.
+    images = [{"frame_number": 0, "object_path": "cyl-images/a.png"}]
+    monkeypatch.setattr(dl, "fetch_images", lambda client, scan_id: images)
+
+    dl.download_images(_FakeClient(), [SCAN], tmp_path, workers=2)
+
+    frame_dir = tmp_path / "images/Wave2/Day14_2026-05-11/QR-1"
+    assert (frame_dir / "0.png").read_bytes() == b"bytes::cyl-images/a.png"
+    assert list(frame_dir.glob(".dl-*.tmp")) == []  # no temp left behind
 
 
 def test_download_images_actually_runs_in_parallel(tmp_path, monkeypatch):
@@ -191,17 +247,19 @@ def test_download_workers_option_passed_through(tmp_path, monkeypatch):
     assert captured["workers"] == 3
 
 
-def test_download_workers_zero_rejected(tmp_path, monkeypatch):
+def test_download_workers_out_of_range_rejected(tmp_path, monkeypatch):
+    # IntRange(1, 64) rejects both 0 and >64 before any work runs.
     monkeypatch.setattr(
         "bloomctl.credentials.load_credentials",
         lambda *a, **k: Credentials("https://x/api", "KEY", "u@s.edu", "pw"),
     )
     out = tmp_path / "out"
-    res = CliRunner().invoke(
-        cli, ["cyl", "download", str(out), "--experiment-id", "17957", "--workers", "0"]
-    )
-    assert res.exit_code != 0
-    assert "workers must be >= 1" in res.output
+    for bad in ("0", "65", "-3"):
+        res = CliRunner().invoke(
+            cli, ["cyl", "download", str(out), "--experiment-id", "17957", "--workers", bad]
+        )
+        assert res.exit_code != 0, f"--workers {bad} should be rejected"
+        assert "workers" in res.output.lower() and "range" in res.output.lower()
 
 
 def test_full_download_writes_csv_and_images(tmp_path, monkeypatch):

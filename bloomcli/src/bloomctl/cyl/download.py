@@ -7,6 +7,8 @@ so the contract is unit-testable without a live server.
 from __future__ import annotations
 
 import csv
+import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -189,6 +191,12 @@ def download_frame(
     Self-contained and exception-safe: any failure (missing object, transient 5xx,
     write error) is captured on the result, never raised — so one bad frame can't
     abort a concurrent run. Safe to call from a worker thread.
+
+    The bytes are written to a temp file in the destination directory and then atomically
+    ``os.replace``-d into place. Two frames can map to the same destination path when the
+    path scheme (wave/day/qr + frame_number) doesn't distinguish two scans; the atomic
+    rename means concurrent writers can never produce a torn file — the result is one
+    complete file (last writer wins), matching the sequential behaviour.
     """
     object_path = image.get("object_path", "")
     result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
@@ -198,11 +206,40 @@ def download_frame(
             raise ValueError("empty response from storage")
         dest = image_dest(out_dir, scan, image)
         dest.parent.mkdir(parents=True, exist_ok=True)  # mkdir(exist_ok) is race-safe
-        dest.write_bytes(data)
+        fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=".dl-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp, dest)  # atomic: no torn file even if two workers collide
+        except BaseException:
+            _unlink_quietly(tmp)  # never leave a temp behind
+            raise
         result.ok = True
     except Exception as exc:  # per-frame: record and continue
         result.error = str(exc)
     return result
+
+
+def _unlink_quietly(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _list_scan_frames(
+    client: Any, scan: dict[str, Any]
+) -> tuple[list[dict[str, Any]], FrameResult | None]:
+    """List a scan's frames; on a listing failure return a synthetic failed FrameResult.
+
+    A failed metadata query (transient 5xx, auth expiry) becomes one recorded failure for
+    that scan instead of crashing the whole run with a traceback — so the partial-download
+    exit + download_log still apply uniformly.
+    """
+    try:
+        return fetch_images(client, scan.get("scan_id")), None
+    except Exception as exc:
+        return [], FrameResult(scan.get("scan_id"), None, "", ok=False, error=f"list images: {exc}")
 
 
 def download_images(
@@ -215,23 +252,32 @@ def download_images(
     """Download every frame for every scan from Storage bucket `images`.
 
     Frames are listed per scan (ordered), then downloaded concurrently across a thread
-    pool of ``workers`` — the per-frame HTTP round-trips are the bottleneck on large
+    pool of up to ``workers`` — the per-frame HTTP round-trips are the bottleneck on large
     experiments, and being I/O-bound they overlap well (see #534). ``workers <= 1`` runs
-    sequentially (identical to the original behaviour). Results preserve scan/frame order,
-    so the download log is deterministic. The Supabase client's underlying httpx client is
-    thread-safe, so the one bucket handle is shared across workers.
+    sequentially. Results preserve scan/frame order, so the download log is deterministic.
+    The Supabase client's underlying httpx client is thread-safe, so the one bucket handle
+    is shared across workers. A scan whose frame list can't be fetched is recorded as a
+    failure (not a crash); atomic per-frame writes tolerate colliding destination paths.
     """
     bucket = client.storage.from_("images")
-    work: list[tuple[dict[str, Any], dict[str, Any]]] = [
-        (scan, image) for scan in scans for image in fetch_images(client, scan["scan_id"])
-    ]
-    if workers <= 1:
+    work: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    listing_failures: list[FrameResult] = []
+    for scan in scans:
+        images, failure = _list_scan_frames(client, scan)
+        if failure is not None:
+            listing_failures.append(failure)
+        for image in images:
+            work.append((scan, image))
+
+    # Never spawn more threads than there's work for (or than requested).
+    n = min(workers, len(work)) if work else 0
+    if n <= 1:
         frames = [download_frame(bucket, scan, image, out_dir) for scan, image in work]
     else:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        with ThreadPoolExecutor(max_workers=n) as pool:
             # map preserves input order → log stays in scan/frame order.
-            frames = list(pool.map(lambda si: download_frame(bucket, si[0], si[1], out_dir), work))
-    return DownloadResult(frames)
+            frames = list(pool.map(lambda p: download_frame(bucket, p[0], p[1], out_dir), work))
+    return DownloadResult(frames + listing_failures)
 
 
 def write_download_log(result: DownloadResult, path: Path) -> None:
@@ -319,10 +365,10 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
 @click.option(
     "-n",
     "--workers",
-    type=int,
+    type=click.IntRange(min=1, max=64),
     default=DEFAULT_WORKERS,
     show_default=True,
-    help="Concurrent image downloads (I/O-bound). 1 = sequential.",
+    help="Concurrent image downloads (I/O-bound, 1-64). 1 = sequential.",
 )
 def download(
     out_dir: Path,
@@ -344,8 +390,6 @@ def download(
     # Exactly one of --experiment-id / --scan-id.
     if (experiment_id is None) == (scan_id is None):
         raise click.UsageError("Pass exactly one of --experiment-id or --scan-id.")
-    if workers < 1:
-        raise click.UsageError("--workers must be >= 1.")
 
     try:
         creds = load_credentials(profile)
