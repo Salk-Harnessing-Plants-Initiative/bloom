@@ -35,6 +35,17 @@ code under test — so the oracle is a genuine cross-tier regression check.
   and **not** the naive-`dropna` number. turface_19's mahalanobis chi-squared fit is poor
   (`goodness_of_fit_fit_quality == "very_poor"`; the delegate warns), so this is a **method+seed
   characterization pin**, not a claim that the 8 flagged samples are ground-truth outliers.
+- `turface_19_stats_golden.json` — independently-computed oracle for the **read-only
+  `descriptive_stats`** tool (#488), using `sleap_roots_analyze.calculate_trait_statistics`
+  directly (not through the tool) on the same canonical-default cleaned turface_19 frame
+  `turface_19_outlier_golden.json` uses as its pre-trim input (`max_nans_per_trait=0.2` →
+  **158 samples, 19 kept trait columns**, recorded in `cleaning_params`/`cleaned_samples`/
+  `kept_trait_columns`). Unlike the PCA/clustering/heritability goldens (characterization
+  snapshots with no external ground truth on turface_19), `calculate_trait_statistics` computes
+  parameter-free textbook arithmetic (mean/std/quantiles/skewness/kurtosis) — the recorded values
+  are independently hand-verifiable from the raw CSV, not merely a drift gate. `Root_Shoot_Ratio`
+  is recorded with its genuinely non-normal `skewness ≈ 6.78`/`kurtosis ≈ 65.6` as a reminder the
+  tool must not clip or transform it.
 - `turface_19_qc_inspect_golden.json` — independently-computed oracle for the **read-only
   `qc_inspect`** tool (#360), using `sleap_roots_analyze.apply_data_cleanup_filters` (the
   delegate `qc_inspect` wraps) on `turface_19_raw_data.csv` at the **canonical defaults**
