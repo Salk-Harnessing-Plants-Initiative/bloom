@@ -1,0 +1,137 @@
+name: Promote security fixes to main
+
+# The team's flow is feature -> staging -> (periodic promotion PR) -> main, where
+# main is what deploys to production. Security fixes (CVE bumps, Trivy
+# suppressions) merge to staging like any other work and can sit there for weeks
+# before production sees them. This job batches the pending security commits into
+# one reviewed PR so they get promoted together instead of one-off by hand.
+#
+# What it does daily:
+#   - finds security commits on `staging` not yet in `main`
+#     (scripts/promote_security_to_main.sh does the selection),
+#   - if more than THRESHOLD are pending, cherry-picks the ones that apply
+#     cleanly onto a promotion branch off `main`,
+#   - opens (or updates) a single PR into `main` and requests review.
+# Dependency bumps that conflict on generated lockfiles are listed in the PR body
+# under "needs manual promotion" rather than blocking the batch.
+#
+# Nothing merges automatically — a human always approves the promotion to prod.
+
+on:
+  schedule:
+    # 09:00 UTC daily. Scheduled runs use the workflow file on the default branch.
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: "Open a PR only when MORE THAN this many security commits are pending."
+        required: false
+        default: "5"
+
+concurrency:
+  group: promote-security-to-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  BASE_BRANCH: main
+  SOURCE_BRANCH: staging
+  PROMO_BRANCH: promote/security-to-main
+  LABEL: security-promotion
+  # A PR opened with the default GITHUB_TOKEN does NOT trigger pr-checks.yml
+  # (GitHub blocks recursive workflow runs). Set a PROMOTION_PAT secret (a PAT or
+  # GitHub App token with repo scope) so the promotion PR gets the CVE scans run
+  # on it. Falls back to GITHUB_TOKEN, in which case checks must be re-run by hand.
+  GH_TOKEN: ${{ secrets.PROMOTION_PAT || github.token }}
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history — selection spans main..staging)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PROMOTION_PAT || github.token }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "bloom-security-bot"
+          git config user.email "bloom-security-bot@users.noreply.github.com"
+
+      - name: Build promotion branch
+        id: build
+        env:
+          MIN: ${{ github.event.inputs.threshold || '5' }}
+          PROMO_DATE: ${{ github.run_id }}
+        run: |
+          set +e
+          PROMO_BRANCH="${PROMO_BRANCH}" \
+          PR_BODY_FILE="${RUNNER_TEMP}/promotion_pr_body.md" \
+            bash scripts/promote_security_to_main.sh --min "${MIN}"
+          rc=$?
+          echo "rc=${rc}" >> "$GITHUB_OUTPUT"
+          echo "body_file=${RUNNER_TEMP}/promotion_pr_body.md" >> "$GITHUB_OUTPUT"
+          # 0 = branch built; 3 = nothing to promote (not a failure); else real error.
+          if [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; then exit 0; else exit "$rc"; fi
+
+      - name: Nothing to promote
+        if: steps.build.outputs.rc == '3'
+        run: echo "Below threshold or all pending security commits already in ${BASE_BRANCH}. No PR."
+
+      - name: Push promotion branch
+        if: steps.build.outputs.rc == '0'
+        # Fetch the standing branch first so --force-with-lease has a
+        # remote-tracking ref to compare against — a bare lease against a remote
+        # branch that was never fetched is rejected as "stale info", which broke
+        # every run after the first. The branch is rebuilt from origin/main each
+        # run, so a reviewer's conflict fix must be pushed to `staging`, not onto
+        # this branch (it would be discarded on the next rebuild).
+        run: |
+          git fetch origin "${PROMO_BRANCH}" 2>/dev/null || true
+          git push --force-with-lease origin "HEAD:${PROMO_BRANCH}"
+
+      - name: Open or update promotion PR
+        if: steps.build.outputs.rc == '0'
+        env:
+          REVIEWERS: ${{ vars.SECURITY_PROMOTION_REVIEWERS }}
+          PROMOTED: ${{ steps.build.outputs.promoted }}
+          HAS_PAT: ${{ secrets.PROMOTION_PAT != '' }}
+        run: |
+          body="${{ steps.build.outputs.body_file }}"
+          # Without a PROMOTION_PAT the PR opens with GITHUB_TOKEN, which does NOT
+          # trigger pr-checks (CVE scans). Flag that on the PR itself so a
+          # promotion isn't merged to prod assuming the scans ran.
+          if [ "${HAS_PAT}" != "true" ]; then
+            {
+              echo "> [!WARNING]"
+              echo "> Opened with the default \`GITHUB_TOKEN\`, so pr-checks (CVE scans) did **not** run automatically. Re-run the required checks before merging to production."
+              echo
+              cat "$body"
+            } > "${body}.tmp" && mv "${body}.tmp" "$body"
+          fi
+
+          gh label create "${LABEL}" --color B60205 --description "Batched security fixes promoted from staging to main" 2>/dev/null || true
+
+          title="Promote ${{ steps.build.outputs.promoted }} security fix(es) to production"
+          # `// empty` so the no-PR case is a blank string, not the literal
+          # "null" (which is truthy in bash and always took the edit path).
+          existing=$(gh pr list --base "${BASE_BRANCH}" --head "${PROMO_BRANCH}" --state open --json number --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "$title" --body-file "$body"
+            echo "Updated existing PR #$existing."
+          else
+            reviewer_args=""
+            if [ -n "${REVIEWERS}" ]; then reviewer_args="--reviewer ${REVIEWERS}"; fi
+            gh pr create \
+              --base "${BASE_BRANCH}" \
+              --head "${PROMO_BRANCH}" \
+              --title "$title" \
+              --body-file "$body" \
+              --label "${LABEL}" \
+              ${reviewer_args}
+          fi

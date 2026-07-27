@@ -37,7 +37,7 @@ bloommcp/
 │   ├── visualization.py
 │   ├── experiment_utils.py
 │   └── supabase_client.py
-├── storage/
+├── manifest/                   # versioned-run bookkeeping (renamed from storage/, #487)
 ├── tools/                      # shared helpers only — every tool lives in sections/
 │   ├── _ports.py                # composition seam: injected reader/store
 │   ├── _qc_shared.py             # canonical QC thresholds shared by qc_clean/qc_inspect
@@ -78,17 +78,11 @@ Any new tool that reads or writes a CSV should use this bucket.
 ### Storage backend (`local` opt-in)
 
 Analysis **outputs** go to Supabase Storage by default — in local dev that means
-MinIO, not files under `./bloommcp/data/ANALYSIS_OUTPUT`. Two env vars control an
-opt-in local-filesystem backend:
-
-- `BLOOM_STORAGE_BACKEND` — `supabase` (default) or `local`. `local` writes outputs
-  as real files laid out by storage key.
-- `BLOOM_STORAGE_LOCAL_ROOT` — the local root when `local`; defaults to
-  `BLOOM_OUTPUT_DIR` when unset.
-
-Note `BLOOM_OUTPUT_DIR` / `BLOOM_USE_LOCAL` do **not** by themselves write local
-CSVs. Do not mix backends for one experiment. Full details:
-[storage-backends.md](../../bloommcp/docs/storage-backends.md). (This is the same
+MinIO, not files under `./bloommcp/data/ANALYSIS_OUTPUT`. `BLOOM_STORAGE_BACKEND=local`
+opts into a fully-local (offline) mode instead — input, output, and boot. See
+[storage-backends.md](../../bloommcp/docs/storage-backends.md) for the full
+precedence table (including the single `BLOOM_LOCAL_ROOT` var) and setup details —
+not duplicated here to avoid the two docs drifting out of sync. (This is the same
 `supabase_client.py` boundary that #388's user-facing downloads build on.)
 
 ## File reading and writing
@@ -189,7 +183,7 @@ Each tool's outputs land in a folder named after its `tool_class`.
 `tool_class` is one of the 9 canonical classes — `qc`, `stats`,
 `dimred`, `clustering`, `outlier`, `viz`, `correlation`,
 `heritability`, `anova` — registered in
-[`CANONICAL_TOOL_CLASSES`](../../bloommcp/src/bloom_mcp/storage/__init__.py).
+[`CANONICAL_TOOL_CLASSES`](../../bloommcp/src/bloom_mcp/manifest/__init__.py).
 
 To add a tool to a **section** (the current pattern — e.g. phenotyping), see
 [adding-a-section-tool.md](./adding-a-section-tool.md).

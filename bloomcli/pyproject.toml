@@ -1,8 +1,10 @@
 [project]
 name = "bloomctl"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Bloom command-line tool for Bloom Database"
-readme = "README.md"
+# PyPI project page renders README.pypi.md (a lean user-facing landing page);
+# README.md is the fuller in-repo doc.
+readme = "README.pypi.md"
 requires-python = ">=3.11"
 license = "BSD-2-Clause"
 authors = [{ name = "Salk Harnessing Plants Initiative" }]
@@ -22,12 +24,18 @@ dependencies = [
     # Security floor for the supabase auth/JWT transitive dep, per repo convention
     # (open floor past the upstream CVE fix; see bloommcp/pyproject.toml).
     "cryptography>=48.0.1",
-    # ResultEnvelope model for `cyl ingest` fail-fast validation. a3 floor matches
-    # the emitters' contract_version (stricter than bloommcp's a1 on purpose); no
-    # [pandas] extra — only the pydantic models are needed (pydantic already present
+    # ResultEnvelope model for `cyl ingest` fail-fast validation, plus (a5+)
+    # PredictionArtifact/PredictionManifest for `cyl ingest-result
+    # --predictions-dir` blob construction (bloom #407). No [pandas] extra —
+    # only the pydantic models are needed (pydantic already present
     # transitively via supabase->postgrest).
-    "sleap-roots-contracts>=0.1.0a4",
+    "sleap-roots-contracts>=0.1.0a5",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/tree/main/bloomcli"
+Repository = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom"
+Changelog = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/main/bloomcli/CHANGELOG.md"
 
 [project.scripts]
 bloomctl = "bloomctl.cli:cli"

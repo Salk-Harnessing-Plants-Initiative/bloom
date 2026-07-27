@@ -135,8 +135,8 @@ supabase/.temp/
 
 # Stray uv lockfiles outside the known service dirs.
 # The tracked service uv.locks (langchain/, bloommcp/, services/video-worker/,
-# services/workflows/) are unaffected because gitignore doesn't apply to
-# already-tracked files —
+# services/workflows/, bloomcli/) are unaffected because gitignore doesn't
+# apply to already-tracked files —
 # `scripts/check-uv-locks.py` enforces those. This rule keeps a one-off
 # `uv.lock` (e.g. from running `uv` at the repo root for the test extra,
 # or in a new subdir) from polluting `git status`.

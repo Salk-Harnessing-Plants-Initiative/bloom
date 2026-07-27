@@ -3,8 +3,9 @@
 Covers the shared ``_demo_stats`` I/O helper (number parsing, input resolution,
 result-file writing, structured errors) and each tool's happy path + error
 propagation through the ``@as_mcp_tool`` contract. Runs with no live Supabase
-(see tests/conftest.py); ``TRAITS_DIR`` / ``RESULTS_DIR`` are redirected to a
-tmp dir per test so nothing touches the real data directories.
+(see tests/conftest.py); the input root (``resolve_experiment_local_root``) and
+output root (``OUTPUT_DIR``) are redirected to a tmp dir per test so nothing
+touches the real data directories.
 """
 
 from __future__ import annotations
@@ -38,9 +39,10 @@ def demo_dirs(tmp_path, monkeypatch):
     """Point the helper's input/output dirs at an isolated tmp location."""
     traits = tmp_path / "traits"
     traits.mkdir()
-    results = tmp_path / "out" / "results"
-    monkeypatch.setattr(_demo_stats, "TRAITS_DIR", traits)
-    monkeypatch.setattr(_demo_stats, "RESULTS_DIR", results)
+    output = tmp_path / "out"
+    results = output / "results"
+    monkeypatch.setattr(_demo_stats, "resolve_experiment_local_root", lambda: traits)
+    monkeypatch.setattr(_demo_stats, "OUTPUT_DIR", output)
     return traits, results
 
 
@@ -276,3 +278,42 @@ def test_tool_registered_on_section(name):
 
     tools = {t.name for t in asyncio.run(ps.section.list_tools())}
     assert f"compute_{name}" in tools
+
+
+# ── BLOOM_LOCAL_ROOT-only mode (#479 regression) ─────────────────────────────
+#
+# BLOOM_TRAITS_DIR / BLOOM_OUTPUT_DIR can now be entirely unset when
+# BLOOM_STORAGE_BACKEND=local and BLOOM_LOCAL_ROOT is set — these tools must
+# not silently read/write relative to the process CWD in that combination.
+
+
+def test_read_numbers_honors_local_root_only_mode(tmp_path, monkeypatch):
+    import bloom_mcp.experiment_utils as eu
+    import bloom_mcp.storage_backend as sb
+
+    root = tmp_path / "local_root"
+    (root / "input").mkdir(parents=True)
+    monkeypatch.delenv("BLOOM_EXPERIMENT_LOCAL_ROOT", raising=False)
+    monkeypatch.setattr(eu, "TRAITS_DIR", Path("/should-not-be-used"))
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(root))
+    sb.reset_backend_for_tests()
+
+    (root / "input" / "nums.txt").write_text("1 2 3")
+    assert _demo_stats.read_numbers("nums.txt") == [1.0, 2.0, 3.0]
+
+
+def test_write_result_honors_local_root_only_mode(tmp_path, monkeypatch):
+    import bloom_mcp.storage_backend as sb
+
+    root = tmp_path / "local_root"
+    root.mkdir()
+    monkeypatch.delenv("BLOOM_OUTPUT_DIR", raising=False)
+    monkeypatch.setattr(_demo_stats, "OUTPUT_DIR", Path("/should-not-be-used"))
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(root))
+    sb.reset_backend_for_tests()
+
+    out = _demo_stats.write_result("min", "sample.txt", "3.0")
+    assert Path(out) == root / "output" / "results" / "min_sample.txt"
+    assert Path(out).read_text() == "min(sample.txt) = 3.0\n"

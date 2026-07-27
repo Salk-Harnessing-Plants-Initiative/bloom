@@ -18,7 +18,7 @@ Installable `uv` package under `src/bloom_mcp/`:
   `sections.core` holds the cross-cutting discovery tools.
 - `bloom_mcp.tools` — shared helpers only (`_ports`, `_qc_shared`, `_consumer_utils`),
   not tools themselves
-- `bloom_mcp.storage` — versioned, append-only analysis-artifact storage
+- `bloom_mcp.manifest` — versioned, append-only analysis-artifact manifest/bookkeeping
 - `bloom_mcp.supabase_client` — single point of Supabase access
 
 ## Running
