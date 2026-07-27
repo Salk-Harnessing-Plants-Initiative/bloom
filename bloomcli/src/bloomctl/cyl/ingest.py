@@ -21,6 +21,7 @@ from typing import Any, TextIO
 import click
 
 from ..credentials import DEFAULT_PROFILE
+from ._batch import BatchResult, ScanResult, format_json, format_summary
 
 
 class EnvelopeError(Exception):
@@ -68,6 +69,20 @@ def load_envelope(source: str, *, stdin: TextIO | None = None) -> dict[str, Any]
     if not isinstance(data, dict):
         raise EnvelopeError(f"envelope from {where} must be a JSON object")
     return data
+
+
+def discover_envelopes(envelopes_dir: str | Path) -> list[Path]:
+    """Non-recursive glob for ``*.result.json`` directly under ``envelopes_dir``, sorted.
+
+    Matches the flat layout ``trait_extractor.extractor.extract_batch``'s
+    ``output_dir`` produces (one ``{scan_key}.result.json`` per scan, no nesting). Raises
+    ``EnvelopeError`` if ``envelopes_dir`` doesn't exist or isn't a directory; an empty-but-present
+    directory returns ``[]`` (the empty-batch no-op case, not an error).
+    """
+    path = Path(envelopes_dir)
+    if not path.is_dir():
+        raise EnvelopeError(f"envelopes directory does not exist or is not a directory: {path}")
+    return sorted(path.glob("*.result.json"))
 
 
 def validate_envelope(data: dict[str, Any]) -> None:
@@ -382,6 +397,113 @@ def call_insert_envelope(client: Any, envelope: dict[str, Any]) -> dict[str, Any
     return client.rpc("insert_cyl_result_envelope", {"envelope": envelope}).execute().data
 
 
+# --- batch: non-raising per-envelope core ------------------------------------
+
+
+def ingest_one_envelope(
+    client: Any,
+    envelope_path: str | Path,
+    *,
+    predictions_dir: str | Path | None = None,
+    profile: str | None = None,
+) -> ScanResult:
+    """Ingest one envelope file, isolating any failure into a `ScanResult` instead of raising.
+
+    Sequences the same steps `ingest_result` (the single-envelope command) does — read/parse via
+    the existing `load_envelope` (so an unreadable or malformed file is isolated the same way a
+    bad path/stdin input already is for the single command), validate, optionally construct +
+    upload blobs, call the RPC — but never raises. When `predictions_dir` is given, it is expected
+    to be predict's own nested batch output root; this looks up
+    `predictions_dir/{scan_key}/{scan_key}.predictions.json` per envelope (reusing
+    `load_predictions_manifest`/`build_pending_blobs`/`upload_pending_blobs` unchanged).
+    """
+    scan_key = envelope_path if isinstance(envelope_path, str) else envelope_path.name
+    scan_key = Path(scan_key).name.removesuffix(".result.json")
+
+    try:
+        data = load_envelope(str(envelope_path))
+    except EnvelopeError as exc:
+        return ScanResult(scan_key, "failed", str(exc))
+
+    # Prefer the envelope's own provenance.scan_key once it's readable, so a failure after this
+    # point is reported under the scan's real key rather than the filename stem.
+    scan_key = (data.get("provenance") or {}).get("scan_key") or scan_key
+
+    try:
+        validate_envelope(data)
+    except EnvelopeValidationError as exc:
+        return ScanResult(scan_key, "failed", str(exc))
+
+    try:
+        pending: list[PendingBlob] = []
+        idempotency_key = ""
+        if predictions_dir is not None:
+            idempotency_key = data["provenance"].get("idempotency_key") or ""
+            if not idempotency_key:
+                return ScanResult(
+                    scan_key,
+                    "failed",
+                    "envelope's provenance.idempotency_key is empty or absent — required to "
+                    "derive the cyl-intermediates object path; the producer must set it before "
+                    "blobs can be uploaded",
+                )
+            # scan_key is producer-supplied JSON content (no path-safety constraint from
+            # sleap-roots-contracts) and is about to become a directory *segment*, not just a
+            # string embedded in a filename — reject the same unsafe characters
+            # blob_object_path already rejects for the object-storage key, before any local
+            # filesystem access (review finding: this was a path-traversal gap).
+            if "/" in scan_key or "\\" in scan_key or ".." in scan_key:
+                return ScanResult(
+                    scan_key,
+                    "failed",
+                    f"provenance.scan_key {scan_key!r} contains a path separator or '..' — "
+                    "refusing to build a local predictions-dir path from it",
+                )
+            scan_predictions_dir = Path(predictions_dir) / scan_key
+            try:
+                manifest = load_predictions_manifest(scan_predictions_dir, scan_key)
+                pending = build_pending_blobs(
+                    manifest, scan_predictions_dir, data.get("blobs") or []
+                )
+            except BlobConstructionError as exc:
+                return ScanResult(scan_key, "failed", str(exc))
+
+            report = upload_pending_blobs(
+                client, pending, scan_key=scan_key, idempotency_key=idempotency_key
+            )
+            if not report.all_ok:
+                details = "; ".join(f"{o.root_type}: {o.error}" for o in report.failed)
+                return ScanResult(
+                    scan_key,
+                    "failed",
+                    f"blob upload failed for {len(report.failed)} of {len(report.outcomes)} "
+                    f"blob(s): {details}",
+                )
+            data["blobs"] = [*(data.get("blobs") or []), *(p.blob for p in pending)]
+
+        from postgrest import APIError
+
+        try:
+            result = call_insert_envelope(client, data)
+        except APIError as exc:
+            return ScanResult(
+                scan_key,
+                "failed",
+                map_rpc_error(getattr(exc, "message", None), profile=profile),
+            )
+
+        if not isinstance(result, dict):
+            return ScanResult(scan_key, "failed", f"unexpected RPC response shape: {result!r}")
+
+        if result.get("was_noop"):
+            return ScanResult(scan_key, "skipped")
+        return ScanResult(scan_key, "ok")
+    except Exception as exc:  # batch isolation: a transient network/auth error on one
+        # envelope must never abort the rest of the batch (review finding: this was
+        # previously uncaught for anything other than postgrest.APIError/BlobConstructionError).
+        return ScanResult(scan_key, "failed", str(exc))
+
+
 # --- command ----------------------------------------------------------------
 
 
@@ -494,3 +616,77 @@ def ingest_result(
         click.echo(json.dumps(result))
     else:
         click.echo(summarize_result(result))
+
+
+# --- batch: command -----------------------------------------------------------
+
+
+@click.command(name="batch-ingest-result")
+@click.argument("envelopes_dir", type=click.Path(file_okay=False, path_type=Path))
+@click.option(
+    "-p",
+    "--profile",
+    default=DEFAULT_PROFILE,
+    show_default=True,
+    help="Credentials profile to use (must have write access to the RPC).",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the batch result as a JSON array on stdout.",
+)
+@click.option(
+    "--predictions-dir",
+    "predictions_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "Predict's own nested batch output root, containing "
+        "{scan_key}/{scan_key}.predictions.json + .slp files per scan. When given, constructs + "
+        "uploads blobs for each envelope from its own scan_key's subdirectory. Omit to forward "
+        "blobs unchanged (no upload)."
+    ),
+)
+@click.pass_context
+def batch_ingest_result(
+    ctx: click.Context,
+    envelopes_dir: Path,
+    profile: str,
+    as_json: bool,
+    predictions_dir: Path | None,
+) -> None:
+    """Ingest every {scan_key}.result.json file directly under ENVELOPES_DIR — the batch
+    sibling of `ingest-result`. Isolates per-envelope failures (one bad envelope doesn't abort
+    the batch); exits non-zero if any envelope failed."""
+    try:
+        envelope_paths = discover_envelopes(envelopes_dir)
+    except EnvelopeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not envelope_paths:
+        click.echo("No envelope files found; nothing to ingest.")
+        return
+
+    from ..cli import _authed_client
+
+    client = _authed_client(profile)
+
+    batch_result = BatchResult(
+        [
+            ingest_one_envelope(client, path, predictions_dir=predictions_dir, profile=profile)
+            for path in envelope_paths
+        ]
+    )
+
+    if as_json:
+        click.echo(format_json(batch_result))
+    else:
+        click.echo(
+            format_summary(
+                batch_result, verb="Ingested", noun="envelope", destination=str(envelopes_dir)
+            )
+        )
+
+    if not batch_result.ok:
+        ctx.exit(1)
