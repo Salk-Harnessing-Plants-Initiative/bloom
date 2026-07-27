@@ -26,6 +26,9 @@ export default function SearchComponent() {
   const [plantResults, setPlantResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  // A completed search that matched nothing. Distinct from errorMsg so "found
+  // nothing" doesn't render in the same red as "the query failed".
+  const [noMatches, setNoMatches] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const supabase = createClientSupabaseClient();
   const router = useRouter();
@@ -41,6 +44,7 @@ export default function SearchComponent() {
   const clearResults = () => {
     setSpeciesResults([]);
     setPlantResults([]);
+    setNoMatches(false);
   };
 
   // Clear the query + results on navigation (search bar persists across the layout).
@@ -51,6 +55,7 @@ export default function SearchComponent() {
     setSpeciesResults([]);
     setPlantResults([]);
     setErrorMsg('');
+    setNoMatches(false);
   }, [pathname]);
 
   // Enter / magnifier: jump straight to the species page when the text is
@@ -141,6 +146,7 @@ export default function SearchComponent() {
       setErrorMsg(batchNotice(list.length, data?.length ?? 0));
       setSpeciesResults([]);
       setPlantResults(data || []);
+      setNoMatches((data || []).length === 0);
       setLoading(false);
       return;
     }
@@ -175,6 +181,7 @@ export default function SearchComponent() {
     }
     setSpeciesResults(sp.data || []);
     setPlantResults(pl.data || []);
+    setNoMatches((sp.data || []).length === 0 && (pl.data || []).length === 0);
     setLoading(false);
   };
 
@@ -223,6 +230,12 @@ export default function SearchComponent() {
         </Box>
         {showAdvanced && <PlantAdvancedSearch />}
       </ThemeProvider>
+
+      {noMatches && !hasResults && (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
+          No matches found.
+        </Typography>
+      )}
 
       { hasResults && <Box
         sx={{

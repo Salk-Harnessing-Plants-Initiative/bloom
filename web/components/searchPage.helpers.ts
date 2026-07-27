@@ -21,14 +21,14 @@ export function fieldHrefs(item: any) {
   return { species, experiment, accession };
 }
 
-// A comma or newline in the input means "batch barcode list"; otherwise the
-// input is a single free-text term.
+// More than one token means "batch barcode list". Spaces, tabs, newlines and
+// commas all separate, matching parseBarcodes in the advanced panel so the same
+// paste behaves the same in both boxes. A single token is a free-text term.
 export function parseQuery(input: string): { list: string[] | null; text: string } {
   const raw = input.trim();
-  if (/[\n,]/.test(raw)) {
-    const list = raw.split(/[\s,]+/).map((t) => t.trim()).filter(Boolean);
-    return { list, text: raw };
-  }
+  if (!raw) return { list: null, text: '' };
+  const parts = raw.split(/[\s,]+/).filter(Boolean);
+  if (/[\n,]/.test(raw) || parts.length > 1) return { list: parts, text: raw };
   return { list: null, text: raw };
 }
 
