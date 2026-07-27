@@ -5,12 +5,17 @@ import { useEffect, useMemo, useState } from "react";
 import { CylScanWithImages } from "@/lib/custom.types";
 import Link from "next/link";
 
+// Long enough to page through a scan's frames without re-signing. Matches the
+// video URL's TTL below.
+const FRAME_URL_TTL = 3600;
+
+// Thumbnails need a transform (resize), which only the single-path API takes.
 async function getImageUrl(path: string, thumb: boolean, height: number) {
   const supabase = createClientSupabaseClient();
 
   const { data } = await supabase.storage.from("images").createSignedUrl(
     path,
-    120,
+    FRAME_URL_TTL,
     thumb
       ? {
           transform: {
@@ -22,6 +27,22 @@ async function getImageUrl(path: string, thumb: boolean, height: number) {
   );
 
   return data?.signedUrl ?? "";
+}
+
+// Sign every frame of a scan in one request, keyed by path so a partial or
+// reordered response can't shift frames out of position.
+async function getFrameUrls(paths: string[]) {
+  const supabase = createClientSupabaseClient();
+
+  const { data } = await supabase.storage
+    .from("images")
+    .createSignedUrls(paths, FRAME_URL_TTL);
+
+  const byPath = new Map<string, string>();
+  for (const entry of data ?? []) {
+    if (entry.path && entry.signedUrl) byPath.set(entry.path, entry.signedUrl);
+  }
+  return byPath;
 }
 
 async function getVideoUrl(scan: CylScanWithImages) {
@@ -53,7 +74,7 @@ export default function PlantScan({
   height?: number;
   label?: string;
 }) {
-  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [frameUrls, setFrameUrls] = useState<Map<string, string>>(new Map());
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [imageIsLoaded, setImageIsLoaded] = useState<boolean>(false);
@@ -75,22 +96,46 @@ export default function PlantScan({
     setFrameIndex(0);
   }, [frames]);
 
+  // Detail view: sign every frame in one request, so paging costs no further
+  // round-trips and the URL for a frame is ready before it is asked for.
   useEffect(() => {
+    if (thumb) return;
+    if (total === 0) {
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    setLoading(true);
+    getFrameUrls(frames.map((f) => f.object_path as string)).then((urls) => {
+      if (!active) return;
+      setFrameUrls(urls);
+      setLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [thumb, frames, total]);
+
+  // Thumbnail: a single frame, signed with the resize transform.
+  useEffect(() => {
+    if (!thumb) return;
     if (currentPath === null) {
       setLoading(false);
       return;
     }
     let active = true;
     setLoading(true);
-    getImageUrl(currentPath, thumb, height || defaultHeight).then((url) => {
+    getImageUrl(currentPath, true, height || defaultHeight).then((url) => {
       if (!active) return;
-      setObjectUrl(url);
+      setFrameUrls(new Map([[currentPath, url]]));
       setLoading(false);
     });
     return () => {
       active = false;
     };
-  }, [currentPath, thumb, height]);
+  }, [thumb, currentPath, height]);
+
+  const objectUrl = currentPath ? frameUrls.get(currentPath) ?? null : null;
 
   useEffect(() => {
     getVideoUrl(scan).then(setVideoUrl);
