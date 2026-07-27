@@ -40,6 +40,8 @@ export default function SearchComponent() {
   );
   // Cancels the in-flight search so a slower, older response can't overwrite newer results.
   const abortRef = useRef<AbortController | null>(null);
+  // The pending "still typing" search, so a submit can cancel it.
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearResults = () => {
     setSpeciesResults([]);
@@ -68,6 +70,11 @@ export default function SearchComponent() {
       return;
     }
     setErrorMsg('');
+
+    // Enter doesn't change searchQuery, so the "still typing" timer from the last
+    // keystroke is still armed. Left alone it fires mid-flight and aborts the
+    // navigate lookup below, and the jump silently doesn't happen.
+    if (debounceRef.current) clearTimeout(debounceRef.current);
 
     // Take the abort slot before the jump queries: a newer search started while
     // they run supersedes this submit, so the stale text captured in this
@@ -101,7 +108,7 @@ export default function SearchComponent() {
   };
 
   useEffect(() => {
-    const delayDebounce = setTimeout(() => {
+    debounceRef.current = setTimeout(() => {
       if (searchQuery.trim() !== '') {
         fetchResults(searchQuery);
       } else {
@@ -109,7 +116,9 @@ export default function SearchComponent() {
       }
     }, 300);
 
-    return () => clearTimeout(delayDebounce);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
   }, [searchQuery]);
 
   // Results are grouped by what matched: a species-name match surfaces the
