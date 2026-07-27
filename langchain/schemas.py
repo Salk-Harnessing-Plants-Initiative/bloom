@@ -27,3 +27,13 @@ class CreateThreadRequest(BaseModel):
 
 class ModelsResponse(BaseModel):
     models: dict[str, list[str]]
+
+
+class MCPToolInfo(BaseModel):
+    name: str
+    description: str
+    foundational: bool
+
+
+class MCPToolsResponse(BaseModel):
+    tools: list[MCPToolInfo]

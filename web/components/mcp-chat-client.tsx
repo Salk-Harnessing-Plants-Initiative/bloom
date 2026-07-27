@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import styles from "./mcp-chat-client.module.css";
+import { filterPickerTools, type MCPTool } from "./mcp-chat-client.helpers";
 
 type Message = { from: "user" | "bot"; text: string };
 type Provider = "local";
@@ -20,11 +21,6 @@ type SuggestionPayload = {
 type FollowupAction = { label: string; prompt: string };
 type FollowupPayload = { tool: string; actions: FollowupAction[] };
 type ImagePayload = { tool: string; url: string; layout: string };
-
-interface MCPTool {
-  name: string;
-  description: string;
-}
 
 interface ThreadInfo {
   thread_id: string;
@@ -259,19 +255,7 @@ export default function MCPChat() {
           return;
         }
         const data = await r.json();
-        // inspect_data_quality was dropped (bloom-mcp devendor-bloommcp-analysis;
-        // redundant with qc_inspect). Matched prefix-aware (exact name or
-        // "<section>_<name>") so the Phase-2 sections migration's namespacing
-        // (e.g. core_list_available_experiments) doesn't silently stop hiding these.
-        const HIDDEN_TOOLS = new Set([
-          "list_available_experiments",
-          "load_experiment_data",
-          "list_existing_analyses",
-        ]);
-        const isHidden = (name: string) =>
-          HIDDEN_TOOLS.has(name) ||
-          Array.from(HIDDEN_TOOLS).some((base) => name.endsWith(`_${base}`));
-        setAvailableMcpTools((data.tools || []).filter((t: MCPTool) => !isHidden(t.name)));
+        setAvailableMcpTools(filterPickerTools(data.tools || []));
       } catch {
         setAvailableMcpTools([]);
       }
