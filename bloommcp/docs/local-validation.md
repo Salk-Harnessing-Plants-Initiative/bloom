@@ -42,8 +42,8 @@ per-check summary and a non-zero exit — never an unlabelled traceback.
 ## What it validates
 
 The driver first checks the **Tier-0 import-clean guarantee** (`import bloom_mcp` is clean in
-a subprocess with the Supabase env scrubbed), then runs three legs through the real ports.
-(A fourth, legacy leg driving `run_clustering_workflow` used to carry the generic v3-provenance
+a subprocess with the Supabase env scrubbed), then runs four legs through the real ports.
+(A legacy leg driving `run_clustering_workflow` used to carry the generic v3-provenance
 
 - version-advance assertions below — retired by `devendor-bloommcp-analysis`; those assertions
   moved onto Leg 2 / `remove_outliers`, the surviving seed-bearing consumer.)
@@ -117,6 +117,27 @@ This is the `qc_clean` → … → `clustering(require_clean=True)` composition 
 the real ports, in parallel with the `pca_analysis` consumer, for both the stochastic and
 deterministic clustering methods.
 
+### Leg 4 — `descriptive_stats` (granular tool, #488, deterministic)
+
+The granular `descriptive_stats` tool on the same cleaned `turface_raw.csv`. Immediately after
+Legs 1–3, runs `descriptive_stats(experiment="turface_raw.csv")` through the same real ports and
+asserts:
+
+- the tool resolves the latest **cleaned** version via `require_clean=True` (the trim from Leg 2,
+  else the Leg 1 clean; `source` is `v<N>_cleaned`, **not** `raw`);
+- **structural** invariants on the tool's own result — `n_traits_reported > 0` and `n_failed == 0`
+  — rather than the unit golden's exact numeric values (the smoke's cleaned input uses Leg 1's own
+  threshold, which may differ from the unit golden's canonical-default clean);
+- the committed run's outputs include **`stats.csv`** (the full per-trait table, uncapped);
+- the run's manifest is **`manifest_schema_version == 3`**, `tool == "descriptive_stats"`, and
+  records **`seed == None`** (deterministic — no RNG, unlike the stochastic legs above);
+- the recorded `output_sha256` matches the actual stored bytes for `stats.csv`.
+
+`descriptive_stats` persists under its own **`stats`** tool class — deliberately not `qc` — since,
+unlike `remove_outliers`'s trim, its output does not compose as another tool's input; this leg
+proves the `qc_clean` → … → `descriptive_stats(require_clean=True)` composition without claiming
+its output feeds back into the cleaned-version resolution chain.
+
 > **Note on raw inputs.** The deployed reader currently resolves _raw_ experiment inputs from
 > the local `BLOOM_TRAITS_DIR`, so the qc_clean leg seeds `turface_raw.csv` there (matching
 > the clustering leg's fixture-upload pattern). When raw inputs migrate to the
@@ -126,18 +147,18 @@ A green run ends with:
 
 ```
 SMOKE PASSED ✅ — the qc_clean cleaned run, remove_outliers trimmed run (incl. the generic
-v3-provenance + version-advance guarantee), AND the granular clustering(kmeans) and
-clustering(hierarchical) consumers all persist full provenance through the real ports; the
-qc_clean → remove_outliers → clustering(require_clean=True) composition resolves and clusters
-the trimmed table for both stochastic and deterministic methods.
+v3-provenance + version-advance guarantee), AND the granular clustering(kmeans),
+clustering(hierarchical), and descriptive_stats consumers all persist full provenance through
+the real ports; the qc_clean → remove_outliers → {clustering,descriptive_stats}(require_clean=True)
+composition resolves and summarizes the trimmed table.
 ```
 
 ## Unit tests (no live stack)
 
 The driver's pure decision logic — manifest/provenance assertions, the hash-compare loop,
-version-advance detection, the qc_clean and remove_outliers persist/read checks, and the
-summary/exit aggregation — is factored into importable helpers and unit-tested with **no**
-Supabase:
+version-advance detection, the qc_clean, remove_outliers, clustering, and descriptive_stats
+persist/read checks, and the summary/exit aggregation — is factored into importable helpers and
+unit-tested with **no** Supabase:
 
 ```bash
 cd bloommcp && uv run pytest tests/scripts/test_live_persistence_smoke_logic.py
@@ -239,6 +260,10 @@ Either client satisfies the dogfood — pick whichever is installed.
 - [ ] Ask Claude to run `pca_analysis` with `require_clean=True` **after** `qc_clean` and
       capture the **composition** (PCA consumes the cleaned run) →
       `images/qc-clean-pca-composition.png`.
+- [ ] **(#488, not yet run)** Ask Claude to run `descriptive_stats` **after** `qc_clean` and
+      capture the per-trait summary (`stats_per_trait`, `n_traits_reported`, links); then on a
+      wide experiment (e.g. cylinder) capture `truncated_in_summary=true` +
+      `omitted_traits` naming the cut traits → `images/qc-clean-descriptive-stats.png`.
 
 ### Screenshots
 
