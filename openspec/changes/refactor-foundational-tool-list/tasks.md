@@ -89,11 +89,11 @@ task 1.2 real, not aspirational.
 
 ## 4. Scope closure + validation
 
-- [ ] 4.1 File a follow-up GitHub issue tracking the still-open soft suggestion from #485's
+- [x] 4.1 File a follow-up GitHub issue tracking the still-open soft suggestion from #485's
       ask #3 — deriving `CONTEXT_MCP`'s tool descriptions from the live tool registry's own
       `description` fields, rather than the hand-written strings that remain there today — so
-      it isn't silently lost when #485 closes. **Not done** — filing a public GitHub issue is
-      an external, visible action; deferred pending explicit confirmation.
+      it isn't silently lost when #485 closes. Filed as
+      [#538](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/538).
 - [x] 4.2 `openspec validate refactor-foundational-tool-list --strict` passes.
 - [x] 4.3 `ruff check` (`ruff@0.9.9`, matching `.pre-commit-config.yaml`'s pin) and
       `black --check --target-version py311` (`black@26.3.1`, same pin) both green on every
