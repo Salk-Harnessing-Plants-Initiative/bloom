@@ -7,6 +7,11 @@ COPY --from=ghcr.io/astral-sh/uv:0.11@sha256:b1e699368d24c57cda93c338a57a8c5a119
 # Venv outside /app so dev compose bind-mounts don't shadow it
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PATH"
 
+# Upgrade base packages to pick up any security patches released after the pinned
+# base image digest. Run before installing anything so upgraded packages are present
+# for all subsequent layers.
+RUN apt-get update && apt-get upgrade -y && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Install Node.js (required for stdio-based MCP servers like web-search) — runs as root
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
