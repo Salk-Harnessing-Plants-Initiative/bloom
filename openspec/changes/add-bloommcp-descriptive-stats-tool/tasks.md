@@ -240,10 +240,11 @@
       the existing Leg 1–3 sections: what it asserts, how to run) and a Claude dogfood row (run
       `qc_clean` → `descriptive_stats`, capture the per-trait summary + the `truncated_in_summary`
       behavior on a wide experiment).
-- [ ] 6.4 Re-run `make bloommcp-smoke` (all legs green) and the smoke helper unit tests. **Not yet
-      done** — no running dev stack in this environment; the pure-logic unit tests (§6.2) are
-      green, and the leg's code has been syntax-checked and reviewed, but the actual live-stack
-      run against Supabase/MinIO is still outstanding.
+- [x] 6.4 Re-run `make bloommcp-smoke` (all legs green) and the smoke helper unit tests. Both
+      green: the smoke helper unit tests pass (§6.2), and a live run against the dev stack running
+      in this environment confirmed all legs pass, including the new `descriptive_stats` leg
+      (`n_traits_reported=17`, `n_failed=0`, `tool_class="stats"`, `seed=None`, matching
+      `sha256`).
 
 ## 7. Follow-ups (out of this change's scope — tracked, not done here)
 
