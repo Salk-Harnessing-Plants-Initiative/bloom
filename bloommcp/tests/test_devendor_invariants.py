@@ -384,6 +384,12 @@ def test_no_hand_listed_foundational_tool_names_in_web_client():
         "load_experiment_data",
         "list_existing_analyses",
     }
+    # String literals as double-quoted, single-quoted, OR backtick-quoted (a
+    # hand-list could be retyped in any of the 3 — the repo's own .prettierrc.json
+    # sets singleQuote: true, making that a very plausible restyling, not a
+    # hypothetical one). \1 backreferences the opening quote char so a
+    # `'...'` span can't be closed by a stray `"` and vice versa.
+    quoted_string = r"""(["'`])((?:(?!\1).)*)\1"""
     # Scan both array/Set literals (`[...]`) and object literals (`{...}`) —
     # a hand-list could be reintroduced as either. Innermost-span regexes
     # (no nested brackets/braces within a captured span) are enough: a
@@ -394,7 +400,7 @@ def test_no_hand_listed_foundational_tool_names_in_web_client():
         (r"\{([^{}]*)\}", "object"),
     ):
         for literal in re.findall(pattern, text, re.DOTALL):
-            found = set(re.findall(r'"([^"]+)"', literal))
+            found = {name for _quote, name in re.findall(quoted_string, literal)}
             assert foundational_names - found, (
                 f"mcp-chat-client.tsx hand-lists all 3 foundational tool names "
                 f"together in one {kind} literal — reintroduces the retired "

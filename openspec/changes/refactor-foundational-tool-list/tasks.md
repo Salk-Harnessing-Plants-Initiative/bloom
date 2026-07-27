@@ -43,7 +43,8 @@ task 1.2 real, not aspirational.
       This is a new, local-only gate — no CI job currently runs pytest against `langchain/`,
       and wiring one up is out of scope for this change (the same way
       `devendor-bloommcp-analysis`'s `V.3` documents its `ruff`/`black` check as local-only,
-      not CI-enforced).
+      not CI-enforced). Tracked so it doesn't sit as a bare unchecked precedent:
+      [#542](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/542).
 
 ## 2. Frontend: filter on `foundational` via a unit-tested pure function
 
@@ -110,3 +111,31 @@ task 1.2 real, not aspirational.
       `devendor-bloommcp-analysis` still shows `43/53 tasks`, not archived. No reconciliation
       needed yet; flagging the dependency to its owner before either change merges remains the
       outstanding action.
+
+## 5. PR #539 review round 2 — third stale reference + regex hardening
+
+- [x] 5.1 `bloommcp/src/bloom_mcp/sections/core/list_available_experiments.py:5` still pointed
+      at `ALWAYS_INCLUDE_MCP_TOOLS` in `langchain/routes/chat.py` — missed by task 1.3's move
+      (only `core/__init__.py`'s docstring was updated). Repointed to
+      `langchain/helpers/foundational_tools.py`. Grepped both `bloommcp/src/bloom_mcp/sections/core/`
+      and `bloommcp/docs/` afterward to confirm no third site was missed.
+- [x] 5.2 `bloommcp/docs/2026-06-29-bloom-mcp-contributor-namespacing.md`'s "Consequence for
+      hand-maintained tool-name lists" section still described the retired two-list design
+      (`ALWAYS_INCLUDE_MCP_TOOLS` + `HIDDEN_TOOLS`, both hand-maintained). Rewritten to describe
+      the single-source design and the web client's `foundational`-field filter.
+- [x] 5.3 Widened `test_no_hand_listed_foundational_tool_names_in_web_client`'s string-literal
+      regex from double-quotes-only to double/single/backtick-quoted (backreferenced so a
+      literal can't be closed by a mismatched quote char) — the repo's own `.prettierrc.json`
+      sets `singleQuote: true`, making single-quote a plausible restyling that the
+      double-quote-only regex would have missed entirely. Verified against synthetic
+      double/single/backtick/object-literal cases (all caught) and an unrelated array (not
+      falsely caught), standalone, without modifying the real `mcp-chat-client.tsx`. Full
+      `bloommcp` suite re-run green after the change (676 passed, 26 skipped, 0 failed).
+- [x] 5.4 Filed a follow-up issue tracking task 1.6's disclosed CI gap (no job runs
+      `langchain/`'s new pytest suite) so it gets a tracked decision instead of sitting as a
+      bare precedent: [#542](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/542).
+- [ ] 5.5 Task 2.5 (manual browser verification) remains undone. Discovered a live dev Docker
+      stack already running (`bloom_v2_dev-langchain-agent`, `bloom-web`, etc.) predating this
+      branch — but it's shared state (matches this session's earlier shared-checkout hazard on
+      the git working tree), so rebuilding/restarting it to test this branch's code needs the
+      user's explicit go-ahead rather than being done unilaterally.
