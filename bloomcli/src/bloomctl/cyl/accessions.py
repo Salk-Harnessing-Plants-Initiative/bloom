@@ -24,9 +24,10 @@ def accessions() -> None:
     """Cylinder accession commands."""
 
 
-def accession_sort_key(rec: dict[str, Any]) -> str:
-    """Sort accessions by name."""
-    return rec.get("accession_name") or ""
+def accession_sort_key(rec: dict[str, Any]) -> tuple[str, int]:
+    """Sort accessions by name, then id (id breaks ties so output is
+    deterministic run-to-run)."""
+    return (rec.get("accession_name") or "", rec.get("accession_id") or 0)
 
 
 def build_accession_row(rec: dict[str, Any]) -> list[str]:
@@ -40,9 +41,14 @@ def build_accession_record(rec: dict[str, Any]) -> dict[str, Any]:
     return {"accession_id": rec.get("accession_id"), "accession_name": rec.get("accession_name")}
 
 
-def sample_count_sort_key(rec: dict[str, Any]) -> tuple[str, str]:
-    """Sort sample counts by species, then accession name."""
-    return (rec.get("species_name") or "", rec.get("accession_name") or "")
+def sample_count_sort_key(rec: dict[str, Any]) -> tuple[str, str, int]:
+    """Sort sample counts by species, then accession name, then id (id breaks
+    ties so output is deterministic run-to-run)."""
+    return (
+        rec.get("species_name") or "",
+        rec.get("accession_name") or "",
+        rec.get("accession_id") or 0,
+    )
 
 
 def build_sample_count_row(rec: dict[str, Any]) -> list[str]:
@@ -108,8 +114,9 @@ def fetch_accession_sample_counts(client: Any, species: str | None = None) -> li
 )
 def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
     """List the accessions used in a cylinder experiment."""
-    from ..cli import _authed_client
     from postgrest import APIError
+
+    from ..cli import _authed_client
 
     client = _authed_client(profile)
     try:
@@ -127,7 +134,11 @@ def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
 
 
 @accessions.command(name="sample-counts")
-@click.option("--species", default=None, help="Filter to one species (common name).")
+@click.option(
+    "--species",
+    default=None,
+    help="Filter to one species by common name (case-sensitive, e.g. 'sorghum').",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit counts as a JSON array.")
 @click.option(
     "-p",
@@ -137,9 +148,15 @@ def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
     help="Credentials profile to use.",
 )
 def sample_counts(species: str | None, as_json: bool, profile: str) -> None:
-    """Show the plant count per accession, per species (one plant = one biological replicate)."""
-    from ..cli import _authed_client
+    """Show the plant count per accession, per species (one plant = one biological replicate).
+
+    Counts are across all experiments in the database (not scoped to one
+    experiment, unlike `accessions list`). Plants not assigned to an accession
+    are excluded, so summing the counts can be lower than the total plant count.
+    """
     from postgrest import APIError
+
+    from ..cli import _authed_client
 
     client = _authed_client(profile)
     try:
