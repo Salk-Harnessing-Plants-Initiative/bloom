@@ -98,9 +98,13 @@ The roadmap's Live-state facts (verified 2026-07-21, re-confirmed 2026-07-23) al
 schema-wide `GRANT SELECT ... TO bloom_agent` + matching per-table RLS `SELECT` policies
 (`20260506000001_bloom_role_rls_policies.sql`). Both new functions are `SECURITY INVOKER` like
 `get_scan_traits`, so they don't inherit a definer's privileges — confirming this at the role level is a
-test (`SET LOCAL ROLE bloom_agent`, call both functions, assert no permission error), not a schema
-change. This mirrors the source-aware migration's own D5/role-read tests rather than introducing a new
-pattern.
+test, not a schema change. The spot-check SHALL cover all four read roles named by the "Bulk read grants"
+requirement, matching the source-aware precedent's own role-read rigor (its "Read path stays open"
+requirement tests the same four): `SET LOCAL ROLE bloom_agent`/`bloom_user`/`bloom_admin` and call both
+functions directly; for `authenticated`, mirror the precedent's `test_authenticated_has_select_grant_on_views`
+pattern — a bare `SET LOCAL ROLE authenticated` has no JWT/session context, so assert via
+`has_function_privilege('authenticated', 'get_experiment_traits(bigint,bigint,text)', 'EXECUTE')` (and the
+`list_experiment_trait_sources` equivalent) rather than attempting a role-assumed call.
 
 ### D4 — Same forward-only migration + rollback convention as the shipped precedent
 
@@ -113,18 +117,31 @@ by full argument signature (to avoid ambiguity if a future change ever overloads
 
 ## Migration / Rollback
 
-Single forward-only migration `supabase/migrations/<ts>_get_experiment_traits.sql` (timestamp later than
-the most recent migration at merge time). Companion
+Single forward-only migration `supabase/migrations/<ts>_get_experiment_traits.sql`. The timestamp must be
+later than every migration on **both** `main` and `staging` at the time the PR is opened — this repo's
+own history has a real collision precedent (a same-day migration needed renaming after `staging` gained a
+same-timestamp file first). Re-check immediately before opening the PR, and again before merge if the PR
+sits open while other migrations land on `staging`. Companion
 `supabase/rollbacks/<ts>_get_experiment_traits_rollback.sql` drops both functions by full signature. All
 five tracked `database.types.ts` copies are hand-edited to add the two new RPCs (mirroring the
 source-aware precedent's `database.types.ts` update, since local dev-DB regeneration has a known gap —
-CI's `compose-health-check` is the authoritative signal the migration applies).
+CI's `compose-health-check` is the authoritative signal the migration applies). **No TypeScript caller of
+either new function exists anywhere in the repo** (unlike the source-aware precedent, where
+`TraitExplorer.tsx`'s live 2-arg `get_scan_traits` call gave `tsc --noEmit` partial signal on the hand-edit)
+— Tier 2 (the first caller) is explicitly deferred, so `tsc --noEmit` passing on this change proves nothing
+about whether the hand-edited `Args`/`Returns` shape actually matches the migration. The hand-edit must be
+checked by hand against the `RETURNS TABLE` clause, not treated as CI-verified.
 
 ## Risks / Trade-offs
 
 - **D1 is explicitly not final** — if Benfica's review prefers Option B, this design and its tasks need
   a follow-up revision before merge. Flagged, not hidden: the rest of the proposal (D2–D4, testing plan)
-  does not depend on which shape wins.
+  does not depend on which shape wins. If D1 flips **after** this migration has already merged and
+  applied in any deployed environment, a plain `git revert` of the merge commit is not sufficient by
+  itself: the correct sequence is (1) run
+  `supabase/rollbacks/<ts>_get_experiment_traits_rollback.sql` against every environment the forward
+  migration reached, (2) author a **new** forward migration implementing Option B (not a re-edit of the
+  reverted one, per this repo's forward-only convention).
 - **Payload size.** One `get_experiment_traits` call for the full raw cylinder fixture returns on the
   order of 10⁵ rows (129 samples × 880 traits ≈ 113k long-format rows; 123 × 649 post-QC ≈ 80k) in one
   response. Acceptable at this scale (a few MB of long-format rows); no pagination is added because the
@@ -136,19 +153,39 @@ CI's `compose-health-check` is the authoritative signal the migration applies).
 ## Testing (TDD)
 
 Integration tests in `tests/integration/test_cyl_experiment_traits.py`, following
-`test_cyl_read_path.py`'s fixtures/helpers (`pg_conn`, `_seed_experiment_scan`, `_seed_two_sources`).
+`test_cyl_read_path.py`'s actual fixtures/helpers: `pg_conn`, `_seed_experiment_scan`, `_trait`, and
+`_deliver(cur, img_ids, label, *, run=None, traits)` — `_deliver` already accepts a list of traits per
+call (see `test_cyl_read_path.py`'s `test_no_cross_source_mixing`), so seeding multiple sources for one
+scan is two `_deliver` calls against the same seeded scan (mirroring `test_two_sources_one_scan_seed`),
+not a separate `_seed_two_sources` helper — no such helper exists.
+
+**Byte-for-byte parity helper.** `get_experiment_traits` returns 11 columns (adds `trait_name`/`source_id`
+since the caller no longer supplies a trait name) vs. `get_scan_traits`'s 10 — a direct row diff doesn't
+type-check. Add `_assert_matches_get_scan_traits(cur, experiment_id, *, source_id=None, run_id=None)`:
+group the bulk call's rows by `trait_name`, and for each group assert the `{(scan_id, trait_value)}` set
+equals calling `get_scan_traits(experiment_id, trait_name, source_id_, run_id_)` for that trait — i.e.
+compare per-trait row sets, not raw row lists, and exclude `source_id`/`trait_name` (the two columns
+`get_scan_traits` doesn't return) from the comparison.
+
 Oracle, mirrored from bloom#546 and the source-aware precedent's own scenario shape:
 
 - One `get_experiment_traits` call returns every trait for a multi-scan, multi-trait experiment (no
   per-trait filter needed) — the round-trip-count assertion the whole change exists for.
 - Default/pin-source/pin-run/both-set behavior on `get_experiment_traits` matches `get_scan_traits`
-  row-for-row on overlapping `(scan, trait, source)` combinations (byte-for-byte per the roadmap's
-  oracle) — build both from the same seeded fixture and diff.
-- `list_experiment_trait_sources` lists each real source exactly once, excludes a legacy NULL-source
-  scan, and returns nothing for an experiment with no sources.
-- Role reads: `bloom_agent` can call both functions end-to-end through the full join chain (the D3
-  spot-check).
-- Forward migration is idempotent-safe on re-apply; rollback removes both functions cleanly.
+  byte-for-byte via `_assert_matches_get_scan_traits`, including the legacy NULL-source-scan case (the
+  precedent's `test_legacy_null_source_scan_returned_by_default`) and cross-experiment isolation.
+- `list_experiment_trait_sources` lists each real source exactly once (including one with a `NULL`
+  `pipeline_run_id`, which is listed, not excluded — only a `NULL` `source_id` is excluded), excludes a
+  legacy NULL-source scan, returns nothing for an experiment with only legacy data, and never leaks
+  another experiment's sources.
+- A dedicated no-write-capability test: static-scan the migration's SQL text for the absence of
+  `CREATE POLICY`/`GRANT INSERT|UPDATE|DELETE|ALL`, distinct from the role-read test below.
+- Role reads (D3): all four read roles (`bloom_agent`, `bloom_user`, `bloom_admin` via `SET LOCAL ROLE`;
+  `authenticated` via `has_function_privilege`) can use both functions end-to-end through the full join
+  chain, with no new grant on any table.
+- Forward migration is idempotent-safe on re-apply, and re-applying does not alter `get_scan_traits` or
+  the three existing views/functions; rollback removes exactly the two new functions and leaves every
+  pre-existing read object unchanged.
 
 Written RED first, confirmed failing (`UndefinedFunction`) before implementation.
 
