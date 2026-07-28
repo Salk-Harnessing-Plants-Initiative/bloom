@@ -113,7 +113,7 @@ def _validate_trait_subset(
         if not requested:
             raise BloomMCPError(
                 code="invalid_input",
-                message="trait_columns was given as an empty list.",
+                message=f"trait_columns for {experiment!r} was given as an empty list.",
                 remedy=(
                     "Omit trait_columns to analyze all certified-clean traits, or name at "
                     "least one certified trait column."
@@ -123,7 +123,10 @@ def _validate_trait_subset(
         if duplicates:
             raise BloomMCPError(
                 code="invalid_input",
-                message=f"trait_columns contains duplicate columns: {duplicates}.",
+                message=(
+                    f"trait_columns for {experiment!r} contains duplicate columns: "
+                    f"{duplicates}."
+                ),
                 remedy="List each trait column at most once.",
             )
         certified = set(frame.trait_cols)
@@ -146,7 +149,10 @@ def _validate_trait_subset(
         if non_numeric:
             raise BloomMCPError(
                 code="invalid_input",
-                message=f"trait_columns includes non-numeric columns: {non_numeric}.",
+                message=(
+                    f"trait_columns for {experiment!r} includes non-numeric columns: "
+                    f"{non_numeric}."
+                ),
                 remedy="Pass only numeric trait columns; identifiers/metadata cannot be analyzed.",
             )
         return

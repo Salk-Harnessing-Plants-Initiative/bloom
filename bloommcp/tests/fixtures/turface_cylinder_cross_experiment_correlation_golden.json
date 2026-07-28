@@ -1,0 +1,33 @@
+{
+  "_comment": "Characterization snapshot of sleap-roots-analyze cross-experiment correlation on the real turface_19 (153 samples, 19 genotypes) / cylinder (123 samples, 19 genotypes, fully overlapping) fixture pair. Used as a DRIFT GATE + regression fixture for the confirmed min_samples no-op workaround (design.md D8) through the cross_experiment_correlations MCP tool.",
+  "_source": "Re-derived by bloommcp/scripts/gen_cross_experiment_correlation_golden.py from calculate_genotype_means / calculate_cross_experiment_correlations==0.1.0a5. No number here is hand-transcribed.",
+  "_reproduced_by_sleap_roots_analyze_version": "0.1.0a5",
+  "experiment_1": "turface_19.csv",
+  "experiment_2": "cylinder.csv",
+  "genotype_col": "Genotype",
+  "trait_1": "Total Root Length (mm)",
+  "trait_2": "Network Length Mean",
+  "unfiltered": {
+    "_comment": "min_samples=1 -> all 19 shared genotypes participate.",
+    "min_samples": 1,
+    "n_genotypes": 19,
+    "correlation": -0.18437072204140167,
+    "p_value": 0.44988442773882453,
+    "significant": false
+  },
+  "min_samples_3_upstream_no_op": {
+    "_comment": "Calling the upstream delegate directly with min_samples=3 (no bloommcp pre-filter) — confirms the no-op: n_genotypes is unchanged from the unfiltered call (still 19), even though cylinder's GH_7371 has only 2 samples. See talmolab/sleap-roots-analyze#205.",
+    "min_samples": 3,
+    "n_genotypes": 19,
+    "correlation": -0.18437072204140167,
+    "p_value": 0.44988442773882453
+  },
+  "min_samples_3_bloommcp_prefiltered": {
+    "_comment": "bloommcp's pre-filter workaround (design.md D8) applied before delegating: genotype rows with n_samples < 3 dropped from both means tables first. GH_7371 (cylinder n_samples=2) is correctly excluded, n_genotypes drops to 18, and the correlation value changes.",
+    "min_samples": 3,
+    "n_genotypes": 18,
+    "correlation": -0.19177005230148392,
+    "p_value": 0.44586980157467243,
+    "excluded_genotype": "GH_7371"
+  }
+}
