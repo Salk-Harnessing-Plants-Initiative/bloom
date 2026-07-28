@@ -15,7 +15,15 @@ Issue #489 explicitly names this as one of the two real contract mismatches: "Ev
 current bloommcp granular tool ... takes one `filename`. A cross-experiment tool needs
 two — a genuinely new interface shape." This design resolves that mismatch, plus
 confirms the correct upstream delegation surface (the issue's own suggested
-implementation sketch has one factual gap, corrected below).
+implementation sketch has one factual gap, corrected below) and a second, more
+consequential upstream defect discovered while verifying `min_samples`' actual
+behavior (D8).
+
+This revision incorporates a 5-lens adversarial review (spec quality, code/architecture
+feasibility, GitHub issue alignment, TDD/testing, scientific rigor) conducted before
+implementation. Every BLOCKING and IMPORTANT finding from that review is resolved
+below (D8–D13); SUGGESTION-tier findings are folded into the affected sections
+directly (spec scenarios, tasks).
 
 ## Goals / Non-Goals
 
@@ -36,9 +44,36 @@ implementation sketch has one factual gap, corrected below).
   if a second dual-experiment tool appears.
 - `calculate_per_trait_correlations`, `calculate_cross_experiment_correlations_extended`,
   `calculate_correlation_confidence_intervals`, any plotting function, power analysis,
-  or redundant-trait clustering — see proposal.md's deferred list.
+  or redundant-trait clustering — see proposal.md's deferred list and the scope
+  decision immediately below.
 - Re-deriving `pc_correlations`/`cross_platform_prediction` — issue #489's own
   exclusion, unchanged here.
+
+### Scope decision: one tool, not a "small tool family"
+
+Issue #489's Ask explicitly offers either "a granular cross-experiment-correlation
+tool (**or small tool family**)". This proposal chooses **one tool**, covering
+genotype-mean-level correlation + FDR significance + summary, and defers three
+upstream-backed capabilities the issue also names: `calculate_per_trait_correlations`
+(a different granularity — individual-sample-level, single trait pair, not
+genotype-mean-level), `calculate_cross_experiment_correlations_extended` (multi-statistic
+mean/median/std combinations, needs `calculate_genotype_statistics` first), and
+`calculate_correlation_confidence_intervals` (deferred for a substantive reason — D9,
+not scope discipline).
+
+Rationale for choosing one tool now rather than a family: the three deferred
+capabilities are each a distinct, independently-shippable unit of work (different
+granularity, different upstream inputs, or blocked on an unresolved upstream question)
+— bundling them into this proposal would couple their review and merge timing to this
+one's, and this one already carries the two-experiment architectural question (D1)
+that needs to land and prove itself before more surface builds on top of it. This
+mirrors how `pca_analysis` shipped without plots first, with `include_plots` landing
+in a later, separately-reviewed PR (#426) rather than in the same change.
+
+This is a scope decision, not silent scope-cutting: each deferred capability is named
+explicitly (here and in proposal.md) rather than left implicit, so it is not lost.
+Reviewer input welcome on whether any of the three should be pulled into this same
+change instead of following it.
 
 ## Decisions
 
@@ -48,24 +83,32 @@ The `experiment`/`based_on_version`/`source_csv` fields stay single-string/singl
 as declared on the port; this tool encodes both experiments into them rather than
 changing the shared types:
 
-- `experiment=` — a synthetic composite key,
+- `experiment=` — a synthetic composite key, exactly
   `f"{Path(experiment_1).stem}__x__{Path(experiment_2).stem}"`, passed to
   `create_run`. `AnalysisDir` only ever uses this value as `Path(...).stem` for a
   storage-prefix string (`bloommcp/src/bloom_mcp/manifest/analysis_dir.py:33`) — it is
   never validated against a real raw filename, so a synthetic key produces a normal,
-  readable prefix (`cross_experiment_correlation_cylinder_traits__x__turface_traits/`)
+  readable prefix (`correlation_cylinder_traits__x__turface_traits/` — see D9 for why
+  the tool-class segment reads `correlation`, not `cross_experiment_correlation`)
   with zero port changes.
 - `based_on_version=` — a composite string recording both consumed cleaned-version
-  labels, `f"{experiment_1}@{frame1.source}|{experiment_2}@{frame2.source}"` (e.g.
-  `cylinder_traits.csv@v3_cleaned|turface_traits.csv@v2_cleaned`). Documented as a
-  deliberate encoding of a single-string field, not a data-model change; filenames and
-  version labels never contain `@`/`|`, so this round-trips unambiguously for a human
-  reader (it is not meant to be machine-parsed by any existing consumer of
-  `based_on_version`).
+  labels, exactly `f"{experiment_1}@{frame1.source}|{experiment_2}@{frame2.source}"`
+  (e.g. `cylinder_traits.csv@v3_cleaned|turface_traits.csv@v2_cleaned`). Documented as
+  a deliberate encoding of a single-string field, not a data-model change; it is not
+  meant to be machine-parsed by any existing consumer of `based_on_version`.
 - `source_csv=` — both consumed frames' selected trait columns, concatenated with a
   leading `_experiment` label column (`1`/`2`) into one temporary combined CSV, so
   `AnalysisDir.input_sha256` content-addresses **both** inputs' bytes in a single hash
   rather than covering only one side.
+- **Guard (added on review):** the encoding above assumed filenames/version labels
+  never contain `@` or `|`, but the existing experiment-name guard
+  (`_qc_shared._validate_experiment_name`) only rejects path separators and `..` — not
+  `@`/`|`. A real filename containing either character would silently corrupt the
+  composite round-trip. The tool therefore explicitly rejects `experiment_1`/
+  `experiment_2` containing `@` or `|` with `BloomMCPError(invalid_input)` before
+  building either composite string — a small, tool-local check (not a change to the
+  shared `_validate_experiment_name`, since this constraint is specific to this
+  tool's encoding scheme, not a general experiment-name rule every tool should hold).
 
 **Alternative considered and rejected:** extend `Provenance.based_on_version` and
 `StoredRun`/`create_run(experiment=...)` to accept a list of experiment/version pairs.
@@ -78,17 +121,19 @@ with two real call sites to design against instead of one speculative one.
 
 **Requires reviewer sign-off** — this is a deliberate string-encoding trade-off on a
 shared field's meaning, in the same spirit as D3 in `devendor-bloommcp-analysis/design.md`
-(a naming-convention bend that required explicit sign-off before landing).
+(a naming-convention bend that required explicit sign-off before landing). The exact
+formats above are now pinned verbatim in `spec.md`'s persistence requirement (not left
+to a paraphrase), so what is being signed off on is unambiguous.
 
 ### D2 — Genotype-means via upstream `calculate_genotype_means`, not a bespoke `.groupby().mean()`
 
 Issue #489 suggests computing genotype-means "locally (`.groupby(genotype_col)[trait_cols].mean()`
 — a simple pandas operation, no upstream dependency needed for this step)". That undercounts
 the actual contract: `calculate_cross_experiment_correlations` reads
-`exp1_means.loc[g, "n_samples"]` / `exp2_means.loc[g, "n_samples"]` internally to apply
-its own `min_samples` filter (`cross_experiment_analysis.py:1013-1019`). A bare
-`.groupby().mean()` has no `n_samples` column, so calling the delegate on it would raise
-a `KeyError` inside upstream code — an opaque failure, not a clean `assumption_violated`.
+`exp1_means.loc[g, "n_samples"]` / `exp2_means.loc[g, "n_samples"]` internally
+(`cross_experiment_analysis.py:1013-1019`). A bare `.groupby().mean()` has no
+`n_samples` column, so calling the delegate on it would raise a `KeyError` inside
+upstream code — an opaque failure, not a clean `assumption_violated`.
 
 Upstream already provides exactly the right shape:
 `calculate_genotype_means(df, trait_cols, genotype_col) -> DataFrame` groups, means, and
@@ -97,7 +142,9 @@ also not in the issue's excluded list (only `load_and_align_experiments` is excl
 Using it keeps the "delegate all math to upstream, no reimplementation" invariant every
 other granular tool holds (see `pca_analysis`'s and `clustering`'s docstrings) and avoids
 a bespoke aggregation whose column contract could silently drift from what the delegate
-expects.
+expects. (Verified during review: this correction is legitimate, not a missed reading —
+issue #489's own "confirmed public" function list never mentions
+`calculate_genotype_means`.)
 
 ### D3 — `calculate_correlation_confidence_intervals` deferred, not worked around
 
@@ -108,10 +155,7 @@ applies one scalar `n_genotypes` to **every row** via `.apply(lambda r: calculat
 trait pair does its own NaN-alignment inside `_prepare_aligned_values`, so the number of
 genotypes actually paired can legitimately differ row to row. Passing one global scalar
 to a Fisher-z confidence-interval computation for every row would silently produce a
-wrong CI width for any row whose real aligned N differs from the passed value — the same
-class of bug bloommcp already found and documented in `clustering.py`'s
-`_gmm_selected_scores` (upstream returning the wrong candidate's BIC/AIC on GMM
-auto-select).
+wrong CI width for any row whose real aligned N differs from the passed value.
 
 Two options: (a) call it once per distinct `n_genotypes` value present in the row and
 merge — plausible but adds real complexity for a function this proposal is not
@@ -122,6 +166,10 @@ ambiguous upstream signature now — before confirming with upstream whether the
 behavior is intentional — risks the same "silently changes numbers" failure mode #489
 itself was raised to avoid. Filed as a natural follow-up once resolved (either upstream
 fixes/clarifies the signature, or bloommcp deliberately implements option (a)).
+Verified during review (via `git show 1ef181a^:...correlation_tools.py`): the retired
+`run_cross_experiment_correlations` tool didn't compute CIs either — only Pearson r/p,
+FDR-correction, and a summary — so deferring this is not a regression against the tool
+being replaced, only against the fuller upstream surface.
 
 ### D4 — Deterministic tool, no seed
 
@@ -144,10 +192,12 @@ genotype column, with a remedy pointing at `qc_clean`'s `genotype_column` overri
 ### D6 — Degenerate vs. empty-but-valid results
 
 - `calculate_cross_experiment_correlations` returning zero rows (no trait pair reached
-  `min_samples` aligned genotypes) is treated as **degenerate input** —
-  `BloomMCPError(code="assumption_violated")` with a remedy to lower `min_samples` or
-  check genotype overlap between the two experiments, no run persisted. This mirrors
-  `pca_analysis`/`clustering`'s treatment of a delegate-signaled degenerate fit.
+  `min_samples` aligned genotypes, post-D8 pre-filter) is treated as **degenerate
+  input** — `BloomMCPError(code="assumption_violated")` with a remedy to lower
+  `min_samples` or check genotype overlap between the two experiments, no run
+  persisted. This mirrors `pca_analysis`/`clustering`'s treatment of a
+  delegate-signaled degenerate fit. (Before D8's fix, "lower `min_samples`" would have
+  been a misleading remedy — see D8.)
 - `identify_significant_correlations` returning zero rows (correlations exist, none
   clear `r_threshold`/`p_threshold`) is a **normal, non-error outcome** — the tool
   reports `n_significant = 0` and still persists an (empty-but-schema-consistent)
@@ -166,27 +216,178 @@ submodule path, not `__all__`) — for `convert_to_json_serializable`'s existing
 This tool reuses the identical import path and pattern rather than writing a new numpy
 JSON encoder.
 
+### D8 — `min_samples` is a confirmed no-op in the delegate; bloommcp pre-filters before delegating
+
+**Found during review, independently re-verified against the installed upstream
+source (`sleap_roots_analyze==0.1.0a5`).** `calculate_cross_experiment_correlations`
+computes a `min_samples`-filtered `valid_genotypes` list and even prints it
+(`cross_experiment_analysis.py:1011-1020`) — but the per-trait-pair loop immediately
+below calls `_prepare_aligned_values(exp1_means, exp2_means, trait1, trait2,
+min_samples=0)` with a **hardcoded `0`** (line 1028), never referencing
+`valid_genotypes` again. The only genotype floor that actually applies is
+`_prepare_aligned_values`'s own hardcoded `< 3` check (line 76). So passing
+`min_samples=10` to the delegate today has **zero effect** on which genotypes
+participate — a genotype with a single replicate is treated identically to one with
+twenty. D2's citation of these exact lines (justifying why `n_samples` must be built
+via `calculate_genotype_means`) never itself noticed the filter built from that column
+is discarded downstream — this is the same class of "trust but verify the delegate"
+lesson bloommcp already learned once, documented in `clustering.py`'s
+`_gmm_selected_scores` (upstream returning the wrong candidate's BIC/AIC on GMM
+auto-select).
+
+**Consequence if unaddressed:** the tool's own documented remedy for a degenerate
+result ("lower `min_samples`", D6) would be scientifically misleading — lowering it
+changes nothing, since it was never enforced in the first place.
+
+**Fix:** bloommcp pre-filters both genotype-means tables to `n_samples >=
+params.min_samples` **before** calling the delegate:
+
+```python
+exp1_means = calculate_genotype_means(frame1.df, trait_cols_1, frame1.genotype_col)
+exp2_means = calculate_genotype_means(frame2.df, trait_cols_2, frame2.genotype_col)
+exp1_means = exp1_means[exp1_means["n_samples"] >= params.min_samples]
+exp2_means = exp2_means[exp2_means["n_samples"] >= params.min_samples]
+corr_df = calculate_cross_experiment_correlations(
+    exp1_means, exp2_means, trait_cols_1, trait_cols_2, min_samples=params.min_samples
+)
+```
+
+`min_samples` is still forwarded to the delegate call unchanged (harmless — it stays
+inert there) rather than passing a magic `0`, so the call remains correct and
+idempotent even if upstream later fixes the internal filter (both filters would then
+agree; today only bloommcp's pre-filter does any work). This is a genuine,
+call-site-level workaround, not a documentation-only caveat — matching the bar D3
+already sets ("document, or work around — don't silently trust") rather than a lower
+one. **Filed upstream** as
+[talmolab/sleap-roots-analyze#205](https://github.com/talmolab/sleap-roots-analyze/issues/205)
+(tracked separately from this OpenSpec change; that report also raises D3's
+`calculate_correlation_confidence_intervals` question in the same thread).
+
+### D9 — Reuse the reserved `correlation` tool_class slot; no discovery-list changes needed
+
+**Found during review**, and resolved for free: `manifest.CANONICAL_TOOL_CLASSES`
+(`bloommcp/src/bloom_mcp/manifest/__init__.py:26-36`) and
+`list_existing_analyses.TOOL_CLASSES`
+(`bloommcp/src/bloom_mcp/sections/core/list_existing_analyses.py:16-24`) **both
+already contain `"correlation"`**, reserved and kept intact since the pre-#438 legacy
+correlation tools were retired, specifically so historical runs would still read back
+(see that file's "do NOT prune retired classes" comment). This tool reuses that slot
+as its `tool_class` rather than inventing a new `"cross_experiment_correlation"` entry
+— exactly the precedent `descriptive_stats` already set for the retired `"stats"`
+slot (`descriptive_stats.py:53-60`, "reused, not new"). Consequence: **no changes to
+either discovery list are needed** — runs persist under `tool_class="correlation"` and
+are immediately visible via `list_existing_analyses` with zero registration work,
+closing what would otherwise have been a silent discoverability gap (a synthetic
+composite `experiment` key is never a real `list_experiments()` entry, so an
+unregistered tool_class would have been invisible with no error).
+
+The MCP tool's *name* stays `cross_experiment_correlations` (plural, matching the
+module/function name and the issue's own naming) — only the persisted `tool_class`
+segment is `correlation` (matching the storage-prefix convention every other tool
+already uses: short, not the full tool name — `pca`, `qc`, `umap`, `stats`).
+
+### D10 — `_validate_trait_subset` patched to name the experiment in every branch
+
+**Found during review.** `_validate_trait_subset` (`bloommcp/src/bloom_mcp/tools/_qc_shared.py`)
+already takes an `experiment: str` parameter and interpolates it into the "outside
+certified set" error message (line 136), but **not** into the empty-list (line 116),
+duplicate (line 126), or non-numeric (line 149) messages. Calling it twice — once per
+experiment, as this tool does — would produce identically-worded errors for those
+three failure modes regardless of which experiment triggered them, which is not
+"naming the offending experiment" as this proposal's own acceptance test requires.
+
+**Fix:** a small, backward-compatible patch to `_qc_shared.py` — interpolate
+`{experiment!r}` into the empty-list, duplicate, and non-numeric messages too (message
+text only; no signature change, since `experiment` is already a required positional
+parameter every existing call site already passes). This is a shared helper also used
+by `pca_analysis`, `clustering`, and `descriptive_stats` — the improvement benefits all
+of them (clearer error messages), not just the new tool, and carries no behavior change
+(same exception type, same code, same remedy — only the message string gains an
+experiment identifier in three more branches).
+
+### D11 — Finite-value defense-in-depth before genotype-mean aggregation
+
+**Found during review.** `pca_analysis.py:252-264` and `clustering.py:328-340` both add
+an explicit `np.isfinite()` check on selected trait columns before delegating,
+specifically because `require_clean=True` alone isn't trusted as a guarantee. This
+proposal's original draft omitted the equivalent check before `calculate_genotype_means`
+— `.mean()` silently skips NaN (understating the true per-genotype replicate count
+against what's reported as `n_samples`) and silently propagates `±inf` into a genotype
+mean, poisoning the correlation math without ever raising. Fix: add the same
+`np.isfinite(selected.to_numpy(dtype=float)).all()` check on each experiment's selected
+trait columns, independently, before calling `calculate_genotype_means` — a non-finite
+value on either side raises `BloomMCPError(code="assumption_violated")` naming which
+experiment, with the same "re-run qc_clean" remedy `pca_analysis`/`clustering` use.
+
+### D12 — Persist both genotype-means tables for traceability
+
+**Found during review.** Upstream itself discards per-trait-pair genotype identity —
+`_prepare_aligned_values` returns the aligned genotype list but the call site inside
+`calculate_cross_experiment_correlations` assigns it to `_` (line 1032) and never
+surfaces it. So even in principle, no wrapper can recover *which specific genotypes*
+fed a given trait pair's correlation without reimplementing that private, underscore-
+prefixed alignment function — which conflicts with this tool's entire "delegate, don't
+reimplement" premise, and `_prepare_aligned_values`'s leading underscore is itself a
+"do not depend on this" signal from upstream.
+
+The proportionate middle ground: persist both experiments' full genotype-means tables
+(`genotype_means_1.csv`, `genotype_means_2.csv` — each carrying every certified trait's
+per-genotype mean **and** the `n_samples` column `calculate_genotype_means` produces,
+post-D8-filter) as additional artifacts alongside `correlations.csv`/`significant.csv`/
+`summary.json`. This doesn't reconstruct the *exact* per-pair NaN-filtered subset, but
+gives a scientist auditing a surprising correlation enough to manually cross-reference
+which genotypes, and with how many replicates, were available for either trait —
+materially better than the count-only traceability the original draft offered, without
+reimplementing upstream's internal alignment.
+
+### D13 — FDR multiplicity-family caveat is a documentation obligation, not a runtime behavior
+
+**Found during review.** Benjamini-Hochberg FDR correction (delegated to
+`identify_significant_correlations`) is only valid over the family of tests it was
+actually computed across. If a caller reruns the tool with a narrower
+`trait_columns_1`/`trait_columns_2` subset, the test family shrinks and the
+FDR-corrected `p_value_corrected` values for the surviving pairs will **not** match
+their values from a full run — a caller could reasonably (and wrongly) expect a
+"subset" rerun to reproduce the full run's corrected p-values for the pairs it shares.
+There is no runtime fix for this (the tool has no way to know a caller's cross-call
+expectations) — it is a documentation obligation: the `trait_columns_1`/
+`trait_columns_2` Pydantic field descriptions must state this caveat explicitly (see
+tasks.md 3.1), so it is visible in the tool's schema wherever an agent or human reads
+parameter docs, not buried only in this design doc.
+
 ## Risks / Trade-offs
 
 - **String-encoded composite fields are a readability/parseability trade-off**, not a
-  type-safe one — mitigated by D1's "human-readable, not machine-parsed" framing and
-  by not being the first bloommcp precedent for bending a single-string field's literal
-  meaning (D3 of `devendor-bloommcp-analysis` already bent a naming convention with
-  documented sign-off).
+  type-safe one — mitigated by D1's "human-readable, not machine-parsed" framing, the
+  explicit `@`/`|` guard, and by not being the first bloommcp precedent for bending a
+  single-string field's literal meaning (D3 of `devendor-bloommcp-analysis` already bent
+  a naming convention with documented sign-off).
 - **A second two-experiment tool would strain D1's encoding further** — mitigated by
   scoping D1 explicitly to "revisit with two real call sites," not designing an
   abstraction now against one.
+- **A confirmed upstream `min_samples` no-op (D8)** — mitigated by a bloommcp-side
+  pre-filter and an upstream bug report; the workaround is idempotent against a future
+  upstream fix.
 - **Deferring `calculate_correlation_confidence_intervals` (D3) leaves a capability gap**
-  relative to the old `run_cross_experiment_correlations` tool, which did not compute CIs
-  either (only Pearson r/p, FDR-correction, and a summary) — so this is not a regression
-  against the tool being replaced, only against the full upstream surface.
+  relative to the full upstream surface, but not relative to the tool being replaced
+  (verified: it didn't compute CIs either).
+- **A constant (zero-variance) genotype-mean trait may produce a `NaN` correlation row**
+  that survives into `correlations.csv` rather than being filtered or raising — this
+  matches upstream's own documented behavior for its public `calculate_correlations`
+  helper (returns `(NaN, NaN)` for zero-variance input) and is accepted as a
+  pass-through here rather than a bloommcp-side rejection, since the row is
+  transparently NaN (not silently dropped or misrepresented) and a stricter guard
+  would diverge from what the delegate itself considers valid output.
 
 ## Migration / Rollout
 
 No data migration — a new tool, additive registration. No existing tool's behavior,
-schema, or persisted-run shape changes. `test_devendor_invariants.py`'s retired-tool
-list and drift guards are unaffected (this is a new tool, not a repoint of a retired
-one).
+schema, or persisted-run shape changes. Reusing the `correlation` tool_class (D9) means
+`list_existing_analyses` already lists that slot today (for historical, pre-#438 runs,
+currently always empty in a fresh environment) — this tool simply makes it a live write
+target again, exactly as `descriptive_stats` already did for `stats`.
+`test_devendor_invariants.py`'s retired-tool list and drift guards are unaffected (this
+is a new tool, not a repoint of a retired one).
 
 ## Open Questions
 
@@ -199,4 +400,8 @@ one).
   rather than deciding unilaterally.
 - D1's reviewer sign-off — who signs off on the composite-string persistence encoding
   (mirrors the `devendor-bloommcp-analysis` D3 precedent of requiring an explicit
-  approver for a convention bend)?
+  approver for a convention bend)? The exact format is now pinned in spec.md, so this
+  is a concrete artifact to review, not an open-ended one.
+- ~~Should D3's deferred `calculate_correlation_confidence_intervals` question be raised
+  with upstream alongside the D8 bug report?~~ Resolved: both raised in the same thread,
+  [talmolab/sleap-roots-analyze#205](https://github.com/talmolab/sleap-roots-analyze/issues/205).
