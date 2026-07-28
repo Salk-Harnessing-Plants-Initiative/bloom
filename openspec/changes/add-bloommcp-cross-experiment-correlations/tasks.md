@@ -117,17 +117,93 @@ in this run), 0 failed.
 ## 7. Validation
 
 - [x] 7.1 `openspec validate add-bloommcp-cross-experiment-correlations --strict` passes
-- [x] 7.2 Full bloommcp test suite green (746 passed); ruff + black clean at the
-  repo-pinned versions (ruff 0.9.9, black 26.3.1)
-- [ ] 7.3 `make bloommcp-smoke` / live dev-stack verification — **not run in this
-  session**. A container-transport smoke test was written
-  (`bloommcp/tests/smoke/test_cross_experiment_correlations_smoke.py`, mirroring
-  `test_clustering_smoke.py`) and collects/skips cleanly with no live stack marker, but
-  actually exercising it requires the running `bloommcp` container to be rebuilt with
-  this branch's code (a live dev stack was found running during this session, but
-  rebuilding/restarting a shared container mid-session was judged out of scope for this
-  PR). It will run automatically in CI's `dev-stack-smoke` job. Extending the
-  comprehensive `tests/smoke/live_persistence_smoke.py` script with a
-  cross-experiment-correlations leg (host-side, no container rebuild needed) remains a
-  good follow-up if a reviewer wants pre-merge live proof beyond the unit-level golden
-  fixture reproduction in 2.2/2.24.
+- [x] 7.2 Full bloommcp test suite green (759 passed after §8); ruff + black clean at
+  the repo-pinned versions (ruff 0.9.9, black 26.3.1)
+- [x] 7.3 `make bloommcp-smoke` / live dev-stack verification — **ran in this PR's own
+  CI** (`Dev stack smoke` job) and initially **failed**: `result["outputs"]` came back
+  empty even though `store.commit()` had genuinely succeeded. Root-caused and fixed —
+  see §8.1. Re-verified server-side correctness directly against the live container for
+  both this tool and the long-shipped `pca_analysis` (confirming the bug was a
+  pre-existing client-side test-infrastructure gap, not specific to this tool); the
+  fixed smoke test itself still needs a container rebuild to re-run end-to-end, which
+  CI's next run on this branch will do.
+
+## 8. Post-PR-review fixes (two independent 5-agent reviews, posted ~1s apart)
+
+Both reviews' findings, reconciled and resolved:
+
+- [x] 8.1 **BLOCKING — live smoke test failing in CI.** Root-caused to
+  `bloommcp/tests/smoke/conftest.py`'s `_call_tool_sync` reading `result.data`
+  (fastmcp's lossy client-side reconstruction of the server's JSON, which collides two
+  untitled nested `object` schemas — the top-level result and the `outputs: dict[str,
+  str]` field — on the same auto-generated type name `Root`) instead of
+  `result.structured_content` (the server's actual, correct JSON). Confirmed
+  server-side correctness was never in question by reproducing the same empty-`outputs`
+  behavior against the live container for the long-shipped `pca_analysis` tool too —
+  this was a latent gap in *every* `RunLinks`-based tool's live-smoke coverage, only
+  surfaced because this PR was the first to assert on `outputs` via the container
+  transport. Fixed at the shared `conftest.py` level (one line), benefiting every smoke
+  test in the package.
+- [x] 8.2 **BLOCKING — composite-key truncation for dotted filenames.** The originally
+  shipped `f"{Path(e1).stem}__x__{Path(e2).stem}"` composite is silently truncated by
+  `AnalysisDir`'s own re-applied `Path(...).stem` whenever either original stem
+  contains a dot (reproduced by the reviewer: `"my.experiment.v2.csv"` collapses the
+  composite to `"my.experiment"`, losing `experiment_2` entirely — a silent storage
+  collision risk, not a crash). Fixed with `_storage_safe_stem(name) ->
+  Path(name).stem.replace(".", "_")`, making the composite string itself dot-free and
+  therefore immune to re-stemming for *any* filename. New tests exercise the real
+  `AnalysisDir` class directly (not `FakeResultStore`, whose simplified stem helper
+  cannot reproduce this real-backend bug) — see design.md D1's update.
+- [x] 8.3 **IMPORTANT — self-correlation unrejected.** `experiment_1 == experiment_2`
+  now raises `BloomMCPError(invalid_input)` before any I/O.
+- [x] 8.4 **IMPORTANT — argument-order sensitivity undiscoverable from the schema.**
+  Both `experiment_1`/`experiment_2` field descriptions now state that argument order
+  determines the storage key.
+- [x] 8.5 **IMPORTANT — path-traversal protection was incidental, not explicit.** The
+  tool now calls the existing `_qc_shared._validate_experiment_name` guard explicitly
+  on both experiment names (design.md D14). `pca_analysis`/`clustering` share this same
+  pre-existing gap — fixing it there is a follow-up, out of scope here.
+- [x] 8.6 **IMPORTANT — two "either side" tests only tested one side.**
+  `test_missing_genotype_role_either_side_rejected` and
+  `test_non_finite_value_either_side_rejected` now genuinely exercise both
+  `experiment_1` and `experiment_2`.
+- [x] 8.7 Verified (empirically, against the actual upstream source) that the
+  "`significant.csv` schema instability for exactly-one-qualifying-row" concern does
+  not hold: `identify_significant_correlations`'s else-branch adds
+  `p_value_corrected`/`significant_fdr` regardless of row count once `strong_corr` has
+  ≥1 row; the only genuinely columnless case is the top-level `len(strong_corr) == 0`
+  early return, already normalized by `_normalized_significant`. No code change; this
+  finding did not survive verification.
+- [x] 8.8 Added `test_constant_genotype_mean_trait_yields_nan_correlation_not_a_crash`
+  (design.md's accepted NaN-pass-through risk was previously undiscussed by any test)
+  and `test_exactly_one_shared_genotype_is_degenerate`.
+- [x] 8.9 Added `test_upstream_min_samples_no_op_still_present` — a regression pin
+  calling the raw upstream delegate directly, so a future upstream fix (or fixture
+  drift) fails this test loudly instead of the workaround silently going stale.
+- [x] 8.10 Fixed `test_reproduces_golden_correlation_unfiltered` to compare actual
+  `correlation`/`p_value` floats against the golden (it previously only checked
+  counts).
+- [x] 8.11 Extended `test_source_csv_content_addresses_both_inputs` to vary
+  `experiment_1` too (previously only varied `experiment_2`).
+- [x] 8.12 Parametrized `test_trait_columns_validated_independently` (was a manual
+  `for` loop that would mask later cases on an early failure).
+- [x] 8.13 Centralized `@`/`|`/`__x__` as module-level constants
+  (`_RESERVED_ENCODING_CHARS`, `_COMPOSITE_SEPARATOR`) instead of repeated bare
+  literals at the guard and the builder.
+- [x] 8.14 Simplified `_normalized_significant`'s redundant `sig_df.empty and
+  len(sig_df.columns) == 0` to `len(sig_df.columns) == 0` (a 0-column frame is always
+  `.empty`).
+- [x] 8.15 Surfaced D12's traceability limitation in `CrossExperimentCorrelationsResult`'s
+  own docstring (previously only in design.md).
+- [x] 8.16 Fixed design.md's Risks section citing the wrong upstream function
+  (`calculate_correlations`, the public wrapper with its own zero-variance guard) for
+  the NaN pass-through — the actual call path uses the private `_calculate_correlations`.
+- [x] 8.17 Added a `min_samples` field-description caveat: the `ge=1` floor alone
+  doesn't protect against single-replicate noise (a separate, always-enforced `< 3`
+  aligned-genotypes floor does that independent of this setting).
+- [x] 8.18 Noted (design.md Open Questions) that the golden fixture is not bit-for-bit
+  reproducible across regenerations (~1e-16 BLAS/threading float noise) — functionally
+  irrelevant given `abs=1e-6` test tolerances, but worth knowing before mistaking a
+  future regeneration's diff for a real regression.
+
+Full bloommcp suite after §8: 759 passed, 29 skipped, 0 failed. `test_cross_experiment_correlations_tool.py`: 44 tests (was 31).

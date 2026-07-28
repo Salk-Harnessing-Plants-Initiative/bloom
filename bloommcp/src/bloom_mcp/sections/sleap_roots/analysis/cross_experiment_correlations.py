@@ -36,14 +36,20 @@ checked non-``None`` before any computation.
 ``ResultStore``/``Provenance`` are single-experiment-shaped (`experiment: str`,
 ``based_on_version: str``, one ``source_csv``). Rather than extending those shared types
 for what is so far bloommcp's only dual-input consumer, both experiments are encoded into
-the existing fields: a composite ``experiment`` key (both filenames' stems joined by
-``__x__``), a composite ``based_on_version`` (``exp@version|exp@version``), and a single
-combined ``source_csv`` snapshot (both selections concatenated, labeled by a leading
+the existing fields: a composite ``experiment`` key (both filenames' *dot-sanitized* stems
+joined by ``__x__`` — see :func:`_storage_safe_stem`; a naive un-sanitized join is silently
+truncated by ``AnalysisDir``'s own re-applied ``Path(...).stem``, found in review), a
+composite ``based_on_version`` (``exp@version|exp@version``), and a single combined
+``source_csv`` snapshot (both selections concatenated, labeled by a leading
 ``_experiment`` column) so ``input_sha256`` content-addresses both inputs. ``@``/``|`` are
-therefore reserved in ``experiment_1``/``experiment_2`` and rejected up front. Persisted
+therefore reserved in ``experiment_1``/``experiment_2`` and rejected up front, as is
+``experiment_1 == experiment_2`` (self-correlation) and any path-unsafe name. Persisted
 under the reused ``correlation`` tool class (design.md D9) — reserved since the pre-#438
 legacy correlation tools were retired, exactly as ``descriptive_stats`` reactivated the
-reserved ``stats`` slot — so ``list_existing_analyses`` requires no changes.
+reserved ``stats`` slot — so ``list_existing_analyses`` requires no changes. Argument
+order is significant and undoes no normalization: ``(A, B)`` and ``(B, A)`` persist as two
+distinct, un-cross-referenced runs (an open question in design.md, called out in each
+experiment field's own description so a caller can discover it from the schema).
 
 **Traceability (design.md D12).** Upstream itself discards which specific genotypes fed a
 given trait pair's correlation (an internal alignment result assigned to ``_``), so this
@@ -93,7 +99,7 @@ from bloom_mcp.data_access import (
 )
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import snapshot_frame
-from bloom_mcp.tools._qc_shared import _validate_trait_subset
+from bloom_mcp.tools._qc_shared import _validate_experiment_name, _validate_trait_subset
 
 _TOOL_CLASS = "correlation"  # reused reserved slot (design.md D9), not a new one
 _CORRELATIONS_NAME = "correlations.csv"
@@ -101,6 +107,11 @@ _SIGNIFICANT_NAME = "significant.csv"
 _GENOTYPE_MEANS_1_NAME = "genotype_means_1.csv"
 _GENOTYPE_MEANS_2_NAME = "genotype_means_2.csv"
 _SUMMARY_NAME = "summary.json"
+
+# Reserved for the composite `experiment=`/`based_on_version=` string encoding (D1) —
+# centralized here (not repeated as bare literals) so the guard and the builder can't drift.
+_RESERVED_ENCODING_CHARS = ("@", "|")
+_COMPOSITE_SEPARATOR = "__x__"
 
 # Columns identify_significant_correlations' result carries beyond calculate_cross_experiment_
 # correlations' own columns — used to normalize its columnless empty-DataFrame return (design.md D6).
@@ -121,7 +132,10 @@ class CrossExperimentCorrelationsParams(BaseModel):
         ...,
         description="First experiment (CSV filename). Must have a cleaned version "
         "produced by qc_clean; cross_experiment_correlations consumes it (require_clean). "
-        "Must not contain '@' or '|' (reserved for this tool's persisted-run encoding).",
+        "Must not contain '@' or '|' (reserved for this tool's persisted-run encoding), "
+        "and must differ from experiment_2 (self-correlation is rejected). Argument "
+        "order is significant: swapping experiment_1/experiment_2 produces a different "
+        "persisted run (a distinct storage key) — the two calls are not cross-referenced.",
     )
     experiment_2: str = Field(
         ...,
@@ -145,7 +159,10 @@ class CrossExperimentCorrelationsParams(BaseModel):
         description="Minimum replicates a genotype must have in BOTH experiments to "
         "participate. Enforced by a bloommcp-side pre-filter on both genotype-means "
         "tables before delegating — the upstream delegate's own min_samples filtering is "
-        "a confirmed no-op (talmolab/sleap-roots-analyze#205); this tool does not rely on it.",
+        "a confirmed no-op (talmolab/sleap-roots-analyze#205); this tool does not rely on it. "
+        "The ge=1 floor only rejects a non-positive value; it does not by itself protect "
+        "against single-replicate noise — a separate, always-enforced floor requires at "
+        "least 3 aligned genotypes total regardless of this setting.",
     )
     p_threshold: float = Field(
         default=0.05,
@@ -173,7 +190,15 @@ class CrossExperimentCorrelationsParams(BaseModel):
 
 
 class CrossExperimentCorrelationsResult(RunLinks):
-    """Summary counts + links to the persisted run — never the full correlation matrix."""
+    """Summary counts + links to the persisted run — never the full correlation matrix.
+
+    Traceability note (design.md D12): the persisted ``genotype_means_1.csv``/
+    ``genotype_means_2.csv`` record each experiment's full per-genotype trait means and
+    ``n_samples``, but not the exact per-trait-pair NaN-aligned genotype subset behind a
+    specific correlation — upstream discards that identity internally
+    (``_prepare_aligned_values``). Cross-reference the two genotype-means tables by hand
+    for a specific trait pair if a finer audit trail is needed.
+    """
 
     experiment_1: str
     experiment_2: str
@@ -190,18 +215,72 @@ class CrossExperimentCorrelationsResult(RunLinks):
     )
 
 
+def _reject_path_unsafe_names(experiment_1: str, experiment_2: str) -> None:
+    """Explicit path-traversal guard for both experiment names (defense-in-depth).
+
+    Neither this tool's own composite-key construction nor
+    ``ExperimentReader.load_experiment`` guarantees this today — both happen to key off
+    ``Path(name).stem``/``.name`` rather than raising, so relying on that would be
+    incidental safety, not an explicit check (flagged in review). ``pca_analysis``/
+    ``clustering`` share the same gap; fixing it there too is a follow-up, out of scope
+    for this tool.
+    """
+    _validate_experiment_name(experiment_1)
+    _validate_experiment_name(experiment_2)
+
+
 def _reject_reserved_encoding_characters(experiment_1: str, experiment_2: str) -> None:
     """Reject '@'/'|' in either experiment name (design.md D1's composite-string guard)."""
     for label, name in (("experiment_1", experiment_1), ("experiment_2", experiment_2)):
-        if "@" in name or "|" in name:
+        if any(ch in name for ch in _RESERVED_ENCODING_CHARS):
             raise BloomMCPError(
                 code="invalid_input",
                 message=(
-                    f"{label} ({name!r}) contains '@' or '|', reserved characters used to "
-                    "encode this tool's two-experiment persisted run."
+                    f"{label} ({name!r}) contains one of the reserved characters "
+                    f"{list(_RESERVED_ENCODING_CHARS)!r}, used to encode this tool's "
+                    "two-experiment persisted run."
                 ),
-                remedy="Rename the experiment file to avoid '@' and '|' characters.",
+                remedy=(
+                    "Rename the experiment file to avoid these characters: "
+                    f"{list(_RESERVED_ENCODING_CHARS)!r}."
+                ),
             )
+
+
+def _reject_self_correlation(experiment_1: str, experiment_2: str) -> None:
+    """Reject experiment_1 == experiment_2.
+
+    A plausible copy-paste mistake that would otherwise silently compute and persist a
+    meaningless self-vs-self correlation matrix under a "foo__x__foo" storage key
+    instead of a clear, fixable error (flagged in review).
+    """
+    if experiment_1 == experiment_2:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"experiment_1 and experiment_2 are both {experiment_1!r} — "
+                "cross_experiment_correlations compares two different experiments."
+            ),
+            remedy="Pass two distinct experiment filenames.",
+        )
+
+
+def _storage_safe_stem(filename: str) -> str:
+    """``filename``'s stem with internal dots replaced — immune to re-stemming.
+
+    ``AnalysisDir`` (the real backend's storage-prefix builder,
+    ``bloommcp/src/bloom_mcp/manifest/analysis_dir.py:33``) re-applies ``Path(...).stem``
+    to whatever ``experiment=`` string this tool passes it. A naive
+    ``f"{Path(e1).stem}{SEP}{Path(e2).stem}"`` composite is vulnerable: if either
+    original stem itself contains a dot (e.g. ``"my.experiment.v2.csv"`` -> stem
+    ``"my.experiment.v2"``), ``Path(composite).stem`` re-strips at the LAST dot in the
+    *composite* string, silently truncating everything after it — losing the second
+    experiment's name entirely and risking a storage-key collision between unrelated
+    runs (found in review, reproduced directly against the real code). Replacing dots
+    with underscores in each stem before joining makes the composite string itself
+    dot-free, so ``AnalysisDir``'s re-applied ``.stem`` is a no-op on it.
+    """
+    return Path(filename).stem.replace(".", "_")
 
 
 def _load_cleaned(reader, name: str, label: str) -> ExperimentFrame:
@@ -272,8 +351,12 @@ def _genotype_means_prefiltered(
 def _normalized_significant(
     sig_df: pd.DataFrame, corr_df: pd.DataFrame
 ) -> pd.DataFrame:
-    """Normalize identify_significant_correlations' columnless empty return (design.md D6)."""
-    if sig_df.empty and len(sig_df.columns) == 0:
+    """Normalize identify_significant_correlations' columnless empty return (design.md D6).
+
+    A 0-column DataFrame is always ``.empty`` too, so checking column count alone is
+    sufficient (a prior ``sig_df.empty and`` clause here was redundant).
+    """
+    if len(sig_df.columns) == 0:
         return pd.DataFrame(
             columns=list(corr_df.columns) + list(_SIGNIFICANT_EXTRA_COLS)
         )
@@ -301,7 +384,9 @@ def cross_experiment_correlations(
     params: CrossExperimentCorrelationsParams, *, provenance: Provenance
 ) -> CrossExperimentCorrelationsResult:
     """Correlate genotype-mean traits between two cleaned experiments and persist the run."""
+    _reject_path_unsafe_names(params.experiment_1, params.experiment_2)
     _reject_reserved_encoding_characters(params.experiment_1, params.experiment_2)
+    _reject_self_correlation(params.experiment_1, params.experiment_2)
 
     reader = _ports.reader()
     store = _ports.store()
@@ -374,7 +459,8 @@ def cross_experiment_correlations(
     )
 
     composite_experiment = (
-        f"{Path(params.experiment_1).stem}__x__{Path(params.experiment_2).stem}"
+        f"{_storage_safe_stem(params.experiment_1)}{_COMPOSITE_SEPARATOR}"
+        f"{_storage_safe_stem(params.experiment_2)}"
     )
     based_on_version = (
         f"{params.experiment_1}@{frame1.source}|{params.experiment_2}@{frame2.source}"

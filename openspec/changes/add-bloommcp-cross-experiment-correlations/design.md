@@ -25,6 +25,17 @@ implementation. Every BLOCKING and IMPORTANT finding from that review is resolve
 below (D8–D13); SUGGESTION-tier findings are folded into the affected sections
 directly (spec scenarios, tasks).
 
+**Second revision, post-PR code review.** After implementation, two independent
+5-agent PR reviews (posted within a second of each other) each verified the code
+against real infrastructure rather than trusting prose, and found two genuine
+BLOCKING defects the pre-implementation review couldn't have caught (one only
+observable in live CI, one requiring a specific input the test fixtures never
+exercised): the PR's own live smoke test was failing (D-fix below), and the
+composite-key scheme from D1 silently truncated for any dotted experiment filename
+(D1 updated below). Every BLOCKING/IMPORTANT finding from both reviews is resolved
+in this revision — see D1's update, D14, and the "Testing infrastructure fix" note
+under Migration/Rollout.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -83,14 +94,13 @@ The `experiment`/`based_on_version`/`source_csv` fields stay single-string/singl
 as declared on the port; this tool encodes both experiments into them rather than
 changing the shared types:
 
-- `experiment=` — a synthetic composite key, exactly
-  `f"{Path(experiment_1).stem}__x__{Path(experiment_2).stem}"`, passed to
-  `create_run`. `AnalysisDir` only ever uses this value as `Path(...).stem` for a
-  storage-prefix string (`bloommcp/src/bloom_mcp/manifest/analysis_dir.py:33`) — it is
-  never validated against a real raw filename, so a synthetic key produces a normal,
-  readable prefix (`correlation_cylinder_traits__x__turface_traits/` — see D9 for why
-  the tool-class segment reads `correlation`, not `cross_experiment_correlation`)
-  with zero port changes.
+- `experiment=` — a synthetic composite key, built by `_storage_safe_stem(experiment_1)
+  + "__x__" + _storage_safe_stem(experiment_2)`, passed to `create_run`. `AnalysisDir`
+  only ever uses this value as `Path(...).stem` for a storage-prefix string
+  (`bloommcp/src/bloom_mcp/manifest/analysis_dir.py:33`) — it is never validated
+  against a real raw filename, so a synthetic key produces a normal, readable prefix
+  (`correlation_cylinder__x__turface/` — see D9 for why the tool-class segment reads
+  `correlation`, not `cross_experiment_correlation`) with zero port changes.
 - `based_on_version=` — a composite string recording both consumed cleaned-version
   labels, exactly `f"{experiment_1}@{frame1.source}|{experiment_2}@{frame2.source}"`
   (e.g. `cylinder_traits.csv@v3_cleaned|turface_traits.csv@v2_cleaned`). Documented as
@@ -100,8 +110,8 @@ changing the shared types:
   leading `_experiment` label column (`1`/`2`) into one temporary combined CSV, so
   `AnalysisDir.input_sha256` content-addresses **both** inputs' bytes in a single hash
   rather than covering only one side.
-- **Guard (added on review):** the encoding above assumed filenames/version labels
-  never contain `@` or `|`, but the existing experiment-name guard
+- **Guard (added on the first review pass):** the encoding above assumed filenames/
+  version labels never contain `@` or `|`, but the existing experiment-name guard
   (`_qc_shared._validate_experiment_name`) only rejects path separators and `..` — not
   `@`/`|`. A real filename containing either character would silently corrupt the
   composite round-trip. The tool therefore explicitly rejects `experiment_1`/
@@ -109,6 +119,46 @@ changing the shared types:
   building either composite string — a small, tool-local check (not a change to the
   shared `_validate_experiment_name`, since this constraint is specific to this
   tool's encoding scheme, not a general experiment-name rule every tool should hold).
+- **Second, more serious guard needed (found in PR review, confirmed by
+  reproduction): the `@`/`|` guard alone was not sufficient.** The originally-shipped
+  composite key, `f"{Path(experiment_1).stem}__x__{Path(experiment_2).stem}"`, is
+  vulnerable to `AnalysisDir`'s own re-applied `Path(...).stem` whenever *either
+  original stem itself* contains a dot — a case the `@`/`|` guard does nothing about,
+  and no test fixture used a dotted stem, so it shipped unnoticed. Reproduced directly:
+  `experiment_1="my.experiment.v2.csv"` has `Path(...).stem == "my.experiment.v2"`;
+  joining with `experiment_2="cylinder.csv"`'s stem gives the composite
+  `"my.experiment.v2__x__cylinder"`; `AnalysisDir` then re-applies
+  `Path("my.experiment.v2__x__cylinder").stem`, which strips at the *last* dot in that
+  composite string — `"my.experiment"` — silently discarding `experiment_2`'s name and
+  the `__x__` separator entirely. Two different `(experiment_1, experiment_2)` pairs
+  that happen to produce the same truncated prefix would then collide in the same
+  storage directory — silent data mixing between unrelated runs, not a crash.
+  `FakeResultStore`'s own simplified stem helper (`name[:-4] if name.endswith(".csv")
+  else name`) does not reproduce `AnalysisDir`'s real `Path.stem` re-truncation
+  behavior, so no unit test running only against the fake store could have caught
+  this — confirmed by adding a test that exercises the real `AnalysisDir` class
+  directly (`test_analysis_dir_does_not_truncate_dotted_composite_key`).
+
+  **Fix:** each stem is passed through `_storage_safe_stem(name) ->
+  Path(name).stem.replace(".", "_")` before joining. Since the resulting composite
+  string is then guaranteed dot-free, `AnalysisDir`'s re-applied `Path(...).stem` is a
+  no-op on it regardless of what either original filename's stem contained — this
+  closes the vulnerability for *any* dotted filename, not just the one reproduction
+  case, which a narrower fix (e.g. rejecting dots in `experiment_1`/`experiment_2`
+  outright) would not have needed to reason about as carefully. `based_on_version`
+  needed no equivalent fix — it is never re-processed through `AnalysisDir.stem`,
+  only `experiment=` is.
+- **Self-correlation guard (found in PR review):** `experiment_1 == experiment_2` was
+  neither rejected nor tested — a plausible copy-paste mistake that would otherwise
+  silently compute and persist a meaningless self-vs-self correlation matrix under a
+  `"foo__x__foo"` storage key. Now rejected with `BloomMCPError(invalid_input)` before
+  any I/O.
+- **Argument-order sensitivity is now surfaced in the schema (found in PR review):**
+  `(experiment_1=A, experiment_2=B)` and `(experiment_1=B, experiment_2=A)` produce two
+  distinct composite keys and two independent, un-cross-referenced persisted runs —
+  already an accepted Open Question below, but previously undiscoverable from the
+  tool's own schema. Both `experiment_1`/`experiment_2` field descriptions now state
+  this explicitly.
 
 **Alternative considered and rejected:** extend `Provenance.based_on_version` and
 `StoredRun`/`create_run(experiment=...)` to accept a list of experiment/version pairs.
@@ -123,7 +173,12 @@ with two real call sites to design against instead of one speculative one.
 shared field's meaning, in the same spirit as D3 in `devendor-bloommcp-analysis/design.md`
 (a naming-convention bend that required explicit sign-off before landing). The exact
 formats above are now pinned verbatim in `spec.md`'s persistence requirement (not left
-to a paraphrase), so what is being signed off on is unambiguous.
+to a paraphrase), so what is being signed off on is unambiguous. The scheme's most
+serious known risk — silent truncation/collision for a dotted experiment filename — is
+now closed by `_storage_safe_stem` (above) and covered by two tests exercising the
+real `AnalysisDir` class, not just the fake store; this substantively de-risks what a
+human reviewer is being asked to approve, though the sign-off itself is still
+outstanding (tasks.md 1.3).
 
 ### D2 — Genotype-means via upstream `calculate_genotype_means`, not a bespoke `.groupby().mean()`
 
@@ -355,6 +410,19 @@ expectations) — it is a documentation obligation: the `trait_columns_1`/
 tasks.md 3.1), so it is visible in the tool's schema wherever an agent or human reads
 parameter docs, not buried only in this design doc.
 
+### D14 — Explicit path-traversal guard, not incidental safety
+
+**Found during PR review.** This tool never called the existing
+`_qc_shared._validate_experiment_name` guard; safety was incidental — it happened to
+hold only because the tool always calls `load_experiment(..., require_clean=True)`,
+whose real resolution path keys off `Path(filename).stem`/`.name` rather than the raw
+string, not because anything raised on a path-unsafe input. `pca_analysis`/`clustering`
+share this exact gap (pre-existing, not introduced here — out of scope to fix in this
+PR, a candidate follow-up to centralize). Given this tool doubles the untrusted-filename
+surface (two names instead of one), it now calls `_validate_experiment_name` explicitly
+on both `experiment_1` and `experiment_2` as defense-in-depth, rather than relying on
+the incidental protection alone.
+
 ## Risks / Trade-offs
 
 - **String-encoded composite fields are a readability/parseability trade-off**, not a
@@ -373,11 +441,18 @@ parameter docs, not buried only in this design doc.
   (verified: it didn't compute CIs either).
 - **A constant (zero-variance) genotype-mean trait may produce a `NaN` correlation row**
   that survives into `correlations.csv` rather than being filtered or raising — this
-  matches upstream's own documented behavior for its public `calculate_correlations`
-  helper (returns `(NaN, NaN)` for zero-variance input) and is accepted as a
-  pass-through here rather than a bloommcp-side rejection, since the row is
-  transparently NaN (not silently dropped or misrepresented) and a stricter guard
-  would diverge from what the delegate itself considers valid output.
+  matches the actual call path's behavior (the private `_calculate_correlations`
+  helper `calculate_cross_experiment_correlations` uses internally calls raw
+  `scipy.stats.pearsonr`/`spearmanr` with no zero-variance guard, emitting
+  `ConstantInputWarning` and returning `NaN`; corrected citation — an earlier draft of
+  this doc pointed at the public `calculate_correlations` wrapper, which has its own
+  explicit zero-variance check and is not actually on this tool's call path) and is
+  accepted as a pass-through here rather than a bloommcp-side rejection, since the row
+  is transparently NaN (not silently dropped or misrepresented) and a stricter guard
+  would diverge from what the delegate itself considers valid output. Exercised by
+  `test_constant_genotype_mean_trait_yields_nan_correlation_not_a_crash` — the NaN row
+  is confirmed excluded from `n_significant`/`n_highly_significant` (NaN comparisons
+  are always `False`), not silently corrupting either count.
 
 ## Migration / Rollout
 
@@ -388,6 +463,25 @@ currently always empty in a fresh environment) — this tool simply makes it a l
 target again, exactly as `descriptive_stats` already did for `stats`.
 `test_devendor_invariants.py`'s retired-tool list and drift guards are unaffected (this
 is a new tool, not a repoint of a retired one).
+
+**Testing infrastructure fix (found via this PR's own CI, not a design decision about
+this tool).** This tool's live smoke test (`test_cross_experiment_correlations_smoke.py`)
+failed in CI with `result["outputs"]` coming back an empty `{}`, even though
+`store.commit()` had genuinely succeeded (every other assertion in the same test
+passed). Root-caused to `bloommcp/tests/smoke/conftest.py`'s `_call_tool_sync` reading
+`result.data` — fastmcp's client-side reconstruction of the server's JSON into a
+dynamic type derived from the tool's output schema — rather than
+`result.structured_content` (the server's actual JSON, no reconstruction). fastmcp's
+`json_schema_to_type` names every untitled nested `object`-typed schema `Root`; a
+compound result schema with two such untitled shapes (the top-level result and the
+nested `outputs: dict[str, str]` field) collide on that name, and the nested field
+silently gets the top-level's own (fieldless) generated type instead of `dict[str,
+str]`. Confirmed directly against the live container for the long-shipped
+`pca_analysis` tool too (`structured_content` correct, `.data.outputs` empty) — this was
+a latent bug in *every* `RunLinks`-based tool's live-smoke coverage, invisible until
+this PR became the first smoke test to assert on `outputs` at all. Fixed at the shared
+`conftest.py` level (one line), benefiting every smoke test in the package, not patched
+around locally in this tool's own test file.
 
 ## Open Questions
 
@@ -400,8 +494,18 @@ is a new tool, not a repoint of a retired one).
   rather than deciding unilaterally.
 - D1's reviewer sign-off — who signs off on the composite-string persistence encoding
   (mirrors the `devendor-bloommcp-analysis` D3 precedent of requiring an explicit
-  approver for a convention bend)? The exact format is now pinned in spec.md, so this
-  is a concrete artifact to review, not an open-ended one.
+  approver for a convention bend)? The exact format is now pinned in spec.md, and the
+  scheme's most serious known risk (dotted-filename truncation) is fixed and tested
+  against the real `AnalysisDir`, so this is a concrete, substantially de-risked
+  artifact to review — still an outstanding human sign-off, not something this PR can
+  resolve on its own (tasks.md 1.3).
 - ~~Should D3's deferred `calculate_correlation_confidence_intervals` question be raised
   with upstream alongside the D8 bug report?~~ Resolved: both raised in the same thread,
   [talmolab/sleap-roots-analyze#205](https://github.com/talmolab/sleap-roots-analyze/issues/205).
+- The recorded golden fixture (`turface_cylinder_cross_experiment_correlation_golden.json`)
+  is not bit-for-bit reproducible across regenerations of
+  `scripts/gen_cross_experiment_correlation_golden.py` — re-running it produced
+  correlation values differing at ~1e-16 (BLAS/threading float noise), functionally
+  irrelevant given every comparison test's `abs=1e-6` tolerance, but worth knowing
+  before assuming a diff in the checked-in JSON on a future regeneration signals a
+  real regression rather than routine noise (found in PR review).

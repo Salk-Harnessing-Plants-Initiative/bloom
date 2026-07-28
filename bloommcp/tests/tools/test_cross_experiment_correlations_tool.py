@@ -4,7 +4,8 @@ bloommcp's first two-experiment-input consumer. Around the 5 standard contract p
 (schema round-trip, no-leak, require_clean, persistence, deterministic-no-seed) this file
 covers what's specific to a dual-input tool: independent per-experiment validation
 (cleaned version, genotype column, trait selection, finiteness), the composite
-``experiment``/``based_on_version`` encoding (design.md D1), the reserved-`correlation`
+``experiment``/``based_on_version`` encoding (design.md D1) — including the dot-safe
+storage key fix for a truncation bug found in review — the reserved-`correlation`
 tool_class reuse (design.md D9), and — the north-star oracle — the confirmed upstream
 ``min_samples`` no-op and bloommcp's pre-filter workaround (design.md D8,
 talmolab/sleap-roots-analyze#205), reproduced against the real turface_19/cylinder
@@ -30,6 +31,8 @@ from bloom_mcp.sections.sleap_roots.analysis import (
 from bloom_mcp.sections.sleap_roots.analysis.cross_experiment_correlations import (
     CrossExperimentCorrelationsParams,
     CrossExperimentCorrelationsResult,
+    _COMPOSITE_SEPARATOR,
+    _storage_safe_stem,
     cross_experiment_correlations,
 )
 
@@ -67,7 +70,9 @@ def _correlated_pair() -> tuple[pd.DataFrame, pd.DataFrame]:
 def _uncorrelated_pair() -> tuple[pd.DataFrame, pd.DataFrame]:
     """Genotype-mean traits with real variance but only a weak (r~0.33) relationship —
     for the zero-significant case. Deliberately not near-constant (a near-constant
-    genotype mean triggers scipy's ConstantInputWarning / an undefined correlation)."""
+    genotype mean triggers scipy's ConstantInputWarning / an undefined correlation —
+    see test_constant_genotype_mean_trait_yields_nan_correlation_not_a_crash for that
+    case exercised deliberately)."""
     df1 = pd.DataFrame(
         {
             "Genotype": ["G1", "G1", "G1", "G2", "G2", "G2", "G3", "G3", "G3"],
@@ -108,7 +113,27 @@ def _run(**overrides) -> CrossExperimentCorrelationsResult:
     return cross_experiment_correlations(CrossExperimentCorrelationsParams(**params))
 
 
-# ── 2.1 delegation, no reimplementation ──────────────────────────────────────
+def _captured_outputs(store, monkeypatch, run_fn) -> dict[str, str]:
+    """Run once, returning every committed output's staged text keyed by filename.
+
+    ``FakeResultStore.commit`` tears down the staging dir on success (mirroring the
+    real adapter's ephemeral local staging), so outputs must be captured at commit
+    time — mirrors ``test_clustering_tool.py``'s ``_labels_of`` helper.
+    """
+    holder: dict[str, str] = {}
+    real_commit = store.commit
+
+    def _commit(run, outputs):
+        for name in outputs:
+            holder[name] = (run.staging_dir / name).read_text(encoding="utf-8")
+        return real_commit(run, outputs)
+
+    monkeypatch.setattr(store, "commit", _commit)
+    run_fn()
+    return holder
+
+
+# ── delegation, no reimplementation ──────────────────────────────────────────
 
 
 def test_delegates_to_upstream_correlation_chain(injected_ports, monkeypatch):
@@ -158,27 +183,32 @@ def test_load_and_align_experiments_never_called(injected_ports, monkeypatch):
     _run()  # must not raise
 
 
-# ── 2.2 min_samples pre-filter (north-star oracle: the confirmed upstream bug) ──
+def test_upstream_min_samples_no_op_still_present():
+    """Regression pin for design.md D8 / talmolab/sleap-roots-analyze#205: calls the
+    RAW upstream delegate directly (bypassing bloommcp entirely) and asserts the
+    no-op is still present. If upstream ever fixes it, this test fails LOUDLY,
+    signaling that bloommcp's pre-filter workaround should be reconsidered/removed
+    rather than silently going stale alongside a fixed dependency."""
+    from sleap_roots_analyze import calculate_cross_experiment_correlations
+
+    exp1_means = pd.DataFrame(
+        {"t1": [1.0, 2.0, 3.0], "n_samples": [10, 10, 1]}, index=["G1", "G2", "G3"]
+    )
+    exp2_means = pd.DataFrame(
+        {"t2": [1.0, 2.0, 3.0], "n_samples": [10, 10, 1]}, index=["G1", "G2", "G3"]
+    )
+    # G3 has only 1 sample; min_samples=5 SHOULD exclude it if actually enforced.
+    result = calculate_cross_experiment_correlations(
+        exp1_means, exp2_means, ["t1"], ["t2"], min_samples=5
+    )
+    assert int(result["n_genotypes"].iloc[0]) == 3, (
+        "upstream's min_samples filtering appears to have been fixed in "
+        "sleap_roots_analyze -- re-evaluate design.md D8's bloommcp-side pre-filter "
+        "workaround (talmolab/sleap-roots-analyze#205); it may now be redundant"
+    )
 
 
-def _captured_outputs(store, monkeypatch, run_fn) -> dict[str, str]:
-    """Run once, returning every committed output's staged text keyed by filename.
-
-    ``FakeResultStore.commit`` tears down the staging dir on success (mirroring the
-    real adapter's ephemeral local staging), so outputs must be captured at commit
-    time — mirrors ``test_clustering_tool.py``'s ``_labels_of`` helper.
-    """
-    holder: dict[str, str] = {}
-    real_commit = store.commit
-
-    def _commit(run, outputs):
-        for name in outputs:
-            holder[name] = (run.staging_dir / name).read_text(encoding="utf-8")
-        return real_commit(run, outputs)
-
-    monkeypatch.setattr(store, "commit", _commit)
-    run_fn()
-    return holder
+# ── min_samples pre-filter (north-star oracle: the confirmed upstream bug) ──────
 
 
 def test_min_samples_prefilter_actually_excludes_under_replicated_genotypes(
@@ -222,7 +252,7 @@ def test_min_samples_prefilter_actually_excludes_under_replicated_genotypes(
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
-# ── 2.3 require cleaned input on both sides ──────────────────────────────────
+# ── require cleaned input on both sides ──────────────────────────────────────
 
 
 def test_requires_cleaned_version_both_experiments():
@@ -258,51 +288,113 @@ def test_two_cleaned_experiments_consumed_reports_sources(injected_ports):
     assert result.source_2 == "v1_cleaned"
 
 
-# ── 2.4 required genotype column on both sides ───────────────────────────────
+# ── required genotype column on both sides (genuinely symmetric) ────────────────
 
 
 def test_missing_genotype_role_either_side_rejected():
-    reader = FakeReader()
-    store = FakeResultStore()
     df1, df2 = _correlated_pair()
-    no_geno = df1.drop(columns=["Genotype"])
-    reader.add_cleaned_version(_EXP_1, "v1", no_geno, make_latest=True)
-    reader.add_cleaned_version(_EXP_2, "v1", df2, make_latest=True)
-    _ports.configure(reader=reader, store=store)
-    try:
-        with pytest.raises(BloomMCPError) as exc:
-            cross_experiment_correlations(
-                CrossExperimentCorrelationsParams(
-                    experiment_1=_EXP_1, experiment_2=_EXP_2
+    no_geno_1 = df1.drop(columns=["Genotype"])
+    no_geno_2 = df2.drop(columns=["Genotype"])
+
+    for bad_df1, bad_df2, offending in (
+        (no_geno_1, df2, _EXP_1),
+        (df1, no_geno_2, _EXP_2),
+    ):
+        reader = FakeReader()
+        store = FakeResultStore()
+        reader.add_cleaned_version(_EXP_1, "v1", bad_df1, make_latest=True)
+        reader.add_cleaned_version(_EXP_2, "v1", bad_df2, make_latest=True)
+        _ports.configure(reader=reader, store=store)
+        try:
+            with pytest.raises(BloomMCPError) as exc:
+                cross_experiment_correlations(
+                    CrossExperimentCorrelationsParams(
+                        experiment_1=_EXP_1, experiment_2=_EXP_2
+                    )
                 )
-            )
-        assert exc.value.code == "assumption_violated"
-        assert _EXP_1 in exc.value.message
-    finally:
-        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+            assert exc.value.code == "assumption_violated"
+            assert offending in exc.value.message
+        finally:
+            _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
-# ── 2.5 finite-value defense-in-depth ─────────────────────────────────────────
+# ── finite-value defense-in-depth (genuinely symmetric) ─────────────────────────
 
 
 def test_non_finite_value_either_side_rejected():
+    for offending, mutate in (
+        (
+            _EXP_1,
+            lambda d1, d2: d1.__setitem__(
+                "TraitA1", [float("inf")] + list(d1["TraitA1"][1:])
+            ),
+        ),
+        (
+            _EXP_2,
+            lambda d1, d2: d2.__setitem__(
+                "TraitB1", [float("inf")] + list(d2["TraitB1"][1:])
+            ),
+        ),
+    ):
+        df1, df2 = _correlated_pair()
+        mutate(df1, df2)
+        reader = FakeReader()
+        store = FakeResultStore()
+        reader.add_cleaned_version(_EXP_1, "v1", df1, make_latest=True)
+        reader.add_cleaned_version(_EXP_2, "v1", df2, make_latest=True)
+        _ports.configure(reader=reader, store=store)
+        try:
+            with pytest.raises(BloomMCPError) as exc:
+                _run()
+            assert exc.value.code == "assumption_violated"
+            assert offending in exc.value.message
+        finally:
+            _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+@pytest.mark.filterwarnings("ignore:.*constant.*:UserWarning")
+def test_constant_genotype_mean_trait_yields_nan_correlation_not_a_crash():
+    """design.md's Risks section accepts that a constant (zero-variance) genotype-mean
+    trait can yield a NaN correlation row that passes through into correlations.csv
+    rather than being rejected. This proves that acceptance path is actually exercised
+    (not just theorized) and that the NaN row is correctly excluded from
+    n_significant/n_highly_significant (NaN comparisons are always False in pandas),
+    not silently corrupting either count."""
     reader = FakeReader()
     store = FakeResultStore()
-    df1, df2 = _correlated_pair()
-    df1.loc[0, "TraitA1"] = float("inf")
+    df1 = pd.DataFrame(
+        {
+            "Genotype": ["G1", "G1", "G1", "G2", "G2", "G2", "G3", "G3", "G3"],
+            "TraitA1": [5.0] * 9,  # constant -> constant genotype means -> NaN r
+        }
+    )
+    df2 = pd.DataFrame(
+        {
+            "Genotype": ["G1", "G1", "G1", "G2", "G2", "G2", "G3", "G3", "G3"],
+            "TraitB1": [100.0, 102.0, 98.0, 200.0, 205.0, 195.0, 300.0, 295.0, 305.0],
+        }
+    )
     reader.add_cleaned_version(_EXP_1, "v1", df1, make_latest=True)
     reader.add_cleaned_version(_EXP_2, "v1", df2, make_latest=True)
     _ports.configure(reader=reader, store=store)
     try:
-        with pytest.raises(BloomMCPError) as exc:
-            _run()
-        assert exc.value.code == "assumption_violated"
-        assert _EXP_1 in exc.value.message
+        result = cross_experiment_correlations(
+            CrossExperimentCorrelationsParams(
+                experiment_1=_EXP_1,
+                experiment_2=_EXP_2,
+                trait_columns_1=["TraitA1"],
+                trait_columns_2=["TraitB1"],
+                r_threshold=0.0,
+            )
+        )
+        assert result.n_correlations == 1
+        assert result.n_significant == 0
+        assert result.n_highly_significant == 0
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
-# ── 2.8 degenerate vs. empty-but-valid ────────────────────────────────────────
+# ── degenerate vs. empty-but-valid ───────────────────────────────────────────
 
 
 def test_zero_correlations_is_degenerate_input():
@@ -319,6 +411,33 @@ def test_zero_correlations_is_degenerate_input():
             _run()
         assert exc.value.code == "assumption_violated"
         assert store.list_runs("expA__x__expB", "correlation") == []
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def test_exactly_one_shared_genotype_is_degenerate():
+    """Correlation is mathematically undefined at n=1; the delegate's own hardcoded
+    <3-genotype floor makes this indistinguishable from zero shared genotypes, so the
+    same assumption_violated path fires."""
+    reader = FakeReader()
+    store = FakeResultStore()
+    df1 = pd.DataFrame({"Genotype": ["G1", "G1", "G1"], "TraitA1": [1.0, 2.0, 3.0]})
+    df2 = pd.DataFrame({"Genotype": ["G1", "G1", "G1"], "TraitB1": [10.0, 20.0, 30.0]})
+    reader.add_cleaned_version(_EXP_1, "v1", df1, make_latest=True)
+    reader.add_cleaned_version(_EXP_2, "v1", df2, make_latest=True)
+    _ports.configure(reader=reader, store=store)
+    try:
+        with pytest.raises(BloomMCPError) as exc:
+            cross_experiment_correlations(
+                CrossExperimentCorrelationsParams(
+                    experiment_1=_EXP_1,
+                    experiment_2=_EXP_2,
+                    trait_columns_1=["TraitA1"],
+                    trait_columns_2=["TraitB1"],
+                    min_samples=1,
+                )
+            )
+        assert exc.value.code == "assumption_violated"
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
@@ -346,7 +465,7 @@ def test_zero_significant_is_not_an_error():
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
-# ── 2.10/2.11 trait selection ─────────────────────────────────────────────────
+# ── trait selection ───────────────────────────────────────────────────────────
 
 
 def test_default_trait_selection_uses_full_certified_set_both_sides(injected_ports):
@@ -360,19 +479,22 @@ def test_default_trait_selection_uses_full_certified_set_both_sides(injected_por
     assert result.n_traits_2 == len(frame2.trait_cols)
 
 
-def test_trait_columns_validated_independently(injected_ports):
-    for kwargs, needle in [
+@pytest.mark.parametrize(
+    "kwargs,needle",
+    [
         ({"trait_columns_1": ["NoSuchTrait"]}, "NoSuchTrait"),
         ({"trait_columns_2": ["NoSuchTrait"]}, "NoSuchTrait"),
         ({"trait_columns_1": []}, _EXP_1),
         ({"trait_columns_2": []}, _EXP_2),
         ({"trait_columns_1": ["TraitA1", "TraitA1"]}, "TraitA1"),
         ({"trait_columns_2": ["TraitB1", "TraitB1"]}, "TraitB1"),
-    ]:
-        with pytest.raises(BloomMCPError) as exc:
-            _run(**kwargs)
-        assert exc.value.code == "invalid_input"
-        assert needle in exc.value.message
+    ],
+)
+def test_trait_columns_validated_independently(injected_ports, kwargs, needle):
+    with pytest.raises(BloomMCPError) as exc:
+        _run(**kwargs)
+    assert exc.value.code == "invalid_input"
+    assert needle in exc.value.message
 
 
 def test_non_numeric_trait_column_names_experiment(injected_ports):
@@ -382,7 +504,7 @@ def test_non_numeric_trait_column_names_experiment(injected_ports):
     assert _EXP_1 in exc.value.message
 
 
-# ── 2.12 deterministic, no seed ───────────────────────────────────────────────
+# ── deterministic, no seed ────────────────────────────────────────────────────
 
 
 def test_seed_recorded_as_none(injected_ports):
@@ -400,7 +522,7 @@ def test_repeated_runs_identical(injected_ports):
     assert first.n_highly_significant == second.n_highly_significant
 
 
-# ── 2.14/2.15 composite experiment/based_on_version + reserved-character guard ──
+# ── composite experiment/based_on_version + reserved-character/self/path guards ──
 
 
 def test_run_persisted_with_composite_experiment_and_based_on_version(
@@ -438,23 +560,93 @@ def test_reserved_encoding_character_in_filename_rejected(injected_ports, bad_fi
     assert bad_field in exc.value.message
 
 
-# ── 2.16/2.17 content-addressing + genotype-means artifacts ──────────────────
+def test_self_correlation_rejected():
+    """experiment_1 == experiment_2 is rejected up front, not silently computed as a
+    meaningless self-vs-self correlation matrix (found in review)."""
+    with pytest.raises(BloomMCPError) as exc:
+        cross_experiment_correlations(
+            CrossExperimentCorrelationsParams(experiment_1=_EXP_1, experiment_2=_EXP_1)
+        )
+    assert exc.value.code == "invalid_input"
+    assert _EXP_1 in exc.value.message
+
+
+@pytest.mark.parametrize("bad_field", ["experiment_1", "experiment_2"])
+def test_path_unsafe_experiment_name_rejected(bad_field):
+    """Explicit path-traversal guard (defense-in-depth, found in review — this tool's
+    safety was previously incidental, not an explicit check)."""
+    kwargs = {"experiment_1": _EXP_1, "experiment_2": _EXP_2}
+    kwargs[bad_field] = "../secrets/passwd.csv"
+    with pytest.raises(BloomMCPError) as exc:
+        cross_experiment_correlations(CrossExperimentCorrelationsParams(**kwargs))
+    assert exc.value.code == "invalid_input"
+
+
+def test_storage_safe_stem_immune_to_restemming():
+    """Regression test for the composite-key truncation bug found in review: a naive
+    f"{Path(e1).stem}__x__{Path(e2).stem}" composite is vulnerable to AnalysisDir's own
+    re-applied Path(...).stem whenever either original stem contains a dot (e.g.
+    "my.experiment.v2.csv" -> stem "my.experiment.v2"), silently truncating the second
+    experiment's name and risking a storage collision. This proves the fix removes
+    that vulnerability for arbitrary dotted filenames, not just the tested fixtures."""
+    for e1, e2 in [
+        ("my.experiment.v2.csv", "cylinder.csv"),
+        ("a.b.c.csv", "d.e.f.csv"),
+        ("plain.csv", "plain2.csv"),
+    ]:
+        composite = (
+            f"{_storage_safe_stem(e1)}{_COMPOSITE_SEPARATOR}{_storage_safe_stem(e2)}"
+        )
+        assert (
+            Path(composite).stem == composite
+        ), f"composite key {composite!r} is still vulnerable to re-stemming"
+        assert _storage_safe_stem(e1) in composite
+        assert _storage_safe_stem(e2) in composite
+
+
+def test_analysis_dir_does_not_truncate_dotted_composite_key():
+    """Directly exercises the REAL AnalysisDir (not FakeResultStore, whose simplified
+    stem helper cannot reproduce this bug — see design.md D1) against this tool's
+    actual composite-key construction, for the exact kind of filename the review's
+    reproduction used."""
+    from bloom_mcp.manifest.analysis_dir import AnalysisDir
+
+    e1, e2 = "my.experiment.v2.csv", "cylinder.csv"
+    composite = (
+        f"{_storage_safe_stem(e1)}{_COMPOSITE_SEPARATOR}{_storage_safe_stem(e2)}"
+    )
+    adir = AnalysisDir("bloommcp_output", composite, "correlation")
+    assert adir.stem == composite
+    assert "cylinder" in adir.stem
+
+
+# ── content-addressing + genotype-means artifacts ────────────────────────────
 
 
 def test_source_csv_content_addresses_both_inputs(injected_ports):
     _reader, store = injected_ports
-    hashes = []
-    for trait_val in (1.0, 999.0):
+
+    def _hash_for(vary_exp1: float | None, vary_exp2: float | None) -> str:
         reader = FakeReader()
         df1, df2 = _correlated_pair()
-        df2.loc[0, "TraitB1"] = trait_val
+        if vary_exp1 is not None:
+            df1.loc[0, "TraitA1"] = vary_exp1
+        if vary_exp2 is not None:
+            df2.loc[0, "TraitB1"] = vary_exp2
         reader.add_cleaned_version(_EXP_1, "v1", df1, make_latest=True)
         reader.add_cleaned_version(_EXP_2, "v1", df2, make_latest=True)
         _ports.configure(reader=reader, store=store)
         _run()
         stored = store.get_run("expA__x__expB", "correlation", "latest")
-        hashes.append(stored.output_sha256["correlations.csv"])
-    assert hashes[0] != hashes[1]
+        return stored.output_sha256["correlations.csv"]
+
+    baseline = _hash_for(None, None)
+    assert (
+        _hash_for(999.0, None) != baseline
+    ), "experiment_1 alone should change the hash"
+    assert (
+        _hash_for(None, 999.0) != baseline
+    ), "experiment_2 alone should change the hash"
 
 
 def test_genotype_means_artifacts_persisted(injected_ports):
@@ -465,7 +657,7 @@ def test_genotype_means_artifacts_persisted(injected_ports):
     assert "genotype_means_2.csv" in stored.output_keys
 
 
-# ── 2.18/2.19 summary serializable, no full matrix inline ────────────────────
+# ── summary serializable, no full matrix inline ──────────────────────────────
 
 
 def test_summary_json_serializable_no_numpy_leaks(injected_ports, monkeypatch):
@@ -491,7 +683,7 @@ def test_result_never_inlines_full_correlation_matrix(injected_ports):
     assert not any(isinstance(v, list) and len(v) > 20 for v in dumped.values())
 
 
-# ── 2.20 discoverable via list_existing_analyses (reused correlation slot) ────
+# ── discoverable via list_existing_analyses (reused correlation slot) ────────
 
 
 def test_discoverable_via_list_existing_analyses(injected_ports):
@@ -506,7 +698,7 @@ def test_discoverable_via_list_existing_analyses(injected_ports):
     assert "correlation" in response["analyses"]
 
 
-# ── 2.21/2.22 schema round-trip + out-of-range params ─────────────────────────
+# ── schema round-trip + out-of-range params ──────────────────────────────────
 
 
 def test_schema_round_trip(injected_ports):
@@ -541,7 +733,7 @@ def test_out_of_range_parameters_rejected(injected_ports, bad_kwargs):
     assert exc.value.code == "invalid_input"
 
 
-# ── 2.23 no leaked internals ──────────────────────────────────────────────────
+# ── no leaked internals ───────────────────────────────────────────────────────
 
 
 def test_no_error_leaks_backend_internals(injected_ports, monkeypatch):
@@ -572,10 +764,10 @@ def test_cross_experiment_correlations_in_tools_list():
     assert tools["sleap_roots_cross_experiment_correlations"].inputSchema is not None
 
 
-# ── 2.24 numeric oracle against the real turface_19/cylinder golden ──────────
+# ── numeric oracle against the real turface_19/cylinder golden ──────────────
 
 
-def test_reproduces_golden_correlation_unfiltered():
+def test_reproduces_golden_correlation_unfiltered(monkeypatch):
     reader = FakeReader()
     store = FakeResultStore()
     turface = pd.read_csv(_FIXTURES / "turface_19_final_data.csv")
@@ -584,18 +776,27 @@ def test_reproduces_golden_correlation_unfiltered():
     reader.add_cleaned_version("cylinder.csv", "v1", cylinder, make_latest=True)
     _ports.configure(reader=reader, store=store)
     try:
-        result = cross_experiment_correlations(
-            CrossExperimentCorrelationsParams(
-                experiment_1="turface_19.csv",
-                experiment_2="cylinder.csv",
-                trait_columns_1=[_GOLDEN["trait_1"]],
-                trait_columns_2=[_GOLDEN["trait_2"]],
-                min_samples=1,
-                r_threshold=0.0,
+
+        def _call():
+            return cross_experiment_correlations(
+                CrossExperimentCorrelationsParams(
+                    experiment_1="turface_19.csv",
+                    experiment_2="cylinder.csv",
+                    trait_columns_1=[_GOLDEN["trait_1"]],
+                    trait_columns_2=[_GOLDEN["trait_2"]],
+                    min_samples=1,
+                    r_threshold=0.0,
+                )
             )
-        )
+
+        outputs = _captured_outputs(store, monkeypatch, _call)
         g = _GOLDEN["unfiltered"]
-        assert result.n_correlations == 1
-        assert result.n_significant == (1 if g["significant"] else 0)
+        corr_csv = pd.read_csv(io.StringIO(outputs["correlations.csv"]))
+        assert int(corr_csv["n_genotypes"].iloc[0]) == g["n_genotypes"]
+        assert corr_csv["correlation"].iloc[0] == pytest.approx(
+            g["correlation"], abs=_TOL
+        )
+        assert corr_csv["p_value"].iloc[0] == pytest.approx(g["p_value"], abs=_TOL)
+        assert bool(corr_csv["significant"].iloc[0]) == g["significant"]
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
