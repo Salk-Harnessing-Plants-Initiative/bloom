@@ -190,8 +190,10 @@ one scan on the target server — the command explains that the scan's images mu
 already exist in `cyl_images` on the Bloom you're pointed at.
 
 Auth: uses your saved login profile, which must have write access
-(`bloom_writer` / `bloom_admin`). Non-interactive / scoped credentials for
-cluster/CI use are tracked separately (#398).
+(`bloom_writer` / `bloom_admin`). For non-interactive / scoped credentials for
+cluster/CI use, see
+[`docs/credentials/bloom-workflows-a4-pipeline.md`](../docs/credentials/bloom-workflows-a4-pipeline.md)
+(tracked by #398).
 
 Examples:
 
