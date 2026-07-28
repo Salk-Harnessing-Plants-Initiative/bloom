@@ -69,11 +69,17 @@ new blanket convention.
 
 ## Consequence for hand-maintained tool-name lists
 
-Two client-side lists match MCP tool names by exact string: `ALWAYS_INCLUDE_MCP_TOOLS`
-(`langchain/routes/chat.py`) and `HIDDEN_TOOLS` (`web/components/mcp-chat-client.tsx`). Section
-namespacing changes a tool's *registered* name (e.g. `list_available_experiments` becomes
-`core_list_available_experiments`), so both lists match **prefix-aware** (exact name, or
+One list matches MCP tool names by exact string: `ALWAYS_INCLUDE_MCP_TOOLS`
+(`langchain/helpers/foundational_tools.py`), consumed by `langchain/routes/chat.py` to always
+include these tools in the agent's toolset regardless of routing, and by
+`langchain/server.py`'s `GET /langchain/mcp-tools` to mark each tool `foundational: bool` in
+its response. The web client (`web/components/mcp-chat-client.tsx`) no longer keeps a second,
+independent list (the retired `HIDDEN_TOOLS`) — it filters its tool picker on that
+`foundational` field instead (see `refactor-foundational-tool-list`). Section namespacing
+changes a tool's *registered* name (e.g. `list_available_experiments` becomes
+`core_list_available_experiments`), so the list matches **prefix-aware** (exact name, or
 `<anything>_<base name>`) rather than requiring an exact literal — otherwise a namespacing
-change would silently empty a always-included/hidden set with no test failure. A drift-guard
-test in `bloommcp/tests/test_devendor_invariants.py` parses both lists' source and asserts every
-name they carry resolves to a live tool in the mounted registry.
+change would silently empty the always-included/foundational set with no test failure. A
+drift-guard test in `bloommcp/tests/test_devendor_invariants.py` parses the list's source and
+asserts every name it carries resolves to a live tool in the mounted registry, plus a
+content-based check that the web client hasn't reintroduced a hand-list of its own.

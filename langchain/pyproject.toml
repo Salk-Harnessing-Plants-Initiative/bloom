@@ -42,3 +42,9 @@ dependencies = [
     # repo convention.
     "mcp>=1.28.1",
 ]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
