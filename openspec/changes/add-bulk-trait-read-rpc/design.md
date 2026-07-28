@@ -109,11 +109,12 @@ pattern — a bare `SET LOCAL ROLE authenticated` has no JWT/session context, so
 ### D4 — Same forward-only migration + rollback convention as the shipped precedent
 
 Single migration file, `BEGIN; … COMMIT;`, dependency-ordered: (1) `get_experiment_traits` (2)
-`list_experiment_trait_sources`. Both are pure additions (`CREATE FUNCTION`, no `DROP`/`CREATE OR
-REPLACE` of anything existing) — unlike the source-aware migration, this one touches no pre-existing
-object, so there is no drop-then-recreate step and no "does the grant survive DROP VIEW" concern (D5 in
-the prior design). Companion rollback under `supabase/rollbacks/` simply `DROP FUNCTION IF EXISTS` both,
-by full argument signature (to avoid ambiguity if a future change ever overloads them).
+`list_experiment_trait_sources`. Both use `CREATE OR REPLACE FUNCTION` (safely re-runnable, matching the
+idempotency test) even though neither replaces a pre-existing object — unlike the source-aware
+migration, this one touches no pre-existing object, so there is no drop-then-recreate step and no "does
+the grant survive DROP VIEW" concern (D5 in the prior design). Companion rollback under
+`supabase/rollbacks/` simply `DROP FUNCTION IF EXISTS` both, by full argument signature (to avoid
+ambiguity if a future change ever overloads them).
 
 ## Migration / Rollback
 

@@ -2419,6 +2419,22 @@ export type Database = {
         Returns: Record<string, unknown>[]
       }
       dblink_is_busy: { Args: { "": string }; Returns: number }
+      get_experiment_traits: {
+        Args: { experiment_id_: number; run_id_?: string; source_id_?: number }
+        Returns: {
+          accession_name: string
+          date_scanned: string
+          germ_day: number
+          plant_age_days: number
+          plant_id: number
+          plant_qr_code: string
+          scan_id: number
+          source_id: number
+          trait_name: string
+          trait_value: number
+          wave_number: number
+        }[]
+      }
       get_scan_traits: {
         Args: { experiment_id_: number; run_id_?: string; source_id_?: number; trait_name_: string }
         Returns: {
@@ -2576,6 +2592,14 @@ export type Database = {
             }
             Returns: number
           }
+      list_experiment_trait_sources: {
+        Args: { experiment_id_: number }
+        Returns: {
+          pipeline_run_id: string
+          source_id: number
+          source_name: string
+        }[]
+      }
       scrna_cell_arrays: {
         Args: { ds_id: number }
         Returns: {
