@@ -113,19 +113,27 @@
       no cleanup step excludes a zero-mean trait); assert both fields are `None` in
       `stats_per_trait` **and** in the reloaded `stats.csv` (empty cell), never a raw `inf`/`nan`
       token, both trait names appear in `nonfinite_stat_traits`, and the call does not raise.
-- [x] 3.9b Finiteness re-verification guard (mirrors `pca_analysis`'s own `np.isfinite` guard): a
-      `FakeReader` cleaned frame where one certified trait carries a residual `NaN` (simulating a
-      reader/`qc_clean`-invariant violation, since nothing but `qc_clean`'s own write-time guard
-      normally prevents this) → `BloomMCPError(code="assumption_violated")`, no persisted run, and
-      `calculate_trait_statistics` is never called (the finiteness check runs before delegating, so
-      the delegate never silently returns an under-counted `n`).
+- [x] 3.9b Finiteness re-verification guard, **per trait — NOT `pca_analysis`'s all-or-nothing
+      guard** (corrected in a post-implementation review round; an earlier draft of this task, and
+      the initial implementation, copied `pca_analysis`'s whole-selection `assumption_violated`
+      raise verbatim — wrong, since each trait's stats are independent, unlike PCA/clustering's
+      cross-trait fit). Two coverage cases: (a) a `FakeReader` cleaned frame with one certified
+      trait carrying a residual `NaN` alongside another healthy trait → the `NaN` trait is excluded
+      from delegation and lands in `failed_traits`/`n_failed`, the delegate IS called (once) with
+      only the remaining finite trait(s), the healthy trait still reports normal statistics, and a
+      run still persists (`assumption_violated` is no longer raised by this tool at all); (b) every
+      selected trait carries a residual `NaN` → the delegate is never called, every trait lands in
+      `failed_traits`, `n_traits_reported == 0`, and a run still persists (no raise, no crash).
 - [x] 3.10 Delegate-failure defense-in-depth: monkeypatch `calculate_trait_statistics` to return
       `{"error": "No valid data"}` for one requested trait; assert that trait is excluded from
       `stats_per_trait`/`stats.csv`, `n_failed == 1`, `failed_traits == [<trait>]`, and the call
       still succeeds (no raised error, run still persisted for the remaining traits). Also cover the
       delegate omitting a requested trait from its result dict entirely (rather than returning an
-      `"error"` key) — the `results.get(trait)` defense in task 4.4 should route this the same way,
-      not raise a `KeyError`/`internal_error`.
+      `"error"` key), and (added in the same post-implementation review round as 3.9b) the delegate
+      returning a per-trait dict that is missing an expected stat key (e.g. `std`) — all three route
+      the same way via the `results.get(trait)`/key-membership defense in task 4.4, never a
+      `KeyError`/`internal_error`, and never a row with the missing field silently defaulted to
+      `None` (indistinguishable from a genuine non-finite coercion).
 - [x] 3.11 Composition (via the Supabase-adapter harness over `_InMemoryObjectStore`, mirroring
       `pca_analysis`'s/`remove_outliers`'s pattern): after `qc_clean` commits a cleaned version, a
       `descriptive_stats` run persists and its `stats.csv` is downloadable and parses with the
@@ -154,18 +162,24 @@
       source before implementing, not from memory).
 - [x] 4.3 Resolve `trait_cols`: `frame.trait_cols` if `params.trait_columns is None`, else
       `_validate_trait_subset(frame, params.trait_columns, params.experiment,
-      require_certified=True)` then use the caller's list. Then re-verify finiteness (mirrors
-      `pca_analysis`'s own guard): `if not np.isfinite(frame.df[trait_cols].to_numpy(dtype=float)).all():
-      raise BloomMCPError(code="assumption_violated", remedy="re-run qc_clean to produce a
-      finite-valued cleaned version")` — before delegating, so a residual-NaN certified trait never
-      silently under-counts `n` via the delegate's own per-trait `dropna()`.
-- [x] 4.4 Delegate: `results = calculate_trait_statistics(frame.df, trait_cols)`. For each trait in
-      `trait_cols` order: if `results.get(trait) is None` or `"error" in results[trait]`, append to
-      `failed` (the `None` branch guards a trait the delegate's dict omits entirely, not just an
-      explicit `"error"` key — defense-in-depth, not expected to be reachable given task 4.3's
-      finiteness guard); else build a `TraitStatistics` row, applying the non-finite → `None`
-      coercion (a small `_finite_or_none(x)` helper: `float(x) if math.isfinite(x) else None`) to
-      every numeric field and recording the trait name in `nonfinite_stat_traits` if any field was
+      require_certified=True)` then use the caller's list. Then re-verify finiteness **per column,
+      not over the whole selection** (corrected post-implementation — see 3.9b): compute
+      `np.isfinite(frame.df[trait_cols].to_numpy(dtype=float)).all(axis=0)` per column, partition
+      `trait_cols` into the finite subset (passed to the delegate) and the non-finite subset
+      (routed straight to `failed`, never delegated) — no `assumption_violated` raise anywhere in
+      this tool.
+- [x] 4.4 Delegate: `results = calculate_trait_statistics(frame.df, finite_trait_cols)` (empty dict
+      if `finite_trait_cols` is empty — never call the delegate with zero columns' worth of work
+      skipped entirely). For each trait in the ORIGINAL `trait_cols` order: if it was in the
+      non-finite subset from 4.3, append to `failed` directly; else if `results.get(trait) is None`,
+      `"error" in results[trait]`, `"count" not in results[trait]`, or any expected stat key is
+      missing from `results[trait]`, append to `failed` (the `None`/missing-key branches guard a
+      trait the delegate's dict omits or malforms — defense-in-depth, not expected to be reachable
+      given task 4.3's finiteness guard, but a missing key must route here rather than emit a
+      partially-`None` row indistinguishable from a genuine non-finite coercion); else build a
+      `TraitStatistics` row, applying the non-finite → `None` coercion (`_finite_or_none(x)`,
+      hoisted into `tools/_qc_shared.py` since `clustering.py` needed the same helper) to every
+      numeric field and recording the trait name in `nonfinite_stat_traits` if any field was
       coerced. No statistics math of its own.
 - [x] 4.5 Cap the inline list: `stats_per_trait = rows[:_SUMMARY_TRAIT_CAP]` (`= 50`),
       `truncated_in_summary = len(rows) > _SUMMARY_TRAIT_CAP`,

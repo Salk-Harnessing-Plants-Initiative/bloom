@@ -12,10 +12,23 @@ the openspec proposal ``add-bloommcp-descriptive-stats-tool``).
 declares no ``random_state`` and provenance records ``seed = None`` (matching `qc_clean` /
 `pca_analysis`).
 
-**Re-verifies finiteness before delegating**, mirroring `pca_analysis`'s own defense-in-depth
-guard: nothing but ``qc_clean``'s own pre-commit guard normally keeps a certified trait
-NaN-free, so a residual non-finite value in the selection is rejected up front rather than
-silently under-counting ``n`` via the delegate's own per-trait ``dropna()``.
+**Re-verifies finiteness before delegating, per trait — deliberately NOT `pca_analysis`'s
+all-or-nothing guard.** Nothing but ``qc_clean``'s own pre-commit guard normally keeps a
+certified trait NaN-free, so a residual non-finite value is still rejected rather than
+silently under-counting ``n`` via the delegate's own per-trait ``dropna()``. But unlike
+``pca_analysis``/``clustering`` (whose cross-trait fit genuinely needs every selected column
+finite at once, so one bad trait must block the whole call), each trait's descriptive
+statistics are independent — a residual NaN in one of up to 880 cylinder traits has no
+mathematical reason to block the other healthy traits. The offending trait(s) are routed to
+``failed_traits``/``n_failed`` (the same channel a delegate-reported failure uses) instead of
+raising and aborting the entire request.
+
+**A missing or malformed delegate entry is also routed to `failed_traits`, never emitted as a
+partially-``None`` row.** If the delegate omits a trait from its result dict, returns an
+explicit ``{"error": ...}``, or (defense-in-depth) is missing any expected stat key, that
+trait fails rather than producing a row indistinguishable from a genuine non-finite
+coercion — ``r.get(k)`` for an absent key would otherwise return ``None``, identical to a
+coerced ``inf``/``nan``, with no signal either happened.
 
 **Non-finite statistics are coerced, not leaked.** ``cv`` is ``inf`` whenever a certified
 trait's mean is exactly 0 — genuinely reachable (no cleanup step excludes a zero-mean
@@ -25,20 +38,37 @@ through real ``qc_clean`` output. Either way, non-finite values are coerced to `
 before the output model and the persisted CSV, and the affected trait names are collected
 in ``nonfinite_stat_traits`` rather than left as an unexplained blank cell.
 
+**A near-zero (but not exactly zero) mean is NOT coerced.** Coercion only fires on a
+non-finite (``inf``/``nan``) result — ``cv = std / mean`` for a mean of e.g. ``1e-9`` is a
+large but perfectly finite float, so it passes through as an ordinary (if visually extreme)
+``cv`` value, uncaveated beyond its sheer magnitude. This is a known, expected shape for
+zero-inflated cylinder traits, not a bug; a caller reading a huge ``cv`` should treat it as
+a near-zero-mean signal rather than a coercion the tool silently missed.
+
 **Bounded inline summary.** ``stats_per_trait`` is capped to the first 50 traits
 (``_SUMMARY_TRAIT_CAP``, carried over from the retired legacy workflow), with
 ``truncated_in_summary`` + ``omitted_traits`` naming exactly what was cut — necessary given
 the cylinder fixture's ~649-880 traits. The persisted ``stats.csv`` always contains every
 computed (non-failed) trait, uncapped.
 
-Persists a versioned run via the :class:`ResultStore` port under tool class ``stats`` (a
-new class — this tool's output does not compose as another tool's input, unlike ``qc``/
-``pca``/``clustering``).
+Persists a versioned run via the :class:`ResultStore` port under tool class ``stats`` —
+**reused, not new**: ``"stats"`` has been a reserved entry in
+``manifest.CANONICAL_TOOL_CLASSES`` and ``list_existing_analyses.TOOL_CLASSES`` since the
+pre-#438 legacy ``run_descriptive_stats_workflow`` was retired, kept intact there
+specifically so historical runs could still read back (see those modules' own "do NOT
+prune retired classes" comments). This tool reactivates it as a live write target rather
+than claiming a genuinely new slot. Practically: this tool's output doesn't compose as
+another tool's input the way a cleaned CSV or a PCA result does, so there's still no
+reason to share a class or a ``_resolve_versioned_cleaned``-style resolution rule with
+``qc``/``pca``/``clustering`` — but if any experiment already has legacy ``stats``-class
+runs sitting in storage from the retired workflow, this tool's runs land in the *same*
+version lineage, distinguishable only by ``VersionEntry.tool``. Verify no such legacy runs
+exist for experiments this tool will touch before relying on version numbers/``"latest"``
+resolution meaning what a fresh lineage would imply.
 """
 
 from __future__ import annotations
 
-import math
 from typing import Optional
 
 import numpy as np
@@ -50,7 +80,7 @@ from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
 from bloom_mcp.data_access import CleanedVersionRequiredError, ExperimentReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import snapshot_frame
-from bloom_mcp.tools._qc_shared import _validate_trait_subset
+from bloom_mcp.tools._qc_shared import _finite_or_none, _validate_trait_subset
 
 _TOOL_CLASS = "stats"
 _STATS_CSV_NAME = "stats.csv"
@@ -112,8 +142,19 @@ class TraitStatistics(BaseModel):
     min: Optional[float] = None
     max: Optional[float] = None
     cv: Optional[float] = None
-    skewness: Optional[float] = None
-    kurtosis: Optional[float] = None
+    skewness: Optional[float] = Field(
+        default=None,
+        description="SciPy's biased/population estimator (scipy.stats.skew's "
+        "default), NOT the sample-corrected version pandas/Excel default to -- the "
+        "two differ for the same data, so a value hand-verified against "
+        "df[trait].skew() won't match bit-for-bit.",
+    )
+    kurtosis: Optional[float] = Field(
+        default=None,
+        description="SciPy's biased/population estimator (scipy.stats.kurtosis's "
+        "default, excess kurtosis), NOT pandas/Excel's sample-corrected version -- "
+        "same caveat as skewness above.",
+    )
 
 
 class DescriptiveStatsResult(RunLinks):
@@ -140,14 +181,6 @@ class DescriptiveStatsResult(RunLinks):
         "from a non-finite delegate value (inf/-inf/nan) to None — e.g. cv for a "
         "zero-mean trait. Empty when every reported statistic was finite.",
     )
-
-
-def _finite_or_none(value: object) -> Optional[float]:
-    """Coerce a delegate statistic to a finite float, or ``None`` if it isn't one."""
-    if value is None:
-        return None
-    as_float = float(value)
-    return as_float if math.isfinite(as_float) else None
 
 
 @as_mcp_tool(
@@ -189,34 +222,48 @@ def descriptive_stats(
         trait_cols = list(params.trait_columns)
     selected = frame.df[trait_cols]
 
-    # Defense-in-depth (mirrors pca_analysis): a certified trait must be fully finite.
-    # Nothing but qc_clean's own write-time guard normally enforces this — without this
-    # check, a residual NaN would make the delegate's own per-trait dropna() silently
-    # under-count n with no signal.
-    if not np.isfinite(selected.to_numpy(dtype=float)).all():
-        raise BloomMCPError(
-            code="assumption_violated",
-            message=(
-                "The cleaned experiment carries non-finite values (NaN or ±inf) in its "
-                "certified trait columns."
-            ),
-            remedy="Re-run qc_clean to produce a finite-valued cleaned version, then retry.",
-        )
+    # Defense-in-depth, per trait — NOT pca_analysis/clustering's all-or-nothing guard.
+    # Nothing but qc_clean's own write-time guard normally enforces finiteness; without
+    # this check, a residual NaN would make the delegate's own per-trait dropna()
+    # silently under-count n with no signal. But each trait's descriptive stats are
+    # independent (no cross-trait fit the way PCA/clustering have), so a non-finite
+    # value in one trait must not block every other healthy trait in a selection of up
+    # to 880 (cylinder) — it is routed to failed_traits instead of aborting the request.
+    finite_by_col = np.isfinite(selected.to_numpy(dtype=float)).all(axis=0)
+    nonfinite_input_traits = {
+        trait for trait, finite in zip(trait_cols, finite_by_col) if not finite
+    }
+    delegate_trait_cols = [t for t in trait_cols if t not in nonfinite_input_traits]
 
     # Delegate ALL statistics. No math of its own here.
-    results = calculate_trait_statistics(frame.df, trait_cols)
+    results = (
+        calculate_trait_statistics(frame.df, delegate_trait_cols)
+        if delegate_trait_cols
+        else {}
+    )
 
     rows: list[TraitStatistics] = []
     failed: list[str] = []
     nonfinite_traits: list[str] = []
     for trait in trait_cols:
+        if trait in nonfinite_input_traits:
+            failed.append(trait)
+            continue
         r = results.get(trait)
         # r is None when the delegate omits a requested trait from its dict entirely
         # (rather than an explicit "error" key); "error" in r is the delegate's own
-        # all-NaN branch. Both are unreachable through a genuinely certified-clean
-        # selection (qc_clean guarantees no NaN cells in kept trait columns), but
-        # handled anyway as defense-in-depth rather than assumed impossible.
-        if r is None or "error" in r:
+        # all-NaN branch. A missing expected stat key is a malformed delegate entry —
+        # routed the same way rather than emitting a partially-None row indistinguishable
+        # from a genuine non-finite coercion. All three are unreachable through a
+        # genuinely certified-clean selection (qc_clean guarantees no NaN cells in kept
+        # trait columns), but handled anyway as defense-in-depth rather than assumed
+        # impossible.
+        if (
+            r is None
+            or "error" in r
+            or "count" not in r
+            or any(k not in r for k in _STAT_FIELDS)
+        ):
             failed.append(trait)
             continue
         fields = {k: _finite_or_none(r.get(k)) for k in _STAT_FIELDS}

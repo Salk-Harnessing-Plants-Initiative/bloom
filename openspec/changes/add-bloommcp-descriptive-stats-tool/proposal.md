@@ -49,17 +49,29 @@ bounded summary + links.
     `_validate_trait_subset(..., require_certified=True)` helper — reused verbatim, no new
     validation logic — so `trait_columns` (optional; omit for all certified traits) can't summarize
     a NaN-bearing or non-numeric column;
-  - **re-verifies the selection is fully finite before delegating** (mirrors `pca_analysis`'s own
-    `np.isfinite` defense-in-depth guard): a certified trait carrying a residual NaN would
-    otherwise make the delegate's own per-trait `dropna()` silently report `n < n_samples` with no
-    signal — a reader/`qc_clean`-invariant violation, not something to silently under-report;
+  - **re-verifies finiteness before delegating, per trait — NOT `pca_analysis`'s all-or-nothing
+    guard** (a post-implementation review correction; see design.md Decision 8): a certified trait
+    carrying a residual NaN would otherwise make the delegate's own per-trait `dropna()` silently
+    report `n < n_samples` with no signal — a reader/`qc_clean`-invariant violation, not something
+    to silently under-report. But unlike `pca_analysis`/`clustering` (whose cross-trait fit
+    genuinely needs every selected column finite at once), each trait's descriptive statistics are
+    independent, so the offending trait(s) are excluded from delegation and routed to
+    `failed_traits`/`n_failed` instead of raising and aborting the whole request — every trait is
+    still checked, but one bad trait no longer blocks every other healthy one. A missing/malformed
+    delegate entry (an absent expected stat key) is also routed to `failed_traits` rather than
+    silently emitting a row indistinguishable from a genuine non-finite coercion (design.md
+    Decision 9);
   - delegates **all** computation to `sleap_roots_analyze.calculate_trait_statistics(df,
     trait_cols)` in one call. The MCP contains **no statistics math** — no mean/std/quantile/
     skewness/kurtosis computation of its own;
   - **declares no `random_state`** — `calculate_trait_statistics` is a pure deterministic function
     (no RNG) — so provenance records `seed = None`, matching `qc_clean` / `pca_analysis`;
   - **persists the full per-trait table** (every selected trait, uncapped) as a versioned run via
-    the `ResultStore` port under a new tool class `stats`, writing `stats.csv` in the same
+    the `ResultStore` port under tool class `stats` — **reused from the retired pre-#438
+    `run_descriptive_stats_workflow`, not a new class** (`"stats"` has stayed a reserved entry in
+    `manifest.CANONICAL_TOOL_CLASSES` purely so that legacy workflow's historical runs could still
+    read back; see design.md Decision 2 for the version-lineage implication of reactivating it) —
+    writing `stats.csv` in the same
     long-format layout the legacy workflow used (`trait, n, mean, std, median, q25, q75, min, max,
     cv, skewness, kurtosis`) so any script that consumed the old `stats.csv` shape still parses the
     new one; records `based_on_version` = the consumed cleaned source (mirrors `pca_analysis`);

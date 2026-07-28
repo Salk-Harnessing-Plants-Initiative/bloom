@@ -63,10 +63,23 @@ and `clustering` (#309). The reusable seams are already built and unchanged by t
    is the one sibling that instead uses `assumption_violated`, and this tool does not follow it
    here — an earlier draft of this document incorrectly attributed `assumption_violated` to
    `pca_analysis`, corrected after review).
-2. **New tool class `"stats"`.** Distinct from `"qc"` (`qc_clean`/`remove_outliers`),
-   `"pca"`, and `"clustering"` — this tool's output (a long-format stats table) doesn't compose as
-   an input to any other tool the way a cleaned CSV or a PCA result does, so there's no reason to
-   share a class or a `_resolve_versioned_cleaned`-style resolution rule.
+2. **Tool class `"stats"` — reused from the retired legacy workflow, not new.** An earlier draft
+   of this document (and the proposal/docstring/commit messages) called this "a new tool class" —
+   wrong: `"stats"` has been a reserved entry in `manifest.CANONICAL_TOOL_CLASSES` and
+   `list_existing_analyses.TOOL_CLASSES` since the pre-#438 `run_descriptive_stats_workflow` was
+   retired, kept intact there *specifically so historical runs could still read back* (both
+   modules carry their own "do NOT prune retired classes" comment). This tool reactivates that
+   slot as a live write target rather than claiming a genuinely unused one. The original reasoning
+   still holds on its own terms — this tool's output (a long-format stats table) doesn't compose
+   as an input to any other tool the way a cleaned CSV or a PCA result does, so there's no reason
+   to share `"qc"`/`"pca"`/`"clustering"`'s class or a `_resolve_versioned_cleaned`-style
+   resolution rule — but reusing `"stats"` specifically (rather than e.g. a fresh
+   `"descriptive_stats"` class) means: if any experiment already has legacy `stats`-class runs
+   sitting in storage from the retired workflow, this tool's runs land in the *same* version
+   lineage, distinguishable only by `VersionEntry.tool`, and version numbers would continue from
+   wherever the legacy history left off rather than starting fresh at v1. Nothing in this change
+   verifies whether that's actually the case in prod/staging storage — do that before relying on
+   this tool's version numbers/`"latest"` resolution meaning what a fresh lineage would imply.
 3. **50-trait cap on the inline summary only, never on the persisted CSV.** Carried over from the
    legacy workflow's `_SUMMARY_TRAIT_CAP = 50`, necessary given the cylinder fixture's 649–880
    traits (#483) — an uncapped inline response for that experiment would return a huge JSON-RPC
@@ -141,19 +154,40 @@ and `clustering` (#309). The reusable seams are already built and unchanged by t
    "independently-computed" framing (per `tests/fixtures/README.md`) — **not**
    `turface_19_qc_golden.json`, which that same README itself labels a "characterization snapshot"
    (an earlier draft of this document cited the wrong one of the two; corrected after review).
-8. **Re-verify finiteness of the certified selection before delegating, mirroring `pca_analysis`'s
-   own guard.** `pca_analysis.py` asserts `np.isfinite(selected.to_numpy(dtype=float)).all()` before
-   delegating, precisely because nothing enforces that invariant structurally — `frame.trait_cols`
-   is derived by `detect_columns` (name/dtype matching), which never inspects NaN content; only
-   `qc_clean`'s own pre-commit guard is what makes a certified trait NaN-free in practice, and
-   nothing stops a future reader implementation (or a hand-seeded `FakeReader` in a test) from
-   violating that. Without an equivalent check, a certified trait with a residual NaN would make
+8. **Re-verify finiteness of the certified selection before delegating — per trait, NOT
+   `pca_analysis`'s all-or-nothing guard.** `pca_analysis.py` asserts
+   `np.isfinite(selected.to_numpy(dtype=float)).all()` over the *whole* selection before
+   delegating and raises `BloomMCPError(assumption_violated)` if it fails, precisely because
+   nothing enforces that invariant structurally — `frame.trait_cols` is derived by
+   `detect_columns` (name/dtype matching), which never inspects NaN content; only `qc_clean`'s own
+   pre-commit guard is what makes a certified trait NaN-free in practice, and nothing stops a
+   future reader implementation (or a hand-seeded `FakeReader` in a test) from violating that.
+   Without an equivalent check, a certified trait with a residual NaN would make
    `calculate_trait_statistics`'s own per-trait `dropna()` silently return `count < n_samples` with
    no signal — exactly the "no sample is silently lost" guarantee this tool's golden scenario
-   asserts, undermined with no error raised. `descriptive_stats` adds the same `np.isfinite` guard
-   over the selected trait columns before delegating, raising `BloomMCPError(assumption_violated)`
-   (a genuine precondition violation, not a caller-fixable input error) rather than silently
-   reporting an undercount.
+   asserts, undermined with no error raised.
+
+   `descriptive_stats` needs the same *check*, but not the same *response*. An earlier draft of
+   this document (and the initial implementation) copied `pca_analysis`'s all-or-nothing
+   `assumption_violated` raise verbatim — wrong, caught in a post-implementation review round:
+   `pca_analysis`/`clustering` have a genuine cross-trait dependency (a PCA fit or a cluster
+   assignment is computed jointly over every selected column, so one bad column poisons the whole
+   fit), but `calculate_trait_statistics` computes each trait's statistics independently — one
+   residual NaN in a selection of up to 880 (cylinder) traits has no mathematical reason to block
+   the other 879. The corrected behavior: `np.isfinite` is checked per column; any trait that fails
+   is excluded from the delegate call and routed to `failed_traits`/`n_failed` — the same channel
+   a delegate-reported failure (Decision 6) already uses — rather than raising and aborting the
+   whole request. `assumption_violated` is no longer raised by this tool at all. The degenerate
+   case (every selected trait fails) still doesn't raise: the delegate is simply never called
+   (empty trait list), and a run persists with zero reported traits.
+9. **A missing or malformed delegate entry routes to `failed_traits`, never a partially-`None`
+   row.** Extends Decision 6's defense-in-depth: if the delegate's per-trait dict is missing an
+   expected stat key (a hypothetical future upstream rename/drop), `r.get(k)` on that absent key
+   would return `None` — bit-for-bit indistinguishable from a genuine non-finite coercion
+   (Decision 4). Caught in the same post-implementation review round as Decision 8: a caller
+   reading `cv: null` couldn't tell "this trait's mean was exactly 0" from "the delegate's contract
+   silently changed." A missing stat key (or `"count"`) now routes to `failed_traits` alongside the
+   `None`/`"error"` branches, rather than emitting a row with the ambiguous field defaulted.
 
 ## Golden fixture
 

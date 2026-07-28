@@ -143,23 +143,34 @@ SHALL be named in a `nonfinite_stat_traits` list rather than left as an unexplai
   `None`/empty, the tool does not raise or leak a bare `Infinity`/`NaN` token in the JSON-RPC
   response, and the affected trait's name appears in `nonfinite_stat_traits`
 
-### Requirement: Descriptive Stats Re-Verifies Finiteness Before Delegating
+### Requirement: Descriptive Stats Re-Verifies Finiteness Before Delegating, Per Trait
 
-The `descriptive_stats` tool SHALL verify that every value in the selected certified trait columns
-is finite (no `NaN`, `+inf`, or `-inf`) before delegating to `calculate_trait_statistics`, mirroring
-`pca_analysis`'s defense-in-depth guard against a reader/`qc_clean`-invariant violation. A selected
-certified trait carrying a non-finite value SHALL cause the tool to return a `BloomMCPError` with
-code `assumption_violated` and no run persisted, rather than silently letting the delegate's own
-per-trait `dropna()` under-report `n` with no signal.
+The `descriptive_stats` tool SHALL verify, per selected certified trait column, that every value in
+that column is finite (no `NaN`, `+inf`, or `-inf`) before delegating that column to
+`calculate_trait_statistics` — a defense-in-depth guard against a reader/`qc_clean`-invariant
+violation, checking the same condition `pca_analysis`'s own guard checks but responding
+per-trait rather than all-or-nothing: unlike `pca_analysis`/`clustering`, whose cross-trait fit
+requires every selected column finite at once, `descriptive_stats` computes each trait's statistics
+independently, so a non-finite trait SHALL be excluded from delegation and counted in
+`failed_traits`/`n_failed` rather than causing the tool to raise and abort the entire request. The
+tool SHALL NOT return `assumption_violated` for this condition.
 
-#### Scenario: A non-finite value surviving into a certified trait is rejected, not silently under-counted
+#### Scenario: A non-finite value surviving into one certified trait fails only that trait
 
-- **WHEN** a selected certified-clean trait carries a residual non-finite value (a violation of the
-  invariant `qc_clean` is supposed to guarantee, reachable only via a reader/test double that
-  bypasses that guarantee)
-- **THEN** the tool returns a `BloomMCPError` with code `assumption_violated` and no run is
-  persisted, rather than reporting a trait whose `n` is silently smaller than the frame's true
-  sample count
+- **WHEN** one selected certified-clean trait carries a residual non-finite value (a violation of
+  the invariant `qc_clean` is supposed to guarantee, reachable only via a reader/test double that
+  bypasses that guarantee) while other selected traits remain finite
+- **THEN** the tool excludes only the non-finite trait from delegation, lists it in
+  `failed_traits`, increments `n_failed`, and still computes and reports statistics for every other
+  selected trait — rather than reporting a trait whose `n` is silently smaller than the frame's
+  true sample count, and rather than rejecting the whole request over one bad trait
+
+#### Scenario: Every selected trait is non-finite
+
+- **WHEN** every selected certified trait carries a residual non-finite value
+- **THEN** the delegate is never called, every trait is listed in `failed_traits`, the tool reports
+  zero traits (`n_traits_reported == 0`, `stats_per_trait == []`), and a run still persists rather
+  than the tool raising
 
 ### Requirement: Descriptive Stats Honors the Contract Envelope
 
@@ -183,11 +194,22 @@ structured `BloomMCPError` (never a raw traceback or leaked backend internals), 
 
 #### Scenario: A delegate-reported failed trait is surfaced, not raised
 
-- **WHEN** the delegate returns `{"error": "No valid data"}` for a requested trait (a defense-in-depth
-  branch — unreachable through a genuinely certified-clean selection since `qc_clean` guarantees no
-  NaN cells in kept trait columns, but handled rather than assumed impossible)
+- **WHEN** the delegate returns `{"error": "No valid data"}` for a requested trait, or omits a
+  requested trait from its result dict entirely (both defense-in-depth branches — unreachable
+  through a genuinely certified-clean selection since `qc_clean` guarantees no NaN cells in kept
+  trait columns, but handled rather than assumed impossible)
 - **THEN** the tool excludes that trait from `stats_per_trait`/`stats.csv`, increments `n_failed`,
   lists it in `failed_traits`, and does not raise a tool error
+
+#### Scenario: A delegate entry missing an expected stat key is surfaced, never emitted as a partially-null row
+
+- **WHEN** the delegate's per-trait result is missing one of the expected stat keys (`count`, or
+  any of `mean`/`std`/`median`/`q25`/`q75`/`min`/`max`/`cv`/`skewness`/`kurtosis`) — a
+  defense-in-depth branch guarding against a future upstream contract change
+- **THEN** the tool treats that trait the same as a delegate-reported failure (excluded from
+  `stats_per_trait`/`stats.csv`, counted in `n_failed`/`failed_traits`) rather than emitting a row
+  with the missing field defaulted to `None` — indistinguishable from a genuine non-finite
+  coercion (see the non-finite-coercion requirement above)
 
 ### Requirement: Descriptive Stats Persists a Versioned Run With Lineage and Returns Links
 
