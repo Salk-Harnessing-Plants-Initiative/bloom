@@ -38,6 +38,10 @@ _CONSUMERS = [
     "sections/sleap_roots/analysis/qc_inspect.py",
     "sections/sleap_roots/analysis/remove_outliers.py",
     "sections/sleap_roots/analysis/clustering.py",
+    # umap_analysis.py (#425) and descriptive_stats.py (#488) were both missing from
+    # this list pre-dating this change — added here, closing that pre-existing drift.
+    "sections/sleap_roots/analysis/umap_analysis.py",
+    "sections/sleap_roots/analysis/descriptive_stats.py",
 ]
 
 # Names that may not be imported by a consumer module.
