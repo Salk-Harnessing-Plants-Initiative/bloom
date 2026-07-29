@@ -66,7 +66,7 @@ def test_oracle_sidecar_is_accepted_by_discover_scans(tmp_path):
     assert sidecar["scan_key"] == "scan_1"
     assert set(sidecar["params"]) == {"species", "mode", "age"}
     assert sidecar["params"]["mode"] == "cylinder"
-    assert sidecar["image_ids"] == [1001, 1002]
+    assert sidecar["image_ids"] == ["1001", "1002"]
     assert sidecar["images_checksum"].startswith("sha256:")
 
     dfp.write_sidecar(sidecar, scan_dir / "scan_1.scan_metadata.json")
@@ -118,8 +118,24 @@ def test_build_sidecar_assembles_all_fields_in_input_order():
     sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES, PARAMS)
     assert set(sidecar) == {"scan_key", "params", "image_ids", "images_checksum"}
     assert sidecar["scan_key"] == dfp.scan_key_for(SCAN["scan_id"])
-    assert sidecar["image_ids"] == [1001, 1002]
+    assert sidecar["image_ids"] == ["1001", "1002"]
     assert sidecar["params"] == PARAMS
+
+
+def test_build_sidecar_image_ids_and_checksum_validate_as_input_ref():
+    """Regression for bloom#555: `image_ids` must be `list[str]` — the exact shape
+    `sleap_roots_contracts.InputRef` (and, in turn, trait_extractor's `ScanMetadata`)
+    requires. Validating against the real contract model, not just a literal list of
+    strings, catches this class of type bug even if the literal expectation above is
+    ever loosened."""
+    from sleap_roots_contracts import InputRef
+
+    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES, PARAMS)
+
+    input_ref = InputRef.model_validate(
+        {"image_ids": sidecar["image_ids"], "images_checksum": sidecar["images_checksum"]}
+    )
+    assert input_ref.image_ids == ["1001", "1002"]
 
 
 def test_resolve_sidecar_params_passes_mode_override(monkeypatch):
@@ -287,7 +303,7 @@ def test_cli_happy_path_writes_frames_and_sidecar(tmp_path, monkeypatch):
     assert (out / "scan_1" / "1.png").exists()
     sidecar = json.loads((out / "scan_1" / "scan_1.scan_metadata.json").read_text())
     assert sidecar["scan_key"] == "scan_1"
-    assert sidecar["image_ids"] == [1001, 1002]
+    assert sidecar["image_ids"] == ["1001", "1002"]
     assert sidecar["params"]["mode"] == "cylinder"
     assert sidecar["images_checksum"].startswith("sha256:")
 

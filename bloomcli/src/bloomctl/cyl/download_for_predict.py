@@ -87,12 +87,22 @@ def build_sidecar(
     `params` is the already-resolved dict from `resolve_sidecar_params` — resolved
     ahead of time so a metadata-resolution failure surfaces before any download or
     directory-clearing happens, not after.
+
+    `image_ids`/`images_checksum` are built via `InputRef` rather than a bare dict so
+    Pydantic enforces the same `image_ids: list[str]` shape `trait_extractor`'s
+    `ScanMetadata` requires — catching a type mismatch here, at construction, instead
+    of downstream in trait_extractor validation (see bloom#555).
     """
+    from sleap_roots_contracts import InputRef
+
+    input_ref = InputRef(
+        image_ids=[str(image["id"]) for image in images],
+        images_checksum=compute_checksum(frame_bytes_list),
+    )
     return {
         "scan_key": scan_key_for(scan["scan_id"]),
         "params": params,
-        "image_ids": [image["id"] for image in images],
-        "images_checksum": compute_checksum(frame_bytes_list),
+        **input_ref.model_dump(),
     }
 
 
