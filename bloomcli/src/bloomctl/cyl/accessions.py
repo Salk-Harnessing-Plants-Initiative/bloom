@@ -26,8 +26,9 @@ def accessions() -> None:
 
 def accession_sort_key(rec: dict[str, Any]) -> tuple[str, int]:
     """Sort accessions by name, then id (id breaks ties so output is
-    deterministic run-to-run)."""
-    return (rec.get("accession_name") or "", rec.get("accession_id") or 0)
+    deterministic run-to-run). A null id sorts as -1 (distinct from a real id 0)."""
+    aid = rec.get("accession_id")
+    return (rec.get("accession_name") or "", aid if aid is not None else -1)
 
 
 def build_accession_row(rec: dict[str, Any]) -> list[str]:
@@ -43,11 +44,12 @@ def build_accession_record(rec: dict[str, Any]) -> dict[str, Any]:
 
 def sample_count_sort_key(rec: dict[str, Any]) -> tuple[str, str, int]:
     """Sort sample counts by species, then accession name, then id (id breaks
-    ties so output is deterministic run-to-run)."""
+    ties so output is deterministic run-to-run). A null id sorts as -1."""
+    aid = rec.get("accession_id")
     return (
         rec.get("species_name") or "",
         rec.get("accession_name") or "",
-        rec.get("accession_id") or 0,
+        aid if aid is not None else -1,
     )
 
 
