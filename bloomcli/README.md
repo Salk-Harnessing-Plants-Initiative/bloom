@@ -50,8 +50,14 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - **[read]** `bloomctl cyl download-for-predict <scan-id> <out>` — stage one scan
   into the predict-ready layout (see below); produces a **different** output tree
   than `cyl download` — use this only for A4 pipeline stage-in.
+- **[read]** `bloomctl cyl batch-download-for-predict <out_dir> …` — stage a
+  batch of scans into the predict-ready layout in one invocation (see below);
+  the batch sibling of `download-for-predict`, for the A4 per-batch pipeline.
 - **[write]** `bloomctl cyl ingest-result <envelope>` — write a per-scan pipeline
   `ResultEnvelope` back to Bloom (see below).
+- **[write]** `bloomctl cyl batch-ingest-result <envelopes_dir>` — write back a
+  batch of per-scan `ResultEnvelope`s in one invocation (see below); the batch
+  sibling of `ingest-result`, for the A4 per-batch pipeline.
 - **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets
   (`--experiment-id` to scope to one experiment, `--json` for machine-readable output).
 - **[read]** `bloomctl cyl datasets get <name>` — show one dataset's details and the
@@ -103,6 +109,42 @@ Example:
 bloomctl cyl download-for-predict 1 ./staged
 ```
 
+## `bloomctl cyl batch-download-for-predict`
+
+Stage a batch of cylinder scans into the predict-ready layout in one
+invocation — the batch sibling of `download-for-predict`, for the A4
+per-batch pipeline's `download-all` Argo task.
+
+```
+bloomctl cyl batch-download-for-predict <out_dir>
+  (--scan-ids-file <scan_ids.json | -> | --scan-ids 1,2,3)
+  [-p/--profile PROFILE] [--json]
+```
+
+- Exactly one of `--scan-ids-file` (a JSON array of integer scan_ids, read from
+  a path or stdin when the value is `-`) or `--scan-ids` (a comma-separated
+  list, for ad hoc manual use) is required.
+- Stages every scan_id into `<out_dir>/scan_<scan_id>/`, identical to what
+  `download-for-predict` writes for one scan.
+- **Isolates per-scan failures** — one bad scan (not found, no frames, a
+  metadata-resolution failure, a partial frame-download failure) is recorded
+  and reported, but does not abort the rest of the batch.
+- **Skips an already-staged scan** — if `<out_dir>/scan_<scan_id>/` already has
+  a valid sidecar (parses, `scan_key` matches), that scan is reported
+  `skipped` and not re-downloaded.
+- `--json` prints one entry per scan_id (`scan_key`, `status`, `error`) as a
+  JSON array; without it, a human-readable summary plus one line per failure.
+- **Exit code:** non-zero if any scan in the batch failed; zero if every scan
+  succeeded, was skipped, or the input was empty.
+
+Auth: same saved login profile as other `cyl` commands.
+
+Example:
+
+```
+bloomctl cyl batch-download-for-predict ./staged --scan-ids-file scan_ids.json
+```
+
 ## Access & roles
 
 Commands run **as the logged-in user** — every query and mutation is RLS-enforced
@@ -111,8 +153,8 @@ profile maps to determines what works:
 
 | Command tag | Required role | Intended user |
 |---|---|---|
-| **[read]** (`download`, `datasets list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account |
-| **[write]** (`ingest-result`, `datasets create`) | `bloom_writer` / `bloom_admin` | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
+| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account |
+| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`) | `bloom_writer` / `bloom_admin` | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
 
 A read-only `bloom_user` can `list` datasets but **cannot** `create` one — the
 write path (the `create_cyl_dataset` / `insert_cyl_result_envelope` RPCs and the
@@ -160,6 +202,44 @@ Examples:
 ```
 bloomctl cyl ingest-result path/to/scan.result.json
 cat scan.result.json | bloomctl cyl ingest-result - --json
+```
+
+## `bloomctl cyl batch-ingest-result`
+
+Write back a batch of per-scan `ResultEnvelope`s in one invocation — the batch
+sibling of `ingest-result`, for the A4 per-batch pipeline's `write-back` Argo
+task.
+
+```
+bloomctl cyl batch-ingest-result <envelopes_dir>
+  [-p/--profile PROFILE] [--json] [--predictions-dir DIR]
+```
+
+- Ingests every `{scan_key}.result.json` file directly under `envelopes_dir`
+  (non-recursive — the flat layout `trait_extractor.extract_batch`'s
+  output produces), via the same validation + RPC path as `ingest-result`.
+- **Isolates per-envelope failures** — an unreadable/malformed file, a
+  contract-validation failure, or a mapped RPC error is recorded and reported,
+  but does not abort the rest of the batch.
+- **No-op re-deliveries are reported `skipped`**, not `failed` — same
+  first-writer-wins idempotency as `ingest-result`.
+- `--predictions-dir DIR`: predict's own nested batch output root
+  (`DIR/{scan_key}/{scan_key}.predictions.json` + `.slp` files per scan).
+  Constructs, verifies, and uploads blobs per envelope from its own scan_key's
+  subdirectory, reusing `ingest-result --predictions-dir`'s logic unchanged. A
+  missing manifest or upload failure isolates that envelope without aborting
+  the others.
+- `--json` prints one entry per envelope (`scan_key`, `status`, `error`) as a
+  JSON array; without it, a human-readable summary plus one line per failure.
+- **Exit code:** non-zero if any envelope in the batch failed; zero if every
+  envelope succeeded, was a no-op re-delivery, or the directory was empty.
+
+Auth: same saved login profile as `ingest-result` (must have write access).
+
+Example:
+
+```
+bloomctl cyl batch-ingest-result ./results --predictions-dir ./predict-out
 ```
 
 ## Dev-stack smoke test

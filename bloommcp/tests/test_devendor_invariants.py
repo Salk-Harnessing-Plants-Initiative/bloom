@@ -313,13 +313,18 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _parse_always_include_mcp_tools() -> set[str]:
-    """Statically parse ALWAYS_INCLUDE_MCP_TOOLS from langchain/routes/chat.py.
+    """Statically parse ALWAYS_INCLUDE_MCP_TOOLS from
+    langchain/helpers/foundational_tools.py — the single source of truth for
+    foundational tools since refactor-foundational-tool-list (previously
+    langchain/routes/chat.py defined it locally; the web client's HIDDEN_TOOLS
+    hand-list, formerly parsed here too, no longer exists — see
+    test_no_hand_listed_foundational_tool_names_in_web_client).
 
-    Parsed via AST rather than imported — chat.py lives in a different service
-    (its own venv/dependencies), so importing it here isn't viable; this reads
-    the literal set assignment directly out of the source.
+    Parsed via AST rather than imported — this module lives in a different
+    service (its own venv/dependencies), so importing it here isn't viable;
+    this reads the literal set assignment directly out of the source.
     """
-    path = _REPO_ROOT / "langchain" / "routes" / "chat.py"
+    path = _REPO_ROOT / "langchain" / "helpers" / "foundational_tools.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and any(
@@ -332,43 +337,75 @@ def _parse_always_include_mcp_tools() -> set[str]:
     raise AssertionError(f"ALWAYS_INCLUDE_MCP_TOOLS not found in {path}")
 
 
-def _parse_hidden_tools() -> set[str]:
-    """Statically parse HIDDEN_TOOLS from web/components/mcp-chat-client.tsx."""
-    import re
-
-    path = _REPO_ROOT / "web" / "components" / "mcp-chat-client.tsx"
-    text = path.read_text(encoding="utf-8")
-    match = re.search(r"HIDDEN_TOOLS = new Set\(\[(.*?)\]\)", text, re.DOTALL)
-    if not match:
-        raise AssertionError(f"HIDDEN_TOOLS not found in {path}")
-    names = set(re.findall(r'"([^"]+)"', match.group(1)))
-    if not names:
-        raise AssertionError(f"HIDDEN_TOOLS parsed empty from {path}")
-    return names
-
-
 def test_tool_name_lists_match_live_registry():
-    """Neither hand-list names a retired tool, and every name each lists resolves
-    to a live tool in the mounted registry — catches a rename/removal desyncing
-    either list from the actual server (the DRY follow-up's backstop).
+    """The always-include hand-list names no retired tool, and every name it
+    lists resolves to a live tool in the mounted registry — catches a
+    rename/removal desyncing it from the actual server. This is now the only
+    hand-list in the codebase (see refactor-foundational-tool-list, which
+    deleted the web client's HIDDEN_TOOLS in favor of a `foundational` field
+    computed from this same set — test_no_hand_listed_foundational_tool_names_in_web_client
+    guards against that duplication reappearing).
 
     (bloommcp-tool-sections: 'Always-included selection tracks the core tools'
-    registered names' / 'The web client's hidden-tools list ... stay in sync'.)
+    registered names'.)
     """
     import asyncio
 
     always_include = _parse_always_include_mcp_tools()
-    hidden_tools = _parse_hidden_tools()
 
     assert "inspect_data_quality" not in always_include
-    assert "inspect_data_quality" not in hidden_tools
 
     live = asyncio.run(_live_tool_names())
-    for name in sorted(always_include | hidden_tools):
-        # Prefix-aware, matching the production matching logic in chat.py /
-        # mcp-chat-client.tsx: an exact name, or "<section>_<name>" post-namespacing.
+    for name in sorted(always_include):
+        # Prefix-aware, matching the production matching logic in
+        # foundational_tools.py: an exact name, or "<section>_<name>" post-namespacing.
         matched = name in live or any(t.endswith(f"_{name}") for t in live)
         assert matched, f"{name!r} is not a live tool — hand-list has drifted"
+
+
+def test_no_hand_listed_foundational_tool_names_in_web_client():
+    """Content-based guard: no array/Set/object literal in
+    mcp-chat-client.tsx hand-lists all three foundational tool names
+    together. A narrower "is there still an identifier called HIDDEN_TOOLS"
+    check would miss a rename or inlining of the same three literals under a
+    different name — this one doesn't, because it looks at literal content,
+    not an identifier name.
+
+    (refactor-foundational-tool-list: 'Web client filters on the backend's
+    field, not a local list'.)
+    """
+    import re
+
+    path = _REPO_ROOT / "web" / "components" / "mcp-chat-client.tsx"
+    text = path.read_text(encoding="utf-8")
+
+    foundational_names = {
+        "list_available_experiments",
+        "load_experiment_data",
+        "list_existing_analyses",
+    }
+    # String literals as double-quoted, single-quoted, OR backtick-quoted (a
+    # hand-list could be retyped in any of the 3 — the repo's own .prettierrc.json
+    # sets singleQuote: true, making that a very plausible restyling, not a
+    # hypothetical one). \1 backreferences the opening quote char so a
+    # `'...'` span can't be closed by a stray `"` and vice versa.
+    quoted_string = r"""(["'`])((?:(?!\1).)*)\1"""
+    # Scan both array/Set literals (`[...]`) and object literals (`{...}`) —
+    # a hand-list could be reintroduced as either. Innermost-span regexes
+    # (no nested brackets/braces within a captured span) are enough: a
+    # hand-authored name list has no internal nesting, so if the three
+    # names co-occur anywhere, they co-occur within some innermost span.
+    for pattern, kind in (
+        (r"\[([^\[\]]*)\]", "array/Set"),
+        (r"\{([^{}]*)\}", "object"),
+    ):
+        for literal in re.findall(pattern, text, re.DOTALL):
+            found = {name for _quote, name in re.findall(quoted_string, literal)}
+            assert foundational_names - found, (
+                f"mcp-chat-client.tsx hand-lists all 3 foundational tool names "
+                f"together in one {kind} literal — reintroduces the retired "
+                f"HIDDEN_TOOLS duplication: {literal[:200]!r}"
+            )
 
 
 def test_expected_tool_surface():
@@ -383,12 +420,17 @@ def test_expected_tool_surface():
     import asyncio
 
     expected = {
-        # sleap_roots: the 5 sleap_roots-analyze granular consumers
+        # sleap_roots: the 7 sleap_roots-analyze granular consumers (umap_analysis,
+        # #425, and descriptive_stats, #488, were both missing from this
+        # previously-5-tool list, pre-dating this change — added here, closing that
+        # pre-existing drift rather than leaving it for a future PR to rediscover).
         "sleap_roots_pca_analysis",
         "sleap_roots_qc_clean",
         "sleap_roots_qc_inspect",
         "sleap_roots_remove_outliers",
         "sleap_roots_clustering",
+        "sleap_roots_umap_analysis",
+        "sleap_roots_descriptive_stats",
         # sleap_roots: the 5 surviving plots
         "sleap_roots_plot_trait_histograms",
         "sleap_roots_plot_trait_boxplots",

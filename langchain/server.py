@@ -31,7 +31,8 @@ import deps
 from agent import AVAILABLE_MODELS, setup_checkpointer
 from mcp_config import MCP_SERVERS
 from routes import chat as chat_routes
-from schemas import CreateThreadRequest, ModelsResponse
+from schemas import CreateThreadRequest, ModelsResponse, MCPToolsResponse
+from helpers.foundational_tools import is_foundational_tool
 
 logger = logging.getLogger(__name__)
 
@@ -205,12 +206,18 @@ async def get_models(user_id: str = Depends(deps.get_current_user)):
     return ModelsResponse(models=AVAILABLE_MODELS)
 
 
-@app.get("/langchain/mcp-tools")
+@app.get("/langchain/mcp-tools", response_model=MCPToolsResponse)
 async def get_mcp_tools(user_id: str = Depends(deps.get_current_user)):
-    """List connected MCP tools with their names and descriptions."""
+    """List connected MCP tools with their names, descriptions, and whether
+    each is foundational (always included in the agent's toolset — see
+    helpers/foundational_tools.py)."""
     return {
         "tools": [
-            {"name": t.name, "description": t.description}
+            {
+                "name": t.name,
+                "description": t.description,
+                "foundational": is_foundational_tool(t.name),
+            }
             for t in deps.mcp_tools
         ]
     }

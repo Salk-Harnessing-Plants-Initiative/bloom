@@ -422,3 +422,66 @@ def test_clustering_persist_checks_flags_missing_result_artifact():
     kwargs["output_sha256"] = {"labels.csv": "dead"}
     checks = smoke.clustering_persist_checks(**kwargs)
     assert any("committed outputs include" in c.name and not c.ok for c in checks)
+
+
+# --- descriptive_stats leg checks (#488) ---------------------------------------
+def _good_stats_kwargs():
+    return dict(
+        schema_version=3,
+        seed=None,
+        tool="descriptive_stats",
+        source="v3_cleaned",
+        output_keys={"stats.csv": "bloommcp_output/stats_turface_raw/v1/stats.csv"},
+        output_sha256={"stats.csv": "dead"},
+        expected_outputs={"stats.csv"},
+    )
+
+
+def test_stats_persist_checks_all_pass_on_valid_v3_entry():
+    checks = smoke.stats_persist_checks(**_good_stats_kwargs())
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_stats_persist_checks_flags_non_null_seed():
+    # descriptive_stats is deterministic — a non-None seed would be a reproducibility lie.
+    kwargs = _good_stats_kwargs()
+    kwargs["seed"] = 42
+    checks = smoke.stats_persist_checks(**kwargs)
+    assert any("seed == None" in c.name and not c.ok for c in checks)
+
+
+def test_stats_persist_checks_flags_wrong_tool():
+    kwargs = _good_stats_kwargs()
+    kwargs["tool"] = "run_descriptive_stats_workflow"
+    checks = smoke.stats_persist_checks(**kwargs)
+    assert any("tool == 'descriptive_stats'" in c.name and not c.ok for c in checks)
+
+
+def test_stats_persist_checks_flags_raw_source():
+    kwargs = _good_stats_kwargs()
+    kwargs["source"] = "raw"
+    checks = smoke.stats_persist_checks(**kwargs)
+    assert any("consumed a cleaned source" in c.name and not c.ok for c in checks)
+
+
+def test_stats_persist_checks_flags_missing_stats_csv():
+    kwargs = _good_stats_kwargs()
+    kwargs["output_keys"] = {}
+    kwargs["output_sha256"] = {}
+    checks = smoke.stats_persist_checks(**kwargs)
+    assert any("committed outputs include" in c.name and not c.ok for c in checks)
+
+
+def test_stats_result_checks_all_pass_on_valid_result():
+    checks = smoke.stats_result_checks(19, 0)
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_stats_result_checks_flags_zero_traits_reported():
+    checks = smoke.stats_result_checks(0, 0)
+    assert any("n_traits_reported > 0" in c.name and not c.ok for c in checks)
+
+
+def test_stats_result_checks_flags_nonzero_failed():
+    checks = smoke.stats_result_checks(18, 1)
+    assert any("n_failed == 0" in c.name and not c.ok for c in checks)

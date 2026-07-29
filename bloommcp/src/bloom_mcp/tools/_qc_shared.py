@@ -1,14 +1,21 @@
-"""Shared helpers for the granular QC tools (``qc_clean`` #338, ``qc_inspect`` #360).
+"""Shared helpers for the granular QC + consumer tools.
 
-Both tools read the **raw** experiment frame and forward the adapter-detected role
-columns into ``sleap_roots_analyze`` delegates the same way, and both validate a
-caller-supplied ``trait_columns`` subset up front. Factoring these here keeps the
-two tools in lockstep rather than drifting as two copies.
+Originally just ``qc_clean``/``qc_inspect`` (#338, #360): both read the **raw**
+experiment frame and forward the adapter-detected role columns into
+``sleap_roots_analyze`` delegates the same way, and both validate a caller-supplied
+``trait_columns`` subset up front. ``_validate_trait_subset`` is also reused verbatim
+(``require_certified=True``) by the cleaned-frame consumers (``pca_analysis``,
+``clustering``, ``descriptive_stats``); ``_finite_or_none`` is shared by ``clustering``
+and ``descriptive_stats``, the two tools that coerce a non-finite delegate statistic to
+``None`` before it reaches the output model/persisted CSV. Factoring these here keeps
+the tool family in lockstep rather than drifting as separate copies.
 """
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -160,3 +167,18 @@ def _validate_trait_subset(
             message=f"trait_columns includes non-numeric columns: {non_numeric}.",
             remedy="Pass only numeric trait columns; metadata/identifier columns cannot be used as traits.",
         )
+
+
+def _finite_or_none(value: object) -> Optional[float]:
+    """Coerce a delegate statistic to a finite float, or ``None`` if it isn't one.
+
+    Shared by ``clustering`` (cophenetic_correlation/cut_height) and
+    ``descriptive_stats`` (mean/std/.../skewness/kurtosis) — both coerce a non-finite
+    (``inf``/``-inf``/``nan``) delegate value to ``None`` before it reaches the output
+    model or a persisted CSV, since ``json.dumps``/``to_json(allow_nan=False)`` would
+    otherwise emit or reject a bare ``Infinity``/``NaN`` token.
+    """
+    if value is None:
+        return None
+    as_float = float(value)
+    return as_float if math.isfinite(as_float) else None

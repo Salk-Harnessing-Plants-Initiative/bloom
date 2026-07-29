@@ -2,7 +2,7 @@
 
 Not a ``sleap-roots-analyze`` wrapper — reads through the injected
 ``ExperimentReader`` port. Always-included in the agent's tool set (see
-``ALWAYS_INCLUDE_MCP_TOOLS`` in ``langchain/routes/chat.py``).
+``ALWAYS_INCLUDE_MCP_TOOLS`` in ``langchain/helpers/foundational_tools.py``).
 """
 
 from bloom_mcp.tools import _ports

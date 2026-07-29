@@ -8,6 +8,30 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Added
+
+- `bloomctl cyl batch-download-for-predict <out_dir>` — stage a batch of cylinder
+  scans in one invocation. Reads scan_ids from `--scan-ids-file` (a JSON array,
+  path or `-` for stdin) or `--scan-ids 1,2,3` (comma-separated, mutually
+  exclusive with `--scan-ids-file`); stages each into the same nested
+  `out_dir/{scan_key}/` layout `cyl download-for-predict` writes for one scan.
+  Isolates per-scan failures (one bad scan doesn't abort the batch) and skips a
+  scan whose stage directory already has a valid sidecar (resume). Supports
+  `--json` for a machine-readable per-scan report; exits non-zero if any scan
+  failed, zero on empty input or all ok/skipped. For the A4 per-batch pipeline's
+  `download-all` stage (#529).
+- `bloomctl cyl batch-ingest-result <envelopes_dir>` — write back a batch of
+  per-scan `ResultEnvelope`s in one invocation. Ingests every
+  `{scan_key}.result.json` file directly under `envelopes_dir` (the flat layout
+  `trait_extractor.extract_batch`'s output produces) via the same
+  validation + RPC path as `cyl ingest-result`. Isolates per-envelope failures
+  (one bad envelope doesn't abort the batch); a no-op re-delivery is reported
+  distinctly from a real failure. Accepts an optional `--predictions-dir`
+  (predict's own nested batch output root) to construct and upload blobs per
+  envelope, reusing `cyl ingest-result --predictions-dir`'s logic unchanged.
+  Supports `--json`; exits non-zero if any envelope failed, zero on empty input
+  or all ok/skipped. For the A4 per-batch pipeline's `write-back` stage (#529).
+
 ## [0.1.0a2] - 2026-07-23
 
 ### Changed
