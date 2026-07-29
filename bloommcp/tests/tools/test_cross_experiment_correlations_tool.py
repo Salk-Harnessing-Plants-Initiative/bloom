@@ -4,12 +4,14 @@ bloommcp's first two-experiment-input consumer. Around the 5 standard contract p
 (schema round-trip, no-leak, require_clean, persistence, deterministic-no-seed) this file
 covers what's specific to a dual-input tool: independent per-experiment validation
 (cleaned version, genotype column, trait selection, finiteness), the composite
-``experiment``/``based_on_version`` encoding (design.md D1) — including the dot-safe
-storage key fix for a truncation bug found in review — the reserved-`correlation`
-tool_class reuse (design.md D9), and — the north-star oracle — the confirmed upstream
-``min_samples`` no-op and bloommcp's pre-filter workaround (design.md D8,
-talmolab/sleap-roots-analyze#205), reproduced against the real turface_19/cylinder
-fixture pair via the recorded golden.
+``experiment``/``based_on_version`` encoding (design.md D1) — including the reject-outright
+guard against a filename stem that would collide or truncate under ``AnalysisDir``'s
+re-applied ``Path(...).stem`` (two review rounds found this: first a naive un-sanitized
+join, then a lossy dot-to-underscore sanitization that reopened the same collision one
+level down) — the reserved-`correlation` tool_class reuse (design.md D9), and — the
+north-star oracle — the confirmed upstream ``min_samples`` no-op and bloommcp's
+pre-filter workaround (design.md D8, talmolab/sleap-roots-analyze#205), reproduced
+against the real turface_19/cylinder fixture pair via the recorded golden.
 """
 
 from __future__ import annotations
@@ -32,7 +34,6 @@ from bloom_mcp.sections.sleap_roots.analysis.cross_experiment_correlations impor
     CrossExperimentCorrelationsParams,
     CrossExperimentCorrelationsResult,
     _COMPOSITE_SEPARATOR,
-    _storage_safe_stem,
     cross_experiment_correlations,
 )
 
@@ -208,6 +209,41 @@ def test_upstream_min_samples_no_op_still_present():
     )
 
 
+def test_upstream_min_samples_no_op_still_present_on_real_fixture_pair():
+    """Same regression pin as test_upstream_min_samples_no_op_still_present, but against
+    the REAL turface_19/cylinder genotype-means data and the recorded golden's
+    min_samples_3_upstream_no_op block, rather than a synthetic 3-genotype fixture
+    (found in review — the golden fixture was generated recording this exact scenario,
+    but no test actually read that block back until now, leaving it orphaned)."""
+    from sleap_roots_analyze import (
+        calculate_cross_experiment_correlations,
+        calculate_genotype_means,
+    )
+
+    turface = pd.read_csv(_FIXTURES / "turface_19_final_data.csv")
+    cylinder = pd.read_csv(_FIXTURES / "cylinder_final_data.csv")
+    gm1 = calculate_genotype_means(
+        turface, [_GOLDEN["trait_1"]], genotype_col=_GOLDEN["genotype_col"]
+    )
+    gm2 = calculate_genotype_means(
+        cylinder, [_GOLDEN["trait_2"]], genotype_col=_GOLDEN["genotype_col"]
+    )
+
+    # Calling the RAW upstream delegate directly (bypassing bloommcp's pre-filter
+    # workaround entirely) with min_samples=3: cylinder's GH_7371 has n_samples=2 and
+    # SHOULD be excluded if min_samples were actually enforced upstream.
+    result = calculate_cross_experiment_correlations(
+        gm1, gm2, [_GOLDEN["trait_1"]], [_GOLDEN["trait_2"]], min_samples=3
+    )
+    g = _GOLDEN["min_samples_3_upstream_no_op"]
+    assert int(result["n_genotypes"].iloc[0]) == g["n_genotypes"], (
+        "upstream's min_samples filtering appears to have been fixed in "
+        "sleap_roots_analyze -- re-evaluate design.md D8's bloommcp-side pre-filter "
+        "workaround (talmolab/sleap-roots-analyze#205); it may now be redundant"
+    )
+    assert result["correlation"].iloc[0] == pytest.approx(g["correlation"], abs=_TOL)
+
+
 # ── min_samples pre-filter (north-star oracle: the confirmed upstream bug) ──────
 
 
@@ -291,75 +327,76 @@ def test_two_cleaned_experiments_consumed_reports_sources(injected_ports):
 # ── required genotype column on both sides (genuinely symmetric) ────────────────
 
 
-def test_missing_genotype_role_either_side_rejected():
+@pytest.mark.parametrize(
+    "offending",
+    [pytest.param(_EXP_1, id="experiment_1"), pytest.param(_EXP_2, id="experiment_2")],
+)
+def test_missing_genotype_role_either_side_rejected(offending):
+    """Parametrized (found in review — a prior manual for-loop over both directions
+    would mask a failure on the first case, hiding a regression in the second; matches
+    this file's other genuinely-symmetric tests' parametrize style)."""
     df1, df2 = _correlated_pair()
-    no_geno_1 = df1.drop(columns=["Genotype"])
-    no_geno_2 = df2.drop(columns=["Genotype"])
+    bad_df1 = df1.drop(columns=["Genotype"]) if offending == _EXP_1 else df1
+    bad_df2 = df2.drop(columns=["Genotype"]) if offending == _EXP_2 else df2
 
-    for bad_df1, bad_df2, offending in (
-        (no_geno_1, df2, _EXP_1),
-        (df1, no_geno_2, _EXP_2),
-    ):
-        reader = FakeReader()
-        store = FakeResultStore()
-        reader.add_cleaned_version(_EXP_1, "v1", bad_df1, make_latest=True)
-        reader.add_cleaned_version(_EXP_2, "v1", bad_df2, make_latest=True)
-        _ports.configure(reader=reader, store=store)
-        try:
-            with pytest.raises(BloomMCPError) as exc:
-                cross_experiment_correlations(
-                    CrossExperimentCorrelationsParams(
-                        experiment_1=_EXP_1, experiment_2=_EXP_2
-                    )
+    reader = FakeReader()
+    store = FakeResultStore()
+    reader.add_cleaned_version(_EXP_1, "v1", bad_df1, make_latest=True)
+    reader.add_cleaned_version(_EXP_2, "v1", bad_df2, make_latest=True)
+    _ports.configure(reader=reader, store=store)
+    try:
+        with pytest.raises(BloomMCPError) as exc:
+            cross_experiment_correlations(
+                CrossExperimentCorrelationsParams(
+                    experiment_1=_EXP_1, experiment_2=_EXP_2
                 )
-            assert exc.value.code == "assumption_violated"
-            assert offending in exc.value.message
-        finally:
-            _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+            )
+        assert exc.value.code == "assumption_violated"
+        assert offending in exc.value.message
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
 # ── finite-value defense-in-depth (genuinely symmetric) ─────────────────────────
 
 
-def test_non_finite_value_either_side_rejected():
-    for offending, mutate in (
-        (
-            _EXP_1,
-            lambda d1, d2: d1.__setitem__(
-                "TraitA1", [float("inf")] + list(d1["TraitA1"][1:])
-            ),
-        ),
-        (
-            _EXP_2,
-            lambda d1, d2: d2.__setitem__(
-                "TraitB1", [float("inf")] + list(d2["TraitB1"][1:])
-            ),
-        ),
-    ):
-        df1, df2 = _correlated_pair()
-        mutate(df1, df2)
-        reader = FakeReader()
-        store = FakeResultStore()
-        reader.add_cleaned_version(_EXP_1, "v1", df1, make_latest=True)
-        reader.add_cleaned_version(_EXP_2, "v1", df2, make_latest=True)
-        _ports.configure(reader=reader, store=store)
-        try:
-            with pytest.raises(BloomMCPError) as exc:
-                _run()
-            assert exc.value.code == "assumption_violated"
-            assert offending in exc.value.message
-        finally:
-            _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+@pytest.mark.parametrize(
+    "offending",
+    [pytest.param(_EXP_1, id="experiment_1"), pytest.param(_EXP_2, id="experiment_2")],
+)
+def test_non_finite_value_either_side_rejected(offending):
+    """Parametrized (found in review — see test_missing_genotype_role_either_side_rejected
+    for why a manual for-loop over both directions is worse here)."""
+    df1, df2 = _correlated_pair()
+    if offending == _EXP_1:
+        df1["TraitA1"] = [float("inf")] + list(df1["TraitA1"][1:])
+    else:
+        df2["TraitB1"] = [float("inf")] + list(df2["TraitB1"][1:])
+
+    reader = FakeReader()
+    store = FakeResultStore()
+    reader.add_cleaned_version(_EXP_1, "v1", df1, make_latest=True)
+    reader.add_cleaned_version(_EXP_2, "v1", df2, make_latest=True)
+    _ports.configure(reader=reader, store=store)
+    try:
+        with pytest.raises(BloomMCPError) as exc:
+            _run()
+        assert exc.value.code == "assumption_violated"
+        assert offending in exc.value.message
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
 @pytest.mark.filterwarnings("ignore:.*constant.*:UserWarning")
-def test_constant_genotype_mean_trait_yields_nan_correlation_not_a_crash():
+def test_constant_genotype_mean_trait_yields_nan_correlation_not_a_crash(monkeypatch):
     """design.md's Risks section accepts that a constant (zero-variance) genotype-mean
     trait can yield a NaN correlation row that passes through into correlations.csv
     rather than being rejected. This proves that acceptance path is actually exercised
-    (not just theorized) and that the NaN row is correctly excluded from
-    n_significant/n_highly_significant (NaN comparisons are always False in pandas),
-    not silently corrupting either count."""
+    (not just theorized): the persisted correlations.csv row is itself confirmed NaN
+    (found in review — a prior version of this test only inferred the NaN indirectly
+    via n_significant/n_highly_significant counts, never reading the persisted file),
+    and the NaN row is correctly excluded from n_significant/n_highly_significant (NaN
+    comparisons are always False in pandas), not silently corrupting either count."""
     reader = FakeReader()
     store = FakeResultStore()
     df1 = pd.DataFrame(
@@ -378,6 +415,15 @@ def test_constant_genotype_mean_trait_yields_nan_correlation_not_a_crash():
     reader.add_cleaned_version(_EXP_2, "v1", df2, make_latest=True)
     _ports.configure(reader=reader, store=store)
     try:
+        captured: dict[str, str] = {}
+        real_commit = store.commit
+
+        def _commit(run, outputs):
+            for name in outputs:
+                captured[name] = (run.staging_dir / name).read_text(encoding="utf-8")
+            return real_commit(run, outputs)
+
+        monkeypatch.setattr(store, "commit", _commit)
         result = cross_experiment_correlations(
             CrossExperimentCorrelationsParams(
                 experiment_1=_EXP_1,
@@ -387,6 +433,10 @@ def test_constant_genotype_mean_trait_yields_nan_correlation_not_a_crash():
                 r_threshold=0.0,
             )
         )
+
+        corr_csv = pd.read_csv(io.StringIO(captured["correlations.csv"]))
+        assert pd.isna(corr_csv["correlation"].iloc[0])
+        assert pd.isna(corr_csv["p_value"].iloc[0])
         assert result.n_correlations == 1
         assert result.n_significant == 0
         assert result.n_highly_significant == 0
@@ -574,49 +624,58 @@ def test_self_correlation_rejected():
 @pytest.mark.parametrize("bad_field", ["experiment_1", "experiment_2"])
 def test_path_unsafe_experiment_name_rejected(bad_field):
     """Explicit path-traversal guard (defense-in-depth, found in review — this tool's
-    safety was previously incidental, not an explicit check)."""
+    safety was previously incidental, not an explicit check). The message must name
+    which of experiment_1/experiment_2 was rejected (found in a second review pass —
+    _validate_experiment_name's message previously never named the offending field, so
+    a two-name caller couldn't tell which one failed)."""
     kwargs = {"experiment_1": _EXP_1, "experiment_2": _EXP_2}
     kwargs[bad_field] = "../secrets/passwd.csv"
     with pytest.raises(BloomMCPError) as exc:
         cross_experiment_correlations(CrossExperimentCorrelationsParams(**kwargs))
     assert exc.value.code == "invalid_input"
+    assert bad_field in exc.value.message
 
 
-def test_storage_safe_stem_immune_to_restemming():
-    """Regression test for the composite-key truncation bug found in review: a naive
-    f"{Path(e1).stem}__x__{Path(e2).stem}" composite is vulnerable to AnalysisDir's own
-    re-applied Path(...).stem whenever either original stem contains a dot (e.g.
-    "my.experiment.v2.csv" -> stem "my.experiment.v2"), silently truncating the second
-    experiment's name and risking a storage collision. This proves the fix removes
-    that vulnerability for arbitrary dotted filenames, not just the tested fixtures."""
-    for e1, e2 in [
-        ("my.experiment.v2.csv", "cylinder.csv"),
-        ("a.b.c.csv", "d.e.f.csv"),
-        ("plain.csv", "plain2.csv"),
-    ]:
-        composite = (
-            f"{_storage_safe_stem(e1)}{_COMPOSITE_SEPARATOR}{_storage_safe_stem(e2)}"
-        )
-        assert (
-            Path(composite).stem == composite
-        ), f"composite key {composite!r} is still vulnerable to re-stemming"
-        assert _storage_safe_stem(e1) in composite
-        assert _storage_safe_stem(e2) in composite
+@pytest.mark.parametrize("bad_field", ["experiment_1", "experiment_2"])
+@pytest.mark.parametrize(
+    "unsafe_name",
+    [
+        pytest.param("my.experiment.v2.csv", id="internal-dot"),
+        pytest.param("control__x__treatment.csv", id="embeds-separator"),
+    ],
+)
+def test_unsafe_composite_stem_rejected(bad_field, unsafe_name):
+    """Regression test for the composite-key collision bug found in review — TWICE:
+    a naive f"{Path(e1).stem}__x__{Path(e2).stem}" composite is silently truncated by
+    AnalysisDir's own re-applied Path(...).stem whenever either original stem contains
+    a dot (e.g. "my.experiment.v2.csv" -> stem "my.experiment.v2"), losing the other
+    experiment's name and risking a storage collision. A first fix sanitized dots to
+    underscores before joining, which reopened the identical collision class one level
+    down ("my.experiment.csv" and "my_experiment.csv" both sanitize to "my_experiment").
+    A stem containing the separator itself has the same failure mode from the other
+    direction: two distinct (experiment_1, experiment_2) pairs can join to the same
+    composite string. All three are now rejected outright rather than sanitized."""
+    kwargs = {"experiment_1": _EXP_1, "experiment_2": _EXP_2}
+    kwargs[bad_field] = unsafe_name
+    with pytest.raises(BloomMCPError) as exc:
+        cross_experiment_correlations(CrossExperimentCorrelationsParams(**kwargs))
+    assert exc.value.code == "invalid_input"
+    assert bad_field in exc.value.message
 
 
-def test_analysis_dir_does_not_truncate_dotted_composite_key():
+def test_analysis_dir_preserves_composite_key_for_safe_stems():
     """Directly exercises the REAL AnalysisDir (not FakeResultStore, whose simplified
-    stem helper cannot reproduce this bug — see design.md D1) against this tool's
-    actual composite-key construction, for the exact kind of filename the review's
-    reproduction used."""
+    stem helper cannot reproduce the original truncation bug — see design.md D1)
+    against this tool's actual (un-sanitized, since unsafe stems are now rejected
+    outright by _reject_unsafe_composite_stem rather than reaching this construction)
+    composite-key construction."""
     from bloom_mcp.manifest.analysis_dir import AnalysisDir
 
-    e1, e2 = "my.experiment.v2.csv", "cylinder.csv"
-    composite = (
-        f"{_storage_safe_stem(e1)}{_COMPOSITE_SEPARATOR}{_storage_safe_stem(e2)}"
-    )
+    e1, e2 = "turface_19.csv", "cylinder.csv"
+    composite = f"{Path(e1).stem}{_COMPOSITE_SEPARATOR}{Path(e2).stem}"
     adir = AnalysisDir("bloommcp_output", composite, "correlation")
     assert adir.stem == composite
+    assert "turface_19" in adir.stem
     assert "cylinder" in adir.stem
 
 

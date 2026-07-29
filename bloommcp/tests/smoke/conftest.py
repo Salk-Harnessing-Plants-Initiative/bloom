@@ -91,13 +91,15 @@ def _call_tool_sync(tool_name: str, params: dict) -> Any:
     type derived from the tool's output schema). Found via #489's cross-experiment-
     correlations smoke test failing in CI with every ``RunLinks.outputs`` (a
     ``dict[str, str]`` field) field coming back an empty ``{}``: fastmcp's
-    ``json_schema_to_type`` names every untitled nested ``object``-typed schema
-    ``Root``, and a compound result schema with two such untitled object shapes (the
-    top-level result and the nested ``outputs`` dict) collide on that name, silently
-    reusing the top-level's (fieldless) generated type for the nested dict instead of
-    ``dict[str, str]`` -- confirmed directly against the live container for the
-    long-shipped ``pca_analysis`` tool too, so this was a latent bug in every
-    ``RunLinks``-based tool's smoke coverage, not something introduced by #489.
+    ``json_schema_to_type`` reconstructs a nested ``object``-typed schema with no
+    declared ``properties`` (a plain ``dict[str, str]`` field like ``outputs`` has none
+    -- only ``additionalProperties``) into a fieldless placeholder type rather than a
+    real ``dict[str, str]``, so the client-side object silently loses every key -- the
+    exact underlying schema-routing path within ``json_schema_to_type`` wasn't traced
+    further than that; treat "loses nested dict keys on reconstruction" as the confirmed
+    symptom, not a fully pinned root cause -- confirmed directly against the live
+    container for the long-shipped ``pca_analysis`` tool too, so this was a latent bug in
+    every ``RunLinks``-based tool's smoke coverage, not something introduced by #489.
     ``structured_content`` is the server's actual JSON payload with no such
     reconstruction step, so it does not carry this risk for any field shape.
     """

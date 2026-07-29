@@ -36,20 +36,24 @@ checked non-``None`` before any computation.
 ``ResultStore``/``Provenance`` are single-experiment-shaped (`experiment: str`,
 ``based_on_version: str``, one ``source_csv``). Rather than extending those shared types
 for what is so far bloommcp's only dual-input consumer, both experiments are encoded into
-the existing fields: a composite ``experiment`` key (both filenames' *dot-sanitized* stems
-joined by ``__x__`` — see :func:`_storage_safe_stem`; a naive un-sanitized join is silently
-truncated by ``AnalysisDir``'s own re-applied ``Path(...).stem``, found in review), a
-composite ``based_on_version`` (``exp@version|exp@version``), and a single combined
-``source_csv`` snapshot (both selections concatenated, labeled by a leading
+the existing fields: a composite ``experiment`` key (both filenames' stems joined by
+``__x__``), a composite ``based_on_version`` (``exp@version|exp@version``), and a single
+combined ``source_csv`` snapshot (both selections concatenated, labeled by a leading
 ``_experiment`` column) so ``input_sha256`` content-addresses both inputs. ``@``/``|`` are
 therefore reserved in ``experiment_1``/``experiment_2`` and rejected up front, as is
-``experiment_1 == experiment_2`` (self-correlation) and any path-unsafe name. Persisted
-under the reused ``correlation`` tool class (design.md D9) — reserved since the pre-#438
-legacy correlation tools were retired, exactly as ``descriptive_stats`` reactivated the
-reserved ``stats`` slot — so ``list_existing_analyses`` requires no changes. Argument
-order is significant and undoes no normalization: ``(A, B)`` and ``(B, A)`` persist as two
-distinct, un-cross-referenced runs (an open question in design.md, called out in each
-experiment field's own description so a caller can discover it from the schema).
+``experiment_1 == experiment_2`` (self-correlation), any path-unsafe name, and — since a
+naive un-sanitized composite is silently truncated by ``AnalysisDir``'s own re-applied
+``Path(...).stem`` (found in review) — a filename stem containing a ``.`` or the
+``__x__`` separator itself: see :func:`_reject_unsafe_composite_stem` for why rejecting
+these outright, rather than sanitizing them away, is the fix that actually closes the
+collision risk (a first, sanitizing fix reopened the identical class one level down,
+found in a second review pass). Persisted under the reused ``correlation`` tool class
+(design.md D9) — reserved since the pre-#438 legacy correlation tools were retired,
+exactly as ``descriptive_stats`` reactivated the reserved ``stats`` slot — so
+``list_existing_analyses`` requires no changes. Argument order is significant and undoes
+no normalization: ``(A, B)`` and ``(B, A)`` persist as two distinct, un-cross-referenced
+runs (an open question in design.md, called out in each experiment field's own
+description so a caller can discover it from the schema).
 
 **Traceability (design.md D12).** Upstream itself discards which specific genotypes fed a
 given trait pair's correlation (an internal alignment result assigned to ``_``), so this
@@ -109,9 +113,12 @@ _GENOTYPE_MEANS_2_NAME = "genotype_means_2.csv"
 _SUMMARY_NAME = "summary.json"
 
 # Reserved for the composite `experiment=`/`based_on_version=` string encoding (D1) —
-# centralized here (not repeated as bare literals) so the guard and the builder can't drift.
-_RESERVED_ENCODING_CHARS = ("@", "|")
-_COMPOSITE_SEPARATOR = "__x__"
+# centralized here (not repeated as bare literals in the builder below, found in review)
+# so the guard and the builder can't drift.
+_VERSION_SEPARATOR = "@"  # joins a filename to its resolved cleaned-version label
+_PAIR_SEPARATOR = "|"  # joins the two `name@version` halves of based_on_version
+_RESERVED_ENCODING_CHARS = (_VERSION_SEPARATOR, _PAIR_SEPARATOR)
+_COMPOSITE_SEPARATOR = "__x__"  # joins the two stems of the composite `experiment=` key
 
 # Columns identify_significant_correlations' result carries beyond calculate_cross_experiment_
 # correlations' own columns — used to normalize its columnless empty-DataFrame return (design.md D6).
@@ -133,7 +140,9 @@ class CrossExperimentCorrelationsParams(BaseModel):
         description="First experiment (CSV filename). Must have a cleaned version "
         "produced by qc_clean; cross_experiment_correlations consumes it (require_clean). "
         "Must not contain '@' or '|' (reserved for this tool's persisted-run encoding), "
-        "and must differ from experiment_2 (self-correlation is rejected). Argument "
+        "and its filename stem (the part before the final extension) must not contain "
+        "'.' or '__x__' (reserved for this tool's composite storage-key encoding). Must "
+        "differ from experiment_2 (self-correlation is rejected). Argument "
         "order is significant: swapping experiment_1/experiment_2 produces a different "
         "persisted run (a distinct storage key) — the two calls are not cross-referenced.",
     )
@@ -225,8 +234,8 @@ def _reject_path_unsafe_names(experiment_1: str, experiment_2: str) -> None:
     ``clustering`` share the same gap; fixing it there too is a follow-up, out of scope
     for this tool.
     """
-    _validate_experiment_name(experiment_1)
-    _validate_experiment_name(experiment_2)
+    _validate_experiment_name(experiment_1, "experiment_1")
+    _validate_experiment_name(experiment_2, "experiment_2")
 
 
 def _reject_reserved_encoding_characters(experiment_1: str, experiment_2: str) -> None:
@@ -265,22 +274,64 @@ def _reject_self_correlation(experiment_1: str, experiment_2: str) -> None:
         )
 
 
-def _storage_safe_stem(filename: str) -> str:
-    """``filename``'s stem with internal dots replaced — immune to re-stemming.
+def _reject_unsafe_composite_stem(experiment_1: str, experiment_2: str) -> None:
+    """Reject a stem this tool's composite storage key can't safely encode (design.md D1).
 
     ``AnalysisDir`` (the real backend's storage-prefix builder,
     ``bloommcp/src/bloom_mcp/manifest/analysis_dir.py:33``) re-applies ``Path(...).stem``
-    to whatever ``experiment=`` string this tool passes it. A naive
-    ``f"{Path(e1).stem}{SEP}{Path(e2).stem}"`` composite is vulnerable: if either
-    original stem itself contains a dot (e.g. ``"my.experiment.v2.csv"`` -> stem
-    ``"my.experiment.v2"``), ``Path(composite).stem`` re-strips at the LAST dot in the
-    *composite* string, silently truncating everything after it — losing the second
-    experiment's name entirely and risking a storage-key collision between unrelated
-    runs (found in review, reproduced directly against the real code). Replacing dots
-    with underscores in each stem before joining makes the composite string itself
-    dot-free, so ``AnalysisDir``'s re-applied ``.stem`` is a no-op on it.
+    to whatever ``experiment=`` string this tool passes it. A composite key built by
+    joining two stems with ``_COMPOSITE_SEPARATOR`` is vulnerable to that re-stemming
+    whenever either original stem contains a dot: e.g. ``"my.experiment.v2.csv"`` has
+    stem ``"my.experiment.v2"``; joined with ``"cylinder.csv"``'s stem, the composite
+    ``"my.experiment.v2__x__cylinder"`` gets re-stemmed by ``AnalysisDir`` at the LAST
+    dot, silently truncating to ``"my.experiment"`` — losing the second experiment's
+    name and the separator entirely, risking a storage-key collision between unrelated
+    runs (found in review, reproduced directly against the real code).
+
+    A first fix attempted a lossy sanitization (``_storage_safe_stem``, since removed
+    here): replace each dot with an underscore before joining, so the composite string
+    itself is dot-free and ``AnalysisDir``'s re-applied ``.stem`` becomes a no-op. That
+    reopened the identical collision class one level down — found in a second review
+    pass: ``"my.experiment.csv"`` and ``"my_experiment.csv"`` both sanitize to the
+    identical stem ``"my_experiment"`` and would silently collide on the same storage
+    key. A lossy substitution can narrow a collision class but can't close it. Rejecting
+    a dotted stem outright, instead of sanitizing it away, is the only fix that doesn't
+    trade one collision class for a narrower one.
+
+    A stem containing ``_COMPOSITE_SEPARATOR`` itself is rejected for the same reason:
+    it would let two distinct ``(experiment_1, experiment_2)`` pairs join to the
+    identical composite string — e.g. ``experiment_1="control__x__treatment.csv",
+    experiment_2="foo.csv"`` joins to the same string as ``experiment_1="control.csv",
+    experiment_2="treatment__x__foo.csv"``.
     """
-    return Path(filename).stem.replace(".", "_")
+    for label, name in (("experiment_1", experiment_1), ("experiment_2", experiment_2)):
+        stem = Path(name).stem
+        if "." in stem:
+            raise BloomMCPError(
+                code="invalid_input",
+                message=(
+                    f"{label} ({name!r})'s filename stem ({stem!r}) contains a '.', "
+                    "which this tool's composite storage-key encoding cannot safely "
+                    "represent."
+                ),
+                remedy=(
+                    "Rename the experiment file so its stem (the part before the final "
+                    "extension) contains no '.' characters."
+                ),
+            )
+        if _COMPOSITE_SEPARATOR in stem:
+            raise BloomMCPError(
+                code="invalid_input",
+                message=(
+                    f"{label} ({name!r})'s filename stem ({stem!r}) contains "
+                    f"{_COMPOSITE_SEPARATOR!r}, reserved as this tool's composite "
+                    "storage-key separator."
+                ),
+                remedy=(
+                    f"Rename the experiment file so its stem does not contain "
+                    f"{_COMPOSITE_SEPARATOR!r}."
+                ),
+            )
 
 
 def _load_cleaned(reader, name: str, label: str) -> ExperimentFrame:
@@ -387,6 +438,7 @@ def cross_experiment_correlations(
     _reject_path_unsafe_names(params.experiment_1, params.experiment_2)
     _reject_reserved_encoding_characters(params.experiment_1, params.experiment_2)
     _reject_self_correlation(params.experiment_1, params.experiment_2)
+    _reject_unsafe_composite_stem(params.experiment_1, params.experiment_2)
 
     reader = _ports.reader()
     store = _ports.store()
@@ -458,12 +510,17 @@ def cross_experiment_correlations(
         )
     )
 
+    # Safe un-sanitized: _reject_unsafe_composite_stem already ruled out a dotted or
+    # separator-containing stem on either side, so AnalysisDir's own re-applied
+    # Path(...).stem is a no-op on this composite (design.md D1).
     composite_experiment = (
-        f"{_storage_safe_stem(params.experiment_1)}{_COMPOSITE_SEPARATOR}"
-        f"{_storage_safe_stem(params.experiment_2)}"
+        f"{Path(params.experiment_1).stem}{_COMPOSITE_SEPARATOR}"
+        f"{Path(params.experiment_2).stem}"
     )
     based_on_version = (
-        f"{params.experiment_1}@{frame1.source}|{params.experiment_2}@{frame2.source}"
+        f"{params.experiment_1}{_VERSION_SEPARATOR}{frame1.source}"
+        f"{_PAIR_SEPARATOR}"
+        f"{params.experiment_2}{_VERSION_SEPARATOR}{frame2.source}"
     )
     prov = provenance.model_copy(update={"based_on_version": based_on_version})
 
