@@ -37,6 +37,25 @@ def test_web_env_file_is_optional():
         )
 
 
+def test_bloommcp_storage_backend_vars_use_env_interpolation_not_literals():
+    """#478: BLOOM_STORAGE_BACKEND/BLOOM_STORAGE_LOCAL_ROOT/BLOOM_EXPERIMENT_LOCAL_ROOT
+    must be sourced via ${VAR:-} interpolation from the active env file, not baked
+    in as commented-out or literal YAML values, so toggling fully-local mode never
+    requires editing this tracked file."""
+    env = _compose()["services"]["bloommcp"]["environment"]
+    for var in (
+        "BLOOM_STORAGE_BACKEND",
+        "BLOOM_STORAGE_LOCAL_ROOT",
+        "BLOOM_EXPERIMENT_LOCAL_ROOT",
+    ):
+        assert var in env, f"{var} must be present in bloommcp's environment block"
+        value = str(env[var])
+        assert value == f"${{{var}:-}}", (
+            f"{var} must be sourced via ${{{var}:-}} interpolation (empty "
+            f"default), got literal value {value!r}"
+        )
+
+
 def test_bloommcp_healthcheck_uses_unauthenticated_health_endpoint():
     """bloommcp's /mcp requires a Bearer token (ApiKeyVerifier), so probing it
     unauthenticated returns 401 and the container is wrongly marked unhealthy.

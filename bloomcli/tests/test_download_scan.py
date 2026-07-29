@@ -1,10 +1,10 @@
-"""Single-scan download (`bloomctl download --scan-id`)."""
+"""Single-scan download (`bloomctl cyl download --scan-id`)."""
 
 from click.testing import CliRunner
 from test_download_metadata import SCAN
 
 import bloomctl.auth as auth
-import bloomctl.download as dl
+import bloomctl.cyl.download as dl
 from bloomctl.cli import cli
 from bloomctl.credentials import Credentials
 
@@ -93,7 +93,7 @@ def test_download_scan_writes_that_scan_only(tmp_path, monkeypatch):
     )
 
     out = tmp_path / "out"
-    result = CliRunner().invoke(cli, ["download", str(out), "--scan-id", "1"])
+    result = CliRunner().invoke(cli, ["cyl", "download", str(out), "--scan-id", "1"])
 
     assert result.exit_code == 0, result.output
     with (out / "scans.csv").open() as fh:
@@ -113,20 +113,20 @@ def test_scan_not_found_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(auth, "make_authed_client", lambda creds: _FakeClient())
     monkeypatch.setattr(dl, "fetch_scan", lambda client, scan_id: None)
 
-    result = CliRunner().invoke(cli, ["download", str(tmp_path / "out"), "--scan-id", "999"])
+    result = CliRunner().invoke(cli, ["cyl", "download", str(tmp_path / "out"), "--scan-id", "999"])
     assert result.exit_code != 0
     assert "not found" in result.output
 
 
 def test_scan_id_and_experiment_id_are_mutually_exclusive(tmp_path):
     result = CliRunner().invoke(
-        cli, ["download", str(tmp_path / "out"), "--scan-id", "1", "--experiment-id", "17957"]
+        cli, ["cyl", "download", str(tmp_path / "out"), "--scan-id", "1", "--experiment-id", "17957"]
     )
     assert result.exit_code != 0
     assert "exactly one" in result.output.lower()
 
 
 def test_scan_id_or_experiment_id_is_required(tmp_path):
-    result = CliRunner().invoke(cli, ["download", str(tmp_path / "out")])
+    result = CliRunner().invoke(cli, ["cyl", "download", str(tmp_path / "out")])
     assert result.exit_code != 0
     assert "exactly one" in result.output.lower()

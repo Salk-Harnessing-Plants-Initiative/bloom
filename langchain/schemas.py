@@ -8,7 +8,7 @@ class ChatRequest(BaseModel):
     prompt: str
     provider: str = "openai"  # "openai" or "local"
     model: Optional[str] = None  # Defaults to first model for provider
-    tool_set: str = "all"  # "all", "scrna", "cyl", "generic"
+    tool_set: str = "all"  # "all", "scrna", "cyl", "generic", "mcp" (MCP tools only)
     mcp_tool_names: list[str] = Field(default_factory=list)  # Filter MCP tools by name (empty = foundational only)
     thread_id: str = "default"  # Conversation thread ID for memory persistence
 
@@ -27,3 +27,13 @@ class CreateThreadRequest(BaseModel):
 
 class ModelsResponse(BaseModel):
     models: dict[str, list[str]]
+
+
+class MCPToolInfo(BaseModel):
+    name: str
+    description: str
+    foundational: bool
+
+
+class MCPToolsResponse(BaseModel):
+    tools: list[MCPToolInfo]

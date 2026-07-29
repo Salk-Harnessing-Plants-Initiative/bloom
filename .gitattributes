@@ -19,11 +19,34 @@
 .env.dev.example text eol=lf
 .env.prod.defaults text eol=lf
 .env.staging.defaults text eol=lf
+# Pinned Supabase CLI version — read by scripts/doctor.sh; keep LF.
+.supabase-version text eol=lf
 
 # Container init scripts under volumes/db/ are bind-mounted into the Linux
 # db-dev container; a CRLF shebang breaks them with "bad interpreter" and the
 # database is left half-initialised (issue #124). Force LF for everything there.
 volumes/db/** text eol=lf
+
+# The supavisor pooler container evals volumes/pooler/pooler.exs via Elixir at
+# startup (`supavisor eval "$(cat /etc/pooler/pooler.exs)"`); a CRLF there
+# crashes it with "unexpected token: carriage return (U+000D)" and the pooler
+# crash-loops. `.exs` is not otherwise covered, so force LF for the pooler dir.
+*.exs text eol=lf
+volumes/pooler/** text eol=lf
+
+# Generated contract types (pin-sleap-roots-contract / #294). The `* text=auto`
+# default would round-trip .ts through CRLF on Windows working trees, while
+# json-schema-to-typescript emits LF — breaking the byte-for-byte drift guard
+# (scripts/contract_types.mjs --check) locally vs CI. Force LF so the guard is
+# reproducible cross-platform. (The vendored schema is already covered by *.json.)
+contracts/generated/*.ts text eol=lf
+
+# cyl-blob-upload predictions fixture (bloom #407): these placeholder .slp
+# files' exact bytes are sha256-checksummed in the sibling
+# scan0K9E8BI.predictions.json fixture. Real .slp files are binary (HDF5);
+# marking these `binary` disables the `* text=auto` CRLF conversion that
+# would otherwise silently break the checksum on a Windows checkout.
+bloomcli/tests/fixtures/predictions_scan0K9E8BI/*.slp binary
 
 # Jupyter notebooks
 *.ipynb text eol=lf

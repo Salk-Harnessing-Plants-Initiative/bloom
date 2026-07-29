@@ -1,0 +1,26 @@
+{
+  "_comment": "Characterization snapshot of sleap_roots_analyze.clean_traits_for_analysis (cleanup+validate only) on the raw turface_19 input, called with the reader-detected role + trait columns (exactly as the qc_clean tool calls it). NOT the #120 post-QC final table (that is the full QCPipeline). Demonstrates trait-first cleanup minimizing sample loss vs naive dropna. As of #403 trait detection delegates to sleap_roots_analyze.get_trait_columns, which excludes the numeric metadata column Computation.Time.s from the trait set: detected traits 20 -> 19, and the cleaned trait count 18 -> 17 (Computation.Time.s is NaN-free so it previously survived cleaning). Sample counts are unchanged because the excluded column carried no NaNs.",
+  "_raw_source": "talmolab/sleap-roots-analyze@main:tests/fixtures/real/wheat_edpie/inputs/raw/turface_19/Turface_all_traits_2024_RSR_diameter_angle_traits_removed.csv",
+  "_reproduced_by_sleap_roots_analyze_version": "0.1.0a4",
+  "role_columns": {
+    "barcode_col": "Barcode",
+    "genotype_col": "geno",
+    "replicate_col": "rep"
+  },
+  "cleanup_params": {
+    "max_nans_per_trait": 0.1
+  },
+  "raw_samples": 187,
+  "raw_traits": 19,
+  "excluded_from_traits": [
+    "Computation.Time.s"
+  ],
+  "naive_dropna_samples": 158,
+  "cleaned_samples": 187,
+  "cleaned_traits": 17,
+  "cleaned_trait_nans": 0,
+  "removed_traits": [
+    "Root_Biomass_mg",
+    "Root_Shoot_Ratio"
+  ]
+}

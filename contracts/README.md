@@ -1,0 +1,122 @@
+# Pinned `sleap-roots-contracts` (Bloom consumer)
+
+This directory pins the cross-language **result contract** that the sleap-roots pipeline
+produces and Bloom consumes (sub-project #1 → #2; change `pin-sleap-roots-contract`, #294).
+The contract itself is owned by
+[`talmolab/sleap-roots-contracts`](https://github.com/talmolab/sleap-roots-contracts); Bloom is
+the consumer and only **pins** a version, codegens TypeScript from it, and checks its DB schema
+against it in CI.
+
+## Terminology & roadmap
+
+References here (and in this change's proposal/design) to **sub-projects** (`#1` the contract
+library, `#2` the Bloom write-back) and to **#2's changes** (`A`, `B`, `C`, `D`, `E`,
+`consume-pin`, `read-path`, `CLI`, `backfill`) come from the integration roadmap. This change is
+**consume-pin** (#294), historically lettered **F**.
+
+- **Roadmap** — the canonical change list, GitHub issues, and status (see its "A2 change
+  breakdown" table):
+  <https://github.com/talmolab/sleap-roots-pipeline/blob/main/docs/bloom-integration/roadmap.md>
+- **Contract design doc** — the rationale and the original `A–H` decomposition (§10 lists the
+  changes; §6 the cross-language drift guard; §7 the deferred models seam):
+  <https://github.com/talmolab/sleap-roots-contracts/blob/main/docs/01-contract-library-design.md>
+
+Where the two differ, the **roadmap is the more current source** (it renamed `F`→`consume-pin`,
+sequenced it first, and added `read-path` #298); the design doc uses the `A–H` letters
+(`F`=consume-pin, `G`=ingest CLI, `H`=backfill).
+
+## What's here
+
+| Path                                 | What                                                                                                         | Authority                                                 |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------- |
+| `schema/result_envelope.schema.json` | Vendored, LF-normalized copy of the pinned JSON Schema                                                       | Faithful copy of the published artifact — **do not edit** |
+| `pin.json`                           | The pin manifest: `package`, `version`, full schema `$id`, `source`, file paths                              | The declared pin                                          |
+| `generated/result-envelope.ts`       | TypeScript types (`ResultEnvelope`/`Provenance`/`TraitValue`/`BlobRef` + sub-defs) generated from the schema | Emitted by codegen — **do not edit by hand**              |
+
+**Currently pinned: `v0.1.0a5`.** These are the _contract_ types (from the JSON Schema), distinct
+from the Supabase `database.types.ts` (generated from the database by `make gen-types`).
+
+> Note on `v0.1.0a5`: re-pinned from `v0.1.0a4` for Bloom change `add-cyl-blob-upload` (#407) — an **`$id`-only structural no-op for the JSON Schema** (verified by diffing the fetched `v0.1.0a5` schema against the vendored `a4` schema with the version string normalized out: no other bytes differ). `BlobRef`/`Provenance` are unchanged and the generated TS is byte-identical apart from the `$id` line. The substantive addition in this contracts release is on the Python package side — `sleap_roots_contracts.PredictionArtifact`/`PredictionManifest`, promoted from `sleap-roots-predict` (talmolab/sleap-roots-contracts#22) so `bloomctl cyl ingest-result --predictions-dir` can read predict's per-scan manifest without a PyPI-absent dependency — not a schema field, so it doesn't surface in the drift-guard diff.
+
+> Note on `v0.1.0a4`: re-pinned from `v0.1.0a3` for Bloom change `add-cyl-download-for-predict` (#411) — an **`$id`-only structural no-op for the JSON Schema** (verified by diffing the fetched `v0.1.0a4` schema against the vendored `a3` schema with the version string normalized out: no other bytes differ). `BlobRef`/`Provenance` are unchanged and the generated TS is byte-identical apart from the `$id` line. The substantive addition in this contracts release is on the Python package side — `sleap_roots_contracts.resolve_params`, the canonical species/age-normalization oracle bloomctl now calls when authoring `scan_metadata.json` sidecars for the A4 per-scan pipeline stage-in — not a schema field, so it doesn't surface in the drift-guard diff.
+
+> Note on `v0.1.0a3`: re-pinned from `v0.1.0a2` for Bloom change `repin-cyl-contract-a3` (#393) —
+> a **real contract revision**, not a `$id` no-op, but **additive and non-breaking**. `Provenance`
+> gained two optional, nullable fields (`predict_inference_config`, `predict_output_params`); no field
+> was removed or retyped and `BlobRef` is unchanged. Because `Provenance` is a plain object with
+> `properties`, the generated TS **does** surface the two new optional fields (unlike the `BlobRef`
+> `anyOf` caveat below) — an expected, reviewed drift-guard diff. Both fields ride inside the opaque
+> `cyl_trait_sources.metadata` jsonb, so no Bloom DB column or migration is needed. The bare-vs-`v`
+> `contract_version` convention (the write-back RPC now matches prefix-tolerantly) is tracked upstream
+> in [`talmolab/sleap-roots-contracts#14`](https://github.com/talmolab/sleap-roots-contracts/issues/14);
+> once it settles on the canonical byte, Bloom can drop the tolerance and pin it exactly.
+
+> Note on `v0.1.0a2`: re-pinned from `v0.1.0a1` for Bloom change C
+> ([talmolab/sleap-roots-contracts#5](https://github.com/talmolab/sleap-roots-contracts/issues/5)) —
+> a **real contract revision**, not a `$id` no-op. `BlobRef.kind` was narrowed to
+> `Literal["predictions_slp"]` (dropping `labels`/`h5`/`qc_image`) and a required `BlobRef.root_type`
+> (`Literal["primary","lateral","crown"]`) was added. The schema diff is real; the generated TS is
+> unchanged because `json-schema-to-typescript` renders `BlobRef` from its top-level `anyOf` only
+> (see the change-C codegen caveat below). When `v0.1.0` is cut, re-pin per below.
+
+## Guards (CI)
+
+- **Drift guard** — `npm run contracts:check` (`scripts/contract_types.mjs --check`), in the
+  `build-and-audit` job: regenerates the TS from the pinned schema and fails if the committed
+  `generated/` types are not byte-identical, and fails if `pin.json` disagrees with the schema
+  `$id` (exact `id` + parsed `version`).
+- **Negative-path / `$id`-no-op test** — `npm run contracts:test`
+  (`node --test scripts/contract_types.test.mjs`), same job.
+- **Migration-matches-schema** — `tests/integration/test_contract_migration_match.py` (in
+  `compose-health-check`): asserts Bloom's applied DB schema agrees with the pinned contract for
+  the mappings built today, and the contract-side facts that justify them.
+
+## The `$id`-restamp-is-a-no-op rule
+
+The schema `$id` carries the package version (`…/schema/v0.1.0a1/result_envelope.schema.json`), so a
+re-pin re-stamps the `$id` even when the payload is unchanged. The codegen **never emits `$id`** into
+the types, so a `$id`-only re-pin regenerates **byte-identical** TS. Treat that as a structural
+no-op — not a contract revision. The intended diff on such a re-pin is exactly two things (kept in
+lockstep by the pin-consistency check): the schema `$id` and `pin.json` `version`/`id`. A _real_
+field change produces a TS diff and fails the drift guard — that is the signal to review.
+
+## Re-pin procedure
+
+1. Replace `schema/result_envelope.schema.json` with the new published schema (keep it LF; it is
+   excluded from repo prettier — see below).
+2. Update `pin.json` `version` and `id` to the new version.
+3. Run `npm run contracts:gen` to regenerate `generated/result-envelope.ts`; commit it.
+   (`--write` runs the pin-consistency check first and **refuses to write** if `pin.json` and the
+   schema `$id` disagree — so do step 2 before step 3.)
+4. Run `npm run contracts:check` — it passes when `pin.json`, the schema `$id`, and the regenerated
+   types all agree. For a `$id`-only bump the types diff is empty; any other diff is a real contract
+   change to review.
+
+## Gotchas
+
+- **Never run prettier from inside `contracts/`.** The repo `.prettierignore` excludes
+  `contracts/generated/` and `contracts/schema/`, but that ignore is **root-relative** — running
+  prettier from a subdirectory bypasses it and would reformat the generated/vendored files,
+  breaking the byte-for-byte drift guard.
+- `generated/*.ts` is pinned to LF via `.gitattributes` so the guard is reproducible on Windows and
+  Linux.
+
+## Consumer hand-offs (recorded for later changes, not enforced here)
+
+The generated types have **no consumer yet** (changes B/C/D/G pending). When the write-back path is
+built, the consumer (D/G) MUST, at the write boundary:
+
+- validate `provenance.contract_version` against the pinned `version` (or an explicit compatibility
+  set) — the per-row provenance-of-origin anchor;
+- validate each `TraitValue.value` is finite-or-null (the contract normalizes NaN/inf → null).
+
+The reproducibility anchors `inputs.images_checksum` / `image_ids` and `params.param_hash` ride
+inside the opaque `metadata` jsonb and are not promoted to columns by change A.
+
+**Codegen caveat for change C (blob table):** `json-schema-to-typescript` renders `BlobRef` from
+its top-level `anyOf` only (`{ s3_location } | { box_link }`), so the generated `BlobRef` type
+**does not surface** the required `kind`/`root_type`/`scan_key` fields or the `kind` enum
+(`predictions_slp`) — they survive only via the `[k: string]: unknown` index
+signature. This is faithful-but-lossy (under-specified, not mis-specified). Change C validates a
+blob against the JSON Schema directly, not the generated `BlobRef`, for `kind`/`root_type`/`scan_key`
+(the Bloom DB enforces `kind`/`root_type` via CHECK constraints).

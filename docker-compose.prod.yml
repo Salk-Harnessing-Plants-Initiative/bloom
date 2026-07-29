@@ -79,7 +79,7 @@ services:
       - supanet
 
   #-------------------
-  # BLOOM WEB 
+  # BLOOM WEB
   #-------------------
   bloom-web:
     build:
@@ -111,6 +111,13 @@ services:
       SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
+      # Read by web/lib/config/validate-on-boot.ts in production via the
+      # Next.js 16 instrumentation hook (web/instrumentation.ts). Required:
+      # boot fails if unset. See openspec/changes/add-ghcr-image-publishing
+      # design.md Decision 13 for format
+      # (<internal_host>=<public_host>[,<internal_host>=<public_host>]*).
+      # The .env.prod / .env.staging / .env.ci sources MUST set this var.
+      SUPABASE_URL_HOSTS_ALLOWED: ${SUPABASE_URL_HOSTS_ALLOWED}
     depends_on:
       - kong
     healthcheck:
@@ -184,6 +191,46 @@ services:
     command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5002", "--workers", "4"]
 
   # -------------------
+  # Workflows API
+  # -------------------
+  workflows:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      # Size-capped so the temp MP4 can't exhaust host RAM (sized for the full
+      # video × the 2 workers, with headroom).
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    expose:
+      - "5100"
+    environment:
+      WORKFLOWS_CORS_ORIGINS: ${CORS_ORIGINS}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      # Public base for rewriting signed URLs off the internal kong host so
+      # download_url is usable by outside callers.
+      WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+    networks:
+      - supanet
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5100/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - kong
+      - db-prod
+    restart: unless-stopped
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "2"]
+
+  # -------------------
   # Bloom MCP Server
   # -------------------
   bloommcp:
@@ -205,7 +252,7 @@ services:
       # JWT langchain-agent uses). SERVICE_ROLE_KEY is deliberately NOT passed
       # in — bloommcp's storage access is gated by the bloom_agent RLS policies, and granting service_role would let a future code path silently bypass them.
       BLOOM_AGENT_KEY: ${BLOOM_AGENT_KEY}
-      BLOOM_TRAITS_DIR: /app/data/SLEAP_OUT_CSV
+      BLOOM_TRAITS_DIR: /app/data/TRAITS_DIR
       BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
       BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
@@ -228,7 +275,7 @@ services:
       # restores the normal caching path.
       PYTHONPYCACHEPREFIX: /tmp/pycache
     volumes:
-      - ./bloommcp/data/SLEAP_OUT_CSV:/app/data/SLEAP_OUT_CSV
+      - ./bloommcp/data/TRAITS_DIR:/app/data/TRAITS_DIR
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
       - ./bloommcp/data/ANALYSIS_OUTPUT:/app/data/ANALYSIS_OUTPUT
     networks:
@@ -435,7 +482,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
 
-  
+
   # -------------------
   # Supabase Storage
   # -------------------
@@ -537,7 +584,7 @@ services:
         "-c",
         "log_min_messages=fatal"
       ]
-  
+
   # -------------------
   # Supavisor (Connection Pooler)
   # -------------------
@@ -698,7 +745,3 @@ volumes:
 networks:
   supanet:
     driver: bridge
-
-
-
-

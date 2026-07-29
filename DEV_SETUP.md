@@ -10,10 +10,11 @@ This guide covers setting up Bloom for local development.
 1. [Prerequisites](#prerequisites)
 2. [Environment Configuration](#environment-configuration)
 3. [MinIO Storage Setup](#minio-storage-setup)
-4. [Starting the Stack](#starting-the-stack)
-5. [Database Migrations](#database-migrations)
-6. [Loading Test Data](#loading-test-data)
-7. [Service URLs and Ports](#service-urls-and-ports)
+4. [bloommcp Data Directories](#bloommcp-data-directories)
+5. [Starting the Stack](#starting-the-stack)
+6. [Database Migrations](#database-migrations)
+7. [Loading Test Data](#loading-test-data)
+8. [Service URLs and Ports](#service-urls-and-ports)
 
 ---
 
@@ -26,21 +27,34 @@ Before starting, ensure you have:
 - **`uv`** — https://docs.astral.sh/uv/getting-started/installation/ (runs the
   Python helpers; no separate Python install needed)
 - **Node.js 18+ and npm**
-- **Supabase CLI**, pinned to the version CI uses (currently **2.92.1**) so local
-  `migrate-local` behaves identically to CI:
+- **Supabase CLI**, pinned to the version in [`.supabase-version`](.supabase-version)
+  (the repo's single source of truth, matched by CI) so local `migrate-local`
+  behaves identically to CI:
   - macOS: `brew install supabase/tap/supabase`
   - Linux/WSL2: download the matching release from
     https://github.com/supabase/cli/releases
-  - check: `supabase --version`
+  - check: `supabase --version` (and `make doctor` warns if it's off the pin)
 
 ### Windows: use WSL2
 
-Bloom's stack is Linux containers, and the Postgres init scripts under
-`volumes/db/` must be checked out with LF line endings. **Develop inside WSL2**
-(Ubuntu) with Docker Desktop's WSL integration enabled, and **clone the repo into
-the WSL2 Linux filesystem** (e.g. `~/repos/bloom`) — *not* under `/mnt/c/...`.
-Cloning onto the Windows drive reintroduces filesystem/line-ending problems
-(issue #124). Inside WSL2 every command below is identical to macOS/Linux.
+Bloom's stack is Linux containers. **Develop inside WSL2** (Ubuntu) with Docker
+Desktop's WSL integration enabled, and **clone the repo into the WSL2 Linux
+filesystem** (e.g. `~/repos/bloom`) — _not_ under `/mnt/c/...`. Two things break
+silently if you run from the Windows drive:
+
+- **MinIO** bind-mounts its data dir to `/data`; from `/mnt/c` that fails with
+  `lstat /data: input/output error` / "drive is faulty" — Docker Desktop can't
+  service MinIO's low-level disk I/O over the Windows↔Linux share. This is the
+  **primary** reason the repo must live on the Linux filesystem.
+- **Line endings:** the Postgres init scripts under `volumes/db/` must be LF; a
+  CRLF checkout breaks them with `bad interpreter` (issue #124). `.gitattributes`
+  forces LF on a fresh clone, but a `/mnt/c` working tree can still reintroduce
+  CRLF — a secondary reason.
+
+**Install the toolchain _inside_ WSL Ubuntu, not on Windows** — `uv`, `node`
+(via nvm), and the `supabase` CLI. A Windows-installed Node leaks into WSL via
+`/mnt/c/Program Files/nodejs`, so `npm` runs the wrong runtime; `make doctor`
+(below) flags this. Inside WSL2 every command below is identical to macOS/Linux.
 
 ---
 
@@ -83,29 +97,50 @@ Only needed for specific features / conflicts:
 
 ---
 
+## Preflight: `make doctor`
+
+Before bringing the stack up, run the environment doctor:
+
+```bash
+make doctor
+```
+
+It checks your machine for the traps that silently break local setup and prints
+what to fix: a repo on the Windows drive (`/mnt/c`), a missing or Windows-leaked
+tool (`uv`/`node`/`npm`/`supabase`/`make`/`docker`), the Docker daemon not
+running, a `supabase` CLI version off the pin in `.supabase-version`, the
+configured `POSTGRES_HOST_PORT` already in use (the port-conflict note above),
+and CRLF in the container init scripts. A
+hard error (repo on `/mnt/`, a missing tool) stops with a non-zero exit;
+everything else is an advisory. `make dev-up` runs this same preflight
+automatically — set `DOCTOR_SKIP=1` to bypass it (CI does this on its known-good
+runner).
+
+---
+
 ## MinIO Storage Setup
 
-### Step 1: Create Storage Directory
+Nothing to do — MinIO is provisioned automatically:
 
-```bash
-# Create directory (adjust path to match MINIO_DATA_PATH)
-mkdir -p ~/minio
+- **Buckets** are created on `make dev-up` by the `minio-init` service
+  (`minio/init/create-buckets.sh`).
+- **Data dir:** `MINIO_DATA_PATH` defaults to `./volumes/minio-dev` (a
+  gitignored, repo-relative path); Docker creates it on first start. Leave it at
+  the default.
 
-# Set permissions
-chmod 755 ~/minio
-```
+> On native Linux only, if MinIO can't write its data dir (a host/container UID
+> mismatch on the bind mount), see the writability note in `openspec/project.md`
+> (`chmod 770`). On Docker Desktop (macOS / Windows-WSL2) this doesn't arise.
 
-### Step 2: Verify Path Configuration
+---
 
-Ensure `MINIO_DATA_PATH` in `.env.dev` matches your created directory:
+## bloommcp Data Directories
 
-```bash
-# Example for macOS/Linux
-MINIO_DATA_PATH=/Users/yourusername/minio
-
-# Or use full path
-MINIO_DATA_PATH=$(pwd)/minio
-```
+Nothing to do — `bloommcp/data/{TRAITS_DIR,PLOTS_DIR,ANALYSIS_OUTPUT}` are
+provisioned automatically by `make dev-up`'s `ensure-bloommcp-data-dirs`
+preflight, before `docker compose up` runs — no manual `mkdir`/`chmod` needed.
+See the writability note in `openspec/project.md` for why this exists (the same
+root-owned-bind-mount class of issue as MinIO's, above).
 
 ---
 
@@ -118,6 +153,7 @@ make dev-up
 ```
 
 This command will:
+
 - Install frontend dependencies (if needed)
 - Build Docker images
 - Start all services with hot reload
@@ -133,6 +169,7 @@ docker ps
 ```
 
 You should see containers for:
+
 - bloom-web-dev (Next.js with hot reload)
 - db-dev (PostgreSQL)
 - supabase-minio (MinIO storage)
@@ -171,6 +208,7 @@ make migrate-local
 
 This command (Supabase CLI `db push --debug`, reading credentials and
 `POSTGRES_HOST_PORT` from `.env.dev`) will:
+
 - Apply every SQL file from `supabase/migrations/` in order
 - Record applied migrations in `supabase_migrations.schema_migrations`
 - Skip migrations that are already recorded (idempotent)
@@ -187,6 +225,7 @@ docker compose -f docker-compose.dev.yml exec db-dev psql -U supabase_admin -d p
 ```
 
 You should see tables like:
+
 - species
 - phenotypers
 - cyl_experiments
@@ -221,50 +260,53 @@ make load-test-data
 # Step 2: Upload sample images to MinIO (72 images)
 make upload-images
 ```
+
+> **Validate the bloom-mcp persistence path:** with the stack up + migrated, `make bloommcp-smoke` drives the granular bloom-mcp tools end-to-end through real Supabase storage — see [bloommcp/docs/local-validation.md](bloommcp/docs/local-validation.md).
+
 ---
 
 ## Service URLs and Ports
 
 ### Frontend & External Services
 
-| Service | URL | Port | Description |
-|---------|-----|------|-------------|
-| Bloom Web | http://localhost:3000 | 3000 | Next.js frontend with hot reload |
-| Supabase Studio | http://localhost:55323 | 55323 | Database management UI |
-| LangChain Agent | http://localhost:5002 | 5002 | AI agent chat API |
-| Bloom MCP Server | http://localhost:8811 | 8811 | FastMCP Bloom analysis tools |
-| Swagger UI | http://localhost:8085 | 8085 | PostgREST API browser |
-| MinIO Console | http://localhost:9101 | 9101 | Storage management console |
-| Kong Gateway | http://localhost:8000 | 8000 | API Gateway |
+| Service          | URL                    | Port  | Description                      |
+| ---------------- | ---------------------- | ----- | -------------------------------- |
+| Bloom Web        | http://localhost:3000  | 3000  | Next.js frontend with hot reload |
+| Supabase Studio  | http://localhost:55323 | 55323 | Database management UI           |
+| LangChain Agent  | http://localhost:5002  | 5002  | AI agent chat API                |
+| Bloom MCP Server | http://localhost:8811  | 8811  | FastMCP Bloom analysis tools     |
+| Swagger UI       | http://localhost:8085  | 8085  | PostgREST API browser            |
+| MinIO Console    | http://localhost:9101  | 9101  | Storage management console       |
+| Kong Gateway     | http://localhost:8000  | 8000  | API Gateway                      |
 
 ### Internal Services (Docker Network)
 
-| Service | Internal URL | Port | Description |
-|---------|-------------|------|-------------|
-| PostgreSQL | db-dev:5432 | 5432 | Database |
-| MinIO API | supabase-minio:9000 | 9000 | S3 API |
-| Storage API | storage:5000 | 5000 | Supabase Storage |
-| Auth API | auth:9999 | 9999 | Authentication |
-| REST API | rest:3000 | 3000 | PostgREST |
-| Realtime | realtime:4000 | 4000 | Realtime subscriptions |
+| Service     | Internal URL        | Port | Description            |
+| ----------- | ------------------- | ---- | ---------------------- |
+| PostgreSQL  | db-dev:5432         | 5432 | Database               |
+| MinIO API   | supabase-minio:9000 | 9000 | S3 API                 |
+| Storage API | storage:5000        | 5000 | Supabase Storage       |
+| Auth API    | auth:9999           | 9999 | Authentication         |
+| REST API    | rest:3000           | 3000 | PostgREST              |
+| Realtime    | realtime:4000       | 4000 | Realtime subscriptions |
 
 ### API Endpoints
 
 **Kong Gateway** (http://localhost:8000) routes to:
 
-| Path | Routes To | Description |
-|------|-----------|-------------|
-| /auth/v1/* | auth:9999 | Authentication |
-| /rest/v1/* | rest:3000 | Database API |
-| /realtime/v1/* | realtime:4000 | Subscriptions |
-| /storage/v1/* | storage:5000 | File storage |
+| Path            | Routes To     | Description    |
+| --------------- | ------------- | -------------- |
+| /auth/v1/\*     | auth:9999     | Authentication |
+| /rest/v1/\*     | rest:3000     | Database API   |
+| /realtime/v1/\* | realtime:4000 | Subscriptions  |
+| /storage/v1/\*  | storage:5000  | File storage   |
 
 **LangChain Agent** (http://localhost:5002):
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | /chat | Send message to AI agent |
-| GET | /health | Health check |
+| Method | Endpoint | Description              |
+| ------ | -------- | ------------------------ |
+| POST   | /chat    | Send message to AI agent |
+| GET    | /health  | Health check             |
 
 ---
 
@@ -283,6 +325,7 @@ The LangChain agent connects to the Bloom MCP server (port 8811) which provides 
 ### Storage Management
 
 **Create new bucket:**
+
 ```bash
 # Private bucket
 make create-bucket BUCKET=my-new-bucket
@@ -292,6 +335,7 @@ make create-bucket BUCKET=public-data PUBLIC=true
 ```
 
 **List all buckets:**
+
 ```bash
 make list-buckets
 ```
@@ -325,8 +369,8 @@ docker compose -f docker-compose.dev.yml restart db-dev
 # Check MinIO is running
 docker ps | grep minio
 
-# Verify path exists and is writable
-ls -la ~/minio
+# Verify the data dir exists and is writable (default: ./volumes/minio-dev)
+ls -la ./volumes/minio-dev
 
 # Check environment variable
 cat .env.dev | grep MINIO_DATA_PATH
@@ -396,8 +440,8 @@ make dev-down
 # Remove all containers and volumes
 docker compose -f docker-compose.dev.yml down -v
 
-# Remove MinIO data
-rm -rf ~/minio/*
+# Remove MinIO data (default path; adjust if you overrode MINIO_DATA_PATH)
+rm -rf ./volumes/minio-dev/*
 
 # Start fresh
 make dev-up
@@ -406,18 +450,21 @@ make upload-images
 ```
 
 ---
+
 ### Automated Bucket Creation
 
 On stack startup, these buckets are created automatically:
 
 **Private Buckets:**
+
 - images
-- species_illustrations
+- species-illustrations
 - tus-files
-- video
+- videos
 - scrna
 
 **Public Buckets:**
+
 - experiment-log-images
 - plates-images
 - plate-blob-storage
@@ -448,15 +495,18 @@ After successful setup:
 ---
 
 # API Gateway
+
 KONG_HTTP_PORT=8000
 SITE_URL=http://localhost:3000
 
 # MinIO
+
 MINIO_ROOT_USER=<your-minio-user>
 MINIO_ROOT_PASSWORD=<your-minio-password>
 MINIO_DEFAULT_BUCKET=bloom-storage
 
 # LangChain Agent
+
 SUPABASE_URL=http://kong:8000
 S3_ENDPOINT=http://supabase-minio:9000
 
@@ -472,15 +522,16 @@ make reset-storage
 ```
 
 What the target does:
+
 - Stops the dev compose stack.
 - Attempts to detect the MinIO host path mounted in `docker-compose.dev.yml` and will prompt for confirmation before deleting all files in that directory.
 - Removes docker volumes prefixed with `bloom_v2_dev_` (named dev volumes).
 - Restarts the dev stack so you can re-run initialization.
 
 Safety notes:
+
 - The Make target prompts twice (first to proceed, then to type `delete` to actually remove files) to avoid accidents.
 - This target is intended for development only. Don't run it against production.
-- If the MinIO host path cannot be detected automatically, you'll be prompted to enter it manually (e.g. `/Users/benficaa/minio`).
+- If the MinIO host path cannot be detected automatically, you'll be prompted to enter it manually (the default is `./volumes/minio-dev`).
 
-
-**Last Updated:** March 2026
+**Last Updated:** July 2026

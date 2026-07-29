@@ -37,11 +37,17 @@ Audits each service's full transitive dependency tree via its lockfile. A temp f
 # the temp file when `exit 1` fired mid-loop).
 (
   trap "rm -f /tmp/reqs.txt" EXIT
-  for svc in langchain bloommcp services/video-worker; do
+  for svc in langchain bloommcp services/video-worker bloomcli; do
     echo "=== Auditing $svc ==="
     (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit@2.10.0 -r /tmp/reqs.txt) || exit 1
   done
 )
+```
+
+`python-audit`'s per-PR CI run excludes bloommcp's `integration`-marked tests (`bloommcp/tests/test_oracle.py`'s full-fixture `statsmodels`/`umap` heritability/UMAP oracles — known to intermittently stall in CI containers, #454). Run them here instead so numeric drift is still caught before merge:
+
+```bash
+cd bloommcp && uv run --extra test pytest tests/ -m integration -v --tb=short
 ```
 
 ## Step 3: Docker Builds (matches `docker-build` job)
@@ -56,6 +62,7 @@ docker build -f web/Dockerfile.bloom-web.prod \
   -t bloom-web:test .
 docker build -f langchain/Dockerfile -t langchain:test ./langchain
 docker build -f bloommcp/Dockerfile -t bloommcp:test ./bloommcp
+docker build -f bloomcli/Dockerfile -t bloomcli:test ./bloomcli
 ```
 
 Smoke-test that each Python image's non-root user can import its key packages (catches venv ownership / PATH issues before CI):
@@ -63,6 +70,13 @@ Smoke-test that each Python image's non-root user can import its key packages (c
 ```bash
 docker run --rm --entrypoint python langchain:test -c "import langchain; import langgraph; import fastapi"
 docker run --rm --entrypoint python bloommcp:test -c "import fastmcp; import statsmodels; import umap"
+```
+
+`bloomcli`'s image has `ENTRYPOINT ["bloomctl"]` (a CLI, not a service) — smoke-test it
+directly rather than overriding the entrypoint to `python`:
+
+```bash
+docker run --rm bloomcli:test --version
 ```
 
 ## Step 4: Integration Tests (matches `compose-health-check` job)
@@ -74,6 +88,37 @@ make prod-up
 docker compose -f docker-compose.prod.yml ps
 uv run --extra test pytest tests/integration/ -v --tb=short
 make prod-down
+```
+
+### Step 4b: bloommcp live-persistence smoke (bloommcp PRs only — matches the `dev-stack-smoke` job)
+
+Drives a workflow end-to-end through the **real** `SupabaseReader`/`SupabaseResultStore`
+against the dev stack and asserts the committed run is a v3 manifest whose
+`output_sha256` matches the bytes actually stored (issue #326). Same `make bloommcp-smoke`
+target CI runs, so local and CI never drift. `make bloommcp-plot-smoke` similarly calls a
+real plotting tool through the container's actual MCP transport (issue #472) — CI already
+runs both; do the same locally.
+
+```bash
+make dev-up && make migrate-local && make check && make bloommcp-smoke && make bloommcp-plot-smoke
+make dev-down
+```
+
+### Step 4c: bloommcp granular tool smoke — full `live_smoke` set (bloommcp PRs only, #483)
+
+Runs every `live_smoke`-marked test under `bloommcp/tests/smoke/` — the CI-safe subset
+`dev-stack-smoke` already runs, **plus** the `live_smoke_slow` cases CI skips
+(mahalanobis/gmm on cylinder, the per-trait MixedLM heritability/variance-decomposition
+plots, correlation-matrix-on-cylinder). Requires `BLOOMMCP_PORT` / `BLOOMMCP_API_KEY`
+from `.env.dev` (same as the Makefile targets above).
+
+```bash
+make dev-up && make migrate-local && make check
+cd bloommcp && \
+  BLOOMMCP_PORT=$(sed -n 's/^BLOOMMCP_PORT=//p' ../.env.dev | head -n1 | tr -d '\r') \
+  BLOOMMCP_API_KEY=$(sed -n 's/^BLOOMMCP_API_KEY=//p' ../.env.dev | head -n1 | tr -d '\r') \
+  uv run --extra test pytest tests/smoke/ -m live_smoke -v --tb=short
+cd .. && make dev-down
 ```
 
 ## Step 5: PR Status on GitHub
@@ -88,6 +133,7 @@ Verify these jobs pass:
 - `python-audit`
 - `docker-build`
 - `compose-health-check`
+- `dev-stack-smoke` (includes the bloommcp live-persistence smoke)
 
 ## Step 6: Review Feedback
 
@@ -141,15 +187,20 @@ cd web && npx tsc --noEmit && npm run build && cd ..
 # Subshell + EXIT trap so /tmp/reqs.txt is cleaned up on success AND failure.
 (
   trap "rm -f /tmp/reqs.txt" EXIT
-  for svc in langchain bloommcp services/video-worker; do
+  for svc in langchain bloommcp services/video-worker bloomcli; do
     (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit@2.10.0 -r /tmp/reqs.txt) || exit 1
   done
 )
+
+# bloommcp integration-marked oracle tests (if bloommcp/tests/test_oracle.py or
+# delegated statsmodels/umap code touched) — per-PR CI excludes these (#454).
+cd bloommcp && uv run --extra test pytest tests/ -m integration -v --tb=short && cd ..
 ```
 
 ## Pre-Merge Checklist
 
 - [ ] All CI jobs pass (`gh pr checks`)
+- [ ] bloommcp integration-marked oracle tests run if `bloommcp/tests/test_oracle.py` or delegated statsmodels/umap code touched (excluded from per-PR CI, see Step 2)
 - [ ] Code reviewed and approved
 - [ ] Review comments addressed
 - [ ] Branch up to date with the PR's base branch (`gh pr view <PR_NUMBER> --json baseRefName` — usually `staging`)

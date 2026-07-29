@@ -13,6 +13,7 @@ help:
 	@echo "Usage:"
 	@echo "  make init             - Generate .env.dev from .env.dev.example (FORCE=1 to overwrite)"
 	@echo "  make dev-up           - Run full stack in development mode"
+	@echo "  make dev-up-local     - Run dev stack fully local/offline (BLOOM_STORAGE_BACKEND=local for this run only; don't mix backends per experiment)"
 	@echo "  make dev-down         - Stop development stack"
 	@echo "  make prod-up          - Run full stack in production mode"
 	@echo "  make prod-down        - Stop production stack"
@@ -24,6 +25,8 @@ help:
 	@echo "  make new-migration name=xxx - Create a new migration file"
 	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
 	@echo "  make test-integration - Run integration tests against the local dev stack"
+	@echo "  make bloommcp-smoke   - Live persistence smoke: drive granular tools through real Supabase storage"
+	@echo "  make bloommcp-plot-smoke - Live plot-tool smoke: real MCP call through the bloommcp container"
 	@echo "  make check            - Verify local stack: services, roles, schemas, migrations"
 	@echo "  make verify-dev       - Clean reset -> up -> migrate -> check (destructive)"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
@@ -39,9 +42,37 @@ help:
 init: check-uv
 	@uv run --with pyjwt,python-dotenv python scripts/init_dev.py $(if $(FORCE),--force,)
 
+# Preflight the developer environment BEFORE bring-up (see scripts/doctor.sh).
+# Hard errors (repo on /mnt/, a missing required tool) exit non-zero; advisories
+# (host-port in use, supabase version, CRLF, Windows toolchain leak) print and
+# continue. DOCTOR_SKIP=1 bypasses it (CI sets this on the dev-stack-smoke job,
+# where the environment is known-good).
+.PHONY: doctor
+doctor:
+	@sh scripts/doctor.sh
+
+# Ensure bloommcp's bind-mounted data directories are writable before compose
+# brings the container up (issue #472). A .PHONY prerequisite — not folded into
+# `doctor.sh` — so it always runs, including in CI's `DOCTOR_SKIP=1 make dev-up`
+# (see scripts/ensure_bloommcp_data_dirs.sh's header for why), and Make resolves
+# prerequisites before the `dev-up` recipe body regardless of where the
+# prerequisite is listed, so this can never accidentally land after
+# `docker compose up` the way an inline recipe line could.
+.PHONY: ensure-bloommcp-data-dirs
+ensure-bloommcp-data-dirs:
+	@sh scripts/ensure_bloommcp_data_dirs.sh
+
 # Run development stack
 .PHONY: dev-up
-dev-up:
+dev-up: ensure-bloommcp-data-dirs
+	@BACKEND="$${BLOOM_STORAGE_BACKEND:-$$(sed -n 's/^BLOOM_STORAGE_BACKEND=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r')}"; \
+	if [ -n "$$BACKEND" ]; then \
+		echo " NOTE: BLOOM_STORAGE_BACKEND=$$BACKEND is set (shell env or .env.dev) — this"; \
+		echo " dev-up will boot bloommcp in that backend, not the default Supabase-backed"; \
+		echo " mode. Use 'make dev-up-local' for a one-shot local run, or unset"; \
+		echo " BLOOM_STORAGE_BACKEND (shell and .env.dev) to restore the default."; \
+	fi
+	@sh scripts/doctor.sh
 	@echo " Checking frontend dependencies..."
 	@if [ ! -f "./web/package-lock.json" ]; then \
 		echo " package-lock.json not found. Installing dependencies..."; \
@@ -54,6 +85,19 @@ dev-up:
 	@echo " Bloom Dev Stack running in background"
 	@echo " Access at: http://localhost:3000"
 	@echo " View logs: make dev-logs"
+
+# Run development stack in fully-local/offline mode (BLOOM_STORAGE_BACKEND=local
+# for this invocation only — does not modify .env.dev). Delegates to dev-up so
+# the two never drift apart. Do not mix backends for one experiment — see
+# bloommcp/docs/storage-backends.md. Same single canonical per-machine dev
+# stack as `dev-up` (docker-compose.dev.yml's fixed `bloom_v2_dev` project
+# name, per the "Canonical Local Stack Path" convention) — if someone else's
+# `dev-up`/`dev-up-local` is already running on this machine, this recreates
+# those containers in local mode instead of starting a separate stack.
+.PHONY: dev-up-local
+dev-up-local:
+	@echo " Fully-local/offline mode: BLOOM_STORAGE_BACKEND=local for this run only (.env.dev untouched)"
+	BLOOM_STORAGE_BACKEND=local $(MAKE) dev-up
 
 .PHONY: rebuild-dev-fresh
 rebuild-dev-fresh:
@@ -253,7 +297,19 @@ migrate-local:
 	supabase db push \
 		--db-url "postgresql://$${PG_USER}:$${PG_PASSWORD}@127.0.0.1:$(POSTGRES_HOST_PORT)/$${PG_DB}?sslmode=disable" \
 		--debug \
-		--yes
+		--yes; \
+	echo "Applying bloom_* schema-USAGE grants as supabase_admin (supabase/grants/schema_grants.sql)..."; \
+	docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T -e PGPASSWORD="$$PG_PASSWORD" db-dev \
+		psql -U "$$PG_USER" -d "$$PG_DB" -v ON_ERROR_STOP=1 \
+		< supabase/grants/schema_grants.sql
+# NOTE: supabase/grants/schema_grants.sql is the single source of truth for bloom_*
+# schema-level USAGE grants (issue #333). `supabase db push` runs migrations after
+# `SET SESSION ROLE postgres`, which cannot grant on the supabase_admin-owned
+# storage/auth schemas, so a raw `GRANT USAGE ON SCHEMA storage` in a migration
+# silently no-ops. Applied here as supabase_admin ($$PG_USER) AFTER db push (roles
+# exist; outside the db-push role downgrade) the grant sticks. CI applies the same
+# file in compose-health-check; ongoing prod/staging apply it manually when grants
+# change. Supersedes the #330 repair grant.
 
 # Preflight helper: fail fast with an actionable message if `uv` is not on PATH.
 # Used as a prerequisite by every target that invokes `uv run ...` below so the
@@ -279,6 +335,58 @@ test-integration: check-uv
 .PHONY: check
 check: check-uv
 	@uv run --extra test python scripts/check_health.py
+
+## Live persistence smoke (issue #326): drive a workflow end-to-end through the
+## REAL SupabaseReader/SupabaseResultStore against the running dev stack, then
+## assert the committed run is a v3 manifest with real provenance and that each
+## recorded output_sha256 == the bytes actually stored. Requires the stack to be
+## up (`make dev-up`) and migrated (`make migrate-local` — which creates the
+## bloommcp-data bucket and applies the storage grants the write path needs).
+## Bridges the host<->container env gap: .env.dev points SUPABASE_URL at the
+## in-container gateway http://kong:8000 and BLOOM_*_DIR at /app paths, so here we
+## derive the host gateway from KONG_HTTP_PORT and let the driver use host temp
+## dirs. The same target backs the CI gate, so local and CI never drift. The
+## BLOOM_AGENT_KEY line is `@`-prefixed and never echoed.
+.PHONY: bloommcp-smoke
+bloommcp-smoke: check-uv
+	@if [ ! -f .env.dev ]; then \
+		echo "Error: .env.dev not found. Run 'make init' first."; \
+		exit 1; \
+	fi
+	@if ! docker ps | grep -q db-dev; then \
+		echo "Error: dev stack not running. Start with 'make dev-up' (then 'make migrate-local')."; \
+		exit 1; \
+	fi
+	@KONG_PORT=$$(sed -n 's/^KONG_HTTP_PORT=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); KONG_PORT=$${KONG_PORT:-8000}; \
+	BLOOM_AGENT_KEY=$$(sed -n 's/^BLOOM_AGENT_KEY=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
+	if [ -z "$$BLOOM_AGENT_KEY" ]; then echo "Error: BLOOM_AGENT_KEY is empty in .env.dev — run 'make init'."; exit 1; fi; \
+	cd bloommcp && SUPABASE_URL="http://localhost:$${KONG_PORT}" BLOOM_AGENT_KEY="$$BLOOM_AGENT_KEY" \
+		uv run python tests/smoke/live_persistence_smoke.py
+
+## Live plot-tool smoke (issue #472): calls a real plotting tool through the
+## bloommcp container's actual MCP transport (not an in-process/env-overridden
+## call like bloommcp-smoke's) — the only way to prove the real bind-mounted
+## PLOTS_DIR write path works. Requires the stack to be up AND healthy — `make
+## dev-up` alone only starts containers; `docker ps` can show `bloommcp` as
+## `Up ... (health: starting)` well before its MCP endpoint accepts requests.
+## Run `make check` first (or otherwise wait for `bloommcp` to report
+## `healthy`), or this can hang or connection-refuse instead of hitting the
+## guard clauses below.
+.PHONY: bloommcp-plot-smoke
+bloommcp-plot-smoke: check-uv
+	@if [ ! -f .env.dev ]; then \
+		echo "Error: .env.dev not found. Run 'make init' first."; \
+		exit 1; \
+	fi
+	@if ! docker ps | grep -q bloommcp; then \
+		echo "Error: dev stack not running. Start with 'make dev-up'."; \
+		exit 1; \
+	fi
+	@BLOOMMCP_PORT=$$(sed -n 's/^BLOOMMCP_PORT=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); BLOOMMCP_PORT=$${BLOOMMCP_PORT:-8811}; \
+	BLOOMMCP_API_KEY=$$(sed -n 's/^BLOOMMCP_API_KEY=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
+	if [ -z "$$BLOOMMCP_API_KEY" ]; then echo "Error: BLOOMMCP_API_KEY is empty in .env.dev — run 'make init'."; exit 1; fi; \
+	cd bloommcp && BLOOMMCP_PORT="$$BLOOMMCP_PORT" BLOOMMCP_API_KEY="$$BLOOMMCP_API_KEY" \
+		uv run python tests/smoke/live_plot_tool_smoke.py
 
 ## One-shot: clean reset -> up -> migrate -> health check. Destructive (wipes the
 ## local DB). Use to reproduce a fresh-clone init and prove it end to end.

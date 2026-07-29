@@ -1,10 +1,10 @@
-"""Task 5 — `bloomctl download` image download via Supabase Storage."""
+"""Task 5 — `bloomctl cyl download` image download via Supabase Storage."""
 
 from click.testing import CliRunner
 from test_download_metadata import SCAN
 
 import bloomctl.auth as auth
-import bloomctl.download as dl
+import bloomctl.cyl.download as dl
 from bloomctl.cli import cli
 from bloomctl.credentials import Credentials
 
@@ -101,7 +101,7 @@ def test_partial_download_exits_nonzero(tmp_path, monkeypatch):
     )
 
     out = tmp_path / "out"
-    result = CliRunner().invoke(cli, ["download", str(out), "--experiment-id", "17957"])
+    result = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "17957"])
 
     # Partial download -> non-zero exit, but scans.csv + log are still written.
     assert result.exit_code != 0
@@ -127,7 +127,7 @@ def test_full_download_writes_csv_and_images(tmp_path, monkeypatch):
     )
 
     out = tmp_path / "out"
-    result = CliRunner().invoke(cli, ["download", str(out), "--experiment-id", "17957"])
+    result = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "17957"])
 
     assert result.exit_code == 0, result.output
     assert (out / "scans.csv").exists()

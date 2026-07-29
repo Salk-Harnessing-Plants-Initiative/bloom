@@ -11,11 +11,13 @@
 """
 render_plate_videos.py — backfill time-lapse MP4s for plate-scanner experiments.
 
-Reads gravi_scans + gravi_images for each (experiment_id, plate_id) pair, pulls
-the TIFFs out of the graviscan-images bucket, encodes a sorted-by-capture_date
-MP4 with ffmpeg, uploads the result to the graviscan-videos bucket at
-{experiment_id}/{plate_id}.mp4, and upserts a row in gravi_plate_videos so the
-per-plate detail page can render it.
+Reads gravi_scans + gravi_images for each (experiment_id, plate_id, wave_number)
+group, pulls the TIFFs out of the graviscan-images bucket, encodes a
+sorted-by-capture_date MP4 with ffmpeg, uploads the result to the
+graviscan-videos bucket at {experiment_id}/wave-{wave}/{plate_id}.mp4, and
+upserts a row in gravi_plate_videos so the per-wave plate detail page can render
+it. (Plate IDs repeat across waves, so grouping by wave keeps each wave's
+time-lapse separate instead of merging them.)
 
 REQUIREMENTS
 ------------
@@ -119,6 +121,7 @@ class Config:
 class PlateJob:
     experiment_id: int
     plate_id: str
+    wave_number: int | None
     session_id: int | None
     frame_paths: list[str]  # object_paths from gravi_images, ordered by capture_date
 
@@ -126,11 +129,17 @@ class PlateJob:
 def list_plate_jobs(
     conn: psycopg.Connection, experiment_id: int, plate_id: str | None
 ) -> list[PlateJob]:
-    """Return one job per (experiment, plate) with the ordered list of frame paths."""
+    """Return one job per (experiment, plate, wave) with the ordered frame paths.
+
+    Grouping by wave (not plate alone) keeps each wave's frames in its own
+    video — plate IDs are reused across waves, so grouping by plate would merge
+    them into one mixed time-lapse.
+    """
     sql = """
         SELECT
             s.experiment_id,
             s.plate_id,
+            s.wave_number,
             MAX(s.session_id)   AS session_id,
             ARRAY_AGG(i.object_path ORDER BY s.capture_date) AS frame_paths
         FROM gravi_scans s
@@ -138,9 +147,9 @@ def list_plate_jobs(
         WHERE s.experiment_id = %s
           AND s.plate_id IS NOT NULL
           {plate_filter}
-        GROUP BY s.experiment_id, s.plate_id
+        GROUP BY s.experiment_id, s.plate_id, s.wave_number
         HAVING COUNT(*) >= 1
-        ORDER BY s.plate_id
+        ORDER BY s.plate_id, s.wave_number
     """
     if plate_id:
         sql = sql.format(plate_filter="AND s.plate_id = %s")
@@ -154,23 +163,31 @@ def list_plate_jobs(
         rows = cur.fetchall()
     return [
         PlateJob(
-            experiment_id=r[0], plate_id=r[1], session_id=r[2], frame_paths=list(r[3])
+            experiment_id=r[0],
+            plate_id=r[1],
+            wave_number=r[2],
+            session_id=r[3],
+            frame_paths=list(r[4]),
         )
         for r in rows
     ]
 
 
 def existing_video_row(
-    conn: psycopg.Connection, experiment_id: int, plate_id: str
+    conn: psycopg.Connection,
+    experiment_id: int,
+    plate_id: str,
+    wave_number: int | None,
 ) -> dict | None:
     sql = """
         SELECT id, object_path, frame_count
         FROM gravi_plate_videos
         WHERE experiment_id = %s AND plate_id = %s
+          AND COALESCE(wave_number, -1) = COALESCE(%s, -1)
         LIMIT 1
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (experiment_id, plate_id))
+        cur.execute(sql, (experiment_id, plate_id, wave_number))
         row = cur.fetchone()
     if not row:
         return None
@@ -182,20 +199,22 @@ def upsert_video_row(
     *,
     experiment_id: int,
     plate_id: str,
+    wave_number: int | None,
     session_id: int | None,
     object_path: str,
     duration_seconds: int,
     frame_count: int,
     file_size_bytes: int,
 ) -> None:
-    """Upsert a row in gravi_plate_videos keyed on (experiment, plate, session?)."""
+    """Upsert a row in gravi_plate_videos keyed on (experiment, plate, wave)."""
     sql = """
         INSERT INTO gravi_plate_videos
-          (experiment_id, plate_id, session_id, object_path,
+          (experiment_id, plate_id, wave_number, session_id, object_path,
            duration_seconds, frame_count, file_size_bytes, generated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, now())
-        ON CONFLICT (experiment_id, plate_id, COALESCE(session_id, -1)) DO UPDATE
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
+        ON CONFLICT (experiment_id, plate_id, COALESCE(wave_number, -1)) DO UPDATE
           SET object_path     = EXCLUDED.object_path,
+              session_id      = EXCLUDED.session_id,
               duration_seconds = EXCLUDED.duration_seconds,
               frame_count     = EXCLUDED.frame_count,
               file_size_bytes = EXCLUDED.file_size_bytes,
@@ -207,6 +226,7 @@ def upsert_video_row(
             (
                 experiment_id,
                 plate_id,
+                wave_number,
                 session_id,
                 object_path,
                 duration_seconds,
@@ -335,9 +355,14 @@ def render_one(
     force: bool,
     dry_run: bool,
 ) -> None:
-    target_path = f"{job.experiment_id}/{job.plate_id}.mp4"
+    # Wave in the path so each wave's video is a distinct object (a plate_id
+    # reused across waves would otherwise overwrite the previous wave's file).
+    wave_seg = f"wave-{job.wave_number}" if job.wave_number is not None else "wave-none"
+    target_path = f"{job.experiment_id}/{wave_seg}/{job.plate_id}.mp4"
 
-    existing = existing_video_row(conn, job.experiment_id, job.plate_id)
+    existing = existing_video_row(
+        conn, job.experiment_id, job.plate_id, job.wave_number
+    )
     if existing and existing["frame_count"] == len(job.frame_paths) and not force:
         logger.info(
             "  skip — gravi_plate_videos already at %d frames; use --force to redo",
@@ -395,6 +420,7 @@ def render_one(
             conn,
             experiment_id=job.experiment_id,
             plate_id=job.plate_id,
+            wave_number=job.wave_number,
             session_id=job.session_id,
             object_path=target_path,
             duration_seconds=estimate_duration_seconds(
@@ -457,8 +483,9 @@ def main(argv: list[str]) -> int:
         logger.info("Found %d plate(s) to consider for experiment %d", len(jobs), args.experiment)
         for job in jobs:
             logger.info(
-                "[%s] %d frames%s",
+                "[%s wave=%s] %d frames%s",
                 job.plate_id,
+                job.wave_number if job.wave_number is not None else "none",
                 len(job.frame_paths),
                 " (DRY-RUN)" if args.dry_run else "",
             )

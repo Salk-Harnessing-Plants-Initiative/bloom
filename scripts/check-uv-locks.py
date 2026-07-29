@@ -30,6 +30,8 @@ SERVICES = (
     "langchain",
     "bloommcp",
     "services/video-worker",
+    "services/workflows",
+    "bloomcli",
 )
 
 UV_INSTALL_URL = "https://docs.astral.sh/uv/getting-started/installation/"
