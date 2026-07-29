@@ -9,10 +9,14 @@ by querying Bloom's Postgres tables directly (`get_experiment_traits`,
 `list_experiment_trait_sources`) rather than reading a local `BLOOM_TRAITS_DIR` CSV. The raw
 tier is DB-only: `name` is parsed as `str(experiment_id)`; a non-numeric or unresolvable
 `name` with no cleaned output is a structured not-found condition, not a local-disk
-fallback. `list_experiments()` enumerates experiments from `cyl_experiments` rather than
-scanning a local directory or bucket. `SupabaseReader` no longer implements `RawSourced`
-(there is no on-disk path for a DB-backed raw read to content-address); it implements
-`SourceSelectable` instead.
+fallback. Every raw read — pinned or not — resolves and pins exactly one concrete DB source
+before fetching, so no returned frame ever mixes rows from more than one source. A
+long→wide pivot that produces colliding `sample_id` values across distinct plants is a
+structured error, not a silently ambiguous frame. `list_experiments()` enumerates
+experiments from `cyl_experiments` rather than scanning a local directory or bucket, with
+each entry's `filename` equal to the same `str(experiment_id)` shape `load_experiment`
+accepts. `SupabaseReader` no longer implements `RawSourced` (there is no on-disk path for a
+DB-backed raw read to content-address); it implements `SourceSelectable` instead.
 
 #### Scenario: Resolves the latest versioned cleaned output from Supabase
 
@@ -25,10 +29,12 @@ scanning a local directory or bucket. `SupabaseReader` no longer implements `Raw
 
 - **WHEN** `SupabaseReader.load_experiment(name)` is called for `name` shaped as
   `str(experiment_id)` with no cleaned output
-- **THEN** it fetches long-format trait rows via `get_experiment_traits`, pivots them wide
-  (one column per distinct trait name), renames columns to canonical roles (`genotype` from
-  `accessions.name`, `sample_id` from `cyl_plants.qr_code`), and returns the resulting frame
-  with source label `"raw"` — no local disk or Storage bucket is read for this tier
+- **THEN** it resolves a concrete source (see "One source per frame, never mixed"), fetches
+  long-format trait rows via `get_experiment_traits` pinned to that source, pivots them
+  wide (one column per distinct trait name), renames columns to canonical roles
+  (`genotype` from `accessions.name`, `sample_id` from `cyl_plants.qr_code`), retains
+  `cyl_plants.id` as a metadata column, and returns the resulting frame with source label
+  `"raw"` — no local disk or Storage bucket is read for this tier
 
 #### Scenario: Non-numeric raw-tier name is not-found, not a local fallback
 
@@ -37,20 +43,44 @@ scanning a local directory or bucket. `SupabaseReader` no longer implements `Raw
 - **THEN** it raises `ExperimentNotFoundError` — it SHALL NOT read a local `BLOOM_TRAITS_DIR`
   CSV as a fallback
 
+#### Scenario: An empty raw read is valid, not not-found
+
+- **WHEN** `SupabaseReader.load_experiment(name)` resolves `name` to a real experiment that
+  has zero trait rows recorded
+- **THEN** it returns a frame with zero trait columns rather than raising
+  `ExperimentNotFoundError` — the experiment exists; it simply has no measurements yet
+
 #### Scenario: One source per frame, never mixed
 
-- **WHEN** `SupabaseReader.load_experiment(name)` resolves a raw read for an experiment
-  whose trait rows span more than one `source_id`
-- **THEN** the returned frame's rows all belong to exactly one resolved `source_id` (the
-  latest, or an explicitly pinned one) — rows from a different source are never merged into
-  the same frame
+- **WHEN** `SupabaseReader.load_experiment(name)` resolves a raw read, pinned or not
+- **THEN** it first resolves exactly one concrete `source_id` (the explicit pin, or
+  whatever `resolve_source` treats as latest for the whole experiment) and passes that
+  single id as an explicit pin to `get_experiment_traits` — it SHALL NOT call
+  `get_experiment_traits` unpinned and rely on the RPC's own per-scan `is_latest`
+  disjunction to avoid mixing sources across scans
 
-#### Scenario: Explicit source/run pin is honored
+#### Scenario: Concurrent source_id and run_id pin is rejected before any DB call
+
+- **WHEN** `SupabaseReader.load_experiment(name, source_id=<id>, run_id=<id>)` is called
+  with both set
+- **THEN** it raises `AmbiguousSourceSelectionError` without calling `get_experiment_traits`
+  — the caller never sees a raw Postgres `RAISE EXCEPTION` message
+
+#### Scenario: An explicit pin matching nothing is a hard error
 
 - **WHEN** `SupabaseReader.load_experiment(name, source_id=<id>)` or `load_experiment(name,
-  run_id=<id>)` is called
-- **THEN** the returned frame contains only rows from that pinned source or run, not
-  whatever would otherwise resolve as latest
+  run_id=<id>)` is called for a pin that resolves no rows
+- **THEN** it raises `ExperimentNotFoundError` rather than returning a silent empty frame —
+  an explicit pin the caller expected to resolve failing is a caller-visible condition
+
+#### Scenario: Colliding sample identity is a structured error, not a silent merge
+
+- **WHEN** the long→wide pivot produces two or more rows sharing the same `sample_id`
+  (`cyl_plants.qr_code`) value — possible because `qr_code` is unique only within a wave,
+  not experiment-wide
+- **THEN** `SupabaseReader.load_experiment` raises `AmbiguousSampleIdentityError` naming the
+  colliding value, rather than returning a frame where two physically distinct plants share
+  one `sample_id`
 
 #### Scenario: DB-backed reader no longer satisfies RawSourced
 
@@ -62,9 +92,17 @@ scanning a local directory or bucket. `SupabaseReader` no longer implements `Raw
 #### Scenario: List experiments enumerates database experiments
 
 - **WHEN** `SupabaseReader.list_experiments()` is called
-- **THEN** it returns `ExperimentSummary` entries sourced from `cyl_experiments`, with
-  non-placeholder `rows`/`trait_columns`/`total_columns` counts, rather than scanning a
-  local directory or Storage bucket
+- **THEN** it returns `ExperimentSummary` entries sourced from `cyl_experiments`, each with
+  `filename` equal to `str(experiment_id)` (so it round-trips unchanged through
+  `load_experiment`) and non-placeholder `rows`/`trait_columns`/`total_columns` counts,
+  rather than scanning a local directory or Storage bucket
+
+#### Scenario: A per-experiment listing failure excludes that experiment, not the whole list
+
+- **WHEN** `SupabaseReader.list_experiments()` fails to fetch trait data for one experiment
+  while enumerating several
+- **THEN** that experiment is excluded from the returned list (logged server-side) rather
+  than the whole call raising or returning a misleading placeholder count for it
 
 #### Scenario: Adapter tests do not touch the network
 
@@ -84,9 +122,10 @@ explicit source/run pinning without widening the core `ExperimentReader` Protoco
 `SourceSelectable` SHALL expose `list_sources(name) -> list[SourceInfo]` (enumerating
 available `(source_id, source_name, pipeline_run_id)` tuples for an experiment) and
 `resolve_source(name, *, source_id=None, run_id=None) -> Optional[SourceInfo]` (resolving
-which source actually backs a read, honoring an explicit pin or defaulting to latest).
-Adapters without a source-versioned substrate (e.g. `FakeReader`, `LocalReader`) SHALL NOT
-implement it.
+which source actually backs a read, honoring an explicit pin or defaulting to latest, and
+returning `None` when the experiment has only legacy, pre-source-tracking data with no
+`source_id` to report). Adapters without a source-versioned substrate (e.g. `FakeReader`,
+`LocalReader`) SHALL NOT implement it.
 
 #### Scenario: Capability is discoverable via isinstance
 
@@ -101,8 +140,18 @@ implement it.
 - **THEN** it returns the distinct `(source_id, source_name, pipeline_run_id)` tuples for
   that experiment
 
-#### Scenario: Unpinned resolution still yields a concrete source
+#### Scenario: Unpinned resolution yields a concrete source when one exists
 
 - **WHEN** `SupabaseReader().resolve_source(name)` is called with no `source_id`/`run_id`
+  for an experiment with at least one tracked (`source_id IS NOT NULL`) trait row
 - **THEN** it returns the `SourceInfo` for whatever `get_experiment_traits` treats as
-  latest for that experiment, never `None`, for an experiment with at least one source
+  latest for that experiment
+
+#### Scenario: Legacy-only data resolves to no source, not an error
+
+- **WHEN** `SupabaseReader().resolve_source(name)` is called for an experiment whose trait
+  rows are all legacy (`source_id IS NULL`, so `list_experiment_trait_sources` returns an
+  empty list for it)
+- **THEN** it returns `None` rather than raising or fabricating a `SourceInfo` —
+  `load_experiment(name)` still succeeds using that legacy data, recording no source
+  identity

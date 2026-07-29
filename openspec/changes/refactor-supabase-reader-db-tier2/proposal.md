@@ -16,43 +16,60 @@ remaining `BLOOM_TRAITS_DIR` bypass dead code — that issue is explicitly block
 
 - **`SupabaseReader.load_experiment`** — the raw-tier fallback (any `name` that isn't
   resolved by `_resolve_versioned_cleaned`'s cleaned-output tiers, which are **untouched**)
-  now calls Tier 1's `get_experiment_traits(experiment_id_=int(name))`, pivots the
-  long-format result wide, and renames columns to canonical roles
-  (`genotype`←`accessions.name`, `sample_id`←`cyl_plants.qr_code`, metadata columns for
-  `wave`/`plant_age_days`/`date_scanned`) instead of reading a local CSV.
-- **Two-ID-shape dispatch simplified to DB-only** *(Decision D1 — see `design.md`)*: issue
-  #413 (the upload path the original dispatch would have fallen through to) is closed with
-  no successor filed, so a non-numeric `name` is now a structured `ExperimentNotFoundError`
-  rather than a silent local-disk read — this is what actually retires the `BLOOM_TRAITS_DIR`
-  bypass `bloom#476` is blocked on.
+  now resolves a concrete DB source first, then calls Tier 1's
+  `get_experiment_traits(experiment_id_=int(name), source_id_=<resolved>)` **always
+  explicitly pinned** (never unpinned — see Decision D2), pivots the long-format result
+  wide, and renames columns to canonical roles instead of reading a local CSV.
+- **DB-only resolution** *(Decision D1 — see `design.md`)*: a non-numeric `name` is a
+  structured `ExperimentNotFoundError` rather than a local-disk read — this is what
+  actually retires the `BLOOM_TRAITS_DIR` bypass `bloom#476` is blocked on. (Correction:
+  the original justification for this — "PR #413 closed with nothing to fall through to" —
+  was incomplete; bloom#388 is a live, assigned successor. The decision itself still holds;
+  see D1 for the corrected reasoning.)
 - **New `SourceSelectable` capability protocol** *(Decision D2)*, `isinstance`-gated like
   the existing `RawSourced`, giving `SupabaseReader` a `list_sources(name)` discovery method
-  and `load_experiment(name, source_id=..., run_id=...)` optional pin kwargs — the
-  source/run-selection gap the roadmap calls out as previously silently defaulted to
-  "latest."
+  and `load_experiment(name, source_id=..., run_id=...)` optional pin kwargs. Supplying
+  both `source_id` and `run_id` raises a structured `AmbiguousSourceSelectionError` before
+  any RPC call. Every read — pinned or not — resolves and pins one concrete `source_id_`
+  internally, so "one source per frame" is structural, not asserted.
 - **`list_experiments()`** rewritten to enumerate experiments from `cyl_experiments` via a
-  direct PostgREST table read (no new RPC/migration) instead of scanning the local
-  directory/bucket *(Decision D4 — see `design.md` for the `rows`/`trait_columns` count
-  tradeoff)*.
-- **Provenance/manifest schema v3→v4, additive** *(Decision D3, mirrors the shipped
-  v2→v3 `+seed/agent/output_sha256` bump)*: `Provenance`/`VersionEntry` gain optional
-  `source_id`/`source_name` fields so a DB-backed read still has a recorded identity even
-  though it no longer satisfies `RawSourced` (no on-disk path to content-address).
-  `ExperimentBlock` is unchanged — `supabase_store.py` already treats a path-less source as
-  `source_path=""`/`input_sha256=""`, so no schema change is needed there.
+  direct PostgREST table read (no new RPC/migration), with `rows` from a cheap `count=exact`
+  query and `trait_columns`/`total_columns` from the same bulk fetch `load_experiment`
+  itself performs per experiment *(Decision D4 — this is a real, accepted cost increase
+  over the old directory scan, not a free lunch; see `design.md`)*. `ExperimentSummary.filename`
+  is `str(experiment_id)` so the discovery→read round trip stays valid under D1.
+- **Provenance/manifest schema v3→v4, additive** *(Decision D3)*: `Provenance`/`VersionEntry`
+  gain optional `source_id`/`source_name` fields, wired through a new `source:
+  Optional[SourceInfo]` parameter on `ResultStore.create_run` (mirroring the existing
+  `source_csv` parameter) — **not** through `tools/_ports.py`'s `start_run`, which has zero
+  real callers today. Every producer tool
+  (`qc_clean.py`, `qc_inspect.py`, `remove_outliers.py`, `pca_analysis.py`, `clustering.py`,
+  `descriptive_stats.py`, `umap_analysis.py`) gains one line at its existing
+  `store.create_run(...)` call site. `ExperimentBlock` is unchanged — a path-less source
+  already produces `source_path=""`/`input_sha256=""`.
+- **`sample_id` uniqueness validated at load time** *(Decision D5, new)*: `cyl_plants.qr_code`
+  (the roadmap's `sample_id` mapping) is only unique within a wave, not experiment-wide.
+  `SupabaseReader` raises a structured `AmbiguousSampleIdentityError` on a collision rather
+  than silently returning a frame that mislabels two plants as one; the pivot retains
+  `cyl_plants.id` as a metadata column for traceability.
 - **A fake DB row-fetcher**, injected into `SupabaseReader`, mirrors the existing
-  `FakeReader` precedent so this tier's tests run with no live DB.
+  `fake_supabase_storage` fixture's monkeypatch-the-client-boundary shape (not
+  `fake_reader.py`, which is a structurally different full alternate-adapter double).
 - **Two existing tests deleted, not updated**: `tests/data_access/test_local_reader.py`'s
-  `test_same_raw_bytes_yield_same_roles_as_supabase` (its premise — `SupabaseReader` and
-  `LocalReader` read identical on-disk bytes — no longer holds once the raw tier is
-  DB-backed) and `tests/data_access/test_supabase_reader.py`'s
-  `test_raw_source_path_rejects_path_traversal` (guards a local-disk traversal case that no
-  longer applies once the raw tier drops `RawSourced`).
+  `test_same_raw_bytes_yield_same_roles_as_supabase` and
+  `tests/data_access/test_supabase_reader.py`'s `test_raw_source_path_rejects_path_traversal`.
+- **Two existing tests fixed, not just supplemented**: `tests/data_access/
+  test_supabase_reader.py`'s `test_resolves_versioned_cleaned_then_raw` (currently exercises
+  the local-disk raw fallback D1 removes) and `tests/contract/{test_v2_backcompat.py,
+  test_schema_v3.py}`'s hardcoded schema-version assertions (`4` was "rejected as too new";
+  `3` was "current" — both now wrong post-bump).
 
-**Explicitly out of scope, per the roadmap's Tier 3 row**: LLM-facing tool-schema text
-(still says "CSV filename"), retiring `BLOOM_TRAITS_DIR` from `_REQUIRED_DIRS`/boot
-validation, and `docker-compose.prod.yml`'s `SLEAP_OUT_CSV` mount — those are Tier 3, not
-yet filed. `LocalReader`/`BLOOM_STORAGE_BACKEND=local` is untouched.
+**Explicitly out of scope**: reintroducing an upload/blob-backed raw input path (bloom#388's
+job, not this change's — see D1). LLM-facing tool-schema text still saying "CSV filename" is
+tracked by [bloom#552](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/552)
+(filed 2026-07-29), not this change; retiring `BLOOM_TRAITS_DIR` from `_REQUIRED_DIRS`/boot
+validation and `docker-compose.prod.yml`'s `SLEAP_OUT_CSV` mount has no tracking issue yet.
+`LocalReader`/`BLOOM_STORAGE_BACKEND=local` is untouched.
 
 ## Impact
 
@@ -62,36 +79,52 @@ yet filed. `LocalReader`/`BLOOM_STORAGE_BACKEND=local` is untouched.
   - `bloommcp-tool-contract` — RENAMED+MODIFIED `Additive Manifest Schema v3` →
     `Additive Manifest Schema v4`; MODIFIED `Provenance Maps Into The Manifest
     VersionEntry`.
+  - `bloommcp-result-store` — MODIFIED `ResultStore Port` (new `source` parameter on
+    `create_run`); MODIFIED `Provenance Persisted at Commit`.
 - **Affected code:**
   - `bloommcp/src/bloom_mcp/data_access/supabase_reader.py` (raw tier + `list_experiments`
-    rewrite, drops `RawSourced`, adds `SourceSelectable`)
+    rewrite, drops `RawSourced`, adds `SourceSelectable`, adds the `sample_id` uniqueness
+    check)
   - `bloommcp/src/bloom_mcp/data_access/ports.py` (new `SourceSelectable` protocol +
-    `SourceInfo` value type)
-  - `bloommcp/src/bloom_mcp/contract/provenance.py` (`Provenance.stamp()` /
-    `to_version_entry()` gain `source_id`/`source_name`)
+    `SourceInfo` value type, new `AmbiguousSourceSelectionError`/
+    `AmbiguousSampleIdentityError` exception classes)
+  - `bloommcp/src/bloom_mcp/contract/provenance.py` (`Provenance` gains `source_id`/
+    `source_name` fields; `to_version_entry()` passes them through — `Provenance.stamp()`
+    itself is unchanged)
   - `bloommcp/src/bloom_mcp/manifest/schema.py` (`CURRENT_SCHEMA_VERSION` 3→4;
     `VersionEntry` v4-additive block)
-  - `bloommcp/src/bloom_mcp/tools/_ports.py` (`start_run` records the resolved source
-    alongside the existing `raw_source_for`)
-  - `bloommcp/src/bloom_mcp/supabase_client.py` (new RPC/table-read helper — no existing
-    `.rpc(...)` caller exists to reuse)
+  - `bloommcp/src/bloom_mcp/result_store/ports.py` (`ResultStore.create_run` gains
+    `source: Optional[SourceInfo] = None`; `StoredRun` gains `source_id`/`source_name`)
+  - `bloommcp/src/bloom_mcp/result_store/supabase_store.py` and `fake_store.py`
+    (`create_run` merges `source` into `provenance` before storing the per-run state)
+  - `bloommcp/src/bloom_mcp/tools/_ports.py` (`source_for(filename)` mirroring
+    `raw_source_for`; `start_run` updated for consistency though still unused)
+  - The 7 producer tools (`sections/sleap_roots/analysis/{qc_clean,qc_inspect,
+    remove_outliers,pca_analysis,clustering,descriptive_stats,umap_analysis}.py`) — one
+    added `source=_ports.source_for(params.experiment)` kwarg at each existing
+    `store.create_run(...)` call site
+  - `bloommcp/src/bloom_mcp/supabase_client.py` (new RPC-call and table-read helpers — no
+    existing `.rpc(...)`/`.table(...)` caller to reuse)
 - **Affected tests:** `tests/data_access/test_supabase_reader.py` (rewritten raw-tier
-  tests, new fake DB fixture, one deletion), `tests/data_access/test_local_reader.py` (one
-  deletion), `tests/contract/test_provenance_roundtrip.py` /
-  `test_provenance_to_version_entry.py` (extended for `source_id`/`source_name`),
-  `tests/contract/test_schema_v3.py`-equivalent v4 coverage, a new `test_v3_backcompat.py`
-  proving pre-v4 manifests still load.
+  tests including `test_resolves_versioned_cleaned_then_raw`, new fake DB fixture, one
+  deletion), `tests/data_access/test_local_reader.py` (one deletion),
+  `tests/contract/test_provenance_roundtrip.py` / `test_provenance_to_version_entry.py`
+  (extended for `source_id`/`source_name`), `tests/contract/test_schema_v3.py` and
+  `test_v2_backcompat.py` (fixed hardcoded version assertions, not just supplemented),
+  a new v3-manifest backcompat case, and new coverage for `SupabaseResultStore`/
+  `FakeResultStore.create_run`'s `source` parameter.
 - **Coordination note — `retire-bloommcp-traits-dir-bypass` (bloom#476's in-progress
   change, 1/12 tasks):** that change makes doc/message-text-only edits to
   `supabase_reader.py`'s module docstring and `_LOCAL_RAW_DEPRECATION`, and a matching
   `SupabaseReader Adapter` wording delta on the same spec requirement this change also
   modifies. Neither the module docstring, the deprecation constant, nor the text #476's
   change edits exist in this change's rewritten `supabase_reader.py` (there is no more
-  local raw-input fallback to deprecate). Whichever change merges first, the other's
-  doc-only hunk on this file should be dropped rather than reapplied — recommend landing
+  local raw-input fallback to deprecate). Recommend landing
   `retire-bloommcp-traits-dir-bypass` first (it's smaller and already in progress) and
   rebasing this change's rewrite on top.
 
-**Non-goals:** Tier 3 (LLM-facing surface + `BLOOM_TRAITS_DIR` boot/compose cleanup) — filed
-as its own issue when reached, per the roadmap's just-in-time policy. No RLS or write-grant
-change; auth model stays the shared `bloom_agent` role.
+**Non-goals:** reintroducing an upload-backed raw input path (bloom#388, not this change).
+LLM-facing tool text (bloom#552) and `BLOOM_TRAITS_DIR` boot/compose cleanup — the
+still-unfiled half of the roadmap's "Tier 3." No RLS or write-grant change; auth model
+stays the shared `bloom_agent` role (see `design.md`'s Risks section for the resulting
+application-level exposure-surface change this is explicitly not mitigating).
