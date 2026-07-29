@@ -58,7 +58,7 @@ from bloom_mcp.data_access import (
     ExperimentReadError,
 )
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._qc_shared import _validate_trait_subset
+from bloom_mcp.tools._qc_shared import _finite_or_none, _validate_trait_subset
 
 _TOOL_CLASS = "clustering"
 _LABELS_NAME = "labels.csv"
@@ -457,8 +457,8 @@ def clustering(
             # NaN arises when all pairwise distances are 0 (all-identical data) giving a
             # 0/0 cophenet correlation or undefined cut height; convert to None so
             # to_json(allow_nan=False) doesn't raise after the run is already committed.
-            "cophenetic_correlation": None if not np.isfinite(coph) else coph,
-            "cut_height": None if not np.isfinite(cut) else cut,
+            "cophenetic_correlation": _finite_or_none(coph),
+            "cut_height": _finite_or_none(cut),
         }
 
     tool_warnings: list[str] = []

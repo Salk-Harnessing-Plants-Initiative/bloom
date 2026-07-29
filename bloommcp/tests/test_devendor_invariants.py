@@ -420,12 +420,17 @@ def test_expected_tool_surface():
     import asyncio
 
     expected = {
-        # sleap_roots: the 5 sleap_roots-analyze granular consumers
+        # sleap_roots: the 7 sleap_roots-analyze granular consumers (umap_analysis,
+        # #425, and descriptive_stats, #488, were both missing from this
+        # previously-5-tool list, pre-dating this change — added here, closing that
+        # pre-existing drift rather than leaving it for a future PR to rediscover).
         "sleap_roots_pca_analysis",
         "sleap_roots_qc_clean",
         "sleap_roots_qc_inspect",
         "sleap_roots_remove_outliers",
         "sleap_roots_clustering",
+        "sleap_roots_umap_analysis",
+        "sleap_roots_descriptive_stats",
         # sleap_roots: the 5 surviving plots
         "sleap_roots_plot_trait_histograms",
         "sleap_roots_plot_trait_boxplots",
