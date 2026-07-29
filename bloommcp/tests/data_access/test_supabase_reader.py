@@ -10,6 +10,7 @@ from bloom_mcp.data_access import (
     AmbiguousSampleIdentityError,
     AmbiguousSourceSelectionError,
     ExperimentNotFoundError,
+    MultipleScansPerPlantError,
     RawSourced,
     SourceSelectable,
     SupabaseReader,
@@ -274,3 +275,99 @@ def test_supabase_reader_no_longer_satisfies_raw_sourced(
 ):
     assert isinstance(SupabaseReader(), SourceSelectable)
     assert not isinstance(SupabaseReader(), RawSourced)
+
+
+def test_resolved_source_set_for_raw_read_pinned_or_not(
+    fake_supabase_storage, fake_supabase_db
+):
+    """PR #557 review: `frame.resolved_source` is the value a caller should
+    stamp into provenance — not a fresh, independent re-resolution at commit
+    time, which can race ahead of what the frame's data actually is."""
+    experiment_id = _seed_two_plant_experiment(fake_supabase_db)
+    reader = SupabaseReader()
+
+    unpinned = reader.load_experiment(str(experiment_id))
+    assert unpinned.resolved_source.source_id == 9
+
+    pinned = reader.load_experiment(str(experiment_id), source_id=9)
+    assert pinned.resolved_source.source_id == 9
+
+
+def test_resolved_source_is_none_for_cleaned_tier_read(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A cleaned-tier read never touches the raw DB tier, so it must not carry
+    a source identity — recording one would misattribute lineage the read
+    never consulted."""
+    experiment_id = _seed_two_plant_experiment(fake_supabase_db)
+    store = SupabaseResultStore()
+    raw = pd.DataFrame({"Genotype": ["g"], "trait": [1.0]})
+    run = store.create_run(
+        experiment=str(experiment_id),
+        tool_class="qc",
+        provenance=Provenance.stamp(tool="run_qc_workflow", params={}),
+    )
+    (run.staging_dir / "_cleaned.csv").write_text(raw.to_csv(index=False))
+    store.commit(run, {"_cleaned.csv": "_cleaned.csv"})
+
+    frame = SupabaseReader().load_experiment(str(experiment_id))
+    assert frame.source.endswith("_cleaned")
+    assert frame.resolved_source is None
+
+
+def test_resolved_source_reflects_load_time_not_a_later_resolution(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A frame's resolved_source is fixed at load time. A source landing
+    *after* the frame was loaded must not retroactively change what an
+    already-loaded frame reports — the whole point of capturing it on the
+    frame instead of re-resolving "the current latest" at commit time."""
+    experiment_id = _seed_two_plant_experiment(fake_supabase_db)
+    reader = SupabaseReader()
+
+    frame = reader.load_experiment(str(experiment_id))
+    assert frame.resolved_source.source_id == 9
+
+    # A newer source lands after the frame was loaded (e.g. a reprocessing
+    # run completing between this tool's load and its eventual commit).
+    fake_supabase_db.seed_sources(
+        experiment_id,
+        [{"source_id": 10, "source_name": "run-b", "pipeline_run_id": "p10"}],
+    )
+    assert reader.resolve_source(str(experiment_id)).source_id == 10
+    # The already-loaded frame is unaffected — it still reports what it
+    # actually read, not "whatever is latest now".
+    assert frame.resolved_source.source_id == 9
+
+
+def test_multiple_scans_per_plant_raises_structured_error(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A plant with two distinct scan_ids in the resolved source has no
+    defined column layout in this pivot — a structured error, not silently
+    keyed by (scan_id, plant_id)."""
+    experiment_id = 21
+    fake_supabase_db.seed_experiment(experiment_id, "rescanned plant")
+    rows = [
+        _trait_row(
+            plant_id=1,
+            scan_id=501,
+            qr_code="QRX",
+            accession="acc-a",
+            wave=1,
+            trait_name="root_length",
+            trait_value=1.0,
+        ),
+        _trait_row(
+            plant_id=1,
+            scan_id=502,
+            qr_code="QRX",
+            accession="acc-a",
+            wave=1,
+            trait_name="root_length",
+            trait_value=1.1,
+        ),
+    ]
+    fake_supabase_db.seed_traits(experiment_id, rows)
+    with pytest.raises(MultipleScansPerPlantError):
+        SupabaseReader().load_experiment(str(experiment_id))

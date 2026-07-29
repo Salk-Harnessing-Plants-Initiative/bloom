@@ -33,25 +33,33 @@ remaining `BLOOM_TRAITS_DIR` bypass dead code — that issue is explicitly block
   any RPC call. Every read — pinned or not — resolves and pins one concrete `source_id_`
   internally, so "one source per frame" is structural, not asserted.
 - **`list_experiments()`** rewritten to enumerate experiments from `cyl_experiments` via a
-  direct PostgREST table read (no new RPC/migration), with `rows` from a cheap `count=exact`
-  query and `trait_columns`/`total_columns` from the same bulk fetch `load_experiment`
-  itself performs per experiment *(Decision D4 — this is a real, accepted cost increase
-  over the old directory scan, not a free lunch; see `design.md`)*. `ExperimentSummary.filename`
-  is `str(experiment_id)` so the discovery→read round trip stays valid under D1.
+  direct PostgREST table read (no new RPC/migration), deriving both `rows` and
+  `trait_columns`/`total_columns` from the same per-experiment bulk fetch `load_experiment`
+  itself performs *(Decision D4 — a real, accepted cost increase over the old directory
+  scan, not a free lunch; see `design.md`, which also notes this bulk fetch is
+  intentionally unpinned, unlike `load_experiment`)*. `ExperimentSummary.filename` is
+  `str(experiment_id)` so the discovery→read round trip stays valid under D1.
 - **Provenance/manifest schema v3→v4, additive** *(Decision D3)*: `Provenance`/`VersionEntry`
   gain optional `source_id`/`source_name` fields, wired through a new `source:
   Optional[SourceInfo]` parameter on `ResultStore.create_run` (mirroring the existing
   `source_csv` parameter) — **not** through `tools/_ports.py`'s `start_run`, which has zero
-  real callers today. Every producer tool
-  (`qc_clean.py`, `qc_inspect.py`, `remove_outliers.py`, `pca_analysis.py`, `clustering.py`,
-  `descriptive_stats.py`, `umap_analysis.py`) gains one line at its existing
-  `store.create_run(...)` call site. `ExperimentBlock` is unchanged — a path-less source
-  already produces `source_path=""`/`input_sha256=""`.
-- **`sample_id` uniqueness validated at load time** *(Decision D5, new)*: `cyl_plants.qr_code`
+  real callers today. `ExperimentFrame` gains a `resolved_source` field set to whatever
+  `SourceInfo` a raw-tier read actually pinned (`None` for a cleaned-tier read); every
+  producer tool passes `source=frame.resolved_source` — the value its own earlier
+  `load_experiment(...)` call already resolved — at its existing `store.create_run(...)`
+  call site, **not** an independent re-resolution (an earlier draft did this and recorded
+  an unrelated source for the 5 tools that read `require_clean=True`, i.e. a cleaned CSV,
+  never the raw DB tier — caught in review, see design.md D3). `ExperimentBlock` is
+  unchanged — a path-less source already produces `source_path=""`/`input_sha256=""`.
+- **`sample_id` uniqueness validated at load time** *(Decision D5)*: `cyl_plants.qr_code`
   (the roadmap's `sample_id` mapping) is only unique within a wave, not experiment-wide.
   `SupabaseReader` raises a structured `AmbiguousSampleIdentityError` on a collision rather
   than silently returning a frame that mislabels two plants as one; the pivot retains
   `cyl_plants.id` as a metadata column for traceability.
+- **Multiple scans for one plant is a structured error** *(Decision D6)*: the pivot keys
+  one row per `plant_id` within the resolved source; a plant with more than one `scan_id`
+  raises `MultipleScansPerPlantError` rather than the silent `(scan_id, plant_id)`-keyed
+  pivot an earlier draft of this design claimed but never implemented.
 - **A fake DB row-fetcher**, injected into `SupabaseReader`, mirrors the existing
   `fake_supabase_storage` fixture's monkeypatch-the-client-boundary shape (not
   `fake_reader.py`, which is a structurally different full alternate-adapter double).
@@ -86,8 +94,9 @@ validation and `docker-compose.prod.yml`'s `SLEAP_OUT_CSV` mount has no tracking
     rewrite, drops `RawSourced`, adds `SourceSelectable`, adds the `sample_id` uniqueness
     check)
   - `bloommcp/src/bloom_mcp/data_access/ports.py` (new `SourceSelectable` protocol +
-    `SourceInfo` value type, new `AmbiguousSourceSelectionError`/
-    `AmbiguousSampleIdentityError` exception classes)
+    `SourceInfo` value type; new `AmbiguousSourceSelectionError`/
+    `AmbiguousSampleIdentityError`/`MultipleScansPerPlantError` exception classes;
+    `ExperimentFrame` gains `resolved_source: Optional[SourceInfo] = None`)
   - `bloommcp/src/bloom_mcp/contract/provenance.py` (`Provenance` gains `source_id`/
     `source_name` fields; `to_version_entry()` passes them through — `Provenance.stamp()`
     itself is unchanged)
@@ -98,11 +107,12 @@ validation and `docker-compose.prod.yml`'s `SLEAP_OUT_CSV` mount has no tracking
   - `bloommcp/src/bloom_mcp/result_store/supabase_store.py` and `fake_store.py`
     (`create_run` merges `source` into `provenance` before storing the per-run state)
   - `bloommcp/src/bloom_mcp/tools/_ports.py` (`source_for(filename)` mirroring
-    `raw_source_for`; `start_run` updated for consistency though still unused)
+    `raw_source_for`; used only by the still-unused `start_run`, not by any producer tool)
   - The 7 producer tools (`sections/sleap_roots/analysis/{qc_clean,qc_inspect,
     remove_outliers,pca_analysis,clustering,descriptive_stats,umap_analysis}.py`) — one
-    added `source=_ports.source_for(params.experiment)` kwarg at each existing
-    `store.create_run(...)` call site
+    added `source=frame.resolved_source` kwarg (the value each tool's own
+    `load_experiment(...)` call already resolved) at each existing `store.create_run(...)`
+    call site
   - `bloommcp/src/bloom_mcp/supabase_client.py` (new RPC-call and table-read helpers — no
     existing `.rpc(...)`/`.table(...)` caller to reuse)
 - **Affected tests:** `tests/data_access/test_supabase_reader.py` (rewritten raw-tier

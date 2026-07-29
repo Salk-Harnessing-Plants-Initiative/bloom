@@ -147,24 +147,45 @@ typing doesn't require every implementer to share it).
 `ExperimentReader.load_experiment` Protocol signature. Rejected as scope creep on a port
 three other adapters would have to grow a meaningless parameter for.
 
-### D3: Provenance identity — wired through `ResultStore.create_run`, not the unused `start_run`
+### D3: Provenance identity — wired through `ResultStore.create_run`, sourced from the frame actually read
 
-**Status: resolved — corrected from this design's first draft, which routed the new
-`source_id`/`source_name` recording exclusively through `tools/_ports.py`'s `start_run`.
-`start_run` has zero real callers today** (confirmed via `grep -rn "start_run"
-bloommcp/src bloommcp/tests`) **— every shipped producer tool
-(`qc_clean.py`, `qc_inspect.py`, `remove_outliers.py`, `pca_analysis.py`, `clustering.py`,
-`descriptive_stats.py`, `umap_analysis.py`) calls `_ports.store().create_run(...,
-source_csv=_ports.raw_source_for(params.experiment))` directly**, with `Provenance`
-already stamped generically (with no experiment context) by `contract/wrap.py`'s
-`as_mcp_tool` decorator at line ~115. Wiring only through `start_run` would ship a code
-path no production call exercises.
+**Status: resolved — corrected twice.** The first draft routed
+`source_id`/`source_name` recording exclusively through `tools/_ports.py`'s `start_run`,
+which has zero real callers (confirmed via `grep -rn "start_run" bloommcp/src
+bloommcp/tests`) — every shipped producer tool calls `_ports.store().create_run(...)`
+directly. That was fixed by threading `source` through `ResultStore.create_run` instead
+(below). PR review then caught a **second, subtler bug in that fix**: the 7 producer-tool
+call sites originally called `source=_ports.source_for(params.experiment)` — a fresh,
+independent, unpinned `resolve_source` round trip taken at `create_run` time, disconnected
+from whatever the tool's own `reader.load_experiment(...)` call actually resolved earlier
+in the same function. For the 5 tools that call `load_experiment(...,
+require_clean=True)` (`remove_outliers`, `clustering`, `descriptive_stats`, `pca_analysis`,
+`umap_analysis`), that call reads a **cleaned CSV from Storage** and never touches the raw
+DB tier at all — recording "whatever the current latest raw DB source happens to be" for
+those runs is not a source-less fallback, it is a **wrong, unrelated value** stamped onto a
+run that never consulted it. Even for `qc_clean`/`qc_inspect` (which do read raw), the
+frame-load resolution and a second, independent create_run-time resolution are two
+separate round trips with a race window between them — exactly the "double source
+resolution" problem this design already flagged as a risk, reintroduced at the tool-call-site
+level after appearing to be fixed inside `load_experiment` itself.
 
-**Corrected decision:** add a `source: Optional[SourceInfo] = None` parameter to
+**Corrected decision:** `ExperimentFrame` gains a `resolved_source: Optional[SourceInfo] =
+None` field, set by `SupabaseReader.load_experiment` to whatever `SourceInfo` it actually
+pinned for a raw-tier read (`None` for a cleaned-tier read — no DB source was consulted for
+that read at all). Every producer tool now passes `source=frame.resolved_source` — the
+value captured at the point the tool actually read its input — instead of independently
+re-resolving anything at `create_run` time. This is not just "reuse a cached value" as an
+optimization; it is the only value that is *actually true* for what the run consumed. Two
+of the 7 tools have no raw-tier read on the path that matters
+(`remove_outliers`/`clustering`/`descriptive_stats`/`pca_analysis`/`umap_analysis` all read
+`require_clean=True`) and correctly record `None`; `qc_clean`/`qc_inspect` record whatever
+source their own load actually pinned, with no second round trip and no race window.
+
 `ResultStore.create_run` (`result_store/ports.py`'s Protocol, plus both
-`SupabaseResultStore.create_run` and `FakeResultStore.create_run`), mirroring the existing
-`source_csv: Optional[Path] = None` parameter exactly. Inside `create_run` (both adapters),
-before storing `provenance` in the per-run state dataclass, merge it in:
+`SupabaseResultStore.create_run` and `FakeResultStore.create_run`) gains a `source:
+Optional[SourceInfo] = None` parameter, mirroring the existing `source_csv:
+Optional[Path] = None` parameter exactly. Inside `create_run` (both adapters), before
+storing `provenance` in the per-run state dataclass, merge it in:
 
 ```python
 if source is not None:
@@ -180,14 +201,16 @@ hashing is centralized once in `SupabaseResultStore.commit`, not duplicated per 
 `to_version_entry()` unchanged, so `source_id`/`source_name` ride along automatically once
 set at `create_run` time.
 
-Each of the 7 producer-tool call sites gains one line, mirroring their existing
-`source_csv=_ports.raw_source_for(params.experiment)`:
+Each of the 7 producer-tool call sites gains one line, using the `frame` variable each tool
+already holds from its own earlier `load_experiment(...)` call:
 
 ```python
-source=_ports.source_for(params.experiment),
+source=frame.resolved_source,
 ```
 
-`_ports.py` gains `source_for(filename)`, mirroring `raw_source_for` exactly:
+`_ports.py` still gains `source_for(filename)`, mirroring `raw_source_for`, but it is
+**not** called by any producer tool anymore — it exists only for `start_run` (below),
+mirroring `raw_source_for`'s own shape for whatever future caller adopts `start_run`:
 
 ```python
 def source_for(filename: str) -> Optional[SourceInfo]:
@@ -198,9 +221,16 @@ def source_for(filename: str) -> Optional[SourceInfo]:
     )
 ```
 
-`start_run` (still unused by any shipped tool) is updated for consistency with the same
-one-line addition, so it doesn't silently drift further out of date for whatever future
-tool eventually adopts it — but it is not the load-bearing wiring path.
+`start_run` (still unused by any shipped tool, and has no `frame` in scope — it stamps
+provenance and opens a run without reading one) is updated for consistency with the same
+one-line addition using `source_for`, so it doesn't silently drift further out of date for
+whatever future tool eventually adopts it — but it is not the load-bearing wiring path, and
+a future adopter of `start_run` that *does* read a frame first should prefer
+`frame.resolved_source` the same way the 7 producer tools now do.
+
+**Rejected alternative (this design's second draft):** keep `source=_ports.source_for(...)`
+at each tool's `create_run` call site. Rejected — verified to record an unrelated value for
+5 of 7 tools (cleaned-tier readers), and to reintroduce a race window for the other 2.
 
 **Manifest schema v3→v4 (additive), mirrors the shipped v2→v3 bump exactly:**
 
@@ -250,19 +280,37 @@ schema-wide `bloom_agent` grant Tier 1's review already confirmed covers this ta
 soft-delete filter the `bloom_agent` RLS `SELECT` policy already applies
 (`deleted_at IS NULL`).
 
-**Corrected decision:** `rows` (distinct plant count) is genuinely cheap — a plain
-`count=exact` HEAD query against `cyl_plants` filtered through the experiment's waves.
-`trait_columns`/`total_columns`, however, have no cheap path: computing them accurately
-requires the same `get_experiment_traits` bulk fetch `load_experiment` itself performs,
-deduplicating `trait_name` client-side. **This is accepted as a genuine, explicit
-tradeoff of moving off a local directory scan** — a directory `ls` was free; a Postgres
-read is not. `list_experiments()` therefore costs one bulk fetch per experiment being
-listed, same order of magnitude as loading each one. If this proves too slow at real
-experiment-count scale, a dedicated summary RPC is the natural follow-up (deferred, not
-built now, per this project's complexity-budget convention: no performance data yet shows
-the direct approach doesn't scale) — this is the one place the "zero new migrations" goal
-is knowingly in tension with a cheap listing, resolved in favor of zero new migrations for
-this change.
+**Corrected decision (revised again during implementation):** `trait_columns`/
+`total_columns` have no cheap path: computing them accurately requires the same
+`get_experiment_traits` bulk fetch `load_experiment` itself performs, deduplicating
+`trait_name` client-side. This design's earlier draft claimed `rows` (distinct plant count)
+could be split out as a separate, genuinely cheap `count=exact` HEAD query against
+`cyl_plants` filtered through the experiment's waves — but that filter (`cyl_plants` joined
+through `cyl_waves` to one `experiment_id`) requires either a PostgREST embedded-resource
+filter whose exact shape against this schema was never verified live, or a second round
+trip to first collect wave ids. Rather than ship an unverified join-filter query, the
+shipped code derives **both** `rows` and `trait_columns`/`total_columns` from the one bulk
+fetch already required for the latter — `rows = len({row["plant_id"] for row in rows})` —
+one round trip per experiment instead of two, and no query shape that needed guessing.
+**This is accepted as a genuine, explicit tradeoff of moving off a local directory scan** —
+a directory `ls` was free; a Postgres read is not. `list_experiments()` therefore costs one
+bulk fetch per experiment being listed, same order of magnitude as loading each one. If
+this proves too slow at real experiment-count scale, a dedicated summary RPC is the
+natural follow-up (deferred, not built now, per this project's complexity-budget
+convention: no performance data yet shows the direct approach doesn't scale) — this is the
+one place the "zero new migrations" goal is knowingly in tension with a cheap listing,
+resolved in favor of zero new migrations for this change.
+
+**Known inconsistency, accepted:** `list_experiments()`'s bulk fetch is called **unpinned**
+(`source_id_=None`, `run_id_=None`) — the exact pattern D2 says `load_experiment` must
+never use, because per-scan `is_latest` can span multiple sources for a partially
+reprocessed experiment. This means a listing's `trait_columns`/`rows` count can disagree
+with what `load_experiment(str(id))` on the same experiment actually returns. Accepted
+because a listing is discovery summary metadata, not the analyzable frame — resolving one
+concrete source per experiment during a listing (an extra `list_experiment_trait_sources`
+round trip per experiment, on top of the bulk fetch) is a real cost with no evidence the
+summary counts' precision is worth it. If this discrepancy turns out to confuse callers in
+practice, resolving a pinned source here too (mirroring `load_experiment`) is the fix.
 
 **Partial-failure semantics:** a `get_experiment_traits` failure for one experiment during
 listing excludes that experiment from the returned list (logged server-side), rather than
@@ -312,6 +360,34 @@ that level), not something to quietly redefine inside this adapter-rewrite chang
 loudly on an actual collision surfaces the question to a human rather than presupposing an
 answer.
 
+### D6: Multiple scans for one plant is a structured error, not `(scan_id, plant_id)`-keyed
+
+**Status: resolved — new decision, added in response to review; not in this design's
+first draft, which claimed a `(scan_id, plant_id)` pivot key that the shipped code never
+actually implemented.**
+
+The pivot keys one output row per `plant_id` **within the single resolved source** a raw
+read fetched — matching cylinder data's "the replicate unit" framing (one row = one
+physical plant in the analyzable frame, not one row per scan). If a plant genuinely has
+more than one `scan_id` in that resolved source (a rescan), there is no defined column
+layout for a second set of trait values against the same plant row — silently keying by
+`(scan_id, plant_id)` (this design's original, never-implemented claim) would produce a
+frame whose row count varies unpredictably per plant, which no downstream tool expects.
+
+**Decision:** a plant with more than one `scan_id` in the resolved source raises
+`MultipleScansPerPlantError` (a dedicated `ExperimentReadError` subclass, same shape as
+`AmbiguousSampleIdentityError`) rather than silently picking one scan, silently averaging,
+or silently widening the frame's row semantics. This is explicit, structured, and tested —
+not an assumed-away edge case. The current golden fixture (`cylinder_raw_data.csv`, 129
+plants) happens to have zero multi-scan plants, so this hasn't surfaced in practice yet.
+
+**Rejected alternative:** implement the originally-claimed `(scan_id, plant_id)` composite
+key, emitting multiple rows per plant when rescanned. Rejected for this change — it's a
+real feature (how would a downstream tool that expects one row per `sample_id` handle two
+rows sharing one? Suffix the `sample_id`? Keep only the latest scan?) with no current
+requirement driving a specific answer; deferred as explicit future work rather than guessed
+at here.
+
 ## Column-role mapping (unchanged from the roadmap, restated for implementers)
 
 | canonical role | ← DB source | notes |
@@ -322,11 +398,14 @@ answer.
 | `image_path` | cylinder image path | optional |
 | *(metadata)* | `cyl_waves.number`→`wave`, `plant_age_days`, `date_scanned`, `cyl_plants.id`→`plant_id` (D5, traceability) | plain columns, not roles |
 
-The long→wide pivot keys on `(scan_id, plant_id)`, with one output column per distinct
-`trait_name`. An experiment with zero trait rows (a valid, Tier-1-documented state — "an
-experiment with no trait rows returns cleanly") produces a frame with zero `trait_cols`,
-not an error; `int(name)` resolving to a real `cyl_experiments` row is what determines
-found-vs-not-found, independent of whether that experiment has any measurements yet.
+The long→wide pivot keys on `plant_id` alone, within the single resolved source a raw read
+fetched, with one output column per distinct `trait_name`; more than one `scan_id` for the
+same plant in that source is a structured `MultipleScansPerPlantError` (see D6), not a
+`(scan_id, plant_id)` composite key. An experiment with zero trait rows (a valid,
+Tier-1-documented state — "an experiment with no trait rows returns cleanly") produces a
+frame with zero `trait_cols`, not an error; `int(name)` resolving to a real
+`cyl_experiments` row is what determines found-vs-not-found, independent of whether that
+experiment has any measurements yet.
 
 ## Risks / Trade-offs
 
@@ -412,6 +491,17 @@ found-vs-not-found, independent of whether that experiment has any measurements 
   `FakeResultStore`) results in a committed `VersionEntry`/`StoredRun` carrying
   `source_id`/`source_name` — this is the test that actually proves the wiring reaches a
   shipped tool's manifest, replacing the first draft's dead `start_run`-only coverage.
+- `frame.resolved_source` is set to the pinned `SourceInfo` for a raw-tier read (pinned or
+  unpinned) and `None` for a cleaned-tier read — this is the test that actually proves
+  provenance lineage is correct for `require_clean=True` consumers, not just that the
+  `create_run(source=...)` plumbing works when handed a `SourceInfo` directly (D3, second
+  correction).
+- `frame.resolved_source` reflects what was true at load time even if a newer source lands
+  before commit — proves the race window D3 originally reintroduced is actually closed, not
+  just less likely.
+- A plant with two distinct `scan_id`s in the resolved source raises
+  `MultipleScansPerPlantError` (D6) — was previously untested and raised a generic
+  `ExperimentReadError` with no dedicated scenario.
 - **Deletions, not updates:** `tests/data_access/test_local_reader.py::
   test_same_raw_bytes_yield_same_roles_as_supabase` and `tests/data_access/
   test_supabase_reader.py::test_raw_source_path_rejects_path_traversal`.

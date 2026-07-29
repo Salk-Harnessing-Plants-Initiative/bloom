@@ -10,9 +10,12 @@ by querying Bloom's Postgres tables directly (`get_experiment_traits`,
 tier is DB-only: `name` is parsed as `str(experiment_id)`; a non-numeric or unresolvable
 `name` with no cleaned output is a structured not-found condition, not a local-disk
 fallback. Every raw read — pinned or not — resolves and pins exactly one concrete DB source
-before fetching, so no returned frame ever mixes rows from more than one source. A
+before fetching, so no returned frame ever mixes rows from more than one source, and
+records that resolved source on the returned `ExperimentFrame` (`resolved_source`) so a
+caller can stamp accurate provenance without an independent, racy re-resolution. A
 long→wide pivot that produces colliding `sample_id` values across distinct plants is a
-structured error, not a silently ambiguous frame. `list_experiments()` enumerates
+structured error, not a silently ambiguous frame, and so is more than one scan for the same
+plant within a resolved source. `list_experiments()` enumerates
 experiments from `cyl_experiments` rather than scanning a local directory or bucket, with
 each entry's `filename` equal to the same `str(experiment_id)` shape `load_experiment`
 accepts. `SupabaseReader` no longer implements `RawSourced` (there is no on-disk path for a
@@ -58,6 +61,28 @@ DB-backed raw read to content-address); it implements `SourceSelectable` instead
   single id as an explicit pin to `get_experiment_traits` — it SHALL NOT call
   `get_experiment_traits` unpinned and rely on the RPC's own per-scan `is_latest`
   disjunction to avoid mixing sources across scans
+
+#### Scenario: The resolved frame records which source it actually consulted
+
+- **WHEN** `SupabaseReader.load_experiment(name)` resolves a raw-tier read
+- **THEN** the returned `ExperimentFrame.resolved_source` equals the `SourceInfo` that was
+  actually pinned for that read — not re-resolved independently by any caller — and stays
+  fixed to that value even if a newer source becomes available before the caller acts on
+  the frame
+
+#### Scenario: A cleaned-tier read carries no source identity
+
+- **WHEN** `SupabaseReader.load_experiment(name)` resolves a cleaned-tier read (a Storage
+  read, not the raw DB tier)
+- **THEN** the returned `ExperimentFrame.resolved_source` is `None` — that read never
+  consulted a DB source, so recording one would misattribute lineage
+
+#### Scenario: Multiple scans for one plant is a structured error
+
+- **WHEN** the resolved source's rows include more than one `scan_id` for the same
+  `plant_id`
+- **THEN** `SupabaseReader.load_experiment` raises `MultipleScansPerPlantError` rather than
+  silently keying the pivot by `(scan_id, plant_id)` or picking one scan arbitrarily
 
 #### Scenario: Concurrent source_id and run_id pin is rejected before any DB call
 

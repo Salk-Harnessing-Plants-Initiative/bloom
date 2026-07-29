@@ -87,6 +87,16 @@
       the rejected/too-new case — becomes valid post-bump; update to `5`).
 - [x] 2.17 Add pre-v4 (v2 and v3) manifest backcompat coverage — old manifests still load
       under v4 code.
+- [x] 2.18 **Added after PR review**: `frame.resolved_source` is set (pinned or unpinned)
+      for a raw-tier read, and `None` for a cleaned-tier read — proves provenance lineage
+      is correct for `require_clean=True` consumers, not just that `create_run(source=...)`
+      plumbing works when handed a `SourceInfo` directly (D3).
+- [x] 2.19 **Added after PR review**: a frame's `resolved_source` reflects what was true at
+      load time even when a newer source lands before the caller acts on the frame — proves
+      the race window is actually closed, not just less likely (D3).
+- [x] 2.20 **Added after PR review**: a plant with two distinct `scan_id`s in the resolved
+      source raises `MultipleScansPerPlantError` (D6) — previously untested, and raised a
+      generic `ExperimentReadError` with no dedicated scenario.
 
 ## 3. Deletions
 
@@ -97,18 +107,27 @@
 
 ## 4. Implementation (GREEN)
 
-- [x] 4.1 `bloommcp/src/bloom_mcp/supabase_client.py`: add an RPC-call helper
-      (`get_postgrest_client().rpc(name, params).execute()`) for
-      `get_experiment_traits`/`list_experiment_trait_sources`, and a table-read helper for
-      `cyl_experiments` plus a `count=exact` helper for the `cyl_plants` row count (D4).
+- [x] 4.1 `bloommcp/src/bloom_mcp/supabase_client.py`: add a `call_rpc(function_name,
+      params)` helper (`get_postgrest_client().rpc(...).execute()`) for
+      `get_experiment_traits`/`list_experiment_trait_sources`. `list_experiments()` reads
+      `cyl_experiments` directly through the already-public `get_postgrest_client()` (no
+      separate table-read wrapper needed). **Revised during implementation**: no separate
+      `count=exact` helper for the `cyl_plants` row count was built — see 4.3's note.
 - [x] 4.2 `bloommcp/src/bloom_mcp/data_access/ports.py`: add `SourceInfo` dataclass,
-      `SourceSelectable` Protocol, `AmbiguousSourceSelectionError` and
-      `AmbiguousSampleIdentityError` (subclassing `ExperimentReadError`) (D2, D5).
+      `SourceSelectable` Protocol, `AmbiguousSourceSelectionError`,
+      `AmbiguousSampleIdentityError`, and `MultipleScansPerPlantError` (subclassing
+      `ExperimentReadError`) (D2, D5, D6). `ExperimentFrame` gains
+      `resolved_source: Optional[SourceInfo] = None` (D3, added in response to PR review —
+      see 4.9's note).
 - [x] 4.3 `bloommcp/src/bloom_mcp/data_access/supabase_reader.py`:
       - Rewrite the raw-tier fallback: resolve a concrete source first (`resolve_source`),
         then call `get_experiment_traits` **always explicitly pinned** to that resolved
-        `source_id_`, pivot long→wide, apply the canonical column-role rename including
-        `plant_id` as metadata (D2, design.md's table).
+        `source_id_`, pivot long→wide keyed on `plant_id` alone within that source, apply
+        the canonical column-role rename including `plant_id` as metadata (D2, design.md's
+        table). Set the returned frame's `resolved_source` to the pinned `SourceInfo` (D3).
+      - Reject more than one `scan_id` per `plant_id` in the resolved source with
+        `MultipleScansPerPlantError`, not a silent `(scan_id, plant_id)` key (D6 — the
+        original task description here was wrong about the key; fixed after PR review).
       - Validate `source_id`/`run_id` mutual exclusivity before any RPC call (D2).
       - Validate `sample_id` uniqueness post-pivot; raise `AmbiguousSampleIdentityError`
         on collision (D5).
@@ -116,8 +135,11 @@
       - Remove `raw_source_path`/`RawSourced` implementation.
       - Add `list_sources`/`resolve_source` (`SourceSelectable`) and `source_id`/`run_id`
         kwargs on `load_experiment`.
-      - Rewrite `list_experiments()`: `cyl_experiments` roster + `count=exact` for `rows`
-        + a bulk fetch per experiment for `trait_columns`/`total_columns`, with
+      - Rewrite `list_experiments()`: `cyl_experiments` roster, deriving **both** `rows`
+        and `trait_columns`/`total_columns` from one per-experiment bulk fetch (not a
+        separate `count=exact` query — that would need an unverified PostgREST
+        join-filter shape against `cyl_plants`/`cyl_waves`; deriving `rows` from the same
+        bulk fetch instead is one round trip, not two, and needs no guessed query), with
         `filename = str(experiment_id)`; exclude an experiment from the list on a
         per-experiment fetch failure rather than failing the whole call (D4).
       - Update the module docstring to describe the DB-direct raw tier (coordinate with
@@ -139,13 +161,19 @@
 - [x] 4.8 `bloommcp/src/bloom_mcp/tools/_ports.py`: add `source_for(filename)` mirroring
       `raw_source_for`; add the same one-line addition to `start_run` for consistency
       (still unused by any shipped tool) (D2/D3).
-- [x] 4.9 Add `source=_ports.source_for(params.experiment)` to the existing
-      `store.create_run(...)` call in each of the 7 producer tools: `qc_clean.py`,
-      `qc_inspect.py`, `remove_outliers.py`, `pca_analysis.py`, `clustering.py`,
-      `descriptive_stats.py`, `umap_analysis.py` (D3 — this is the wiring that actually
-      reaches a shipped tool's manifest).
+- [x] 4.9 Add `source=frame.resolved_source` to the existing `store.create_run(...)` call
+      in each of the 7 producer tools: `qc_clean.py`, `qc_inspect.py`,
+      `remove_outliers.py`, `pca_analysis.py`, `clustering.py`, `descriptive_stats.py`,
+      `umap_analysis.py` (D3). **Fixed after PR review**: this task originally said
+      `source=_ports.source_for(params.experiment)` — an independent, unpinned
+      re-resolution at commit time, disconnected from what the tool's own
+      `load_experiment(...)` call actually read. For the 5 tools reading
+      `require_clean=True` (a cleaned CSV from Storage, never the raw DB tier), that
+      recorded a source the run never consulted. `frame.resolved_source` (the `frame`
+      variable each tool already holds from its own load) is the correct, race-free value.
 - [x] 4.10 `bloommcp/src/bloom_mcp/data_access/__init__.py`: export `SourceInfo`,
-      `SourceSelectable`, `AmbiguousSourceSelectionError`, `AmbiguousSampleIdentityError`.
+      `SourceSelectable`, `AmbiguousSourceSelectionError`, `AmbiguousSampleIdentityError`,
+      `MultipleScansPerPlantError`.
 
 ## 5. Validate
 

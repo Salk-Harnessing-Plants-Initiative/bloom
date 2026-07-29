@@ -42,12 +42,29 @@ class AmbiguousSampleIdentityError(ExperimentReadError):
     """A pivoted frame would carry a ``sample_id`` shared by more than one plant."""
 
 
+class MultipleScansPerPlantError(ExperimentReadError):
+    """A resolved source has more than one scan for the same plant.
+
+    The raw-tier pivot keys one row per plant within a single resolved source;
+    more than one ``scan_id`` for the same plant has no defined column layout
+    (multi-scan pivoting is not yet supported).
+    """
+
+
 @dataclass(frozen=True, eq=False)
 class ExperimentFrame:
     """An experiment's data plus its adapter-declared column roles.
 
     ``source`` records what was resolved: ``"raw"``, ``"legacy_cleaned"``, or a
-    ``"v<N>_cleaned"`` label.
+    ``"v<N>_cleaned"`` label. ``resolved_source`` is the concrete DB source
+    (see :class:`SourceSelectable`) actually consulted for a raw read — always
+    ``None`` for a cleaned-tier read (no DB source touched for that read) or an
+    adapter with no source-versioned substrate. A caller that stamps
+    provenance at commit time SHOULD use this value rather than independently
+    re-resolving "the current latest source": for a cleaned-tier read this
+    frame's data never touched the DB at all, and even for a raw read, a fresh
+    re-resolution at commit time can race ahead of what this frame's data
+    actually is (see ``ResultStore.create_run``'s ``source`` parameter).
     """
 
     df: pd.DataFrame
@@ -57,6 +74,7 @@ class ExperimentFrame:
     replicate_col: Optional[str]
     sample_id_col: Optional[str]
     source: str
+    resolved_source: Optional["SourceInfo"] = None
 
 
 @dataclass(frozen=True)

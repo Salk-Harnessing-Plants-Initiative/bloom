@@ -304,7 +304,7 @@ def descriptive_stats(
             provenance=prov,
             user_label=params.user_label,
             source_csv=source_snapshot,
-            source=_ports.source_for(params.experiment),
+            source=frame.resolved_source,
         )
         stats_df.to_csv(run.staging_dir / _STATS_CSV_NAME, index=False)
         stored = store.commit(run, {_STATS_CSV_NAME: _STATS_CSV_NAME})

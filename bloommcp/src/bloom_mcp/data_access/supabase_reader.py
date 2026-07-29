@@ -38,8 +38,8 @@ from .ports import (
     CleanedVersionRequiredError,
     ExperimentFrame,
     ExperimentNotFoundError,
-    ExperimentReadError,
     ExperimentSummary,
+    MultipleScansPerPlantError,
     SourceInfo,
 )
 
@@ -115,7 +115,7 @@ class SupabaseReader:
         if not rows and not self._experiment_exists(experiment_id):
             raise ExperimentNotFoundError(f"Experiment {name!r} could not be resolved.")
 
-        return _pivot_wide(rows, name)
+        return _pivot_wide(rows, name, source)
 
     def list_sources(self, name: str) -> list[SourceInfo]:
         experiment_id = _parse_experiment_id(name)
@@ -246,8 +246,18 @@ def _parse_experiment_id(name: str) -> int:
         ) from None
 
 
-def _pivot_wide(rows: list[dict], name: str) -> ExperimentFrame:
-    """Pivot `get_experiment_traits`'s long-format rows into a wide frame."""
+def _pivot_wide(
+    rows: list[dict], name: str, source: Optional[SourceInfo]
+) -> ExperimentFrame:
+    """Pivot `get_experiment_traits`'s long-format rows into a wide frame.
+
+    Keys one output row per ``plant_id`` within the single resolved source
+    `rows` was fetched for (cylinder data's "the replicate unit" semantics —
+    see the module docstring). More than one ``scan_id`` for the same plant in
+    that source is an explicit, structured error (`MultipleScansPerPlantError`)
+    rather than a silent `(scan_id, plant_id)`-keyed pivot: supporting a real
+    multi-scan layout is deferred future work, not assumed away.
+    """
     if not rows:
         return ExperimentFrame(
             df=pd.DataFrame(),
@@ -257,6 +267,7 @@ def _pivot_wide(rows: list[dict], name: str) -> ExperimentFrame:
             replicate_col=None,
             sample_id_col=None,
             source="raw",
+            resolved_source=source,
         )
 
     long_df = pd.DataFrame(rows)
@@ -264,7 +275,7 @@ def _pivot_wide(rows: list[dict], name: str) -> ExperimentFrame:
     scans_per_plant = long_df.groupby("plant_id")["scan_id"].nunique()
     ambiguous = scans_per_plant[scans_per_plant > 1]
     if not ambiguous.empty:
-        raise ExperimentReadError(
+        raise MultipleScansPerPlantError(
             f"plant {ambiguous.index[0]!r} in experiment {name!r} has "
             f"{int(ambiguous.iloc[0])} distinct scans in the resolved source; "
             "multi-scan pivoting is not supported."
@@ -312,6 +323,7 @@ def _pivot_wide(rows: list[dict], name: str) -> ExperimentFrame:
         replicate_col=None,
         sample_id_col=_SAMPLE_ID_COL,
         source="raw",
+        resolved_source=source,
     )
 
 
