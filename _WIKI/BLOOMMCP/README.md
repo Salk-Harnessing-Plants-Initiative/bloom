@@ -147,6 +147,19 @@ exposes the same selection (latest by default; pin a `source_id_`; group by
 `cyl_scan_traits_source` — see the `cyl-trait-read` spec and its migration for
 the definition (not restated here).
 
+**Loading a whole experiment.** `get_scan_traits` is per-trait — one call per
+trait name. For a wide-pivot read (all of an experiment's traits at once),
+call `get_experiment_traits(experiment_id_, source_id_, run_id_)` instead: same
+latest/`source_id`/`run_id` selection as `get_scan_traits`, but returns every
+trait for the experiment in a single round trip. Use
+`list_experiment_trait_sources(experiment_id_)` to see which sources/runs are
+available before pinning one.
+
+```python
+traits = client.rpc("get_experiment_traits", {"experiment_id_": 42}).execute()
+sources = client.rpc("list_experiment_trait_sources", {"experiment_id_": 42}).execute()
+```
+
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.
 
