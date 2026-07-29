@@ -207,3 +207,77 @@ Both reviews' findings, reconciled and resolved:
   future regeneration's diff for a real regression.
 
 Full bloommcp suite after §8: 759 passed, 29 skipped, 0 failed. `test_cross_experiment_correlations_tool.py`: 44 tests (was 31).
+
+## 9. Post-PR-review fixes, round 2 (re-review of commit c649f9d)
+
+- [x] 9.1 **BLOCKING — `_storage_safe_stem`'s dot-to-underscore sanitization reopened
+  the collision it closed.** `"my.experiment.csv"` and `"my_experiment.csv"` both
+  sanitize to the identical stem `"my_experiment"` and would silently collide on the
+  same storage key. Replaced with `_reject_unsafe_composite_stem`, rejecting a dotted
+  (or, at the time, separator-embedding) stem outright instead of sanitizing it — see
+  §10.1 for why the separator-embedding half of this fix was itself superseded.
+- [x] 9.2 **IMPORTANT — `based_on_version`'s builder still hardcoded bare `@`/`|`.**
+  Centralized into `_VERSION_SEPARATOR`/`_PAIR_SEPARATOR`, reusing the same constants
+  the reserved-character guard already used.
+- [x] 9.3 **IMPORTANT — path-traversal guard's message didn't name the field.**
+  `_validate_experiment_name` gained an optional `label` parameter (default preserves
+  every existing single-experiment caller); this tool passes `"experiment_1"`/
+  `"experiment_2"` explicitly.
+- [x] 9.4 **IMPORTANT — golden fixture's `min_samples_3_upstream_no_op` block recorded
+  but never read by any test.** Added
+  `test_upstream_min_samples_no_op_still_present_on_real_fixture_pair` — see §10.4 for
+  a follow-up gap found in this same test.
+- [x] 9.5 **IMPORTANT — "benefits every `RunLinks`-based tool" claim untested beyond
+  this one tool.** Extended `test_pca_analysis_smoke` to assert on `outputs`.
+- [x] 9.6 Strengthened the NaN pass-through test to assert `pd.isna()` directly on the
+  persisted `correlations.csv` value, not just infer it from `n_significant`/
+  `n_highly_significant` counts.
+- [x] 9.7 Parametrized `test_missing_genotype_role_either_side_rejected` and
+  `test_non_finite_value_either_side_rejected` (manual for-loops, inconsistent with
+  this file's other genuinely-symmetric tests).
+- [x] 9.8 Softened an overclaiming comment in `conftest.py` about the exact fastmcp
+  schema-routing mechanism behind the `outputs`-empty bug (kept the confirmed symptom,
+  dropped the unverified "name collision" causal claim) — itself found imprecise by
+  §10's review; see §10's Testing-infrastructure-fix note in design.md.
+
+## 10. Post-PR-review fixes, round 3 (re-review of commit a5ec16d)
+
+- [x] 10.1 **BLOCKING — rejecting a stem containing the separator substring does not
+  prevent the separator from appearing in the JOINED string.** `_COMPOSITE_SEPARATOR`
+  (`"__x__"`) is self-overlapping; `stem_1="A"`/`stem_2="x__B"` and
+  `stem_1="A__x"`/`stem_2="B"` both pass §9.1's guard (neither stem contains the full
+  substring) yet both join to the identical `"A__x__x__B"` — confirmed by direct
+  construction and a 500k-sample randomized stress test (thousands of collisions found
+  in seconds). No stem-content guard can close this — the ambiguity is a property of
+  the join, not either stem. **Fixed structurally**: `_composite_experiment_key`
+  prefixes `stem_1` with its own length before joining
+  (`f"{len(stem_1)}_{stem_1}{_COMPOSITE_SEPARATOR}{stem_2}"`), which is provably
+  injective regardless of stem content (standard length-prefixed/"netstring"
+  encoding). `_reject_unsafe_composite_stem`'s separator-substring branch is removed
+  (renamed `_reject_dotted_stem`, dot-only now) since it is no longer needed — a stem
+  containing `"__x__"` is permitted. Verified by
+  `test_boundary_straddling_stems_no_longer_collide` (the exact adversarial pair) and
+  `test_composite_key_round_trips_for_any_stem_pair` (a property test proving a real
+  left-inverse exists for arbitrary stem content, not just spot-checked pairs — the
+  testing gap that let three rounds of this bug ship).
+- [x] 10.2 **BLOCKING — `spec.md` described the superseded (§9.1) sanitizing behavior
+  as current**, still citing `_storage_safe_stem` and asserting the composite key
+  "contains a recognizable, sanitized form of both original stems" — the opposite of
+  the shipped reject-outright behavior even before this round's further fix. Rewritten
+  to describe the length-prefixed encoding and its injectivity guarantee; added a
+  scenario for the boundary-straddling case.
+- [x] 10.3 **IMPORTANT — design.md's D1 opening bullet still cited `_storage_safe_stem`**,
+  contradicted by the "Final fix" narrative later in the same section. Corrected,
+  along with two other stale "second review pass" labels (D8, D14 sections) that
+  should have read "third" — a minor version of the same internal-consistency gap.
+- [x] 10.4 **IMPORTANT — `test_upstream_min_samples_no_op_still_present_on_real_fixture_pair`
+  (added §9.4) omitted the golden block's own `p_value` field**, even though it
+  asserts `n_genotypes`/`correlation` from the same block. Added.
+
+`test_cross_experiment_correlations_tool.py`: 50 tests, all passing (§10.1 removes the
+4 now-invalid `embeds-separator` parametrized cases from §9.1's
+`test_unsafe_composite_stem_rejected` — a stem containing the separator substring is no
+longer rejected — and adds 2 new tests in their place:
+`test_boundary_straddling_stems_no_longer_collide` and
+`test_composite_key_round_trips_for_any_stem_pair`). ruff/black clean at the
+repo-pinned versions.

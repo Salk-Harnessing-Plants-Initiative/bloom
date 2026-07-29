@@ -36,24 +36,26 @@ checked non-``None`` before any computation.
 ``ResultStore``/``Provenance`` are single-experiment-shaped (`experiment: str`,
 ``based_on_version: str``, one ``source_csv``). Rather than extending those shared types
 for what is so far bloommcp's only dual-input consumer, both experiments are encoded into
-the existing fields: a composite ``experiment`` key (both filenames' stems joined by
-``__x__``), a composite ``based_on_version`` (``exp@version|exp@version``), and a single
-combined ``source_csv`` snapshot (both selections concatenated, labeled by a leading
-``_experiment`` column) so ``input_sha256`` content-addresses both inputs. ``@``/``|`` are
-therefore reserved in ``experiment_1``/``experiment_2`` and rejected up front, as is
+the existing fields: a length-prefixed composite ``experiment`` key (see
+:func:`_composite_experiment_key` — provably injective, not just both filenames' stems
+naively joined by ``__x__``), a composite ``based_on_version`` (``exp@version|exp@version``),
+and a single combined ``source_csv`` snapshot (both selections concatenated, labeled by a
+leading ``_experiment`` column) so ``input_sha256`` content-addresses both inputs. ``@``/``|``
+are therefore reserved in ``experiment_1``/``experiment_2`` and rejected up front, as is
 ``experiment_1 == experiment_2`` (self-correlation), any path-unsafe name, and — since a
 naive un-sanitized composite is silently truncated by ``AnalysisDir``'s own re-applied
-``Path(...).stem`` (found in review) — a filename stem containing a ``.`` or the
-``__x__`` separator itself: see :func:`_reject_unsafe_composite_stem` for why rejecting
-these outright, rather than sanitizing them away, is the fix that actually closes the
-collision risk (a first, sanitizing fix reopened the identical class one level down,
-found in a second review pass). Persisted under the reused ``correlation`` tool class
-(design.md D9) — reserved since the pre-#438 legacy correlation tools were retired,
-exactly as ``descriptive_stats`` reactivated the reserved ``stats`` slot — so
-``list_existing_analyses`` requires no changes. Argument order is significant and undoes
-no normalization: ``(A, B)`` and ``(B, A)`` persist as two distinct, un-cross-referenced
-runs (an open question in design.md, called out in each experiment field's own
-description so a caller can discover it from the schema).
+``Path(...).stem`` (found in review) — a filename stem containing a ``.``: see
+:func:`_reject_dotted_stem`. (A stem containing the literal ``__x__`` separator substring
+is *not* rejected — a second review pass added that guard, but a third found it
+insufficient: the join itself can manufacture a fresh separator occurrence straddling the
+two stems even when neither stem contains it outright, so the fix had to be structural —
+see :func:`_composite_experiment_key` — not another content guard.) Persisted under the
+reused ``correlation`` tool class (design.md D9) — reserved since the pre-#438 legacy
+correlation tools were retired, exactly as ``descriptive_stats`` reactivated the reserved
+``stats`` slot — so ``list_existing_analyses`` requires no changes. Argument order is
+significant and undoes no normalization: ``(A, B)`` and ``(B, A)`` persist as two distinct,
+un-cross-referenced runs (an open question in design.md, called out in each experiment
+field's own description so a caller can discover it from the schema).
 
 **Traceability (design.md D12).** Upstream itself discards which specific genotypes fed a
 given trait pair's correlation (an internal alignment result assigned to ``_``), so this
@@ -274,15 +276,16 @@ def _reject_self_correlation(experiment_1: str, experiment_2: str) -> None:
         )
 
 
-def _reject_unsafe_composite_stem(experiment_1: str, experiment_2: str) -> None:
-    """Reject a stem this tool's composite storage key can't safely encode (design.md D1).
+def _reject_dotted_stem(experiment_1: str, experiment_2: str) -> None:
+    """Reject a stem containing a '.' — this tool's composite key can't safely encode it
+    (design.md D1).
 
     ``AnalysisDir`` (the real backend's storage-prefix builder,
     ``bloommcp/src/bloom_mcp/manifest/analysis_dir.py:33``) re-applies ``Path(...).stem``
     to whatever ``experiment=`` string this tool passes it. A composite key built by
-    joining two stems with ``_COMPOSITE_SEPARATOR`` is vulnerable to that re-stemming
-    whenever either original stem contains a dot: e.g. ``"my.experiment.v2.csv"`` has
-    stem ``"my.experiment.v2"``; joined with ``"cylinder.csv"``'s stem, the composite
+    joining two stems is vulnerable to that re-stemming whenever either original stem
+    contains a dot: e.g. ``"my.experiment.v2.csv"`` has stem ``"my.experiment.v2"``;
+    joined with ``"cylinder.csv"``'s stem, the composite
     ``"my.experiment.v2__x__cylinder"`` gets re-stemmed by ``AnalysisDir`` at the LAST
     dot, silently truncating to ``"my.experiment"`` — losing the second experiment's
     name and the separator entirely, risking a storage-key collision between unrelated
@@ -294,15 +297,12 @@ def _reject_unsafe_composite_stem(experiment_1: str, experiment_2: str) -> None:
     reopened the identical collision class one level down — found in a second review
     pass: ``"my.experiment.csv"`` and ``"my_experiment.csv"`` both sanitize to the
     identical stem ``"my_experiment"`` and would silently collide on the same storage
-    key. A lossy substitution can narrow a collision class but can't close it. Rejecting
-    a dotted stem outright, instead of sanitizing it away, is the only fix that doesn't
-    trade one collision class for a narrower one.
+    key. Rejecting a dotted stem outright, instead of sanitizing it away, closes that
+    class without trading it for a narrower one.
 
-    A stem containing ``_COMPOSITE_SEPARATOR`` itself is rejected for the same reason:
-    it would let two distinct ``(experiment_1, experiment_2)`` pairs join to the
-    identical composite string — e.g. ``experiment_1="control__x__treatment.csv",
-    experiment_2="foo.csv"`` joins to the same string as ``experiment_1="control.csv",
-    experiment_2="treatment__x__foo.csv"``.
+    (The composite-key *join* itself has a separate, independent ambiguity — not fixed
+    by rejecting any stem content, since it is a property of the join, not either stem
+    alone — see :func:`_composite_experiment_key`.)
     """
     for label, name in (("experiment_1", experiment_1), ("experiment_2", experiment_2)):
         stem = Path(name).stem
@@ -319,19 +319,37 @@ def _reject_unsafe_composite_stem(experiment_1: str, experiment_2: str) -> None:
                     "extension) contains no '.' characters."
                 ),
             )
-        if _COMPOSITE_SEPARATOR in stem:
-            raise BloomMCPError(
-                code="invalid_input",
-                message=(
-                    f"{label} ({name!r})'s filename stem ({stem!r}) contains "
-                    f"{_COMPOSITE_SEPARATOR!r}, reserved as this tool's composite "
-                    "storage-key separator."
-                ),
-                remedy=(
-                    f"Rename the experiment file so its stem does not contain "
-                    f"{_COMPOSITE_SEPARATOR!r}."
-                ),
-            )
+
+
+def _composite_experiment_key(stem_1: str, stem_2: str) -> str:
+    """Length-prefixed composite ``experiment=`` key — provably injective (design.md D1).
+
+    A second review pass rejected a stem containing the literal ``_COMPOSITE_SEPARATOR``
+    substring, on the theory that neither stem containing the separator was sufficient to
+    keep it out of the joined string. **That's false — found in a third review pass,
+    confirmed by direct construction and a 500k-sample randomized stress test:**
+    ``stem_1="A", stem_2="x__B"`` and ``stem_1="A__x", stem_2="B"`` both pass that guard
+    (neither stem contains the 5-character substring ``"__x__"``) yet both produce the
+    identical joined string ``"A__x__x__B"`` — the separator's own internal repetition
+    (``"__x"``/``"x__"``) lets characters straddling the stem/separator boundary
+    reconstruct a fresh occurrence of it. No guard on either stem's *content* can close
+    this: the ambiguity is a property of the *join*, not of either stem alone, so a third
+    round of "reject this substring too" would only narrow the class again, not close it.
+
+    **Fix: prefix ``stem_1`` with its own length**, terminated by ``"_"`` (never itself a
+    digit, so the boundary is unambiguous regardless of what either stem contains):
+    ``f"{len(stem_1)}_{stem_1}{_COMPOSITE_SEPARATOR}{stem_2}"``. Given the resulting
+    string, ``len(stem_1)`` is always recoverable as the value of its maximal leading
+    run of digit characters — which necessarily terminates at the first ``"_"``,
+    because digits never contain ``"_"`` and nothing precedes the numeral. That pins the
+    exact boundary between ``stem_1`` and everything after it, making the encoding
+    injective (in fact invertible — see ``test_composite_key_round_trips_for_any_stem_pair``)
+    regardless of either stem's content. This is the standard length-prefixed
+    ("netstring") technique for exactly this class of delimiter ambiguity, and is why
+    the previous rounds' stem-content guards (dot, separator-substring) were the wrong
+    kind of fix: they treat a structural encoding problem as a validation problem.
+    """
+    return f"{len(stem_1)}_{stem_1}{_COMPOSITE_SEPARATOR}{stem_2}"
 
 
 def _load_cleaned(reader, name: str, label: str) -> ExperimentFrame:
@@ -438,7 +456,7 @@ def cross_experiment_correlations(
     _reject_path_unsafe_names(params.experiment_1, params.experiment_2)
     _reject_reserved_encoding_characters(params.experiment_1, params.experiment_2)
     _reject_self_correlation(params.experiment_1, params.experiment_2)
-    _reject_unsafe_composite_stem(params.experiment_1, params.experiment_2)
+    _reject_dotted_stem(params.experiment_1, params.experiment_2)
 
     reader = _ports.reader()
     store = _ports.store()
@@ -510,12 +528,11 @@ def cross_experiment_correlations(
         )
     )
 
-    # Safe un-sanitized: _reject_unsafe_composite_stem already ruled out a dotted or
-    # separator-containing stem on either side, so AnalysisDir's own re-applied
-    # Path(...).stem is a no-op on this composite (design.md D1).
-    composite_experiment = (
-        f"{Path(params.experiment_1).stem}{_COMPOSITE_SEPARATOR}"
-        f"{Path(params.experiment_2).stem}"
+    # _reject_dotted_stem already ruled out a dotted stem on either side, so
+    # AnalysisDir's own re-applied Path(...).stem is a no-op on this composite; the
+    # length-prefixed encoding (design.md D1) keeps the join itself collision-free.
+    composite_experiment = _composite_experiment_key(
+        Path(params.experiment_1).stem, Path(params.experiment_2).stem
     )
     based_on_version = (
         f"{params.experiment_1}{_VERSION_SEPARATOR}{frame1.source}"

@@ -218,13 +218,13 @@ single-experiment-shaped fields without any change to `ResultStore`, `Provenance
 the manifest schema:
 
 - `experiment` SHALL equal exactly
-  `f"{_storage_safe_stem(experiment_1)}__x__{_storage_safe_stem(experiment_2)}"`, where
-  `_storage_safe_stem(name)` is `Path(name).stem` with every internal `.` replaced by
-  `_`. This dot-sanitization (added after review found the naive un-sanitized
-  composite silently truncated whenever either original stem contained a dot — see
-  design.md D1) makes the composite string itself dot-free, so it is immune to
-  `AnalysisDir`'s own re-applied `Path(...).stem`, regardless of what either original
-  filename's stem contains.
+  `f"{len(stem_1)}_{stem_1}__x__{stem_2}"`, where `stem_1`/`stem_2` are
+  `Path(experiment_1).stem`/`Path(experiment_2).stem` unmodified (not sanitized). This
+  length-prefix encoding SHALL be genuinely injective: for any two distinct
+  `(stem_1, stem_2)` pairs, the composite keys SHALL differ, regardless of what
+  characters either stem contains (including a literal `__x__` substring, which is
+  permitted — see design.md D1 for why a prior guard rejecting that substring in either
+  stem individually was still insufficient to prevent collision).
 - `based_on_version` SHALL equal exactly
   `f"{experiment_1}@{frame1.source}|{experiment_2}@{frame2.source}"`
 - `source_csv` SHALL content-address both consumed frames' selected trait data in a
@@ -233,14 +233,17 @@ the manifest schema:
 Before building either composite string, the tool SHALL reject `experiment_1` or
 `experiment_2` containing `@` or `|` with `BloomMCPError(code="invalid_input")` (these
 characters are reserved for the composite-string encoding above and are not blocked by
-the shared `_validate_experiment_name` guard), and SHALL reject `experiment_1 ==
-experiment_2` (self-correlation) with the same error code. The tool SHALL persist the
-full correlation matrix (`correlations.csv`), the significance-filtered subset
-(`significant.csv`), both experiments' genotype-means tables with per-genotype
-`n_samples` (`genotype_means_1.csv`, `genotype_means_2.csv` — for traceability, since
-upstream itself discards per-pair genotype identity; see design.md D12), and the
-JSON-serializable summary (`summary.json`). It SHALL return only summary counts and
-**links** to these artifacts — never the full trait-by-trait correlation matrix inline.
+the shared `_validate_experiment_name` guard), SHALL reject `experiment_1 ==
+experiment_2` (self-correlation) with the same error code, and SHALL reject a stem
+(the filename without its final `.csv` extension) containing a `.` with the same error
+code — a dotted stem is not sanitized into the composite key; the request is rejected
+before either composite string is built. The tool SHALL persist the full correlation
+matrix (`correlations.csv`), the significance-filtered subset (`significant.csv`), both
+experiments' genotype-means tables with per-genotype `n_samples` (`genotype_means_1.csv`,
+`genotype_means_2.csv` — for traceability, since upstream itself discards per-pair
+genotype identity; see design.md D12), and the JSON-serializable summary
+(`summary.json`). It SHALL return only summary counts and **links** to these artifacts —
+never the full trait-by-trait correlation matrix inline.
 
 #### Scenario: Run is committed with the exact composite experiment key and based_on_version
 
@@ -248,22 +251,29 @@ JSON-serializable summary (`summary.json`). It SHALL return only summary counts 
   (resolved cleaned source `v3_cleaned`) and `experiment_2` (resolved cleaned source
   `v2_cleaned`)
 - **THEN** the `StoredRun`'s `experiment` equals
-  `f"{_storage_safe_stem(experiment_1)}__x__{_storage_safe_stem(experiment_2)}"`
+  `f"{len(stem_1)}_{stem_1}__x__{stem_2}"` for `stem_1 = Path(experiment_1).stem`,
+  `stem_2 = Path(experiment_2).stem`
 - **AND** the committed `Provenance.based_on_version` equals
   `f"{experiment_1}@v3_cleaned|{experiment_2}@v2_cleaned"`
 - **AND** the committed outputs include `correlations.csv`, `significant.csv`,
   `genotype_means_1.csv`, `genotype_means_2.csv`, and `summary.json`
 
-#### Scenario: A dotted experiment filename does not truncate or collide the composite key
+#### Scenario: A dotted experiment filename stem is rejected, not sanitized
 
 - **WHEN** either `experiment_1` or `experiment_2`'s stem (the filename without its
   final `.csv` extension) itself contains a dot (e.g. `experiment_1 =
   "my.experiment.v2.csv"`)
-- **THEN** the composite `experiment` key still contains a recognizable, sanitized form
-  of both original stems, and re-applying `Path(...).stem` to that composite key
-  (exactly what `AnalysisDir` does internally) returns the composite key unchanged —
-  it is not truncated, and two different such filenames do not collide on the same
-  storage prefix
+- **THEN** the tool returns a `BloomMCPError` with code `invalid_input` naming the
+  offending field, before either composite string is built, and no run is persisted
+
+#### Scenario: Two distinct experiment-name pairs never collide on the composite key, regardless of stem content
+
+- **WHEN** two distinct `(experiment_1, experiment_2)` pairs are each valid (neither
+  stem is dotted, neither name contains `@`/`|`, the pair is not a self-correlation) —
+  including pairs where one stem is a substring or superstring of the composite
+  separator itself, or where the two stems' characters straddle a separator boundary
+  (e.g. stems `"A"`/`"x__B"` versus `"A__x"`/`"B"`)
+- **THEN** the two pairs' composite `experiment` keys are never identical
 
 #### Scenario: A filename containing a reserved encoding character is rejected
 

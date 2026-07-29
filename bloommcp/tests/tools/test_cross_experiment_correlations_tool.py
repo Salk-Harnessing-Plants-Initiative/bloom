@@ -4,11 +4,12 @@ bloommcp's first two-experiment-input consumer. Around the 5 standard contract p
 (schema round-trip, no-leak, require_clean, persistence, deterministic-no-seed) this file
 covers what's specific to a dual-input tool: independent per-experiment validation
 (cleaned version, genotype column, trait selection, finiteness), the composite
-``experiment``/``based_on_version`` encoding (design.md D1) — including the reject-outright
-guard against a filename stem that would collide or truncate under ``AnalysisDir``'s
-re-applied ``Path(...).stem`` (two review rounds found this: first a naive un-sanitized
-join, then a lossy dot-to-underscore sanitization that reopened the same collision one
-level down) — the reserved-`correlation` tool_class reuse (design.md D9), and — the
+``experiment``/``based_on_version`` encoding (design.md D1) — including the length-prefixed,
+provably injective composite-key encoding (three review rounds found successive collision
+classes here: a naive un-sanitized join, a lossy dot-to-underscore sanitization that
+reopened the same collision one level down, and a separator-substring guard that still let
+two distinct stem pairs join to an identical string via a boundary straddling the
+separator itself) — the reserved-`correlation` tool_class reuse (design.md D9), and — the
 north-star oracle — the confirmed upstream ``min_samples`` no-op and bloommcp's
 pre-filter workaround (design.md D8, talmolab/sleap-roots-analyze#205), reproduced
 against the real turface_19/cylinder fixture pair via the recorded golden.
@@ -34,6 +35,7 @@ from bloom_mcp.sections.sleap_roots.analysis.cross_experiment_correlations impor
     CrossExperimentCorrelationsParams,
     CrossExperimentCorrelationsResult,
     _COMPOSITE_SEPARATOR,
+    _composite_experiment_key,
     cross_experiment_correlations,
 )
 
@@ -47,6 +49,10 @@ _TOL = 1e-6
 
 _EXP_1 = "expA.csv"
 _EXP_2 = "expB.csv"
+# The persisted composite `experiment=` key for (_EXP_1, _EXP_2) under the
+# length-prefixed encoding (design.md D1) -- computed via the real helper, not
+# hand-transcribed, so this constant can't silently drift from production behavior.
+_COMPOSITE_KEY = _composite_experiment_key("expA", "expB")
 
 
 def _correlated_pair() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -242,6 +248,10 @@ def test_upstream_min_samples_no_op_still_present_on_real_fixture_pair():
         "workaround (talmolab/sleap-roots-analyze#205); it may now be redundant"
     )
     assert result["correlation"].iloc[0] == pytest.approx(g["correlation"], abs=_TOL)
+    # found in review: the golden's own p_value field went unread by this test even
+    # though it's recorded right alongside correlation/n_genotypes -- a silent
+    # regression in that value specifically wouldn't have been caught.
+    assert result["p_value"].iloc[0] == pytest.approx(g["p_value"], abs=_TOL)
 
 
 # ── min_samples pre-filter (north-star oracle: the confirmed upstream bug) ──────
@@ -460,7 +470,7 @@ def test_zero_correlations_is_degenerate_input():
         with pytest.raises(BloomMCPError) as exc:
             _run()
         assert exc.value.code == "assumption_violated"
-        assert store.list_runs("expA__x__expB", "correlation") == []
+        assert store.list_runs(_COMPOSITE_KEY, "correlation") == []
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
@@ -560,7 +570,7 @@ def test_non_numeric_trait_column_names_experiment(injected_ports):
 def test_seed_recorded_as_none(injected_ports):
     _reader, store = injected_ports
     _run()
-    stored = store.get_run("expA__x__expB", "correlation", "latest")
+    stored = store.get_run(_COMPOSITE_KEY, "correlation", "latest")
     assert stored.seed is None
 
 
@@ -588,7 +598,7 @@ def test_run_persisted_with_composite_experiment_and_based_on_version(
 
     monkeypatch.setattr(store, "create_run", _spy)
     _run()
-    assert captured["experiment"] == "expA__x__expB"
+    assert captured["experiment"] == _COMPOSITE_KEY
     assert (
         captured["provenance"].based_on_version
         == f"{_EXP_1}@v1_cleaned|{_EXP_2}@v1_cleaned"
@@ -637,42 +647,100 @@ def test_path_unsafe_experiment_name_rejected(bad_field):
 
 
 @pytest.mark.parametrize("bad_field", ["experiment_1", "experiment_2"])
-@pytest.mark.parametrize(
-    "unsafe_name",
-    [
-        pytest.param("my.experiment.v2.csv", id="internal-dot"),
-        pytest.param("control__x__treatment.csv", id="embeds-separator"),
-    ],
-)
-def test_unsafe_composite_stem_rejected(bad_field, unsafe_name):
-    """Regression test for the composite-key collision bug found in review — TWICE:
-    a naive f"{Path(e1).stem}__x__{Path(e2).stem}" composite is silently truncated by
+def test_dotted_stem_rejected(bad_field):
+    """Regression test for the composite-key truncation bug found in review: a naive
+    f"{Path(e1).stem}__x__{Path(e2).stem}" composite is silently truncated by
     AnalysisDir's own re-applied Path(...).stem whenever either original stem contains
     a dot (e.g. "my.experiment.v2.csv" -> stem "my.experiment.v2"), losing the other
     experiment's name and risking a storage collision. A first fix sanitized dots to
     underscores before joining, which reopened the identical collision class one level
     down ("my.experiment.csv" and "my_experiment.csv" both sanitize to "my_experiment").
-    A stem containing the separator itself has the same failure mode from the other
-    direction: two distinct (experiment_1, experiment_2) pairs can join to the same
-    composite string. All three are now rejected outright rather than sanitized."""
+    Rejected outright rather than sanitized."""
     kwargs = {"experiment_1": _EXP_1, "experiment_2": _EXP_2}
-    kwargs[bad_field] = unsafe_name
+    kwargs[bad_field] = "my.experiment.v2.csv"
     with pytest.raises(BloomMCPError) as exc:
         cross_experiment_correlations(CrossExperimentCorrelationsParams(**kwargs))
     assert exc.value.code == "invalid_input"
     assert bad_field in exc.value.message
 
 
+# ── composite key is a length-prefixed, provably injective join (design.md D1) ───
+# A second review pass rejected a stem containing the literal "__x__" substring, on
+# the theory that this was sufficient to keep the separator out of the joined string.
+# A third review pass found that false: the separator's own internal repetition lets
+# two DIFFERENT (stem_1, stem_2) pairs -- neither containing "__x__" as a substring --
+# join to the IDENTICAL composite string. No stem-content guard closes this; the fix
+# is a length-prefixed encoding (_composite_experiment_key), verified below both by the
+# exact adversarial pair the review found and by a randomized round-trip stress test.
+
+
+def test_boundary_straddling_stems_no_longer_collide():
+    """The exact collision the third review pass found and reproduced independently:
+    stem_1="A"/stem_2="x__B" and stem_1="A__x"/stem_2="B" both produce the identical
+    naive join "A__x__x__B" (neither stem contains the literal "__x__" substring, so a
+    content guard on either stem alone cannot catch this). The length-prefixed encoding
+    must produce two DIFFERENT composite keys for these two distinct pairs."""
+    naive_a = "A" + _COMPOSITE_SEPARATOR + "x__B"
+    naive_b = "A__x" + _COMPOSITE_SEPARATOR + "B"
+    assert naive_a == naive_b == "A__x__x__B", "sanity check on the naive join itself"
+
+    key_a = _composite_experiment_key("A", "x__B")
+    key_b = _composite_experiment_key("A__x", "B")
+    assert key_a != key_b
+
+
+def test_composite_key_round_trips_for_any_stem_pair():
+    """Property test: _composite_experiment_key is not just collision-free for the one
+    adversarial pair above, but genuinely invertible for arbitrary stem content (the
+    length prefix pins the stem_1/stem_2 boundary regardless of what either stem
+    contains -- including digits, underscores, and the separator substring itself,
+    which is no longer rejected). Proving an exact left-inverse exists is a strictly
+    stronger guarantee than spot-checking a handful of hand-picked pairs, which is the
+    testing gap that let three rounds of this bug ship in the first place."""
+
+    def _decode(composite: str) -> tuple[str, str]:
+        n_str, rest = composite.split("_", 1)
+        n = int(n_str)
+        stem_1 = rest[:n]
+        remainder = rest[n:]
+        assert remainder.startswith(_COMPOSITE_SEPARATOR)
+        stem_2 = remainder[len(_COMPOSITE_SEPARATOR) :]
+        return stem_1, stem_2
+
+    candidates = [
+        "",
+        "A",
+        "B",
+        "x",
+        "_",
+        "__",
+        "0",
+        "12",
+        "__x__",
+        "x__",
+        "__x",
+        "A__x",
+        "x__B",
+        "A_1_B",
+        "turface_19",
+        "cylinder",
+    ]
+    for stem_1 in candidates:
+        for stem_2 in candidates:
+            composite = _composite_experiment_key(stem_1, stem_2)
+            assert _decode(composite) == (stem_1, stem_2)
+
+
 def test_analysis_dir_preserves_composite_key_for_safe_stems():
     """Directly exercises the REAL AnalysisDir (not FakeResultStore, whose simplified
     stem helper cannot reproduce the original truncation bug — see design.md D1)
-    against this tool's actual (un-sanitized, since unsafe stems are now rejected
-    outright by _reject_unsafe_composite_stem rather than reaching this construction)
-    composite-key construction."""
+    against this tool's actual (length-prefixed, since a dotted stem is rejected
+    outright by _reject_dotted_stem before reaching this construction) composite-key
+    construction."""
     from bloom_mcp.manifest.analysis_dir import AnalysisDir
 
     e1, e2 = "turface_19.csv", "cylinder.csv"
-    composite = f"{Path(e1).stem}{_COMPOSITE_SEPARATOR}{Path(e2).stem}"
+    composite = _composite_experiment_key(Path(e1).stem, Path(e2).stem)
     adir = AnalysisDir("bloommcp_output", composite, "correlation")
     assert adir.stem == composite
     assert "turface_19" in adir.stem
@@ -696,7 +764,7 @@ def test_source_csv_content_addresses_both_inputs(injected_ports):
         reader.add_cleaned_version(_EXP_2, "v1", df2, make_latest=True)
         _ports.configure(reader=reader, store=store)
         _run()
-        stored = store.get_run("expA__x__expB", "correlation", "latest")
+        stored = store.get_run(_COMPOSITE_KEY, "correlation", "latest")
         return stored.output_sha256["correlations.csv"]
 
     baseline = _hash_for(None, None)
@@ -711,7 +779,7 @@ def test_source_csv_content_addresses_both_inputs(injected_ports):
 def test_genotype_means_artifacts_persisted(injected_ports):
     _reader, store = injected_ports
     _run()
-    stored = store.get_run("expA__x__expB", "correlation", "latest")
+    stored = store.get_run(_COMPOSITE_KEY, "correlation", "latest")
     assert "genotype_means_1.csv" in stored.output_keys
     assert "genotype_means_2.csv" in stored.output_keys
 
@@ -753,7 +821,7 @@ def test_discoverable_via_list_existing_analyses(injected_ports):
 
     assert "correlation" in TOOL_CLASSES
     _run()
-    response = json.loads(list_existing_analyses("expA__x__expB"))
+    response = json.loads(list_existing_analyses(_COMPOSITE_KEY))
     assert "correlation" in response["analyses"]
 
 
