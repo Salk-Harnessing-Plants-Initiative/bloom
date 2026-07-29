@@ -71,6 +71,17 @@ A fourth, **hierarchical clustering** leg (#422) validates the deterministic arm
     ``seed=None`` (hierarchical is deterministic — no RNG), ``tool == "clustering"``, and
     matching ``output_sha256`` for both artifacts.
 
+A fifth, **``descriptive_stats``** leg (#488) *consumes* the same latest cleaned version:
+
+  * ``descriptive_stats(experiment="turface_raw.csv")`` resolves the latest cleaned version via
+    ``require_clean=True`` and commits a versioned ``stats`` run (a new tool class — its output
+    does not compose as another tool's input) whose outputs include ``stats.csv``, with a
+    schema-v3 manifest recording ``seed=None`` (deterministic — no RNG), ``tool ==
+    "descriptive_stats"``, and matching ``output_sha256``. Asserted **structurally** (one row per
+    reported trait, ``n_failed == 0``) rather than against the unit golden's exact numeric values
+    — the smoke's cleaned input uses the ``qc_clean`` leg's own threshold, which may differ from
+    the unit golden's canonical-default clean.
+
 Every failure mode (tool error, hash mismatch, read-after-write timeout, import leak)
 routes through the per-check summary and a non-zero exit — never an unlabelled traceback.
 
@@ -139,6 +150,14 @@ CL_SEED = 42  # clustering/kmeans is stochastic — resolves this fixed seed
 CL_LABELS_NAME = "labels.csv"  # logical key for the per-sample cluster labels
 CL_RESULT_NAME = "cluster_result.json"  # logical key for the serialized typed result
 
+# --- descriptive_stats leg constants (#488) -----------------------------------
+# The granular descriptive_stats tool (#488) *consumes* the same latest cleaned
+# version through the SAME real ports, persisting under its own ``stats`` tool
+# class (deliberately not ``qc`` — its output does not compose as another tool's
+# input). descriptive_stats is deterministic (records seed=None).
+STATS_TOOL_CLASS = "stats"
+STATS_CSV_NAME = "stats.csv"  # logical key for the full per-trait table
+
 # Read-after-write can lag the storage-api; bound the wait so a real regression
 # still fails fast (5 attempts, 1s apart, ≤5s ceiling) rather than hanging.
 RETRY_ATTEMPTS = 5
@@ -169,10 +188,10 @@ def summarize(checks: list[Check]) -> tuple[str, int]:
     lines.append(
         "SMOKE PASSED ✅ — the qc_clean cleaned run, remove_outliers trimmed run "
         "(incl. the generic v3-provenance + version-advance guarantee), AND the granular "
-        "clustering(kmeans) and clustering(hierarchical) consumers all persist full "
-        "provenance through the real ports; the qc_clean → remove_outliers → "
-        "clustering(require_clean=True) composition resolves and clusters the trimmed "
-        "table for both stochastic and deterministic methods."
+        "clustering(kmeans), clustering(hierarchical), and descriptive_stats consumers "
+        "all persist full provenance through the real ports; the qc_clean → "
+        "remove_outliers → {clustering,descriptive_stats}(require_clean=True) "
+        "composition resolves and summarizes the trimmed table."
     )
     return "\n".join(lines), 0
 
@@ -485,6 +504,80 @@ def hierarchical_clustering_persist_checks(
             "hierarchical clustering: output_keys / output_sha256 share one key-set",
             set(output_keys) == set(output_sha256),
             f"keys={sorted(output_keys)} sha={sorted(output_sha256)}",
+        ),
+    ]
+
+
+def stats_persist_checks(
+    *,
+    schema_version: object,
+    seed: object,
+    tool: object,
+    source: object,
+    output_keys: dict,
+    output_sha256: dict,
+    expected_outputs: set,
+) -> list[Check]:
+    """Assert the persisted ``descriptive_stats`` run: v3 manifest, seed=None, catalog, lineage.
+
+    The #488 analogue of :func:`hierarchical_clustering_persist_checks`.
+    ``descriptive_stats`` is deterministic (no RNG), so provenance records ``seed=None``.
+    A pure **consumer**: it produces no new cleaned version, so the payoff is that it
+    resolved the committed cleaned source (``v<N>_cleaned``, not ``raw``) via
+    ``require_clean=True`` and persisted a versioned ``stats`` run whose full per-trait
+    table is under its own key-set.
+    """
+    return [
+        Check(
+            "descriptive_stats: manifest schema == 3",
+            schema_version == 3,
+            f"schema_version={schema_version!r}",
+        ),
+        Check(
+            "descriptive_stats: seed == None (deterministic)",
+            seed is None,
+            f"seed={seed!r}",
+        ),
+        Check(
+            "descriptive_stats: run tool == 'descriptive_stats'",
+            tool == "descriptive_stats",
+            f"tool={tool!r}",
+        ),
+        Check(
+            "descriptive_stats: consumed a cleaned source (require_clean, not raw)",
+            isinstance(source, str) and source != "raw" and source.endswith("_cleaned"),
+            f"source={source!r}",
+        ),
+        Check(
+            "descriptive_stats: committed outputs include stats.csv",
+            expected_outputs <= set(output_keys),
+            f"output_keys={sorted(output_keys)}",
+        ),
+        Check(
+            "descriptive_stats: output_keys / output_sha256 share one key-set",
+            set(output_keys) == set(output_sha256),
+            f"keys={sorted(output_keys)} sha={sorted(output_sha256)}",
+        ),
+    ]
+
+
+def stats_result_checks(n_traits_reported: object, n_failed: object) -> list[Check]:
+    """Assert the tool's own result is structurally sound: traits reported, none failed.
+
+    Checked against **structural** invariants, not the unit golden's exact numeric
+    values — the smoke's cleaned input uses the ``qc_clean`` leg's own threshold, which
+    may differ from the unit golden's canonical-default clean.
+    """
+    return [
+        Check(
+            "descriptive_stats: n_traits_reported > 0",
+            isinstance(n_traits_reported, int) and n_traits_reported > 0,
+            f"n_traits_reported={n_traits_reported!r}",
+        ),
+        Check(
+            "descriptive_stats: n_failed == 0",
+            n_failed == 0,
+            f"n_failed={n_failed!r}",
         ),
     ]
 
@@ -900,6 +993,60 @@ def main() -> int:
                 hash_checks(
                     hier_stored.output_keys, hier_stored.output_sha256, read_bytes
                 )
+            )
+
+        # === descriptive_stats leg (#488) =====================================
+        # Consume the same latest cleaned version through the SAME real ports,
+        # persisting a versioned `stats` run under its own tool class — proving
+        # qc_clean -> ... -> descriptive_stats(require_clean=True), in parallel with
+        # the other consumers above.
+        from bloom_mcp.sections.sleap_roots.analysis.descriptive_stats import (  # noqa: E402
+            DescriptiveStatsParams,
+            descriptive_stats,
+        )
+
+        print(
+            f">>> running descriptive_stats on {QC_EXPERIMENT} through real ports ..."
+        )
+        ds_committed = False
+        ds_source: object = None
+        ds_n_traits_reported: object = None
+        ds_n_failed: object = None
+        try:
+            ds_result = descriptive_stats(
+                DescriptiveStatsParams(experiment=QC_EXPERIMENT)
+            )
+            ds_committed = True
+            ds_source = ds_result.source
+            ds_n_traits_reported = ds_result.n_traits_reported
+            ds_n_failed = ds_result.n_failed
+            checks.append(Check("descriptive_stats commits a run", True))
+        except BloomMCPError as exc:
+            checks.append(
+                Check("descriptive_stats commits a run", False, f"error={exc!r}")
+            )
+
+        if ds_committed:
+            checks.extend(stats_result_checks(ds_n_traits_reported, ds_n_failed))
+            ds_stored = retry(
+                lambda: _ports.store().get_run(
+                    QC_EXPERIMENT, STATS_TOOL_CLASS, "latest"
+                )
+            )
+            ds_manifest = retry(lambda: sc.read_json(ds_stored.manifest_path))
+            checks.extend(
+                stats_persist_checks(
+                    schema_version=ds_manifest.get("manifest_schema_version"),
+                    seed=ds_stored.seed,
+                    tool=ds_stored.tool,
+                    source=ds_source,
+                    output_keys=ds_stored.output_keys,
+                    output_sha256=ds_stored.output_sha256,
+                    expected_outputs={STATS_CSV_NAME},
+                )
+            )
+            checks.extend(
+                hash_checks(ds_stored.output_keys, ds_stored.output_sha256, read_bytes)
             )
 
     text, code = summarize(checks)

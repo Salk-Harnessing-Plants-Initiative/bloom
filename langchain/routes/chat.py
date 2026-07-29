@@ -12,27 +12,10 @@ import deps
 from agent import AVAILABLE_MODELS
 from schemas import ChatRequest, ChatResponse
 from helpers.sse_events import tool_result_event
+from helpers.foundational_tools import is_foundational_tool
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# Foundational MCP tools are always exposed so the agent can discover and load data.
-# inspect_data_quality was dropped (bloom-mcp devendor-bloommcp-analysis; redundant
-# with qc_inspect). Matched prefix-aware (exact name or "<section>_<name>") so the
-# Phase-2 sections migration's namespacing (e.g. core_list_available_experiments)
-# doesn't silently empty this set — see test_tool_name_lists_match_live_registry.
-ALWAYS_INCLUDE_MCP_TOOLS = {
-    "list_available_experiments",
-    "load_experiment_data",
-    "list_existing_analyses",
-}
-
-
-def _is_always_included(tool_name: str) -> bool:
-    return tool_name in ALWAYS_INCLUDE_MCP_TOOLS or any(
-        tool_name.endswith(f"_{base}") for base in ALWAYS_INCLUDE_MCP_TOOLS
-    )
-
 
 VALID_TOOL_SETS = ["all", "scrna", "cyl", "generic", "mcp"]
 
@@ -65,13 +48,13 @@ def _resolve_agent(body: ChatRequest, checkpointer) -> tuple[object, str, str]:
         filtered = [
             t
             for t in deps.mcp_tools
-            if t.name in explicit or _is_always_included(t.name)
+            if t.name in explicit or is_foundational_tool(t.name)
         ]
     elif tool_set == "mcp":
         # MCP-only mode: expose every connected MCP tool (no foundational filter).
         filtered = list(deps.mcp_tools)
     else:
-        filtered = [t for t in deps.mcp_tools if _is_always_included(t.name)]
+        filtered = [t for t in deps.mcp_tools if is_foundational_tool(t.name)]
 
     agent = deps.get_or_create_agent(
         provider=provider,
