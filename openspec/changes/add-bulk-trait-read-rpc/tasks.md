@@ -99,10 +99,12 @@ revision needed.
       newest at the time was `20260724000300`); `scripts/lint_migrations.sh origin/staging` passes.
 - [x] 3.2 `CREATE FUNCTION public.get_experiment_traits(experiment_id_ bigint, source_id_ bigint DEFAULT
     NULL, run_id_ text DEFAULT NULL) RETURNS TABLE (...)` per design.md D1 — same guard, same
-      disjunction, same table-qualified ORDER BY discipline as `get_scan_traits`. Do not add `REVOKE
-    EXECUTE ... FROM PUBLIC` (match the existing PUBLIC-execute posture on `get_scan_traits`). Used
-      `CREATE OR REPLACE FUNCTION` (not bare `CREATE`) so the migration body is safely re-runnable —
-      design.md D4/Migration-Rollback updated to match.
+      table-qualified ORDER BY discipline as `get_scan_traits` (plus a `cyl_scans.id` tiebreak it lacks),
+      **but not the same `FROM` clause** — starts from `cyl_experiments` directly, dropping the dead
+      `species` join `get_scan_traits` has (see 7.1). Used `CREATE OR REPLACE FUNCTION` (not bare
+      `CREATE`) so the migration body is safely re-runnable — design.md D4/Migration-Rollback updated to
+      match. **`REVOKE EXECUTE ... FROM PUBLIC` + explicit `GRANT` added in round-1 review (see 7.5)** —
+      superseding the original "match get_scan_traits's implicit-PUBLIC posture" plan.
 - [x] 3.3 `CREATE FUNCTION public.list_experiment_trait_sources(experiment_id_ bigint) RETURNS TABLE
     (source_id bigint, source_name text, pipeline_run_id text)` per design.md D2. Same
       `CREATE OR REPLACE` treatment as 3.2.
@@ -159,3 +161,55 @@ revision needed.
 - [x] 6.3 File Tier 2's tracking issue ("rewrite `SupabaseReader`'s raw tier to query the DB directly")
       per the roadmap's just-in-time issue policy, now that Tier 1 is reached — reference bloom#546 and
       this change. Filed as [bloom#551](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/551).
+
+## 7. Round-1 PR review fixes (5-agent review, PR #548, 2026-07-29)
+
+Elizabeth's review (Code Quality · Testing · Scientific Rigor · Security · Behavioural Correctness) found
+no blocking issues but several verified gaps, addressed before Tier 2 (#551) depends on this surface.
+Approved (both Benfica and Elizabeth) regardless — these are polish, not a merge blocker — but fixed here
+rather than deferred.
+
+- [x] 7.1 **Species join asymmetry (Important #1).** Dropped the dead `species JOIN cyl_experiments ON
+      cyl_experiments.species_id = species.id` from `get_experiment_traits` — copied verbatim from
+      `get_scan_traits`, which also never selects a species column, but `species_id` is nullable
+      (confirmed against the live schema: `is_nullable = YES`), so the inner join silently returned zero
+      rows for any experiment with `species_id IS NULL`, disagreeing with `list_experiment_trait_sources`
+      (no such join) for the same experiment. Added
+      `test_null_species_id_experiment_still_returns_traits` (regression test, direct-inserts an
+      experiment with `species_id = NULL` via a new `_seed_experiment_null_species` helper).
+- [x] 7.2 **Nullable TS return types (Important #2).** `source_id`/`trait_value`
+      (`get_experiment_traits`) and `pipeline_run_id` (`list_experiment_trait_sources`) changed to
+      `T | null` in all five `database.types.ts` copies — three of this PR's own tests already proved
+      each is nullable at runtime. See design.md D6.
+- [x] 7.3 **`is_latest` per-scan partition risk (Important #3).** Documented in design.md's Risks
+      section as a known, inherited (not introduced) failure mode — not fixed, since the partition grain
+      lives in the shared `cyl_scan_traits_source` substrate and changing it affects `get_scan_traits`
+      too (out of scope here).
+- [x] 7.4 **`run_id_ = ''` vs `NULL` (Important #4).** Added
+      `test_empty_string_run_id_is_not_treated_as_null`, pinning down current behavior (a real,
+      non-matching filter value, zero rows, no error) rather than changing the semantics — documented in
+      design.md's Risks as inherited/shared with `get_scan_traits`.
+- [x] 7.5 **Implicit PUBLIC EXECUTE (Important #5).** Added `REVOKE EXECUTE ... FROM PUBLIC` + explicit
+      `GRANT EXECUTE ... TO bloom_agent, bloom_user, bloom_admin, authenticated` for both functions —
+      see design.md D3's update. `get_scan_traits` itself untouched.
+- [x] 7.6 **NaN/Infinity schema gap (Important #6).** Documented in design.md's Risks as a pre-existing
+      gap (no `CHECK` on `cyl_scan_traits.value`, and this PR's own raw-`INSERT` seeds prove the bypass)
+      — explicitly **not** fixed here (a `CHECK` on a table this migration doesn't otherwise touch is a
+      separate, broader schema change).
+- [x] 7.7 **No PostgREST/HTTP-layer coverage (Important #7).** Added
+      `test_get_experiment_traits_reachable_over_postgrest` and
+      `test_list_experiment_trait_sources_reachable_over_postgrest`, mirroring the precedent's
+      `test_backward_compatible_two_arg_call_over_postgrest` pattern (skip locally, run in CI's
+      `compose-health-check`).
+- [x] 7.8 **Minor: `ORDER BY` total order + no-write-capability regex (Important #8).** Added a
+      `cyl_scans.id` tiebreak to `get_experiment_traits`'s `ORDER BY` (table-qualified, matching the
+      existing ambiguity-avoidance discipline). Strengthened `test_migration_adds_no_write_capability`
+      from bare substring checks to a regex (`grant\s+[^;]*\b(insert|update|delete|all)\b`) that also
+      catches a combined grant like `GRANT SELECT, INSERT`.
+- [x] 7.9 **Float4→float8 precision note (Suggestion).** Added to design.md's Risks for Tier 2's benefit.
+- [ ] 7.10 **PR description stale "Not ready to merge / draft" section (Suggestion).** Update PR #548's
+      description on GitHub to reflect that Benfica approved and it's no longer a draft.
+- Not applied (explicitly out of scope, see design.md for reasoning): a distinct `SQLSTATE` on the
+  mutual-exclusion `RAISE EXCEPTION` (mirrors an existing gap in `get_scan_traits`, applying it only to
+  the new function would make the two siblings inconsistent) and a schema-level `CHECK` against NaN on
+  `cyl_scan_traits.value` (independent of this PR per the review itself).

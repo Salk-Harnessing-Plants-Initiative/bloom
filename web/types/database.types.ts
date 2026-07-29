@@ -1592,8 +1592,8 @@ export interface Database {
           plant_qr_code: string
           accession_name: string
           trait_name: string
-          source_id: number
-          trait_value: number
+          source_id: number | null
+          trait_value: number | null
         }[]
       }
       list_experiment_trait_sources: {
@@ -1603,7 +1603,7 @@ export interface Database {
         Returns: {
           source_id: number
           source_name: string
-          pipeline_run_id: string
+          pipeline_run_id: string | null
         }[]
       }
       get_scans_without_videos: {

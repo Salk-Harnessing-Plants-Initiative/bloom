@@ -2429,9 +2429,9 @@ export type Database = {
           plant_id: number
           plant_qr_code: string
           scan_id: number
-          source_id: number
+          source_id: number | null
           trait_name: string
-          trait_value: number
+          trait_value: number | null
           wave_number: number
         }[]
       }
@@ -2595,7 +2595,7 @@ export type Database = {
       list_experiment_trait_sources: {
         Args: { experiment_id_: number }
         Returns: {
-          pipeline_run_id: string
+          pipeline_run_id: string | null
           source_id: number
           source_name: string
         }[]

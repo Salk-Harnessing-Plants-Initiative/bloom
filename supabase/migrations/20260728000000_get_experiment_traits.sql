@@ -16,7 +16,11 @@
 -- cyl_scan_traits_source's is_latest selection rule rather than re-deriving it.
 --
 -- RPC shape (bulk RPC vs. a PostgREST embedded-join query) is Decision D1 in this change's
--- design.md -- gated on @blm3886 (Benfica)'s review per bloom#546; do not merge unreviewed.
+-- design.md; approved by @blm3886 (Benfica) on PR #548, commit 5fd431d.
+--
+-- EXECUTE is explicitly granted to the four read roles (not left on the implicit PUBLIC
+-- default get_scan_traits relies on) -- a deliberately narrower posture than the precedent,
+-- see design.md D5.
 --
 -- Manual rollback: supabase/rollbacks/20260728000000_get_experiment_traits_rollback.sql
 
@@ -63,8 +67,11 @@ BEGIN
         src.trait_name::text,
         src.source_id::bigint,
         src.value::float
-    FROM species
-    JOIN cyl_experiments ON cyl_experiments.species_id = species.id
+    -- No species join: no species column is ever selected here, and cyl_experiments.species_id
+    -- is nullable -- an inner join through species would silently return zero rows for any
+    -- experiment with a NULL species_id, disagreeing with list_experiment_trait_sources (below),
+    -- which has no such join. Start from cyl_experiments directly instead.
+    FROM cyl_experiments
     JOIN cyl_waves       ON cyl_waves.experiment_id = cyl_experiments.id
     JOIN cyl_plants      ON cyl_plants.wave_id = cyl_waves.id
     JOIN accessions      ON cyl_plants.accession_id = accessions.id
@@ -81,9 +88,16 @@ BEGIN
                   AND s2.trait_id = src.trait_id
                   AND s2.pipeline_run_id = run_id_))
           )
-    ORDER BY accessions.name, cyl_plants.id, src.trait_name;
+    -- cyl_scans.id (table-qualified, not bare scan_id -- ambiguous against the OUT column
+    -- under variable_conflict = error) breaks ties between multiple scans of the same plant;
+    -- without it the order among such rows is unstable across calls.
+    ORDER BY accessions.name, cyl_plants.id, cyl_scans.id, src.trait_name;
 END;
 $$;
+
+REVOKE EXECUTE ON FUNCTION public.get_experiment_traits(bigint, bigint, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_experiment_traits(bigint, bigint, text)
+    TO bloom_agent, bloom_user, bloom_admin, authenticated;
 
 -- 2. Source/run discovery: enumerate an experiment's real sources before pinning one.
 CREATE OR REPLACE FUNCTION public.list_experiment_trait_sources(
@@ -106,5 +120,9 @@ AS $$
     WHERE cyl_experiments.id = experiment_id_
       AND src.source_id IS NOT NULL;
 $$;
+
+REVOKE EXECUTE ON FUNCTION public.list_experiment_trait_sources(bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.list_experiment_trait_sources(bigint)
+    TO bloom_agent, bloom_user, bloom_admin, authenticated;
 
 COMMIT;

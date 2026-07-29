@@ -15,6 +15,7 @@ rather than duplicated.
 """
 
 import re
+import uuid
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,23 @@ def _sql_body(path: Path) -> str:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+
+def _seed_experiment_null_species(cur):
+    """An experiment with a NULL species_id -- cyl_experiments.species_id is nullable, but
+    _seed_experiment (test_cyl_read_path.py) always links a real species row. Regression
+    fixture for the species-join bug: an INNER JOIN through species would silently return
+    zero rows for such an experiment. Returns (experiment_id, wave_id)."""
+    cur.execute(
+        "INSERT INTO cyl_experiments (name, species_id) VALUES (%s, NULL) RETURNING id",
+        (f"exp-null-species-{uuid.uuid4().hex[:8]}",),
+    )
+    experiment_id = cur.fetchone()[0]
+    cur.execute(
+        "INSERT INTO cyl_waves (experiment_id, number) VALUES (%s, %s) RETURNING id",
+        (experiment_id, 1),
+    )
+    return experiment_id, cur.fetchone()[0]
 
 
 def _get_experiment_traits(cur, experiment_id, *, source_id=None, run_id=None):
@@ -217,6 +235,39 @@ def test_empty_experiment_returns_no_rows(pg_conn):
     pg_conn.rollback()
 
 
+def test_null_species_id_experiment_still_returns_traits(pg_conn):
+    """Regression test for the dead species join: an experiment whose species_id IS NULL
+    must not silently return zero rows just because get_scan_traits's FROM clause was copied
+    verbatim (species is never selected, so an inner join through it has no reason to exist).
+    """
+    with pg_conn.cursor() as cur:
+        exp, wave = _seed_experiment_null_species(cur)
+        scan_id, imgs = _seed_scan_in(cur, wave)
+        _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
+        rows = _get_experiment_traits(cur, exp)
+        assert len(rows) == 1
+        scan_id_, trait_name, source_id, trait_value = rows[0]
+        assert (scan_id_, trait_name, trait_value) == (scan_id, "length", 1.0)
+        assert source_id is not None
+    pg_conn.rollback()
+
+
+def test_empty_string_run_id_is_not_treated_as_null(pg_conn):
+    """run_id_='' is a real (non-NULL) filter value, not equivalent to "no filter" -- since no
+    source has an empty-string pipeline_run_id, it returns zero rows rather than falling back
+    to the latest-per-scan default. Pins down current (previously untested) behavior rather
+    than changing it -- get_scan_traits inherits the same untested edge, unmodified here.
+    """
+    with pg_conn.cursor() as cur:
+        exp, scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "k", run="r1", traits=[_trait("length", 1.0)])
+        assert _get_experiment_traits(cur, exp, run_id="") == []
+        assert (
+            _get_experiment_traits(cur, exp) != []
+        )  # true default (run_id=None) has rows
+    pg_conn.rollback()
+
+
 # --------------------------------------------------------------------------- #
 # Requirement: Experiment trait-source listing
 # --------------------------------------------------------------------------- #
@@ -339,13 +390,59 @@ def test_authenticated_has_execute_grant(pg_conn):
     pg_conn.rollback()
 
 
+def test_get_experiment_traits_reachable_over_postgrest(api, service_role_key):
+    """PostgREST/HTTP-layer coverage: proves the function is actually exposed through the REST
+    gateway (grants resolve, PostgREST's schema cache includes it), not just callable via
+    direct SQL -- the 22 psycopg-only tests above can't catch a gateway-level misconfiguration.
+    Mirrors the source-aware precedent's `test_backward_compatible_two_arg_call_over_postgrest`.
+    Skips when the gateway is unreachable (dev has none); CI's compose-health-check covers it.
+    """
+    import urllib.error
+
+    try:
+        status, body = api(
+            "/api/rest/v1/rpc/get_experiment_traits",
+            api_key=service_role_key,
+            method="POST",
+            data={"experiment_id_": 1},
+        )
+    except (urllib.error.URLError, OSError) as e:
+        pytest.skip(
+            f"PostgREST gateway not reachable ({e}); CI compose-health-check covers this"
+        )
+    assert (
+        status == 200
+    ), f"expected 200 (source_id_/run_id_ bind their defaults), got {status}: {body}"
+
+
+def test_list_experiment_trait_sources_reachable_over_postgrest(api, service_role_key):
+    """PostgREST/HTTP-layer coverage for the sibling function -- see the docstring above."""
+    import urllib.error
+
+    try:
+        status, body = api(
+            "/api/rest/v1/rpc/list_experiment_trait_sources",
+            api_key=service_role_key,
+            method="POST",
+            data={"experiment_id_": 1},
+        )
+    except (urllib.error.URLError, OSError) as e:
+        pytest.skip(
+            f"PostgREST gateway not reachable ({e}); CI compose-health-check covers this"
+        )
+    assert status == 200, f"expected 200, got {status}: {body}"
+
+
 def test_migration_adds_no_write_capability():
     # Purely additive read functions: no policy, no write grant, so this cannot widen write
-    # access to any table (a static property of the migration text, not data-dependent).
+    # access to any table (a static property of the migration text, not data-dependent). A
+    # regex (not a bare substring check) so a combined grant like "grant select, insert on ..."
+    # is caught too, not just a standalone "grant insert".
     sql = MIGRATION.read_text().lower()
     assert "create policy" not in sql
-    for verb in ("grant insert", "grant update", "grant delete", "grant all"):
-        assert verb not in sql, f"migration must not {verb}"
+    assert not re.search(
+        r"grant\s+[^;]*\b(insert|update|delete|all)\b", sql
+    ), "migration must not grant any write privilege"
 
 
 # --------------------------------------------------------------------------- #

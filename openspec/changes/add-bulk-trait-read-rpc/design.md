@@ -50,10 +50,21 @@ WHERE cyl_experiments.id = experiment_id_ AND (
 )
 ```
 `LANGUAGE plpgsql STABLE SECURITY INVOKER`, same table-qualified `ORDER BY` discipline as
-`get_scan_traits` (bare `plant_id` is ambiguous against the OUT column under `variable_conflict = error`).
-Result: every `(scan, trait)` row for the experiment, long-format, one HTTP round trip. The bloommcp Tier
-2 caller pivots long→wide itself — it already needs to, to do the canonical-role rename the roadmap's
-column-role table specifies, so this is not new client-side cost.
+`get_scan_traits` (bare `plant_id` is ambiguous against the OUT column under `variable_conflict = error`),
+plus a `cyl_scans.id` tiebreak `get_scan_traits` lacks — a plant with multiple scans would otherwise sort
+unstably between them, which matters more here than in `get_scan_traits` since a bulk call is the natural
+input to future golden-file diffing. Result: every `(scan, trait)` row for the experiment, long-format,
+one HTTP round trip. The bloommcp Tier 2 caller pivots long→wide itself — it already needs to, to do the
+canonical-role rename the roadmap's column-role table specifies, so this is not new client-side cost.
+
+**Correction from the initial implementation (round-1 review, 2026-07-29): the `FROM` clause does NOT
+copy `get_scan_traits`'s `species JOIN cyl_experiments ON cyl_experiments.species_id = species.id` —
+starts from `cyl_experiments` directly instead.** `get_scan_traits` never selects a `species` column
+either, so that join was already dead weight there; copying it verbatim into `get_experiment_traits`
+turned dead weight into a live bug, because `cyl_experiments.species_id` is nullable and an inner join
+through `species` silently returns **zero rows** for any experiment with `species_id IS NULL` — while
+`list_experiment_trait_sources` (D2, no such join) reports that same experiment's sources normally. Fixed
+by dropping the join; `get_scan_traits` itself is untouched (out of scope, not part of this change).
 
 Rationale for recommending A over B:
 
@@ -90,7 +101,7 @@ src.source_id IS NOT NULL` (excludes the legacy NULL-source placeholder — it i
 source). `LANGUAGE sql STABLE SECURITY INVOKER` (no guard logic needed, so plain SQL suffices, unlike
 D1's RPC).
 
-### D3 — Grants: spot-check via test, no grant migration
+### D3 — Grants: explicit EXECUTE to the four read roles, spot-checked via test
 
 The roadmap's Live-state facts (verified 2026-07-21, re-confirmed 2026-07-23) already traced
 `bloom_agent`'s `SELECT` grants across all six join tables via `20260414002000_security_groups.sql`'s
@@ -105,6 +116,16 @@ pattern — a bare `SET LOCAL ROLE authenticated` has no JWT/session context, so
 `has_function_privilege('authenticated', 'get_experiment_traits(bigint,bigint,text)', 'EXECUTE')` (and the
 `list_experiment_trait_sources` equivalent) rather than attempting a role-assumed call.
 
+**Correction from the initial implementation (round-1 review, 2026-07-29): EXECUTE is explicitly
+`REVOKE`d from `PUBLIC` and `GRANT`ed to the four named roles, rather than left on `get_scan_traits`'s
+implicit PUBLIC-default posture.** Confirmed not exploitable today — traced `anon`/`bloom_workflows`
+grants; both fail on the underlying tables' `SELECT` before ever reaching the function — but leaving it
+implicit means the actual caller set is whatever a *future* grant migration decides, not a choice made at
+the function itself. The four roles gain nothing they didn't already have (they can already reach the
+same rows via `get_scan_traits`/the views); this only forecloses a hypothetical future broad grant from
+silently widening bulk-read access. `get_scan_traits` itself is untouched — this is a deliberately
+narrower posture for the *new* functions, not a retroactive tightening of the precedent.
+
 ### D4 — Same forward-only migration + rollback convention as the shipped precedent
 
 Single migration file, `BEGIN; … COMMIT;`, dependency-ordered: (1) `get_experiment_traits` (2)
@@ -114,6 +135,17 @@ migration, this one touches no pre-existing object, so there is no drop-then-rec
 the grant survive DROP VIEW" concern (D5 in the prior design). Companion rollback under
 `supabase/rollbacks/` simply `DROP FUNCTION IF EXISTS` both, by full argument signature (to avoid
 ambiguity if a future change ever overloads them).
+
+### D6 — Hand-edited TS types mark the columns this PR's own tests prove nullable (round-1 review fix)
+
+`get_experiment_traits`'s `source_id` and `trait_value`, and `list_experiment_trait_sources`'s
+`pipeline_run_id`, are typed `T | null` in all five `database.types.ts` copies — not the non-null the
+initial hand-edit used. `tsc --noEmit` cannot catch this on its own (no caller exists yet, D4/Migration
+below), but three of this PR's own tests exercise the NULL case directly
+(`test_legacy_null_source_scan_returned_by_default`, `test_non_finite_value_surfaced_as_null`,
+`test_list_sources_includes_null_pipeline_run_id`), so shipping non-null types would have been a proven,
+not hypothetical, runtime null-deref risk for Tier 2. `source_name`/`trait_name`/etc. stay non-null —
+only the three columns with a demonstrated NULL path are widened.
 
 ## Migration / Rollback
 
@@ -147,6 +179,31 @@ checked by hand against the `RETURNS TABLE` clause, not treated as CI-verified.
 - **`list_experiment_trait_sources` excludes legacy NULL-source rows** — intentional (D2): there is
   nothing to "pin" for a placeholder that isn't a real source, so the listing only surfaces sources a
   caller could actually pass back into `source_id_`.
+- **`is_latest` partitions per-scan, not per-`(scan, trait)`** (round-1 review, 2026-07-29) — inherited
+  unmodified from `cyl_scan_traits_source` (the shipped precedent), but the blast radius is larger for a
+  bulk "give me everything" call than for `get_scan_traits`'s single-trait calls: if the newest pipeline
+  run for a scan only re-delivered a handful of traits, **every older trait for that scan loses
+  `is_latest`** with no error — indistinguishable from "never measured." Not fixed here (changing the
+  partition grain is a substrate-view change affecting `get_scan_traits` too, out of scope for this
+  change); **Tier 2 callers should be aware a bulk read can under-report a partially-reprocessed scan's
+  trait set**, and should treat a missing trait as "not present in the latest delivery," not "never
+  measured historically."
+- **NaN/Infinity is enforced by convention at `insert_cyl_result_envelope`, not by a schema constraint**
+  (round-1 review, 2026-07-29) — there is no `CHECK` on `cyl_scan_traits.value` against non-finite
+  values; this PR's own tests prove the bypass is real (several seed rows are raw `INSERT`s that skip the
+  RPC entirely). Pre-existing, not introduced by this change, and a schema `CHECK` on a table this
+  migration doesn't otherwise touch is out of scope here — flagged for a follow-up, not fixed in this PR.
+- **`trait_value` is `real` (float4, ~7 significant digits) narrowed from a float8 client value** — the
+  legacy-null-source test above needed `pytest.approx` for exactly this reason. Tier 2 should expect
+  values like `4.2` to round-trip as `4.19999980926514` and format/display accordingly, not treat it as a
+  bug.
+- **`run_id_ = ''` is a real filter value, not a synonym for "no filter"** (round-1 review, 2026-07-29) —
+  `pipeline_run_id` comes from an unvalidated jsonb blob with no `CHECK` against an empty string, so a
+  caller that defaults a missing argument to `""` instead of `None` silently gets a **zero-row,
+  no-error** result (no source has `pipeline_run_id = ''`) rather than the latest-per-scan default. This
+  is inherited, untested-until-now behavior shared with `get_scan_traits` (not a new gap introduced
+  here); `test_empty_string_run_id_is_not_treated_as_null` now pins down the current behavior rather than
+  changing the semantics, which would be a larger decision affecting the shared precedent.
 
 ## Testing (TDD)
 
@@ -176,14 +233,21 @@ Oracle, mirrored from bloom#546 and the source-aware precedent's own scenario sh
   `pipeline_run_id`, which is listed, not excluded — only a `NULL` `source_id` is excluded), excludes a
   legacy NULL-source scan, returns nothing for an experiment with only legacy data, and never leaks
   another experiment's sources.
-- A dedicated no-write-capability test: static-scan the migration's SQL text for the absence of
-  `CREATE POLICY`/`GRANT INSERT|UPDATE|DELETE|ALL`, distinct from the role-read test below.
+- A dedicated no-write-capability test: static-scan the migration's SQL text (a regex, not a bare
+  substring check, so a combined grant like `GRANT SELECT, INSERT` is caught too) for the absence of
+  `CREATE POLICY`/any write-privilege `GRANT`, distinct from the role-read test below.
 - Role reads (D3): all four read roles (`bloom_agent`, `bloom_user`, `bloom_admin` via `SET LOCAL ROLE`;
   `authenticated` via `has_function_privilege`) can use both functions end-to-end through the full join
   chain, with no new grant on any table.
 - Forward migration is idempotent-safe on re-apply, and re-applying does not alter `get_scan_traits` or
   the three existing views/functions; rollback removes exactly the two new functions and leaves every
   pre-existing read object unchanged.
+- **(round-1 review additions, 2026-07-29):** an experiment with `species_id IS NULL` still returns
+  traits from `get_experiment_traits` (regression test for the dead-join bug, D1); `run_id_ = ''`
+  returns zero rows rather than the default (pins the D-Risks behavior above); a PostgREST/HTTP-layer
+  smoke test per function (mirroring the precedent's `test_backward_compatible_two_arg_call_over_postgrest`)
+  proves each is actually reachable through the REST gateway, not just callable via direct SQL — skips
+  locally (dev has no gateway), runs in CI's `compose-health-check`.
 
 Written RED first, confirmed failing (`UndefinedFunction`) before implementation.
 
