@@ -1,13 +1,12 @@
 ## 0. Pre-work — resolve the open design decision
 
-- [ ] 0.1 Get @blm3886 (Benfica)'s review on `design.md` Decision D1 (bulk RPC vs. PostgREST
+- [x] 0.1 Get @blm3886 (Benfica)'s review on `design.md` Decision D1 (bulk RPC vs. PostgREST
       embedded-join) before starting section 1 (this gate covers sections 1-3 — tests are written
       against the RPC-call shape D1 recommends, so a flip to Option B invalidates the tests, not just
       the implementation). If she prefers the rejected alternative, revise D1/D2 and sections 1-3
       accordingly before continuing — do not implement or test against an unreviewed shape.
-      **Still open.** Sections 1-5 below were implemented locally against Option A ahead of her review
-      (fully reversible pre-merge — nothing pushed or opened as a PR) so the proposal has working code to
-      review rather than only a design doc. **Do not push, open a PR, or merge until this is checked.**
+      **Resolved 2026-07-28.** Benfica approved PR #548 at commit `5fd431d` (Option A, as implemented) —
+      review id `PRR_kwDOQDQTas8AAAABHj8UtQ`. No revision to D1/D2 or sections 1-3 needed.
 
 ## 1. Test scaffolding (RED first)
 
@@ -91,8 +90,8 @@
 
 ## 3. Implementation — migration (GREEN)
 
-Gated on task 0.1 resolving — **implemented ahead of that review** (see the note on 0.1); revisit if
-Benfica prefers Option B.
+Gated on task 0.1, now resolved (see the note on 0.1) — Benfica approved Option A as implemented, no
+revision needed.
 
 - [x] 3.1 Create `supabase/migrations/<ts>_get_experiment_traits.sql`, wrapped in `BEGIN; … COMMIT;`.
       Pick `<ts>` per design.md's Migration/Rollback section (later than every migration on **both**
@@ -146,19 +145,17 @@ Benfica prefers Option B.
 
 ## 6. Docs + follow-up
 
-- [ ] 6.1 Update `bloommcp/docs/data-access-roadmap.md`'s Tier 1 row to ✅ and link this PR; strike the
+- [x] 6.1 Update `bloommcp/docs/data-access-roadmap.md`'s Tier 1 row to ✅ and link this PR; strike the
       "Tier 1's RPC shape" ask in the roadmap's "Questions for Benfica" section (Q2), matching how Q1/Q3
       were struck through and marked "Resolved" once answered.
-      **Partially done, intentionally not checked off:** updated the Tier 1 row's Tracking cell (links
-      bloom#546 + this branch) and Status to 🔵 (in progress) — **not** ✅, since nothing is merged yet.
-      Left Q2 unstruck since D1 isn't actually resolved (task 0.1 still open) — striking it now would
-      misstate that the review happened.
+      **D1 resolved 2026-07-28** — struck Q2 and marked it "Resolved 2026-07-29", per Q1/Q3's convention.
+      Tier 1 row's Tracking cell now links PR #548 (approved, open). Status kept at 🔵 (in progress), not
+      ✅ — still not merged.
 - [x] 6.2 Update `_WIKI/BLOOMMCP/README.md`'s "Supabase data access" section to mention
       `get_experiment_traits`/`list_experiment_trait_sources` as the single-round-trip way to fetch an
       experiment's full trait set, alongside the existing `get_scan_traits` example — cross-reference the
       spec/migration for the selection rule rather than restating it (mirrors the source-aware
       precedent's own equivalent doc task).
-- [ ] 6.3 File Tier 2's tracking issue ("rewrite `SupabaseReader`'s raw tier to query the DB directly")
+- [x] 6.3 File Tier 2's tracking issue ("rewrite `SupabaseReader`'s raw tier to query the DB directly")
       per the roadmap's just-in-time issue policy, now that Tier 1 is reached — reference bloom#546 and
-      this change. **Not done** — filing a GitHub issue is a shared-state action left for explicit
-      confirmation rather than taken unilaterally.
+      this change. Filed as [bloom#551](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/551).

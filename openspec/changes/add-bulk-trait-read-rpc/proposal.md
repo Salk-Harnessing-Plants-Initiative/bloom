@@ -12,12 +12,12 @@ latest/source/run selection logic (`cyl_scan_traits_source`, shipped
 ## What Changes
 
 - **New `get_experiment_traits(experiment_id_ BIGINT, source_id_ BIGINT DEFAULT NULL,
-run_id_ TEXT DEFAULT NULL)`** *(recommended shape; pending @blm3886's review — see Decision D1)* — a
+run_id_ TEXT DEFAULT NULL)`** *(approved shape — see Decision D1)* — a
   bulk sibling of `get_scan_traits` that drops the `trait_name_` filter, returning **every** trait row
   for the experiment in one round trip (long-format: one row per scan/trait). Built on the same
   `cyl_scan_traits_source` substrate and reusing its exact latest/pin-source/pin-run three-way
   disjunction and mutual-exclusion guard — the "latest = max(source_id)" rule is not re-derived.
-- **New `list_experiment_trait_sources(experiment_id_ BIGINT)`** *(same D1-pending status)* — lists the
+- **New `list_experiment_trait_sources(experiment_id_ BIGINT)`** *(same, now-approved status)* — lists the
   distinct `(source_id, source_name, pipeline_run_id)` tuples contributing scan-trait rows to the
   experiment, so a caller can enumerate available sources/runs before deciding whether to pin one.
 - **Spot-check (not a grant migration): confirm `bloom_agent` grants cover the full join chain**
@@ -29,11 +29,11 @@ run_id_ TEXT DEFAULT NULL)`** *(recommended shape; pending @blm3886's review —
 - **Forward-only migration** + companion manual rollback under `supabase/rollbacks/`; regenerate the five
   tracked `database.types.ts` copies (mirroring the source-aware read-path precedent).
 
-**Open design decision, gated on review (see `design.md` Decision D1):** the RPC shape — a bulk
-long-format RPC (this proposal's recommendation) vs. a PostgREST embedded-join query — is called out in
-bloom#546 as needing @blm3886 (Benfica)'s review before it ships, the same gate as the shipped
-`cyl_trait_read_source_aware` migration. This proposal is written to be reviewable as-is (recommendation
-+ rejected alternative below), not pre-decided.
+**Design decision resolved (see `design.md` Decision D1):** the RPC shape — a bulk
+long-format RPC (this proposal's recommendation) vs. a PostgREST embedded-join query — was called out in
+bloom#546 as needing @blm3886 (Benfica)'s review before it shipped, the same gate as the shipped
+`cyl_trait_read_source_aware` migration. Benfica reviewed this proposal as-is (recommendation
++ rejected alternative) and approved Option A on 2026-07-28 (PR #548).
 
 ## Impact
 

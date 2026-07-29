@@ -28,11 +28,10 @@ concrete gap this change closes.
 
 ### D1 — RPC shape: bulk long-format RPC (recommended) vs. PostgREST embedded-join query
 
-**Status: open, gated on @blm3886 (Benfica)'s review before this migration ships** — bloom#546 names
-this explicitly as needing her input, the same review gate as the shipped source-aware migration. This
-proposal is written with a recommendation and a rejected alternative so it is reviewable as-is, per the
-issue's own request to loop her in *before* the shape is treated as final — not because the choice is
-ambiguous to the point of blocking a draft.
+**Status: resolved 2026-07-28** — @blm3886 (Benfica) reviewed and approved Option A (PR #548, commit
+`5fd431d`), the same review gate as the shipped source-aware migration named this explicitly in
+bloom#546. This proposal was written with a recommendation and a rejected alternative so it was
+reviewable as-is, per the issue's own request to loop her in *before* the shape was treated as final.
 
 **Recommended: Option A — bulk long-format RPC**, `get_experiment_traits(experiment_id_ BIGINT,
 source_id_ BIGINT DEFAULT NULL, run_id_ TEXT DEFAULT NULL)`. Same signature style as `get_scan_traits`
@@ -135,11 +134,9 @@ checked by hand against the `RETURNS TABLE` clause, not treated as CI-verified.
 
 ## Risks / Trade-offs
 
-- **D1 is explicitly not final** — if Benfica's review prefers Option B, this design and its tasks need
-  a follow-up revision before merge. Flagged, not hidden: the rest of the proposal (D2–D4, testing plan)
-  does not depend on which shape wins. If D1 flips **after** this migration has already merged and
-  applied in any deployed environment, a plain `git revert` of the merge commit is not sufficient by
-  itself: the correct sequence is (1) run
+- **D1 is resolved** — Benfica approved Option A on 2026-07-28 (PR #548), so no follow-up revision is
+  needed. The revert sequence below is retained for reference in case a *future* change ever needs to
+  swap RPC shapes after this has merged and applied in any deployed environment: (1) run
   `supabase/rollbacks/<ts>_get_experiment_traits_rollback.sql` against every environment the forward
   migration reached, (2) author a **new** forward migration implementing Option B (not a re-edit of the
   reverted one, per this repo's forward-only convention).
@@ -192,5 +189,4 @@ Written RED first, confirmed failing (`UndefinedFunction`) before implementation
 
 ## Open Questions
 
-- **D1 (RPC shape) — blocking, awaiting @blm3886's review.** Everything else in this design is
-  independent of the outcome.
+None — **D1 (RPC shape) resolved 2026-07-28**, @blm3886 approved Option A (PR #548).
