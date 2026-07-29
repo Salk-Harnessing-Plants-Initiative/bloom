@@ -87,7 +87,7 @@ def list_experiments(as_json: bool, profile: str) -> None:
     try:
         raw = fetch_experiments(client)
     except APIError as exc:
-        raise click.ClickException(getattr(exc, "message", str(exc))) from exc
+        raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
     rows_data = sorted(raw, key=experiment_sort_key)
 
     if as_json:

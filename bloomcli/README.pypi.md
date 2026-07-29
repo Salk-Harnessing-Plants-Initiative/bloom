@@ -47,6 +47,8 @@ Run `bloomctl --help` or `bloomctl <command> --help` for the full option list.
 - `bloomctl cyl datasets list | get <name> | create <name> <experiment_id> <trait_source_name>`
   — list, inspect, or create cylinder trait datasets.
 - `bloomctl cyl experiments list` — list cylinder experiments.
+- `bloomctl cyl accessions list | sample-counts` — list the accessions in an
+  experiment, or the plant count per accession per species.
 
 Read commands work for any logged-in user; write commands (`ingest-result`,
 `datasets create`) require an account with write access.
