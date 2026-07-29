@@ -16,6 +16,8 @@ from bloom_mcp.data_access import (
     ExperimentReader,
     ExperimentReadError,
     RawSourced,
+    SourceInfo,
+    SourceSelectable,
     SupabaseReader,
 )
 from bloom_mcp.result_store import ResultStore, RunHandle, SupabaseResultStore
@@ -62,6 +64,21 @@ def raw_source_for(filename: str) -> Optional[Path]:
     )
 
 
+def source_for(filename: str) -> Optional[SourceInfo]:
+    """The active reader's resolved DB source for ``filename``, or ``None``.
+
+    Mirrors :func:`raw_source_for`. Adapters backed by a source-versioned
+    substrate satisfy :class:`SourceSelectable`; a source-less adapter (or an
+    experiment with only legacy, pre-source-tracking data) yields ``None`` so
+    the run records no source identity rather than a fabricated one.
+    """
+    return (
+        _reader.resolve_source(filename)
+        if isinstance(_reader, SourceSelectable)
+        else None
+    )
+
+
 def load_frame(filename: str) -> tuple:
     """Legacy 4-tuple read adapter for the discovery + workflow tools.
 
@@ -102,6 +119,7 @@ def start_run(
     # ``raw_source_for``). A path-less adapter yields None and the run records no
     # input hash (source_csv=None) rather than a fabricated path.
     src = raw_source_for(filename)
+    source = source_for(filename)
     provenance = Provenance.stamp(tool=tool_name, params=params, seed=seed)
     return _store.create_run(
         experiment=filename,
@@ -109,4 +127,5 @@ def start_run(
         provenance=provenance,
         user_label=user_label,
         source_csv=src,
+        source=source,
     )

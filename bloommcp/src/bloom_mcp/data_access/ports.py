@@ -34,6 +34,14 @@ class CleanedVersionRequiredError(ExperimentReadError):
     """``require_clean=True`` was requested but no cleaned version exists."""
 
 
+class AmbiguousSourceSelectionError(ExperimentReadError):
+    """Both ``source_id`` and ``run_id`` were given; the DB read surface rejects that."""
+
+
+class AmbiguousSampleIdentityError(ExperimentReadError):
+    """A pivoted frame would carry a ``sample_id`` shared by more than one plant."""
+
+
 @dataclass(frozen=True, eq=False)
 class ExperimentFrame:
     """An experiment's data plus its adapter-declared column roles.
@@ -105,4 +113,41 @@ class RawSourced(Protocol):
 
     def raw_source_path(self, name: str) -> Optional[Path]:
         """The on-disk raw CSV for ``name``, or ``None`` when absent."""
+        ...
+
+
+@dataclass(frozen=True)
+class SourceInfo:
+    """One database source/pipeline-run backing a source-versioned raw read."""
+
+    source_id: int
+    source_name: Optional[str]
+    pipeline_run_id: Optional[str]
+
+
+@runtime_checkable
+class SourceSelectable(Protocol):
+    """Optional adapter capability: explicit source/run pinning for a raw read.
+
+    Mirrors :class:`RawSourced`'s isinstance-gated shape. Adapters backed by a
+    source/run-versioned substrate (:class:`SupabaseReader`) implement this;
+    adapters without one (``FakeReader``, ``LocalReader``) do not.
+    """
+
+    def list_sources(self, name: str) -> list[SourceInfo]:
+        """Enumerate the distinct sources/runs contributing data to ``name``."""
+        ...
+
+    def resolve_source(
+        self,
+        name: str,
+        *,
+        source_id: Optional[int] = None,
+        run_id: Optional[str] = None,
+    ) -> Optional[SourceInfo]:
+        """Resolve which source backs a read of ``name``, honoring an explicit pin.
+
+        Returns ``None`` when ``name`` has only legacy, pre-source-tracking data
+        (no ``source_id`` to report) — a normal state, not an error.
+        """
         ...

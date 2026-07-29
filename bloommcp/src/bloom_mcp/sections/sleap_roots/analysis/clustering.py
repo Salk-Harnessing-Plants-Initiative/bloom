@@ -493,6 +493,7 @@ def clustering(
             provenance=prov,
             user_label=params.user_label,
             source_csv=source_snapshot,
+            source=_ports.source_for(params.experiment),
         )
         _labels_frame(result, frame).to_csv(run.staging_dir / _LABELS_NAME, index=False)
         (run.staging_dir / _RESULT_NAME).write_text(result.to_json())

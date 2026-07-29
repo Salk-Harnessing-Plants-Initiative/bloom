@@ -390,6 +390,7 @@ def umap_analysis(
                 provenance=prov,
                 user_label=params.user_label,
                 source_csv=source_snapshot,
+                source=_ports.source_for(params.experiment),
             )
             _build_output_frame(frame, embedding_df).to_csv(
                 run.staging_dir / _EMBEDDING_NAME, index=False

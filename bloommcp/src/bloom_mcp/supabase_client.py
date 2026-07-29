@@ -6,7 +6,7 @@ prefix decisions in one place means future tools cannot accidentally
 upload to the wrong bucket, hit Supabase as service_role, or skip the
 required input/output prefix.
 
-Public surface (exactly three functions):
+Public surface:
 
     get_postgrest_client()           → supabase.Client authenticated as
                                        bloom_agent. Use for table reads
@@ -16,6 +16,10 @@ Public surface (exactly three functions):
     read_input_csv(name)             → pd.DataFrame loaded from object
                                        `bloommcp_input/{name}` in the
                                        `bloommcp-data` bucket.
+
+    call_rpc(function_name, params)  → list[dict] rows from a Postgres RPC
+                                       function (e.g. `get_experiment_traits`),
+                                       called as bloom_agent via PostgREST.
 
 For tool outputs, go through the `ResultStore` port (`bloom_mcp.result_store`)
 instead — its `SupabaseResultStore` adapter routes through the versioned
@@ -125,6 +129,25 @@ def read_input_csv(name: str) -> pd.DataFrame:
     client = get_postgrest_client()
     payload = client.storage.from_(BUCKET).download(f"{INPUT_PREFIX}{name}")
     return pd.read_csv(io.BytesIO(payload))
+
+
+def call_rpc(function_name: str, params: dict) -> list[dict]:
+    """Call a Postgres RPC function via PostgREST as bloom_agent, return its rows.
+
+    Args:
+        function_name: a `bloom_agent`-granted RPC (e.g. `get_experiment_traits`,
+            `list_experiment_trait_sources`).
+        params: keyword arguments for the function, matching its SQL parameter
+            names exactly (e.g. `{"experiment_id_": 42, "source_id_": None}`).
+
+    Raises:
+        Exception: whatever the Supabase client raises on failure (a declared
+            SQL `RAISE EXCEPTION`, network failure, RLS denial). Callers decide
+            how to surface those as a structured, caller-safe error.
+    """
+    client = get_postgrest_client()
+    response = client.rpc(function_name, params).execute()
+    return response.data
 
 
 # ─── Generic storage helpers ──────────────────────────────────────────────────

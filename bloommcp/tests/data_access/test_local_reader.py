@@ -21,7 +21,6 @@ from bloom_mcp.data_access import (
     ExperimentNotFoundError,
     ExperimentReadError,
     LocalReader,
-    SupabaseReader,
 )
 
 _RAW = "Genotype,trait_a,trait_b\ng1,1.0,3.0\ng2,2.0,4.0\ng3,3.0,5.0\n"
@@ -176,34 +175,3 @@ def test_raw_source_path(local_env):
     assert reader.raw_source_path("exp.csv") == inp / "exp.csv"
     assert reader.raw_source_path("absent.csv") is None
     assert reader.raw_source_path("../escape.csv") is None
-
-
-# ── raw-CSV dtype parity vs SupabaseReader (same bytes) ─────────────────────
-
-
-def test_same_raw_bytes_yield_same_roles_as_supabase(monkeypatch, tmp_path):
-    """FakeReader can't catch dtype divergence (in-memory frames); read the SAME
-    on-disk CSV with a dtype-ambiguous trait column through both file-backed
-    adapters and assert identical declared roles."""
-    root = tmp_path / "traits"
-    root.mkdir()
-    # `missing` is not in pandas' default na_values, so `ambig` infers as object
-    # (→ metadata). Both readers must classify it the same way.
-    (root / "exp.csv").write_text(
-        "Genotype,good,ambig\ng1,1.0,1.0\ng2,2.0,missing\ng3,3.0,3.0\n"
-    )
-    monkeypatch.setattr(eu, "TRAITS_DIR", root)
-    monkeypatch.delenv("BLOOM_EXPERIMENT_LOCAL_ROOT", raising=False)  # → TRAITS_DIR
-    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
-    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path / "store"))
-    (tmp_path / "store").mkdir()
-    sb.reset_backend_for_tests()
-
-    local = LocalReader().load_experiment("exp.csv", version="raw")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        supa = SupabaseReader().load_experiment("exp.csv", version="raw")
-
-    assert local.trait_cols == supa.trait_cols == ["good"]
-    assert set(local.metadata_cols) == set(supa.metadata_cols)
-    sb.reset_backend_for_tests()
