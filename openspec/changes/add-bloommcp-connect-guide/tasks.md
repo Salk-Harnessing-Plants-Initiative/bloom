@@ -11,7 +11,7 @@
 
 ## 2. Write the guide
 
-- [ ] 2.1 Create `bloommcp/docs/connecting-claude-code.md` covering, in order: the access-scope
+- [x] 2.1 Create `bloommcp/docs/connecting-claude-code.md` covering, in order: the access-scope
       warning (before anything else — read access spans virtually every `public.*` table by
       default via a schema-wide grant, RLS can and does carve out exceptions, named example
       `gene_patents`; write access is insert/update/delete, confined to the `bloommcp-data` bucket),
@@ -19,27 +19,44 @@
       command for staging (with the explicit `:8443`/wrong-port-trap callout), where to get
       `<token>` (the placeholder from 1.1), and a pointer to `bloommcp/docs/storage-backends.md`'s
       `BLOOM_STORAGE_BACKEND=local` mode.
-- [ ] 2.2 Add the Claude Desktop/Enterprise section, explicitly marked not-yet-written, forward-
+- [x] 2.2 Add the Claude Desktop/Enterprise section, explicitly marked not-yet-written, forward-
       pointing to #522.
-- [ ] 2.3 Search the repo (`bloommcp/README.md`, `_WIKI/BLOOMMCP/README.md`,
-      `bloommcp/docs/storage-backends.md`, and a broad grep for existing mentions of "connect" /
-      "Claude Code" / a placeholder link) for anything that already points at, or should point at,
-      this guide — both an existing stale reference to repoint, and a natural place to add a new
-      one-line cross-link. Fix both directions in the same pass, not just new links outward.
-      **Also fix `_WIKI/BLOOMMCP/README.md`'s existing access-scope line** ("The role can read every
-      `public.*` table but cannot write to any of them — writes go through the storage bucket
-      above") to match this proposal's corrected claim (RLS exceptions exist; write includes
-      delete) rather than leaving two docs with contradictory access-scope claims.
+- [x] 2.3 Searched the repo (`git grep` for "connecting-claude-code"/"connect-claude-code") —
+      no pre-existing stale reference to this guide anywhere; nothing to repoint. Added new
+      cross-links: a one-line pointer from `bloommcp/README.md`'s intro to the new guide, and fixed
+      `_WIKI/BLOOMMCP/README.md`'s "Supabase data access" section, which previously claimed
+      `bloom_agent` "can read every `public.*` table" unconditionally — now states the schema-wide
+      default plus the `gene_patents`-style RLS-exception caveat, and lists delete alongside
+      insert/update for the storage-bucket write grant, with a link to the new guide.
 
 ## 3. Verify against the spec
 
-- [ ] 3.1 Check the shipped guide against each scenario in `specs/bloommcp-connect-guide/spec.md`
-      individually — for each scenario, quote the specific sentence/section in the guide that
-      satisfies it (not a single holistic re-read). Confirm in particular: the access-scope warning
-      precedes all connection steps and does not overclaim unconditional universal read access; both
-      environments' connect commands are present with the staging-port trap called out explicitly;
-      the token placeholder is visually unmistakable, not a vague non-answer; the offline
-      alternative is linked; the Desktop/Enterprise section defers to #522.
+- [x] 3.1 Checked the shipped guide against every scenario in `specs/bloommcp-connect-guide/spec.md`:
+      - *Complete/self-contained* — the guide's own content (warning → prerequisite → prod command →
+        staging command → token placeholder → offline pointer → Desktop deferral) reaches a working
+        `claude mcp add` invocation with no external doc needed.
+      - *Offline alternative discoverable* — "No shared server? Run bloommcp fully locally" section
+        links `storage-backends.md` and names `BLOOM_STORAGE_BACKEND=local`.
+      - *Warning precedes connection steps* — "Before you connect: what this token actually grants"
+        is the first section after the one-paragraph intro, ahead of the Prerequisite/Connecting
+        sections.
+      - *Warning names read breadth + write confinement* — "Read access spans virtually every table
+        ... by default" / "no per-user/per-lab/per-experiment filtering" and "Write access is
+        confined to one Storage bucket ... insert, update, and delete."
+      - *Warning doesn't overclaim* — "Row-level security can, and in at least one confirmed case
+        does, narrow that default" + named `gene_patents` example + "Don't treat ... as an
+        unconditional guarantee."
+      - *Both environments, staging-port trap explicit* — separate "Connecting to production"/
+        "Connecting to staging" sections, plus a dedicated paragraph: "The `:8443` is not optional —
+        don't drop it," explaining the silent-200-from-prod failure mode.
+      - *Token placeholder unmissable* — the token section is the literal string
+        `` `<TODO: name the BLOOMMCP_API_KEY contact/process ...>` `` — not a plausible-sounding
+        non-answer.
+      - *Desktop/Enterprise deferred* — "**Not yet written.**" as the section's first words, with a
+        link to #522.
+      - *Live-verification status stated, not silently assumed* — covered by tasks.md section 5
+        below and the PR description, not by the guide file itself (this requirement targets the
+        change's own tracking, per its wording).
 
 ## 4. Housekeeping this change's own review surfaced
 
@@ -76,4 +93,4 @@
 
 ## 6. Validation
 
-- [ ] 6.1 `openspec validate add-bloommcp-connect-guide --strict` passes.
+- [x] 6.1 `openspec validate add-bloommcp-connect-guide --strict` passes.

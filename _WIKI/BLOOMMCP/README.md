@@ -106,8 +106,14 @@ the input/output split is enforced in code.
 ## Supabase data access
 
 bloommcp is signed in as the `bloom_agent` Postgres role via the JWT in
-`BLOOM_AGENT_KEY`. The role can read every `public.*` table but cannot
-write to any of them — writes go through the storage bucket above.
+`BLOOM_AGENT_KEY`. The role has a schema-wide `SELECT` grant covering virtually every `public.*`
+table by default (including tables created later), but row-level security can and does carve out
+per-table exceptions to that default — `gene_patents` is a confirmed one, not readable by
+`bloom_agent` despite the blanket grant, because its own policy targets a different role. Writes
+don't go through any table — they go through the `bloommcp-data` storage bucket above, and cover
+insert, update, and a narrowly-scoped delete (previously-uploaded outputs only, never input CSVs).
+See [connecting-claude-code.md](../../bloommcp/docs/connecting-claude-code.md) for the
+researcher-facing version of this same disclosure.
 
 The helper's `get_postgrest_client()` returns a fully authenticated
 PostgREST client:
