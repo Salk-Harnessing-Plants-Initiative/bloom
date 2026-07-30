@@ -46,7 +46,8 @@ Run `bloomctl --help` or `bloomctl <command> --help` for the full option list.
   to Bloom (needs write access).
 - `bloomctl cyl datasets list | get <name> | create <name> <experiment_id> <trait_source_name>`
   — list, inspect, or create cylinder trait datasets.
-- `bloomctl cyl experiments list` — list cylinder experiments.
+- `bloomctl cyl experiments list` — list cylinder experiments (`--species` to pick
+  one from a menu; `--output csv|json` to grab an id for `cyl download`).
 - `bloomctl cyl accessions list | sample-counts` — list the accessions in an
   experiment, or the plant count per accession per species.
 - `bloomctl cyl qc list-sets` — list cylinder QC (quality-control) sets

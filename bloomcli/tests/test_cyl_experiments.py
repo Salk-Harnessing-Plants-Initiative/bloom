@@ -66,8 +66,16 @@ def test_fetch_experiments_builds_query():
             captured["is_"] = (col, val)
             return self
 
+        def eq(self, col, val):
+            captured["eq"] = (col, val)
+            return self
+
         def order(self, col, **kw):
             captured["order"] = col
+            return self
+
+        def limit(self, n):
+            captured["limit"] = n
             return self
 
         def execute(self):
@@ -84,6 +92,39 @@ def test_fetch_experiments_builds_query():
     assert captured["select"] == "*, species(*)"  # full select: id/name + species
     assert captured["is_"] == ("deleted_at", "null")  # soft-deleted experiments excluded
     assert captured["order"] == "id"  # deterministic base order
+    assert captured["limit"] == ex.DEFAULT_LIMIT  # explicit cap, never an unbounded query
+    assert captured.get("eq") is None  # no species filter unless species_id is passed
+
+
+def test_fetch_experiments_filters_by_species_id():
+    captured = {}
+
+    class _Q:
+        def select(self, sel):
+            return self
+
+        def is_(self, *a):
+            return self
+
+        def eq(self, col, val):
+            captured["eq"] = (col, val)
+            return self
+
+        def order(self, *a, **k):
+            return self
+
+        def limit(self, n):
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": EXPS})()
+
+    class _Client:
+        def table(self, name):
+            return _Q()
+
+    ex.fetch_experiments(_Client(), species_id=7)
+    assert captured["eq"] == ("species_id", 7)
 
 
 def test_fetch_experiments_empty():
@@ -96,7 +137,13 @@ def test_fetch_experiments_empty():
                 def is_(self, *a):
                     return self
 
+                def eq(self, *a):
+                    return self
+
                 def order(self, *a, **k):
+                    return self
+
+                def limit(self, n):
                     return self
 
                 def execute(self):
@@ -107,12 +154,56 @@ def test_fetch_experiments_empty():
     assert ex.fetch_experiments(_Client()) == []
 
 
+def test_fetch_species_with_experiments_dedups_and_sorts():
+    rows = [
+        {"species_id": 2, "species": {"common_name": "Rice"}},
+        {"species_id": 1, "species": {"common_name": "Canola"}},
+        {"species_id": 2, "species": {"common_name": "Rice"}},  # duplicate species
+        {"species_id": None, "species": None},  # no species → skipped
+    ]
+    captured = {}
+
+    class _Q:
+        def select(self, sel):
+            captured["select"] = sel
+            return self
+
+        def is_(self, col, val):
+            captured["is_"] = (col, val)
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": rows})()
+
+    class _Client:
+        def table(self, name):
+            captured["table"] = name
+            return _Q()
+
+    out = ex.fetch_species_with_experiments(_Client())
+    assert out == [(1, "Canola"), (2, "Rice")]  # deduped, sorted by common name
+    assert captured["table"] == "cyl_experiments"
+    assert captured["is_"] == ("deleted_at", "null")  # only species of live experiments
+    assert "species(common_name)" in captured["select"]
+
+
+def test_select_species_maps_choice_to_id(monkeypatch):
+    monkeypatch.setattr("click.prompt", lambda *a, **k: 2)
+    # menu: 1) Canola(10)  2) Rice(20) → choosing 2 returns id 20
+    assert ex.select_species_interactively([(10, "Canola"), (20, "Rice")]) == 20
+
+
+def test_select_species_zero_is_all(monkeypatch):
+    monkeypatch.setattr("click.prompt", lambda *a, **k: 0)
+    assert ex.select_species_interactively([(10, "Canola")]) is None  # 0 = All species
+
+
 # --- command ----------------------------------------------------------------
 
 
 def test_list_renders_table(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(ex, "fetch_experiments", lambda client: EXPS)
+    monkeypatch.setattr(ex, "fetch_experiments", lambda client, **kw: EXPS)
     res = CliRunner().invoke(cli, ["cyl", "experiments", "list"])
     assert res.exit_code == 0, res.output
     assert "Experiments" in res.output  # table title
@@ -126,7 +217,7 @@ def test_list_surfaces_api_error(monkeypatch):
 
     _patch_authed(monkeypatch)
 
-    def _boom(client):
+    def _boom(client, **kw):
         raise APIError({"message": "permission denied", "code": "42501"})
 
     monkeypatch.setattr(ex, "fetch_experiments", _boom)
@@ -142,7 +233,7 @@ def test_list_apierror_without_message_falls_back(monkeypatch):
 
     _patch_authed(monkeypatch)
 
-    def _boom(client):
+    def _boom(client, **kw):
         raise APIError({"code": "42P01", "details": "relation does not exist"})
 
     monkeypatch.setattr(ex, "fetch_experiments", _boom)
@@ -154,7 +245,7 @@ def test_list_apierror_without_message_falls_back(monkeypatch):
 
 def test_list_json_sorted(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(ex, "fetch_experiments", lambda client: EXPS)
+    monkeypatch.setattr(ex, "fetch_experiments", lambda client, **kw: EXPS)
     res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--json"])
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)
@@ -164,7 +255,7 @@ def test_list_json_sorted(monkeypatch):
 
 def test_list_empty(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(ex, "fetch_experiments", lambda client: [])
+    monkeypatch.setattr(ex, "fetch_experiments", lambda client, **kw: [])
     res = CliRunner().invoke(cli, ["cyl", "experiments", "list"])
     assert res.exit_code == 0
     assert "No experiments found" in res.output
@@ -172,10 +263,108 @@ def test_list_empty(monkeypatch):
 
 def test_list_empty_json(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(ex, "fetch_experiments", lambda client: [])
+    monkeypatch.setattr(ex, "fetch_experiments", lambda client, **kw: [])
     res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--json"])
     assert res.exit_code == 0
     assert res.output.strip() == "[]"
+
+
+# --- --species menu ---------------------------------------------------------
+
+
+def test_list_species_menu_filters(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(
+        ex, "fetch_species_with_experiments", lambda client: [(3, "Canola"), (2, "Rice")]
+    )
+    captured = {}
+
+    def _fetch(client, *, species_id=None, limit=ex.DEFAULT_LIMIT):
+        captured["species_id"] = species_id
+        return [EXPS[1], EXPS[2]]
+
+    monkeypatch.setattr(ex, "fetch_experiments", _fetch)
+    # menu: 0) All  1) Canola  2) Rice → pick 1 → Canola (id 3)
+    res = CliRunner().invoke(
+        cli, ["cyl", "experiments", "list", "--species", "--output", "json"], input="1\n"
+    )
+    assert res.exit_code == 0, res.output
+    assert captured["species_id"] == 3  # chosen menu entry → its species_id, passed to fetch
+
+
+def test_list_species_menu_all_is_no_filter(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ex, "fetch_species_with_experiments", lambda client: [(3, "Canola")])
+    captured = {}
+
+    def _fetch(client, *, species_id=None, limit=ex.DEFAULT_LIMIT):
+        captured["species_id"] = species_id
+        return EXPS
+
+    monkeypatch.setattr(ex, "fetch_experiments", _fetch)
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species"], input="0\n")
+    assert res.exit_code == 0, res.output
+    assert captured["species_id"] is None  # 0 = All species → no filter
+
+
+def test_list_species_menu_none_available(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ex, "fetch_species_with_experiments", lambda client: [])
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species"], input="0\n")
+    assert res.exit_code != 0
+    assert "No species" in res.output
+
+
+# --- output formats ---------------------------------------------------------
+
+
+def test_list_output_csv(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ex, "fetch_experiments", lambda client, **kw: EXPS)
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--output", "csv"])
+    assert res.exit_code == 0, res.output
+    lines = res.output.strip().splitlines()
+    assert lines[0] == "species,experiment,experiment_id"  # header
+    assert lines[1] == "Canola,Alpha,3"  # sorted species/name → Canola/Alpha first
+
+
+def test_list_output_json_equals_json_alias(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ex, "fetch_experiments", lambda client, **kw: EXPS)
+    a = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--output", "json"])
+    b = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--json"])
+    assert a.exit_code == 0 and a.output == b.output  # --json is an alias for --output json
+    assert json.loads(a.output)[0]["experiment_id"] == 3
+
+
+def test_list_json_and_conflicting_output_rejected(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ex, "fetch_experiments", lambda client, **kw: EXPS)
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--json", "--output", "csv"])
+    assert res.exit_code != 0
+    assert "not both" in res.output.lower()
+
+
+def test_list_limit_passed_through_and_capped(monkeypatch):
+    _patch_authed(monkeypatch)
+    captured = {}
+
+    def _fetch(client, *, species_id=None, limit=ex.DEFAULT_LIMIT):
+        captured["limit"] = limit
+        return EXPS
+
+    monkeypatch.setattr(ex, "fetch_experiments", _fetch)
+
+    ok = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--limit", "5"])
+    assert ok.exit_code == 0, ok.output
+    assert captured["limit"] == 5
+
+    # over the cap (DEFAULT_LIMIT) → rejected by IntRange before any fetch
+    over = CliRunner().invoke(
+        cli, ["cyl", "experiments", "list", "--limit", str(ex.DEFAULT_LIMIT + 1)]
+    )
+    assert over.exit_code != 0
+    assert "range" in over.output.lower()
 
 
 # --- grouping ---------------------------------------------------------------

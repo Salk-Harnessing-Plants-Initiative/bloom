@@ -65,7 +65,11 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - **[write]** `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
   create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`).
 - **[read]** `bloomctl cyl experiments list` — list cylinder experiments (species,
-  name, id), sorted by species then name (`--json` for machine-readable output).
+  name, id), sorted by species then name. Pass `--species` to **pick a species from
+  an interactive menu** (needs a terminal) and filter to it. Choose the output with
+  `--output csv|json` (default is the table; `--json` is an alias for
+  `--output json`) — handy for grabbing an `experiment_id` for `cyl download`;
+  `--limit` caps the fetch.
 - **[read]** `bloomctl cyl accessions list --experiment-id N` — list the accessions
   used in an experiment (`--json`).
 - **[read]** `bloomctl cyl accessions sample-counts [--species X]` — plant count per

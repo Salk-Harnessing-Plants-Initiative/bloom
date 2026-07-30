@@ -10,6 +10,13 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
+- `bloomctl cyl experiments list` gains an interactive **species selector** and
+  **output formats**. `--species` presents a numbered menu ("All species" + one per
+  species that has experiments) and filters to the pick (interactive; needs a
+  terminal). `--output csv|json` (default is the table; `--json` is an alias for
+  `--output json`) makes it easy to pull an `experiment_id` for `cyl download`, and
+  `--limit` caps the fetch so the query is never unbounded. `--output` is the
+  standard machine-output selector for `cyl` list commands.
 - `bloomctl cyl batch-download-for-predict <out_dir>` — stage a batch of cylinder
   scans in one invocation. Reads scan_ids from `--scan-ids-file` (a JSON array,
   path or `-` for stdin) or `--scan-ids 1,2,3` (comma-separated, mutually
