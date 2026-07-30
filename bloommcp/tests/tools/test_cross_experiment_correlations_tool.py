@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from hypothesis import given, settings, strategies as st
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
@@ -635,9 +636,9 @@ def test_self_correlation_rejected():
 def test_path_unsafe_experiment_name_rejected(bad_field):
     """Explicit path-traversal guard (defense-in-depth, found in review — this tool's
     safety was previously incidental, not an explicit check). The message must name
-    which of experiment_1/experiment_2 was rejected (found in a second review pass —
-    _validate_experiment_name's message previously never named the offending field, so
-    a two-name caller couldn't tell which one failed)."""
+    which of experiment_1/experiment_2 was rejected (found when re-reviewing commit
+    c649f9d — _validate_experiment_name's message previously never named the offending
+    field, so a two-name caller couldn't tell which one failed)."""
     kwargs = {"experiment_1": _EXP_1, "experiment_2": _EXP_2}
     kwargs[bad_field] = "../secrets/passwd.csv"
     with pytest.raises(BloomMCPError) as exc:
@@ -665,17 +666,21 @@ def test_dotted_stem_rejected(bad_field):
 
 
 # ── composite key is a length-prefixed, provably injective join (design.md D1) ───
-# A second review pass rejected a stem containing the literal "__x__" substring, on
-# the theory that this was sufficient to keep the separator out of the joined string.
-# A third review pass found that false: the separator's own internal repetition lets
+# Commit a5ec16d rejected a stem containing the literal "__x__" substring, on the
+# theory that this was sufficient to keep the separator out of the joined string.
+# Re-reviewing a5ec16d found that false: the separator's own internal repetition lets
 # two DIFFERENT (stem_1, stem_2) pairs -- neither containing "__x__" as a substring --
-# join to the IDENTICAL composite string. No stem-content guard closes this; the fix
-# is a length-prefixed encoding (_composite_experiment_key), verified below both by the
-# exact adversarial pair the review found and by a randomized round-trip stress test.
+# join to the IDENTICAL composite string. No stem-content guard closes this; f199126's
+# fix is a length-prefixed encoding (_composite_experiment_key), verified below by the
+# exact adversarial pair that re-review found, a fixed table of named edge cases, and
+# two hypothesis property tests over randomized input (found when re-reviewing f199126
+# itself: that commit's own message and design.md cited a "500k-sample randomized
+# stress test" that was never actually committed as a test -- only the fixed table
+# existed. The hypothesis tests below make that claim true rather than retracting it.)
 
 
 def test_boundary_straddling_stems_no_longer_collide():
-    """The exact collision the third review pass found and reproduced independently:
+    """The exact collision found when re-reviewing a5ec16d, reproduced independently:
     stem_1="A"/stem_2="x__B" and stem_1="A__x"/stem_2="B" both produce the identical
     naive join "A__x__x__B" (neither stem contains the literal "__x__" substring, so a
     content guard on either stem alone cannot catch this). The length-prefixed encoding
@@ -689,24 +694,24 @@ def test_boundary_straddling_stems_no_longer_collide():
     assert key_a != key_b
 
 
+def _decode_composite_key(composite: str) -> tuple[str, str]:
+    """Left-inverse of _composite_experiment_key, used only to prove one exists."""
+    n_str, rest = composite.split("_", 1)
+    n = int(n_str)
+    stem_1 = rest[:n]
+    remainder = rest[n:]
+    assert remainder.startswith(_COMPOSITE_SEPARATOR)
+    stem_2 = remainder[len(_COMPOSITE_SEPARATOR) :]
+    return stem_1, stem_2
+
+
 def test_composite_key_round_trips_for_any_stem_pair():
-    """Property test: _composite_experiment_key is not just collision-free for the one
-    adversarial pair above, but genuinely invertible for arbitrary stem content (the
-    length prefix pins the stem_1/stem_2 boundary regardless of what either stem
-    contains -- including digits, underscores, and the separator substring itself,
-    which is no longer rejected). Proving an exact left-inverse exists is a strictly
-    stronger guarantee than spot-checking a handful of hand-picked pairs, which is the
-    testing gap that let three rounds of this bug ship in the first place."""
-
-    def _decode(composite: str) -> tuple[str, str]:
-        n_str, rest = composite.split("_", 1)
-        n = int(n_str)
-        stem_1 = rest[:n]
-        remainder = rest[n:]
-        assert remainder.startswith(_COMPOSITE_SEPARATOR)
-        stem_2 = remainder[len(_COMPOSITE_SEPARATOR) :]
-        return stem_1, stem_2
-
+    """Property test over a fixed table of named edge cases: _composite_experiment_key
+    is not just collision-free for the one adversarial pair above, but genuinely
+    invertible for this specific, human-readable set of cases -- including digits,
+    underscores, and the separator substring itself, which is no longer rejected.
+    See test_composite_key_injective_property below for the same guarantee proved
+    over randomized input, not just this hand-picked table."""
     candidates = [
         "",
         "A",
@@ -728,7 +733,38 @@ def test_composite_key_round_trips_for_any_stem_pair():
     for stem_1 in candidates:
         for stem_2 in candidates:
             composite = _composite_experiment_key(stem_1, stem_2)
-            assert _decode(composite) == (stem_1, stem_2)
+            assert _decode_composite_key(composite) == (stem_1, stem_2)
+
+
+@settings(max_examples=1000)
+@given(stem_1=st.text(max_size=25), stem_2=st.text(max_size=25))
+def test_composite_key_injective_property(stem_1, stem_2):
+    """Real property-based coverage (found in review — the design.md/commit-message
+    claim of a "500k-sample randomized stress test" described an ephemeral, uncommitted
+    check run by hand while designing the fix, not anything in this test suite; the
+    only committed coverage was the fixed 256-pair table above). Proving an exact
+    left-inverse exists for arbitrary stem content is a strictly stronger guarantee
+    than spot-checking a handful of hand-picked pairs, which is the testing gap that
+    let three rounds of this exact bug ship in the first place."""
+    composite = _composite_experiment_key(stem_1, stem_2)
+    assert _decode_composite_key(composite) == (stem_1, stem_2)
+
+
+@settings(max_examples=1000)
+@given(
+    stem_1=st.text(max_size=15),
+    stem_2=st.text(max_size=15),
+    stem_1b=st.text(max_size=15),
+    stem_2b=st.text(max_size=15),
+)
+def test_composite_key_distinct_pairs_never_collide(stem_1, stem_2, stem_1b, stem_2b):
+    """Injectivity stated directly (not just derived from round-trip existence):
+    two DIFFERENT (stem_1, stem_2) pairs must never produce the same composite key."""
+    if (stem_1, stem_2) == (stem_1b, stem_2b):
+        return
+    assert _composite_experiment_key(stem_1, stem_2) != _composite_experiment_key(
+        stem_1b, stem_2b
+    )
 
 
 def test_analysis_dir_preserves_composite_key_for_safe_stems():

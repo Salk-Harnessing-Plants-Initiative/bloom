@@ -268,16 +268,58 @@ Full bloommcp suite after §8: 759 passed, 29 skipped, 0 failed. `test_cross_exp
   scenario for the boundary-straddling case.
 - [x] 10.3 **IMPORTANT — design.md's D1 opening bullet still cited `_storage_safe_stem`**,
   contradicted by the "Final fix" narrative later in the same section. Corrected,
-  along with two other stale "second review pass" labels (D8, D14 sections) that
-  should have read "third" — a minor version of the same internal-consistency gap.
+  along with a stale "second review pass" label (D8 section) that should have read
+  "third" — a minor version of the same internal-consistency gap. (See §11.3: this
+  fix was itself incomplete and introduced a *new* instance of the same drift.)
 - [x] 10.4 **IMPORTANT — `test_upstream_min_samples_no_op_still_present_on_real_fixture_pair`
   (added §9.4) omitted the golden block's own `p_value` field**, even though it
   asserts `n_genotypes`/`correlation` from the same block. Added.
 
-`test_cross_experiment_correlations_tool.py`: 50 tests, all passing (§10.1 removes the
-4 now-invalid `embeds-separator` parametrized cases from §9.1's
-`test_unsafe_composite_stem_rejected` — a stem containing the separator substring is no
-longer rejected — and adds 2 new tests in their place:
-`test_boundary_straddling_stems_no_longer_collide` and
-`test_composite_key_round_trips_for_any_stem_pair`). ruff/black clean at the
+`test_unsafe_composite_stem_rejected`'s 4 parametrized cases (2 `bad_field` × 2
+`unsafe_name`, added §9.1) are replaced by `test_dotted_stem_rejected`'s 2 cases
+(`bad_field` only — a stem containing the separator substring is no longer rejected),
+plus 2 new standalone tests: `test_boundary_straddling_stems_no_longer_collide` and
+`test_composite_key_round_trips_for_any_stem_pair`. Net change: 0 (-4, +2, +2).
+`test_cross_experiment_correlations_tool.py`: 50 tests, all passing — unchanged from
+the count after §9, since this round's test churn was a like-for-like swap, not a net
+increase (see §11 for why stating this as "44 → 50" is itself the kind of
+easy-to-get-wrong arithmetic this section now avoids). ruff/black clean at the
 repo-pinned versions.
+
+## 11. Post-PR-review fixes, round 4 (re-review of commit f199126)
+
+- [x] 11.1 **Stale Pydantic field description.** `CrossExperimentCorrelationsParams.
+  experiment_1`/`experiment_2`'s schema description still stated the stem "must not
+  contain... `__x__`" — §10.1 removed that restriction from the code but not from the
+  caller-facing schema text. Corrected.
+- [x] 11.2 **"500k-sample randomized stress test" was never committed as a test** —
+  design.md and the `f199126` commit message described an ad-hoc check run by hand at
+  design time; the only committed coverage was the 256-pair hardcoded table
+  (`test_composite_key_round_trips_for_any_stem_pair`, §10.1). Added
+  `test_composite_key_injective_property` and
+  `test_composite_key_distinct_pairs_never_collide` (`hypothesis`-based, 1000 generated
+  stem pairs per test run) so the design-time claim is now a real, repeatable,
+  committed guarantee.
+- [x] 11.3 **This document's own §10.3 fix introduced a fresh instance of the drift it
+  was fixing.** Relabeling D8/D14 findings as a "third (PR) review pass" used two
+  different, one-off ordinal counters (a bare "review pass" count starting at the
+  pre-implementation review, and a separately-incremented "PR review pass" count that
+  doesn't) that silently disagreed with each other and with this file's own
+  commit-anchored section numbers. Removed every "Nth review pass" ordinal from
+  `design.md`, `cross_experiment_correlations.py`, and this test file's comments,
+  replacing each with the actual commit SHA being re-reviewed (`c649f9d`, `a5ec16d`,
+  `f199126`) — a reference that cannot drift out of sync with itself the way a
+  manually-incremented counter can.
+- [x] 11.4 **Minor — test-count bookkeeping didn't reconcile.** §10's "44 → 50 tests"
+  framing implied `test_unsafe_composite_stem_rejected`'s test-count delta was "-4, +2"
+  without accounting for `test_dotted_stem_rejected` (its direct replacement) also
+  contributing 2 IDs, making the stated arithmetic not add up against the last
+  explicit count (44, after §8). §9's own subtotal was never recorded, which is the
+  actual root cause — corrected in §10's note above to state the verified, empirically
+  re-counted total directly rather than an inferred delta chain.
+
+`test_cross_experiment_correlations_tool.py`: 52 tests, all passing (§11.2's two new
+`hypothesis` tests are a genuine net increase over §10's 50 — this section's own count
+is stated directly from a real `pytest` run, not computed from a delta chain, precisely
+to avoid repeating §10/§11.4's mistake). ruff/black clean at the repo-pinned versions;
+`openspec validate --strict` passes.

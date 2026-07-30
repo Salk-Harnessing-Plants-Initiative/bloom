@@ -50,21 +50,47 @@ about the live-smoke fix was itself untested beyond this one tool (Testing
 infrastructure fix note updated, `test_pca_analysis_smoke` extended). Every
 BLOCKING/IMPORTANT finding from this pass is resolved in this revision.
 
-**Fourth revision, re-review of that fix.** A third review pass found that pass's *own*
+**Fourth revision, re-review of commit a5ec16d.** That re-review found a5ec16d's *own*
 fix for the composite-key collision — rejecting a stem containing the separator
 substring — was itself insufficient: the separator's internal repetition lets two
 distinct, individually-valid stem pairs join to an identical composite string via a
-boundary straddling the separator (confirmed by direct construction and a 500k-sample
-randomized stress test, not just asserted). This was the third consecutive round finding
-a variant of the same collision class from patching guard conditions on a
-string-concatenation encoding rather than fixing the encoding structurally; this
-revision replaces the guard-based approach with a length-prefixed, provably injective
-encoding (see D1's "Fourth guard needed"/"Final fix"). That review also found: this
-tool's own OpenSpec `spec.md` had not been updated after the second fix and described
-the superseded sanitizing behavior as current (now corrected), and the golden-fixture
-regression test added in the third revision omitted a `p_value` assertion present in the
-same golden block it otherwise checks (now added). Every BLOCKING/IMPORTANT finding from
-this pass is resolved in this revision.
+boundary straddling the separator (confirmed by direct construction and a hand-run,
+ad-hoc randomized check at design time — see the "Fifth revision" note below for why
+that check needed to become a committed test, not just a claim). This was the third
+consecutive round finding a variant of the same collision class from patching guard
+conditions on a string-concatenation encoding rather than fixing the encoding
+structurally; this revision (commit f199126) replaces the guard-based approach with a
+length-prefixed, provably injective encoding (see D1's "Fourth guard needed"/"Final
+fix"). That re-review also found: this tool's own OpenSpec `spec.md` had not been
+updated after the a5ec16d fix and described the superseded sanitizing behavior as
+current (now corrected), and the golden-fixture regression test added in a5ec16d
+omitted a `p_value` assertion present in the same golden block it otherwise checks (now
+added). Every BLOCKING/IMPORTANT finding from that re-review is resolved in this
+revision.
+
+**Fifth revision, re-review of commit f199126.** That re-review found four things: (1)
+the `CrossExperimentCorrelationsParams.experiment_1`/`experiment_2` field descriptions
+still claimed the stem "must not contain... `__x__`" — a restriction f199126 itself
+removed, so the MCP tool's own schema overclaimed a constraint to callers/agents that no
+longer existed in the code (now corrected); (2) the "500k-sample randomized stress test"
+this document and the `f199126` commit message cited was never actually committed to
+the test suite — only the 256-pair hardcoded round-trip table was (now closed with two
+`hypothesis`-based property tests, `test_composite_key_injective_property` and
+`test_composite_key_distinct_pairs_never_collide`, each running 1000 generated examples
+per test run); (3) *this document's own f199126-era edit introduced a fresh instance of
+the exact inconsistency it was fixing elsewhere* — it relabeled some findings as
+belonging to a "third (PR) review pass" using two different, one-off ordinal counters
+that silently disagreed with each other and with `tasks.md`'s own commit-anchored
+section numbers (a "review pass" counter that starts at the pre-implementation review,
+and a separately-incremented "PR review pass" counter that doesn't — both appeared in
+this document, offset from each other by one, which is exactly the kind of fragile
+scheme that produces this class of drift on every subsequent edit); and (4) `tasks.md`'s
+test-count bookkeeping for f199126 didn't arithmetically reconcile. Given that ordinal
+"Nth review pass" labels have now drifted incorrectly at least twice across four
+revisions of this same document, this revision removes them everywhere in favor of
+naming the actual commit being re-reviewed (`c649f9d`, `a5ec16d`, `f199126`) — a
+reference that cannot silently drift out of sync the way a manually-incremented counter
+can. Every finding from this re-review is resolved in this revision.
 
 ## Goals / Non-Goals
 
@@ -142,7 +168,7 @@ changing the shared types:
   leading `_experiment` label column (`1`/`2`) into one temporary combined CSV, so
   `AnalysisDir.input_sha256` content-addresses **both** inputs' bytes in a single hash
   rather than covering only one side.
-- **Guard (added on the first review pass):** the encoding above assumed filenames/
+- **Guard (added during the pre-implementation review):** the encoding above assumed filenames/
   version labels never contain `@` or `|`, but the existing experiment-name guard
   (`_qc_shared._validate_experiment_name`) only rejects path separators and `..` — not
   `@`/`|`. A real filename containing either character would silently corrupt the
@@ -177,8 +203,9 @@ changing the shared types:
   `Path(...).stem` was a no-op on it — but this was a *sanitization*, not a rejection,
   and sanitization is lossy.
 
-  **Third guard needed (found in a second PR review pass, confirmed by reproduction):
-  the sanitizing fix reopened the identical collision class one level down.**
+  **Third guard needed (found when re-reviewing commit c649f9d, confirmed by
+  reproduction): the sanitizing fix reopened the identical collision class one level
+  down.**
   `_storage_safe_stem("my.experiment.csv")` and `_storage_safe_stem("my_experiment.csv")`
   both produce the identical stem `"my_experiment"` — a dot-vs-underscore filename
   variant is exactly the kind of naming difference a scientist re-exporting or
@@ -198,27 +225,28 @@ changing the shared types:
   containing the separator was the only way it could appear in the joined string. That
   let the composite `experiment=` key be built directly from the un-sanitized
   `Path(experiment_1).stem`/`Path(experiment_2).stem`, with no lossy transform at all —
-  and closed the reproduction case from the second review pass. `based_on_version`'s own
+  and closed the reproduction case from that same re-review of c649f9d. `based_on_version`'s own
   `@`/`|` literals were also centralized into the same `_VERSION_SEPARATOR`/
   `_PAIR_SEPARATOR` constants the reserved-character guard uses (found in review: the
   guard and the builder had drifted — the guard used named constants, the builder still
   hardcoded bare `@`/`|` literals), so the two can no longer silently diverge.
 
-  **Fourth guard needed (found in a third PR review pass, confirmed by direct
-  construction AND a 500k-sample randomized stress test): rejecting a stem that
-  *contains* the separator substring is not sufficient to keep the separator out of the
-  *joined* string.** `_COMPOSITE_SEPARATOR` (`"__x__"`) is self-overlapping — its own
+  **Fourth guard needed (found when re-reviewing commit a5ec16d, confirmed by direct
+  construction and an ad-hoc 500k-sample randomized stress test run by hand while
+  designing this fix — see below for why that check is now a committed hypothesis
+  property test, not just a design-time claim): rejecting a stem that *contains* the
+  separator substring is not sufficient to keep the separator out of the *joined*
+  string.** `_COMPOSITE_SEPARATOR` (`"__x__"`) is self-overlapping — its own
   prefix (`"__x"`) and suffix (`"x__"`) can be reconstructed from characters straddling
   the stem/separator boundary even when neither individual stem contains the full
   5-character substring. Concretely: `stem_1="A"`, `stem_2="x__B"` and `stem_1="A__x"`,
   `stem_2="B"` both pass the second-fix guard (neither stem contains `"__x__"`) yet both
-  join to the identical string `"A__x__x__B"`. A randomized stress test (500k pairs over
-  a small alphabet including `"_"` and `"x"`) found thousands of such collisions in
-  seconds, confirming this is a real, easily-reachable bug class — not a contrived
-  corner case. No guard on either stem's *content* can close this, because the ambiguity
-  is a property of the *join itself*, not of either stem alone; a third round of "reject
-  this substring too" would only narrow the class again (as the second fix narrowed the
-  first), not close it structurally.
+  join to the identical string `"A__x__x__B"`. The hand-run stress test found thousands
+  of such collisions in seconds, confirming this is a real, easily-reachable bug class —
+  not a contrived corner case. No guard on either stem's *content* can close this,
+  because the ambiguity is a property of the *join itself*, not of either stem alone; a
+  third round of "reject this substring too" would only narrow the class again (as the
+  second fix narrowed the first), not close it structurally.
 
   **Final fix:** `_reject_unsafe_composite_stem`'s separator-substring branch is removed
   (a stem containing `"__x__"` is now permitted — it is no longer collision-prone). Only
@@ -234,13 +262,21 @@ changing the shared types:
   is the standard length-prefixed ("netstring") technique for exactly this class of
   delimiter ambiguity, and is why the prior two fixes were the wrong *kind* of fix: they
   treated a structural encoding problem as an input-validation problem, so each one
-  could only narrow the reachable collision space, never close it. Verified two ways in
+  could only narrow the reachable collision space, never close it. Verified in
   `test_cross_experiment_correlations_tool.py`: `test_boundary_straddling_stems_no_longer_collide`
   reproduces the exact adversarial pair above and asserts the two composites now differ;
-  `test_composite_key_round_trips_for_any_stem_pair` proves a real left-inverse exists
-  for arbitrary stem content (including digits, underscores, and the separator substring
-  itself) — a strictly stronger guarantee than spot-checking a handful of hand-picked
-  pairs, which is the testing gap that let three rounds of this bug ship.
+  `test_composite_key_round_trips_for_any_stem_pair` proves a left-inverse exists over a
+  fixed table of named edge cases (digits, underscores, the separator substring itself,
+  empty stems). **Found when re-reviewing commit f199126:** that table (256 hand-picked
+  pairs) was the *only* committed coverage — the "500k-sample randomized stress test"
+  this section and the `f199126` commit message described was an ad-hoc check run by
+  hand at design time, never committed as a test, so it could not catch a future
+  regression. `test_composite_key_injective_property` and
+  `test_composite_key_distinct_pairs_never_collide` (both `hypothesis`-based, 1000
+  generated examples each per run) now give the real, repeatable version of that
+  guarantee the design-time claim asserted — a strictly stronger guarantee than
+  spot-checking a handful of hand-picked pairs, which is the testing gap that let three
+  rounds of this bug ship in the first place.
 - **Self-correlation guard (found in PR review):** `experiment_1 == experiment_2` was
   neither rejected nor tested — a plausible copy-paste mistake that would otherwise
   silently compute and persist a meaningless self-vs-self correlation matrix under a
@@ -271,11 +307,12 @@ known risk — silent collision between two distinct experiment-name pairs — w
 three narrowing-but-not-closing guard attempts (reject/sanitize a dot; reject a
 separator-substring) before landing on a structural fix: `_composite_experiment_key`'s
 length-prefixed encoding is provably injective for arbitrary stem content, not merely
-"no known collision found yet," and is covered both by a test reproducing the exact
-adversarial pair the third review pass found and by a round-trip property test over
-arbitrary stem content (not just a handful of hand-picked cases) — see D1's "Fourth
-guard needed"/"Final fix" above. This substantively de-risks what a human reviewer is
-being asked to approve, though the sign-off itself is still outstanding (tasks.md 1.3).
+"no known collision found yet," and is covered by a test reproducing the exact
+adversarial pair found when re-reviewing commit a5ec16d, a fixed table of named edge
+cases, and two `hypothesis` property tests generating 1000 random stem pairs per run
+(not just a handful of hand-picked cases) — see D1's "Fourth guard needed"/"Final fix"
+above. This substantively de-risks what a human reviewer is being asked to approve,
+though the sign-off itself is still outstanding (tasks.md 1.3).
 
 ### D2 — Genotype-means via upstream `calculate_genotype_means`, not a bespoke `.groupby().mean()`
 
@@ -415,18 +452,19 @@ one. **Filed upstream** as
 (tracked separately from this OpenSpec change; that report also raises D3's
 `calculate_correlation_confidence_intervals` question in the same thread).
 
-**Regression coverage gap found in a third review pass:** the golden fixture
+**Regression coverage gap found when re-reviewing commit c649f9d:** the golden fixture
 (`turface_cylinder_cross_experiment_correlation_golden.json`) was generated recording a
 `min_samples_3_upstream_no_op` block — the no-op reproduced directly against the real
 turface_19/cylinder genotype-means, not a synthetic fixture — specifically so this
 no-op's continued existence could be pinned against real data. No test actually read
 that block back: `test_upstream_min_samples_no_op_still_present` pins the no-op only
 against a synthetic 3-genotype fixture. `test_upstream_min_samples_no_op_still_present_on_real_fixture_pair`
-now exercises the same raw-delegate call against the real fixture pair and asserts
-against the golden's `n_genotypes`/`correlation` values, so that recorded field is no
-longer orphaned. **Fourth review pass:** that new test still omitted the golden block's
-own `p_value` field despite asserting the other two values right next to it — a silent
-regression in `p_value` specifically would have gone uncaught. Added.
+(added in a5ec16d) now exercises the same raw-delegate call against the real fixture
+pair and asserts against the golden's `n_genotypes`/`correlation` values, so that
+recorded field is no longer orphaned. **Found when re-reviewing commit a5ec16d:** that
+new test still omitted the golden block's own `p_value` field despite asserting the
+other two values right next to it — a silent regression in `p_value` specifically would
+have gone uncaught. Added in f199126.
 
 ### D9 — Reuse the reserved `correlation` tool_class slot; no discovery-list changes needed
 
@@ -533,7 +571,7 @@ surface (two names instead of one), it now calls `_validate_experiment_name` exp
 on both `experiment_1` and `experiment_2` as defense-in-depth, rather than relying on
 the incidental protection alone.
 
-**Found in a third PR review pass:** `_validate_experiment_name`'s error message never
+**Found when re-reviewing commit c649f9d:** `_validate_experiment_name`'s error message never
 named which field it was validating — harmless for its original single-experiment
 callers (`qc_inspect`), but this tool calls it twice, so a caller had no way to tell
 whether `experiment_1` or `experiment_2` was rejected. `_validate_experiment_name` now
@@ -599,15 +637,16 @@ schema-routing path wasn't traced further than that — this is the confirmed sy
 not a fully pinned root cause; an earlier draft of this note additionally claimed the
 top-level result schema and the nested `outputs` schema "collide" on an identical
 auto-generated type name, which overstated a mechanism this investigation didn't
-actually verify — corrected on a third review pass). Confirmed directly against the
-live container for the long-shipped `pca_analysis` tool too (`structured_content`
-correct, `.data.outputs` empty) — this was a latent bug in *every* `RunLinks`-based
-tool's live-smoke coverage, invisible until this PR became the first smoke test to
-assert on `outputs` at all. Fixed at the shared `conftest.py` level (one line),
-benefiting every smoke test in the package, not patched around locally in this tool's
-own test file. That "benefits every `RunLinks`-based tool" claim was itself untested
-beyond this one tool until a third review pass flagged it (found in review): nothing
-else asserted on `outputs` to pin the shared fix going forward. `test_pca_analysis_smoke`
+actually verify — corrected when re-reviewing commit c649f9d). Confirmed directly
+against the live container for the long-shipped `pca_analysis` tool too
+(`structured_content` correct, `.data.outputs` empty) — this was a latent bug in
+*every* `RunLinks`-based tool's live-smoke coverage, invisible until this PR became the
+first smoke test to assert on `outputs` at all. Fixed at the shared `conftest.py` level
+(one line), benefiting every smoke test in the package, not patched around locally in
+this tool's own test file. That "benefits every `RunLinks`-based tool" claim was itself
+untested beyond this one tool until re-reviewing commit c649f9d flagged it (found in
+review): nothing else asserted on `outputs` to pin the shared fix going forward.
+`test_pca_analysis_smoke`
 now also asserts `set(result["outputs"]) == {...}`, so a second, independent tool
 regression-tests the shared `conftest.py` fix, not just #489's own tool.
 

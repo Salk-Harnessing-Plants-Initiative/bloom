@@ -46,7 +46,7 @@ are therefore reserved in ``experiment_1``/``experiment_2`` and rejected up fron
 naive un-sanitized composite is silently truncated by ``AnalysisDir``'s own re-applied
 ``Path(...).stem`` (found in review) — a filename stem containing a ``.``: see
 :func:`_reject_dotted_stem`. (A stem containing the literal ``__x__`` separator substring
-is *not* rejected — a second review pass added that guard, but a third found it
+is *not* rejected — commit a5ec16d added that guard, but re-reviewing it found it
 insufficient: the join itself can manufacture a fresh separator occurrence straddling the
 two stems even when neither stem contains it outright, so the fix had to be structural —
 see :func:`_composite_experiment_key` — not another content guard.) Persisted under the
@@ -143,10 +143,11 @@ class CrossExperimentCorrelationsParams(BaseModel):
         "produced by qc_clean; cross_experiment_correlations consumes it (require_clean). "
         "Must not contain '@' or '|' (reserved for this tool's persisted-run encoding), "
         "and its filename stem (the part before the final extension) must not contain "
-        "'.' or '__x__' (reserved for this tool's composite storage-key encoding). Must "
-        "differ from experiment_2 (self-correlation is rejected). Argument "
-        "order is significant: swapping experiment_1/experiment_2 produces a different "
-        "persisted run (a distinct storage key) — the two calls are not cross-referenced.",
+        "'.' (this tool's composite storage-key encoding cannot safely represent a "
+        "dotted stem). Must differ from experiment_2 (self-correlation is rejected). "
+        "Argument order is significant: swapping experiment_1/experiment_2 produces a "
+        "different persisted run (a distinct storage key) — the two calls are not "
+        "cross-referenced.",
     )
     experiment_2: str = Field(
         ...,
@@ -324,10 +325,11 @@ def _reject_dotted_stem(experiment_1: str, experiment_2: str) -> None:
 def _composite_experiment_key(stem_1: str, stem_2: str) -> str:
     """Length-prefixed composite ``experiment=`` key — provably injective (design.md D1).
 
-    A second review pass rejected a stem containing the literal ``_COMPOSITE_SEPARATOR``
+    Commit a5ec16d rejected a stem containing the literal ``_COMPOSITE_SEPARATOR``
     substring, on the theory that neither stem containing the separator was sufficient to
-    keep it out of the joined string. **That's false — found in a third review pass,
-    confirmed by direct construction and a 500k-sample randomized stress test:**
+    keep it out of the joined string. **That's false — found when re-reviewing a5ec16d,
+    confirmed by direct construction and by** ``test_composite_key_injective_property``/
+    ``test_composite_key_distinct_pairs_never_collide`` **below:**
     ``stem_1="A", stem_2="x__B"`` and ``stem_1="A__x", stem_2="B"`` both pass that guard
     (neither stem contains the 5-character substring ``"__x__"``) yet both produce the
     identical joined string ``"A__x__x__B"`` — the separator's own internal repetition
@@ -343,8 +345,10 @@ def _composite_experiment_key(stem_1: str, stem_2: str) -> str:
     run of digit characters — which necessarily terminates at the first ``"_"``,
     because digits never contain ``"_"`` and nothing precedes the numeral. That pins the
     exact boundary between ``stem_1`` and everything after it, making the encoding
-    injective (in fact invertible — see ``test_composite_key_round_trips_for_any_stem_pair``)
-    regardless of either stem's content. This is the standard length-prefixed
+    injective (in fact invertible — see ``test_composite_key_round_trips_for_any_stem_pair``
+    and, over randomized input rather than a fixed table,
+    ``test_composite_key_injective_property``) regardless of either stem's content. This
+    is the standard length-prefixed
     ("netstring") technique for exactly this class of delimiter ambiguity, and is why
     the previous rounds' stem-content guards (dot, separator-substring) were the wrong
     kind of fix: they treat a structural encoding problem as a validation problem.
