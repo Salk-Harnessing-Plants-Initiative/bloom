@@ -24,10 +24,29 @@ INSERT INTO storage.buckets (id, name)
 
 -- Repoint any objects that landed in the old underscore-bucket id back onto
 -- the hyphen id so they remain readable under the new policies. No-op when
--- the table has no such rows (the typical case — MinIO refused the bucket).
-UPDATE storage.objects
+-- the table has no such rows.
+--
+-- The NOT EXISTS guard is load-bearing: storage.objects has a unique
+-- constraint on (bucket_id, name), so a plain UPDATE aborts with 23505 when
+-- the same name already exists under the hyphen id. Production carries 42
+-- rows under both ids — the hyphen rows are the originals (2023-2025), the
+-- underscore rows a later Bloom V1 import — so the unguarded UPDATE failed
+-- and blocked every deploy.
+--
+-- Move only the rows that have no counterpart under the new id. Rows that do
+-- have one are left in place rather than dropped: whether a same-named pair
+-- is genuinely the same object can only be confirmed per environment, and a
+-- migration is the wrong place to delete data on an assumption. Nothing reads
+-- the legacy id, so leaving them is inert. On production this moves 0 rows.
+UPDATE storage.objects o
    SET bucket_id = 'species-illustrations'
- WHERE bucket_id = 'species_illustrations';
+ WHERE o.bucket_id = 'species_illustrations'
+   AND NOT EXISTS (
+     SELECT 1
+       FROM storage.objects t
+      WHERE t.bucket_id = 'species-illustrations'
+        AND t.name = o.name
+   );
 
 -- Repoint the four authenticated-role policies from the original
 -- 20230807221141_create_species_illustrations_bucket.sql migration.
