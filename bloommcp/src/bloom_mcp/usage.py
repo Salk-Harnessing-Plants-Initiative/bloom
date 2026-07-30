@@ -13,6 +13,7 @@ flight, since submission happens fire-and-forget, never awaited inline.
 from __future__ import annotations
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,17 @@ logger = logging.getLogger(__name__)
 # client's own timeout), not a long-running task, so this doesn't meaningfully
 # delay process shutdown.
 _EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bloommcp-usage")
+
+# `ThreadPoolExecutor` itself has an unbounded work queue — under a burst of
+# traffic, unbounded submission would queue arbitrarily many recording calls,
+# all eventually serializing on the same hot bloommcp_usage row (a single
+# identity, most commonly the 'anonymous' sentinel). This semaphore caps how
+# many recording calls may be in flight (queued + running) at once;
+# `record_usage_async` drops (logs, does not block or raise) rather than
+# queue unboundedly once the cap is hit — usage tracking is observability,
+# not a delivery guarantee.
+_MAX_INFLIGHT = 64
+_inflight = threading.Semaphore(_MAX_INFLIGHT)
 
 
 def _do_record(identity: str, action: str) -> None:
@@ -46,18 +58,32 @@ def _do_record(identity: str, action: str) -> None:
             identity,
             action,
         )
+    finally:
+        _inflight.release()
 
 
 def record_usage_async(identity: str, action: str) -> None:
     """Fire-and-forget: submit the recording call to a background thread.
 
-    Never blocks the caller and never raises — a submission failure (e.g. the
-    executor rejecting work during interpreter shutdown) is caught and logged
-    the same as an RPC failure.
+    Never blocks the caller and never raises. Drops (logs) rather than
+    queues if `_MAX_INFLIGHT` recording calls are already in flight — see the
+    module-level comment on `_inflight`. A submission failure for another
+    reason (e.g. the executor rejecting work during interpreter shutdown) is
+    also caught and logged, the same as an RPC failure.
     """
+    if not _inflight.acquire(blocking=False):
+        logger.warning(
+            "bloommcp_usage recording dropped (>= %d already in flight): "
+            "identity=%r action=%r",
+            _MAX_INFLIGHT,
+            identity,
+            action,
+        )
+        return
     try:
         _EXECUTOR.submit(_do_record, identity, action)
     except Exception:
+        _inflight.release()
         logger.exception(
             "failed to submit bloommcp_usage recording (identity=%r, action=%r)",
             identity,

@@ -14,17 +14,21 @@ it's out of scope (startup-`lifespan`-scoped MCP client construction, no per-req
 and re-scoped the issue to bloommcp-side-only. This design implements that resolved, re-scoped
 slice.
 
-**This document has now been revised twice.** The first revision, after a 5-agent adversarial
-review of the initial proposal, found one load-bearing citation (an "existing `call_rpc()` seam")
-was fabricated, and rewrote Decision 4 to attribute usage per-tool-call instead of per-section,
-based on a claim (FastMCP's own context-propagation mechanism is reliable) that later turned out
-to be true in general but not sufficient for the specific reused-session case this feature needs.
-The second revision — a review of the actual PR implementation, not just the proposal — found
-that gap and reverted Decision 4 to its original, section-level design, this time with the real
-mechanism confirmed correct rather than assumed. Two other real issues from that same review are
-also fixed here: a UUID regex anchor that let a trailing newline slip through (Decision 1), and
-usage recording running synchronously on every tool call rather than off the request's critical
-path (Decision 4). Where a decision below changed as a result of either review, that's noted
+**This document has now been revised three times.** The first revision, after a 5-agent
+adversarial review of the initial proposal, found one load-bearing citation (an "existing
+`call_rpc()` seam") was fabricated, and rewrote Decision 4 to attribute usage per-tool-call
+instead of per-section, based on a claim (FastMCP's own context-propagation mechanism is
+reliable) that later turned out to be true in general but not sufficient for the specific
+reused-session case this feature needs. The second revision — a review of the actual PR
+implementation, not just the proposal — found that gap and reverted Decision 4 to its original,
+section-level design, this time with the real mechanism confirmed correct rather than assumed.
+Two other real issues from that same review were also fixed then: a UUID regex anchor that let a
+trailing newline slip through (Decision 1), and usage recording running synchronously on every
+tool call rather than off the request's critical path (Decision 4). The third revision — a
+re-review of that fix — found the middleware-level recording it introduced fired before FastMCP's
+own bearer-auth check could reject an unauthenticated request, and that the fire-and-forget
+submission had no bound; both are fixed in Decision 4's fourth stage below. Where a decision below
+changed as a result of any of these reviews, that's noted
 explicitly rather than silently rewritten.
 
 **Root cause of the fabricated citation** (worth recording so it isn't repeated): the first
@@ -266,6 +270,31 @@ proposal, which described the *feature*, not this specific cost.
   review of what (if anything) currently depends on session reuse — not something to change as a
   side effect of an identity/usage-tracking feature.
 
+**Fourth stage (this revision) — recording is gated on the downstream response, and bounded.** A
+review of the reverted-to-middleware-level implementation (not just the design) found two further
+issues, both fixed here:
+
+- **Recording fired unconditionally, before the wrapped app even ran** — meaning it fired for
+  *every* HTTP request reaching bloommcp, including one with no valid `BLOOMMCP_API_KEY` and no
+  `X-Bloom-Identity` header, which FastMCP's own bearer check (inside the wrapped app) would go on
+  to reject with `401` anyway. Confirmed reachable: nothing about this middleware's own logic
+  requires authentication first, and it is wired in regardless of whether any real client sends
+  the identity header yet. Fixed by wrapping `send` to capture the downstream response's status
+  and moving the `record_usage_async` call to *after* `await self.app(...)` returns, firing only
+  when that status is not `401` — an unauthenticated hit still gets rejected exactly as before,
+  but is no longer recorded. (A downstream status other than `401` — e.g. a `4xx`/`5xx` from the
+  tool/protocol layer itself, unrelated to auth — still records; only `401` specifically is
+  treated as "this caller was never authenticated to begin with.")
+- **The fire-and-forget submission had no bound.** `ThreadPoolExecutor`'s own work queue is
+  unbounded, so — especially now that unauthenticated traffic could reach it at all before the fix
+  above — a burst of requests could queue arbitrarily many recording calls, all eventually
+  serializing on the same hot `bloommcp_usage` row (most commonly the `anonymous` sentinel, or any
+  single popular identity). Fixed with a `threading.Semaphore(_MAX_INFLIGHT=64)` gate:
+  `record_usage_async` acquires non-blocking before submitting, and drops (logs, does not queue or
+  block) if the cap is already reached. Usage tracking is observability, not a delivery guarantee,
+  so dropping under sustained overload is the right failure mode — blocking the caller or growing
+  an unbounded queue would not be.
+
 ### Decision 5 — `JWT_SECRET` is validated lazily, only when a request actually carries the header
 
 Mirrors the existing convention: `bloom_mcp.supabase_client._require_env()`
@@ -463,11 +492,23 @@ fixed by this design doc.
   rather than a sampling gap. A future change (e.g., a careless #388 namespacing implementation)
   could still thread identity into a query or Storage path without violating this spec's literal
   text — that would be a new, separate regression to catch at that time.
+- **`request_count`/`last_action` count raw qualifying HTTP requests, not MCP tool invocations —
+  disclosed here so a future reader of `bloommcp_usage` doesn't misinterpret the numbers once real
+  identities start flowing through.** Since recording now happens in the middleware itself (per
+  Decision 4's final revision), it fires for every HTTP request the middleware sees and doesn't
+  reject — including MCP protocol-level messages (`initialize`, `notifications/initialized`, and
+  similar handshake/keepalive traffic) that carry no tool call at all. This means `request_count`
+  is inflated above the caller's actual number of tool invocations, and `last_action` can reflect
+  a protocol message rather than the caller's most recent real tool use. This is the direct,
+  accepted cost of Decision 4's fix (attributing at request granularity, since that's the only
+  granularity provably free of the ContextVar/session bug) — not something a future change should
+  "fix" by trying to filter which HTTP requests count without re-introducing tool-call-level
+  awareness (and its cross-task problems) into this middleware.
 - **This entire feature is inert until a separate, not-yet-filed langchain-agent change ships**
   (proposal.md Scope) — there is no way to demo the identity-resolved path end-to-end from
-  Bloom-web today. Mitigated by testing the middleware and `register()` wrapper directly (a
-  client sending `X-Bloom-Identity` by hand against bloommcp), which is sufficient to verify this
-  change's own contract independent of its unshipped prerequisite.
+  Bloom-web today. Mitigated by testing the middleware directly (a client sending
+  `X-Bloom-Identity` by hand against bloommcp), which is sufficient to verify this change's own
+  contract independent of its unshipped prerequisite.
 - **The rejection behavior (Decision 2) has no real-traffic exposure to validate against** —
   since no current client sends the header, "invalid token → 401" has only ever been exercised
   by this change's own tests. Accepted; this is standard for additive, currently-unreachable

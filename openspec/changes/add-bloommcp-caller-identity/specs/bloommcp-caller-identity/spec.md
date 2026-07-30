@@ -105,14 +105,21 @@ bloommcp SHALL record usage of every qualifying HTTP request in a `bloommcp_usag
 `identity` (the resolved caller identity, or the literal `anonymous` when no header was present),
 `first_seen`, `last_seen`, a monotonically incrementing `request_count`, and `last_action` (the
 mounted surface that served the request — one of the registered section names, or `combined` for
-the root/combined surface). Recording SHALL upsert atomically keyed on `identity`, incrementing
-`request_count` and refreshing `last_seen`/`last_action` on repeat activity from the same
-identity, and SHALL run without blocking or adding latency to the request it is attributed to. A
-failure while recording usage — including a failure to schedule the recording itself — SHALL be
-caught and logged, and SHALL NOT cause the underlying request to fail. Requests to the `/health`
-endpoint SHALL NOT be recorded. This table records the most recent state per identity; it is not
-an append-only history (repeat activity from the same identity overwrites `last_action` and does
-not preserve the previous one).
+the root/combined surface). A request qualifies only if it is not to the `/health` endpoint AND
+the downstream response is not a `401` — a `401` from the wrapped app (e.g. FastMCP's own
+`BLOOMMCP_API_KEY` bearer check) indicates the caller was never authenticated to use bloommcp at
+all, and SHALL NOT be recorded; recording SHALL happen only after the downstream response is
+known, not unconditionally before it. Recording SHALL upsert atomically keyed on `identity`,
+incrementing `request_count` and refreshing `last_seen`/`last_action` on repeat activity from the
+same identity, and SHALL run without blocking or adding latency to the request it is attributed
+to. Recording attempts SHALL be bounded: beyond a fixed number of concurrently in-flight
+recording attempts, further attempts SHALL be dropped (logged) rather than queued or blocked on.
+A failure while recording usage — including a dropped or unschedulable attempt — SHALL be caught
+and logged, and SHALL NOT cause the underlying request to fail. This table records the most
+recent state per identity; it is not an append-only history (repeat activity from the same
+identity overwrites `last_action` and does not preserve the previous one), and `request_count`
+counts qualifying HTTP requests, not MCP tool invocations specifically (protocol-level messages
+such as `initialize` also count — see design.md Risks).
 
 Usage is recorded at the granularity of which mounted surface handled a request, not the specific
 MCP tool invoked — a caller's `bloommcp_usage` row reflects "used the `sleap_roots` surface,
@@ -165,6 +172,26 @@ see design.md Decision 4.
 - **WHEN** a request is made to the `/health` endpoint, with or without a valid
   `X-Bloom-Identity` header
 - **THEN** no `bloommcp_usage` row is created or updated as a result
+
+#### Scenario: A request the downstream app rejects with 401 is not recorded
+
+- **WHEN** a request (with a valid, absent, or otherwise-acceptable `X-Bloom-Identity` header)
+  reaches the wrapped app, and that app's own response is a `401`
+- **THEN** no `bloommcp_usage` row is created or updated as a result — recording is gated on the
+  downstream response, not fired unconditionally beforehand
+
+#### Scenario: A non-401 downstream rejection is still recorded
+
+- **WHEN** the wrapped app's response is some status other than `401` (including other error
+  statuses unrelated to authentication)
+- **THEN** the request is still recorded normally
+
+#### Scenario: Recording attempts beyond the in-flight bound are dropped, not queued
+
+- **WHEN** the number of concurrently in-flight recording attempts already equals the configured
+  bound
+- **THEN** a further recording attempt is dropped (logged) immediately, rather than queued
+  indefinitely or blocking the triggering request
 
 ### Requirement: JWT_SECRET Is Validated Lazily, Only When Needed
 

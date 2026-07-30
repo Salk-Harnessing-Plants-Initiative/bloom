@@ -123,8 +123,13 @@ def verify_identity_header(value: str | None) -> str | None:
 def _action_from_path(path: str) -> str:
     """The mounted surface a request's path resolves to: one of
     `bloom_mcp.sections.SECTIONS`'s keys, or `"combined"` for the root
-    surface (`/mcp`, `/health`). Imported lazily to avoid any import-time
-    coupling between this module and the sections package."""
+    surface (`/mcp`, `/health`). Imported lazily not to avoid an import
+    cycle (`server.py` already imports both `identity` and `sections`
+    eagerly with no conflict) but because `bloom_mcp.sections` pulls in
+    every section's tool modules — a materially heavier import graph
+    (matplotlib, sleap-roots-analyze, etc.) than `identity.py` otherwise
+    needs at its own import time, e.g. for a lightweight unit test of this
+    module alone."""
     from bloom_mcp.sections import SECTIONS
 
     first_segment = path.strip("/").split("/", 1)[0]
@@ -148,9 +153,22 @@ class IdentityMiddleware:
     Verification only does real work when the header is present, so a Docker
     healthcheck hitting ``/health`` never touches ``JWT_SECRET`` or PyJWT.
     Usage recording (see module docstring for why it lives here, not in
-    tool-dispatch code) is skipped for `/health` specifically, and is
-    non-blocking (`bloom_mcp.usage.record_usage_async`) — it never adds
-    latency to the request it's attributed to.
+    tool-dispatch code) is skipped for `/health`, and is non-blocking
+    (`bloom_mcp.usage.record_usage_async`) — it never adds latency to the
+    request it's attributed to.
+
+    Recording happens **after** the wrapped app responds, gated on the
+    response not being a `401` — not before, and not unconditionally. This
+    middleware only ever rejects a request itself (before reaching the
+    wrapped app) for a bad *identity* header; FastMCP's own independent
+    `BLOOMMCP_API_KEY` bearer check runs *inside* the wrapped app (Decision
+    3) and can reject with `401` on its own. Recording unconditionally
+    before delegating would log usage for a request that was never actually
+    authenticated to use bloommcp at all — reachable by anyone, with no
+    valid API key and no `X-Bloom-Identity` header, since this middleware is
+    wired in regardless of whether any real client sends the header yet.
+    Gating on the response status closes that off: an unauthenticated hit
+    still gets a `401` from FastMCP as before, but is no longer recorded.
     """
 
     def __init__(self, app) -> None:
@@ -184,12 +202,20 @@ class IdentityMiddleware:
             return
 
         path = scope.get("path", "")
-        if path != "/health":
+        should_record = path != "/health"
+        response_status: dict[str, int] = {}
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                response_status["status"] = message["status"]
+            await send(message)
+
+        await self.app(scope, receive, _send if should_record else send)
+
+        if should_record and response_status.get("status") != 401:
             from bloom_mcp.usage import record_usage_async
 
             record_usage_async(identity or ANONYMOUS, _action_from_path(path))
-
-        await self.app(scope, receive, send)
 
 
 async def _json_response(scope, receive, send, *, status: int, error: str) -> None:

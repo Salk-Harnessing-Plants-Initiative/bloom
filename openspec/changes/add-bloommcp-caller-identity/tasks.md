@@ -111,20 +111,44 @@
 - [x] 3.4b Implement: `_action_from_path(path)` in `identity.py`; `IdentityMiddleware.__call__`
       calls `bloom_mcp.usage.record_usage_async(identity, action)` after a successful
       verification (skipping `/health`), before delegating to the wrapped app.
+- [x] 3.4c **Fixed, third review pass**: 3.4b's "before delegating to the wrapped app" was itself
+      a bug — it meant recording fired for *every* request reaching bloommcp, including one with
+      no valid `BLOOMMCP_API_KEY` and no `X-Bloom-Identity` header, before FastMCP's own bearer
+      check (inside the wrapped app) got a chance to reject it with `401`. Confirmed reachable by
+      anyone, regardless of whether any real client sends the identity header yet. Write failing
+      tests: a downstream `401` (simulating FastMCP's bearer rejection) suppresses recording even
+      with a valid identity header; a downstream status other than `401` does not suppress it.
+      (`test_downstream_401_is_not_recorded`, `test_downstream_non_401_rejection_is_still_recorded`
+      in `tests/test_identity_middleware.py`.)
+- [x] 3.4d Implement: `IdentityMiddleware.__call__` wraps `send` to capture the downstream
+      response's status, moves the `record_usage_async` call to *after* `await self.app(...)`
+      returns, and only fires it when that status is not `401`.
 - [x] 3.5a Write failing tests proving usage recording is **non-blocking**: `record_usage_async`
-      returns before a deliberately slow `call_rpc` call completes; the actual RPC call still
-      happens (eventually, on a background thread — verified via a `threading.Event`, not a race);
-      a `call_rpc` failure is caught and logged without propagating; a failure to even *submit*
-      the background work (e.g. the executor rejecting new work) is also caught and logged. This
-      directly fixes a review finding: the first version of this recording design ran the DB
-      round-trip synchronously in a `finally` block around every tool call, adding undisclosed
-      latency to every existing (today, 100% anonymous) tool call — not just future/inert
-      traffic, contrary to the "inert in production" framing describing the *feature*, not this
-      specific cost. (`tests/test_usage.py`, 4 tests, all green.)
+      returns before a deliberately slow `call_rpc` call completes, with an explicit wall-clock
+      bound (not just event ordering — a first draft of this test asserted ordering only, which a
+      review correctly pointed out couldn't actually fail on a regression to synchronous
+      execution, only run slower); the actual RPC call still happens (eventually, on a background
+      thread — verified via a `threading.Event`, not a race); a `call_rpc` failure is caught and
+      logged without propagating; a failure to even *submit* the background work (e.g. the
+      executor rejecting new work) is also caught and logged. This directly fixes a review
+      finding: the first version of this recording design ran the DB round-trip synchronously in
+      a `finally` block around every tool call, adding undisclosed latency to every existing
+      (today, 100% anonymous) tool call — not just future/inert traffic, contrary to the "inert in
+      production" framing describing the *feature*, not this specific cost. (`tests/test_usage.py`,
+      5 tests, all green.)
 - [x] 3.5b Implement: `bloom_mcp/usage.py`'s `record_usage_async(identity, action)` submits the
       `call_rpc()` round-trip to a small, dedicated `concurrent.futures.ThreadPoolExecutor`
       (module-level, 4 workers) and returns immediately; both the RPC call and the submission
       itself are wrapped in try/except, logged, never re-raised.
+- [x] 3.5c **Fixed, third review pass**: `ThreadPoolExecutor`'s own work queue is unbounded — a
+      burst of traffic (especially unauthenticated traffic, before 3.4c/3.4d's fix) could queue
+      arbitrarily many recording calls, serializing on the same hot `bloommcp_usage` row. Write a
+      failing test: with the in-flight cap monkeypatched down to 1, a second concurrent recording
+      attempt is dropped (logged), not queued, while the first is still in flight.
+      (`test_record_usage_async_drops_when_too_many_in_flight`, `tests/test_usage.py`.)
+- [x] 3.5d Implement: a module-level `threading.Semaphore(_MAX_INFLIGHT=64)` in `usage.py`;
+      `record_usage_async` acquires non-blocking before submitting and drops (logs) if the cap is
+      already reached; `_do_record` releases the semaphore in a `finally` block.
 - [x] 3.6 Write real-Postgres tests under the repo's **existing** root-level `tests/integration/`
       (using its `pg_conn` fixture convention, wired into the `compose-health-check` CI job —
       **not** `bloommcp/tests/` with `@pytest.mark.integration`, which means something different
@@ -170,8 +194,8 @@
       continues to pass unmodified — run the full existing suite as-is after this change lands
       and confirm zero unrelated failures (this is a gate on 6.1, not a separate new assertion).
       (`tests/contract/` — the suite `as_mcp_tool`/`register()` live in, confirmed fully reverted
-      to pre-this-change behavior — reruns clean at 36/36 (one fewer file than during the
-      now-reverted per-tool attempt, which had temporarily added a 37th);
+      to pre-this-change behavior — reruns clean at 35/35 (one fewer file than during the
+      now-reverted per-tool attempt, which had temporarily added a `test_register_usage.py` 36th);
       `tests/test_sections_scaffold.py` reruns clean at 7/7. A full-repository run is also
       required per 6.1.)
 - [x] 5.2 Write a test proving the never-forwarded invariant across **every currently-registered
@@ -191,17 +215,24 @@
 
 - [ ] 6.1 `cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration and not
       live_smoke and not live_smoke_slow"` — **not yet run clean end-to-end; still open.**
-      Verified clean so far, targeted per new/changed file: identity (16), identity middleware
-      (25, including the live subprocess dual-auth test), supabase_client call_rpc (4), usage
-      (4), contract/ full suite (36, unaffected — confirmed reverted, not merely unaffected),
-      sections_scaffold (7, unaffected) — 92 tests green with zero regressions in every file
-      touched or exercised by this change. A single whole-`tests/`-tree invocation was attempted
-      repeatedly but could not complete in this session due to persistent WSL/tool-bridge
-      instability unrelated to this change (confirmed independently: even a bare `echo` through
-      the same bridge failed intermittently throughout) — collection alone (`--collect-only`)
-      succeeded cleanly and fast (749 tests, 7.5s), so this is infrastructure flakiness, not a
-      hang or failure in the suite itself. Retry once the environment is stable, or let CI's own
-      run be the gate — do not treat the per-file greens above as a substitute for this.
+      Verified clean so far, targeted per new/changed file — counts below are from
+      `pytest --collect-only -q` grouped by file, not hand-counted (a review caught an earlier,
+      hand-counted claim in this file/the commit message that didn't sum correctly — supabase_client
+      was stated as 4 when it's actually 2, and contract/ as 36 when it's actually 35; these
+      corrected counts are authoritative): identity (16), identity middleware (27, including the
+      live subprocess dual-auth test and the two 401-gating tests), supabase_client call_rpc (2),
+      usage (5, including the tightened non-blocking timing test and the in-flight-cap test),
+      contract/ full suite (35, unaffected — confirmed reverted, not merely unaffected),
+      sections_scaffold (7, unaffected) — **92 tests green** (16+27+2+5+35+7=92, verified via
+      `pytest --collect-only -q | grep '::' | sed 's/::.*//' | sort | uniq -c`) with zero
+      regressions in every file touched or exercised by this change. A single whole-`tests/`-tree
+      invocation was attempted repeatedly but could not complete in this session due to persistent
+      WSL/tool-bridge instability unrelated to this change (confirmed independently: even a bare
+      `echo` through the same bridge failed intermittently throughout) — collection alone
+      (`--collect-only`) succeeded cleanly and fast (749 tests, 7.5s), so this is infrastructure
+      flakiness, not a hang or failure in the suite itself. Retry once the environment is stable,
+      or let CI's own run be the gate — do not treat the per-file greens above as a substitute for
+      this.
 - [ ] 6.2 `ruff check`, `ruff format --check`, `black --check` clean on all changed files;
       `uv lock --check` clean after promoting `PyJWT` to a direct dependency. **Partially
       verified:** `uv lock` + `uv lock --check` both clean; `ruff check`/`ruff format --check`

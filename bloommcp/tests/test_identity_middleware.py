@@ -9,12 +9,19 @@ Two layers of test:
 
 1. Unit-level, against `IdentityMiddleware` wrapping a bare dummy ASGI app —
    confirms accept/reject behavior, that usage recording is attempted with
-   the right (identity, action) pair (or skipped for `/health`), and that
-   duplicate `X-Bloom-Identity` headers are rejected. Uses `TestClient`
-   *without* the context-manager form, so no ASGI lifespan is driven — the
-   dummy app has none to run. `bloom_mcp.usage.record_usage_async` is
-   monkeypatched to a synchronous recorder so these tests don't depend on
-   background-thread timing (that's `test_usage.py`'s job).
+   the right (identity, action) pair (or skipped for `/health`), that
+   duplicate `X-Bloom-Identity` headers are rejected, and that recording is
+   gated on the *wrapped app's own response*, not fired unconditionally
+   before delegating to it: a downstream `401` (e.g. FastMCP's own
+   `BLOOMMCP_API_KEY` bearer check rejecting the request) suppresses
+   recording, since otherwise any caller — with no valid API key and no
+   identity header — could generate a `bloommcp_usage` row for every hit,
+   reachable today regardless of whether a real client sends the header
+   yet. Uses `TestClient` *without* the context-manager form, so no ASGI
+   lifespan is driven — the dummy app has none to run.
+   `bloom_mcp.usage.record_usage_async` is monkeypatched to a synchronous
+   recorder so these tests don't depend on background-thread timing (that's
+   `test_usage.py`'s job).
 2. Integration-level, against the real `server.build_app()` output via
    `TestClient` entered as a context manager (so FastMCP's own lifespan runs
    and its streamable-http session manager initializes — required for its
@@ -49,14 +56,18 @@ def _token(sub=A_UUID, secret=SECRET):
 
 
 class _DummyApp:
-    """A minimal ASGI app that returns 200 and records that it was called."""
+    """A minimal ASGI app that responds with a configurable status and
+    records that it was called."""
 
-    def __init__(self):
+    def __init__(self, status: int = 200):
         self.called = 0
+        self._status = status
 
     async def __call__(self, scope, receive, send):
         self.called += 1
-        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send(
+            {"type": "http.response.start", "status": self._status, "headers": []}
+        )
         await send({"type": "http.response.body", "body": b"ok"})
 
 
@@ -97,6 +108,35 @@ def test_valid_header_is_recorded_with_resolved_identity(monkeypatch, recorded_u
     client = TestClient(IdentityMiddleware(downstream))
     resp = client.get("/anything", headers={"X-Bloom-Identity": _token()})
     assert resp.status_code == 200
+    assert recorded_usage == [(A_UUID, "combined")]
+
+
+def test_downstream_401_is_not_recorded(monkeypatch, recorded_usage):
+    """A valid identity header does not force recording if the *wrapped app*
+    itself rejects the request with 401 — e.g. FastMCP's own independent
+    `BLOOMMCP_API_KEY` bearer check, which runs downstream of this
+    middleware (Decision 3). Without this gate, an unauthenticated caller
+    with no valid API key and no `X-Bloom-Identity` header could still
+    generate a recording for every request, since this middleware is wired
+    in regardless of whether any real client sends the header yet."""
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    downstream = _DummyApp(status=401)
+    client = TestClient(IdentityMiddleware(downstream))
+    resp = client.get("/anything", headers={"X-Bloom-Identity": _token()})
+    assert resp.status_code == 401
+    assert downstream.called == 1  # our middleware did delegate to it
+    assert recorded_usage == []  # but its 401 suppressed recording
+
+
+def test_downstream_non_401_rejection_is_still_recorded(monkeypatch, recorded_usage):
+    """Only a 401 suppresses recording — any other downstream status (e.g. a
+    4xx/5xx from the tool/protocol layer itself, unrelated to auth) does not,
+    since that's not evidence the caller was unauthenticated."""
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    downstream = _DummyApp(status=500)
+    client = TestClient(IdentityMiddleware(downstream))
+    resp = client.get("/anything", headers={"X-Bloom-Identity": _token()})
+    assert resp.status_code == 500
     assert recorded_usage == [(A_UUID, "combined")]
 
 
