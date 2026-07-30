@@ -1,5 +1,7 @@
-"""bloomctl cyl qc — list-sets (shaping, code count, sort, json; mocked client)."""
+"""bloomctl cyl qc — list-sets (shaping, code count, output formats; mocked client)."""
 
+import csv
+import io
 import json
 
 from click.testing import CliRunner
@@ -34,18 +36,17 @@ def _patch_authed(monkeypatch):
 
 def test_build_qc_set_row_counts_codes():
     row = qc.build_qc_set_row(SETS[0])
-    assert row == ["outliers", "20", "Rice", "Rice Wave 2", "2", "3"]  # set id + 3 QC codes
+    assert row == ["outliers", "Rice", "Rice Wave 2", "2", "3"]  # 3 QC codes
 
 
 def test_build_qc_set_row_tolerates_missing_relations():
     row = qc.build_qc_set_row({"name": "x", "cyl_experiments": None, "cyl_qc_codes": None})
-    assert row == ["x", "", "", "", "", "0"]  # no id/experiment/species, zero codes
+    assert row == ["x", "", "", "", "0"]  # no experiment/species, zero codes
 
 
 def test_build_qc_set_record():
     rec = qc.build_qc_set_record(SETS[1])
     assert rec == {
-        "id": 10,
         "name": "bad-scans",
         "species": "Canola",
         "experiment": "Canola Exp 1",
@@ -54,9 +55,20 @@ def test_build_qc_set_record():
     }
 
 
-def test_qc_set_sort_key_species_then_name():
-    ordered = sorted(SETS, key=qc.qc_set_sort_key)
-    assert [s["name"] for s in ordered] == ["bad-scans", "outliers"]  # Canola before Rice
+def test_columns_match_legacy_exactly():
+    """Five legacy columns, legacy header wording, no additions."""
+    assert qc.QC_SET_COLUMNS == [
+        "QC Set Name",
+        "Species",
+        "Experiment Name",
+        "Experiment ID",
+        "Number of QC Codes",
+    ]
+
+
+def test_no_sort_is_imposed():
+    """Rows are emitted in fetch order; the command must not reorder them."""
+    assert not hasattr(qc, "qc_set_sort_key")
 
 
 # --- query shape ------------------------------------------------------------
@@ -88,15 +100,57 @@ def test_fetch_qc_sets_builds_query():
 # --- command ----------------------------------------------------------------
 
 
-def test_list_sets_json_sorted(monkeypatch):
+def test_list_sets_default_is_table(monkeypatch):
+    """Bare invocation prints the human table, matching legacy."""
     _patch_authed(monkeypatch)
     monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
-    res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--json"])
+    res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets"])
+    assert res.exit_code == 0, res.output
+    assert "QC Set Name" in res.output
+
+
+def test_list_sets_output_json(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
+    res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "json"])
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)
-    assert [s["name"] for s in payload] == ["bad-scans", "outliers"]  # species-then-name
-    assert payload[0]["qc_code_count"] == 1
-    assert payload[1]["qc_code_count"] == 3
+    # Order is not specified — compare without regard to it.
+    assert {s["name"]: s["qc_code_count"] for s in payload} == {"outliers": 3, "bad-scans": 1}
+    assert all("id" not in s for s in payload)
+
+
+def test_list_sets_output_csv(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
+    res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "csv"])
+    assert res.exit_code == 0, res.output
+    rows = list(csv.DictReader(io.StringIO(res.output)))
+    assert {r["name"]: r["qc_code_count"] for r in rows} == {"outliers": "3", "bad-scans": "1"}
+
+
+def test_list_sets_rejects_unknown_output(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
+    res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "yaml"])
+    assert res.exit_code != 0
+    assert "yaml" in res.output
+
+
+def test_list_sets_empty_json_is_empty_array(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: [])
+    res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "json"])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output) == []
+
+
+def test_list_sets_empty_csv_is_header_only(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: [])
+    res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "csv"])
+    assert res.exit_code == 0, res.output
+    assert res.output.strip() == ",".join(qc.QC_SET_FIELDS)
 
 
 def test_list_sets_table(monkeypatch):
@@ -105,9 +159,37 @@ def test_list_sets_table(monkeypatch):
     res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets"])
     assert res.exit_code == 0, res.output
     assert "QC sets" in res.output
-    # names, set ids, and species all rendered — fails if a column is dropped/swapped
-    for token in ("outliers", "bad-scans", "20", "10", "Rice", "Canola"):
+    # names, species, experiments and counts all rendered — fails if a column is dropped
+    for token in ("outliers", "bad-scans", "Rice", "Canola", "Rice Wave 2", "Canola Exp 1"):
         assert token in res.output, f"{token!r} missing from table output"
+    # the set id is deliberately not a column
+    assert "QC Set ID" not in res.output
+
+
+def test_list_sets_lists_a_set_with_no_codes(monkeypatch):
+    """A set with zero QC codes reports 0 and is still listed, not filtered out."""
+    empty_set = [
+        {
+            "id": 7,
+            "name": "untouched",
+            "cyl_experiments": {"id": 5, "name": "Wheat W1", "species": {"common_name": "Wheat"}},
+            "cyl_qc_codes": [],
+        }
+    ]
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: empty_set)
+    res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "json"])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.output)
+    assert payload == [
+        {
+            "name": "untouched",
+            "species": "Wheat",
+            "experiment": "Wheat W1",
+            "experiment_id": 5,
+            "qc_code_count": 0,
+        }
+    ]
 
 
 def test_list_sets_surfaces_api_error(monkeypatch):

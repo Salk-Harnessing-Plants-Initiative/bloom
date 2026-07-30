@@ -71,7 +71,8 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - **[read]** `bloomctl cyl accessions sample-counts [--species X]` — plant count per
   accession, per species (`--json`).
 - **[read]** `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species,
-  experiment, number of QC codes) (`--json`).
+  experiment, number of QC codes). Prints a table by default; `--output csv|json`
+  for machine-readable output.
 
 (Full `cyl download` usage docs are still forthcoming; run any command
 with `--help` in the meantime. `cyl ingest-result` and `cyl download-for-predict`

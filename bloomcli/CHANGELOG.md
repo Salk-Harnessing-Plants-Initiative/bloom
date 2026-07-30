@@ -72,7 +72,8 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   accession per species, with `--json`. Read the server-side `cyl_experiment_accessions`
   and `cyl_accession_sample_counts` views (new capability; no legacy equivalent).
 - `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species, experiment,
-  and QC-code count), with `--json`. Ports the legacy `cyl qc list-sets` command.
+  and QC-code count). Ports the legacy `cyl qc list-sets` command, matching its
+  columns and header wording. Adds `--output csv|json`, which legacy did not have.
 - `bloomctl cyl ingest-result <envelope>` — write a per-scan `ResultEnvelope`
   back to Bloom via the `insert_cyl_result_envelope` RPC. Reads from a path or
   stdin (`-`), validates against `sleap-roots-contracts`, sends the original JSON
