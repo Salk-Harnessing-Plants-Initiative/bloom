@@ -1,7 +1,14 @@
 -- bloommcp caller-identity usage tracking (bloom#406, openspec
 -- add-bloommcp-caller-identity): a rolling per-identity usage aggregate, upserted once per
--- tool call by bloom_mcp.usage.with_usage_recording (contract.wrap.register()'s wrapper) via
--- the new bloom_mcp.supabase_client.call_rpc() seam.
+-- qualifying HTTP request by bloom_mcp.identity.IdentityMiddleware (via
+-- bloom_mcp.usage.record_usage_async, a non-blocking wrapper around the new
+-- bloom_mcp.supabase_client.call_rpc() seam). last_action records which *mounted surface*
+-- served the request (e.g. "core", "sleap_roots", "combined"), not the specific MCP tool name —
+-- an earlier per-tool design (recording from contract.wrap.register()'s tool wrapper via a
+-- ContextVar) was reverted after review: FastMCP's StreamableHTTPSessionManager runs the actual
+-- tool-dispatch loop in one long-lived task per session (mcp/server/streamable_http_manager.py),
+-- so a ContextVar set by this middleware on a *later* request in the same session cannot reach
+-- that already-running task. See design.md Decision 4 for the full history.
 --
 -- identity is the resolved X-Bloom-Identity sub claim (a Supabase user UUID), or the literal
 -- 'anonymous' when no header was present -- collapsing all unauthenticated usage into one

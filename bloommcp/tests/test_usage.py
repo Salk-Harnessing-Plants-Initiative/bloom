@@ -1,117 +1,94 @@
-"""`bloom_mcp.usage.with_usage_recording` — per-tool usage recording.
+"""`bloom_mcp.usage.record_usage_async` — non-blocking bloommcp_usage recording.
 
-Applied by `contract.wrap.register()` around each already-`@as_mcp_tool`-
-wrapped callable (not inside `as_mcp_tool` itself — see
-openspec/changes/add-bloommcp-caller-identity/design.md Decision 4). Records
-one `bloommcp_usage` upsert per tool invocation, keyed on the tool's own name,
-via `call_rpc` — faked here with `fake_bloommcp_rpc` (conftest.py) so no
-network/Postgres is touched. A recording failure must never fail the
-triggering tool call.
+Called by `identity.IdentityMiddleware`, not by tool-dispatch code (see
+identity.py's module docstring for why: a per-tool-call design was tried and
+reverted — it relied on a `ContextVar` that cannot reach FastMCP's
+persistent, per-session tool-dispatch task for a reused `streamable-http`
+session). Runs the actual `call_rpc()` round-trip on a background thread so
+it never blocks the caller; a `threading.Event` is used to deterministically
+wait for that background call in tests, rather than racing it.
 """
 
 from __future__ import annotations
 
-import pytest
+import threading
 
-import bloom_mcp.identity as identity
-from bloom_mcp.usage import with_usage_recording
-
-
-@pytest.fixture
-def set_current_identity():
-    """Set `identity._current_identity` for the duration of a test, resetting
-    afterward so it can't leak into a later test (ContextVar.set() persists
-    across plain sequential calls in the same thread otherwise)."""
-    tokens = []
-
-    def _set(value):
-        tokens.append(identity._current_identity.set(value))
-
-    yield _set
-    for token in reversed(tokens):
-        identity._current_identity.reset(token)
+from bloom_mcp.usage import record_usage_async
 
 
-def test_wrapped_tool_returns_the_same_result(fake_bloommcp_rpc):
-    def qc_clean(params):
-        return {"cleaned": True}
+def test_record_usage_async_returns_before_call_rpc_runs(monkeypatch):
+    """The call returns immediately even when `call_rpc` itself would block —
+    proves the recording genuinely happens on a background thread, not
+    inline before returning to the caller."""
+    import bloom_mcp.supabase_client as sc
 
-    wrapped = with_usage_recording(qc_clean)
-    assert wrapped({"experiment": "turface_19"}) == {"cleaned": True}
+    started = threading.Event()
+    release = threading.Event()
+
+    def _blocking_call(function_name, params):
+        started.set()
+        release.wait(timeout=2)
+        return []
+
+    monkeypatch.setattr(sc, "call_rpc", _blocking_call)
+
+    record_usage_async("11111111-1111-1111-1111-111111111111", "core")
+    # If this were synchronous, the line above would already have blocked on
+    # `release` — reaching here at all (let alone before `started` is
+    # necessarily set) is only possible because the call happens elsewhere.
+    release.set()
+    assert started.wait(timeout=2), "background call never started"
 
 
-def test_records_usage_with_tool_name_and_current_identity(
-    fake_bloommcp_rpc, set_current_identity
-):
-    set_current_identity("11111111-1111-1111-1111-111111111111")
+def test_record_usage_async_eventually_calls_call_rpc(monkeypatch):
+    import bloom_mcp.supabase_client as sc
 
-    def qc_clean(params):
-        return {"cleaned": True}
+    done = threading.Event()
+    calls = []
 
-    with_usage_recording(qc_clean)({"experiment": "turface_19"})
+    def _watched(function_name, params):
+        calls.append((function_name, dict(params)))
+        done.set()
+        return []
 
-    assert fake_bloommcp_rpc.calls == [
+    monkeypatch.setattr(sc, "call_rpc", _watched)
+
+    record_usage_async("11111111-1111-1111-1111-111111111111", "core")
+
+    assert done.wait(timeout=2), "record_usage_async never called call_rpc"
+    assert calls == [
         (
             "record_bloommcp_usage",
-            {
-                "p_identity": "11111111-1111-1111-1111-111111111111",
-                "p_action": "qc_clean",
-            },
+            {"p_identity": "11111111-1111-1111-1111-111111111111", "p_action": "core"},
         )
     ]
 
 
-def test_records_usage_as_anonymous_when_no_identity_set(fake_bloommcp_rpc):
-    def qc_clean(params):
-        return {"cleaned": True}
-
-    with_usage_recording(qc_clean)({"experiment": "turface_19"})
-
-    assert fake_bloommcp_rpc.calls == [
-        ("record_bloommcp_usage", {"p_identity": "anonymous", "p_action": "qc_clean"})
-    ]
-
-
-def test_records_usage_even_when_the_tool_raises(fake_bloommcp_rpc):
-    def qc_clean(params):
-        raise ValueError("boom")
-
-    with pytest.raises(ValueError, match="boom"):
-        with_usage_recording(qc_clean)({"experiment": "turface_19"})
-
-    assert len(fake_bloommcp_rpc.calls) == 1
-    assert fake_bloommcp_rpc.calls[0][0] == "record_bloommcp_usage"
-
-
-def test_usage_recording_failure_does_not_fail_the_tool_call(monkeypatch):
+def test_record_usage_async_swallows_call_rpc_failure(monkeypatch):
     import bloom_mcp.supabase_client as sc
 
+    done = threading.Event()
+
     def _boom(*_a, **_k):
+        done.set()
         raise RuntimeError("db unreachable")
 
     monkeypatch.setattr(sc, "call_rpc", _boom)
 
-    def qc_clean(params):
-        return {"cleaned": True}
-
-    # Must not raise, despite call_rpc raising internally.
-    assert with_usage_recording(qc_clean)({"experiment": "turface_19"}) == {
-        "cleaned": True
-    }
+    # Must not raise, despite call_rpc raising internally on the background thread.
+    record_usage_async("anonymous", "combined")
+    assert done.wait(timeout=2), "background call never ran"
 
 
-def test_wrapper_preserves_name_and_signature_for_fastmcp_registration():
-    """FastMCP introspects the wrapped callable's __name__/__signature__ to
-    build its tool schema — this must survive the extra wrapping layer."""
-    import inspect
+def test_record_usage_async_swallows_a_submission_failure(monkeypatch):
+    """Even if the executor itself can't accept work (e.g. shutting down),
+    the caller is never affected."""
+    import bloom_mcp.usage as usage
 
-    def qc_clean(params):
-        return {"cleaned": True}
+    class _DeadExecutor:
+        def submit(self, *_a, **_k):
+            raise RuntimeError("cannot schedule new futures after shutdown")
 
-    qc_clean.__signature__ = inspect.Signature(
-        [inspect.Parameter("params", inspect.Parameter.POSITIONAL_OR_KEYWORD)]
-    )
+    monkeypatch.setattr(usage, "_EXECUTOR", _DeadExecutor())
 
-    wrapped = with_usage_recording(qc_clean)
-    assert wrapped.__name__ == "qc_clean"
-    assert wrapped.__signature__ == qc_clean.__signature__
+    record_usage_async("anonymous", "combined")  # must not raise

@@ -1,23 +1,33 @@
 """`bloom_mcp.identity.IdentityMiddleware` — wiring + cross-surface coverage.
 
+Records usage itself, at request granularity (see identity.py's module
+docstring for why — a per-tool-call ContextVar design was tried and reverted
+after confirming it cannot reach FastMCP's persistent per-session
+tool-dispatch task for a reused `streamable-http` session).
+
 Two layers of test:
 
 1. Unit-level, against `IdentityMiddleware` wrapping a bare dummy ASGI app —
-   confirms the ContextVar is set/reset correctly and rejection short-circuits
-   before the downstream app is ever called. Uses `TestClient` *without* the
-   context-manager form, so no ASGI lifespan is driven — the dummy app has
-   none to run.
+   confirms accept/reject behavior, that usage recording is attempted with
+   the right (identity, action) pair (or skipped for `/health`), and that
+   duplicate `X-Bloom-Identity` headers are rejected. Uses `TestClient`
+   *without* the context-manager form, so no ASGI lifespan is driven — the
+   dummy app has none to run. `bloom_mcp.usage.record_usage_async` is
+   monkeypatched to a synchronous recorder so these tests don't depend on
+   background-thread timing (that's `test_usage.py`'s job).
 2. Integration-level, against the real `server.build_app()` output via
    `TestClient` entered as a context manager (so FastMCP's own lifespan runs
    and its streamable-http session manager initializes — required for its
-   mounted apps to handle a request at all; mirrors the `TestClient(app) as
-   c:` convention already used in `langchain/tests/conftest.py`). Confirms
-   the middleware is wired in and applies uniformly across the combined
-   surface and every mounted section, with no per-section wiring — new test
-   infrastructure for this package: no existing bloommcp test drives an HTTP
-   request through `build_app()`'s actual ASGI surface (existing tool tests
-   use `fastmcp.Client`'s in-memory transport, which bypasses `Mount` routing
-   and middleware entirely).
+   mounted apps to handle a request at all). Confirms the middleware is wired
+   in and applies uniformly across the combined surface and every mounted
+   section, with no per-section wiring, and that it doesn't short-circuit
+   FastMCP's own independent `BLOOMMCP_API_KEY` bearer check (a live
+   subprocess test — `bloom_mcp.auth.auth_provider` is built once at
+   `bloom_mcp.auth`'s first import, and every other test in this session has
+   already imported `bloom_mcp.server` without the key set, so a live
+   in-process test can't retroactively exercise the keyed path; mirrors
+   `test_devendor_invariants.py::test_server_boots_after_devendor`'s
+   subprocess pattern).
 """
 
 from __future__ import annotations
@@ -28,7 +38,7 @@ import jwt
 import pytest
 from starlette.testclient import TestClient
 
-from bloom_mcp.identity import ANONYMOUS, IdentityMiddleware, get_current_identity
+from bloom_mcp.identity import IdentityMiddleware, _action_from_path
 
 SECRET = "test-jwt-secret"
 A_UUID = str(uuid.uuid4())
@@ -38,71 +48,118 @@ def _token(sub=A_UUID, secret=SECRET):
     return jwt.encode({"sub": sub, "aud": "authenticated"}, secret, algorithm="HS256")
 
 
-class _SeenIdentityApp:
-    """A minimal ASGI app that records the identity visible during its call
-    and returns 200 with that identity as the body."""
+class _DummyApp:
+    """A minimal ASGI app that returns 200 and records that it was called."""
 
     def __init__(self):
-        self.seen: list[str] = []
+        self.called = 0
 
     async def __call__(self, scope, receive, send):
-        self.seen.append(get_current_identity())
-        body = self.seen[-1].encode()
+        self.called += 1
         await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": body})
+        await send({"type": "http.response.body", "body": b"ok"})
 
 
-# ── Unit-level: ContextVar + short-circuit behavior ──────────────────────────
-# No `with` block: these dummy apps implement no lifespan handler, and don't
-# need one — the middleware passes non-"http" scopes straight through, so a
-# lifespan event would otherwise reach the dummy app's http-only logic.
+@pytest.fixture
+def recorded_usage(monkeypatch):
+    """Synchronously records (identity, action) pairs `IdentityMiddleware`
+    attempts to log, bypassing the real background-thread executor so these
+    tests aren't racing it."""
+    import bloom_mcp.usage as usage
+
+    calls = []
+    monkeypatch.setattr(
+        usage,
+        "record_usage_async",
+        lambda identity, action: calls.append((identity, action)),
+    )
+    return calls
 
 
-def test_absent_header_calls_downstream_as_anonymous(monkeypatch):
+# ── Unit-level: accept/reject + usage-recording behavior ────────────────────
+# No `with` block: the dummy app implements no lifespan handler, and doesn't
+# need one — the middleware passes non-"http" scopes straight through.
+
+
+def test_absent_header_is_recorded_as_anonymous(monkeypatch, recorded_usage):
     monkeypatch.setenv("JWT_SECRET", SECRET)
-    downstream = _SeenIdentityApp()
+    downstream = _DummyApp()
     client = TestClient(IdentityMiddleware(downstream))
     resp = client.get("/anything")
     assert resp.status_code == 200
-    assert downstream.seen == [ANONYMOUS]
+    assert downstream.called == 1
+    assert recorded_usage == [("anonymous", "combined")]
 
 
-def test_valid_header_calls_downstream_with_resolved_identity(monkeypatch):
+def test_valid_header_is_recorded_with_resolved_identity(monkeypatch, recorded_usage):
     monkeypatch.setenv("JWT_SECRET", SECRET)
-    downstream = _SeenIdentityApp()
+    downstream = _DummyApp()
     client = TestClient(IdentityMiddleware(downstream))
     resp = client.get("/anything", headers={"X-Bloom-Identity": _token()})
     assert resp.status_code == 200
-    assert downstream.seen == [A_UUID]
+    assert recorded_usage == [(A_UUID, "combined")]
 
 
-def test_invalid_header_rejects_before_downstream_runs(monkeypatch):
+def test_invalid_header_rejects_before_downstream_runs(monkeypatch, recorded_usage):
     monkeypatch.setenv("JWT_SECRET", SECRET)
-    downstream = _SeenIdentityApp()
+    downstream = _DummyApp()
     client = TestClient(IdentityMiddleware(downstream))
     resp = client.get("/anything", headers={"X-Bloom-Identity": "not-a-jwt"})
     assert resp.status_code == 401
-    assert downstream.seen == []
+    assert downstream.called == 0
+    assert recorded_usage == []
 
 
-def test_missing_jwt_secret_with_header_present_returns_500(monkeypatch):
+def test_missing_jwt_secret_with_header_present_returns_500(
+    monkeypatch, recorded_usage
+):
     monkeypatch.delenv("JWT_SECRET", raising=False)
-    downstream = _SeenIdentityApp()
+    downstream = _DummyApp()
     client = TestClient(IdentityMiddleware(downstream))
     resp = client.get("/anything", headers={"X-Bloom-Identity": _token()})
     assert resp.status_code == 500
-    assert downstream.seen == []
+    assert downstream.called == 0
+    assert recorded_usage == []
 
 
-def test_identity_does_not_leak_between_requests(monkeypatch):
-    """Each request gets its own resolved identity — a prior request's
-    ContextVar value must not leak into the next."""
+def test_duplicate_identity_headers_are_rejected(monkeypatch, recorded_usage):
     monkeypatch.setenv("JWT_SECRET", SECRET)
-    downstream = _SeenIdentityApp()
+    downstream = _DummyApp()
     client = TestClient(IdentityMiddleware(downstream))
-    client.get("/anything", headers={"X-Bloom-Identity": _token()})
-    client.get("/anything")
-    assert downstream.seen == [A_UUID, ANONYMOUS]
+    resp = client.get(
+        "/anything",
+        headers=[("X-Bloom-Identity", _token()), ("X-Bloom-Identity", _token())],
+    )
+    assert resp.status_code == 401
+    assert downstream.called == 0
+    assert recorded_usage == []
+
+
+def test_health_path_is_not_recorded(monkeypatch, recorded_usage):
+    """Even with a valid identity header, `/health` is never recorded — a
+    Docker healthcheck must not accumulate usage rows."""
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    downstream = _DummyApp()
+    client = TestClient(IdentityMiddleware(downstream))
+    resp = client.get("/health", headers={"X-Bloom-Identity": _token()})
+    assert resp.status_code == 200
+    assert downstream.called == 1
+    assert recorded_usage == []
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("/mcp", "combined"),
+        ("/health", "combined"),
+        ("/core/mcp", "core"),
+        ("/sleap_roots/mcp", "sleap_roots"),
+        ("/phenotyping_segmentation/mcp", "phenotyping_segmentation"),
+        ("/not-a-real-section/mcp", "combined"),
+    ],
+)
+def test_action_from_path(path, expected):
+    assert _action_from_path(path) == expected
 
 
 # ── Integration-level: real build_app(), every mounted surface ───────────────
@@ -153,3 +210,81 @@ def test_absent_header_not_rejected_by_identity_middleware(monkeypatch, path):
     with TestClient(server.build_app()) as client:
         resp = client.get(path)
     assert resp.status_code not in (401, 500)
+
+
+@pytest.mark.parametrize(
+    "path,expected_action",
+    [("/mcp", "combined"), ("/core/mcp", "core"), ("/sleap_roots/mcp", "sleap_roots")],
+)
+def test_real_surface_records_usage_with_correct_action(
+    monkeypatch, recorded_usage, path, expected_action
+):
+    """End-to-end wiring check through the real build_app(): a request to
+    each real mounted surface is recorded with the action this surface should
+    resolve to."""
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    from bloom_mcp import server
+
+    with TestClient(server.build_app()) as client:
+        client.get(path, headers={"X-Bloom-Identity": _token()})
+    assert recorded_usage == [(A_UUID, expected_action)]
+
+
+# ── Live subprocess: IdentityMiddleware and BLOOMMCP_API_KEY are independent ──
+
+_DUAL_AUTH_SCRIPT = """
+import os
+os.environ["JWT_SECRET"] = "test-jwt-secret"
+os.environ["BLOOMMCP_API_KEY"] = "test-api-key"
+
+import json
+import jwt
+from starlette.testclient import TestClient
+from bloom_mcp import server
+
+valid_identity = jwt.encode(
+    {"sub": "11111111-1111-1111-1111-111111111111", "aud": "authenticated"},
+    "test-jwt-secret",
+    algorithm="HS256",
+)
+
+with TestClient(server.build_app()) as client:
+    # Valid identity header, no bearer token — FastMCP's own bearer check
+    # must still reject this; our middleware has nothing to object to.
+    r1 = client.get("/mcp", headers={"X-Bloom-Identity": valid_identity})
+    # Invalid identity header, valid bearer token — our middleware must
+    # reject this before FastMCP's own check is ever reached.
+    r2 = client.get(
+        "/mcp",
+        headers={"X-Bloom-Identity": "garbage", "Authorization": "Bearer test-api-key"},
+    )
+
+print(json.dumps({"r1": r1.status_code, "r2": r2.status_code}))
+"""
+
+
+def test_identity_middleware_and_bearer_auth_are_independent_live():
+    """`bloom_mcp.auth.auth_provider` is built once at import time from
+    whatever `BLOOMMCP_API_KEY` is set then — every other test in this
+    session already imported `bloom_mcp.server` with the key unset, so this
+    can only be exercised in a fresh interpreter (subprocess), not via
+    `monkeypatch.setenv` here. Mirrors
+    `test_devendor_invariants.py::test_server_boots_after_devendor`'s pattern."""
+    import json
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-c", _DUAL_AUTH_SCRIPT],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    out = json.loads(result.stdout.strip().splitlines()[-1])
+    # Rejected by FastMCP's own bearer check (our middleware had no reason to
+    # object to a valid identity header) — not necessarily 401 specifically,
+    # just definitely not a 2xx success.
+    assert not (200 <= out["r1"] < 300), out
+    # Rejected by our middleware, before FastMCP's bearer check is reached.
+    assert out["r2"] == 401, out

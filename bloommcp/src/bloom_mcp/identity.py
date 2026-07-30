@@ -8,12 +8,12 @@ here changes which role performs a DB/Storage call.
 
 Verification mirrors ``langchain/deps.py:get_current_user()`` exactly: PyJWT,
 ``algorithms=["HS256"]``, ``audience="authenticated"``, extracts the ``sub``
-claim. One addition beyond ``deps.py``: the resolved ``sub`` must look like a
-Supabase user id (a UUID) and must not equal the reserved literal
+claim. Two additions beyond ``deps.py``: the resolved ``sub`` is (a) required
+to look like a Supabase user id (a UUID) and not equal the reserved literal
 ``"anonymous"`` — see ``ANONYMOUS`` below, the sentinel ``bloommcp_usage``
-uses for callers with no header at all. Without this guard a validly-signed
-token could collide with that sentinel and pollute or mask the aggregate
-anonymous-usage count.
+uses for callers with no header at all — and (b) normalized to lowercase, so
+two different-cased spellings of the same UUID can't fragment into two
+separate aggregate rows.
 
 One deliberate divergence from ``deps.py``: ``JWT_SECRET`` is validated
 lazily, only when a request actually carries the header — mirroring
@@ -21,26 +21,48 @@ lazily, only when a request actually carries the header — mirroring
 ``deps.py``'s unconditional import-time hard-fail. No current deployment
 sends this header yet, so requiring the var unconditionally would force
 every environment to set one for a code path nothing exercises.
+
+**Usage recording happens in ``IdentityMiddleware`` itself, at request
+granularity — not per MCP tool call.** An earlier design recorded usage via a
+wrapper applied to each tool at registration time (`contract.wrap.register()`),
+using a `contextvars.ContextVar` set here to carry the resolved identity into
+tool-dispatch code. That design was reverted after review: for a reused MCP
+``streamable-http`` session (the common case — one client session spans many
+tool calls), FastMCP's ``StreamableHTTPSessionManager`` starts the actual
+tool-dispatch loop in a single long-lived task once, at session creation
+(``_handle_stateful_request``/``self._task_group.start(run_server)`` in the
+installed ``mcp`` package); a *later* request in that session only feeds a
+stream into that already-running task, never re-entering it. A `ContextVar`
+set by this middleware on that later request's own (different) task cannot
+reach the already-running dispatch task — `asyncio`/`anyio` task creation
+snapshots context at spawn time, and that snapshot cannot see values set in
+the parent context afterward. This is not fixable by threading the value
+differently inside the tool-dispatch layer either: FastMCP's own
+`get_http_headers()`/`get_http_request()` rely on the identical
+`RequestContextMiddleware` mechanism and inherit the same limitation for a
+reused session (confirmed directly: `mcp.shared.message.SessionMessage`'s
+per-message metadata carries no HTTP header info to reconstruct the
+*current* request from inside the persistent task). Recording directly here,
+in the middleware, sidesteps the whole problem — this middleware always sees
+the correct, current request, regardless of session reuse — at the cost of
+attributing usage to the *request path* (which mounted surface handled it),
+not the specific MCP tool name. See
+openspec/changes/add-bloommcp-caller-identity/design.md Decision 4 for the
+full history of this revision.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from contextvars import ContextVar
 
 import jwt
 
 ANONYMOUS = "anonymous"
 
 _UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
 )
-
-# Set once per request by IdentityMiddleware; read by contract.wrap.register()'s
-# usage-recording wrapper. Defaults to ANONYMOUS outside of a request (e.g. at
-# import time, or in a unit test that never installs the middleware).
-_current_identity: ContextVar[str] = ContextVar("bloom_identity", default=ANONYMOUS)
 
 
 class IdentityVerificationError(Exception):
@@ -52,16 +74,19 @@ class IdentityConfigError(Exception):
 
 
 def _is_valid_identity(sub: str) -> bool:
-    """A resolved sub must be UUID-shaped and not the reserved sentinel."""
-    return bool(_UUID_RE.match(sub)) and sub.lower() != ANONYMOUS
+    """A resolved sub must be UUID-shaped (the whole string, not a substring
+    — `re.fullmatch`, not a `$`-anchored `.match()`, which would let a value
+    ending in a trailing newline slip through) and not the reserved
+    sentinel."""
+    return bool(_UUID_RE.fullmatch(sub)) and sub.lower() != ANONYMOUS
 
 
 def verify_identity_header(value: str | None) -> str | None:
     """Verify an ``X-Bloom-Identity`` header value.
 
-    Returns the resolved identity (the token's ``sub``) for a valid header, or
-    ``None`` when ``value`` is absent/empty — callers should treat that as
-    anonymous, not as an error.
+    Returns the resolved identity (the token's ``sub``, lowercased) for a
+    valid header, or ``None`` when ``value`` is absent/empty — callers should
+    treat that as anonymous, not as an error.
 
     Raises:
         IdentityConfigError: ``JWT_SECRET`` is unset but a header was
@@ -92,21 +117,22 @@ def verify_identity_header(value: str | None) -> str | None:
     sub = payload.get("sub")
     if not sub or not isinstance(sub, str) or not _is_valid_identity(sub):
         raise IdentityVerificationError("X-Bloom-Identity token has no valid sub claim")
-    return sub
+    return sub.lower()
 
 
-def get_current_identity() -> str:
-    """Return the resolved identity for the request currently being handled.
+def _action_from_path(path: str) -> str:
+    """The mounted surface a request's path resolves to: one of
+    `bloom_mcp.sections.SECTIONS`'s keys, or `"combined"` for the root
+    surface (`/mcp`, `/health`). Imported lazily to avoid any import-time
+    coupling between this module and the sections package."""
+    from bloom_mcp.sections import SECTIONS
 
-    Defaults to ``ANONYMOUS`` outside of a request (e.g. at import time, in a
-    unit test that never installs ``IdentityMiddleware``, or when no
-    ``X-Bloom-Identity`` header was present on the current request).
-    """
-    return _current_identity.get()
+    first_segment = path.strip("/").split("/", 1)[0]
+    return first_segment if first_segment in SECTIONS else "combined"
 
 
 class IdentityMiddleware:
-    """Raw-ASGI middleware: verifies ``X-Bloom-Identity``, rejects invalid tokens.
+    """Raw-ASGI middleware: verifies ``X-Bloom-Identity`` and records usage.
 
     A raw ASGI middleware class (``async def __call__(self, scope, receive,
     send)``), deliberately **not** ``starlette.middleware.base.BaseHTTPMiddleware``
@@ -119,11 +145,12 @@ class IdentityMiddleware:
     this sits in front of the same persistent ``streamable-http``/SSE session
     FastMCP itself takes care to protect.
 
-    Verification only runs work when the header is present, so a Docker
-    healthcheck hitting ``/health`` (which never sends this header) never
-    touches ``JWT_SECRET`` or PyJWT. Usage recording does **not** happen here —
-    see ``bloom_mcp.usage``, which records per tool call instead, so this
-    middleware only ever resolves identity and rejects invalid tokens.
+    Verification only does real work when the header is present, so a Docker
+    healthcheck hitting ``/health`` never touches ``JWT_SECRET`` or PyJWT.
+    Usage recording (see module docstring for why it lives here, not in
+    tool-dispatch code) is skipped for `/health` specifically, and is
+    non-blocking (`bloom_mcp.usage.record_usage_async`) — it never adds
+    latency to the request it's attributed to.
     """
 
     def __init__(self, app) -> None:
@@ -134,8 +161,18 @@ class IdentityMiddleware:
             await self.app(scope, receive, send)
             return
 
-        raw = dict(scope.get("headers") or []).get(b"x-bloom-identity")
-        value = raw.decode("latin-1") if raw is not None else None
+        headers = scope.get("headers") or []
+        matches = [v for k, v in headers if k == b"x-bloom-identity"]
+        if len(matches) > 1:
+            await _json_response(
+                scope,
+                receive,
+                send,
+                status=401,
+                error="multiple X-Bloom-Identity headers present",
+            )
+            return
+        value = matches[0].decode("latin-1") if matches else None
 
         try:
             identity = verify_identity_header(value)
@@ -146,11 +183,13 @@ class IdentityMiddleware:
             await _json_response(scope, receive, send, status=401, error=str(exc))
             return
 
-        token = _current_identity.set(identity or ANONYMOUS)
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            _current_identity.reset(token)
+        path = scope.get("path", "")
+        if path != "/health":
+            from bloom_mcp.usage import record_usage_async
+
+            record_usage_async(identity or ANONYMOUS, _action_from_path(path))
+
+        await self.app(scope, receive, send)
 
 
 async def _json_response(scope, receive, send, *, status: int, error: str) -> None:

@@ -14,12 +14,18 @@ it's out of scope (startup-`lifespan`-scoped MCP client construction, no per-req
 and re-scoped the issue to bloommcp-side-only. This design implements that resolved, re-scoped
 slice.
 
-**This document was revised once already**, after a 5-agent adversarial review of the first
-draft. That review found one load-bearing citation (an "existing `call_rpc()` seam") was
-fabricated, and several design decisions rested on claims that turned out to be either wrong or
-newly-falsifiable by reading the actual installed dependency. Where a decision below changed as a
-result, that's noted explicitly rather than silently rewritten — see each Decision's "Revised
-after review" note where present.
+**This document has now been revised twice.** The first revision, after a 5-agent adversarial
+review of the initial proposal, found one load-bearing citation (an "existing `call_rpc()` seam")
+was fabricated, and rewrote Decision 4 to attribute usage per-tool-call instead of per-section,
+based on a claim (FastMCP's own context-propagation mechanism is reliable) that later turned out
+to be true in general but not sufficient for the specific reused-session case this feature needs.
+The second revision — a review of the actual PR implementation, not just the proposal — found
+that gap and reverted Decision 4 to its original, section-level design, this time with the real
+mechanism confirmed correct rather than assumed. Two other real issues from that same review are
+also fixed here: a UUID regex anchor that let a trailing newline slip through (Decision 1), and
+usage recording running synchronously on every tool call rather than off the request's critical
+path (Decision 4). Where a decision below changed as a result of either review, that's noted
+explicitly rather than silently rewritten.
 
 **Root cause of the fabricated citation** (worth recording so it isn't repeated): the first
 draft's author read `bloommcp/src/bloom_mcp/supabase_client.py` *before* creating this change's
@@ -79,6 +85,13 @@ allowed an attacker-influenced `sub` value could collide with that sentinel and 
 the aggregate anonymous-usage counter. `langchain/deps.py` has no equivalent guard because it
 only ever returns `sub` for authorization decisions scoped to that one user, not for insertion
 into a table keyed by a value with its own reserved sentinel.
+
+The shape check uses `re.fullmatch`, not a `$`-anchored `.match()` — a review of the implementation
+found the original `$`-anchored pattern would let a `sub` ending in a trailing `\n` slip through
+(`$` matches immediately before a trailing newline as well as at the true end of string in Python's
+`re` module; `\Z`/`fullmatch` do not). The resolved `sub` is also lowercased before being returned,
+so a non-lowercase UUID from any future issuer can't fragment into a second `bloommcp_usage` row
+for the same identity.
 
 - **Alternative considered:** the original issue's JWKS-based verification against
   `/auth/v1/.well-known/jwks.json` (reusing `/api/client-info` for discovery, per the issue's
@@ -141,55 +154,117 @@ confirm the middleware doesn't buffer or break it.
   different header than `X-Bloom-Identity`. The new middleware runs first in the ASGI chain
   (outer), FastMCP's bearer check runs second (inner, inside whichever `Mount` the request
   routes to, itself sitting outside FastMCP's own `RequestContextMiddleware` for that sub-app) —
-  see Decision 2's consequence for the one behavioral interaction between the two.
+  see Decision 2's consequence for the one behavioral interaction between the two. Verified live
+  (not just by code inspection, per an earlier review's own admission that this was untested): a
+  subprocess test with `BLOOMMCP_API_KEY` actually set confirms a valid identity header does not
+  bypass FastMCP's bearer check, and an invalid identity header is rejected before that check is
+  ever reached, regardless of bearer-token validity.
+- **Duplicate `X-Bloom-Identity` headers are rejected, not silently resolved to one occurrence.**
+  ASGI's `` scope["headers"] `` is a list of `(name, value)` pairs, and a naive
+  `dict(scope["headers"])` construction would silently keep only the *last* occurrence of a
+  repeated header. If a caller (or a future trusted-proxy-injected-header architecture) ever sends
+  `X-Bloom-Identity` twice, this middleware rejects the request (`401`) rather than picking one
+  silently — not exploitable today (no proxy injects this header yet), but cheap to close now
+  rather than leave as a latent footgun for whenever one is added.
 
-### Decision 4 — Usage is attributed per tool call, via `register()`, using a verified ContextVar-propagation mechanism (revised after review)
+### Decision 4 — Usage is attributed at request/mounted-surface granularity, recorded by the middleware itself, non-blocking (reverted and corrected after a second, deeper review)
 
-**Original (first-draft) decision, now superseded:** attribute usage to the mounted
-section/path (`core`, `sleap_roots`, etc.), not the specific tool name, on the stated grounds
-that "whether a `ContextVar` set in the outer Starlette middleware is reliably visible inside
-FastMCP's tool-dispatch code path... [is] unverified from this repo; FastMCP is a dependency, not
-code in this repository." Review found this premise false and directly checkable: FastMCP
-**already** exposes `get_http_headers()` / `get_http_request()`
-(`fastmcp/server/dependencies.py:646,693` in the installed package) for tool implementations to
-call, backed by exactly the `ContextVar` pattern the original decision speculated about
-(`_current_http_request`, `fastmcp/server/http.py:68`, set by `RequestContextMiddleware` for
-precisely this purpose — confirmed by reading the installed package directly, not from
-documentation). That FastMCP relies on this propagation path for its own public API is strong,
-directly-checkable evidence it's reliable for a same-shaped use here.
+**This decision has now been revised twice.** The full history is kept here rather than
+compressed away, because the second revision corrects a real bug the first revision introduced —
+worth remaining visible so it isn't repeated.
 
-**Revised decision:** bloommcp defines its own `contextvars.ContextVar[str]` (module-level,
-default `"anonymous"`), set once per request by the identity middleware (Decision 3) to the
-resolved identity. `register()` in `contract/wrap.py`
-([wrap.py:47-56](../../../bloommcp/src/bloom_mcp/contract/wrap.py#L47-L56)) gains a thin outer
-wrapper, applied around each already-`as_mcp_tool`-wrapped callable before `mcp.tool()(...)`
-registers it — **not** inside `as_mcp_tool`'s own decorator logic, which stays exactly as
-I/O-free as it is today (confirmed by re-reading the full file: no I/O appears anywhere in
-`as_mcp_tool` itself; `register()` is a separate, always-thin function with no such purity
-claim attached to it in `bloommcp-tool-contract`'s spec). The wrapper reads the ContextVar and,
-after the tool call completes (success or a handled `BloomMCPError`), records usage keyed on
-`func.__name__` — the tool's own bare name (e.g. `qc_clean`), stable regardless of which mounted
-surface or namespace prefix served the call.
+**Draft 1 (original):** attribute usage to the mounted section/path (`core`, `sleap_roots`,
+etc.), recorded directly by the identity middleware, on the stated grounds that "whether a
+`ContextVar` set in the outer Starlette middleware is reliably visible inside FastMCP's
+tool-dispatch code path... [is] unverified from this repo."
 
-Using bloommcp's own ContextVar (rather than having the wrapper call `get_http_headers()` and
-re-verify the JWT itself) avoids re-running JWT verification on every tool call within a request
-and keeps verification/rejection concentrated in one place (Decision 2/3); it mirrors, rather
-than depends on, FastMCP's internal mechanism.
+**Draft 2 (first review's revision, now known to be wrong):** that review found the "unverified"
+premise directly checkable and false — FastMCP itself exposes `get_http_headers()` /
+`get_http_request()`, backed by a `ContextVar` set by its own `RequestContextMiddleware`, for
+exactly this purpose. Draft 2 concluded from this that a bloommcp-owned `ContextVar`, set by the
+identity middleware and read inside `register()`'s per-tool wrapper, would reliably carry
+identity into tool-dispatch code — enabling real per-tool attribution instead of coarser
+section-level attribution.
 
-- **Consequence for the `/health` endpoint:** since usage is now recorded only on an actual tool
-  invocation (inside `register()`'s wrapper), not on every HTTP request (the original design's
-  middleware-level recording), a Docker healthcheck hitting `/health` never triggers a database
-  write. This resolves a review finding (synchronous per-`/health`-ping DB load) structurally,
-  without needing to special-case the `/health` route anywhere.
-- **Alternative considered (the original decision):** section/path-level attribution. Superseded
-  as above — once real per-tool attribution is verified feasible at comparable implementation
-  cost (one wrapper in one already-thin function), it delivers materially more audit value ("who
-  ran tool X" vs. "who hit section Y") for the same size of change, which better serves #34/#554's
-  audit-trail intent.
-- **Alternative considered (new):** have the `register()` wrapper call `get_http_headers()`
-  directly and re-verify the token itself, instead of reading bloommcp's own ContextVar. Rejected
-  — redundant cryptographic work per tool call within a session, and it would duplicate the
-  rejection logic (Decision 2) in two places instead of one.
+**Why draft 2 was wrong:** a second, deeper review (of the actual implementation, not just the
+proposal) traced FastMCP's `StreamableHTTPSessionManager` (`mcp/server/streamable_http_manager.py`
+in the installed `mcp` package) directly and found that for a **reused** `streamable-http`
+session — the common case: one client session spans many tool calls, exactly how
+`fastmcp.Client`'s `async with` block and any real chat-agent client work — the actual
+tool-dispatch loop (`self.app.run(...)`) runs inside a single long-lived task, started **once**,
+at session creation (`_handle_stateful_request`, `self._task_group.start(run_server)`). A *later*
+HTTP request in that same session does not re-enter that task at all; it only pushes a message
+into a stream the already-running task reads from
+(`await transport.handle_request(scope, receive, send)`, the existing-session branch). Python's
+`asyncio`/`anyio` task creation snapshots `contextvars.Context` at spawn time — a `ContextVar.set()`
+call made later, in a *different* request's own (separate) task, cannot reach a task whose context
+was already snapshotted at session creation. This was confirmed independently, not just asserted:
+by reading `streamable_http_manager.py`'s actual control flow, and by the well-established,
+documented semantics of `asyncio`/`anyio` task context snapshotting (not something that needed an
+empirical repro to settle). It equally invalidates draft 2's justification: FastMCP's own
+`get_http_headers()`/`get_http_request()` rely on the identical mechanism
+(`RequestContextMiddleware`, set fresh per incoming HTTP request) and inherit the exact same
+limitation for a reused session — confirmed further by reading `mcp.shared.message.SessionMessage`
+(the wrapper carried through the transport's internal read/write streams), whose `metadata` field
+carries only a `related_request_id`, no HTTP header information a per-message re-set inside the
+persistent task could use to reconstruct "the current request" some other way. So there is no
+available mechanism — not FastMCP's, not a bloommcp-owned one built the same way — that correctly
+carries a *per-request* value into that persistent dispatch task for a session spanning more than
+one tool call.
+
+**Net effect the bug would have had, had it shipped:** for a real multi-call session, only the
+*first* request's resolved identity would ever be visible to `register()`'s wrapper — every
+subsequent tool call in that session would be silently attributed to whatever identity was live
+at session creation (frequently anonymous, if the very first call in a session happened to omit
+the header), not the caller each individual request actually named. Wrong, not crashing —
+exactly the kind of defect a plain test wouldn't catch: the contract test for this
+(`test_register_usage.py`, now deleted) used FastMCP's in-memory `Client` transport, which
+bypasses `IdentityMiddleware`/`build_app()` entirely, and no test drove two tool calls through one
+real session.
+
+**Final decision (this revision):** revert to draft 1's design almost exactly — usage is recorded
+by `IdentityMiddleware` itself, keyed on the mounted surface the request resolved to (via
+`_action_from_path`, matching against `bloom_mcp.sections.SECTIONS`'s keys, or `"combined"` for
+the root surface), not the specific MCP tool name. This sidesteps the whole problem structurally:
+the middleware always sees the *current* request correctly, with no dependency on session reuse
+or task/context propagation, because it runs once per incoming HTTP request regardless of which
+task eventually consumes that request's message. `contract/wrap.py`'s `register()` and
+`as_mcp_tool` are both reverted to their pre-this-change form — no ContextVar, no per-tool
+wrapper, no coupling between Tier 1's contract layer and identity/usage at all.
+
+**Also fixed in this revision — non-blocking recording:** the middleware is a genuine `async def
+__call__`, unlike a per-tool wrapper around a synchronous tool function (which cannot `await`
+anything). Recording now happens via `bloom_mcp.usage.record_usage_async`, which submits the
+blocking `call_rpc()` round-trip to a small dedicated `ThreadPoolExecutor` and returns immediately
+— the request/response cycle it's attributed to is never delayed by the DB write. This also
+resolves a related review finding independent of the ContextVar bug: the very first version of
+this recording design ran the DB round-trip synchronously in a `finally` block around every tool
+call, adding undisclosed latency (and a failure-coupling risk) to *every* current tool call today,
+not just future/inert traffic — despite the "inert in production" framing elsewhere in this
+proposal, which described the *feature*, not this specific cost.
+
+- **Consequence for the `/health` endpoint:** now that recording happens per-*request*, not
+  per-tool-call, `/health` is excluded explicitly (`if path != "/health"`) rather than
+  structurally — the earlier per-tool design got this for free, coincidentally, as a side effect
+  of the (buggy) mechanism it used; this revision states it directly instead.
+- **Alternative considered (draft 2, superseded — see above):** per-tool attribution via a
+  `register()` wrapper + ContextVar. Rejected: confirmed broken for a reused session, which is
+  the common real-world case, not an edge case.
+- **Alternative considered:** parse the incoming JSON-RPC request body in the middleware (peeking
+  at the `"method"`/tool name being called) to get per-tool granularity without relying on
+  cross-task propagation at all. Rejected for this change — correctly buffering and replaying an
+  ASGI request body from middleware (so the downstream app can still read it) is a real,
+  non-trivial pattern in its own right, and the added risk didn't seem proportionate to fix in the
+  same pass as the ContextVar bug. Left as a real option for a future change that specifically
+  wants per-tool granularity back, now that the cross-task limitation is well understood.
+- **Alternative considered:** switch bloommcp's `FastMCP`/`http_app()` instances to
+  `stateless_http=True`, which creates a fresh transport and dispatch task per request
+  (`_handle_stateless_request` in the same installed-package file) — this would make the original
+  ContextVar design correct, since task creation and context capture would happen fresh on every
+  request. Rejected as disproportionate scope for this fix: it changes MCP session behavior for
+  the *entire* server (every tool, every client), not just usage tracking, and needs its own
+  review of what (if anything) currently depends on session reuse — not something to change as a
+  side effect of an identity/usage-tracking feature.
 
 ### Decision 5 — `JWT_SECRET` is validated lazily, only when a request actually carries the header
 
@@ -281,9 +356,11 @@ tiers, matching an existing split already present in this repo (not invented for
   integration"`): a new fake-RPC test double, mirroring the existing `fake_supabase_storage`
   fixture's shape (which monkeypatches the six storage-helper module-level names in
   `supabase_client.py`) but for `call_rpc` — records calls in-memory, returns a caller-supplied
-  fixture response, never touches a network or real Postgres. This is what the middleware/
-  `register()`-wrapper tests (write-failure-non-fatal, per-identity upsert bookkeeping at the
-  Python-call level) run against.
+  fixture response, never touches a network or real Postgres. This is what the middleware's own
+  recording tests (write-failure-non-fatal, per-identity upsert bookkeeping at the Python-call
+  level) run against; `record_usage_async`'s own tests (background-thread submission,
+  non-blocking) additionally use a `threading.Event` to deterministically wait for the background
+  call rather than racing it, since that function's whole point is to run off the calling thread.
 - **Real-Postgres tier**, for genuine upsert/concurrency semantics (`ON CONFLICT` behavior under
   two simultaneous first-time requests from the same new identity): placed under the repo's
   **existing** root-level `tests/integration/` (not `bloommcp/tests/` with
@@ -371,10 +448,14 @@ fixed by this design doc.
   concern — but there is also no TTL/purge for a table that, once the langchain-agent sibling
   ships, links real researcher identities to activity indefinitely. Accepted as proportionate for
   this change's scope; revisit if a compliance/data-minimization requirement emerges.
-- **Per-tool, not per-section, granularity was reconsidered mid-proposal** (Decision 4) once its
-  original justification was found false. The revised design is more code (a `register()`
-  wrapper) than the original, section-level version, but is the same order of magnitude — one
-  new wrapper in one existing, already-thin function.
+- **Section/mounted-surface granularity, not per-tool.** Decision 4's history (draft 1 → draft 2 →
+  this final revision) means this proposal ended up back where it started, after a detour that
+  turned out to rest on a mechanism (cross-task `ContextVar` propagation into a reused session's
+  persistent dispatch task) that doesn't actually work. `last_action` answers "who hit the
+  `sleap_roots` surface, and how often" — not "who ran `qc_clean` specifically." Real per-tool
+  attribution remains possible for a future change (via request-body parsing in the middleware,
+  or by switching to `stateless_http=True` — see Decision 4's alternatives), just not attempted
+  here given the added risk of either approach.
 - **The "never grants DB/Storage authority" invariant is enforced by construction and tested by
   regression, not by a type-level guarantee.** `get_postgrest_client()` takes zero parameters
   today and no identity is threaded into it; the regression test (tasks.md) iterates every
@@ -394,12 +475,14 @@ fixed by this design doc.
 
 ## Migration Plan
 
-Purely additive: a new module, a new middleware wired into `build_app()`, a new wrapper in
-`register()`, one new table, one new env var read only when the (currently never-sent) header is
-present. No existing behavior changes for any current deployment. Rollback is reverting the code
-change and running the migration's paired rollback SQL (removing `bloommcp_usage`) — note this
-destroys any usage data accumulated by then; if the langchain-agent sibling has shipped and real
-usage has accumulated, consider a `pg_dump` of the table before rolling back.
+Purely additive: two new modules (`identity.py`, `usage.py`), a new middleware wired into
+`build_app()`, one new table, one new env var read only when the (currently never-sent) header is
+present. `contract/wrap.py` (`as_mcp_tool`, `register()`) is untouched — Decision 4's reverted
+per-tool design would have modified it, but the final design doesn't. No existing behavior changes
+for any current deployment. Rollback is reverting the code change and running the migration's
+paired rollback SQL (removing `bloommcp_usage`) — note this destroys any usage data accumulated by
+then; if the langchain-agent sibling has shipped and real usage has accumulated, consider a
+`pg_dump` of the table before rolling back.
 
 ## Open Questions
 

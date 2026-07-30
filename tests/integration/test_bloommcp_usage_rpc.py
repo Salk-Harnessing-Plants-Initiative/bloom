@@ -62,8 +62,18 @@ def test_repeat_call_increments_count_and_updates_last_action(pg_conn):
         second_row = _row(cur, identity)
     pg_conn.rollback()
 
-    first_seen_1, last_seen_1, count_1, action_1 = first_row[1], first_row[2], first_row[3], first_row[4]
-    first_seen_2, last_seen_2, count_2, action_2 = second_row[1], second_row[2], second_row[3], second_row[4]
+    first_seen_1, last_seen_1, count_1, action_1 = (
+        first_row[1],
+        first_row[2],
+        first_row[3],
+        first_row[4],
+    )
+    first_seen_2, last_seen_2, count_2, action_2 = (
+        second_row[1],
+        second_row[2],
+        second_row[3],
+        second_row[4],
+    )
 
     assert count_1 == 1 and action_1 == "qc_clean"
     assert count_2 == 2 and action_2 == "pca_analysis"

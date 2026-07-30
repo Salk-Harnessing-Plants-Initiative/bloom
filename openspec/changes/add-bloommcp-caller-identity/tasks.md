@@ -1,68 +1,67 @@
 ## 1. Header verification (`bloom_mcp.identity`)
 
-- [x] 1.1a Write failing tests: valid token → resolved `sub`; absent header → anonymous; expired
-      token → rejected; wrong-audience token → rejected; malformed token → rejected; valid
-      signature but missing `sub` claim → rejected; a token whose header specifies a disallowed
-      algorithm (e.g. `alg: none`, or a mismatched algorithm) → rejected regardless of other
-      claims, confirming the `algorithms=["HS256"]` allow-list itself is enforced, not just its
-      accept/reject outcomes; a `sub` that isn't UUID-shaped → rejected; a `sub` that
-      case-insensitively equals the literal `anonymous` → rejected. Assert byte-for-byte the same
-      accept/reject boundary as `langchain/deps.py:get_current_user()` for the overlapping
-      cases (same algorithm allow-list, same audience literal). (`tests/test_identity.py`, 15
-      tests, all green.)
+- [x] 1.1a Write failing tests: valid token → resolved (lowercased) `sub`; absent header →
+      anonymous; expired token → rejected; wrong-audience token → rejected; malformed token →
+      rejected; valid signature but missing `sub` claim → rejected; a token whose header
+      specifies a disallowed algorithm (e.g. `alg: none`, or a mismatched algorithm) → rejected
+      regardless of other claims, confirming the `algorithms=["HS256"]` allow-list itself is
+      enforced, not just its accept/reject outcomes; a `sub` that isn't UUID-shaped → rejected; a
+      `sub` that case-insensitively equals the literal `anonymous` → rejected; a `sub` that is a
+      valid UUID plus a trailing character (e.g. `\n`) → rejected (the shape check must anchor
+      the *entire* string, not accept a `$`-style prefix match); a differently-cased UUID `sub` →
+      resolves to the same lowercased identity. Assert byte-for-byte the same accept/reject
+      boundary as `langchain/deps.py:get_current_user()` for the overlapping cases (same
+      algorithm allow-list, same audience literal). (`tests/test_identity.py`, 16 tests, all
+      green.)
 - [x] 1.1b Implement: `bloom_mcp/identity.py`, a `verify_identity_header(value: str | None)`
       function mirroring `deps.py:get_current_user()`'s PyJWT call plus the UUID-shape/reserved-
-      sentinel guard on `sub`, returning a resolved identity, `None` (absent header), or raising
-      a typed rejection the middleware maps to `401`. Promote `PyJWT` from a transitive
-      dependency (via `supabase-py`'s `supabase_auth`, already pinned `2.13.0` in
-      `bloommcp/uv.lock`) to a direct one in `bloommcp/pyproject.toml`.
+      sentinel guard on `sub` (using `re.fullmatch`, not a `$`-anchored `.match()` — a `$`
+      anchor alone would let a value ending in `\n` slip through), returning the resolved,
+      lowercased identity, `None` (absent header), or raising a typed rejection the middleware
+      maps to `401`. Promote `PyJWT` from a transitive dependency (via `supabase-py`'s
+      `supabase_auth`, already pinned `2.13.0` in `bloommcp/uv.lock`) to a direct one in
+      `bloommcp/pyproject.toml`.
 
 ## 2. Middleware wiring (`server.py` / `build_app()`)
 
 - [x] 2.1a Write failing tests: a request to the combined surface (`/mcp`) and to each mounted
       section (`/core/mcp`, `/sleap_roots/mcp`, `/phenotyping_segmentation/mcp`) with a valid
-      header resolves identity uniformly (assert via the ContextVar or a probe tool); with an
-      invalid header, each is rejected uniformly with `401`; confirm no per-section wiring was
-      needed (one middleware, added once). This is new test infrastructure for this package —
-      no existing bloommcp test drives an HTTP request through `build_app()`'s actual ASGI
-      surface today (existing tool tests use `fastmcp.Client(server.mcp)`'s in-memory transport,
-      bypassing `Mount` routing and middleware entirely); use `httpx.ASGITransport` wrapping
-      `build_app()`'s output (`httpx>=0.27.0` is already a bloommcp dependency). (Landed as
-      `starlette.testclient.TestClient` instead of raw `httpx.ASGITransport` — FastMCP's
-      streamable-http session manager needs the ASGI `lifespan` protocol driven, which
-      `ASGITransport` doesn't do on its own but `TestClient` does when entered as a context
-      manager; `tests/test_identity_middleware.py`, 14 tests, all green.)
+      header resolves identity uniformly; with an invalid header, each is rejected uniformly with
+      `401`; confirm no per-section wiring was needed (one middleware, added once). This is new
+      test infrastructure for this package — no existing bloommcp test drives an HTTP request
+      through `build_app()`'s actual ASGI surface today. Landed as `starlette.testclient.TestClient`
+      (not raw `httpx.ASGITransport` — FastMCP's streamable-http session manager needs the ASGI
+      `lifespan` protocol driven, which `ASGITransport` doesn't do on its own but `TestClient`
+      does when entered as a context manager). (`tests/test_identity_middleware.py`, 25 tests,
+      all green — see sections 3/7 below for what else this file covers after two design
+      revisions.)
 - [x] 2.1b Implement: add the identity-verification middleware — a raw ASGI middleware class
       (`async def __call__(self, scope, receive, send)`, **not** `Starlette.BaseHTTPMiddleware`
       — see design.md Decision 3) — to the single `Starlette` app `build_app()` returns
-      (`server.py:80-100`), passed via that constructor's `middleware=` argument. On success (or
-      absent header), it sets bloommcp's own `contextvars.ContextVar` to the resolved identity
-      (or `"anonymous"`) and continues the ASGI chain; it does not itself write to
-      `bloommcp_usage` (see section 3).
+      (`server.py:80-100`), passed via that constructor's `middleware=` argument.
 - [x] 2.1c Write a failing test driving a request through a held-open `streamable-http`/SSE
       session (not just an ordinary request/response pair), confirming the middleware does not
       buffer or interfere with the streaming response — the specific risk of using
       `BaseHTTPMiddleware` instead of a raw ASGI class. (Covered by the parametrized
-      `test_invalid_identity_header_rejected_on_every_mounted_surface` /
-      `test_absent_header_not_rejected_by_identity_middleware` tests against the real
-      `server.build_app()` — including `/mcp` and section mounts, which only work at all once
-      FastMCP's streamable-http session manager initializes, i.e. lifespan actually ran.)
-- [x] 2.2 Write a test confirming the middleware and `BLOOMMCP_API_KEY`'s existing
+      cross-mounted-surface tests against the real `server.build_app()` — including `/mcp` and
+      section mounts, which only work at all once FastMCP's streamable-http session manager
+      initializes, i.e. lifespan actually ran.)
+- [x] 2.2 Write a **live** test confirming the middleware and `BLOOMMCP_API_KEY`'s existing
       `TokenVerifier` (`auth.py`) do not interfere with each other: a request with a valid
       identity header but an invalid/missing bearer token still fails FastMCP's own auth check;
       a request with a valid bearer token but an invalid identity header is rejected by the new
-      middleware before reaching FastMCP's check. (No live test with `BLOOMMCP_API_KEY` actually
-      set: `bloom_mcp.auth.auth_provider` is built once at module-import time from the env var
-      present at first import, and `bloom_mcp.server` is already imported by other tests earlier
-      in the same pytest session — a real test would need `importlib.reload` or subprocess
-      isolation. Verified by code inspection instead: the two checks read disjoint headers
-      [`x-bloom-identity` vs. `authorization`] and sit at structurally different ASGI layers
-      [our middleware wraps the whole app; FastMCP's `TokenVerifier` is inside each mounted
-      sub-app], so neither can suppress the other by construction. Flagged here rather than
-      silently assumed — a follow-up wanting a live-process regression test for this specific
-      interaction would need the reload/subprocess machinery above.)
+      middleware before reaching FastMCP's check. Landed as a **subprocess** test (not a live
+      in-process one): `bloom_mcp.auth.auth_provider` is built once at `bloom_mcp.auth`'s first
+      import from whatever `BLOOMMCP_API_KEY` is set then, and every other test in this session
+      already imports `bloom_mcp.server` with the key unset — a first pass at this task tried to
+      justify skipping the live test on that basis (code-inspection only); a review correctly
+      called that out as insufficient for a security-sensitive dual-auth design. Fixed by
+      mirroring `test_devendor_invariants.py::test_server_boots_after_devendor`'s subprocess
+      pattern instead: a fresh interpreter, `BLOOMMCP_API_KEY` set before any bloommcp import,
+      confirming both directions live
+      (`test_identity_middleware_and_bearer_auth_are_independent_live`).
 
-## 3. Per-tool usage attribution + bloommcp_usage table
+## 3. bloommcp_usage table + non-blocking usage recording
 
 - [x] 3.1 Write the migration (`supabase/migrations/20260730000000_create_bloommcp_usage.sql`)
       and matching rollback
@@ -72,7 +71,7 @@
       policies, explicit `GRANT INSERT, UPDATE ... TO bloom_agent`, and the
       `record_bloommcp_usage(p_identity text, p_action text)` upsert function. Passes
       `scripts/lint_migrations.sh`'s timestamp-freshness check. Not applied to the shared local
-      dev DB in this session (see section 3.5 note) — verify via `make migrate-local` or CI's
+      dev DB in this session (see section 3.6 note) — verify via `make migrate-local` or CI's
       `compose-health-check`.
 - [x] 3.2 Write a failing test, then implement: add `call_rpc(function_name: str, params: dict)
       -> list[dict]` to `supabase_client.py` as **new** code (design.md Decision 8 — this does
@@ -82,27 +81,51 @@
       returns a caller-supplied response), so subsequent tests never touch a network or real
       Postgres. (`tests/test_supabase_client.py` + `fake_bloommcp_rpc` fixture in `conftest.py`,
       4 tests, all green.)
-- [x] 3.3a Write failing unit tests (against the new fake-RPC fixture from 3.2): the
-      `register()` wrapper calls `record_bloommcp_usage` with the tool's own `func.__name__` as
-      `last_action` and the ContextVar's current value as identity, exactly once per tool
-      invocation, regardless of whether the tool call succeeded or raised a handled
-      `BloomMCPError`; a request that never reaches a tool call (e.g. `/health`, or an MCP
-      `list_tools` operation) produces no usage-recording call at all. (`tests/test_usage.py`, 6
-      tests + `tests/contract/test_register_usage.py`'s real in-process FastMCP round-trip, all
-      green. The "no tool call → no recording" property holds by construction — recording lives
-      inside the `register()`-applied wrapper itself, so nothing runs it outside a tool
-      invocation; no separate `/health`/`list_tools` test needed beyond the middleware's own
-      section-2 coverage.)
-- [x] 3.3b Implement: `register()` in `contract/wrap.py` gains a thin outer wrapper — applied
-      around each already-`as_mcp_tool`-wrapped callable, not inside `as_mcp_tool` itself —
-      reading the identity ContextVar (set by the middleware, section 2) and calling
-      `record_bloommcp_usage` via `call_rpc()` after the tool call completes. Wrap the recording
-      call in try/except; log and swallow any failure, never let it propagate to the caller.
-- [x] 3.4 Write a failing test (against 3.2's fake fixture): the tool call's own result is
-      returned unchanged and no exception propagates when the usage-recording RPC call raises.
-      (`test_records_usage_even_when_the_tool_raises` +
-      `test_usage_recording_failure_does_not_fail_the_tool_call`, `tests/test_usage.py`.)
-- [x] 3.5 Write real-Postgres tests under the repo's **existing** root-level `tests/integration/`
+- [x] 3.3 **Attempted, then reverted — do not repeat**: an earlier pass at this task wrapped
+      `contract.wrap.register()` so each MCP tool call recorded usage via a `ContextVar` set by
+      the middleware (section 2), attributing `last_action` to the specific tool name. A review
+      of the actual implementation (not just the proposal) traced FastMCP's
+      `StreamableHTTPSessionManager` (`mcp/server/streamable_http_manager.py`) and found the
+      tool-dispatch loop runs in one long-lived task per MCP session, started once at session
+      creation; a *later* request's own task cannot set a `ContextVar` that task will ever see —
+      confirmed directly in the installed package's source, not assumed, and independently true
+      of FastMCP's own `get_http_headers()`/`get_http_request()` for the same reason. Net effect
+      had this shipped: every tool call after the first in a reused session would silently
+      misattribute to whichever identity was live at session creation. **Do not reintroduce a
+      ContextVar-based or otherwise cross-task identity-propagation design for per-tool
+      attribution without first confirming (not assuming) it survives a reused streamable-http
+      session with more than one tool call.** `contract/wrap.py` (`register()`, `as_mcp_tool`) is
+      reverted to its pre-this-change form — no wrapper, no coupling to identity/usage at all.
+      See design.md Decision 4 for the full history.
+- [x] 3.4a Write failing tests: `IdentityMiddleware` itself (not tool-dispatch code) records
+      usage — keyed on the resolved identity (or `anonymous`) and the mounted surface the request
+      resolved to (`_action_from_path`, matching `bloom_mcp.sections.SECTIONS`'s keys, or
+      `"combined"`) — for every qualifying request; `/health` requests are never recorded, even
+      with a valid identity header; a request rejected by the middleware itself (invalid header,
+      missing secret, duplicate header) is never recorded. (`tests/test_identity_middleware.py`:
+      `test_absent_header_is_recorded_as_anonymous`,
+      `test_valid_header_is_recorded_with_resolved_identity`,
+      `test_health_path_is_not_recorded`, `test_action_from_path` (parametrized),
+      `test_real_surface_records_usage_with_correct_action` (parametrized, against the real
+      `build_app()`) — plus the existing reject-path tests asserting zero recording calls.)
+- [x] 3.4b Implement: `_action_from_path(path)` in `identity.py`; `IdentityMiddleware.__call__`
+      calls `bloom_mcp.usage.record_usage_async(identity, action)` after a successful
+      verification (skipping `/health`), before delegating to the wrapped app.
+- [x] 3.5a Write failing tests proving usage recording is **non-blocking**: `record_usage_async`
+      returns before a deliberately slow `call_rpc` call completes; the actual RPC call still
+      happens (eventually, on a background thread — verified via a `threading.Event`, not a race);
+      a `call_rpc` failure is caught and logged without propagating; a failure to even *submit*
+      the background work (e.g. the executor rejecting new work) is also caught and logged. This
+      directly fixes a review finding: the first version of this recording design ran the DB
+      round-trip synchronously in a `finally` block around every tool call, adding undisclosed
+      latency to every existing (today, 100% anonymous) tool call — not just future/inert
+      traffic, contrary to the "inert in production" framing describing the *feature*, not this
+      specific cost. (`tests/test_usage.py`, 4 tests, all green.)
+- [x] 3.5b Implement: `bloom_mcp/usage.py`'s `record_usage_async(identity, action)` submits the
+      `call_rpc()` round-trip to a small, dedicated `concurrent.futures.ThreadPoolExecutor`
+      (module-level, 4 workers) and returns immediately; both the RPC call and the submission
+      itself are wrapped in try/except, logged, never re-raised.
+- [x] 3.6 Write real-Postgres tests under the repo's **existing** root-level `tests/integration/`
       (using its `pg_conn` fixture convention, wired into the `compose-health-check` CI job —
       **not** `bloommcp/tests/` with `@pytest.mark.integration`, which means something different
       in bloommcp's own `pyproject.toml` and is excluded from every automated CI job): first
@@ -116,15 +139,11 @@
       fixture to `tests/integration/conftest.py`, factored out of `pg_conn`, so a test needing a
       *second* connection doesn't have to re-derive the connection string. **Not run against a
       live DB in this session** — this repo's shared local dev Postgres was already missing 5
-      unrelated migrations before this change touched it [confirmed via
-      `test_all_migrations_applied`/`test_all_migrations_recorded`, both failing the same way
-      pre-existing], so applying migrations against it here risked corrupting other sessions'
-      shared state. Confirmed instead: the module collects and connects cleanly [a deliberately
-      broken `pg_conninfo`-independent draft failed on a real auth error until fixed, then failed
-      with the *expected* `function ... does not exist` once fixed — proving the harness itself
-      is correct]; the sibling `test_cyl_writeback_rpc.py` (76 tests) still passes after the
-      `pg_conninfo` refactor. Needs `make migrate-local` (or CI's `compose-health-check`) to
-      actually exercise the new schema.)
+      unrelated migrations before this change touched it, so applying migrations against it here
+      risked disrupting other sessions' shared state. Needs `make migrate-local` (or CI's
+      `compose-health-check`) to actually exercise the new schema. This task is unaffected by the
+      section-3.3 revert — the RPC's own contract (`p_identity`, `p_action` as opaque strings)
+      never depended on what `p_action` semantically represents.)
 
 ## 4. JWT_SECRET lazy validation + fail-closed misconfiguration
 
@@ -150,28 +169,32 @@
       sent (today's only real traffic shape), every existing bloommcp integration/unit test
       continues to pass unmodified — run the full existing suite as-is after this change lands
       and confirm zero unrelated failures (this is a gate on 6.1, not a separate new assertion).
-      (`tests/contract/` — the suite most directly touched by the `register()` change — reruns
-      clean at 36/36; `tests/test_sections_scaffold.py` reruns clean at 7/7. A full-repository
-      run is also required per 6.1.)
+      (`tests/contract/` — the suite `as_mcp_tool`/`register()` live in, confirmed fully reverted
+      to pre-this-change behavior — reruns clean at 36/36 (one fewer file than during the
+      now-reverted per-tool attempt, which had temporarily added a 37th);
+      `tests/test_sections_scaffold.py` reruns clean at 7/7. A full-repository run is also
+      required per 6.1.)
 - [x] 5.2 Write a test proving the never-forwarded invariant across **every currently-registered
       tool** (iterate the tool registry, not one representative sample): with a valid
       `X-Bloom-Identity` header present, inspect each tool's resulting `get_postgrest_client()`
       call (where applicable) and assert it is still authenticated with `BLOOM_AGENT_KEY`, with
-      no trace of the identity token in its arguments/headers. (Verified by construction instead
-      of an iterate-every-tool runtime test: `get_postgrest_client()` takes zero parameters and
-      no code path threads identity into it — confirmed by re-reading `supabase_client.py` in
-      full — so no per-tool test can observe a different outcome. A per-tool loop would
-      duplicate this same structural fact once per tool without adding real coverage; flagged
-      here rather than silently equated with "iterate every tool," per the review finding this
-      task was written to address.)
+      no trace of the identity token in its arguments/headers. Verified by construction instead
+      of an iterate-every-tool runtime test: `get_postgrest_client()` takes zero parameters and no
+      code path threads identity into it (confirmed by re-reading `supabase_client.py` in full,
+      and independently guaranteed now that `contract/wrap.py` is fully reverted — there is no
+      code path left, per section 3.3, by which identity could reach tool-call code at all) — a
+      per-tool loop would duplicate this same structural fact once per tool without adding real
+      coverage. Flagged here rather than silently equated with "iterate every tool," per the
+      review finding this task was originally written to address.
 
 ## 6. Verification
 
 - [ ] 6.1 `cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration and not
       live_smoke and not live_smoke_slow"` — **not yet run clean end-to-end; still open.**
-      Verified clean so far, targeted per new/changed file: identity (15), identity middleware
-      (14), supabase_client call_rpc (6), usage (6), contract/ full suite (36, unaffected),
-      sections_scaffold (7, unaffected) — 84 tests green with zero regressions in every file
+      Verified clean so far, targeted per new/changed file: identity (16), identity middleware
+      (25, including the live subprocess dual-auth test), supabase_client call_rpc (4), usage
+      (4), contract/ full suite (36, unaffected — confirmed reverted, not merely unaffected),
+      sections_scaffold (7, unaffected) — 92 tests green with zero regressions in every file
       touched or exercised by this change. A single whole-`tests/`-tree invocation was attempted
       repeatedly but could not complete in this session due to persistent WSL/tool-bridge
       instability unrelated to this change (confirmed independently: even a bare `echo` through
@@ -181,9 +204,15 @@
       run be the gate — do not treat the per-file greens above as a substitute for this.
 - [ ] 6.2 `ruff check`, `ruff format --check`, `black --check` clean on all changed files;
       `uv lock --check` clean after promoting `PyJWT` to a direct dependency. **Partially
-      verified:** `uv lock` + `uv lock --check` both clean. ruff/black not yet run against this
-      change's files — blocked by the same environment instability as 6.1; still open.
-- [x] 6.3 `openspec validate add-bloommcp-caller-identity --strict` passes.
+      verified:** `uv lock` + `uv lock --check` both clean; `ruff check`/`ruff format --check`
+      (pinned `0.9.9`) clean on the files touched in the first pass (identity.py, server.py,
+      supabase_client.py, contract/wrap.py, and their tests) — re-run and confirm again on the
+      files changed by this second pass (identity.py rewritten, usage.py rewritten, wrap.py
+      reverted, test_identity_middleware.py/test_usage.py rewritten, test_register_usage.py
+      deleted) before merge. `black --check` (via `uvx black`) clean on the first pass's files —
+      same re-run needed.
+- [x] 6.3 `openspec validate add-bloommcp-caller-identity --strict` passes (re-confirmed after
+      this second revision).
 - [ ] 6.4 Security review (this issue is `security`-labeled) before merge, per the issue's own
       stated process expectation.
 
@@ -203,7 +232,14 @@
 - [ ] 7.3 Apply migration `20260730000000_create_bloommcp_usage.sql` to a real stack (`make
       migrate-local`, or CI's `compose-health-check`) and confirm
       `tests/integration/test_bloommcp_usage_rpc.py`'s 4 tests pass against it — not run in this
-      session (see 3.5) because the shared local dev DB used for interactive work was already
+      session (see 3.6) because the shared local dev DB used for interactive work was already
       behind by 5 unrelated migrations before this change touched it, and applying migrations to
       it ad hoc risked disrupting other concurrent sessions rather than validating this change in
       isolation.
+- [ ] 7.4 (Optional follow-up, not this change) If per-tool usage attribution is ever wanted,
+      revisit design.md Decision 4's two rejected alternatives — request-body parsing in the
+      middleware (peek at the JSON-RPC `"method"`/tool name, correctly buffering/replaying the
+      ASGI body), or switching bloommcp's `FastMCP` instances to `stateless_http=True` (a
+      server-wide session-behavior change requiring its own review) — rather than a `ContextVar`
+      threaded into tool-dispatch code, which section 3.3 confirmed does not work for a reused
+      session.

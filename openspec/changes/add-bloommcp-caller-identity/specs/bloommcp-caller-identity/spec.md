@@ -3,16 +3,19 @@
 ### Requirement: X-Bloom-Identity Header Verification
 
 bloommcp SHALL accept an optional `X-Bloom-Identity` request header on every HTTP request it
-serves (the combined surface and every mounted per-section sub-app). When present, it SHALL be
-verified as a JWT using `algorithms=["HS256"]` against the `JWT_SECRET` environment variable
-with `audience="authenticated"`, mirroring `langchain/deps.py:get_current_user()`'s
-verification exactly. The resolved caller identity SHALL be the token's `sub` claim, which SHALL
-additionally be required to match a standard UUID shape and SHALL NOT case-insensitively equal
-the reserved literal `anonymous`. When the header is absent, the request SHALL proceed as
-anonymous with no change to today's behavior. When the header is present but fails verification
-(invalid signature, disallowed algorithm, wrong audience, expired, missing `sub`, malformed
-`sub`, or `sub` equal to the reserved literal), the request SHALL be rejected with a `401`
-response rather than silently treated as anonymous.
+serves (the combined surface and every mounted per-section sub-app). Exactly one occurrence of
+the header SHALL be accepted; a request carrying it more than once SHALL be rejected. When
+present, it SHALL be verified as a JWT using `algorithms=["HS256"]` against the `JWT_SECRET`
+environment variable with `audience="authenticated"`, mirroring
+`langchain/deps.py:get_current_user()`'s verification exactly. The resolved caller identity
+SHALL be the token's `sub` claim, normalized to lowercase, which SHALL additionally be required
+to match a standard UUID shape in its entirety (not merely as a prefix) and SHALL NOT
+case-insensitively equal the reserved literal `anonymous`. When the header is absent, the request
+SHALL proceed as anonymous with no change to today's behavior. When the header is present but
+fails verification (invalid signature, disallowed algorithm, wrong audience, expired, missing
+`sub`, malformed `sub`, `sub` equal to the reserved literal, or duplicated), the request SHALL be
+rejected with a `401` response rather than silently treated as anonymous or silently resolved to
+one occurrence.
 
 #### Scenario: Absent header proceeds as anonymous
 
@@ -48,6 +51,27 @@ response rather than silently treated as anonymous.
 - **THEN** the request is rejected with a `401` response
 - **AND** no value from this token is ever written to `bloommcp_usage.identity`
 
+#### Scenario: A sub claim with a trailing character after a valid UUID is rejected
+
+- **WHEN** a request carries an otherwise-validly-signed `X-Bloom-Identity` header whose `sub`
+  claim is a valid UUID immediately followed by any additional character (e.g. a trailing
+  newline)
+- **THEN** the request is rejected with a `401` response — the UUID-shape check matches the
+  entire claim, not merely a prefix of it
+
+#### Scenario: A differently-cased UUID normalizes to the same resolved identity
+
+- **WHEN** two requests carry validly-signed `X-Bloom-Identity` headers whose `sub` claims are the
+  same UUID in different letter casing
+- **THEN** both resolve to the identical (lowercased) caller identity, and `bloommcp_usage`
+  accumulates them under one row, not two
+
+#### Scenario: A duplicated header is rejected
+
+- **WHEN** a request carries the `X-Bloom-Identity` header more than once
+- **THEN** the request is rejected with a `401` response, regardless of whether the repeated
+  values are identical or different
+
 #### Scenario: Verification covers every mounted surface, not only the combined app
 
 - **WHEN** an `X-Bloom-Identity` header is sent to the combined surface (`/mcp`) or to any
@@ -75,53 +99,71 @@ verified successfully, failed verification, or was absent.
 - **THEN** the raw header value or decoded token is not present in that call's credentials,
   headers, or parameters
 
-### Requirement: bloommcp_usage Records Per-Tool Caller Activity
+### Requirement: bloommcp_usage Records Caller Activity Per Mounted Surface
 
-bloommcp SHALL record usage of every tool invocation in a `bloommcp_usage` table: `identity` (the
-resolved caller identity, or the literal `anonymous` when no header was present), `first_seen`,
-`last_seen`, a monotonically incrementing `request_count`, and `last_action` (the name of the
-tool that was invoked). Recording SHALL upsert atomically keyed on `identity`, incrementing
+bloommcp SHALL record usage of every qualifying HTTP request in a `bloommcp_usage` table:
+`identity` (the resolved caller identity, or the literal `anonymous` when no header was present),
+`first_seen`, `last_seen`, a monotonically incrementing `request_count`, and `last_action` (the
+mounted surface that served the request — one of the registered section names, or `combined` for
+the root/combined surface). Recording SHALL upsert atomically keyed on `identity`, incrementing
 `request_count` and refreshing `last_seen`/`last_action` on repeat activity from the same
-identity. A failure while recording usage SHALL be caught and logged, and SHALL NOT cause the
-underlying tool call to fail. This table records the most recent state per identity; it is not
-an append-only history (a repeat tool call from the same identity overwrites `last_action` and
-does not preserve the previous one).
+identity, and SHALL run without blocking or adding latency to the request it is attributed to. A
+failure while recording usage — including a failure to schedule the recording itself — SHALL be
+caught and logged, and SHALL NOT cause the underlying request to fail. Requests to the `/health`
+endpoint SHALL NOT be recorded. This table records the most recent state per identity; it is not
+an append-only history (repeat activity from the same identity overwrites `last_action` and does
+not preserve the previous one).
 
-#### Scenario: A new identity's first tool call creates a row
+Usage is recorded at the granularity of which mounted surface handled a request, not the specific
+MCP tool invoked — a caller's `bloommcp_usage` row reflects "used the `sleap_roots` surface,
+9 times, most recently," not "ran `qc_clean`." A per-tool design was attempted and reverted: it
+depended on a value threaded via a `ContextVar` into the MCP tool-dispatch code path, which cannot
+reliably reach that code for a reused `streamable-http` session (the common real-world case) —
+see design.md Decision 4.
 
-- **WHEN** an identity with no prior `bloommcp_usage` row invokes a tool
+#### Scenario: A new identity's first qualifying request creates a row
+
+- **WHEN** an identity with no prior `bloommcp_usage` row makes a qualifying request (any mounted
+  surface other than `/health`)
 - **THEN** a row is created with `request_count = 1`, `first_seen` and `last_seen` set to the
-  call time, and `last_action` set to that tool's name
+  request time, and `last_action` set to the surface that served it
 
-#### Scenario: A repeat tool call from the same identity increments the count
+#### Scenario: A repeat request from the same identity increments the count
 
-- **WHEN** an identity with an existing `bloommcp_usage` row invokes a tool again (the same tool
-  or a different one)
+- **WHEN** an identity with an existing `bloommcp_usage` row makes another qualifying request
+  (the same mounted surface or a different one)
 - **THEN** its `request_count` increments by exactly 1, `last_seen` and `last_action` update to
-  reflect the new call, and `first_seen` is unchanged
+  reflect the new request, and `first_seen` is unchanged
 
-#### Scenario: Anonymous tool calls collapse into one aggregate row
+#### Scenario: Anonymous requests collapse into one aggregate row
 
-- **WHEN** two tool calls with no `X-Bloom-Identity` header are made (from any callers)
+- **WHEN** two qualifying requests with no `X-Bloom-Identity` header are made (from any callers)
 - **THEN** both upsert against the same `identity = 'anonymous'` row, incrementing its
   `request_count` rather than creating two rows
 
-#### Scenario: Concurrent first-time calls from the same new identity do not lose an update
+#### Scenario: Concurrent first-time requests from the same new identity do not lose an update
 
-- **WHEN** two tool invocations from the same, previously-unseen identity are made concurrently
+- **WHEN** two qualifying requests from the same, previously-unseen identity are made
+  concurrently
 - **THEN** the resulting row has `request_count = 2`, not `1` (a lost update) and not a
   duplicate-row or constraint-violation error
 
-#### Scenario: A usage-recording failure does not fail the tool call
+#### Scenario: A usage-recording failure does not fail the request
 
-- **WHEN** the `bloommcp_usage` upsert raises (e.g. a transient DB error)
-- **THEN** the triggering tool call still completes and returns its normal result
+- **WHEN** the `bloommcp_usage` upsert raises (e.g. a transient DB error), or recording cannot
+  even be scheduled
+- **THEN** the triggering request still completes and returns its normal result
 - **AND** the failure is logged
 
-#### Scenario: A request that never reaches a tool call does not record usage
+#### Scenario: Usage recording does not add latency to the request it is attributed to
 
-- **WHEN** a request only exercises the `/health` endpoint or MCP protocol-level operations
-  (e.g. listing tools) without invoking a tool
+- **WHEN** the `bloommcp_usage` upsert is slow (e.g. a slow or momentarily unresponsive database)
+- **THEN** the triggering request's response is not delayed waiting for it
+
+#### Scenario: Requests to /health are never recorded
+
+- **WHEN** a request is made to the `/health` endpoint, with or without a valid
+  `X-Bloom-Identity` header
 - **THEN** no `bloommcp_usage` row is created or updated as a result
 
 ### Requirement: JWT_SECRET Is Validated Lazily, Only When Needed

@@ -15,10 +15,8 @@ import jwt
 import pytest
 
 from bloom_mcp.identity import (
-    ANONYMOUS,
     IdentityConfigError,
     IdentityVerificationError,
-    get_current_identity,
     verify_identity_header,
 )
 
@@ -125,6 +123,24 @@ def test_non_uuid_sub_is_rejected(monkeypatch):
         verify_identity_header(_token(sub="not-a-uuid"))
 
 
+def test_sub_with_trailing_newline_is_rejected(monkeypatch):
+    """Regression: a `$`-anchored `.match()` (rather than `.fullmatch()`) would
+    let a UUID followed by a trailing newline slip through, since `$` matches
+    immediately before a trailing `\\n` as well as at the true end of string.
+    `bloommcp_usage.identity` must never receive anything but a canonical
+    UUID or the literal `anonymous`."""
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    with pytest.raises(IdentityVerificationError):
+        verify_identity_header(_token(sub=A_UUID + "\n"))
+
+
+def test_resolved_identity_is_normalized_to_lowercase(monkeypatch):
+    """A non-lowercase UUID from any future issuer must not fragment into a
+    second aggregate row for the same person."""
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    assert verify_identity_header(_token(sub=A_UUID.upper())) == A_UUID.lower()
+
+
 def test_reserved_anonymous_sub_is_rejected(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", SECRET)
     with pytest.raises(IdentityVerificationError):
@@ -142,7 +158,3 @@ def test_jwt_secret_unset_but_header_present_raises_config_error(monkeypatch):
 def test_jwt_secret_unset_and_header_absent_is_fine(monkeypatch):
     monkeypatch.delenv("JWT_SECRET", raising=False)
     assert verify_identity_header(None) is None
-
-
-def test_get_current_identity_defaults_to_anonymous():
-    assert get_current_identity() == ANONYMOUS

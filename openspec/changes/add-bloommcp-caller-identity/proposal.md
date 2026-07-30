@@ -55,44 +55,40 @@ that re-scoped slice — the acceptance criteria below are copied verbatim from 
   ([server.py:80-100](../../../bloommcp/src/bloom_mcp/server.py#L80-L100)), reads
   `X-Bloom-Identity` on every request before it is routed to any `Mount` (combined surface, or
   any of the three per-section sub-apps — one app, one middleware stack, so this covers all of
-  them uniformly, no per-section wiring). It resolves and stashes the caller identity in a
-  `contextvars.ContextVar`; it does **not** itself record usage (see the next bullet — usage
-  recording moved to the actual tool-call seam once FastMCP's own request-context mechanism
-  proved the ContextVar approach reliable; this also means a Docker healthcheck hitting
-  `/health` never triggers a database write). Behavior:
+  them uniformly, no per-section wiring), and records usage itself (see below) — no
+  `contextvars.ContextVar`, no coupling to tool-dispatch code. Behavior:
   - Header **absent** → proceed as anonymous. No regression to today's behavior (no client
     sends this header yet — see Scope below).
-  - Header **present and valid** → proceed, caller identity is the token's `sub`.
-  - Header **present and invalid/expired/malformed-`sub`/reserved-value `sub`** → reject the
-    request (`401`), rather than silently downgrading to anonymous. This is the issue's literal
-    wording ("invalid/expired tokens are rejected" is a separate bullet from "an absent header
-    falls back to anonymous") and matches this codebase's fail-closed precedent (#265).
-- **Per-tool usage attribution**, not per-section/path: `bloom_mcp.contract.wrap.register()`
-  ([wrap.py:47-56](../../../bloommcp/src/bloom_mcp/contract/wrap.py#L47-L56)) gains a thin outer
-  wrapper — applied around each already-`as_mcp_tool`-wrapped callable at registration time, not
-  inside `as_mcp_tool` itself — that reads the identity `ContextVar` and records usage keyed on
-  the tool's own name after each invocation attempt (success or handled tool error). This is
-  possible, and reliable, because FastMCP's own `get_http_headers()`/`get_http_request()`
-  dependency functions (`fastmcp/server/dependencies.py:646,693` in the installed package,
-  version-pinned via `bloommcp/uv.lock`) are already backed by exactly this pattern — a
-  `ContextVar` set by an outer ASGI middleware (`RequestContextMiddleware`,
-  `fastmcp/server/http.py:68,89,132`) and reliably read from inside tool-dispatch code. Confirmed
-  by reading the installed `fastmcp` package directly, not assumed from documentation (it isn't
-  part of this repo's own tree, so it isn't a citable relative link — see design.md Decision 4
-  for how this was verified).
+  - Header **present and valid** → proceed, caller identity is the token's `sub` (lowercased).
+  - Header **present and invalid/expired/malformed-`sub`/reserved-value `sub`/duplicated** →
+    reject the request (`401`), rather than silently downgrading to anonymous or silently
+    resolving a duplicate header to one occurrence. This is the issue's literal wording
+    ("invalid/expired tokens are rejected" is a separate bullet from "an absent header falls back
+    to anonymous") and matches this codebase's fail-closed precedent (#265).
+- **Usage attribution is at request/mounted-surface granularity** (`core`, `sleap_roots`,
+  `phenotyping_segmentation`, or `combined` for the root surface), not the specific MCP tool
+  name, recorded directly by the middleware above via a non-blocking call
+  (`bloom_mcp.usage.record_usage_async`, run on a background thread so the DB round-trip never
+  adds latency to the request it's attributed to). **This was not the original design in this
+  proposal's history:** an intermediate revision attributed usage per-tool-call via a
+  `contract.wrap.register()` wrapper and a `ContextVar`, which a later, deeper review found
+  cannot work correctly for a reused MCP session — FastMCP's `StreamableHTTPSessionManager` runs
+  the actual tool-dispatch loop in one long-lived task per session, so a `ContextVar` set by a
+  *later* request's own task can never reach it. See design.md Decision 4 for the full,
+  confirmed-not-assumed technical history. `/health` is explicitly excluded from recording.
 - **New `bloommcp_usage` table** (migration + rollback, following the repo's
   `supabase/migrations/` + `supabase/rollbacks/` convention) records identity, first/last seen,
-  request count, and last action (now the actual tool name, e.g. `qc_clean` — see above),
-  upserted once per tool call by the register() wrapper via a **new** `call_rpc()` helper added
-  to `supabase_client.py` by this change (not a reuse of existing code — see design.md
-  Decision 8 for why, and for a disclosed coordination note with a concurrently open, unrelated
-  PR that independently introduces a same-named helper). Unauthenticated calls collapse into a
-  single `identity = 'anonymous'` row so "anonymous entries when no identity header is present"
-  (the issue's wording) doesn't require a fabricated per-caller key for traffic with no identity
-  at all. A usage-write failure is caught and logged, never fails the underlying tool call —
-  usage tracking is observability, not a functional gate. This table is a rolling aggregate
-  (last-known state per identity), not an append-only log — see design.md Risks for why that
-  matches the issue's own AC shape and what it does *not* provide.
+  request count, and last action (the mounted surface, per above), upserted once per qualifying
+  request by the middleware via a **new** `call_rpc()` helper added to `supabase_client.py` by
+  this change (not a reuse of existing code — see design.md Decision 8 for why, and for a
+  disclosed coordination note with a concurrently open, unrelated PR that independently
+  introduces a same-named helper). Unauthenticated calls collapse into a single
+  `identity = 'anonymous'` row so "anonymous entries when no identity header is present" (the
+  issue's wording) doesn't require a fabricated per-caller key for traffic with no identity at
+  all. A usage-write failure is caught and logged, never fails the underlying request — usage
+  tracking is observability, not a functional gate. This table is a rolling aggregate (last-known
+  state per identity), not an append-only log — see design.md Risks for why that matches the
+  issue's own AC shape and what it does *not* provide.
 - **`JWT_SECRET` wired into bloommcp's environment** in `docker-compose.dev.yml` and
   `docker-compose.prod.yml` (one line each, `JWT_SECRET: ${JWT_SECRET}` — the value already
   exists at the top-level `.env` in every environment; dev has it committed, staging/prod
@@ -128,29 +124,29 @@ that re-scoped slice — the acceptance criteria below are copied verbatim from 
   - `bloommcp-caller-identity` (new capability) — ADDED requirements for header verification,
     the never-forwarded/never-authorizing invariant, the `bloommcp_usage` table, `JWT_SECRET`'s
     lazy-validation contract, and transport-bearer-auth non-interference.
-  - No spec delta to `bloommcp-tool-contract`: `register()`'s existing documented contract (a
-    seam that registers tools onto a live `FastMCP` instance) is unchanged by adding a purely
-    additive, side-effect-only outer wrapper — no `SHALL` in that capability's spec is affected.
-    The code change to `contract/wrap.py` is still called out here for visibility.
+  - No spec delta to `bloommcp-tool-contract`: `register()` and `as_mcp_tool` are untouched by
+    this change — an intermediate revision would have added a usage-recording wrapper there, but
+    the final design (usage recorded by the middleware itself; see design.md Decision 4) doesn't
+    touch `contract/wrap.py` at all.
   - No spec delta to `bloommcp-packaging` — see design.md Decision 6 for why `JWT_SECRET`'s
     lazy-validation contract lives in this change's own capability instead.
 - **Affected code (to be written during implementation, not this proposal):**
-  - New: `bloommcp/src/bloom_mcp/identity.py` (verification), a new raw-ASGI middleware (same
-    module or a small `bloommcp/src/bloom_mcp/usage.py`), a new `call_rpc()` helper in
-    `supabase_client.py`, one migration + rollback under `supabase/migrations/` /
-    `supabase/rollbacks/`.
+  - New: `bloommcp/src/bloom_mcp/identity.py` (verification + the raw-ASGI middleware, which also
+    records usage), `bloommcp/src/bloom_mcp/usage.py` (the non-blocking `record_usage_async`
+    helper), a new `call_rpc()` helper in `supabase_client.py`, one migration + rollback under
+    `supabase/migrations/` / `supabase/rollbacks/`.
   - Modified: `bloommcp/src/bloom_mcp/server.py` (`build_app()` gains the middleware),
-    `bloommcp/src/bloom_mcp/contract/wrap.py` (`register()` gains the usage-recording wrapper),
     `docker-compose.dev.yml`, `docker-compose.prod.yml` (bloommcp's `environment:` block gains
     `JWT_SECRET: ${JWT_SECRET}`), `bloommcp/pyproject.toml` (PyJWT promoted to direct).
+    `contract/wrap.py` is **not** modified — see above.
   - Tests: header verification (valid/absent/expired/malformed/wrong-audience/wrong-algorithm/
-    malformed-or-reserved-`sub`), middleware coverage across the combined surface and each
-    mounted section, the never-forwarded invariant (iterated over every registered tool, not a
-    single sample), per-tool usage upsert semantics (new identity, repeat identity, anonymous
-    collapsing, concurrent-first-request race, write-failure non-fatality) via a new fake-RPC
-    test double for the fast unit tier plus a real-Postgres concurrency test placed under the
-    repo's existing root-level `tests/integration/` convention, `JWT_SECRET`-unset-but-header-
-    present behavior.
+    malformed-or-reserved-`sub`/trailing-newline/duplicate-header), middleware coverage across
+    the combined surface and each mounted section including a live subprocess test confirming
+    independence from the `BLOOMMCP_API_KEY` bearer check, the never-forwarded invariant, usage
+    upsert semantics (new identity, repeat identity, anonymous collapsing, concurrent-first-request
+    race, write-failure non-fatality, non-blocking submission) via a new fake-RPC test double for
+    the fast unit tier plus a real-Postgres concurrency test placed under the repo's existing
+    root-level `tests/integration/` convention, `JWT_SECRET`-unset-but-header-present behavior.
 
 ## Scope / Non-Goals
 
