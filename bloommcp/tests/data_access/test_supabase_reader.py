@@ -17,6 +17,7 @@ from bloom_mcp.data_access import (
     FakeReader,
     MultipleScansPerPlantError,
     RawSourced,
+    SourcePinNotFoundError,
     SourceSelectable,
     SupabaseReader,
 )
@@ -167,13 +168,29 @@ def test_concurrent_source_and_run_pin_rejected_before_any_rpc_call(
         reader.resolve_source(str(experiment_id), source_id=9, run_id="p9")
 
 
-def test_pin_matching_nothing_raises_not_found(fake_supabase_storage, fake_supabase_db):
+def test_pin_matching_nothing_raises_source_pin_not_found(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A pin matching nothing for an experiment that DOES exist is
+    SourcePinNotFoundError, distinct from ExperimentNotFoundError -- a caller
+    can tell "wrong experiment" from "right experiment, stale pin"."""
     experiment_id = _seed_two_plant_experiment(fake_supabase_db)
     reader = SupabaseReader()
-    with pytest.raises(ExperimentNotFoundError):
+    with pytest.raises(SourcePinNotFoundError):
         reader.load_experiment(str(experiment_id), source_id=404)
-    with pytest.raises(ExperimentNotFoundError):
+    with pytest.raises(SourcePinNotFoundError):
         reader.load_experiment(str(experiment_id), run_id="no-such-run")
+
+
+def test_pin_given_for_a_nonexistent_experiment_raises_not_found(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A pin given for an experiment that does NOT exist at all is
+    ExperimentNotFoundError, not SourcePinNotFoundError -- the experiment
+    itself, not just the pin, is the problem."""
+    reader = SupabaseReader()
+    with pytest.raises(ExperimentNotFoundError):
+        reader.load_experiment("999999", source_id=1)
 
 
 def test_sample_id_collision_across_waves_raises(

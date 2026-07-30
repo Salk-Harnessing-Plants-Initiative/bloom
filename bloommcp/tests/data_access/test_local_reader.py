@@ -21,6 +21,7 @@ from bloom_mcp.data_access import (
     ExperimentNotFoundError,
     ExperimentReadError,
     LocalReader,
+    SourceSelectable,
 )
 
 _RAW = "Genotype,trait_a,trait_b\ng1,1.0,3.0\ng2,2.0,4.0\ng3,3.0,5.0\n"
@@ -175,3 +176,9 @@ def test_raw_source_path(local_env):
     assert reader.raw_source_path("exp.csv") == inp / "exp.csv"
     assert reader.raw_source_path("absent.csv") is None
     assert reader.raw_source_path("../escape.csv") is None
+
+
+def test_local_reader_is_not_source_selectable(local_env):
+    """LocalReader has no source-versioned substrate; unlike SupabaseReader,
+    it must not satisfy SourceSelectable."""
+    assert not isinstance(LocalReader(), SourceSelectable)

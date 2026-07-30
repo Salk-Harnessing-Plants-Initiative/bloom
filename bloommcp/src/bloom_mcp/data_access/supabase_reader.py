@@ -44,6 +44,7 @@ from .ports import (
     ExperimentSummary,
     MultipleScansPerPlantError,
     SourceInfo,
+    SourcePinNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,11 @@ _METADATA_COLS = ["wave", "plant_age_days", "date_scanned", "plant_id", "scan_id
 # columns are added — used to report `total_columns` in a list_experiments()
 # summary without re-deriving the wide frame's exact shape.
 _FIXED_COLUMN_COUNT = 2 + len(_METADATA_COLS)
+
+# RPC/table names, named once so a rename or typo is a single-line fix.
+_RPC_GET_EXPERIMENT_TRAITS = "get_experiment_traits"
+_RPC_LIST_EXPERIMENT_TRAIT_SOURCES = "list_experiment_trait_sources"
+_TABLE_CYL_EXPERIMENTS = "cyl_experiments"
 
 
 class SupabaseReader:
@@ -134,7 +140,7 @@ class SupabaseReader:
         }
         if source is not None:
             rpc_params["source_id_"] = source.source_id
-        rows = _safe_rpc("get_experiment_traits", rpc_params, name=name)
+        rows = _safe_rpc(_RPC_GET_EXPERIMENT_TRAITS, rpc_params, name=name)
 
         if not rows and not self._experiment_exists(experiment_id):
             raise ExperimentNotFoundError(f"Experiment {name!r} could not be resolved.")
@@ -144,7 +150,7 @@ class SupabaseReader:
     def list_sources(self, name: str) -> list[SourceInfo]:
         experiment_id = _parse_experiment_id(name)
         rows = _safe_rpc(
-            "list_experiment_trait_sources",
+            _RPC_LIST_EXPERIMENT_TRAIT_SOURCES,
             {"experiment_id_": experiment_id},
             name=name,
         )
@@ -172,7 +178,15 @@ class SupabaseReader:
         sources = self.list_sources(name)
         if not sources:
             if source_id is not None or run_id is not None:
-                raise ExperimentNotFoundError(
+                # Distinguish "this experiment doesn't exist at all" from "it
+                # exists but has no tracked sources to pin against" -- a
+                # caller acting on the error (e.g. retry vs. give up) needs to
+                # tell these apart programmatically, not just read the message.
+                if not self._experiment_exists(_parse_experiment_id(name)):
+                    raise ExperimentNotFoundError(
+                        f"Experiment {name!r} could not be resolved."
+                    )
+                raise SourcePinNotFoundError(
                     f"No source/run matching the given pin for experiment {name!r}."
                 )
             # Legacy-only data (source_id IS NULL for every trait row) — a
@@ -183,7 +197,7 @@ class SupabaseReader:
         if source_id is not None:
             match = next((s for s in sources if s.source_id == source_id), None)
             if match is None:
-                raise ExperimentNotFoundError(
+                raise SourcePinNotFoundError(
                     f"Source {source_id} not found for experiment {name!r}."
                 )
             return match
@@ -191,7 +205,7 @@ class SupabaseReader:
         if run_id is not None:
             matches = [s for s in sources if s.pipeline_run_id == run_id]
             if not matches:
-                raise ExperimentNotFoundError(
+                raise SourcePinNotFoundError(
                     f"Run {run_id!r} not found for experiment {name!r}."
                 )
             if len(matches) > 1:
@@ -217,7 +231,7 @@ class SupabaseReader:
         try:
             client = _sc.get_postgrest_client()
             response = (
-                client.table("cyl_experiments")
+                client.table(_TABLE_CYL_EXPERIMENTS)
                 .select("id")
                 .eq("id", experiment_id)
                 .execute()
@@ -230,8 +244,13 @@ class SupabaseReader:
         return bool(response.data)
 
     def list_experiments(self) -> list[ExperimentSummary]:
-        client = _sc.get_postgrest_client()
-        response = client.table("cyl_experiments").select("id,name").execute()
+        try:
+            client = _sc.get_postgrest_client()
+            response = client.table(_TABLE_CYL_EXPERIMENTS).select("id,name").execute()
+        except Exception as exc:
+            raise ExperimentReadError(
+                "Could not list experiments: the database read failed."
+            ) from exc
 
         summaries: list[ExperimentSummary] = []
         for row in response.data:
@@ -249,7 +268,7 @@ class SupabaseReader:
                 # `rows` (distinct plant count) from the same round trip
                 # rather than a second, separately-guessed join query.
                 rows = _sc.call_rpc(
-                    "get_experiment_traits",
+                    _RPC_GET_EXPERIMENT_TRAITS,
                     {
                         "experiment_id_": experiment_id,
                         "source_id_": None,
@@ -321,6 +340,14 @@ def _pivot_wide(
     that source is an explicit, structured error (`MultipleScansPerPlantError`)
     rather than a silent `(scan_id, plant_id)`-keyed pivot: supporting a real
     multi-scan layout is deferred future work, not assumed away.
+
+    Three integrity checks run in a fixed order (multi-scan, then duplicate
+    trait readings, then cross-wave sample_id collisions) and each raises
+    immediately on its first violation. If more than one kind of violation is
+    present in the same fetch, only the first-encountered one is ever
+    reported — an intentional ordering choice (the read still fails loudly
+    either way), not a guarantee about which violation a caller sees first
+    when several co-occur.
     """
     if not rows:
         return ExperimentFrame(

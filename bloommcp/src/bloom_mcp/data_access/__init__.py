@@ -16,6 +16,7 @@ from .ports import (
     MultipleScansPerPlantError,
     RawSourced,
     SourceInfo,
+    SourcePinNotFoundError,
     SourceSelectable,
 )
 from .supabase_reader import SupabaseReader
@@ -36,6 +37,7 @@ __all__ = [
     "MultipleScansPerPlantError",
     "RawSourced",
     "SourceInfo",
+    "SourcePinNotFoundError",
     "SourceSelectable",
     "SupabaseReader",
 ]

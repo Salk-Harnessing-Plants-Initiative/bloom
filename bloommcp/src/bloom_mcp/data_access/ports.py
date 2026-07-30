@@ -30,6 +30,16 @@ class ExperimentNotFoundError(ExperimentReadError):
     """The experiment, or an explicitly requested version, could not be resolved."""
 
 
+class SourcePinNotFoundError(ExperimentReadError):
+    """The experiment exists, but a given ``source_id``/``run_id`` pin matched nothing.
+
+    Distinct from :class:`ExperimentNotFoundError` (the experiment itself does
+    not exist) so a caller can tell "wrong experiment" from "right experiment,
+    stale/wrong pin" programmatically rather than catching one exception for
+    both.
+    """
+
+
 class CleanedVersionRequiredError(ExperimentReadError):
     """``require_clean=True`` was requested but no cleaned version exists."""
 
