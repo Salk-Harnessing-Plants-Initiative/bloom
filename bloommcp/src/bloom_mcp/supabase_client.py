@@ -17,6 +17,10 @@ Public surface (exactly three functions):
                                        `bloommcp_input/{name}` in the
                                        `bloommcp-data` bucket.
 
+    call_rpc(function_name, params)  → list[dict] rows from a Postgres RPC
+                                       function (e.g. `record_bloommcp_usage`),
+                                       called as bloom_agent via PostgREST.
+
 For tool outputs, go through the `ResultStore` port (`bloom_mcp.result_store`)
 instead — its `SupabaseResultStore` adapter routes through the versioned
 `bloommcp_output/<tool_class>_<stem>/v<N>_<date>_<slug>/` prefix and updates
@@ -125,6 +129,27 @@ def read_input_csv(name: str) -> pd.DataFrame:
     client = get_postgrest_client()
     payload = client.storage.from_(BUCKET).download(f"{INPUT_PREFIX}{name}")
     return pd.read_csv(io.BytesIO(payload))
+
+
+def call_rpc(function_name: str, params: dict) -> list[dict]:
+    """Call a Postgres RPC function via PostgREST as bloom_agent, return its rows.
+
+    Args:
+        function_name: a `bloom_agent`-granted RPC (e.g. `record_bloommcp_usage`).
+        params: keyword arguments for the function, matching its SQL parameter
+            names exactly (e.g. `{"p_identity": "...", "p_action": "qc_clean"}`).
+            Sent as a JSON body that PostgREST binds as function arguments —
+            not string-interpolated SQL, so an attacker-influenced value in
+            `params` is not a SQL-injection vector.
+
+    Raises:
+        Exception: whatever the Supabase client raises on failure (a declared
+            SQL `RAISE EXCEPTION`, network failure, RLS denial). Callers decide
+            how to surface those as a structured, caller-safe error.
+    """
+    client = get_postgrest_client()
+    response = client.rpc(function_name, params).execute()
+    return response.data
 
 
 # ─── Generic storage helpers ──────────────────────────────────────────────────
