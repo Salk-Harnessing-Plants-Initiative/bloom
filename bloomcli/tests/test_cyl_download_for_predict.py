@@ -66,7 +66,7 @@ def test_oracle_sidecar_is_accepted_by_discover_scans(tmp_path):
     assert sidecar["scan_key"] == "scan_1"
     assert set(sidecar["params"]) == {"species", "mode", "age"}
     assert sidecar["params"]["mode"] == "cylinder"
-    assert sidecar["image_ids"] == [1001, 1002]
+    assert sidecar["image_ids"] == ["1001", "1002"]
     assert sidecar["images_checksum"].startswith("sha256:")
 
     dfp.write_sidecar(sidecar, scan_dir / "scan_1.scan_metadata.json")
@@ -118,8 +118,24 @@ def test_build_sidecar_assembles_all_fields_in_input_order():
     sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES, PARAMS)
     assert set(sidecar) == {"scan_key", "params", "image_ids", "images_checksum"}
     assert sidecar["scan_key"] == dfp.scan_key_for(SCAN["scan_id"])
-    assert sidecar["image_ids"] == [1001, 1002]
+    assert sidecar["image_ids"] == ["1001", "1002"]
     assert sidecar["params"] == PARAMS
+
+
+def test_build_sidecar_image_ids_and_checksum_validate_as_input_ref():
+    """Regression for bloom#555: `image_ids` must be `list[str]` — the exact shape
+    `sleap_roots_contracts.InputRef` (and, in turn, trait_extractor's `ScanMetadata`)
+    requires. Validating against the real contract model, not just a literal list of
+    strings, catches this class of type bug even if the literal expectation above is
+    ever loosened."""
+    from sleap_roots_contracts import InputRef
+
+    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES, PARAMS)
+
+    input_ref = InputRef.model_validate(
+        {"image_ids": sidecar["image_ids"], "images_checksum": sidecar["images_checksum"]}
+    )
+    assert input_ref.image_ids == ["1001", "1002"]
 
 
 def test_resolve_sidecar_params_passes_mode_override(monkeypatch):
@@ -287,7 +303,7 @@ def test_cli_happy_path_writes_frames_and_sidecar(tmp_path, monkeypatch):
     assert (out / "scan_1" / "1.png").exists()
     sidecar = json.loads((out / "scan_1" / "scan_1.scan_metadata.json").read_text())
     assert sidecar["scan_key"] == "scan_1"
-    assert sidecar["image_ids"] == [1001, 1002]
+    assert sidecar["image_ids"] == ["1001", "1002"]
     assert sidecar["params"]["mode"] == "cylinder"
     assert sidecar["images_checksum"].startswith("sha256:")
 
@@ -628,6 +644,27 @@ def test_scan_is_already_staged_false_when_scan_key_mismatched(tmp_path):
     assert dfp.scan_is_already_staged(scan_dir, "scan_1") is False
 
 
+def test_scan_is_already_staged_false_when_image_ids_are_int(tmp_path):
+    """Regression for bloom#555: a sidecar staged by the pre-fix build_sidecar() has
+    int image_ids. Without this check, scan_is_already_staged would treat it as valid
+    forever, and the batch resume path would never re-stage it with corrected str ids."""
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1", "image_ids": [1001, 1002]}), encoding="utf-8"
+    )
+    assert dfp.scan_is_already_staged(scan_dir, "scan_1") is False
+
+
+def test_scan_is_already_staged_true_when_image_ids_are_str(tmp_path):
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1", "image_ids": ["1001", "1002"]}), encoding="utf-8"
+    )
+    assert dfp.scan_is_already_staged(scan_dir, "scan_1") is True
+
+
 def _fetch_scan_for(scan_id_to_images):
     """A fetch_scan stand-in returning a per-scan_id SCAN row (scan_id field matches).
 
@@ -822,6 +859,25 @@ def test_stage_one_scan_malformed_sidecar_triggers_full_redownload(tmp_path, mon
     sidecar_path = scan_dir / "scan_1.scan_metadata.json"
     assert json.loads(sidecar_path.read_text(encoding="utf-8"))["scan_key"] == "scan_1"
     assert stale.read_bytes() != b"stale content from a previous run's malformed sidecar"
+
+
+def test_stage_one_scan_stale_int_image_ids_sidecar_triggers_full_redownload(tmp_path, monkeypatch):
+    """Regression for bloom#555: a scan staged by the pre-fix build_sidecar() (int
+    image_ids) must be treated as not-staged and re-downloaded, not silently skipped
+    forever by the batch resume path."""
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1", "image_ids": [1001, 1002]}), encoding="utf-8"
+    )
+
+    _patch_batch(monkeypatch)
+    client = _FakeClient()
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+
+    assert result.status == "ok"
+    sidecar = json.loads((scan_dir / "scan_1.scan_metadata.json").read_text(encoding="utf-8"))
+    assert sidecar["image_ids"] == ["1001", "1002"]
 
 
 def test_batch_cli_malformed_sidecar_triggers_full_redownload(tmp_path, monkeypatch):

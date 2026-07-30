@@ -135,6 +135,23 @@ def test_list_surfaces_api_error(monkeypatch):
     assert "permission denied" in res.output  # clean message, not a raw traceback
 
 
+def test_list_apierror_without_message_falls_back(monkeypatch):
+    # APIError.message is None when the body has no "message" key; fall back to str(exc)
+    # so the diagnostic survives instead of printing "Error: None".
+    from postgrest import APIError
+
+    _patch_authed(monkeypatch)
+
+    def _boom(client):
+        raise APIError({"code": "42P01", "details": "relation does not exist"})
+
+    monkeypatch.setattr(ex, "fetch_experiments", _boom)
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list"])
+    assert res.exit_code != 0
+    assert "None" not in res.output
+    assert "42P01" in res.output or "relation does not exist" in res.output
+
+
 def test_list_json_sorted(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(ex, "fetch_experiments", lambda client: EXPS)

@@ -1576,6 +1576,36 @@ export interface Database {
           trait_value: number
         }[]
       }
+      get_experiment_traits: {
+        Args: {
+          experiment_id_: number
+          run_id_?: string
+          source_id_?: number
+        }
+        Returns: {
+          scan_id: number
+          date_scanned: string
+          plant_age_days: number
+          wave_number: number
+          plant_id: number
+          germ_day: number
+          plant_qr_code: string
+          accession_name: string
+          trait_name: string
+          source_id: number | null
+          trait_value: number | null
+        }[]
+      }
+      list_experiment_trait_sources: {
+        Args: {
+          experiment_id_: number
+        }
+        Returns: {
+          source_id: number
+          source_name: string
+          pipeline_run_id: string | null
+        }[]
+      }
       get_scans_without_videos: {
         Args: Record<PropertyKey, never>
         Returns: {

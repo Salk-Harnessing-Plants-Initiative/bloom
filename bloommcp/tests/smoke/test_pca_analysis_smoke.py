@@ -27,3 +27,9 @@ def test_pca_analysis_smoke(call_tool, seeded_experiment: str) -> None:
     assert len(result["explained_variance_ratio"]) == result["n_components"]
     assert result["run_ref"]
     assert result["manifest_path"]
+    # Regression pin for the RunLinks.outputs live-transport bug found via #489's
+    # cross-experiment-correlations smoke test (fixed at the shared conftest.py level,
+    # in _call_tool_sync -- see its docstring). That fix benefits every RunLinks-based
+    # tool, but nothing beyond #489's own smoke test asserted on `outputs` to pin it
+    # going forward (found in review) -- this is that second, independent tool.
+    assert set(result["outputs"]) == {"loadings.csv", "scores.csv", "pca_result.json"}
