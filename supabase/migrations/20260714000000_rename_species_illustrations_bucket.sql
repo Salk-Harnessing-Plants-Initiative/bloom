@@ -22,12 +22,22 @@ INSERT INTO storage.buckets (id, name)
   VALUES ('species-illustrations', 'species-illustrations')
     ON CONFLICT DO NOTHING;
 
--- Repoint any objects that landed in the old underscore-bucket id back onto
--- the hyphen id so they remain readable under the new policies. No-op when
--- the table has no such rows (the typical case — MinIO refused the bucket).
-UPDATE storage.objects
+-- Repoint any objects filed under the old underscore-bucket id onto the
+-- hyphen id so they remain readable under the new policies.
+--
+-- storage.objects is unique on (bucket_id, name), so move only rows with no
+-- counterpart under the new id. Rows that have one are left in place: matching
+-- names do not prove matching content, and that can only be established per
+-- environment. Nothing reads the legacy id, so leaving them is inert.
+UPDATE storage.objects o
    SET bucket_id = 'species-illustrations'
- WHERE bucket_id = 'species_illustrations';
+ WHERE o.bucket_id = 'species_illustrations'
+   AND NOT EXISTS (
+     SELECT 1
+       FROM storage.objects t
+      WHERE t.bucket_id = 'species-illustrations'
+        AND t.name = o.name
+   );
 
 -- Repoint the four authenticated-role policies from the original
 -- 20230807221141_create_species_illustrations_bucket.sql migration.

@@ -9,10 +9,11 @@ one package it happens to populate today. See
 rationale (D3 in this change's ``design.md``).
 
 Two subgroups:
-  - ``analysis/`` — the 7 granular ``sleap-roots-analyze`` consumers
+  - ``analysis/`` — the 8 granular ``sleap-roots-analyze`` consumers
     (``pca_analysis``, ``qc_clean``, ``qc_inspect``, ``remove_outliers``,
-    ``clustering``, ``umap_analysis``, ``descriptive_stats``) + the 5 surviving
-    plotting tools. Populated here.
+    ``clustering``, ``umap_analysis``, ``descriptive_stats``,
+    ``cross_experiment_correlations``) + the 5 surviving plotting tools.
+    Populated here.
   - ``extraction/`` — reserved for future ``sleap-roots`` trait-extraction
     tools. Empty; not built in this change.
 
@@ -28,6 +29,7 @@ from bloom_mcp.contract import register
 
 from .analysis import (
     clustering,
+    cross_experiment_correlations,
     descriptive_stats,
     pca_analysis,
     plot_correlation_matrix,
@@ -53,6 +55,7 @@ register(
     clustering.clustering,
     umap_analysis.umap_analysis,
     descriptive_stats.descriptive_stats,
+    cross_experiment_correlations.cross_experiment_correlations,
     plot_trait_histograms.plot_trait_histograms,
     plot_trait_boxplots.plot_trait_boxplots,
     plot_correlation_matrix.plot_correlation_matrix,

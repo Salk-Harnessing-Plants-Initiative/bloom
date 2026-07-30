@@ -65,7 +65,8 @@ services:
     networks:
       - supanet
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:5002/health"]
+      # Probe with python, not curl — curl is not installed in this image.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5002/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -136,6 +137,12 @@ services:
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
       BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
       BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
+      # Verifies an optional X-Bloom-Identity header for usage tracking (#406)
+      # — never used as DB/Storage authority. Same secret GoTrue/PostgREST/
+      # langchain-agent already use; validated lazily (only if/when a request
+      # actually carries the header), so leaving it set here has no effect
+      # until a client sends that header.
+      JWT_SECRET: ${JWT_SECRET}
       # Storage backend (opt-in, default off — empty here behaves exactly like
       # unset). Set BLOOM_STORAGE_BACKEND=local in your own .env.dev, or run
       # `make dev-up-local`, to run FULLY LOCAL (offline) — reads inputs via
