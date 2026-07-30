@@ -1,11 +1,11 @@
 """Backend-agnostic experiment-read port and its value types.
 
 Tools depend on :class:`ExperimentReader`, never on Supabase or the
-``storage`` primitives. The current :class:`SupabaseReader` adapter wraps the
-deployed read path; :class:`FakeReader` is the in-memory test double. A future
-DB-direct adapter can satisfy the same port by **declaring** column roles for
-whatever shape it sources, instead of re-inferring them from a wide frame's
-dtypes — so role detection never leaks into callers.
+``storage`` primitives. :class:`SupabaseReader` is the deployed DB-direct
+adapter; :class:`FakeReader` is the in-memory test double. An adapter
+satisfies the port by **declaring** column roles for whatever shape it
+sources, instead of re-inferring them from a wide frame's dtypes — so role
+detection never leaks into callers.
 """
 
 from __future__ import annotations
@@ -48,6 +48,24 @@ class MultipleScansPerPlantError(ExperimentReadError):
     The raw-tier pivot keys one row per plant within a single resolved source;
     more than one ``scan_id`` for the same plant has no defined column layout
     (multi-scan pivoting is not yet supported).
+    """
+
+
+class AmbiguousRunIdError(ExperimentReadError):
+    """A ``run_id`` pin matches more than one source.
+
+    ``pipeline_run_id`` carries no DB uniqueness constraint (only
+    ``idempotency_key`` is enforced), so a caller's ``run_id`` pin is not
+    guaranteed to resolve to exactly one source. Raised rather than silently
+    picking one of the matches.
+    """
+
+
+class DuplicateTraitReadingError(ExperimentReadError):
+    """A resolved source has more than one trait value for the same plant+trait.
+
+    ``cyl_scan_traits`` carries no constraint preventing this. The raw-tier
+    pivot refuses to silently keep an arbitrary one of the duplicates.
     """
 
 
@@ -121,12 +139,13 @@ class ExperimentReader(Protocol):
 class RawSourced(Protocol):
     """Optional adapter capability: a concrete on-disk raw input path.
 
-    Adapters backed by a real raw CSV on local disk (:class:`SupabaseReader`,
-    :class:`LocalReader`) expose the source path so a run can content-address its
-    input (a non-empty ``input_sha256``). Path-less adapters (e.g. ``FakeReader``)
-    simply do not implement it — callers gate on ``isinstance(reader, RawSourced)``
-    rather than a duck-typed attribute lookup, so the capability is discoverable
-    and type-checked.
+    Adapters backed by a real raw CSV on local disk (:class:`LocalReader`) expose
+    the source path so a run can content-address its input (a non-empty
+    ``input_sha256``). Adapters without one — a path-less adapter like
+    ``FakeReader``, or a DB-backed raw tier like :class:`SupabaseReader` (see
+    :class:`SourceSelectable` instead) — simply do not implement it; callers gate
+    on ``isinstance(reader, RawSourced)`` rather than a duck-typed attribute
+    lookup, so the capability is discoverable and type-checked.
     """
 
     def raw_source_path(self, name: str) -> Optional[Path]:

@@ -106,8 +106,11 @@ validation and `docker-compose.prod.yml`'s `SLEAP_OUT_CSV` mount has no tracking
     `source: Optional[SourceInfo] = None`; `StoredRun` gains `source_id`/`source_name`)
   - `bloommcp/src/bloom_mcp/result_store/supabase_store.py` and `fake_store.py`
     (`create_run` merges `source` into `provenance` before storing the per-run state)
-  - `bloommcp/src/bloom_mcp/tools/_ports.py` (`source_for(filename)` mirroring
-    `raw_source_for`; used only by the still-unused `start_run`, not by any producer tool)
+  - `bloommcp/src/bloom_mcp/tools/_ports.py` — no `source_for(filename)` helper: an
+    earlier revision added one for the still-unused `start_run`, but review found it
+    would reintroduce the re-resolution race for whoever eventually adopted it, with
+    zero test coverage; removed rather than kept as a footgun (`start_run` drops the
+    `source=` kwarg entirely, matching its pre-this-change shape)
   - The 7 producer tools (`sections/sleap_roots/analysis/{qc_clean,qc_inspect,
     remove_outliers,pca_analysis,clustering,descriptive_stats,umap_analysis}.py`) — one
     added `source=frame.resolved_source` kwarg (the value each tool's own

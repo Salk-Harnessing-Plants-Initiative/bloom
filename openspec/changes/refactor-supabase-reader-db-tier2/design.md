@@ -208,25 +208,19 @@ already holds from its own earlier `load_experiment(...)` call:
 source=frame.resolved_source,
 ```
 
-`_ports.py` still gains `source_for(filename)`, mirroring `raw_source_for`, but it is
-**not** called by any producer tool anymore — it exists only for `start_run` (below),
-mirroring `raw_source_for`'s own shape for whatever future caller adopts `start_run`:
-
-```python
-def source_for(filename: str) -> Optional[SourceInfo]:
-    return (
-        _reader.resolve_source(filename)
-        if isinstance(_reader, SourceSelectable)
-        else None
-    )
-```
-
-`start_run` (still unused by any shipped tool, and has no `frame` in scope — it stamps
-provenance and opens a run without reading one) is updated for consistency with the same
-one-line addition using `source_for`, so it doesn't silently drift further out of date for
-whatever future tool eventually adopts it — but it is not the load-bearing wiring path, and
-a future adopter of `start_run` that *does* read a frame first should prefer
-`frame.resolved_source` the same way the 7 producer tools now do.
+**Status: corrected during PR review — `_ports.source_for` removed outright, not kept
+for a future caller.** An earlier revision of this design kept a `_ports.source_for(filename)`
+helper (mirroring `raw_source_for`) solely so the still-unused `start_run` could gain the same
+`source=` one-line addition "for consistency." Review caught that this is a footgun, not a
+convenience: `source_for` performs its own independent, unpinned `resolve_source(filename)`
+call — exactly the re-resolution race D2/D3 eliminated everywhere else — and it had zero test
+coverage and zero real callers. Keeping it "for whenever a future tool adopts `start_run`"
+means that future adopter inherits the bug silently, with no test ever having exercised the
+call it's copying. **`_ports.source_for` is deleted; `start_run` drops its `source=` kwarg
+entirely** (it has no `frame` in scope to draw a `resolved_source` from — unlike the 7 producer
+tools below). A future caller that needs source provenance should pass its own already-loaded
+frame's `resolved_source` through to `create_run`, the same way the 7 producer tools do, not
+call a helper that re-resolves independently.
 
 **Rejected alternative (this design's second draft):** keep `source=_ports.source_for(...)`
 at each tool's `create_run` call site. Rejected — verified to record an unrelated value for

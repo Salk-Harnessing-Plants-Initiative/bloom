@@ -14,32 +14,30 @@ in-process, env-overridden call (like ``live_persistence_smoke.py``'s) would
 never touch the actual mount and would pass even if the underlying bind-mount
 permission bug (this script's reason for existing) were still present.
 
-Seeds the raw ``turface_19_raw_data.csv`` fixture into the **real**, host-side
-bind-mounted ``bloommcp/data/TRAITS_DIR/`` (not a host tempdir) as
-``turface_raw.csv``, so the running container can see it at its
-``BLOOM_TRAITS_DIR`` (``/app/data/TRAITS_DIR``).
+SupabaseReader's raw tier is DB-only (bloom#551): there is no local-CSV upload path
+left for this script to seed the input from, so ``BLOOM_SMOKE_EXPERIMENT_ID`` must
+name a numeric experiment id that already has trait rows in whatever Postgres this
+smoke run points at.
 
 Env (sourced from ``.env.dev`` by the ``make bloommcp-plot-smoke`` target):
-    BLOOMMCP_PORT      host port the bloommcp container publishes 8811 on
-    BLOOMMCP_API_KEY   Bearer token the server validates (see auth.py)
+    BLOOMMCP_PORT               host port the bloommcp container publishes 8811 on
+    BLOOMMCP_API_KEY            Bearer token the server validates (see auth.py)
+    BLOOM_SMOKE_EXPERIMENT_ID   numeric experiment id already seeded with trait rows
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import sys
 from pathlib import Path
 
 from fastmcp import Client
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-FIXTURE = REPO_ROOT / "bloommcp" / "tests" / "fixtures" / "turface_19_raw_data.csv"
-TRAITS_DIR = REPO_ROOT / "bloommcp" / "data" / "TRAITS_DIR"
 PLOTS_DIR = REPO_ROOT / "bloommcp" / "data" / "PLOTS_DIR"
-EXPERIMENT = "turface_raw.csv"
-PNG = PLOTS_DIR / "histograms_turface_raw.png"
+EXPERIMENT = os.environ.get("BLOOM_SMOKE_EXPERIMENT_ID", "")
+PNG = PLOTS_DIR / f"histograms_{EXPERIMENT}.png"
 
 _CHECKS: list[tuple[str, bool, str]] = []
 
@@ -53,11 +51,6 @@ def _check(name: str, ok: bool, detail: str = "") -> None:
 
 def _redact(secret: str, text: str) -> str:
     return text.replace(secret, "***REDACTED***") if secret else text
-
-
-def _seed_fixture() -> None:
-    TRAITS_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy(FIXTURE, TRAITS_DIR / EXPERIMENT)
 
 
 def _clear_stale_png() -> None:
@@ -75,12 +68,16 @@ async def main() -> int:
             file=sys.stderr,
         )
         return 1
+    if not EXPERIMENT:
+        print(
+            "live_plot_tool_smoke: BLOOM_SMOKE_EXPERIMENT_ID is empty — set it to a "
+            "numeric experiment id already seeded with trait rows in the target "
+            "Postgres (SupabaseReader's raw tier is DB-only; there is no local-CSV "
+            "upload path to fall back to).",
+            file=sys.stderr,
+        )
+        return 1
 
-    _seed_fixture()
-    _check(
-        "fixture seeded into the real bind-mounted TRAITS_DIR",
-        (TRAITS_DIR / EXPERIMENT).exists(),
-    )
     _clear_stale_png()
 
     url = f"http://localhost:{port}/mcp"

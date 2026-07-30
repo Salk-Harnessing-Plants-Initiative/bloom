@@ -9,8 +9,10 @@ MinIO), so it must override what ``.env.dev`` configures for in-container proces
     script (it derives the port from ``.env.dev``); we fall back to localhost:8000 only
     for a bare ``python tests/smoke/live_persistence_smoke.py`` invocation.
   * ``BLOOM_TRAITS_DIR`` / ``BLOOM_OUTPUT_DIR`` / ``BLOOM_PLOTS_DIR`` — ``.env.dev`` points
-    these at in-container ``/app/data/...`` paths; we override them with host temp dirs,
-    seeding the traits dir with the ``turface`` fixture.
+    these at in-container ``/app/data/...`` paths; we override them with host temp dirs.
+    ``BLOOM_TRAITS_DIR`` itself must still exist for boot validation, but its *contents*
+    are no longer read for the raw tier — see ``BLOOM_SMOKE_EXPERIMENT_ID`` below
+    (bloom#551: ``SupabaseReader``'s raw tier is DB-only, not a local-CSV read anymore).
 
 ``bloom_mcp.experiment_utils`` captures ``TRAITS_DIR`` / ``OUTPUT_DIR`` / ``PLOTS_DIR``
 from the environment **at import time**, so the env must be set *before* ``import
@@ -21,15 +23,21 @@ checked clean with no Supabase env — the Tier-0 lazy-validation contract — i
 subprocess first.
 
 A **Tier-3 ``qc_clean``** leg (#338) drives the granular cleanup tool through the real
-ports against the raw ``turface`` input:
+ports against a raw experiment already resolvable from Postgres:
 
-  * ``qc_clean(experiment="turface_raw.csv", max_nans_per_trait=0.1)`` commits a versioned
-    ``qc`` run whose committed outputs include ``_cleaned.csv`` and ``cleanup_log.json``;
+  * Set ``BLOOM_SMOKE_EXPERIMENT_ID`` to a numeric experiment id that already has trait
+    rows in whatever Postgres this smoke run points at — ``SupabaseReader``'s raw tier is
+    DB-only (bloom#551), so there is no local-CSV upload path for this script to seed the
+    input from anymore. Seeding that experiment into the dev stack's Postgres is not
+    automated by this script (no tracking issue filed yet for a smoke DB seeder);
+  * ``qc_clean(experiment=BLOOM_SMOKE_EXPERIMENT_ID, max_nans_per_trait=0.1)`` commits a
+    versioned ``qc`` run whose committed outputs include ``_cleaned.csv`` and
+    ``cleanup_log.json``;
   * that run's manifest is schema v3 and every recorded ``output_sha256`` matches the bytes
     actually stored for **both** artifacts;
-  * a fresh ``SupabaseReader().load_experiment("turface_raw.csv", require_clean=True)`` then
-    resolves the committed **cleaned** version (source ``v<N>_cleaned``, not ``raw``) and that
-    frame has zero NaN cells in its trait columns — the qc_clean → pca_analysis contract.
+  * a fresh ``SupabaseReader().load_experiment(BLOOM_SMOKE_EXPERIMENT_ID, require_clean=True)``
+    then resolves the committed **cleaned** version (source ``v<N>_cleaned``, not ``raw``) and
+    that frame has zero NaN cells in its trait columns — the qc_clean → pca_analysis contract.
 
 A ``remove_outliers`` leg (#378) trims the cleaned version through the same real ports. This
 is also where the smoke's generic v3-provenance + version-advance guarantee (originally
@@ -113,19 +121,16 @@ from typing import Callable, NamedTuple, Optional
 # of 42 (see RO_SEED below) — same value, no numeric change.
 EXPECTED_SEED = 42
 EXPECTED_AGENT = "bloom_agent"
-_HERE = Path(__file__).resolve().parent
 
 # --- Tier-3 qc_clean leg constants --------------------------------------------
-# A SECOND experiment, cleaned through the granular ``qc_clean`` tool (#338). Its
-# input is the *raw* (un-QC'd) turface table; ``qc_clean`` persists a versioned
-# ``qc`` run whose ``_cleaned.csv`` a later ``require_clean`` read must resolve.
-# The raw input is seeded into ``BLOOM_TRAITS_DIR`` (the deployed read path —
-# inputs have not yet migrated to ``bloommcp_input/``), matching the existing
-# fixture-upload pattern in ``_configure_live_env``.
-QC_EXPERIMENT = "turface_raw.csv"
+# A SECOND experiment, cleaned through the granular ``qc_clean`` tool (#338).
+# ``SupabaseReader``'s raw tier is DB-only (bloom#551) — this leg needs a REAL
+# numeric experiment id that already has trait rows in whatever Postgres this
+# smoke run points at, not a local CSV this script can seed itself. Set
+# BLOOM_SMOKE_EXPERIMENT_ID to that id before running `make bloommcp-smoke`.
+QC_EXPERIMENT = os.environ.get("BLOOM_SMOKE_EXPERIMENT_ID", "")
 QC_TOOL_CLASS = "qc"
 QC_MAX_NANS_PER_TRAIT = 0.1
-QC_FIXTURE = _HERE.parent / "fixtures" / "turface_19_raw_data.csv"
 CLEANED_CSV_NAME = (
     "_cleaned.csv"  # logical key qc_clean commits (and the reader resolves)
 )
@@ -657,23 +662,20 @@ def retry(
 
 # --- live wiring (exercised only with the dev stack up) -----------------------
 def _configure_live_env() -> None:
-    """Point BLOOM_*_DIR at host temp dirs (seeded with the fixture) before import.
+    """Point BLOOM_*_DIR at host temp dirs before import.
 
     The dirs are registered for cleanup at interpreter exit so a smoke run leaves
     no host litter. Env is set here *before* the first ``import bloom_mcp`` in
     ``main`` because ``experiment_utils`` captures the dir globals at import time.
+    ``BLOOM_TRAITS_DIR`` only needs to exist (boot validation still checks for the
+    directory) — its contents are never read by ``SupabaseReader``'s DB-only raw
+    tier, so unlike before this change there is no fixture to seed into it.
     """
-    if not QC_FIXTURE.exists():
-        raise FileNotFoundError(f"fixture not found: {QC_FIXTURE}")
     traits = Path(tempfile.mkdtemp(prefix="smoke_traits_"))
     out = Path(tempfile.mkdtemp(prefix="smoke_out_"))
     plots = Path(tempfile.mkdtemp(prefix="smoke_plots_"))
     for d in (traits, out, plots):
         atexit.register(shutil.rmtree, d, ignore_errors=True)
-    # Seed the raw qc_clean input as turface_raw.csv. The deployed reader resolves
-    # raw inputs from BLOOM_TRAITS_DIR (inputs have not yet moved to the
-    # bloommcp_input/ bucket), so the qc_clean leg uploads its fixture here.
-    shutil.copy(QC_FIXTURE, traits / QC_EXPERIMENT)
     os.environ["BLOOM_TRAITS_DIR"] = str(traits)
     os.environ["BLOOM_OUTPUT_DIR"] = str(out)
     os.environ["BLOOM_PLOTS_DIR"] = str(plots)
@@ -695,6 +697,21 @@ def main() -> int:
                 "BLOOM_AGENT_KEY present",
                 False,
                 "unset — export it from .env.dev (the make target does this)",
+            )
+        )
+        text, code = summarize(checks)
+        print(text)
+        return code
+
+    if not QC_EXPERIMENT:
+        checks.append(
+            Check(
+                "BLOOM_SMOKE_EXPERIMENT_ID present",
+                False,
+                "unset — set it to a numeric experiment id already seeded with trait "
+                "rows in the target Postgres. SupabaseReader's raw tier is DB-only "
+                "(bloom#551): there is no local-CSV upload path left for this script "
+                "to fall back to, so this leg cannot invent a valid experiment itself.",
             )
         )
         text, code = summarize(checks)

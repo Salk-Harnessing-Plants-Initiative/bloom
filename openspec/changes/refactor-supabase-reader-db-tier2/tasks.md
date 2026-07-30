@@ -158,9 +158,13 @@
 - [x] 4.7 `bloommcp/src/bloom_mcp/result_store/supabase_store.py` and `fake_store.py`:
       `create_run` accepts `source`, merges it into `provenance` via `model_copy` before
       constructing the per-run state dataclass (D3).
-- [x] 4.8 `bloommcp/src/bloom_mcp/tools/_ports.py`: add `source_for(filename)` mirroring
-      `raw_source_for`; add the same one-line addition to `start_run` for consistency
-      (still unused by any shipped tool) (D2/D3).
+- [x] 4.8 `bloommcp/src/bloom_mcp/tools/_ports.py`: no `source_for(filename)` helper.
+      **Fixed after a second PR review round**: an earlier revision added one, plus a
+      matching one-line addition to `start_run`, "for consistency" with the 7 producer
+      tools. Review found that `source_for` re-resolves independently (the same
+      unpinned-race pattern fixed at 4.9 below) with zero test coverage and zero real
+      callers — a footgun for whoever eventually adopts `start_run`, not a convenience.
+      Removed outright; `start_run` drops its `source=` kwarg entirely (D2/D3).
 - [x] 4.9 Add `source=frame.resolved_source` to the existing `store.create_run(...)` call
       in each of the 7 producer tools: `qc_clean.py`, `qc_inspect.py`,
       `remove_outliers.py`, `pca_analysis.py`, `clustering.py`, `descriptive_stats.py`,
@@ -195,3 +199,82 @@
 - [ ] 6.3 Confirm bloom#552 already tracks the LLM-facing tool-text half of "Tier 3" (it
       does, filed 2026-07-29) — file only the remaining `BLOOM_TRAITS_DIR` boot/compose
       cleanup half as its own tracking issue if not already filed.
+
+## 7. Second review round (5-agent) fixes
+
+A follow-up 5-agent review (code quality, testing, scientific rigor, security, behavioural
+correctness) surfaced three blocking issues and several important ones, addressed here.
+
+- [x] 7.1 **Blocking — live smoke tests broken by the DB-only rewrite.**
+      `live_persistence_smoke.py`/`live_plot_tool_smoke.py` and the 7 granular
+      analysis-tool smoke tests (`tests/smoke/test_{qc_clean,qc_inspect,remove_outliers,
+      pca_analysis,clustering,descriptive_stats,umap_analysis}_smoke.py`, via
+      `conftest.py`'s `seeded_experiment` fixture) hard-coded non-numeric filenames
+      (`"turface_raw.csv"`) as the experiment identifier passed to a `SupabaseReader`-backed
+      tool call — `_parse_experiment_id` rejects those outright. **Investigation found the
+      5 plot-tool smoke tests are NOT affected**: they call `experiment_utils.
+      load_experiment_data` directly, a separate, untouched local-`BLOOM_TRAITS_DIR` raw
+      tier this change does not touch — only the 7 tools routing through
+      `SupabaseReader.load_experiment` needed a fix. Resolved with the user's chosen
+      "minimal + document" scope, not a DB seeder (out of scope — no live dev-stack access
+      to verify one, and building a correct CSV→envelope seeder for a 129-plant/880-trait
+      fixture through `insert_cyl_result_envelope` with write-capable credentials is a
+      change of its own): both scripts and `conftest.py` now read a numeric experiment id
+      from env vars (`BLOOM_SMOKE_EXPERIMENT_ID`, `BLOOM_SMOKE_EXPERIMENT_ID_TURFACE_19`,
+      `BLOOM_SMOKE_EXPERIMENT_ID_CYLINDER`) and fail/skip with a clear, actionable message
+      when unset, rather than a confusing `ExperimentNotFoundError`. A new `db_experiment_id`
+      fixture (distinct from the unchanged `seeded_experiment`) serves the 7 analysis-tool
+      tests. `make bloommcp-smoke`'s Makefile target passes `BLOOM_SMOKE_EXPERIMENT_ID`
+      through. **Getting CI fully green still requires seeding a real numeric experiment in
+      the target Postgres and setting these env vars — not done here, no tracking issue
+      filed yet.**
+- [x] 7.2 **Blocking — `resolve_source(run_id=...)` could silently pick the wrong source.**
+      `pipeline_run_id` carries no DB uniqueness constraint (only `idempotency_key` is
+      enforced); a `run_id` pin matching more than one source previously resolved to
+      whichever `next(...)` happened to match first, with no error — undermining "one
+      source per frame is structural, not asserted." Fixed: a new `AmbiguousRunIdError`
+      is raised when a `run_id` pin matches more than one source.
+- [x] 7.3 **Blocking — silent data loss on duplicate `(plant_id, trait_name)` rows.**
+      `pivot_table(..., aggfunc="first")` silently kept an arbitrary row and dropped the
+      rest on a duplicate — the same class of risk this change already guards against for
+      `sample_id`/multi-scan collisions, two functions away. Fixed: a new
+      `DuplicateTraitReadingError` is raised on any duplicate `(plant_id, trait_name)` pair
+      before the pivot, naming the trait and `qr_code` (not the internal `plant_id`).
+- [x] 7.4 **Important — error-handling asymmetry.** `list_sources`/`load_experiment`'s RPC
+      calls and `_experiment_exists`'s table read let a raw Supabase/network exception
+      escape the `ExperimentReadError` contract. Fixed: a new `_safe_rpc` helper wraps
+      `call_rpc`, and `_experiment_exists` wraps its table read, both translating any
+      failure into a caller-safe `ExperimentReadError`.
+- [x] 7.5 **Important — `list_experiments()` crashed the whole call on one malformed row.**
+      `row["id"]` (before the try) and the `plant_ids`/`trait_names` derivation (after the
+      try) could each raise `KeyError` uncaught, contradicting the documented per-item
+      fail-open intent. Fixed: the entire per-row body is now one try/except.
+- [x] 7.6 **Important — a `source_id`/`run_id` pin was silently ignored when a cleaned
+      version resolved first.** `load_experiment(name, source_id=..., version="latest")`
+      would return the cleaned frame with no indication the pin was never honored. Fixed:
+      supplying either pin together with a non-`"raw"` `version` now raises
+      `AmbiguousSourceSelectionError` up front.
+- [x] 7.7 **Important — dead-code re-resolution footgun in `tools/_ports.py`.** See §7 note
+      on `_ports.source_for` above (task 4.8) — removed outright rather than kept for a
+      future caller.
+- [x] 7.8 **Important — stale `RawSourced`/module docstrings in `ports.py`.**
+      `RawSourced`'s docstring still listed `SupabaseReader` as an implementer (contradicted
+      by this change's own `test_supabase_reader_no_longer_satisfies_raw_sourced`), and the
+      module docstring's "a future DB-direct adapter" framing was stale now that
+      `SupabaseReader` is that adapter. Both corrected.
+- [x] 7.9 **Important — `scan_id` dropped from the returned frame's metadata**, a
+      traceability regression versus plant/wave/experiment/source. Added to
+      `_METADATA_COLS` and the pivot's retained columns.
+- [x] 7.10 **Suggestion — id-leakage inconsistency.** `MultipleScansPerPlantError` named the
+      internal `plant_id` directly while `AmbiguousSampleIdentityError` deliberately named
+      only the `qr_code`. Made consistent: both now name the `qr_code`.
+- [x] 7.11 **Suggestion — misleading message for `version="raw"` + `require_clean=True`.**
+      Previously reused "no cleaned dataset found; run the QC workflow first," which
+      misdiagnoses a self-contradictory parameter combination as a missing-data condition.
+      Now distinguishes the two cases.
+- [x] 7.12 New test coverage: `run_id` matching multiple sources (`AmbiguousRunIdError`),
+      duplicate `(plant_id, trait_name)` rows (`DuplicateTraitReadingError`), a genuinely
+      mixed-source fixture proving an unpinned read never mixes sources, a negative
+      `SourceSelectable` capability check for `FakeReader`, a NaN/null `trait_value` case,
+      `list_experiments()` surviving a malformed row, and the new
+      pin-requires-raw-version / raw+require_clean-contradiction error paths.

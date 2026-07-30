@@ -33,11 +33,14 @@ from bloom_mcp import supabase_client as _sc
 from bloom_mcp.experiment_utils import detect_columns
 
 from .ports import (
+    AmbiguousRunIdError,
     AmbiguousSampleIdentityError,
     AmbiguousSourceSelectionError,
     CleanedVersionRequiredError,
+    DuplicateTraitReadingError,
     ExperimentFrame,
     ExperimentNotFoundError,
+    ExperimentReadError,
     ExperimentSummary,
     MultipleScansPerPlantError,
     SourceInfo,
@@ -47,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 _GENOTYPE_COL = "genotype"
 _SAMPLE_ID_COL = "sample_id"
-_METADATA_COLS = ["wave", "plant_age_days", "date_scanned", "plant_id"]
+_METADATA_COLS = ["wave", "plant_age_days", "date_scanned", "plant_id", "scan_id"]
 # genotype + sample_id + the four metadata columns above, before any trait
 # columns are added — used to report `total_columns` in a list_experiments()
 # summary without re-deriving the wide frame's exact shape.
@@ -83,6 +86,17 @@ class SupabaseReader:
                     f"Version {version!r} not found for experiment {name!r}."
                 )
             if cleaned_path is not None:
+                if source_id is not None or run_id is not None:
+                    # A source/run pin only applies to the DB-backed raw tier.
+                    # Silently returning the cleaned frame here would let a
+                    # caller believe their pin was honored when it never was
+                    # -- pass version="raw" to force the raw tier instead.
+                    raise AmbiguousSourceSelectionError(
+                        f"source_id/run_id pin cannot be honored: a cleaned "
+                        f"version ({source_label}) resolved for {name!r} "
+                        "before any database read; pass version='raw' to "
+                        "force the raw tier instead."
+                    )
                 df = pd.read_csv(cleaned_path)
                 config = detect_columns(df)
                 return ExperimentFrame(
@@ -96,6 +110,16 @@ class SupabaseReader:
                 )
 
         if require_clean:
+            if version == "raw":
+                # A genuinely contradictory request, not "no cleaned version
+                # exists" — version="raw" above skipped the cleaned-tier lookup
+                # entirely, so telling the caller to "run the QC workflow" would
+                # misdiagnose the actual problem (the two arguments disagree).
+                raise CleanedVersionRequiredError(
+                    f"version='raw' and require_clean=True are contradictory "
+                    f"for {name!r}: version='raw' explicitly forces the raw "
+                    "tier, which is never a cleaned version."
+                )
             raise CleanedVersionRequiredError(
                 f"No cleaned dataset found for {name!r}; run the QC workflow first."
             )
@@ -110,7 +134,7 @@ class SupabaseReader:
         }
         if source is not None:
             rpc_params["source_id_"] = source.source_id
-        rows = _sc.call_rpc("get_experiment_traits", rpc_params)
+        rows = _safe_rpc("get_experiment_traits", rpc_params, name=name)
 
         if not rows and not self._experiment_exists(experiment_id):
             raise ExperimentNotFoundError(f"Experiment {name!r} could not be resolved.")
@@ -119,8 +143,10 @@ class SupabaseReader:
 
     def list_sources(self, name: str) -> list[SourceInfo]:
         experiment_id = _parse_experiment_id(name)
-        rows = _sc.call_rpc(
-            "list_experiment_trait_sources", {"experiment_id_": experiment_id}
+        rows = _safe_rpc(
+            "list_experiment_trait_sources",
+            {"experiment_id_": experiment_id},
+            name=name,
         )
         return [
             SourceInfo(
@@ -163,12 +189,23 @@ class SupabaseReader:
             return match
 
         if run_id is not None:
-            match = next((s for s in sources if s.pipeline_run_id == run_id), None)
-            if match is None:
+            matches = [s for s in sources if s.pipeline_run_id == run_id]
+            if not matches:
                 raise ExperimentNotFoundError(
                     f"Run {run_id!r} not found for experiment {name!r}."
                 )
-            return match
+            if len(matches) > 1:
+                # pipeline_run_id carries no DB uniqueness constraint (only
+                # idempotency_key is enforced) -- a run_id pin is not guaranteed
+                # to resolve to exactly one source. Raise rather than silently
+                # picking one of the matches, which would undermine "one source
+                # per frame is structural, not asserted" (see module docstring).
+                raise AmbiguousRunIdError(
+                    f"run_id {run_id!r} matches {len(matches)} distinct sources "
+                    f"for experiment {name!r}; pipeline_run_id does not "
+                    "uniquely identify one."
+                )
+            return matches[0]
 
         # Unpinned: latest is the experiment-wide max source_id — resolved once
         # here and pinned explicitly by the caller, rather than ever calling
@@ -177,13 +214,19 @@ class SupabaseReader:
         return max(sources, key=lambda s: s.source_id)
 
     def _experiment_exists(self, experiment_id: int) -> bool:
-        client = _sc.get_postgrest_client()
-        response = (
-            client.table("cyl_experiments")
-            .select("id")
-            .eq("id", experiment_id)
-            .execute()
-        )
+        try:
+            client = _sc.get_postgrest_client()
+            response = (
+                client.table("cyl_experiments")
+                .select("id")
+                .eq("id", experiment_id)
+                .execute()
+            )
+        except Exception as exc:
+            raise ExperimentReadError(
+                f"Could not verify experiment {experiment_id} exists: the "
+                "database read failed."
+            ) from exc
         return bool(response.data)
 
     def list_experiments(self) -> list[ExperimentSummary]:
@@ -192,9 +235,13 @@ class SupabaseReader:
 
         summaries: list[ExperimentSummary] = []
         for row in response.data:
-            experiment_id = row["id"]
-            filename = str(experiment_id)
+            # The whole per-row body is one try/except -- a malformed row (a
+            # missing "id"/"plant_id"/"trait_name" key) must exclude only this
+            # experiment from the listing, not crash the entire call, same as
+            # an RPC failure below.
             try:
+                experiment_id = row["id"]
+                filename = str(experiment_id)
                 # A per-experiment bulk fetch — the same call load_experiment
                 # itself makes — is the only way to get an accurate trait
                 # count; there is no per-experiment distinct-trait-name view
@@ -209,20 +256,9 @@ class SupabaseReader:
                         "run_id_": None,
                     },
                 )
-            except Exception:
-                logger.warning(
-                    "list_experiments: failed to fetch traits for experiment "
-                    "%s; excluding it from the listing rather than failing "
-                    "the whole call.",
-                    experiment_id,
-                    exc_info=True,
-                )
-                continue
-
-            plant_ids = {r["plant_id"] for r in rows}
-            trait_names = {r["trait_name"] for r in rows}
-            summaries.append(
-                ExperimentSummary(
+                plant_ids = {r["plant_id"] for r in rows}
+                trait_names = {r["trait_name"] for r in rows}
+                summary = ExperimentSummary(
                     filename=filename,
                     stem=filename,
                     rows=len(plant_ids),
@@ -232,8 +268,36 @@ class SupabaseReader:
                     genotype_col=_GENOTYPE_COL,
                     sample_id_col=_SAMPLE_ID_COL,
                 )
-            )
+            except Exception:
+                logger.warning(
+                    "list_experiments: failed to process experiment row %r; "
+                    "excluding it from the listing rather than failing "
+                    "the whole call.",
+                    row,
+                    exc_info=True,
+                )
+                continue
+            summaries.append(summary)
         return summaries
+
+
+def _safe_rpc(function_name: str, params: dict, *, name: str) -> list[dict]:
+    """Call ``supabase_client.call_rpc``, translating any failure into a
+    caller-safe :class:`ExperimentReadError`.
+
+    ``call_rpc`` itself documents that it re-raises whatever the Supabase
+    client raises (a declared SQL ``RAISE EXCEPTION``, a network failure, an
+    RLS denial) and leaves surfacing that as a structured error to the caller.
+    A raw exception may embed backend detail (a SQL message, a connection
+    string) that must never reach an agent-facing message.
+    """
+    try:
+        return _sc.call_rpc(function_name, params)
+    except Exception as exc:
+        raise ExperimentReadError(
+            f"Could not read {function_name} data for experiment {name!r}: "
+            "the database read failed."
+        ) from exc
 
 
 def _parse_experiment_id(name: str) -> int:
@@ -275,10 +339,32 @@ def _pivot_wide(
     scans_per_plant = long_df.groupby("plant_id")["scan_id"].nunique()
     ambiguous = scans_per_plant[scans_per_plant > 1]
     if not ambiguous.empty:
+        # Name the plant by its qr_code (sample_id), not the internal plant_id
+        # -- consistent with AmbiguousSampleIdentityError's policy of never
+        # leaking an internal DB id into an agent-facing message.
+        bad_plant_id = ambiguous.index[0]
+        bad_qr_code = long_df.loc[
+            long_df["plant_id"] == bad_plant_id, "plant_qr_code"
+        ].iloc[0]
         raise MultipleScansPerPlantError(
-            f"plant {ambiguous.index[0]!r} in experiment {name!r} has "
+            f"plant {bad_qr_code!r} in experiment {name!r} has "
             f"{int(ambiguous.iloc[0])} distinct scans in the resolved source; "
             "multi-scan pivoting is not supported."
+        )
+
+    # A duplicate (plant_id, trait_name) pair within the single resolved source
+    # has no DB constraint preventing it (cyl_scan_traits carries none). Refuse
+    # to silently keep an arbitrary one via pivot_table's aggfunc -- the same
+    # "fail loudly, don't guess" treatment this function already gives
+    # multi-scan and cross-wave sample_id collisions two lines above/below.
+    dup_trait_mask = long_df.duplicated(subset=["plant_id", "trait_name"], keep=False)
+    if dup_trait_mask.any():
+        dup_row = long_df.loc[dup_trait_mask].iloc[0]
+        raise DuplicateTraitReadingError(
+            f"trait {dup_row['trait_name']!r} has more than one value for "
+            f"plant {dup_row['plant_qr_code']!r} in experiment {name!r} "
+            "within the resolved source; the raw tier does not silently "
+            "pick one."
         )
 
     meta = (
@@ -290,6 +376,7 @@ def _pivot_wide(
                 "wave_number",
                 "plant_age_days",
                 "date_scanned",
+                "scan_id",
             ]
         ]
         .rename(
@@ -301,7 +388,16 @@ def _pivot_wide(
         )
     )
     trait_wide = long_df.pivot_table(
-        index="plant_id", columns="trait_name", values="trait_value", aggfunc="first"
+        index="plant_id",
+        columns="trait_name",
+        values="trait_value",
+        aggfunc="first",
+        # pivot_table's default dropna=True silently drops a trait column
+        # whose value is NaN/None for every plant in this fetch (e.g. a trait
+        # not yet measured for anyone in the resolved source) -- the caller
+        # never asked for that exclusion, so it must survive as an all-NaN
+        # column instead of vanishing from trait_cols entirely.
+        dropna=False,
     )
     trait_cols = sorted(trait_wide.columns.tolist())
     trait_wide = trait_wide[trait_cols]

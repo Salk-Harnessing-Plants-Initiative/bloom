@@ -7,9 +7,14 @@ import pytest
 
 from bloom_mcp.contract import Provenance
 from bloom_mcp.data_access import (
+    AmbiguousRunIdError,
     AmbiguousSampleIdentityError,
     AmbiguousSourceSelectionError,
+    CleanedVersionRequiredError,
+    DuplicateTraitReadingError,
     ExperimentNotFoundError,
+    ExperimentReadError,
+    FakeReader,
     MultipleScansPerPlantError,
     RawSourced,
     SourceSelectable,
@@ -131,6 +136,7 @@ def test_load_experiment_wide_pivot_with_canonical_roles(
         "plant_age_days",
         "date_scanned",
         "plant_id",
+        "scan_id",
     }
     assert sorted(frame.df["sample_id"]) == ["QR1", "QR2"]
     assert sorted(frame.df["genotype"]) == ["acc-a", "acc-b"]
@@ -369,5 +375,255 @@ def test_multiple_scans_per_plant_raises_structured_error(
         ),
     ]
     fake_supabase_db.seed_traits(experiment_id, rows)
-    with pytest.raises(MultipleScansPerPlantError):
+    with pytest.raises(MultipleScansPerPlantError) as exc_info:
         SupabaseReader().load_experiment(str(experiment_id))
+    # The internal plant_id must not leak into the agent-facing message --
+    # only the qr_code, consistent with AmbiguousSampleIdentityError's policy.
+    assert "QRX" in str(exc_info.value)
+    assert "plant 1 " not in str(exc_info.value)
+
+
+# --- Second review round: run_id ambiguity, duplicate trait rows, mixed sources ---
+
+
+def test_ambiguous_run_id_raises(fake_supabase_storage, fake_supabase_db):
+    """pipeline_run_id carries no DB uniqueness constraint (only idempotency_key
+    is enforced) -- a run_id pin matching more than one source must raise, not
+    silently pick one of the matches."""
+    experiment_id = 60
+    fake_supabase_db.seed_experiment(experiment_id, "shared pipeline run id")
+    fake_supabase_db.seed_traits(
+        experiment_id,
+        [
+            _trait_row(
+                plant_id=1,
+                scan_id=801,
+                qr_code="QRA",
+                accession="acc-a",
+                wave=1,
+                trait_name="root_length",
+                trait_value=1.0,
+                source_id=1,
+            ),
+            _trait_row(
+                plant_id=2,
+                scan_id=802,
+                qr_code="QRB",
+                accession="acc-b",
+                wave=1,
+                trait_name="root_length",
+                trait_value=2.0,
+                source_id=2,
+            ),
+        ],
+    )
+    fake_supabase_db.seed_sources(
+        experiment_id,
+        [
+            {"source_id": 1, "source_name": "run-a", "pipeline_run_id": "shared"},
+            {"source_id": 2, "source_name": "run-b", "pipeline_run_id": "shared"},
+        ],
+    )
+    reader = SupabaseReader()
+    with pytest.raises(AmbiguousRunIdError):
+        reader.resolve_source(str(experiment_id), run_id="shared")
+    with pytest.raises(AmbiguousRunIdError):
+        reader.load_experiment(str(experiment_id), run_id="shared")
+
+
+def test_duplicate_trait_value_for_same_plant_raises(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A duplicate (plant_id, trait_name) pair within one resolved source has
+    no DB constraint preventing it. pivot_table's aggfunc='first' would
+    silently keep an arbitrary one and drop the rest -- the same class of risk
+    this module already guards against for sample_id/multi-scan collisions."""
+    experiment_id = 70
+    fake_supabase_db.seed_experiment(experiment_id, "duplicate trait row")
+    fake_supabase_db.seed_traits(
+        experiment_id,
+        [
+            _trait_row(
+                plant_id=1,
+                scan_id=901,
+                qr_code="QRD",
+                accession="acc-a",
+                wave=1,
+                trait_name="root_length",
+                trait_value=1.0,
+            ),
+            _trait_row(
+                plant_id=1,
+                scan_id=901,
+                qr_code="QRD",
+                accession="acc-a",
+                wave=1,
+                trait_name="root_length",
+                trait_value=2.0,
+            ),
+        ],
+    )
+    with pytest.raises(DuplicateTraitReadingError):
+        SupabaseReader().load_experiment(str(experiment_id))
+
+
+def test_unpinned_read_never_mixes_two_genuinely_distinct_sources(
+    fake_supabase_storage, fake_supabase_db
+):
+    """D2's 'one source per frame, never mixed' claim, exercised against a
+    fixture where the SAME plant+trait genuinely differs across two sources --
+    not just two single-source fixtures compared separately. An unpinned read
+    must resolve to exactly one source's value, never a blend."""
+    experiment_id = 50
+    fake_supabase_db.seed_experiment(experiment_id, "reprocessed experiment")
+    fake_supabase_db.seed_traits(
+        experiment_id,
+        [
+            _trait_row(
+                plant_id=1,
+                scan_id=701,
+                qr_code="QRM",
+                accession="acc-a",
+                wave=1,
+                trait_name="root_length",
+                trait_value=1.0,
+                source_id=1,
+            ),
+            _trait_row(
+                plant_id=1,
+                scan_id=701,
+                qr_code="QRM",
+                accession="acc-a",
+                wave=1,
+                trait_name="root_length",
+                trait_value=99.0,
+                source_id=2,
+            ),
+        ],
+    )
+    fake_supabase_db.seed_sources(
+        experiment_id,
+        [
+            {"source_id": 1, "source_name": "run-a", "pipeline_run_id": "p1"},
+            {"source_id": 2, "source_name": "run-b", "pipeline_run_id": "p2"},
+        ],
+    )
+    frame = SupabaseReader().load_experiment(str(experiment_id))
+    # Unpinned resolves to the experiment-wide max source_id (2) -- source 1's
+    # value must not appear, and no aggregation/blend of the two is acceptable.
+    assert frame.resolved_source.source_id == 2
+    assert frame.df["root_length"].iloc[0] == 99.0
+
+
+def test_null_trait_value_becomes_nan_not_error(
+    fake_supabase_storage, fake_supabase_db
+):
+    """trait_value is a nullable Postgres column; a NULL must pivot to NaN,
+    not crash the read."""
+    experiment_id = 80
+    fake_supabase_db.seed_experiment(experiment_id, "null trait value")
+    fake_supabase_db.seed_traits(
+        experiment_id,
+        [
+            _trait_row(
+                plant_id=1,
+                scan_id=1001,
+                qr_code="QRN",
+                accession="acc-a",
+                wave=1,
+                trait_name="root_length",
+                trait_value=None,
+            )
+        ],
+    )
+    frame = SupabaseReader().load_experiment(str(experiment_id))
+    assert frame.trait_cols == ["root_length"]
+    assert frame.df["root_length"].isna().all()
+
+
+def test_pin_with_default_version_still_reaches_raw_tier_when_no_cleaned_version(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A pin passed with the default version='latest' must still resolve
+    against the raw tier when no cleaned version exists yet -- only an
+    ACTUALLY-resolved cleaned version should reject a pin (see the test
+    below), not merely a non-'raw' version value."""
+    experiment_id = _seed_two_plant_experiment(fake_supabase_db)
+    frame = SupabaseReader().load_experiment(str(experiment_id), source_id=9)
+    assert frame.source == "raw"
+    assert frame.resolved_source.source_id == 9
+
+
+def test_source_pin_is_rejected_when_a_cleaned_version_resolves_first(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A source_id/run_id pin only applies to the DB-backed raw tier. Silently
+    returning the cleaned frame instead would let a caller believe their pin
+    was honored when it never was."""
+    experiment_id = _seed_two_plant_experiment(fake_supabase_db)
+    store = SupabaseResultStore()
+    raw = pd.DataFrame({"Genotype": ["g"], "trait": [1.0]})
+    run = store.create_run(
+        experiment=str(experiment_id),
+        tool_class="qc",
+        provenance=Provenance.stamp(tool="run_qc_workflow", params={}),
+    )
+    (run.staging_dir / "_cleaned.csv").write_text(raw.to_csv(index=False))
+    store.commit(run, {"_cleaned.csv": "_cleaned.csv"})
+
+    reader = SupabaseReader()
+    with pytest.raises(AmbiguousSourceSelectionError):
+        reader.load_experiment(str(experiment_id), source_id=9)
+    with pytest.raises(AmbiguousSourceSelectionError):
+        reader.load_experiment(str(experiment_id), run_id="p9")
+
+    # version="raw" explicitly bypasses the cleaned tier, so the pin is honored.
+    frame = reader.load_experiment(str(experiment_id), source_id=9, version="raw")
+    assert frame.source == "raw"
+
+
+def test_raw_version_with_require_clean_raises_contradiction_not_missing_clean(
+    fake_supabase_storage, fake_supabase_db
+):
+    """version='raw' + require_clean=True is a self-contradictory request, not
+    'no cleaned dataset found' -- version='raw' never even looks for one."""
+    experiment_id = _seed_two_plant_experiment(fake_supabase_db)
+    with pytest.raises(CleanedVersionRequiredError, match="contradictory"):
+        SupabaseReader().load_experiment(
+            str(experiment_id), version="raw", require_clean=True
+        )
+
+
+def test_rpc_failure_surfaces_as_experiment_read_error_not_raw(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A raw Supabase/network exception from call_rpc must not escape the
+    ExperimentReadError contract -- it may embed backend detail (a SQL
+    message, connection info) that must never reach an agent-facing message."""
+    experiment_id = _seed_two_plant_experiment(fake_supabase_db)
+    fake_supabase_db.fail_rpc(
+        "get_experiment_traits",
+        RuntimeError("connection reset by peer at 10.0.0.5:5432"),
+        experiment_id=experiment_id,
+    )
+    with pytest.raises(ExperimentReadError) as exc_info:
+        SupabaseReader().load_experiment(str(experiment_id))
+    assert "10.0.0.5" not in str(exc_info.value)
+
+
+def test_list_experiments_excludes_a_malformed_row(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A malformed cyl_experiments row (missing 'id') must exclude only that
+    row from the listing, not crash the whole call -- the same per-item
+    fail-open treatment as an RPC failure."""
+    _seed_two_plant_experiment(fake_supabase_db, experiment_id=42)
+    fake_supabase_db.tables["cyl_experiments"].append({"name": "no id field"})
+    summaries = SupabaseReader().list_experiments()
+    assert {s.filename for s in summaries} == {"42"}
+
+
+def test_fake_reader_is_not_source_selectable():
+    """FakeReader has no source-versioned substrate; it must not satisfy
+    SourceSelectable (unlike SupabaseReader)."""
+    assert not isinstance(FakeReader(), SourceSelectable)
