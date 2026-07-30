@@ -431,6 +431,7 @@ def test_expected_tool_surface():
         "sleap_roots_clustering",
         "sleap_roots_umap_analysis",
         "sleap_roots_descriptive_stats",
+        "sleap_roots_cross_experiment_correlations",
         # sleap_roots: the 5 surviving plots
         "sleap_roots_plot_trait_histograms",
         "sleap_roots_plot_trait_boxplots",

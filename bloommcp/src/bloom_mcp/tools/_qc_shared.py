@@ -39,7 +39,7 @@ _CANONICAL_MAX_NANS_PER_SAMPLE = 0.0
 _CANONICAL_MIN_SAMPLES_PER_TRAIT = 10
 
 
-def _validate_experiment_name(experiment: str) -> None:
+def _validate_experiment_name(experiment: str, label: str = "experiment") -> None:
     """Reject an ``experiment`` that is anything but a bare filename.
 
     ``experiment`` flows into ``TRAITS_DIR / experiment`` + ``pd.read_csv``, so a path with
@@ -53,6 +53,13 @@ def _validate_experiment_name(experiment: str) -> None:
     ``Path("..\\\\secret.csv").name`` equals the input unchanged and the traversal payload
     would slip past this guard. Check for either separator explicitly (mirrors the fix in
     ``sections/sleap_roots/analysis/_viz_shared.validate_filename``).
+
+    ``label`` names the offending field in the error message. Single-experiment callers
+    (``qc_inspect``) can rely on the ``"experiment"`` default; a multi-experiment caller
+    (``cross_experiment_correlations``, which validates two names) must pass its own
+    field's name so a caller can tell which of ``experiment_1``/``experiment_2`` failed
+    (found in review — the message previously never named the field, so a two-name caller
+    couldn't distinguish which one was rejected).
     """
     if (
         experiment in ("", ".", "..")
@@ -62,7 +69,10 @@ def _validate_experiment_name(experiment: str) -> None:
     ):
         raise BloomMCPError(
             code="invalid_input",
-            message="experiment must be a bare CSV filename (no path separators).",
+            message=(
+                f"{label} ({experiment!r}) must be a bare CSV filename "
+                "(no path separators)."
+            ),
             remedy="Pass a filename from list_available_experiments, e.g. 'my_experiment.csv'.",
         )
 
@@ -113,7 +123,7 @@ def _validate_trait_subset(
         if not requested:
             raise BloomMCPError(
                 code="invalid_input",
-                message="trait_columns was given as an empty list.",
+                message=f"trait_columns for {experiment!r} was given as an empty list.",
                 remedy=(
                     "Omit trait_columns to analyze all certified-clean traits, or name at "
                     "least one certified trait column."
@@ -123,7 +133,10 @@ def _validate_trait_subset(
         if duplicates:
             raise BloomMCPError(
                 code="invalid_input",
-                message=f"trait_columns contains duplicate columns: {duplicates}.",
+                message=(
+                    f"trait_columns for {experiment!r} contains duplicate columns: "
+                    f"{duplicates}."
+                ),
                 remedy="List each trait column at most once.",
             )
         certified = set(frame.trait_cols)
@@ -146,7 +159,10 @@ def _validate_trait_subset(
         if non_numeric:
             raise BloomMCPError(
                 code="invalid_input",
-                message=f"trait_columns includes non-numeric columns: {non_numeric}.",
+                message=(
+                    f"trait_columns for {experiment!r} includes non-numeric columns: "
+                    f"{non_numeric}."
+                ),
                 remedy="Pass only numeric trait columns; identifiers/metadata cannot be analyzed.",
             )
         return
