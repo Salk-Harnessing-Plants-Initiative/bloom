@@ -48,11 +48,20 @@ def register(mcp: Any, *tools: Callable) -> Any:
     """Register contract-wrapped tools onto a FastMCP instance.
 
     The seam the spec mandates: keeps tools decoupled from the live `mcp`
-    instance at decoration time. Equivalent to calling `mcp.tool()(tool)` for
-    each, returned `mcp` for chaining.
+    instance at decoration time. Each tool is also wrapped with per-tool usage
+    recording (`bloom_mcp.usage.with_usage_recording`, imported lazily so this
+    module — otherwise I/O-free — doesn't gain a permanent import-time
+    dependency on the Supabase-touching `usage`/`supabase_client` modules;
+    see openspec/changes/add-bloommcp-caller-identity/design.md Decision 4).
+    This is purely additive: the tool's own contract guarantees (input/output
+    validation, provenance, error mapping — all still inside `as_mcp_tool`,
+    untouched here) are unaffected. Equivalent to calling `mcp.tool()(tool)`
+    for each, returned `mcp` for chaining.
     """
+    from bloom_mcp.usage import with_usage_recording
+
     for tool in tools:
-        mcp.tool()(tool)
+        mcp.tool()(with_usage_recording(tool))
     return mcp
 
 

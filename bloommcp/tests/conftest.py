@@ -72,7 +72,9 @@ class _InMemoryObjectStore:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(self.objects[key])
 
-    def delete_files(self, keys: list[str], *, timeout_seconds: float | None = None) -> None:
+    def delete_files(
+        self, keys: list[str], *, timeout_seconds: float | None = None
+    ) -> None:
         del timeout_seconds  # in-memory: no network round-trip to bound
         for key in keys:
             self.objects.pop(key, None)
@@ -105,3 +107,40 @@ def fake_supabase_storage(monkeypatch):
 
     monkeypatch.setattr(_sc.supabase, "create_client", _no_network)
     return store
+
+
+# --- In-memory RPC boundary (bloommcp_usage / call_rpc) -----------------------
+#
+# `call_rpc` is bloommcp's one seam for calling a Postgres RPC (e.g.
+# `record_bloommcp_usage`, see bloom_mcp.usage). This fixture fakes that
+# boundary in memory, mirroring `fake_supabase_storage`'s shape: monkeypatch
+# the module-level name directly (not the client `.rpc()` call itself) so
+# tests never touch a network or real Postgres.
+
+
+class _FakeRpc:
+    """Records every `call_rpc` call and returns a caller-configured result."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self._results: dict[str, list[dict]] = {}
+
+    def set_result(self, function_name: str, rows: list[dict]) -> None:
+        self._results[function_name] = rows
+
+    def __call__(self, function_name: str, params: dict) -> list[dict]:
+        self.calls.append((function_name, dict(params)))
+        return self._results.get(function_name, [])
+
+
+@pytest.fixture
+def fake_bloommcp_rpc(monkeypatch):
+    """Patch `bloom_mcp.supabase_client.call_rpc` with an in-memory recorder.
+
+    Returns the fake so tests can inspect `.calls` or seed `.set_result(...)`.
+    """
+    import bloom_mcp.supabase_client as _sc
+
+    fake = _FakeRpc()
+    monkeypatch.setattr(_sc, "call_rpc", fake)
+    return fake
