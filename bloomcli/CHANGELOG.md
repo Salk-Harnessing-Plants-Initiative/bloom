@@ -32,6 +32,23 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   Supports `--json`; exits non-zero if any envelope failed, zero on empty input
   or all ok/skipped. For the A4 per-batch pipeline's `write-back` stage (#529).
 
+### Fixed
+
+- `build_sidecar()` (shared by `cyl download-for-predict` and
+  `cyl batch-download-for-predict`) now writes `image_ids` as `str`, matching
+  the `image_ids: list[str]` shape `sleap_roots_contracts.InputRef` and, in
+  turn, `trait_extractor`'s `ScanMetadata` require. Previously wrote raw ints
+  straight from the DB row, so every real predict→traits run failed
+  `ScanMetadata` validation 100% of the time — masked until now because prior
+  tests only ever fed hand-authored fixture sidecars with correct string ids,
+  never a real `bloomctl`-produced one. `image_ids`/`images_checksum` are now
+  constructed via `InputRef` itself rather than a bare dict, so Pydantic
+  catches this class of type mismatch at construction time going forward.
+  `scan_is_already_staged()` (the `batch-download-for-predict` resume/skip
+  check) now also rejects a sidecar whose `image_ids` aren't all `str`, so a
+  scan staged by the pre-fix `build_sidecar()` gets re-staged with corrected
+  ids instead of being skipped forever (#555).
+
 ## [0.1.0a2] - 2026-07-23
 
 ### Changed
