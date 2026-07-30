@@ -25,10 +25,15 @@ who'd rather not connect to the shared server at all.
 ### Requirement: Access-Scope Warning Precedes Connection Steps
 
 The guide SHALL state, in plain language and before any connection instructions, that the token
-behind either environment grants read access to essentially the entire scientific database (every
-`public.*` table, including tables created after the guide is written), not merely the
-researcher's own data, and that write access is confined to the `bloommcp-data` Storage bucket
-only. This statement SHALL NOT be placed after the connection steps or as a footnote.
+behind either environment grants read access to virtually the entire scientific database by
+default (every `public.*` table, including tables created after the guide is written, via a
+schema-wide grant), not merely the researcher's own data. It SHALL NOT phrase this as unconditional
+universal access — it SHALL note that row-level security can and does carve out exceptions to that
+default (naming the confirmed example: `gene_patents` returns no rows to the shared role despite
+the schema-wide grant, because its only policy targets a different role). It SHALL state that
+write access is confined to the `bloommcp-data` Storage bucket only, and SHALL name insert, update,
+and delete as the covered write operations (not merely "write" without enumerating delete). This
+statement SHALL NOT be placed after the connection steps or as a footnote.
 
 #### Scenario: The warning appears before the first connection instruction
 
@@ -39,8 +44,16 @@ only. This statement SHALL NOT be placed after the connection steps or as a foot
 #### Scenario: The warning names both the read breadth and the write confinement
 
 - **WHEN** the access-scope warning is read on its own
-- **THEN** it states both that read access spans the whole database (not scoped per-user/per-lab/
-  per-experiment) and that write access is confined to the `bloommcp-data` bucket
+- **THEN** it states both that read access spans virtually the whole database by default (not
+  scoped per-user/per-lab/per-experiment) and that write access — insert, update, and delete — is
+  confined to the `bloommcp-data` bucket
+
+#### Scenario: The warning does not overclaim unconditional universal read access
+
+- **WHEN** the access-scope warning is read on its own
+- **THEN** it does not state or imply that every table is guaranteed readable with no exceptions —
+  it names row-level security as a mechanism that can (and, for at least one table today, does)
+  override the default
 
 ### Requirement: Both Environments Are Documented, Including the Staging-Port Trap
 
@@ -56,6 +69,49 @@ reaching staging).
 - **WHEN** the guide documents the staging connect command
 - **THEN** it explicitly warns that dropping `:8443` silently connects to production instead of
   erroring, rather than relying on the reader to notice the port in the example command
+
+#### Scenario: The production connect command is present, not only staging's
+
+- **WHEN** the guide is read top to bottom
+- **THEN** a complete `claude mcp add` invocation for the production endpoint
+  (`https://bloom.salk.edu/bloommcp/mcp`) is present, not only staging's
+
+### Requirement: Token-Contact Placeholder Is Unmissable, Not a Vague Non-Answer
+
+If the real contact/process for obtaining `BLOOMMCP_API_KEY` is not yet determined at the time the
+guide is written, the guide SHALL mark that spot with an explicit, visually unmistakable
+placeholder (e.g. a `<TODO: ...>`-style marker), rather than a sentence that reads as genuine
+information without actually naming a specific person, role, or channel.
+
+#### Scenario: An unresolved token contact is marked as a placeholder, not disguised as an answer
+
+- **WHEN** the real token-distribution contact has not been determined
+- **THEN** the guide's token-source spot contains a marker that is immediately recognizable as
+  unfinished (e.g. `<TODO: ...>`), not a plausible-sounding but non-specific phrase like "ask the
+  maintainers"
+
+### Requirement: Live-Verification Status Is Stated, Not Silently Assumed
+
+Whether the guide's connect commands have been verified end-to-end with a real deployed
+`BLOOMMCP_API_KEY` against both staging and production (a live `tools/list` round-trip, not merely
+the unauthenticated health/401 checks) SHALL be stated explicitly in the change's own tracking
+(tasks.md and the PR that introduces the guide) — it SHALL NOT be left implicit, silently assumed
+complete, or represented only by an unchecked checkbox with no accompanying statement of what,
+specifically, remains unverified.
+
+#### Scenario: An unverified live round-trip is stated plainly, not just unchecked
+
+- **WHEN** the live authenticated round-trip has not been performed
+- **THEN** the PR introducing the guide states this plainly (naming the specific unmet acceptance
+  criterion from the tracking issue), rather than relying on a reader to notice an unchecked
+  tasks.md item
+
+#### Scenario: A verified live round-trip requires both environments independently
+
+- **WHEN** the live round-trip is eventually run
+- **THEN** it is considered passed only if both staging and production each independently return a
+  `tools/list` response listing at least one registered tool — a pass on one environment and a
+  failure on the other is a fail overall, not a partial pass
 
 ### Requirement: Claude Desktop/Enterprise Section Is Marked Not-Yet-Written
 
