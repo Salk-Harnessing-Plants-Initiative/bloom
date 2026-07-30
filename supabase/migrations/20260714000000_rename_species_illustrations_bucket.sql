@@ -22,22 +22,13 @@ INSERT INTO storage.buckets (id, name)
   VALUES ('species-illustrations', 'species-illustrations')
     ON CONFLICT DO NOTHING;
 
--- Repoint any objects that landed in the old underscore-bucket id back onto
--- the hyphen id so they remain readable under the new policies. No-op when
--- the table has no such rows.
+-- Repoint any objects filed under the old underscore-bucket id onto the
+-- hyphen id so they remain readable under the new policies.
 --
--- The NOT EXISTS guard is load-bearing: storage.objects has a unique
--- constraint on (bucket_id, name), so a plain UPDATE aborts with 23505 when
--- the same name already exists under the hyphen id. Production carries 42
--- rows under both ids — the hyphen rows are the originals (2023-2025), the
--- underscore rows a later Bloom V1 import — so the unguarded UPDATE failed
--- and blocked every deploy.
---
--- Move only the rows that have no counterpart under the new id. Rows that do
--- have one are left in place rather than dropped: whether a same-named pair
--- is genuinely the same object can only be confirmed per environment, and a
--- migration is the wrong place to delete data on an assumption. Nothing reads
--- the legacy id, so leaving them is inert. On production this moves 0 rows.
+-- storage.objects is unique on (bucket_id, name), so move only rows with no
+-- counterpart under the new id. Rows that have one are left in place: matching
+-- names do not prove matching content, and that can only be established per
+-- environment. Nothing reads the legacy id, so leaving them is inert.
 UPDATE storage.objects o
    SET bucket_id = 'species-illustrations'
  WHERE o.bucket_id = 'species_illustrations'
