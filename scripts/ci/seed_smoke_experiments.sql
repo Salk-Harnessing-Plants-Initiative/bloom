@@ -90,4 +90,3 @@ BEGIN
     RETURN v_experiment_id;
 END;
 $$;
-</content>
