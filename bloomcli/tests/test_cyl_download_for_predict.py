@@ -644,6 +644,27 @@ def test_scan_is_already_staged_false_when_scan_key_mismatched(tmp_path):
     assert dfp.scan_is_already_staged(scan_dir, "scan_1") is False
 
 
+def test_scan_is_already_staged_false_when_image_ids_are_int(tmp_path):
+    """Regression for bloom#555: a sidecar staged by the pre-fix build_sidecar() has
+    int image_ids. Without this check, scan_is_already_staged would treat it as valid
+    forever, and the batch resume path would never re-stage it with corrected str ids."""
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1", "image_ids": [1001, 1002]}), encoding="utf-8"
+    )
+    assert dfp.scan_is_already_staged(scan_dir, "scan_1") is False
+
+
+def test_scan_is_already_staged_true_when_image_ids_are_str(tmp_path):
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1", "image_ids": ["1001", "1002"]}), encoding="utf-8"
+    )
+    assert dfp.scan_is_already_staged(scan_dir, "scan_1") is True
+
+
 def _fetch_scan_for(scan_id_to_images):
     """A fetch_scan stand-in returning a per-scan_id SCAN row (scan_id field matches).
 
@@ -838,6 +859,25 @@ def test_stage_one_scan_malformed_sidecar_triggers_full_redownload(tmp_path, mon
     sidecar_path = scan_dir / "scan_1.scan_metadata.json"
     assert json.loads(sidecar_path.read_text(encoding="utf-8"))["scan_key"] == "scan_1"
     assert stale.read_bytes() != b"stale content from a previous run's malformed sidecar"
+
+
+def test_stage_one_scan_stale_int_image_ids_sidecar_triggers_full_redownload(tmp_path, monkeypatch):
+    """Regression for bloom#555: a scan staged by the pre-fix build_sidecar() (int
+    image_ids) must be treated as not-staged and re-downloaded, not silently skipped
+    forever by the batch resume path."""
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1", "image_ids": [1001, 1002]}), encoding="utf-8"
+    )
+
+    _patch_batch(monkeypatch)
+    client = _FakeClient()
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+
+    assert result.status == "ok"
+    sidecar = json.loads((scan_dir / "scan_1.scan_metadata.json").read_text(encoding="utf-8"))
+    assert sidecar["image_ids"] == ["1001", "1002"]
 
 
 def test_batch_cli_malformed_sidecar_triggers_full_redownload(tmp_path, monkeypatch):

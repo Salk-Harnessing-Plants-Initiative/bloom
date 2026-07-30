@@ -43,8 +43,11 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   tests only ever fed hand-authored fixture sidecars with correct string ids,
   never a real `bloomctl`-produced one. `image_ids`/`images_checksum` are now
   constructed via `InputRef` itself rather than a bare dict, so Pydantic
-  catches this class of type mismatch at construction time going forward
-  (#555).
+  catches this class of type mismatch at construction time going forward.
+  `scan_is_already_staged()` (the `batch-download-for-predict` resume/skip
+  check) now also rejects a sidecar whose `image_ids` aren't all `str`, so a
+  scan staged by the pre-fix `build_sidecar()` gets re-staged with corrected
+  ids instead of being skipped forever (#555).
 
 ## [0.1.0a2] - 2026-07-23
 
