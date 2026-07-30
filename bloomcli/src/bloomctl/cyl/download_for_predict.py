@@ -87,12 +87,22 @@ def build_sidecar(
     `params` is the already-resolved dict from `resolve_sidecar_params` — resolved
     ahead of time so a metadata-resolution failure surfaces before any download or
     directory-clearing happens, not after.
+
+    `image_ids`/`images_checksum` are built via `InputRef` rather than a bare dict so
+    Pydantic enforces the same `image_ids: list[str]` shape `trait_extractor`'s
+    `ScanMetadata` requires — catching a type mismatch here, at construction, instead
+    of downstream in trait_extractor validation (see bloom#555).
     """
+    from sleap_roots_contracts import InputRef
+
+    input_ref = InputRef(
+        image_ids=[str(image["id"]) for image in images],
+        images_checksum=compute_checksum(frame_bytes_list),
+    )
     return {
         "scan_key": scan_key_for(scan["scan_id"]),
         "params": params,
-        "image_ids": [image["id"] for image in images],
-        "images_checksum": compute_checksum(frame_bytes_list),
+        **input_ref.model_dump(),
     }
 
 
@@ -183,6 +193,12 @@ def scan_is_already_staged(scan_dir: Path, scan_key: str) -> bool:
     Mirrors the validity check ``sleap_roots_predict.batch._load_scan`` itself applies: the
     sidecar must exist, parse as JSON, and its ``scan_key`` field must match. A missing,
     unparseable, or mismatched sidecar is treated as not staged.
+
+    Additionally rejects a sidecar whose ``image_ids`` aren't all ``str`` — the exact shape
+    a pre-bloom#555-fix ``build_sidecar`` wrote — so a scan staged before that fix shipped is
+    re-staged with corrected ids instead of being skipped forever by this resume check. A
+    sidecar with no ``image_ids`` key at all is unaffected by this check (not a real
+    ``build_sidecar`` output; kept staged per the ``scan_key`` check above).
     """
     sidecar_path = scan_dir / f"{scan_key}.scan_metadata.json"
     if not sidecar_path.is_file():
@@ -191,7 +207,14 @@ def scan_is_already_staged(scan_dir: Path, scan_key: str) -> bool:
         data = json.loads(sidecar_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return isinstance(data, dict) and data.get("scan_key") == scan_key
+    if not isinstance(data, dict) or data.get("scan_key") != scan_key:
+        return False
+    image_ids = data.get("image_ids")
+    if image_ids is not None and not (
+        isinstance(image_ids, list) and all(isinstance(x, str) for x in image_ids)
+    ):
+        return False
+    return True
 
 
 # --- supabase / storage I/O -------------------------------------------------
