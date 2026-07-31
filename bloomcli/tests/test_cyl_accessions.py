@@ -210,7 +210,7 @@ def test_list_output_csv(monkeypatch):
     assert res.exit_code == 0, res.output
     lines = res.output.strip().splitlines()
     assert lines[0] == "accession_id,accession_name"
-    assert "Bay-0" in lines[1]  # sorted first
+    assert lines[1] == "4,Bay-0"  # sorted first; accession_id value pinned (the join key)
 
 
 def test_list_json_and_conflicting_output_rejected(monkeypatch):
@@ -257,7 +257,20 @@ def test_sample_counts_output_csv(monkeypatch):
     monkeypatch.setattr(acc, "fetch_accession_sample_counts", lambda client, species=None: COUNTS)
     res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--output", "csv"])
     assert res.exit_code == 0, res.output
-    assert res.output.splitlines()[0] == "accession_id,species,accession,plant_count"
+    lines = res.output.strip().splitlines()
+    assert lines[0] == "accession_id,species,accession,plant_count"
+    # sorted first (Canola/Ames); pins every cell incl. accession_id + plant_count
+    assert lines[1] == "2,Canola,Ames,8"
+
+
+def test_sample_counts_json_and_conflicting_output_rejected(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_accession_sample_counts", lambda client, species=None: COUNTS)
+    res = CliRunner().invoke(
+        cli, ["cyl", "accessions", "sample-counts", "--json", "--output", "csv"]
+    )
+    assert res.exit_code != 0
+    assert "not both" in res.output.lower()
 
 
 def test_sample_counts_json_sorted(monkeypatch):

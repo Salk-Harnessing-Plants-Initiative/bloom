@@ -13,7 +13,8 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 - `cyl accessions list`, `cyl accessions sample-counts`, and `cyl datasets list` now
   take `--output [csv|json]` (with `--json` kept as an alias for `--output json`) —
   the standard machine-output selector for `cyl` list commands, adding CSV export.
-  Detail/write commands (`datasets get`, `datasets create`) keep `--json`.
+  `datasets get` keeps `--json` (it returns a single object with a nested traits
+  array, which CSV can't represent); the write command `datasets create` is unaffected.
 
 ### Added
 

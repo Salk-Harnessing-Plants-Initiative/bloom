@@ -182,6 +182,9 @@ def test_list_output_csv(monkeypatch):
     lines = res.output.strip().splitlines()
     assert lines[0] == "name,timepoints,species,experiment,qc_set,trait_source,created"
     assert lines[1].startswith("canola-v1,")
+    # timepoints is a list; in CSV it renders as its repr in one quoted cell (deliberate —
+    # JSON keeps the real array). Locked so it can't change silently.
+    assert '"[1, 3, 5]"' in lines[1]
 
 
 def test_list_json_and_conflicting_output_rejected(monkeypatch):
