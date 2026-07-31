@@ -101,28 +101,29 @@ def _fetch_all_pages(build_query: Any, page_size: int = _PAGE_SIZE) -> list[dict
         start += page_size
 
 
-def fetch_qc_sets(client: Any) -> list[dict[str, Any]]:
-    """QC sets for live experiments, with species + QC-code ids (for the count).
+def fetch_qc_sets(client: Any, *, include_deleted: bool = False) -> list[dict[str, Any]]:
+    """QC sets with species + QC-code ids (for the count), ordered by id.
 
-    Inner-joins ``cyl_experiments`` and filters ``deleted_at IS NULL`` so a set attached to a
-    soft-deleted experiment is excluded — otherwise ``bloom_admin`` (whose RLS reads
-    ``USING (true)``) would see the tombstoned experiment's name that ``experiments list`` hides,
-    and other roles would get an orphan row. Ordered by id — required for correct pagination and
-    a deterministic base fetch (the display sort is applied client-side).
+    By default, inner-joins ``cyl_experiments`` and filters ``deleted_at IS NULL`` so a set
+    attached to a soft-deleted experiment is excluded — otherwise ``bloom_admin`` (whose RLS
+    reads ``USING (true)``) would see the tombstoned experiment's name that ``experiments list``
+    hides, and other roles would get an orphan row. Pass ``include_deleted=True`` to drop that
+    filter and list those sets too. The inner join also excludes any set whose ``experiment_id``
+    is null; in practice every QC set is created against an experiment, so by default this only
+    ever drops soft-deleted-experiment sets.
 
-    The inner join also excludes any set whose ``experiment_id`` is null; in practice every QC
-    set is created against an experiment, so this only ever drops soft-deleted-experiment sets.
-
-    Paged to exhaustion (see ``_fetch_all_pages``) so a large set list is never silently capped.
+    Ordered by id — required for correct pagination and a deterministic base fetch (the display
+    sort is applied client-side). Paged to exhaustion (``_fetch_all_pages``) so a large set list
+    is never silently capped.
     """
 
     def _query() -> Any:
-        return (
-            client.table("cyl_qc_sets")
-            .select("*, cyl_experiments!inner(*, species(*)), cyl_qc_codes(id)")
-            .is_("cyl_experiments.deleted_at", "null")
-            .order("id")
+        q = client.table("cyl_qc_sets").select(
+            "*, cyl_experiments!inner(*, species(*)), cyl_qc_codes(id)"
         )
+        if not include_deleted:
+            q = q.is_("cyl_experiments.deleted_at", "null")
+        return q.order("id")
 
     return _fetch_all_pages(_query)
 
@@ -134,6 +135,12 @@ def fetch_qc_sets(client: Any) -> list[dict[str, Any]]:
     type=click.Choice(MACHINE_FORMATS),
     default=None,
     help="Emit machine-readable output instead of the table.",
+)
+@click.option(
+    "--include-deleted",
+    "include_deleted",
+    is_flag=True,
+    help="Also list QC sets whose experiment has been soft-deleted (hidden by default).",
 )
 @click.option(
     "--json",
@@ -148,8 +155,13 @@ def fetch_qc_sets(client: Any) -> list[dict[str, Any]]:
     show_default=True,
     help="Credentials profile to use.",
 )
-def list_sets(output_fmt: str | None, as_json: bool, profile: str) -> None:
-    """List sets of cylinder QC (quality-control) data."""
+def list_sets(output_fmt: str | None, include_deleted: bool, as_json: bool, profile: str) -> None:
+    """List sets of cylinder QC (quality-control) data.
+
+    QC sets whose experiment has been soft-deleted are hidden by default (only visible to
+    bloom_admin, since RLS hides soft-deleted experiments from everyone else). Pass
+    --include-deleted to list them too.
+    """
     from postgrest import APIError
 
     from ..cli import _authed_client
@@ -162,7 +174,7 @@ def list_sets(output_fmt: str | None, as_json: bool, profile: str) -> None:
 
     client = _authed_client(profile)
     try:
-        raw = fetch_qc_sets(client)
+        raw = fetch_qc_sets(client, include_deleted=include_deleted)
     except APIError as exc:
         raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
     rows_data = sorted(raw, key=qc_set_sort_key)  # deterministic run-to-run

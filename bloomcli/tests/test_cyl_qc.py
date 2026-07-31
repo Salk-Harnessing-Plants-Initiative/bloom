@@ -165,13 +165,56 @@ def test_fetch_qc_sets_paginates_to_exhaustion():
     ]
 
 
+def test_fetch_qc_sets_include_deleted_omits_filter():
+    captured = {"is_called": False}
+
+    class _Q:
+        def select(self, sel):
+            return self
+
+        def is_(self, col, val):
+            captured["is_called"] = True
+            return self
+
+        def order(self, col):
+            return self
+
+        def range(self, start, end):
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": SETS})()
+
+    class _Client:
+        def table(self, name):
+            return _Q()
+
+    out = qc.fetch_qc_sets(_Client(), include_deleted=True)
+    assert out == SETS
+    assert captured["is_called"] is False  # no deleted_at filter when include_deleted=True
+
+
 # --- command ----------------------------------------------------------------
+
+
+def test_list_sets_include_deleted_passthrough(monkeypatch):
+    _patch_authed(monkeypatch)
+    captured = {}
+
+    def _fetch(client, *, include_deleted=False):
+        captured["include_deleted"] = include_deleted
+        return SETS
+
+    monkeypatch.setattr(qc, "fetch_qc_sets", _fetch)
+    res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--include-deleted"])
+    assert res.exit_code == 0, res.output
+    assert captured["include_deleted"] is True  # flag reaches the fetch
 
 
 def test_list_sets_default_is_table(monkeypatch):
     """Bare invocation prints the human table, matching legacy."""
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client, **kw: SETS)
     res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets"])
     assert res.exit_code == 0, res.output
     assert "QC Set Name" in res.output
@@ -179,7 +222,7 @@ def test_list_sets_default_is_table(monkeypatch):
 
 def test_list_sets_output_json(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client, **kw: SETS)
     res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "json"])
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)
@@ -192,7 +235,7 @@ def test_list_sets_output_json(monkeypatch):
 
 def test_list_sets_output_csv(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client, **kw: SETS)
     res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "csv"])
     assert res.exit_code == 0, res.output
     rows = list(csv.DictReader(io.StringIO(res.output)))
@@ -202,7 +245,7 @@ def test_list_sets_output_csv(monkeypatch):
 def test_list_sets_json_alias_equals_output_json(monkeypatch):
     # --json is an alias for --output json (parity with cyl experiments list)
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client, **kw: SETS)
     a = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "json"])
     b = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--json"])
     assert a.exit_code == 0 and a.output == b.output
@@ -210,7 +253,7 @@ def test_list_sets_json_alias_equals_output_json(monkeypatch):
 
 def test_list_sets_json_and_conflicting_output_rejected(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client, **kw: SETS)
     res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--json", "--output", "csv"])
     assert res.exit_code != 0
     assert "not both" in res.output.lower()
@@ -218,7 +261,7 @@ def test_list_sets_json_and_conflicting_output_rejected(monkeypatch):
 
 def test_list_sets_rejects_unknown_output(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client, **kw: SETS)
     res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "yaml"])
     assert res.exit_code != 0
     assert "yaml" in res.output
@@ -226,7 +269,7 @@ def test_list_sets_rejects_unknown_output(monkeypatch):
 
 def test_list_sets_empty_json_is_empty_array(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: [])
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client, **kw: [])
     res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "json"])
     assert res.exit_code == 0, res.output
     assert json.loads(res.output) == []
@@ -234,7 +277,7 @@ def test_list_sets_empty_json_is_empty_array(monkeypatch):
 
 def test_list_sets_empty_csv_is_header_only(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: [])
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client, **kw: [])
     res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "csv"])
     assert res.exit_code == 0, res.output
     assert res.output.strip() == ",".join(qc.QC_SET_FIELDS)
@@ -242,7 +285,7 @@ def test_list_sets_empty_csv_is_header_only(monkeypatch):
 
 def test_list_sets_table(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client, **kw: SETS)
     res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets"])
     assert res.exit_code == 0, res.output
     assert "QC sets" in res.output
@@ -264,7 +307,7 @@ def test_list_sets_lists_a_set_with_no_codes(monkeypatch):
         }
     ]
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: empty_set)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client, **kw: empty_set)
     res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "json"])
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)
@@ -284,7 +327,7 @@ def test_list_sets_surfaces_api_error(monkeypatch):
 
     _patch_authed(monkeypatch)
 
-    def _boom(client):
+    def _boom(client, **kw):
         raise APIError({"message": "permission denied", "code": "42501"})
 
     monkeypatch.setattr(qc, "fetch_qc_sets", _boom)
@@ -300,7 +343,7 @@ def test_list_sets_api_error_without_message_falls_back(monkeypatch):
 
     _patch_authed(monkeypatch)
 
-    def _boom(client):
+    def _boom(client, **kw):
         raise APIError({"code": "42501", "details": "insufficient privilege"})
 
     monkeypatch.setattr(qc, "fetch_qc_sets", _boom)
@@ -312,7 +355,7 @@ def test_list_sets_api_error_without_message_falls_back(monkeypatch):
 
 def test_list_sets_empty(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: [])
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client, **kw: [])
     res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets"])
     assert res.exit_code == 0
     assert "No QC sets found" in res.output
