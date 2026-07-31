@@ -77,7 +77,15 @@ CREATE POLICY workflows_insert_cyl_pipeline_runs ON public.cyl_pipeline_runs
     FOR INSERT TO bloom_workflows WITH CHECK (true);
 
 GRANT SELECT ON public.cyl_pipeline_runs TO bloom_user, bloom_agent;
-GRANT SELECT, INSERT ON public.cyl_pipeline_runs TO bloom_workflows;
+-- Column-scoped, not whole-table: exactly the columns pipeline.py's _insert_run
+-- populates. Matches this repo's own precedent for the same role
+-- (20260716000000_create_workflows_role.sql: GRANT INSERT (scan_id, path, frames)
+-- ON cyl_scan_videos). The explicit REVOKE first keeps this idempotent across a
+-- re-apply that started from an earlier, broader whole-table grant.
+REVOKE INSERT ON public.cyl_pipeline_runs FROM bloom_workflows;
+GRANT SELECT ON public.cyl_pipeline_runs TO bloom_workflows;
+GRANT INSERT (target_level, target_id, params, requested_by, status, scan_count, reused_count)
+    ON public.cyl_pipeline_runs TO bloom_workflows;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.cyl_pipeline_runs TO bloom_admin;
 
 -- 2. cyl_pipeline_run_scans -----------------------------------------------------
@@ -121,7 +129,13 @@ CREATE POLICY workflows_insert_cyl_pipeline_run_scans ON public.cyl_pipeline_run
     FOR INSERT TO bloom_workflows WITH CHECK (true);
 
 GRANT SELECT ON public.cyl_pipeline_run_scans TO bloom_user, bloom_agent;
-GRANT SELECT, INSERT ON public.cyl_pipeline_run_scans TO bloom_workflows;
+-- Column-scoped, not whole-table — see the matching comment on cyl_pipeline_runs
+-- above. Excludes argo_workflow_name/attempts/source_id/error_message, none of
+-- which this phase's code writes.
+REVOKE INSERT ON public.cyl_pipeline_run_scans FROM bloom_workflows;
+GRANT SELECT ON public.cyl_pipeline_run_scans TO bloom_workflows;
+GRANT INSERT (run_id, scan_id, batch_index, status)
+    ON public.cyl_pipeline_run_scans TO bloom_workflows;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.cyl_pipeline_run_scans TO bloom_admin;
 
 -- 3. Realtime publication --------------------------------------------------------

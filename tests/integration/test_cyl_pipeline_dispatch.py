@@ -204,6 +204,36 @@ def test_bloom_workflows_can_insert_but_not_update(pg_conn):
     pg_conn.rollback()
 
 
+def test_bloom_workflows_can_insert_only_populated_columns(pg_conn):
+    """PR review finding: the original migration granted whole-table INSERT to
+    bloom_workflows. pipeline.py only ever populates a known subset of columns —
+    this proves the grant is now column-scoped to exactly that subset, matching
+    the cyl_scan_videos precedent for the same role."""
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur)  # as supabase_admin
+        scan_id = _seed_scan(cur)
+        cur.execute("SET LOCAL ROLE bloom_workflows")
+        cur.execute(
+            f"INSERT INTO {SCANS_TABLE} (run_id, scan_id, batch_index, status) "
+            f"VALUES (%s, %s, %s, %s)",
+            (run_id, scan_id, 0, "queued"),
+        )
+    pg_conn.rollback()
+
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur)
+        scan_id = _seed_scan(cur)
+        cur.execute("SET LOCAL ROLE bloom_workflows")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            cur.execute(
+                f"INSERT INTO {SCANS_TABLE} "
+                f"(run_id, scan_id, batch_index, status, argo_workflow_name) "
+                f"VALUES (%s, %s, %s, %s, %s)",
+                (run_id, scan_id, 0, "queued", "wf-forged"),
+            )
+    pg_conn.rollback()
+
+
 def test_anon_denied(pg_conn):
     with pg_conn.cursor() as cur:
         _seed_run(
