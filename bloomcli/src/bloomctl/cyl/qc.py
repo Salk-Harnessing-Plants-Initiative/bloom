@@ -87,6 +87,9 @@ def fetch_qc_sets(client: Any) -> list[dict[str, Any]]:
     ``USING (true)``) would see the tombstoned experiment's name that ``experiments list`` hides,
     and other roles would get an orphan row. Ordered by id for a deterministic base fetch (the
     display sort is applied client-side).
+
+    The inner join also excludes any set whose ``experiment_id`` is null; in practice every QC
+    set is created against an experiment, so this only ever drops soft-deleted-experiment sets.
     """
     return (
         client.table("cyl_qc_sets")
@@ -108,17 +111,29 @@ def fetch_qc_sets(client: Any) -> list[dict[str, Any]]:
     help="Emit machine-readable output instead of the table.",
 )
 @click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Alias for --output json.",
+)
+@click.option(
     "-p",
     "--profile",
     default=DEFAULT_PROFILE,
     show_default=True,
     help="Credentials profile to use.",
 )
-def list_sets(output_fmt: str | None, profile: str) -> None:
+def list_sets(output_fmt: str | None, as_json: bool, profile: str) -> None:
     """List sets of cylinder QC (quality-control) data."""
     from postgrest import APIError
 
     from ..cli import _authed_client
+
+    # --json is an alias for --output json; reject a conflicting pair.
+    if as_json:
+        if output_fmt not in (None, "json"):
+            raise click.UsageError("Use either --json or --output, not both.")
+        output_fmt = "json"
 
     client = _authed_client(profile)
     try:

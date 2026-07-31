@@ -153,6 +153,23 @@ def test_list_sets_output_csv(monkeypatch):
     assert {r["name"]: r["qc_code_count"] for r in rows} == {"outliers": "3", "bad-scans": "1"}
 
 
+def test_list_sets_json_alias_equals_output_json(monkeypatch):
+    # --json is an alias for --output json (parity with cyl experiments list)
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
+    a = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "json"])
+    b = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--json"])
+    assert a.exit_code == 0 and a.output == b.output
+
+
+def test_list_sets_json_and_conflicting_output_rejected(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
+    res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--json", "--output", "csv"])
+    assert res.exit_code != 0
+    assert "not both" in res.output.lower()
+
+
 def test_list_sets_rejects_unknown_output(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(qc, "fetch_qc_sets", lambda client: SETS)
