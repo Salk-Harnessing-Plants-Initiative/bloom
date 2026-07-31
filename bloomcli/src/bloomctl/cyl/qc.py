@@ -79,27 +79,52 @@ def qc_set_sort_key(qc_set: dict[str, Any]) -> tuple[str, str, str, int]:
 # --- supabase I/O ---
 
 
+# Rows fetched per PostgREST request. The query pages with `.range()` until a short page,
+# so the full set is returned regardless of the server's row cap — never silently truncated.
+_PAGE_SIZE = 1000
+
+
+def _fetch_all_pages(build_query: Any, page_size: int = _PAGE_SIZE) -> list[dict[str, Any]]:
+    """Fetch every row by paging with ``.range()`` until a page comes back short.
+
+    ``build_query`` returns a fresh, **ordered** query each call — a stable ``ORDER BY`` is
+    required so successive pages don't overlap or skip rows. Avoids relying on PostgREST's
+    default row cap silently truncating a large result.
+    """
+    rows: list[dict[str, Any]] = []
+    start = 0
+    while True:
+        page = build_query().range(start, start + page_size - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        start += page_size
+
+
 def fetch_qc_sets(client: Any) -> list[dict[str, Any]]:
     """QC sets for live experiments, with species + QC-code ids (for the count).
 
     Inner-joins ``cyl_experiments`` and filters ``deleted_at IS NULL`` so a set attached to a
     soft-deleted experiment is excluded — otherwise ``bloom_admin`` (whose RLS reads
     ``USING (true)``) would see the tombstoned experiment's name that ``experiments list`` hides,
-    and other roles would get an orphan row. Ordered by id for a deterministic base fetch (the
-    display sort is applied client-side).
+    and other roles would get an orphan row. Ordered by id — required for correct pagination and
+    a deterministic base fetch (the display sort is applied client-side).
 
     The inner join also excludes any set whose ``experiment_id`` is null; in practice every QC
     set is created against an experiment, so this only ever drops soft-deleted-experiment sets.
+
+    Paged to exhaustion (see ``_fetch_all_pages``) so a large set list is never silently capped.
     """
-    return (
-        client.table("cyl_qc_sets")
-        .select("*, cyl_experiments!inner(*, species(*)), cyl_qc_codes(id)")
-        .is_("cyl_experiments.deleted_at", "null")
-        .order("id")
-        .execute()
-        .data
-        or []
-    )
+
+    def _query() -> Any:
+        return (
+            client.table("cyl_qc_sets")
+            .select("*, cyl_experiments!inner(*, species(*)), cyl_qc_codes(id)")
+            .is_("cyl_experiments.deleted_at", "null")
+            .order("id")
+        )
+
+    return _fetch_all_pages(_query)
 
 
 @qc.command(name="list-sets")

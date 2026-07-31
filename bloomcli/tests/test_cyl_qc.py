@@ -101,6 +101,10 @@ def test_fetch_qc_sets_builds_query():
             captured["order"] = col
             return self
 
+        def range(self, start, end):
+            captured["range"] = (start, end)
+            return self
+
         def execute(self):
             return type("R", (), {"data": SETS})()
 
@@ -116,7 +120,49 @@ def test_fetch_qc_sets_builds_query():
     assert "cyl_experiments!inner(*, species(*))" in captured["select"]
     assert "cyl_qc_codes(id)" in captured["select"]
     assert captured["is_"] == ("cyl_experiments.deleted_at", "null")  # exclude soft-deleted
-    assert captured["order"] == "id"  # deterministic base fetch
+    assert captured["order"] == "id"  # deterministic base fetch (required for paging)
+    assert captured["range"] == (0, qc._PAGE_SIZE - 1)  # first page
+
+
+def test_fetch_qc_sets_paginates_to_exhaustion():
+    # Two full pages then a short one → every row is collected, offsets advance, no silent cap.
+    pages = [
+        [{"id": i} for i in range(qc._PAGE_SIZE)],
+        [{"id": i} for i in range(qc._PAGE_SIZE)],
+        [{"id": 1}, {"id": 2}],  # short page → stop
+    ]
+    calls = {"n": 0, "ranges": []}
+
+    class _Q:
+        def select(self, *a):
+            return self
+
+        def is_(self, *a):
+            return self
+
+        def order(self, *a):
+            return self
+
+        def range(self, start, end):
+            calls["ranges"].append((start, end))
+            return self
+
+        def execute(self):
+            page = pages[calls["n"]]
+            calls["n"] += 1
+            return type("R", (), {"data": page})()
+
+    class _Client:
+        def table(self, name):
+            return _Q()
+
+    out = qc.fetch_qc_sets(_Client())
+    assert len(out) == qc._PAGE_SIZE * 2 + 2  # all rows across the three pages
+    assert calls["ranges"] == [
+        (0, qc._PAGE_SIZE - 1),
+        (qc._PAGE_SIZE, 2 * qc._PAGE_SIZE - 1),
+        (2 * qc._PAGE_SIZE, 3 * qc._PAGE_SIZE - 1),
+    ]
 
 
 # --- command ----------------------------------------------------------------
