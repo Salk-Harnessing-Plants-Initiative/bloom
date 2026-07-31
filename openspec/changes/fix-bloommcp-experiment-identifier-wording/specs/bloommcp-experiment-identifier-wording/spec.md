@@ -28,16 +28,16 @@ accept/reject behavior — only their message text changes.
 - **THEN** the call still rejects the input exactly as before, and the error text
   no longer says "bare CSV filename"
 
-#### Scenario: The dotted-identifier storage-key constraint survives the reword
+#### Scenario: The dotted-identifier storage-key constraint survives the reword, exactly
 
 - **WHEN** `cross_experiment_correlations`'s `experiment_1`/`experiment_2` field
   descriptions are inspected after the reword
-- **THEN** they still state that an identifier containing more than one `.` character is
-  rejected (required by this tool's composite storage-key encoding, enforced by
-  `_reject_dotted_stem`) — the reword changes "CSV filename" to "experiment identifier"
-  without dropping this constraint, and drops filename-specific vocabulary
-  ("stem"/"extension") in favor of the character-count rule so the description stays
-  accurate for a non-filename-shaped identifier too
+- **THEN** they still state the constraint enforced by `_reject_dotted_stem` — an
+  identifier is rejected if it contains more than one `.`, or exactly one `.` that is
+  the first or last character (e.g. `.hidden`, `a.`, and `a.b.c` are all rejected;
+  `a.b` is not) — the reword changes "CSV filename" to "experiment identifier" and
+  drops filename-specific vocabulary ("stem"/"extension") without weakening the rule to
+  a simpler-but-inexact "at most one dot" approximation
 
 #### Scenario: Discovery-tool and consumer docstrings do not claim a CSV filename
 

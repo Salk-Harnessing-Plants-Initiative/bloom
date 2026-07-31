@@ -120,13 +120,34 @@ then." That sentence draws the exact line this change needs to respect.
   filename pedantry. The current description phrases this as "its filename stem (the
   part before the final extension) must not contain '.'" — filename-specific vocabulary
   (stem/extension) that stops making sense once an identifier is a bare
-  `str(experiment_id)` with no extension at all (post Tier 2). Worked out the
-  backend-agnostic equivalent: the rule reduces exactly to **"the identifier must not
-  contain more than one `.` character, period"** — a numeric post-Tier-2 identifier
-  trivially satisfies this (zero dots), so this phrasing is durable through Tier 2
-  without a second edit, unlike a naive "reword filename→identifier, keep
-  stem/extension" pass would have been. Task 2.4 uses this exact framing rather than the
-  original stem/extension language.
+  `str(experiment_id)` with no extension at all (post Tier 2).
+
+  **Correction (PR #571 review, caught by an independent reviewer testing the two
+  conditions in Python):** the first cut of this task claimed the rule reduces exactly to
+  "must not contain more than one `.` character" — that is **not** equivalent.
+  `pathlib.Path(name).suffix` is only non-empty when the last `.` is strictly interior
+  (not the first or last character of the name); when it isn't (a leading dot like
+  `.hidden`, or a trailing dot like `a.`), `.stem` falls back to the *whole name*, which
+  still contains that one dot, so `_reject_dotted_stem` rejects it — but a
+  1-dot-total-only rule would have wrongly said it's allowed. Reviewer's table,
+  reproduced and confirmed directly in Python:
+
+  | identifier | total dots | rejected by `_reject_dotted_stem`? | "≤1 dot" rule says? |
+  | --- | --- | --- | --- |
+  | `.hidden` | 1 | yes | no (wrong) |
+  | `a.` | 1 | yes | no (wrong) |
+  | `a.b` | 1 | no | no (right) |
+  | `a.b.c` | 2 | yes | yes (right) |
+
+  The exact equivalent (verified against every branch of `pathlib`'s `suffix` logic, and
+  against `_reject_path_unsafe_names` running before `_reject_dotted_stem` at line
+  460-463, so a bare `.`/`..` never reaches this guard to begin with): reject iff the
+  identifier contains more than one `.`, **or** contains exactly one `.` that is the
+  first or last character. Task 2.4 and the tool's own description now state this as
+  "must not contain a '.' except as a single interior extension separator... a leading
+  dot, a trailing dot, or more than one '.' anywhere is rejected" — still filename-vocab-free
+  and durable through Tier 2 (a numeric post-Tier-2 identifier has zero dots and trivially
+  satisfies it), but now actually exact rather than only exact on the common case.
 - **Leaving `storage-backends.md` untouched could look like an incomplete fix** relative
   to the issue's literal bullet list. Mitigation: stated explicitly and reasoned through
   in `proposal.md`'s Non-Goals and here, not silently dropped — recommend #552 stay open,

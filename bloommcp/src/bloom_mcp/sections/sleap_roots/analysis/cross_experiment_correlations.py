@@ -141,13 +141,14 @@ class CrossExperimentCorrelationsParams(BaseModel):
         ...,
         description="First experiment identifier. Must have a cleaned version "
         "produced by qc_clean; cross_experiment_correlations consumes it (require_clean). "
-        "Must not contain '@' or '|' (reserved for this tool's persisted-run encoding), "
-        "and must not contain more than one '.' character (this tool's composite "
-        "storage-key encoding cannot safely represent an identifier with an internal "
-        "'.'). Must differ from experiment_2 (self-correlation is rejected). "
-        "Argument order is significant: swapping experiment_1/experiment_2 produces a "
-        "different persisted run (a distinct storage key) — the two calls are not "
-        "cross-referenced.",
+        "Must not contain '@' or '|' (reserved for this tool's persisted-run encoding). "
+        "Must not contain a '.' except as a single interior extension separator (e.g. "
+        "'my_experiment.csv' is fine) — a leading dot, a trailing dot, or more than one "
+        "'.' anywhere (e.g. '.hidden', 'a.', 'a.b.c') is rejected, since this tool's "
+        "composite storage-key encoding cannot safely represent it. Must differ from "
+        "experiment_2 (self-correlation is rejected). Argument order is significant: "
+        "swapping experiment_1/experiment_2 produces a different persisted run (a "
+        "distinct storage key) — the two calls are not cross-referenced.",
     )
     experiment_2: str = Field(
         ...,
