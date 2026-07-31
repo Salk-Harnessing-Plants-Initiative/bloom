@@ -55,7 +55,7 @@ Seeds the raw `turface_19_raw_data.csv` fixture as `turface_raw.csv`, then runs
 asserts:
 
 - the committed run's outputs include **`_cleaned.csv`** and **`cleanup_log.json`**;
-- the run's manifest is **`manifest_schema_version == 3`**;
+- the run's manifest is **`manifest_schema_version == 5`**;
 - each recorded `output_sha256` matches the actual stored bytes for **both** artifacts;
 - `SupabaseReader().load_experiment("turface_raw.csv", require_clean=True)` then resolves the
   committed **cleaned** version (`source` is `v<N>_cleaned`, **not** `raw`);
@@ -80,7 +80,7 @@ real ports and asserts:
 
 - the committed run's outputs include **`_cleaned.csv`** (the trimmed table) and
   **`outlier_report.json`**;
-- the run's manifest is **`manifest_schema_version == 3`** and records the resolved
+- the run's manifest is **`manifest_schema_version == 5`** and records the resolved
   `seed == 42` (outlier detection is stochastic, unlike `qc_clean`), `tool == "remove_outliers"`;
 - the **generic v3-provenance contract**: `agent == "bloom_agent"`, a populated `environment`,
   and matching `output_sha256` / `output_keys` maps (the same assertion the retired legacy
@@ -108,7 +108,7 @@ and asserts, for each:
   else the Leg 1 clean; `source` is `v<N>_cleaned`, **not** `raw`);
 - the committed run's outputs are **`labels.csv`** (per-sample cluster labels with identity) and
   **`cluster_result.json`** (the serialized typed result);
-- the run's manifest is **`manifest_schema_version == 3`** and `tool == "clustering"`; kmeans
+- the run's manifest is **`manifest_schema_version == 5`** and `tool == "clustering"`; kmeans
   records the resolved `seed == 42` (stochastic), hierarchical records `seed == None`
   (deterministic — no RNG);
 - each recorded `output_sha256` matches the actual stored bytes for **both** artifacts.
@@ -129,7 +129,7 @@ asserts:
   — rather than the unit golden's exact numeric values (the smoke's cleaned input uses Leg 1's own
   threshold, which may differ from the unit golden's canonical-default clean);
 - the committed run's outputs include **`stats.csv`** (the full per-trait table, uncapped);
-- the run's manifest is **`manifest_schema_version == 3`**, `tool == "descriptive_stats"`, and
+- the run's manifest is **`manifest_schema_version == 5`**, `tool == "descriptive_stats"`, and
   records **`seed == None`** (deterministic — no RNG, unlike the stochastic legs above);
 - the recorded `output_sha256` matches the actual stored bytes for `stats.csv`.
 

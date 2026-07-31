@@ -155,6 +155,29 @@ different lineage. A later read sees only the store the current backend points a
 and is blind to the other's versions. **Pick one backend per experiment and keep
 it stable** for the life of that experiment's analysis history.
 
+This can't be *prevented* from purely local information — the `local` backend
+runs fully offline and has no way to check whether `supabase` already has
+history for an experiment (and vice versa) without contacting it, which would
+defeat the point. It is made **observable** instead (#395):
+
+- Every `manifest.json` records a `storage_backend` field naming whichever
+  backend most recently wrote it, so inspecting either store's file directly
+  identifies which backend produced it.
+- The first commit for an (experiment, tool_class) pair under a given
+  backend — i.e. allocating a fresh catalog, `v1` — logs an info-level
+  message naming the experiment, tool class, and active backend. It's `info`,
+  not `warning`: this fires on every brand-new experiment's first commit too
+  (the common, non-mixing case), and warning-level would page on-call for
+  routine new-experiment onboarding.
+
+**Known limitation:** the signal only fires when a backend's own catalog
+doesn't exist yet. Flipping `supabase` → `local` → `supabase` logs on the
+first flip (`local` starts fresh) but **not** on the return trip (`supabase`'s
+manifest already exists), even though a `local`-backed run happened in
+between and `supabase`'s catalog is now silently stale relative to it. Neither
+the sentinel nor the log line can join the two catalogs — they only make the
+*moment* of a potential split observable, not the mixing itself.
+
 **This is a dev / power-user path, not a normal-user packaged distribution.**
 Bench scientists use the deployed web product; fully-local mode is for driving
 bloommcp directly from Claude Code / Claude Desktop offline. Packaging it for
