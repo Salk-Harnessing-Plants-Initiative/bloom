@@ -13,7 +13,7 @@ from typing import Any
 import click
 
 from ..credentials import DEFAULT_PROFILE
-from ._output import MACHINE_FORMATS, print_table, render
+from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
 
 
 @click.group(name="datasets")
@@ -135,10 +135,7 @@ def list_datasets(
     """List cylinder trait datasets."""
     from ..cli import _authed_client
 
-    if as_json:
-        if output_fmt not in (None, "json"):
-            raise click.UsageError("Use either --json or --output, not both.")
-        output_fmt = "json"
+    output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
 
     client = _authed_client(profile)
     found = fetch_datasets(client, experiment_id=experiment_id)

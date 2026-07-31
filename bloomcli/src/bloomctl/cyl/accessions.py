@@ -12,7 +12,7 @@ from typing import Any
 import click
 
 from ..credentials import DEFAULT_PROFILE
-from ._output import MACHINE_FORMATS, print_table, render
+from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
 
 ACCESSION_COLUMNS = ["Accession", "Accession ID"]
 SAMPLE_COUNT_COLUMNS = ["Species", "Accession", "Plants"]
@@ -125,16 +125,15 @@ def fetch_accession_sample_counts(client: Any, species: str | None = None) -> li
     show_default=True,
     help="Credentials profile to use.",
 )
-def list_accessions(experiment_id: int, output_fmt: str | None, as_json: bool, profile: str) -> None:
+def list_accessions(
+    experiment_id: int, output_fmt: str | None, as_json: bool, profile: str
+) -> None:
     """List the accessions used in a cylinder experiment."""
     from postgrest import APIError
 
     from ..cli import _authed_client
 
-    if as_json:
-        if output_fmt not in (None, "json"):
-            raise click.UsageError("Use either --json or --output, not both.")
-        output_fmt = "json"
+    output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
 
     client = _authed_client(profile)
     try:
@@ -188,10 +187,7 @@ def sample_counts(species: str | None, output_fmt: str | None, as_json: bool, pr
 
     from ..cli import _authed_client
 
-    if as_json:
-        if output_fmt not in (None, "json"):
-            raise click.UsageError("Use either --json or --output, not both.")
-        output_fmt = "json"
+    output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
 
     client = _authed_client(profile)
     try:
@@ -201,7 +197,9 @@ def sample_counts(species: str | None, output_fmt: str | None, as_json: bool, pr
     data = sorted(raw, key=sample_count_sort_key)
 
     if output_fmt:
-        click.echo(render([build_sample_count_record(r) for r in data], SAMPLE_COUNT_FIELDS, output_fmt))
+        click.echo(
+            render([build_sample_count_record(r) for r in data], SAMPLE_COUNT_FIELDS, output_fmt)
+        )
         return
 
     rows = [build_sample_count_row(r) for r in data]
