@@ -79,7 +79,7 @@ class PCAAnalysisParams(BaseModel):
 
     experiment: str = Field(
         ...,
-        description="Experiment (CSV filename) to analyze. Must have a cleaned version "
+        description="Experiment identifier to analyze. Must have a cleaned version "
         "produced by qc_clean; pca_analysis consumes it (require_clean).",
     )
     trait_columns: list[str] | None = Field(

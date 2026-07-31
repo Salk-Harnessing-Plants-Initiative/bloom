@@ -22,7 +22,7 @@ def plot_correlation_matrix(filename: str, traits: str = "") -> str:
     identifying redundant traits and discovering trait relationships.
 
     Args:
-        filename: CSV filename from list_available_experiments
+        filename: experiment identifier from list_available_experiments
         traits: Comma-separated trait names (empty = all traits)
     """
     unsafe = validate_filename(filename)

@@ -70,10 +70,11 @@ def _validate_experiment_name(experiment: str, label: str = "experiment") -> Non
         raise BloomMCPError(
             code="invalid_input",
             message=(
-                f"{label} ({experiment!r}) must be a bare CSV filename "
+                f"{label} ({experiment!r}) must be a bare experiment identifier "
                 "(no path separators)."
             ),
-            remedy="Pass a filename from list_available_experiments, e.g. 'my_experiment.csv'.",
+            remedy="Pass an experiment identifier from list_available_experiments, "
+            "e.g. 'my_experiment.csv'.",
         )
 
 

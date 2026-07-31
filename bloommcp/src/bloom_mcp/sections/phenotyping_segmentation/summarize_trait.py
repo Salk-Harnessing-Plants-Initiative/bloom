@@ -14,7 +14,7 @@ class SummarizeTraitParams(BaseModel):
     """Inputs for ``summarize_trait``."""
 
     experiment: str = Field(
-        ..., description="CSV filename from list_available_experiments."
+        ..., description="Experiment identifier from list_available_experiments."
     )
     trait: str = Field(
         ..., description="Trait column to summarize (e.g. root_area_mean)."

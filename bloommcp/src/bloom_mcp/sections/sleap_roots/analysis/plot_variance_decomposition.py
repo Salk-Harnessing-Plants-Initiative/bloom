@@ -25,7 +25,7 @@ def plot_variance_decomposition(filename: str) -> str:
     genetic (between-genotype) and environmental (within-genotype) components.
 
     Args:
-        filename: CSV filename from list_available_experiments
+        filename: experiment identifier from list_available_experiments
     """
     unsafe = validate_filename(filename)
     if unsafe:

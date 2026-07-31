@@ -72,7 +72,7 @@ class ClusteringParams(BaseModel):
 
     experiment: str = Field(
         ...,
-        description="Experiment (CSV filename) to cluster. Must have a cleaned version "
+        description="Experiment identifier to cluster. Must have a cleaned version "
         "produced by qc_clean; clustering consumes it (require_clean).",
     )
     method: Literal["kmeans", "gmm", "hierarchical"] = Field(

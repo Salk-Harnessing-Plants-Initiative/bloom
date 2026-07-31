@@ -99,7 +99,7 @@ def test_list_existing_analyses_reports_no_prior_runs_for_a_known_experiment(
     result = list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
     payload = json.loads(result)
 
-    assert payload["experiment_filename"] == _EXPERIMENT
+    assert payload["experiment"] == _EXPERIMENT
     assert payload["analyses"] == {}
     assert "No prior analyses found" in payload["message"]
 

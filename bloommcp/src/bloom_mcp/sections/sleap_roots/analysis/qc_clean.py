@@ -94,7 +94,7 @@ class QCCleanParams(BaseModel):
     """
 
     experiment: str = Field(
-        ..., description="CSV filename from list_available_experiments."
+        ..., description="Experiment identifier from list_available_experiments."
     )
     trait_columns: Optional[list[str]] = Field(
         default=None,

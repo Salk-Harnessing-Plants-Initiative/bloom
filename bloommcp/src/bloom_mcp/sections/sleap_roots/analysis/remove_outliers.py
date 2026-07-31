@@ -96,7 +96,8 @@ class RemoveOutliersParams(BaseModel):
 
     experiment: str = Field(
         ...,
-        description="CSV filename from list_available_experiments (must be cleaned).",
+        description="Experiment identifier from list_available_experiments (must be "
+        "cleaned).",
     )
     method: Literal["mahalanobis", "isolation_forest"] = Field(
         default="mahalanobis",

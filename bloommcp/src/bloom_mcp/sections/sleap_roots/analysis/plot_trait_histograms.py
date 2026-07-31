@@ -28,7 +28,7 @@ def plot_trait_histograms(filename: str, traits: str = "") -> str:
     normality, skewness, and identifying unusual distributions.
 
     Args:
-        filename: CSV filename from list_available_experiments
+        filename: experiment identifier from list_available_experiments
         traits: Comma-separated trait names (empty = all traits)
     """
     unsafe = validate_filename(filename)

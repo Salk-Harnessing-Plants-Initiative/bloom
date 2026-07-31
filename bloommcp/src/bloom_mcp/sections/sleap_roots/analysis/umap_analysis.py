@@ -97,7 +97,7 @@ class UMAPAnalysisParams(BaseModel):
 
     experiment: str = Field(
         ...,
-        description="Experiment (CSV filename) to analyze. Must have a cleaned version "
+        description="Experiment identifier to analyze. Must have a cleaned version "
         "produced by qc_clean; umap_analysis consumes it (require_clean).",
     )
     trait_columns: list[str] | None = Field(
