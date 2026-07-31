@@ -174,6 +174,24 @@ def test_list_json_output(monkeypatch):
     assert payload[0]["timepoints"] == [1, 3, 5]
 
 
+def test_list_output_csv(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ds, "fetch_datasets", lambda client, experiment_id=None: [FULL])
+    res = CliRunner().invoke(cli, ["cyl", "datasets", "list", "--output", "csv"])
+    assert res.exit_code == 0, res.output
+    lines = res.output.strip().splitlines()
+    assert lines[0] == "name,timepoints,species,experiment,qc_set,trait_source,created"
+    assert lines[1].startswith("canola-v1,")
+
+
+def test_list_json_and_conflicting_output_rejected(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ds, "fetch_datasets", lambda client, experiment_id=None: [FULL])
+    res = CliRunner().invoke(cli, ["cyl", "datasets", "list", "--json", "--output", "csv"])
+    assert res.exit_code != 0
+    assert "not both" in res.output.lower()
+
+
 def test_list_json_empty_is_empty_array(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(ds, "fetch_datasets", lambda client, experiment_id=None: [])
