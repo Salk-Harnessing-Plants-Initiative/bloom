@@ -43,9 +43,26 @@ _URL_RE = re.compile(r"https?://[^\s,]+")
 
 # Filenames as seeded into TRAITS_DIR -- distinct from the fixtures' on-disk names in
 # tests/fixtures/ so a smoke run never collides with a developer's own experiment files.
+# Still used by the 5 plot tools (plot_trait_histograms/_boxplots, plot_correlation_matrix,
+# plot_heritability_bar, plot_variance_decomposition): they call
+# ``experiment_utils.load_experiment_data`` directly, a local-BLOOM_TRAITS_DIR raw tier
+# this PR's SupabaseReader rewrite (bloom#551) does not touch -- unlike the 7 granular
+# analysis tools below, which route through SupabaseReader's now DB-only raw tier.
 FIXTURE_FILES: dict[str, str] = {
     "turface_19": "turface_19_raw_data.csv",
     "cylinder": "cylinder_raw_data.csv",
+}
+
+# The 7 granular analysis tools (qc_clean, qc_inspect, remove_outliers, pca_analysis,
+# clustering, descriptive_stats, umap_analysis) route through SupabaseReader, whose raw
+# tier is DB-only (bloom#551) -- a tool call needs a numeric experiment id, not a
+# filename. Each oracle fixture instead needs a REAL numeric experiment id that already
+# has trait rows in whatever Postgres this smoke run points at; seeding that data is not
+# automated by this package (no tracking issue filed yet for a smoke DB seeder). Set the
+# matching env var before running these tests.
+EXPERIMENT_ID_ENV_VARS: dict[str, str] = {
+    "turface_19": "BLOOM_SMOKE_EXPERIMENT_ID_TURFACE_19",
+    "cylinder": "BLOOM_SMOKE_EXPERIMENT_ID_CYLINDER",
 }
 
 
@@ -190,7 +207,10 @@ def fixture_name(request) -> str:
 def seeded_experiment(fixture_name: str) -> str:
     """Seed ``fixture_name``'s raw CSV into the real bind-mounted TRAITS_DIR.
 
-    Returns the experiment filename the tool should be called with. Not cleaned up
+    Returns the experiment filename the tool should be called with. Only for the 5
+    plot tools, which read via ``experiment_utils.load_experiment_data`` directly (a
+    local-BLOOM_TRAITS_DIR raw tier untouched by bloom#551) -- see ``db_experiment_id``
+    for the 7 granular analysis tools, which need a numeric id instead. Not cleaned up
     after the test -- matching ``live_plot_tool_smoke.py``'s convention of leaving the
     seeded fixture in place (host-side bind-mounted scratch dir, gitignored, harmless
     to leave for the next run to overwrite).
@@ -199,3 +219,28 @@ def seeded_experiment(fixture_name: str) -> str:
     filename = FIXTURE_FILES[fixture_name]
     shutil.copy(FIXTURES_DIR / filename, TRAITS_DIR / filename)
     return filename
+
+
+@pytest.fixture
+def db_experiment_id(fixture_name: str) -> str:
+    """Resolve ``fixture_name`` to the numeric experiment id a SupabaseReader-backed
+    tool call should be called with.
+
+    SupabaseReader's raw tier is DB-only (bloom#551): there is no local-CSV upload path
+    left for the 7 granular analysis tools (qc_clean, qc_inspect, remove_outliers,
+    pca_analysis, clustering, descriptive_stats, umap_analysis), so ``fixture_name``'s
+    oracle data must already exist as a real experiment with trait rows in whatever
+    Postgres this smoke run points at. Skips cleanly (not a hard failure) when the
+    matching env var is unset, since not every dev/CI environment has that DB seeding
+    done yet.
+    """
+    env_var = EXPERIMENT_ID_ENV_VARS[fixture_name]
+    experiment_id = os.environ.get(env_var, "")
+    if not experiment_id:
+        pytest.skip(
+            f"{env_var} is unset -- set it to a numeric experiment id already seeded "
+            f"with trait rows in Postgres for the {fixture_name!r} oracle fixture "
+            "(SupabaseReader's raw tier is DB-only; there is no local-CSV upload path "
+            "to fall back to)."
+        )
+    return experiment_id

@@ -14,10 +14,10 @@ import pytest
 pytestmark = pytest.mark.live_smoke
 
 
-def test_qc_clean_smoke(call_tool, seeded_experiment: str) -> None:
-    result = call_tool("sleap_roots_qc_clean", {"experiment": seeded_experiment})
+def test_qc_clean_smoke(call_tool, db_experiment_id: str) -> None:
+    result = call_tool("sleap_roots_qc_clean", {"experiment": db_experiment_id})
 
-    assert result["experiment"] == seeded_experiment
+    assert result["experiment"] == db_experiment_id
     assert result["n_samples_out"] > 0
     assert result["n_traits_out"] > 0
     assert result["cleaned_nan_cells_remaining"] == 0

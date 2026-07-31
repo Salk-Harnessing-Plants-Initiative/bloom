@@ -13,6 +13,8 @@ Phase-1 workflow tools were retired — devendor-bloommcp-analysis C6.1 — its
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
 import subprocess
 import sys
@@ -578,6 +580,208 @@ def test_local_layout_disjoint_from_legacy_fallback(monkeypatch, tmp_path):
     legacy = tmp_path / "qc_exp" / "exp_cleaned.csv"
     assert not legacy.exists()
     assert (tmp_path / "bloommcp_output" / "qc_exp" / "manifest.json").is_file()
+
+
+class _FakeSbStorageClient:
+    """In-memory stand-in for the storage3 bucket client that
+    `SupabaseStorageBackend`'s methods call via `get_storage_client()`.
+
+    Unlike the `fake_supabase_storage` fixture (which monkeypatches
+    `bloom_mcp.manifest.manifest`'s module-level `list_prefix`/`read_json`/
+    `write_json` directly, bypassing `storage_backend.active_backend()`
+    dispatch entirely), patching only `get_storage_client` lets the real
+    `SupabaseStorageBackend` class run through the real dispatch path — so a
+    test can toggle `BLOOM_STORAGE_BACKEND` mid-test and genuinely switch
+    between this fake and the real `LocalStorageBackend`.
+    """
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    def upload(self, *, path, file, file_options=None):
+        del file_options
+        self.objects[path] = file
+
+    def download(self, path):
+        if path not in self.objects:
+            raise KeyError(f"object not found: {path}")
+        return self.objects[path]
+
+    def list(self, prefix):
+        norm = (prefix.rstrip("/") + "/") if prefix else ""
+        names: set[str] = set()
+        for key in self.objects:
+            if key.startswith(norm):
+                names.add(key[len(norm) :].split("/", 1)[0])
+        return [{"name": n} for n in sorted(names) if n]
+
+    def remove(self, paths):
+        for p in paths:
+            self.objects.pop(p, None)
+
+
+def test_write_manifest_stamps_active_backend(monkeypatch, tmp_path):
+    """`write_manifest` stamps `Manifest.storage_backend` with whichever
+    backend is active at write time (#395's sentinel), for both `supabase`
+    (default) and `local`."""
+    from bloom_mcp.contract import Provenance
+    from bloom_mcp.manifest import AnalysisDir
+    from bloom_mcp.result_store import SupabaseResultStore
+
+    # One shared instance: SupabaseStorageBackend calls get_storage_client()
+    # fresh per method (stateless wrapper around real Supabase's server-side
+    # state) — the fake must hand back the SAME instance every call, or each
+    # upload/list/download would silently talk to a different empty store.
+    fake_client = _FakeSbStorageClient()
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client",
+        lambda **_kwargs: fake_client,
+    )
+
+    def _commit(experiment: str) -> None:
+        store = SupabaseResultStore()
+        run = store.create_run(
+            experiment=experiment,
+            tool_class="qc",
+            provenance=Provenance.stamp(tool="t", params={}, seed=1),
+        )
+        (run.staging_dir / "_cleaned.csv").write_bytes(b"data")
+        store.commit(run, {"cleaned": "_cleaned.csv"})
+
+    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+    sb.reset_backend_for_tests()
+    _commit("exp.csv")
+    manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+    assert manifest.storage_backend == "supabase"
+
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+    sb.reset_backend_for_tests()
+    _commit("exp2.csv")
+    manifest = AnalysisDir("bloommcp_output", "exp2.csv", "qc").read_manifest()
+    assert manifest.storage_backend == "local"
+
+
+def test_manifest_identical_across_backends_except_storage_backend(
+    monkeypatch, tmp_path
+):
+    """A real commit through `SupabaseResultStore`/`write_manifest` (not a
+    hand-built dict, unlike `test_manifest_bytes_identical_fake_vs_local`
+    above) produces byte-identical manifests across backends except
+    `storage_backend`, which legitimately differs — the MODIFIED spec's core
+    claim for the #395 sentinel. Uses `_FakeSbStorageClient` (not the
+    `fake_supabase_storage` fixture) so `BLOOM_STORAGE_BACKEND` toggling
+    between the two commits genuinely switches the active backend."""
+    from bloom_mcp.contract import Provenance
+    from bloom_mcp.manifest import AnalysisDir
+    from bloom_mcp.result_store import SupabaseResultStore
+
+    # See test_write_manifest_stamps_active_backend for why this must be one
+    # shared instance, not a fresh one per get_storage_client() call.
+    fake_client = _FakeSbStorageClient()
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client",
+        lambda **_kwargs: fake_client,
+    )
+
+    # One shared Provenance instance so created_at/code_versions/environment
+    # are identical across both commits, not just coincidentally equal.
+    prov = Provenance.stamp(tool="t", params={"n": 1}, seed=9)
+
+    def _commit() -> None:
+        store = SupabaseResultStore()
+        run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=prov)
+        (run.staging_dir / "_cleaned.csv").write_bytes(b"data")
+        store.commit(run, {"cleaned": "_cleaned.csv"})
+
+    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+    sb.reset_backend_for_tests()
+    _commit()
+    supabase_manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+    sb.reset_backend_for_tests()
+    _commit()
+    local_manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    assert supabase_manifest.storage_backend == "supabase"
+    assert local_manifest.storage_backend == "local"
+
+    supabase_dump = supabase_manifest.model_dump(mode="json")
+    local_dump = local_manifest.model_dump(mode="json")
+    del supabase_dump["storage_backend"], local_dump["storage_backend"]
+    assert supabase_dump == local_dump
+
+    # Also compare the actual serialized bytes each store received (not a
+    # re-derived model_dump()), matching the spec's literal "byte-identical
+    # serialized manifest.json" claim.
+    supabase_raw = json.loads(
+        fake_client.objects["bloommcp_output/qc_exp/manifest.json"]
+    )
+    local_raw = json.loads(
+        (tmp_path / "bloommcp_output" / "qc_exp" / "manifest.json").read_bytes()
+    )
+    del supabase_raw["storage_backend"], local_raw["storage_backend"]
+    assert supabase_raw == local_raw
+
+
+def test_repeated_backend_flip_logs_once_not_on_return(monkeypatch, tmp_path, caplog):
+    """#395 spec scenario "Repeated backend flips do not repeatedly signal":
+    supabase -> local -> supabase logs the fresh-catalog message on the first
+    commit to each backend's own (initially-empty) catalog, but NOT again on
+    the return trip to supabase, whose manifest already exists from the first
+    commit."""
+    from bloom_mcp.contract import Provenance
+    from bloom_mcp.result_store import SupabaseResultStore
+
+    fake_client = _FakeSbStorageClient()
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client",
+        lambda **_kwargs: fake_client,
+    )
+
+    def _commit() -> None:
+        store = SupabaseResultStore()
+        run = store.create_run(
+            experiment="exp.csv",
+            tool_class="qc",
+            provenance=Provenance.stamp(tool="t", params={}, seed=1),
+        )
+        (run.staging_dir / "_cleaned.csv").write_bytes(b"data")
+        store.commit(run, {"cleaned": "_cleaned.csv"})
+
+    def _fresh_catalog_log_count() -> int:
+        return sum(
+            1
+            for r in caplog.records
+            if "fresh manifest catalog" in r.getMessage().lower()
+        )
+
+    with caplog.at_level(logging.INFO):
+        # supabase: first commit ever for this pair -> fresh catalog, logs.
+        monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+        sb.reset_backend_for_tests()
+        caplog.clear()
+        _commit()
+        assert _fresh_catalog_log_count() == 1
+
+        # flip to local: a different, still-empty catalog -> also logs.
+        monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+        sb.reset_backend_for_tests()
+        caplog.clear()
+        _commit()
+        assert _fresh_catalog_log_count() == 1
+
+        # flip back to supabase: its manifest already exists from the first
+        # commit above -> no log this time, even though a local-backed run
+        # happened in between (the documented residual gap).
+        monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+        sb.reset_backend_for_tests()
+        caplog.clear()
+        _commit()
+        assert _fresh_catalog_log_count() == 0
 
 
 # ─── 5. Cross-backend list_prefix parity + read-path fallback ──────────────────

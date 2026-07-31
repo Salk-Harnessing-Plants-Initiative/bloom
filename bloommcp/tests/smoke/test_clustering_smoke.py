@@ -15,28 +15,28 @@ import pytest
 pytestmark = pytest.mark.live_smoke
 
 
-def _cluster(call_tool, seeded_experiment: str, **method_kwargs) -> dict:
-    call_tool("sleap_roots_qc_clean", {"experiment": seeded_experiment})
+def _cluster(call_tool, db_experiment_id: str, **method_kwargs) -> dict:
+    call_tool("sleap_roots_qc_clean", {"experiment": db_experiment_id})
     result = call_tool(
         "sleap_roots_clustering",
-        {"experiment": seeded_experiment, **method_kwargs},
+        {"experiment": db_experiment_id, **method_kwargs},
     )
-    assert result["experiment"] == seeded_experiment
+    assert result["experiment"] == db_experiment_id
     assert result["n_clusters"] >= 2
     assert result["run_ref"]
     return result
 
 
-def test_kmeans_clustering_smoke(call_tool, seeded_experiment: str) -> None:
+def test_kmeans_clustering_smoke(call_tool, db_experiment_id: str) -> None:
     result = _cluster(
-        call_tool, seeded_experiment, method="kmeans", n_clusters=3, seed=42
+        call_tool, db_experiment_id, method="kmeans", n_clusters=3, seed=42
     )
     assert result["method"] == "kmeans"
     assert result["inertia"] is not None
 
 
-def test_hierarchical_clustering_smoke(call_tool, seeded_experiment: str) -> None:
-    result = _cluster(call_tool, seeded_experiment, method="hierarchical", n_clusters=3)
+def test_hierarchical_clustering_smoke(call_tool, db_experiment_id: str) -> None:
+    result = _cluster(call_tool, db_experiment_id, method="hierarchical", n_clusters=3)
     assert result["method"] == "hierarchical"
     assert result["linkage_method"] == "ward"
 
@@ -45,10 +45,10 @@ def test_hierarchical_clustering_smoke(call_tool, seeded_experiment: str) -> Non
     "fixture_name",
     ["turface_19", pytest.param("cylinder", marks=pytest.mark.live_smoke_slow)],
 )
-def test_gmm_clustering_smoke(call_tool, seeded_experiment: str) -> None:
+def test_gmm_clustering_smoke(call_tool, db_experiment_id: str) -> None:
     result = _cluster(
         call_tool,
-        seeded_experiment,
+        db_experiment_id,
         method="gmm",
         n_components=3,
         covariance_type="full",

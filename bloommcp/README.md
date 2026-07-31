@@ -6,6 +6,10 @@ bloom Supabase database. Every analysis/plotting tool delegates to
 [`sleap-roots-analyze`](https://github.com/talmolab/sleap-roots-analyze) — bloom-mcp is a thin
 MCP surface over it, not a second home for analysis code.
 
+**Connecting an AI client (Claude Code) to the hosted server?** See
+[docs/connecting-claude-code.md](docs/connecting-claude-code.md) — this README covers running and
+developing the server itself, not connecting a client to it.
+
 ## Layout
 
 Installable `uv` package under `src/bloom_mcp/`:

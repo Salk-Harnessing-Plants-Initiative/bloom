@@ -61,3 +61,17 @@ def test_mapping_yields_v3_version_entry_with_contract_fields():
     # Per-artifact content addressing is filled at commit (Tier 2), not now.
     assert entry.output_sha256 == {}
     assert entry.output_keys == {}
+
+    # No source-versioned substrate wired in this record → no source identity.
+    assert entry.source_id is None
+    assert entry.source_name is None
+
+
+def test_mapping_carries_source_identity_when_present():
+    """A Provenance carrying source_id/source_name maps them onto the VersionEntry."""
+    prov = _provenance().model_copy(
+        update={"source_id": 7, "source_name": "reprocess-2026-07"}
+    )
+    entry = prov.to_version_entry(version_id="v1")
+    assert entry.source_id == 7
+    assert entry.source_name == "reprocess-2026-07"

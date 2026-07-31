@@ -34,6 +34,7 @@ os.environ.setdefault("BLOOM_PLOTS_URL", "http://localhost/plots")
 
 import json  # noqa: E402
 from pathlib import Path  # noqa: E402
+from typing import Optional  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -107,6 +108,118 @@ def fake_supabase_storage(monkeypatch):
 
     monkeypatch.setattr(_sc.supabase, "create_client", _no_network)
     return store
+
+
+# --- In-memory Postgres/PostgREST boundary (Tier 2 DB-direct raw tier) -------
+#
+# SupabaseReader's raw tier calls two module-level bloom_mcp.supabase_client
+# functions: `call_rpc` (get_experiment_traits / list_experiment_trait_sources)
+# and `get_postgrest_client` (a direct `cyl_experiments` table read for
+# list_experiments()). This fake monkeypatches both so the DB-direct raw tier
+# runs with no live Supabase/Postgres — a distinct boundary from
+# `fake_supabase_storage` above (that one fakes object storage; this one fakes
+# table/RPC reads).
+
+
+class _FakeQueryResponse:
+    def __init__(self, data: list[dict]) -> None:
+        self.data = data
+
+
+class _FakeTableQuery:
+    """Minimal stand-in for a PostgREST fluent query — only what supabase_reader uses."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = list(rows)
+
+    def select(self, *_args, **_kwargs) -> "_FakeTableQuery":
+        return self
+
+    def eq(self, column: str, value) -> "_FakeTableQuery":
+        self._rows = [r for r in self._rows if r.get(column) == value]
+        return self
+
+    def execute(self) -> _FakeQueryResponse:
+        return _FakeQueryResponse(list(self._rows))
+
+
+class _FakePostgrestClient:
+    def __init__(self, tables: dict[str, list[dict]]) -> None:
+        self._tables = tables
+
+    def table(self, name: str) -> _FakeTableQuery:
+        return _FakeTableQuery(self._tables.get(name, []))
+
+
+class FakeSupabaseDB:
+    """Seedable in-memory double for the RPC/table-read boundary.
+
+    Seed with `seed_experiment`, `seed_traits`, and `seed_sources`; a call to a
+    function/table with nothing seeded returns an empty result, matching a real
+    PostgREST response for no matching rows.
+    """
+
+    def __init__(self) -> None:
+        self.tables: dict[str, list[dict]] = {"cyl_experiments": []}
+        self._traits: dict[int, list[dict]] = {}
+        self._sources: dict[int, list[dict]] = {}
+        # Keyed by (function_name, experiment_id); experiment_id=None fails
+        # every call to that function regardless of experiment.
+        self.rpc_errors: dict[tuple[str, Optional[int]], Exception] = {}
+
+    def seed_experiment(self, experiment_id: int, name: str) -> None:
+        self.tables["cyl_experiments"].append({"id": experiment_id, "name": name})
+
+    def seed_traits(self, experiment_id: int, rows: list[dict]) -> None:
+        self._traits.setdefault(experiment_id, []).extend(rows)
+
+    def seed_sources(self, experiment_id: int, sources: list[dict]) -> None:
+        self._sources.setdefault(experiment_id, []).extend(sources)
+
+    def fail_rpc(
+        self,
+        function_name: str,
+        exc: Exception,
+        *,
+        experiment_id: Optional[int] = None,
+    ) -> None:
+        self.rpc_errors[(function_name, experiment_id)] = exc
+
+    def call_rpc(self, function_name: str, params: dict) -> list[dict]:
+        experiment_id = params.get("experiment_id_")
+        for key in ((function_name, experiment_id), (function_name, None)):
+            if key in self.rpc_errors:
+                raise self.rpc_errors[key]
+
+        if function_name == "list_experiment_trait_sources":
+            return list(self._sources.get(experiment_id, []))
+        if function_name == "get_experiment_traits":
+            rows = list(self._traits.get(experiment_id, []))
+            source_id = params.get("source_id_")
+            if source_id is not None:
+                rows = [r for r in rows if r.get("source_id") == source_id]
+            run_id = params.get("run_id_")
+            if run_id is not None:
+                rows = [r for r in rows if r.get("pipeline_run_id") == run_id]
+            return rows
+        raise AssertionError(f"unfaked RPC function: {function_name!r}")
+
+    def get_postgrest_client(self) -> _FakePostgrestClient:
+        return _FakePostgrestClient(self.tables)
+
+
+@pytest.fixture
+def fake_supabase_db(monkeypatch):
+    """Patch the Postgres/PostgREST boundary with an in-memory double.
+
+    Returns the double so tests can seed experiments/traits/sources directly.
+    """
+    import bloom_mcp.supabase_client as _sc
+
+    fake = FakeSupabaseDB()
+    monkeypatch.setattr(_sc, "call_rpc", fake.call_rpc)
+    monkeypatch.setattr(_sc, "get_postgrest_client", fake.get_postgrest_client)
+    return fake
 
 
 # --- In-memory RPC boundary (bloommcp_usage / call_rpc) -----------------------
