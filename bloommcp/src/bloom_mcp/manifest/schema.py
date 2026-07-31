@@ -1,15 +1,23 @@
-"""Pydantic models for manifest.json (schema version 3).
+"""Pydantic models for manifest.json (schema version 4).
 
 Every (experiment, tool_class) pair has one manifest.json in the
 bloommcp-data bucket listing all its runs. These models define what
 goes in it.
 
-Schema version 3 is an **additive** bump over v2: it adds optional provenance
+Schema version 3 was an **additive** bump over v2: it added optional provenance
 fields (`seed`, `agent`, `environment`) and per-artifact content-addressing
 (`output_sha256`, `output_keys`) alongside the retained v2 `outputs` string map,
-and extends `code_versions` with `sleap-roots-analyze` / `sleap-roots-contracts`.
-Every new field is optional, so previously-written v2 manifests still validate
-and read without error (see `tests/contract/test_v2_backcompat.py`).
+and extended `code_versions` with `sleap-roots-analyze` / `sleap-roots-contracts`.
+
+Schema version 4 is an **additive** bump over v3: it adds optional `source_id`/
+`source_name` fields to `VersionEntry`, identifying which Bloom database source
+(a `cyl_trait_sources` row) a DB-backed raw read resolved — the replacement
+identity signal for a read that no longer has an on-disk path to
+content-address via `RawSourced` (see `bloom_mcp.data_access.SourceSelectable`).
+
+Every new field across both bumps is optional, so previously-written v2 and v3
+manifests still validate and read without error (see
+`tests/contract/test_v2_backcompat.py`).
 
 Strict mode is on: passing an unknown field raises a ValidationError
 instead of being silently accepted into the file.
@@ -21,7 +29,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 class _StrictModel(BaseModel):
@@ -87,6 +95,13 @@ class VersionEntry(_StrictModel):
     # Keys: ``mode``, ``contract_version``, ``resolved_roles``, ``excluded_columns``,
     # ``warnings``.
     input_validation: Optional[dict] = None
+    # --- v4 additive (all optional → v2/v3 manifests still validate) ---
+    # Which DB source/pipeline-run backed the experiment read this run consumed,
+    # when the active ExperimentReader is SourceSelectable. Absent for reads with
+    # no source-versioned substrate (FakeReader, LocalReader) or legacy DB data
+    # with no tracked source_id.
+    source_id: Optional[int] = None
+    source_name: Optional[str] = None
 
 
 class Manifest(_StrictModel):

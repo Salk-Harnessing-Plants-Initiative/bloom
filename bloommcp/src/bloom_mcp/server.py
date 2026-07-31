@@ -39,6 +39,7 @@ import logging
 from fastmcp import FastMCP
 from fastmcp.utilities.lifespan import combine_lifespans
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount
@@ -51,6 +52,7 @@ from bloom_mcp.supabase_client import validate_env as validate_supabase_env
 from bloom_mcp.experiment_utils import validate_env as validate_data_env
 
 from bloom_mcp.auth import API_KEY, auth_provider
+from bloom_mcp.identity import IdentityMiddleware
 
 from bloom_mcp.sections import SECTIONS
 
@@ -85,6 +87,13 @@ def build_app() -> Starlette:
     section is mounted at /<section> (e.g. /phenotyping_segmentation/mcp). All
     sub-app lifespans are combined so every streamable-http session manager
     starts.
+
+    `IdentityMiddleware` wraps this single app (outside every `Mount`, so it
+    sees every request regardless of which section — or none — it resolves
+    to) to verify an optional `X-Bloom-Identity` header. It runs before
+    FastMCP's own per-section `BLOOMMCP_API_KEY` bearer check (wired via
+    `auth=` on each `FastMCP` instance, inside each `Mount`) — the two checks
+    are independent; see openspec add-bloommcp-caller-identity design.md.
     """
     combined_app = mcp.http_app(path="/mcp")
     section_apps = {
@@ -97,7 +106,11 @@ def build_app() -> Starlette:
     routes.append(Mount("/", app=combined_app))
 
     lifespans = [combined_app.lifespan, *(a.lifespan for a in section_apps.values())]
-    return Starlette(routes=routes, lifespan=combine_lifespans(*lifespans))
+    return Starlette(
+        routes=routes,
+        lifespan=combine_lifespans(*lifespans),
+        middleware=[Middleware(IdentityMiddleware)],
+    )
 
 
 # --- Entry Point ---

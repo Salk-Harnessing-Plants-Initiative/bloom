@@ -20,18 +20,20 @@ pytestmark = pytest.mark.live_smoke
     "fixture_name",
     ["turface_19", pytest.param("cylinder", marks=pytest.mark.live_smoke_slow)],
 )
-def test_remove_outliers_smoke(call_tool, seeded_experiment: str) -> None:
-    call_tool("sleap_roots_qc_clean", {"experiment": seeded_experiment})
+def test_remove_outliers_smoke(call_tool, db_experiment_id: str) -> None:
+    call_tool("sleap_roots_qc_clean", {"experiment": db_experiment_id})
 
     result = call_tool(
         "sleap_roots_remove_outliers",
-        {"experiment": seeded_experiment, "method": "mahalanobis", "seed": 42},
+        {"experiment": db_experiment_id, "method": "mahalanobis", "seed": 42},
     )
 
-    assert result["experiment"] == seeded_experiment
+    assert result["experiment"] == db_experiment_id
     assert result["method"] == "mahalanobis"
     assert result["n_input_samples"] > 0
     assert result["n_output_samples"] <= result["n_input_samples"]
-    assert result["n_outliers"] == result["n_input_samples"] - result["n_output_samples"]
+    assert (
+        result["n_outliers"] == result["n_input_samples"] - result["n_output_samples"]
+    )
     assert result["run_ref"]
     assert result["manifest_path"]

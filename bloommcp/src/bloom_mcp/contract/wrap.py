@@ -50,6 +50,28 @@ def register(mcp: Any, *tools: Callable) -> Any:
     The seam the spec mandates: keeps tools decoupled from the live `mcp`
     instance at decoration time. Equivalent to calling `mcp.tool()(tool)` for
     each, returned `mcp` for chaining.
+
+    Deliberately does NOT wrap tools with any per-call bookkeeping (usage
+    recording included — see `bloom_mcp.identity.IdentityMiddleware`, which
+    records usage itself instead). A per-tool wrapper here was tried and
+    reverted: for a reused MCP `streamable-http` session (the common case —
+    one client session spans many tool calls), FastMCP's `StreamableHTTPSessionManager`
+    starts the tool-dispatch loop in a single long-lived task once, at session
+    creation (`_handle_stateful_request`/`self._task_group.start(run_server)`
+    in the installed `mcp` package); later requests in that session only feed
+    a stream into that already-running task, never re-entering it. A
+    `contextvars.ContextVar` set by an outer ASGI middleware on a *later*
+    request's own task is a different Context object and is structurally
+    invisible inside that already-running task — confirmed by reading
+    `mcp/server/streamable_http_manager.py` directly and independently by the
+    well-defined semantics of `asyncio`/`anyio` task creation (a spawned
+    task's Context is snapshotted at creation time). This is not unique to
+    this repo's code — FastMCP's own `get_http_headers()`/`get_http_request()`
+    rely on the identical mechanism (`RequestContextMiddleware`,
+    `fastmcp/server/http.py`) and inherit the same limitation for a reused
+    session; `SessionMessage`'s per-message metadata carries no HTTP header
+    info to work around it. See
+    openspec/changes/add-bloommcp-caller-identity/design.md Decision 4.
     """
     for tool in tools:
         mcp.tool()(tool)

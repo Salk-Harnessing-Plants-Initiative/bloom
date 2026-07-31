@@ -103,7 +103,18 @@ POSTGRES_HOST_PORT = os.environ.get("POSTGRES_HOST_PORT", _env.get("POSTGRES_HOS
 
 
 @pytest.fixture
-def pg_conn():
+def pg_conninfo() -> str:
+    """The same connection string `pg_conn` connects with, exposed separately
+    for tests that need a *second*, independent connection (e.g. genuine
+    concurrency tests) rather than the one `pg_conn` already opened."""
+    return (
+        f"host=127.0.0.1 port={POSTGRES_HOST_PORT} "
+        f"dbname={POSTGRES_DB} user={POSTGRES_USER} password={POSTGRES_PASSWORD}"
+    )
+
+
+@pytest.fixture
+def pg_conn(pg_conninfo):
     """
     Connect to Postgres via the host-exposed port. Requires `psycopg[binary]`.
 
@@ -123,11 +134,7 @@ def pg_conn():
             )
         pytest.skip("psycopg not installed and no POSTGRES_PASSWORD set — local-dev skip")
 
-    conninfo = (
-        f"host=127.0.0.1 port={POSTGRES_HOST_PORT} "
-        f"dbname={POSTGRES_DB} user={POSTGRES_USER} password={POSTGRES_PASSWORD}"
-    )
-    conn = psycopg.connect(conninfo)
+    conn = psycopg.connect(pg_conninfo)
     try:
         yield conn
     finally:

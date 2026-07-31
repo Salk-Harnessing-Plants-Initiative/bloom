@@ -3,18 +3,30 @@
 from .fake_reader import FakeReader
 from .local_reader import LocalReader
 from .ports import (
+    AmbiguousRunIdError,
+    AmbiguousSampleIdentityError,
+    AmbiguousSourceSelectionError,
     CleanedVersionRequiredError,
+    DuplicateTraitReadingError,
     ExperimentFrame,
     ExperimentNotFoundError,
     ExperimentReader,
     ExperimentReadError,
     ExperimentSummary,
+    MultipleScansPerPlantError,
     RawSourced,
+    SourceInfo,
+    SourcePinNotFoundError,
+    SourceSelectable,
 )
 from .supabase_reader import SupabaseReader
 
 __all__ = [
+    "AmbiguousRunIdError",
+    "AmbiguousSampleIdentityError",
+    "AmbiguousSourceSelectionError",
     "CleanedVersionRequiredError",
+    "DuplicateTraitReadingError",
     "ExperimentFrame",
     "ExperimentNotFoundError",
     "ExperimentReadError",
@@ -22,6 +34,10 @@ __all__ = [
     "ExperimentSummary",
     "FakeReader",
     "LocalReader",
+    "MultipleScansPerPlantError",
     "RawSourced",
+    "SourceInfo",
+    "SourcePinNotFoundError",
+    "SourceSelectable",
     "SupabaseReader",
 ]

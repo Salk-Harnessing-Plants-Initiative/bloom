@@ -101,6 +101,16 @@ def start_run(
     # input root is honoured rather than a hard-coded TRAITS_DIR (see
     # ``raw_source_for``). A path-less adapter yields None and the run records no
     # input hash (source_csv=None) rather than a fabricated path.
+    #
+    # No ``source=`` (SourceInfo) is recorded here: unlike the producer tools,
+    # which pass their own already-loaded ``ExperimentFrame.resolved_source``,
+    # this helper has no frame to draw one from. A fresh, independent
+    # ``resolve_source(filename)`` call here would reintroduce the exact
+    # re-resolution race bloom#551 eliminated everywhere else — the source
+    # actually backing the caller's data can advance between that resolution
+    # and this call. A future caller that needs source provenance should pass
+    # its own frame's ``resolved_source`` through, the same way the producer
+    # tools do.
     src = raw_source_for(filename)
     provenance = Provenance.stamp(tool=tool_name, params=params, seed=seed)
     return _store.create_run(

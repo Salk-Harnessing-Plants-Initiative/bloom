@@ -29,12 +29,14 @@ from .ports import (
 
 if TYPE_CHECKING:
     from bloom_mcp.contract.provenance import Provenance
+    from bloom_mcp.data_access import SourceInfo
 
 # Bounded attempts to allocate a free version_id before giving up, mirroring
 # SupabaseResultStore.commit's pre-record collision check. Same value, an
 # independent constant — not imported from supabase_store.py, whose constant
 # is module-private.
 _MAX_ID_ATTEMPTS = 3
+
 
 # Mirrors SupabaseResultStore's per-key commit lock (see that module's
 # docstring for why this is load-bearing under FastMCP's thread-pool
@@ -99,7 +101,15 @@ class FakeResultStore:
         provenance: "Provenance",
         user_label: Optional[str] = None,
         source_csv: Optional[Path] = None,
+        source: Optional["SourceInfo"] = None,
     ) -> RunHandle:
+        if source is not None:
+            provenance = provenance.model_copy(
+                update={
+                    "source_id": source.source_id,
+                    "source_name": source.source_name,
+                }
+            )
         key = (experiment, tool_class)
         existing = self._runs.get(key, [])
         # Provisional: `commit` re-derives `taken` fresh and reallocates on
