@@ -449,6 +449,27 @@ def active_backend() -> StorageBackend:
     return _active
 
 
+def active_backend_name() -> str:
+    """The name of whatever backend :func:`active_backend` actually resolved to.
+
+    Derived from the memoized backend object's type — not an independent
+    ``BLOOM_STORAGE_BACKEND`` env re-read like :func:`selected_backend_name` —
+    so it can never disagree with the backend instance actually performing
+    I/O, and building it first means an invalid env value raises here too
+    (the same validation any other storage call gets). Prefer this over
+    :func:`selected_backend_name` for anything treated as a durable record of
+    which backend did the work (e.g. the #395 ``storage_backend`` manifest
+    sentinel); ``selected_backend_name`` remains the right tool for pre-build
+    env checks (e.g. :func:`is_local_backend`).
+    """
+    backend = active_backend()
+    if isinstance(backend, SupabaseStorageBackend):
+        return "supabase"
+    if isinstance(backend, LocalStorageBackend):
+        return "local"
+    raise RuntimeError(f"unrecognized active backend type: {type(backend)!r}")
+
+
 def reset_backend_for_tests() -> None:
     """Clear the memoized backend so tests can re-select from a changed env."""
     global _active
