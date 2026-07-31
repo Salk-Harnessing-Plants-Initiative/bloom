@@ -164,7 +164,10 @@ Row-writing below).
 ### Requirement: Dedup preview is informational only — it never withholds a scan from enqueue
 
 The route SHALL compute `compute_param_hash` (from the pinned `sleap-roots-contracts` package)
-**once**, over the request's own resolved params, and SHALL check whether that hash string equals
+**once**, over the request's own `params` object exactly as supplied in the request body — this
+route does not call `sleap_roots_contracts.resolve_params()` or otherwise derive `params` from a
+scan's Bloom metadata; the caller is responsible for supplying whatever `params` value it wants
+hashed, stored, and compared — and SHALL check whether that hash string equals
 the already-stored `metadata->'params'->>'param_hash'` value on **any** of a scan's existing
 `cyl_trait_sources` rows (reached via `cyl_scan_traits.scan_id → source_id → cyl_trait_sources.id` —
 a scan can have more than one source, from successive computations). The route MUST NOT re-hash a
@@ -226,12 +229,12 @@ preview) knows the actual current model versions and code shas.
 #### Scenario: A scan whose sources all used different params does not contribute to reused_count
 
 - **WHEN** none of a scan's recorded sources' params (by `compute_param_hash`) match the current
-  request's resolved params
+  request's `params` as supplied
 - **THEN** `reused_count` does not include that scan
 
 #### Scenario: All enumerated scans have a matching source
 
-- **WHEN** every enumerated scan for a request has at least one source matching the resolved params
+- **WHEN** every enumerated scan for a request has at least one source matching the request's `params`
 - **THEN** `reused_count = scan_count` in the response
 - **AND** every scan is still written with `status = 'queued'` and still enqueued in batches — the
   run does **not** short-circuit to `complete` on the strength of this preview alone
@@ -239,7 +242,8 @@ preview) knows the actual current model versions and code shas.
 ### Requirement: Run and per-scan rows are written before any enqueue
 
 The route SHALL insert one `cyl_pipeline_runs` row per request (capturing `target_level`,
-`target_id`, resolved `params`, `requested_by`, `scan_count` = the total enumerated scan count, and
+`target_id`, `params` exactly as supplied in the request body, `requested_by`, `scan_count` = the
+total enumerated scan count, and
 `reused_count` = the dedup-preview count) and one `cyl_pipeline_run_scans` row per enumerated scan
 (capturing `scan_id`, initial `status = 'queued'`) before any batch is enqueued, so that a crash
 between writing rows and enqueuing leaves a durably queryable (if incomplete) record rather than

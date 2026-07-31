@@ -327,3 +327,30 @@ review: PR #570's review comment. Fixed here via the same TDD discipline as the 
       companion rollback to match.
 - [x] 7.4 Re-run the full suite: all pre-existing tests still green, all new tests green. `openspec
       validate --strict` passes. `ruff`/`black` clean.
+
+## 8. PR #570 review comment fixes (2026-07-31)
+
+Follow-up PR-comment feedback (non-blocking, from the same review): (a) `design.md`/proposal.md/both
+spec files described the hashed/stored `params` as "resolved," implying this route derives
+`{species, mode, age}` from scan metadata via `sleap_roots_contracts.resolve_params()` — it doesn't;
+`pipeline.py` never calls that function and hashes/stores `params` exactly as the caller supplied it.
+(b) no dedup-preview test combined `wave`/`experiment` enumeration with a mixed-match assertion —
+every existing dedup test used `target_level: "scan"` or `"scan_ids"`.
+
+- [x] 8.1 Verified both claims by inspection before changing anything (per
+      `superpowers:receiving-code-review`): confirmed `resolve_params` is never imported/called
+      anywhere in `services/workflows/`; confirmed via `grep` that all dedup-preview tests used
+      `scan`/`scan_ids`, none `wave`/`experiment` — though multi-scan dedup itself *was* already
+      covered via `scan_ids` (e.g. `test_writes_run_and_scan_rows_before_enqueue`'s 40-scan mixed
+      case), so the gap is specifically the wave/experiment enumeration path, not multi-scan dedup
+      generally.
+- [x] 8.2 Corrected "resolved params" wording in `proposal.md`, `design.md` (new "Decision: `params`
+      is stored/hashed exactly as the caller supplied it" entry), and both spec files — `params` is
+      now described as stored/hashed exactly as supplied in the request body, with an explicit note
+      that resolving it from scan metadata (if needed) is the caller's responsibility, and why
+      per-scan server-side resolution is deliberately out of scope for a request that can span scans
+      with differing metadata (wave/experiment level).
+- [x] 8.3 Added `test_dedup_preview_works_for_wave_level_trigger_with_mixed_matches` (unit) — a
+      3-scan wave with one matching source, one differing-params source, one scan with no source at
+      all; asserts `reused_count == 1`, `scan_count == 3`, all 3 rows still written/enqueued.
+- [x] 8.4 Re-ran the full unit suite (40 passed) and `openspec validate --strict` (passes).

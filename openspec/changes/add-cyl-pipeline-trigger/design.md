@@ -156,7 +156,16 @@ identical params, since code shas/container digests/workflow ids differ every ru
 `reused_count` sit at (or near) zero always, defeating the preview's purpose. The correct comparison:
 `compute_param_hash` (from the pinned `sleap-roots-contracts` package, a new dependency of
 `services/workflows` — see proposal.md's Impact) is computed **once**, over the *request's own*
-resolved params, producing a hash string. Each candidate source's *already-stored*
+`params` object exactly as supplied in the request body, producing a hash string. Note this route
+never calls `sleap_roots_contracts.resolve_params()` — that function exists in the pinned package
+(it maps a single Bloom scan's metadata + overrides to a `ResolvedParams`), but Phase 1 does not
+call it: `params` here is whatever the caller sends, unmodified. Deriving `params` from a scan's own
+metadata server-side is deferred — see Open Questions — partly because a wave/experiment-level
+trigger can span scans with differing metadata (e.g. different `plant_age_days`), and per-scan
+resolution within one request would change `cyl_pipeline_runs.params`'s current one-row-per-request
+shape into something per-scan, which is a real design question this phase does not need to answer
+since the caller can already supply whatever single `params` value it wants applied/compared.
+Each candidate source's *already-stored*
 `metadata->'params'->>'param_hash'` (the producer already embeds this at write-back time, per the
 contract's `ResolvedParams` model — nothing needs to be re-derived from the stored side) is compared
 to that one request-side hash as a plain string equality. This is entirely a Python-side comparison
@@ -254,6 +263,33 @@ widens what a compromised credential could touch. **Resolution:** `INSERT` is no
 exactly the columns `pipeline.py` actually populates: `target_level, target_id, params, requested_by,
 status, scan_count, reused_count` on `cyl_pipeline_runs`, and `run_id, scan_id, batch_index, status` on
 `cyl_pipeline_run_scans`.
+
+### Decision: `params` is stored/hashed exactly as the caller supplied it — `resolve_params()` is never called in Phase 1 — found in PR review
+
+An earlier draft of the dedup-preview and schema requirements described the hashed/stored `params`
+as "resolved" (implying this route derives `{species, mode, age}` from a scan's Bloom metadata plus
+user overrides). It does not: `sleap_roots_contracts.resolve_params(metadata, overrides=None)`
+exists in the pinned package but `pipeline.py` never imports or calls it — `_validate_request` reads
+`params` straight from the request body and passes it unmodified to `_validate_params_and_hash`,
+`_insert_run`, and `_dedup_preview`. The wording was corrected throughout proposal.md, this file, and
+both spec files to say `params` is stored "exactly as supplied in the request body," with an explicit
+note that resolving it from scan metadata (if a caller wants that) is the caller's responsibility,
+not this route's. **Deliberately not implemented here**: a request can span many scans (wave/
+experiment level) that may have differing metadata (e.g. different `plant_age_days`), so server-side
+per-scan resolution would mean a single request could legitimately need *different* resolved params
+per scan — which doesn't fit `cyl_pipeline_runs.params`'s current one-value-per-request column, and
+is exactly the kind of scope Phase 1 was cut to avoid taking on. Revisit only if a real caller needs
+Bloom itself (rather than the caller, or the downstream predict stage which already has its own
+`resolve_params()` integration) to do this resolution.
+
+### Decision: added a wave-level dedup-preview test — found in PR review
+
+Every existing dedup-preview test used `target_level: "scan"` or `"scan_ids"`; none combined `"wave"`/
+`"experiment"` enumeration with a mixed-match dedup assertion. `_dedup_preview` is enumeration-source-
+agnostic (it only ever sees the resulting `scan_ids` list, regardless of how `_enumerate` produced
+it), so this was a coverage gap rather than a suspected behavioral bug. Added
+`test_dedup_preview_works_for_wave_level_trigger_with_mixed_matches` to close it and document the
+intended semantics explicitly rather than leaving it merely implied by code structure.
 
 ## Risks / Trade-offs
 

@@ -540,6 +540,37 @@ def test_dedup_preview_excludes_scan_whose_sources_all_have_differing_params(
     assert result["reused_count"] == 0
 
 
+def test_dedup_preview_works_for_wave_level_trigger_with_mixed_matches(monkeypatch):
+    """Closes a coverage gap flagged in PR review: every prior dedup test used
+    target_level scan/scan_ids — none combined wave/experiment enumeration with a
+    mixed-match dedup assertion. _dedup_preview only ever sees the resulting
+    scan_ids list, regardless of how _enumerate produced it, so this documents
+    that the same semantics hold for a wave-level trigger spanning multiple scans.
+    """
+    h = _hash_of({"age": 14})
+    other_hash = _hash_of({"age": 21})
+    client = _FakeClient(
+        cyl_waves=[{"id": 3}],
+        cyl_scans_extended=[
+            {"scan_id": 1, "wave_id": 3},
+            {"scan_id": 2, "wave_id": 3},
+            {"scan_id": 3, "wave_id": 3},
+        ],
+        cyl_scan_traits=[
+            {"scan_id": 1, "source_id": 100},
+            {"scan_id": 2, "source_id": 101},
+        ],
+        cyl_trait_sources=[_source(100, h), _source(101, other_hash)],
+    )
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {"target_level": "wave", "target_id": 3, "params": {"age": 14}}
+    result = pipeline.trigger_pipeline(body, "user-1")
+    assert result["scan_count"] == 3
+    assert result["reused_count"] == 1  # only scan 1 matches; scan 2's source has a
+    # different param_hash; scan 3 has no source at all
+    assert len(client.inserted_run_scans) == 3  # all still written/enqueued
+
+
 def test_all_scans_matching_prior_source_still_all_enqueued_not_short_circuited(
     monkeypatch,
 ):

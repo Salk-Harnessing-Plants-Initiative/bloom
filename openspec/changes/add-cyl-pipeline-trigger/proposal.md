@@ -46,7 +46,9 @@ is preview-only rather than a hard skip.
   starts `status = 'queued'` — see dedup decision below), chunks into `BATCH_SIZE` groups, and
   enqueues every batch. Returns `{pipeline_run_id, scan_count, reused_count}`.
 - **Dedup is a preview, not a hard skip.** The Bloom-side pre-check computes `compute_param_hash`
-  **once**, over the request's own resolved params, and checks whether that hash matches the
+  **once**, over the request's own `params` object exactly as supplied in the request body (this
+  route never calls `resolve_params()` — resolving `params` from Bloom scan metadata, if needed, is
+  the caller's responsibility), and checks whether that hash matches the
   already-stored `metadata->'params'->>'param_hash'` on **any** of a scan's recorded
   `cyl_trait_sources` rows (via the `cyl_scan_traits.scan_id → source_id → cyl_trait_sources` join) —
   not just its most recent one, and not by re-hashing the stored `metadata` envelope itself (that
