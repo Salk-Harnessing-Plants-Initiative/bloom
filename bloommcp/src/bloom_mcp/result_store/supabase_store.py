@@ -26,7 +26,7 @@ from bloom_mcp.manifest import (
     version_dir_name,
     write_manifest,
 )
-from bloom_mcp.storage_backend import selected_backend_name
+from bloom_mcp.storage_backend import active_backend_name
 
 from ._artifacts import hash_outputs, validate_outputs
 from ._locks import KeyedLock
@@ -243,7 +243,7 @@ class SupabaseResultStore:
                         "catalog.",
                         adir.tool_class,
                         adir.stem,
-                        selected_backend_name(),
+                        active_backend_name(),
                     )
                     manifest = Manifest(
                         experiment=ExperimentBlock(

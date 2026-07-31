@@ -33,10 +33,12 @@
       top-level imports from `bloom_mcp`, so `manifest.py` importing
       `selected_backend_name` at module level introduces no cycle.
 - [x] 2.3 In `bloommcp/src/bloom_mcp/manifest/manifest.py`, have
-      `write_manifest` set `manifest.storage_backend =
-      storage_backend.selected_backend_name()` immediately before
+      `write_manifest` set `storage_backend` immediately before
       `validate_schema`/serialization, so every writer stamps correctly
-      without per-call-site duty. Confirm 2.1 passes (green).
+      without per-call-site duty. Confirm 2.1 passes (green). (Revised in
+      §7 below to derive the name from `active_backend()` rather than an
+      independent env re-read, and to stamp a copy rather than mutate the
+      caller's `Manifest` in place.)
 
 ## 3. Fresh-catalog log line in `SupabaseResultStore.commit`
 
@@ -112,3 +114,48 @@
       return to A, since A's own manifest already exists — see design.md's
       Risks section) — while keeping the existing caution that mixing is
       still not automatically prevented or cross-checked.
+
+## 7. Review-response fixes (5-subagent PR review on #572)
+
+- [x] 7.1 **Blocking**: `bloommcp/tests/smoke/live_persistence_smoke.py`
+      hardcodes `schema_version == 4` in 6 `Check(...)` assertions (a
+      dev-stack-smoke CI job runs this for real) — missed by the original
+      OpenSpec-review sweep, which only reached `test_schema_v3.py`/
+      `test_v2_backcompat.py`. Bumped all 6 to `== 5`, plus the module's
+      prose (`schema v4` / `v4 manifest` / `v4-provenance` → `v5`).
+      `bloommcp/tests/scripts/test_live_persistence_smoke_logic.py` (the
+      unit-level suite exercising this driver's pure logic with no live
+      stack) needed the same bump in its "valid" fixture builders and two
+      exact-label assertions, plus renaming `..._v4_entry` tests to `_v5_`.
+- [x] 7.2 Fixed `bloommcp/docs/local-validation.md`'s 4 stale
+      `manifest_schema_version == 3` references (already stale before this
+      PR, fixed while in the area per reviewer's side note).
+- [x] 7.3 **Important**: `selected_backend_name()` independently re-reads
+      env on every call, unvalidated, while `active_backend()` builds once
+      and memoizes — a durable trust anchor (the #395 sentinel) should not
+      be independently derived. Added `active_backend_name()` to
+      `storage_backend.py`, derived from the memoized backend object's own
+      type (so it can never disagree with what's actually doing I/O) and
+      validated (raises on an unrecognized value, same as any other storage
+      call). `write_manifest` and the `commit` log line now use it instead
+      of `selected_backend_name()`.
+- [x] 7.4 **Important**: added `test_repeated_backend_flip_logs_once_not_on_return`
+      (supabase → local → supabase, asserting the fresh-catalog log fires on
+      the first two legs but not the return trip) — the spec's own
+      "Repeated backend flips do not repeatedly signal" scenario had no test
+      exercising the actual flip sequence with `caplog` before this.
+- [x] 7.5 **Important**: filed #573 (qc_clean/pca_analysis `latest`
+      resolution can silently pick a stale/wrong-backend result — the
+      consumer-facing consequence design.md names but this PR doesn't close)
+      and #574 (surface `storage_backend` in tool-facing provenance output,
+      not just `manifest.json` + server logs) so both risks are tracked
+      outside a design doc that gets archived on merge. Cross-referenced
+      from design.md's Risks section.
+- [x] 7.6 Suggestions: `write_manifest` now stamps a `model_copy` instead of
+      mutating the caller's `Manifest` in place; the byte-identical parity
+      test now also compares the raw serialized bytes each store actually
+      received (not just a re-derived `model_dump()`); fixed design.md's
+      triage-comment date (2026-07-29 → the actual 2026-07-30).
+- [x] 7.7 Full non-integration suite green after all of the above: 854
+      passed, 0 failed. `ruff check` / `ruff format --check` / `black
+      --check` clean on every touched file.

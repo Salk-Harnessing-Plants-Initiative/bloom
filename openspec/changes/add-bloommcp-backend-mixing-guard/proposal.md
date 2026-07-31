@@ -41,7 +41,7 @@ catalog starts — the only local signal that a split may be occurring.
   - Automatic cross-backend detection — would require contacting the inactive
     backend, defeating the `local` backend's offline design.
   - Item 3 from #395 (POSIX-only atomicity hardening / Windows guarantees) —
-    per the maintainer's 2026-07-29 triage comment on #395 this remains
+    per the maintainer's 2026-07-30 triage comment on #395 this remains
     optional/low-priority with no new information; left for a separate
     change if the local backend ever becomes more than a dev convenience on
     Windows.

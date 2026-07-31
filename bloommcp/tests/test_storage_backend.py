@@ -13,6 +13,8 @@ Phase-1 workflow tools were retired — devendor-bloommcp-analysis C6.1 — its
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
 import subprocess
 import sys
@@ -710,6 +712,76 @@ def test_manifest_identical_across_backends_except_storage_backend(
     local_dump = local_manifest.model_dump(mode="json")
     del supabase_dump["storage_backend"], local_dump["storage_backend"]
     assert supabase_dump == local_dump
+
+    # Also compare the actual serialized bytes each store received (not a
+    # re-derived model_dump()), matching the spec's literal "byte-identical
+    # serialized manifest.json" claim.
+    supabase_raw = json.loads(
+        fake_client.objects["bloommcp_output/qc_exp/manifest.json"]
+    )
+    local_raw = json.loads(
+        (tmp_path / "bloommcp_output" / "qc_exp" / "manifest.json").read_bytes()
+    )
+    del supabase_raw["storage_backend"], local_raw["storage_backend"]
+    assert supabase_raw == local_raw
+
+
+def test_repeated_backend_flip_logs_once_not_on_return(monkeypatch, tmp_path, caplog):
+    """#395 spec scenario "Repeated backend flips do not repeatedly signal":
+    supabase -> local -> supabase logs the fresh-catalog message on the first
+    commit to each backend's own (initially-empty) catalog, but NOT again on
+    the return trip to supabase, whose manifest already exists from the first
+    commit."""
+    from bloom_mcp.contract import Provenance
+    from bloom_mcp.result_store import SupabaseResultStore
+
+    fake_client = _FakeSbStorageClient()
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client",
+        lambda **_kwargs: fake_client,
+    )
+
+    def _commit() -> None:
+        store = SupabaseResultStore()
+        run = store.create_run(
+            experiment="exp.csv",
+            tool_class="qc",
+            provenance=Provenance.stamp(tool="t", params={}, seed=1),
+        )
+        (run.staging_dir / "_cleaned.csv").write_bytes(b"data")
+        store.commit(run, {"cleaned": "_cleaned.csv"})
+
+    def _fresh_catalog_log_count() -> int:
+        return sum(
+            1
+            for r in caplog.records
+            if "fresh manifest catalog" in r.getMessage().lower()
+        )
+
+    with caplog.at_level(logging.INFO):
+        # supabase: first commit ever for this pair -> fresh catalog, logs.
+        monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+        sb.reset_backend_for_tests()
+        caplog.clear()
+        _commit()
+        assert _fresh_catalog_log_count() == 1
+
+        # flip to local: a different, still-empty catalog -> also logs.
+        monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+        sb.reset_backend_for_tests()
+        caplog.clear()
+        _commit()
+        assert _fresh_catalog_log_count() == 1
+
+        # flip back to supabase: its manifest already exists from the first
+        # commit above -> no log this time, even though a local-backed run
+        # happened in between (the documented residual gap).
+        monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+        sb.reset_backend_for_tests()
+        caplog.clear()
+        _commit()
+        assert _fresh_catalog_log_count() == 0
 
 
 # ─── 5. Cross-backend list_prefix parity + read-path fallback ──────────────────

@@ -37,7 +37,7 @@ history from another backend.
   it does not close the gap fully.
 - Non-goal: #395 item 3 (Windows/NTFS atomicity hardening for the local
   backend's `os.replace`). Confirmed still optional/low-priority per the
-  maintainer's 2026-07-29 comment on #395, with no change in circumstances
+  maintainer's 2026-07-30 comment on #395, with no change in circumstances
   since the original issue — the local backend remains a dev-only convenience
   and production stays on Supabase. Left for a future change if that changes.
 
@@ -119,6 +119,12 @@ history from another backend.
 - The sentinel and log line only ever reflect the *active* backend's own
   view; they cannot themselves join the two catalogs. Closing that gap fully
   is out of scope (see Non-Goals).
+- **Both signals require server log or storage access to see.** A bench
+  scientist driving bloommcp through Claude Desktop/Code has no path to
+  either the log line or the `manifest.json` field — only someone who can
+  read server logs or the storage backend directly would notice. Tracked as
+  a follow-up in #574 (surface `storage_backend` in tool-facing provenance
+  output) rather than expanding this proposal's scope.
 - **Downstream "latest" resolution stays silently split — not just the
   operator-facing signal.** `ResultStore.get_run(run_ref="latest")` resolves
   from `manifest.latest`, scoped entirely to whichever backend answers the
@@ -128,9 +134,8 @@ history from another backend.
   different `output_sha256` than the other backend's "latest" — and this
   happens on every read after the one-time, transient fresh-catalog log line,
   not just the moment of the split. This proposal does not close that gap
-  (see Non-Goals); it is named explicitly here so reviewers can weigh whether
-  logging-only observability is sufficient for this consumer-facing
-  consequence, not just for the write path.
+  (see Non-Goals); tracked as a follow-up in #573 rather than left only as
+  prose here, since this doc is archived on merge.
 - **Known residual gap: flip A → B → A is silent.** The log line only fires
   when `commit` finds no existing manifest at all (`fresh is None`). If an
   experiment is committed under `supabase`, flipped to `local` (logs, since
