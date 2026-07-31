@@ -14,6 +14,21 @@ import click
 MACHINE_FORMATS = ("csv", "json")
 
 
+def resolve_output_format(output_fmt: str | None, as_json: bool) -> str | None:
+    """Resolve a list command's machine-output selection to one format (or None = table).
+
+    ``--output [csv|json]`` is the selector; ``--json`` is a back-compat alias for
+    ``--output json``. Combining ``--json`` with a conflicting ``--output`` is a usage error.
+    Shared so every ``cyl`` list command resolves the alias identically instead of
+    copy-pasting the guard.
+    """
+    if as_json:
+        if output_fmt not in (None, "json"):
+            raise click.UsageError("Use either --json or --output, not both.")
+        return "json"
+    return output_fmt
+
+
 def render(records: Sequence[Mapping[str, Any]], fieldnames: Sequence[str], fmt: str) -> str:
     """Render records as a `fmt` document, fields in `fieldnames` order.
 

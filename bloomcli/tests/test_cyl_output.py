@@ -6,9 +6,23 @@ import csv
 import io
 import json
 
+import click
 import pytest
 
-from bloomctl.cyl._output import render
+from bloomctl.cyl._output import render, resolve_output_format
+
+
+def test_resolve_output_format_selection_and_alias():
+    assert resolve_output_format(None, False) is None  # no flag → default table
+    assert resolve_output_format("csv", False) == "csv"  # --output csv
+    assert resolve_output_format(None, True) == "json"  # --json aliases --output json
+    assert resolve_output_format("json", True) == "json"  # --json + --output json agree
+
+
+def test_resolve_output_format_conflict_raises():
+    with pytest.raises(click.UsageError):
+        resolve_output_format("csv", True)  # --json with a conflicting --output
+
 
 FIELDS = ["name", "species", "experiment", "experiment_id", "qc_code_count"]
 
