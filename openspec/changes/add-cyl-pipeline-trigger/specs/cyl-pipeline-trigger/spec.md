@@ -27,8 +27,15 @@ The route SHALL accept a JSON body of `{target_level, target_id, scan_ids, param
 `target_level` MUST be one of `"scan"|"wave"|"experiment"|"scan_ids"`. When `target_level` is
 `"scan"`, `"wave"`, or `"experiment"`, `target_id` MUST be a positive integer and `scan_ids` MUST be
 absent or `null`. When `target_level` is `"scan_ids"`, `target_id` MUST be `null` and `scan_ids` MUST
-be a non-empty array of positive integers. Any other combination, malformed JSON, or wrong-typed
-field SHALL be rejected with `422`.
+be a non-empty array of positive integers, capped at `MAX_SCAN_IDS` (5000) entries — an array longer
+than that SHALL be rejected with `422` before any enumeration or database work. Duplicate entries in
+`scan_ids` SHALL be deduplicated (order-preserving on first occurrence), not rejected. `params`' values
+SHALL be validated for hashability before any other work: the route SHALL compute
+`compute_param_hash(params)` once, up front, and SHALL reject with `422` if that raises
+(`NonCanonicalizableError` for a non-finite float such as NaN/Infinity, `TypeError` for a
+non-JSON-serializable value, or `RecursionError` for pathologically deep nesting) or if `params`'
+serialized size exceeds `MAX_PARAMS_BYTES` (10,000 bytes). Any other combination, malformed JSON, or
+wrong-typed field SHALL be rejected with `422`.
 
 #### Scenario: scan_ids target with a populated list is accepted
 
@@ -69,16 +76,42 @@ field SHALL be rejected with `422`.
 - **WHEN** the request body is not valid JSON at all
 - **THEN** the route responds `422` without writing any rows
 
+#### Scenario: Duplicate scan_ids are deduplicated, not rejected
+
+- **WHEN** the body is `{"target_level": "scan_ids", "target_id": null, "scan_ids": [5, 5, 7],
+  "params": {}}`
+- **THEN** the route accepts the request and proceeds with exactly `[5, 7]` (order-preserving,
+  duplicates removed) — `scan_count` is `2`, not `3`
+
+#### Scenario: A scan_ids array longer than MAX_SCAN_IDS is rejected
+
+- **WHEN** `target_level = "scan_ids"` and `scan_ids` contains more than 5000 entries
+- **THEN** the route responds `422` without running any enumeration query or writing any rows
+
+#### Scenario: A non-finite value in params is rejected
+
+- **WHEN** `params` contains a NaN or Infinity float value (e.g. `{"age": NaN}` — accepted by the
+  underlying JSON parser as a non-standard extension even though it is not valid per the JSON spec)
+- **THEN** the route responds `422` without calling `app_client()` or running any enumeration query
+
+#### Scenario: An oversized params object is rejected
+
+- **WHEN** `params`' serialized JSON size exceeds `MAX_PARAMS_BYTES` (10,000 bytes)
+- **THEN** the route responds `422` without calling `app_client()` or running any enumeration query
+
 ### Requirement: Enumeration resolves each target_level to a flat scan list via cyl_scans_extended
 
 For `target_level = "scan"`, the route SHALL resolve to the single given scan (existence-checked).
-For `"wave"`, it SHALL resolve to every scan whose `cyl_scans_extended.wave_id` matches `target_id`.
-For `"experiment"`, it SHALL resolve to every scan whose `cyl_scans_extended.experiment_id` matches
-`target_id`. For `"scan_ids"`, it SHALL resolve to exactly the given list, existence-checked against
-`cyl_scans_extended`. A `target_id` (or any `scan_ids` entry) that does not exist SHALL cause a `404`
-and no rows written. A `wave` or `experiment` `target_id` that exists but currently has zero scans is
-**not** an error: the route SHALL proceed with an empty enumerated set (see the "zero scans" scenario
-under Row-writing below).
+For `"wave"`, it SHALL resolve to every scan whose `cyl_scans_extended.wave_id` matches `target_id`,
+**ordered by `scan_id` ascending** so that two triggers of the same wave assign scans to the same
+`batch_index` groups. For `"experiment"`, it SHALL resolve to every scan whose
+`cyl_scans_extended.experiment_id` matches `target_id`, likewise ordered by `scan_id` ascending. For
+`"scan_ids"`, it SHALL resolve to exactly the given (deduplicated) list in the caller's own order,
+existence-checked against `cyl_scans_extended` — this branch does not depend on query row order at
+all. A `target_id` (or any `scan_ids` entry) that does not exist SHALL cause a `404` and no rows
+written. A `wave` or `experiment` `target_id` that exists but currently has zero scans is **not** an
+error: the route SHALL proceed with an empty enumerated set (see the "zero scans" scenario under
+Row-writing below).
 
 #### Scenario: Scan target resolves the single given scan
 
@@ -120,6 +153,13 @@ under Row-writing below).
 - **WHEN** `target_level = "scan_ids"` and one entry in `scan_ids` does not exist in
   `cyl_scans_extended`
 - **THEN** the route responds `404` and writes no rows for the request
+
+#### Scenario: Wave/experiment enumeration order is stable across repeated triggers
+
+- **WHEN** the same wave (or experiment) is triggered twice, and its underlying scan rows are not
+  necessarily returned in the same order by the database on both occasions
+- **THEN** both triggers assign the same scans to the same `batch_index` groups, because enumeration
+  is explicitly ordered by `scan_id` ascending rather than relying on unordered query row order
 
 ### Requirement: Dedup preview is informational only — it never withholds a scan from enqueue
 

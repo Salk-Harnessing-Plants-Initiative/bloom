@@ -281,3 +281,49 @@ proposal introduces or needs to fix).
       unavailable here; this migration and the concurrently-merged `bloommcp_usage` one were both
       applied via direct `psql` instead, so neither is tracked in that table locally — resolves
       automatically once CI/a real `supabase db push` applies them).
+
+## 7. PR #570 review fixes (red → green)
+
+A 5-lens adversarial PR review (Code Quality, Testing, Scientific Rigor, Security, Behavioural
+Correctness) found one BLOCKING bug (independently traced by 3 of 5 reviewers) and several IMPORTANT
+gaps, all sharing a root cause: untrusted request fields reaching downstream calls with no
+bounds/finite-value checking, plus two grant/ordering gaps found by direct code inspection. Full
+review: PR #570's review comment. Fixed here via the same TDD discipline as the rest of this change.
+
+- [x] 7.1 Add failing tests first (red), then implement (green):
+  - **Duplicate `scan_ids` (BLOCKING):** `test_scan_ids_with_duplicates_are_deduped` (unit) — body
+    `scan_ids=[5,5,7]`; assert `scan_count=2`, exactly 2 `cyl_pipeline_run_scans` rows, no crash.
+    Confirmed failing (crashed on the fake client's insert, or — once the fake was made to enforce
+    uniqueness — on the real `UNIQUE(run_id, scan_id)` constraint) before the fix.
+  - **Non-finite `params` (IMPORTANT):** `test_rejects_params_with_nan`, `test_rejects_params_with_infinity`
+    (unit) — assert `422`, assert `app_client`/enumeration never called (validation happens before any
+    Supabase call, matching the existing pattern for every other field).
+  - **Oversized `params` (IMPORTANT):** `test_rejects_params_exceeding_max_bytes` (unit) — a `params`
+    dict serializing past `MAX_PARAMS_BYTES`; assert `422`.
+  - **`scan_ids` length cap (IMPORTANT):** `test_rejects_scan_ids_exceeding_max_length` (unit) — a
+    `scan_ids` list longer than `MAX_SCAN_IDS`; assert `422` without any enumeration query.
+  - **Wave/experiment ordering (IMPORTANT):** `test_enumerate_wave_orders_by_scan_id`,
+    `test_enumerate_experiment_orders_by_scan_id` (unit) — seed scan rows in a scrambled order; assert
+    the fake client recorded an `.order("scan_id")` call and the resulting `batch_index` assignment
+    matches ascending `scan_id` order, not seed order. (Required extending the hand-rolled fake
+    `_Query` with an `.order()` method that actually sorts, matching the real supabase-py contract —
+    the fake previously ignored ordering entirely.)
+  - **Column-scoped `INSERT` grants (IMPORTANT):** `test_bloom_workflows_can_insert_only_populated_columns`
+    (integration) — `SET LOCAL ROLE bloom_workflows`; insert with only the columns `pipeline.py`
+    populates (succeeds); insert additionally touching `argo_workflow_name` (must raise
+    `InsufficientPrivilege`).
+- [x] 7.2 Implement the fixes in `pipeline.py`:
+  - `_validate_request` now computes `compute_param_hash` once up front (catching
+    `NonCanonicalizableError`/`TypeError`/`RecursionError` → `422`) and checks `MAX_PARAMS_BYTES`
+    before attempting the hash; the resulting hash is threaded through to `_dedup_preview` (which no
+    longer recomputes it) rather than discarded.
+  - `scan_ids` deduplicated order-preserving (`list(dict.fromkeys(scan_ids))`) and length-capped at
+    `MAX_SCAN_IDS` in `_validate_request`.
+  - `.order("scan_id")` added to `_enumerate`'s wave/experiment queries.
+- [x] 7.3 Fix `supabase/migrations/20260730120000_create_cyl_pipeline_runs.sql` (edited in place — not
+      yet applied to any shared environment, so this is safe per the forward-only-migration
+      convention): explicit `REVOKE INSERT` before the new column-scoped `GRANT INSERT (...)` on both
+      new tables (idempotent re-apply safety), matching `cyl_scan_videos`' precedent. Updated the
+      companion rollback to match.
+- [x] 7.4 Re-run the full suite: all pre-existing tests still green, all new tests green. `openspec
+      validate --strict` passes. `ruff`/`black` clean.

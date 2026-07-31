@@ -177,6 +177,84 @@ implementation requirement for `pipeline.py` (task 4.1), not a schema change.
   scope/dependency, deliberately deferred rather than folded into Phase 1 (see proposal.md's
   "Out of scope").
 
+### Decision: `scan_ids` are deduplicated (order-preserving), not rejected — found in PR review
+
+**Another real bug, found post-implementation** during the PR's own 5-lens adversarial review (3 of 5
+reviewers independently traced the same failure): a request with duplicate entries in `scan_ids` (e.g.
+`[5, 5, 7]`) was neither rejected nor deduplicated by `_validate_request`, so `_enumerate`'s `scan_ids`
+branch returned the raw list verbatim, `scan_count` was overcounted, and the bulk insert into
+`cyl_pipeline_run_scans` violated `UNIQUE(run_id, scan_id)` — with no exception handling anywhere in
+`pipeline.py`, this surfaced as an unhandled 500, **after** the `cyl_pipeline_runs` row had already been
+committed with a wrong `scan_count`, permanently orphaning it (nothing in Phase 1/2/3 reconciles a
+run stuck at `status='queued'` with zero scan rows).
+
+**Resolution:** `scan_ids` are deduplicated, order-preserving (`list(dict.fromkeys(scan_ids))`), in
+`_validate_request` — not rejected with a 422. Silently accepting a client's duplicate is the better
+default here: a UI multi-select or a naive client-side list-builder can easily produce duplicates
+without it being a meaningful caller error, and deduplicating is strictly safer than crashing.
+
+- Alternatives considered: reject duplicates with 422 — rejected as unnecessarily strict for a
+  cheap-to-fix input shape; the caller gains nothing from being forced to dedupe client-side first.
+
+### Decision: `params` values and `scan_ids` length are bounded — found in PR review
+
+**Two more real, independently-confirmed gaps** from the same review round:
+
+1. `compute_param_hash` (from `sleap-roots-contracts`) explicitly documents raising
+   `NonCanonicalizableError` (a `ValueError` subclass) on non-finite floats (NaN/Infinity) and
+   `TypeError` on non-JSON-serializable values. This is directly reachable from an untrusted client,
+   not theoretical: Python's `json.loads` (what Starlette uses to parse the request body) accepts
+   bareword `NaN`/`Infinity`/`-Infinity` tokens by default despite them being invalid per the JSON
+   spec (verified: `json.loads('{"age": NaN}')` succeeds and produces a real `float('nan')`).
+   `_validate_request` only checked `isinstance(params, dict)`, never leaf values, so this reached
+   `compute_param_hash` uncaught and crashed to a generic 500 instead of a clean 422 — inconsistent
+   with every other validation path in this module, which is otherwise disciplined about turning bad
+   input into a 4xx.
+2. Neither `scan_ids`' length nor `params`' serialized size/depth was bounded anywhere in the request
+   path (no body-size limit at the uvicorn/Caddy layer either), so a single authenticated request
+   could submit an unbounded `scan_ids` list or a deeply-nested `params` object, paying the full
+   enumerate/insert/enqueue cost before any rejection.
+
+**Resolution:**
+- `_validate_request` now computes `compute_param_hash` **once**, up front (before `app_client()` is
+  even called — matching the existing "validate cheaply before touching Supabase" pattern already used
+  for every other field), catching `NonCanonicalizableError`/`TypeError`/`RecursionError` and mapping
+  to `422`. The resulting hash is threaded through to `_dedup_preview` directly (it no longer
+  recomputes it), so this is a correctness fix and a minor efficiency win in the same change.
+- `scan_ids` is capped at `MAX_SCAN_IDS` (5000) — a request with more entries is rejected with `422`
+  before any enumeration/DB work.
+- `params`' serialized size is capped at `MAX_PARAMS_BYTES` (10,000 bytes) — checked before attempting
+  to hash it, so an oversized-but-still-parseable payload is rejected cheaply rather than paying the
+  cost of walking/hashing it first.
+
+- Alternatives considered: rely solely on the `try/except` around `compute_param_hash` for the
+  size/depth case too, skipping an explicit byte cap — rejected because a large-but-shallow payload
+  (e.g. a huge string value) wouldn't necessarily raise inside `compute_param_hash` at all, just be
+  needlessly expensive to hash and persist; an explicit cheap cap catches that case too.
+
+### Decision: `_enumerate`'s wave/experiment queries are explicitly ordered by `scan_id` — found in PR review
+
+Neither the `wave` nor `experiment` branch of `_enumerate` (nor the underlying `cyl_scans_extended`
+view) specified an `ORDER BY`, so Postgres/PostgREST made no ordering guarantee — triggering the same
+wave/experiment twice could assign scans to different `batch_index` groups each time, complicating any
+debugging/comparison across two nominally-identical runs. Fixed by adding `.order("scan_id")` to both
+queries. (`target_level="scan_ids"` was never affected — that branch already returns the caller's own
+list order, ignoring query row order entirely.)
+
+### Decision: `bloom_workflows`'s `INSERT` grants on the two new tables are column-scoped — found in PR review
+
+The original migration granted whole-table `SELECT, INSERT` to `bloom_workflows` on both new tables.
+This is inconsistent with this repo's own precedent for the *same role* — `cyl_scan_videos`' grant
+(`20260716000000_create_workflows_role.sql:75`) is column-scoped:
+`GRANT INSERT (scan_id, path, frames) ON public.cyl_scan_videos TO bloom_workflows`. Since
+`bloom_workflows` is explicitly shared across three call sites (design.md Risks), granting `INSERT` on
+columns this phase's code never writes (`argo_workflow_name`, `attempts`, `source_id`,
+`error_message`, and the `cyl_pipeline_runs` timestamp/count columns Phase 1 never sets) needlessly
+widens what a compromised credential could touch. **Resolution:** `INSERT` is now column-scoped to
+exactly the columns `pipeline.py` actually populates: `target_level, target_id, params, requested_by,
+status, scan_count, reused_count` on `cyl_pipeline_runs`, and `run_id, scan_id, batch_index, status` on
+`cyl_pipeline_run_scans`.
+
 ## Risks / Trade-offs
 
 - **Migration-timestamp collision risk** — mitigated by re-checking the latest migration on `staging`
@@ -198,6 +276,27 @@ implementation requirement for `pipeline.py` (task 4.1), not a schema change.
   stage-in/write-back pods, and now this route) — already an accepted, reviewed tradeoff from PR #470;
   this proposal's new grants widen that shared role's blast radius further, kept as narrow as possible
   (column-scoped `SELECT`, no `UPDATE` yet — see decision above).
+- **No exception handling across the write→enqueue sequence, found in PR review, deliberately not
+  fixed here.** If one of several `enqueue_cyl_pipeline_batch` calls fails partway through a
+  multi-batch request (network blip, RPC error), earlier batches are already durably enqueued
+  (unrecoverable) while later ones silently never are, and the exception propagates as an unhandled
+  500 with the run stuck at `status='queued'` forever — indistinguishable from a healthy in-flight run.
+  Properly fixing this (writing `status='partial'`/`'failed'`, both already defined by the migration's
+  own CHECK constraint) would require the `bloom_workflows` `UPDATE` grant this same design doc already
+  decided, on review, to defer to Phase 2 (see "Decision: defer the `bloom_workflows` UPDATE grant to
+  Phase 2" above) — reopening that grant now to patch this would contradict a decision already made
+  deliberately and reviewed three times. **Accepted as a known Phase 1 gap**, in the same spirit as the
+  concurrent-duplicate-enqueue race above: bounded (no Argo/GPU cost is lost, only a stuck DB row and
+  partially-enqueued batches), and Phase 2 — which adds the `UPDATE` grant for its own push-based status
+  writer anyway — is the natural place to also close this.
+- **RLS visibility for the two new tables is lab-wide, not scoped to `requested_by` — confirmed
+  intentional, matching this schema's existing convention.** `bloom_user`/`bloom_agent`'s read policies
+  use `USING (true)` with no `requested_by = auth.uid()` scoping, so any authenticated lab member can
+  see every run (including who requested it). Cross-checked against `cyl_experiments`' own read
+  policies (`20260506000001_bloom_role_rls_policies.sql`), which are equally unscoped
+  (`USING (deleted_at IS NULL)` only) — shared-lab-wide visibility is this schema's established norm
+  for phenotyping-adjacent data, not a gap introduced here. Recorded explicitly so a future reviewer
+  doesn't need to re-derive this cross-check themselves.
 
 ## Migration Plan
 
@@ -216,3 +315,8 @@ queue + wrapper function, `bloom_workflows` grants) plus a companion manual roll
   scheduled, noted so it isn't lost.
 - The concurrent-duplicate-enqueue race's real fix (see Risks) — left for Phase 2 to decide against
   real GPU-cost pressure, not decided speculatively here.
+- `MAX_SCAN_IDS` (5000) and `MAX_PARAMS_BYTES` (10,000) are plain module-level constants in
+  `pipeline.py`, matching `BATCH_SIZE`'s precedent — not yet env vars, revisit only if a real caller
+  needs a different limit.
+- The write→enqueue partial-failure gap (see Risks) — deliberately deferred to Phase 2 alongside the
+  `UPDATE` grant it requires to fix properly.

@@ -53,12 +53,17 @@ nullable), and standard `created_at`/`updated_at` timestamps.
 Both tables SHALL have Row Level Security enabled. `bloom_admin` SHALL hold `FOR ALL` access.
 `bloom_agent` and `bloom_user` SHALL hold read-only (`SELECT`) access, matching the repo-wide
 convention that `bloom_user` no longer receives write policies. `bloom_workflows` SHALL hold
-`SELECT` and `INSERT` on both tables — `INSERT` for creating runs/scans at trigger time. It SHALL
-**NOT** hold `UPDATE` in this phase: no code path in this phase updates either table after insert,
-and this repo's own convention (`20260716000000_create_workflows_role.sql`) is to expand grants only
-when a new endpoint actually needs them — a later phase (the dispatch worker's status writes) adds
-its own `UPDATE` grant via its own migration when that code lands. No role other than `bloom_admin`
-and `bloom_workflows` SHALL hold write access to either table.
+`SELECT` and a **column-scoped** `INSERT` on both tables — scoped to exactly the columns
+`services/workflows/pipeline.py` populates (`target_level, target_id, params, requested_by, status,
+scan_count, reused_count` on `cyl_pipeline_runs`; `run_id, scan_id, batch_index, status` on
+`cyl_pipeline_run_scans`), matching this repo's own column-scoped-grant precedent for the same role
+(`20260716000000_create_workflows_role.sql`'s `GRANT INSERT (scan_id, path, frames) ON
+cyl_scan_videos`) rather than a blanket whole-table `INSERT`. It SHALL **NOT** hold `UPDATE` in this
+phase: no code path in this phase updates either table after insert, and this repo's own convention
+(`20260716000000_create_workflows_role.sql`) is to expand grants only when a new endpoint actually
+needs them — a later phase (the dispatch worker's status writes) adds its own `UPDATE` grant via its
+own migration when that code lands. No role other than `bloom_admin` and `bloom_workflows` SHALL hold
+write access to either table.
 
 #### Scenario: bloom_user can read but not write
 
@@ -74,6 +79,15 @@ and `bloom_workflows` SHALL hold write access to either table.
 - **WHEN** the same session attempts to `UPDATE` that row's `status` column
 - **THEN** the database rejects it with an insufficient-privilege error (proving this phase's
   least-privilege boundary — `UPDATE` is intentionally not yet granted)
+
+#### Scenario: bloom_workflows can insert only the columns it actually populates
+
+- **WHEN** a session with role `bloom_workflows` inserts a `cyl_pipeline_run_scans` row supplying only
+  `run_id`, `scan_id`, `batch_index`, `status`
+- **THEN** the insert succeeds
+- **WHEN** the same session attempts to insert a row that also supplies `argo_workflow_name`
+- **THEN** the database rejects it with an insufficient-privilege error (proving the `INSERT` grant is
+  column-scoped, not whole-table)
 
 #### Scenario: anon has no access
 
