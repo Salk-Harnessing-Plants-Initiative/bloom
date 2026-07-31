@@ -4,7 +4,8 @@ Five contract patterns + the characterization golden through the MCP tool, plus 
 remove_outliers -> cleaned-version composition a downstream ``require_clean=True``
 consumer (e.g. ``pca_analysis``) relies on. The tool delegates ALL detection/removal
 to ``sleap_roots_analyze.remove_outlier_samples`` and persists a versioned run via the
-``ResultStore`` port under tool class ``qc`` — no outlier logic in the MCP.
+``ResultStore`` port under its own dedicated tool class ``outliers`` (#420) — no
+outlier logic in the MCP.
 
 The golden is a *characterization* pin: turface_19's mahalanobis chi-squared fit is
 poor, so the 8 flagged samples are a method+seed snapshot, not ground truth.
@@ -104,7 +105,7 @@ def test_persisted_trimmed_table_has_output_rows_and_no_nans(injected_ports):
     """2.3 — the persisted trimmed table has n_output_samples rows and no NaNs."""
     _reader, store = injected_ports
     result = _run()
-    stored = store.get_run(_EXPERIMENT, "qc", "latest")
+    stored = store.get_run(_EXPERIMENT, "outliers", "latest")
     assert stored.output_keys[remove_outliers_tool.CLEANED_CSV_NAME].endswith(
         "_cleaned.csv"
     )
@@ -169,7 +170,7 @@ def test_provenance_seed_recorded_and_links_returned(injected_ports):
     _reader, store = injected_ports
     result = _run(seed=42)
 
-    stored = store.get_run(_EXPERIMENT, "qc", "latest")
+    stored = store.get_run(_EXPERIMENT, "outliers", "latest")
     assert stored.tool == "remove_outliers"
     assert stored.seed == 42  # stochastic — resolved integer seed recorded
     assert set(stored.output_keys) == {"_cleaned.csv", "outlier_report.json"}
@@ -358,7 +359,7 @@ def test_uncleaned_input_is_assumption_violated_run_qc_first():
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
     assert exc.value.code == "assumption_violated"
     assert "qc_clean" in exc.value.remedy
-    assert store.list_runs("raw_only.csv", "qc") == []
+    assert store.list_runs("raw_only.csv", "outliers") == []
 
 
 # ── 3.8 degenerate trim (real delegate) + non-unique index ──────────────────
@@ -372,7 +373,7 @@ def test_overaggressive_trim_real_delegate_is_assumption_violated(injected_ports
     with pytest.raises(BloomMCPError) as exc:
         _run(method="mahalanobis", chi2_percentile=0.0001)
     assert exc.value.code == "assumption_violated"
-    assert store.list_runs(_EXPERIMENT, "qc") == []
+    assert store.list_runs(_EXPERIMENT, "outliers") == []
 
 
 def test_non_unique_index_is_structured_error(monkeypatch):
@@ -388,7 +389,7 @@ def test_non_unique_index_is_structured_error(monkeypatch):
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
     assert exc.value.code == "assumption_violated"
-    assert store.list_runs("dup.csv", "qc") == []
+    assert store.list_runs("dup.csv", "outliers") == []
 
 
 # ── 3.8b leak scrub ─────────────────────────────────────────────────────────
@@ -481,7 +482,7 @@ def test_unknown_plot_key_is_invalid_input_with_no_run(injected_ports):
         _run(include_plots=True, plots=["not_a_real_figure"])
     assert exc.value.code == "invalid_input"
     assert "not_a_real_figure" in exc.value.message
-    assert store.list_runs(_EXPERIMENT, "qc") == []
+    assert store.list_runs(_EXPERIMENT, "outliers") == []
 
 
 # ── 3.12 second run increments version and supersedes latest ────────────────
@@ -491,8 +492,8 @@ def test_second_run_increments_version_and_supersedes_latest(injected_ports):
     _reader, store = injected_ports
     _run()
     _run()
-    assert [r.run_ref for r in store.list_runs(_EXPERIMENT, "qc")] == ["v1", "v2"]
-    assert store.get_run(_EXPERIMENT, "qc", "latest").run_ref == "v2"
+    assert [r.run_ref for r in store.list_runs(_EXPERIMENT, "outliers")] == ["v1", "v2"]
+    assert store.get_run(_EXPERIMENT, "outliers", "latest").run_ref == "v2"
 
 
 # ── B1: a barcode-less cleaned frame must not crash on None outlier_barcodes ──
@@ -537,7 +538,9 @@ def test_barcodeless_cleaned_frame_returns_empty_barcodes_not_crash(monkeypatch)
 
     assert result.outlier_barcodes == []  # None coerced to [] — no crash
     assert 0 < result.n_output_samples <= result.n_input_samples
-    assert store.list_runs("nobarcode.csv", "qc")  # the trimmed run still persisted
+    assert store.list_runs(
+        "nobarcode.csv", "outliers"
+    )  # the trimmed run still persisted
 
 
 # ── I2: provenance records the cleaned source it derives from (not "raw") ─────
@@ -611,7 +614,7 @@ def test_own_guard_rejects_returned_frame_with_residual_nan(guard_ports, monkeyp
     with pytest.raises(BloomMCPError) as exc:
         remove_outliers(RemoveOutliersParams(experiment="guard.csv"))
     assert exc.value.code == "assumption_violated"
-    assert guard_ports.list_runs("guard.csv", "qc") == []
+    assert guard_ports.list_runs("guard.csv", "outliers") == []
 
 
 def test_own_guard_rejects_returned_frame_dropping_all_samples(
@@ -626,7 +629,7 @@ def test_own_guard_rejects_returned_frame_dropping_all_samples(
     with pytest.raises(BloomMCPError) as exc:
         remove_outliers(RemoveOutliersParams(experiment="guard.csv"))
     assert exc.value.code == "assumption_violated"
-    assert guard_ports.list_runs("guard.csv", "qc") == []
+    assert guard_ports.list_runs("guard.csv", "outliers") == []
 
 
 def test_own_guard_rejects_returned_rows_not_subset_of_input(guard_ports, monkeypatch):
@@ -643,7 +646,7 @@ def test_own_guard_rejects_returned_rows_not_subset_of_input(guard_ports, monkey
     with pytest.raises(BloomMCPError) as exc:
         remove_outliers(RemoveOutliersParams(experiment="guard.csv"))
     assert exc.value.code == "assumption_violated"
-    assert guard_ports.list_runs("guard.csv", "qc") == []
+    assert guard_ports.list_runs("guard.csv", "outliers") == []
 
 
 # ── I4(b): trait_columns subset validation (unknown / non-numeric) ───────────
@@ -655,7 +658,7 @@ def test_unknown_trait_column_is_invalid_input(injected_ports):
         _run(trait_columns=["definitely_not_a_column"])
     assert exc.value.code == "invalid_input"
     assert "definitely_not_a_column" in exc.value.message
-    assert store.list_runs(_EXPERIMENT, "qc") == []
+    assert store.list_runs(_EXPERIMENT, "outliers") == []
 
 
 def test_non_numeric_trait_column_is_invalid_input(injected_ports):
@@ -664,7 +667,7 @@ def test_non_numeric_trait_column_is_invalid_input(injected_ports):
         _run(trait_columns=["Barcode"])  # a metadata/identifier column — non-numeric
     assert exc.value.code == "invalid_input"
     assert "Barcode" in exc.value.message
-    assert store.list_runs(_EXPERIMENT, "qc") == []
+    assert store.list_runs(_EXPERIMENT, "outliers") == []
 
 
 def test_non_certified_numeric_column_is_rejected_not_dropped(injected_ports):
@@ -679,7 +682,7 @@ def test_non_certified_numeric_column_is_rejected_not_dropped(injected_ports):
         _run(trait_columns=["rep"])  # numeric, present, but a replicate role column
     assert exc.value.code == "invalid_input"
     assert "rep" in exc.value.message
-    assert store.list_runs(_EXPERIMENT, "qc") == []
+    assert store.list_runs(_EXPERIMENT, "outliers") == []
 
 
 def test_own_guard_rejects_returned_frame_missing_trait_column(
@@ -696,7 +699,7 @@ def test_own_guard_rejects_returned_frame_missing_trait_column(
     with pytest.raises(BloomMCPError) as exc:
         remove_outliers(RemoveOutliersParams(experiment="guard.csv"))
     assert exc.value.code == "assumption_violated"
-    assert guard_ports.list_runs("guard.csv", "qc") == []
+    assert guard_ports.list_runs("guard.csv", "outliers") == []
 
 
 # ── seed is recorded live (provenance integrity) ────────────────────────────
@@ -709,38 +712,98 @@ def test_provided_seed_is_recorded_in_provenance(injected_ports):
     seed, not a change in the flagged samples."""
     _reader, store = injected_ports
     _run(seed=7)
-    assert store.get_run(_EXPERIMENT, "qc", "latest").seed == 7
+    assert store.get_run(_EXPERIMENT, "outliers", "latest").seed == 7
 
 
-# ── #420 characterization: order-dependent "latest cleaned" revert ──────────
+# ── #420 fix: a later plain qc_clean does not revert an existing trim ───────
 
 
-def test_qc_class_rerun_reverts_latest_cleaned_order_dependence(injected_ports):
-    """#420 (characterization, not a fix) — sharing tool_class='qc' + _cleaned.csv means
-    a later qc-class commit (a qc_clean re-run) silently supersedes an outlier-removed
-    run as 'latest cleaned', with NO runtime warning; based_on_version makes it auditable
-    only after the fact. The real fix is a dedicated 'outliers' class (design/tasks 7.2).
+def _commit_qc_clean(store, df: pd.DataFrame) -> None:
+    """Commit a bare qc-class run (simulating qc_clean) directly via the store port,
+    so the real `qc_<stem>` manifest exists in the shared object store — distinct
+    from seeding `remove_outliers`'s own input via `FakeReader`, which never touches
+    the real store at all (see `test_trimmed_run_composes_into_require_clean_read`).
     """
     from bloom_mcp.contract import Provenance
 
-    _reader, store = injected_ports
-    ro = _run()  # remove_outliers commits qc v1 (tool == remove_outliers)
-    assert store.get_run(_EXPERIMENT, "qc", "latest").tool == "remove_outliers"
-
-    # Simulate a subsequent qc_clean re-run committing under the SAME qc class.
     prov = Provenance.stamp(tool="qc_clean", params={}, seed=None)
     run = store.create_run(experiment=_EXPERIMENT, tool_class="qc", provenance=prov)
-    (run.staging_dir / remove_outliers_tool.CLEANED_CSV_NAME).write_text("x\n1\n")
+    df.to_csv(run.staging_dir / remove_outliers_tool.CLEANED_CSV_NAME, index=False)
     store.commit(
         run,
         {remove_outliers_tool.CLEANED_CSV_NAME: remove_outliers_tool.CLEANED_CSV_NAME},
     )
 
-    latest = store.get_run(_EXPERIMENT, "qc", "latest")
-    assert (
-        latest.tool == "qc_clean"
-    )  # the trim was silently superseded — the #420 hazard
-    assert latest.run_ref != ro.run_ref
+
+def test_qc_clean_rerun_does_not_revert_existing_trim(fake_supabase_storage):
+    """The actual #420 repro, fixed: qc_clean -> remove_outliers -> qc_clean again ->
+    require_clean=True resolves the TRIMMED frame, not the second qc_clean's
+    un-trimmed one. Driven through the real SupabaseReader/SupabaseResultStore over
+    the shared in-memory object store, so a genuine competing `qc`-class manifest
+    exists (unlike the FakeReader-seeded composition test above)."""
+    store = SupabaseResultStore()
+    _ports.configure(reader=SupabaseReader(), store=store)
+    try:
+        _commit_qc_clean(store, _cleaned_df())  # qc v1
+        result = (
+            _run()
+        )  # remove_outliers reads qc v1 via latest_qc, commits outliers v1
+        _commit_qc_clean(
+            store, _cleaned_df()
+        )  # qc v2 — un-trimmed, committed AFTER the trim
+
+        resolved = SupabaseReader().load_experiment(_EXPERIMENT, require_clean=True)
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert len(resolved.df) == result.n_output_samples == _GOLDEN["n_output_samples"]
+    assert resolved.source == "outliers_v1_cleaned"
+
+
+def test_qc_clean_rerun_with_no_trim_resolves_normally(fake_supabase_storage):
+    """Inverse sanity check: with no trim ever made, a second qc_clean still resolves
+    as "latest" exactly as before this change — confirms the fix doesn't regress the
+    far more common no-trim path."""
+    store = SupabaseResultStore()
+    _ports.configure(reader=SupabaseReader(), store=store)
+    try:
+        _commit_qc_clean(store, _cleaned_df())  # qc v1
+        _commit_qc_clean(store, _cleaned_df())  # qc v2
+
+        resolved = SupabaseReader().load_experiment(_EXPERIMENT, require_clean=True)
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert resolved.source == "v2_cleaned"  # unqualified — no outliers class exists
+
+
+def test_remove_outliers_picks_up_fresh_qc_clean_not_its_own_stale_trim(
+    fake_supabase_storage,
+):
+    """Safety property behind the fix: remove_outliers's own next invocation reads
+    the CURRENT qc clean via version="latest_qc", not its own prior trim — proving a
+    fresh qc_clean is never permanently hidden from the one tool whose job is to trim
+    it (the regression a naive "outliers always wins, full stop" design would have
+    introduced)."""
+    store = SupabaseResultStore()
+    _ports.configure(reader=SupabaseReader(), store=store)
+    try:
+        _commit_qc_clean(store, _cleaned_df())  # qc v1
+        first = _run()  # trims qc v1 (158 rows) -> outliers v1 (150 rows)
+        assert first.n_input_samples == len(_cleaned_df())
+
+        _commit_qc_clean(store, _cleaned_df())  # qc v2 — a fresh re-clean
+        second = _run()  # must read qc v2 via latest_qc, NOT the stale outliers v1 trim
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    # If this tool had instead re-read its own stale trim, n_input_samples would be
+    # outliers v1's 150 (== _GOLDEN["n_output_samples"]), not qc v2's full row count.
+    assert second.n_input_samples == len(_cleaned_df())
+    assert second.n_input_samples != _GOLDEN["n_output_samples"]
+
+    resolved = SupabaseReader().load_experiment(_EXPERIMENT, require_clean=True)
+    assert resolved.source == "outliers_v2_cleaned"
 
 
 # ── plots=None full figure set + figure-cleanup (no leaks) ──────────────────

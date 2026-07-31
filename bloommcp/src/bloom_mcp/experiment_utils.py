@@ -348,34 +348,38 @@ def detect_columns(df: pd.DataFrame) -> dict:
 CLEANED_CSV_NAME = "_cleaned.csv"
 
 
-def _resolve_versioned_cleaned(
-    o_dir: Path,
+# Cleaned-producing tool classes, lowest to highest resolution priority. `outliers`
+# outranks `qc`: for version="latest", a trim (once one exists) is preferred over a
+# plain clean regardless of which was committed more recently — see
+# `_resolve_versioned_cleaned` and
+# `openspec/changes/fix-bloommcp-remove-outliers-tool-class/design.md` for why a
+# recency comparison does not work (the reverting `qc_clean` re-run is, by
+# construction, always the more recent commit).
+_CLEANED_TOOL_CLASSES_BY_PRIORITY = ("qc", "outliers")
+
+
+def _resolve_one_class(
     stem: str,
     version: str,
+    tool_class: str,
 ) -> tuple[Optional[Path], Optional[str], Optional[str]]:
-    """Resolve a versioned cleaned CSV via the QC manifest.
+    """Resolve a versioned cleaned CSV from one tool class's manifest.
 
-    The manifest lives in the bloommcp-data bucket at
-    `bloommcp_output/qc_<stem>/manifest.json`; the cleaned CSV is
-    downloaded to a tmp Path so callers can `pd.read_csv(path)` unchanged.
-    Caller is responsible for the tmp file's lifetime (OS tmp cleanup
-    handles it on process exit).
+    Single-tool-class resolution, parameterized so `_resolve_versioned_cleaned`
+    can check more than one class for `version="latest"`. `version` here is
+    always `"latest"` or an explicit `"v<N>"` — never `"latest_qc"`, which is
+    resolved by the caller as `_resolve_one_class(stem, "latest", "qc")`.
 
-    `o_dir` is accepted for signature compatibility with the pre-migration
-    caller but is ignored — the storage prefix is fixed at
-    `bloommcp_output`.
-
-    Returns (path, source_label, error). On success, error is None and
-    path points at the downloaded tmp CSV. On miss with version="latest",
-    returns (None, None, None) so the caller falls back. On explicit
-    version="v<N>" miss, returns (None, None, error_string).
+    Returns (path, source_label, error) exactly as `_resolve_versioned_cleaned`
+    documents, with the **unqualified** `f"{entry.id}_cleaned"` label — a caller
+    resolving across multiple classes qualifies it with the tool class itself.
     """
     import tempfile
 
     from bloom_mcp.manifest import AnalysisDir, ManifestSchemaError
     from bloom_mcp.supabase_client import download_file, list_prefix
 
-    analysis_dir = AnalysisDir("bloommcp_output", f"{stem}.csv", "qc")
+    analysis_dir = AnalysisDir("bloommcp_output", f"{stem}.csv", tool_class)
     try:
         entry = analysis_dir.get_version(version)
     except ManifestSchemaError as e:
@@ -439,6 +443,69 @@ def _resolve_versioned_cleaned(
     return tmp, f"{entry.id}_cleaned", None
 
 
+def _resolve_versioned_cleaned(
+    o_dir: Path,
+    stem: str,
+    version: str,
+) -> tuple[Optional[Path], Optional[str], Optional[str]]:
+    """Resolve a versioned cleaned CSV via the QC/outliers manifests.
+
+    The manifest lives in the bloommcp-data bucket at
+    `bloommcp_output/<tool_class>_<stem>/manifest.json`; the cleaned CSV is
+    downloaded to a tmp Path so callers can `pd.read_csv(path)` unchanged.
+    Caller is responsible for the tmp file's lifetime (OS tmp cleanup
+    handles it on process exit).
+
+    `version` behavior:
+      - `"latest"` checks every class in `_CLEANED_TOOL_CLASSES_BY_PRIORITY`,
+        highest priority first (`outliers` before `qc`), and returns the first
+        that resolves. `outliers` is preferred whenever it has *any* committed
+        version at all — a fixed priority, not a recency comparison. Its label
+        is qualified (`f"outliers_{entry.id}_cleaned"`) so it is
+        distinguishable from a plain clean; a `qc`-class resolution keeps
+        today's unqualified `f"{entry.id}_cleaned"` label — an experiment that
+        has never been trimmed sees no observable change.
+      - `"latest_qc"` resolves the `qc` class specifically, ignoring any
+        `outliers` version, with the unqualified label — this is what
+        `remove_outliers` reads as its trimming input, so a fresh `qc_clean`
+        is always visible to it regardless of any prior trim.
+      - An explicit `"v<N>"` resolves the `qc` class only, unqualified label —
+        unchanged from before this function checked more than one class (no
+        shipped caller currently passes an explicit cleaned-tier version, so
+        resolving a pin across two independently-numbered class sequences is
+        not yet a reachable question).
+      - `"raw"` is handled by the caller and never reaches this function.
+
+    A `ManifestSchemaError` on any checked class propagates immediately,
+    regardless of iteration position — never treated as a soft miss that
+    falls through to another class.
+
+    `o_dir` is accepted for signature compatibility with the pre-migration
+    caller but is ignored — the storage prefix is fixed at
+    `bloommcp_output`.
+
+    Returns (path, source_label, error). On success, error is None and
+    path points at the downloaded tmp CSV. On miss with version="latest" or
+    "latest_qc", returns (None, None, None) so the caller falls back. On
+    explicit version="v<N>" miss, returns (None, None, error_string).
+    """
+    if version == "latest_qc":
+        return _resolve_one_class(stem, "latest", "qc")
+
+    if version != "latest":
+        return _resolve_one_class(stem, version, "qc")
+
+    for tool_class in reversed(_CLEANED_TOOL_CLASSES_BY_PRIORITY):
+        path, label, error = _resolve_one_class(stem, "latest", tool_class)
+        if error:
+            return None, None, error
+        if path is not None:
+            if tool_class != "qc":
+                label = f"{tool_class}_{label}"
+            return path, label, None
+    return None, None, None
+
+
 def load_experiment_data(
     filename: str,
     traits_dir: Optional[Path] = None,
@@ -450,17 +517,24 @@ def load_experiment_data(
     """Load experiment CSV with auto-detected columns.
 
     Resolution order for version="latest" (the default):
-      1. Versioned manifest entry (qc_<stem>/manifest.json -> latest -> _cleaned.csv)
+      1. Versioned manifest entry, preferring a trim over a plain clean whenever one
+         exists (outliers_<stem>/manifest.json -> latest, else
+         qc_<stem>/manifest.json -> latest -> _cleaned.csv) — see
+         `_resolve_versioned_cleaned`
       2. Legacy un-versioned cleaned CSV (qc_<stem>/<stem>_cleaned.csv) — preserves
          pre-migration behaviour; replaced by v0_legacy after the Phase B migration runs
       3. Raw CSV from BLOOM_TRAITS_DIR
+    version="latest_qc" follows the same order but tier 1 resolves the qc-class
+    manifest specifically, ignoring any trim.
 
     Args:
         filename: CSV filename (e.g., "alfalfa_gwas_wave2.csv")
         traits_dir: Override for BLOOM_TRAITS_DIR
         output_dir: Override for BLOOM_OUTPUT_DIR
         require_clean: If True, fail when no cleaned CSV exists (for UMAP)
-        version: "latest" (default), "raw", or an explicit "v<N>"
+        version: "latest" (default, outliers-preferring), "latest_qc" (qc-class
+            only, ignores any trim — what `remove_outliers` reads as its input),
+            "raw", or an explicit "v<N>" (qc-class only)
         allow_legacy_cleaned: If False, the un-versioned legacy cleaned CSV tier is
             skipped — it carries no manifest/hash lineage, so a certified-clean
             consumer must not be satisfied by a stale legacy file that may not
@@ -468,7 +542,8 @@ def load_experiment_data(
 
     Returns:
         (df, trait_cols, column_config, source_label)
-        source_label is one of "raw", "legacy_cleaned", or "v<N>_cleaned".
+        source_label is one of "raw", "legacy_cleaned", "v<N>_cleaned", or
+        "outliers_v<N>_cleaned".
         On error: (None, None, None, error_string)
     """
     t_dir = traits_dir or TRAITS_DIR
@@ -486,7 +561,7 @@ def load_experiment_data(
             config = detect_columns(df)
             return df, config["trait_cols"], config, source_label
 
-        if version == "latest":
+        if version in ("latest", "latest_qc"):
             legacy_path = o_dir / f"qc_{stem}" / f"{stem}_cleaned.csv"
             if allow_legacy_cleaned and legacy_path.exists():
                 df = pd.read_csv(legacy_path)

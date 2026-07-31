@@ -29,6 +29,7 @@ CANONICAL_TOOL_CLASSES: tuple[str, ...] = (
     "dimred",
     "clustering",
     "outlier",
+    "outliers",
     "viz",
     "correlation",
     "heritability",

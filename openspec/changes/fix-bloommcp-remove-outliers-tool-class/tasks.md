@@ -1,6 +1,6 @@
 ## 1. Reader: `latest` (outliers-preferring) vs `latest_qc` (qc-only) resolution
 
-- [ ] 1.1 Write the failing unit tests first (red), directly against
+- [x] 1.1 Write the failing unit tests first (red), directly against
       `bloommcp/src/bloom_mcp/experiment_utils._resolve_versioned_cleaned` using the existing
       hand-built-manifest harness (`fake_supabase_storage` + `write_manifest`/`VersionEntry`,
       precedent: `test_resolve_versioned_cleaned_via_local_list_prefix_fallback` in
@@ -33,7 +33,7 @@
           the loop reaching its *second* iteration before erroring, a logically distinct code
           path from (f) (e.g. an over-broad `except`/`continue` around the whole loop would pass
           (f) but silently swallow (g)).
-- [ ] 1.2 In `bloommcp/src/bloom_mcp/experiment_utils.py`, add
+- [x] 1.2 In `bloommcp/src/bloom_mcp/experiment_utils.py`, add
       `_CLEANED_TOOL_CLASSES_BY_PRIORITY = ("qc", "outliers")` (lowest to highest priority) next
       to `CLEANED_CSV_NAME`, and rewrite `_resolve_versioned_cleaned` to branch on `version`:
       `"latest"` → iterate `_CLEANED_TOOL_CLASSES_BY_PRIORITY` in *reverse* (highest priority
@@ -46,7 +46,7 @@
       label; explicit `"v<N>"` → unchanged, `qc` class only, unqualified label. A
       `ManifestSchemaError` on any checked class, at any iteration position, propagates
       immediately in every branch (tasks 1.1f/1.1g).
-- [ ] 1.3 Confirm all six cases from 1.1 pass; confirm no other existing test asserting the
+- [x] 1.3 Confirm all six cases from 1.1 pass; confirm no other existing test asserting the
       pre-fix single-class `_resolve_versioned_cleaned` behavior for plain `version="latest"`
       (no `outliers` class involved) regressed. Update the `version` docstring on
       `load_experiment_data` (`experiment_utils.py:442-471`, currently documents only
@@ -55,7 +55,7 @@
       both forward `version` straight through with no adapter-level change needed (verified:
       `supabase_reader.py:85-87` and `local_reader.py:71-77` both pass `version` unchanged into
       `_resolve_versioned_cleaned` / `load_experiment_data`).
-- [ ] 1.4 In `bloommcp/src/bloom_mcp/data_access/fake_reader.py`, treat `version="latest_qc"` as
+- [x] 1.4 In `bloommcp/src/bloom_mcp/data_access/fake_reader.py`, treat `version="latest_qc"` as
       an alias for `"latest"` in `FakeReader.load_experiment` — insert a standalone check before
       the existing explicit-version branch (`fake_reader.py:73`), not an `elif` on it (design.md
       Decision 6's wording was imprecise: the current code treats anything not in
@@ -69,20 +69,20 @@
 
 ## 2. `remove_outliers`: dedicated tool class + explicit `latest_qc` read
 
-- [ ] 2.1 In `bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/remove_outliers.py`, change
+- [x] 2.1 In `bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/remove_outliers.py`, change
       `_TOOL_CLASS = "qc"` to `_TOOL_CLASS = "outliers"`.
-- [ ] 2.2 In the same file, change the input read at (currently) line 274 from
+- [x] 2.2 In the same file, change the input read at (currently) line 274 from
       `reader.load_experiment(params.experiment, require_clean=True)` to
       `reader.load_experiment(params.experiment, require_clean=True, version="latest_qc")` — this
       tool always wants the current plain clean, never a prior trim of its own.
-- [ ] 2.3 Rewrite the module docstring's composition/caveat paragraphs (currently lines ~10-37):
+- [x] 2.3 Rewrite the module docstring's composition/caveat paragraphs (currently lines ~10-37):
       remove the "shares tool class qc" / "order-dependent" language; describe persistence under
       the dedicated `outliers` class, the `version="latest_qc"` input read, and the disclosed
       trade-off that a plain `qc_clean` re-run does not become "latest" for other consumers until
       a fresh `remove_outliers` run is made (design.md Decision 4). Correct the docstring's
       existing `"outliers"` (plural)-as-retired-class claim to the verified `"outlier"`
       (singular).
-- [ ] 2.4 Grep `test_remove_outliers_tool.py` for every `"qc"` string literal appearing alongside
+- [x] 2.4 Grep `test_remove_outliers_tool.py` for every `"qc"` string literal appearing alongside
       a `store.get_run`/`store.create_run`/`_ports.store()` call for a `remove_outliers`-committed
       run, and change each to `"outliers"` — do this exhaustively via the grep, not from a
       pre-enumerated list (a partial list drawn up during proposal review already missed at least
@@ -99,7 +99,7 @@
       module docstring (currently says "tool class `qc`"). Land 2.1, 2.2, and this task in the
       **same commit** — flipping `_TOOL_CLASS` without also updating these assertions leaves the
       suite red.
-- [ ] 2.5 Add one sentence to the parameter/tool description of each of `pca_analysis.py`,
+- [x] 2.5 Add one sentence to the parameter/tool description of each of `pca_analysis.py`,
       `umap_analysis.py`, `clustering.py`, `descriptive_stats.py`, and
       `cross_experiment_correlations.py` (design.md Decision 8): "latest" now resolves the most
       recent outlier trim when one exists for the experiment, not merely the most recent clean.
@@ -108,16 +108,16 @@
 
 ## 3. Discovery / registry consistency
 
-- [ ] 3.1 Add `"outliers"` to `TOOL_CLASSES` in
+- [x] 3.1 Add `"outliers"` to `TOOL_CLASSES` in
       `bloommcp/src/bloom_mcp/sections/core/list_existing_analyses.py` so trimmed runs remain
       visible in that tool's output.
-- [ ] 3.2 Add `"outliers"` to `CANONICAL_TOOL_CLASSES` in `bloommcp/src/bloom_mcp/manifest/__init__.py`
+- [x] 3.2 Add `"outliers"` to `CANONICAL_TOOL_CLASSES` in `bloommcp/src/bloom_mcp/manifest/__init__.py`
       for consistency with 3.1 (not currently enforced by any runtime check, but the two lists
       are documented elsewhere as a matched "reserved tool classes" pair).
 
 ## 4. Regression coverage for the actual hazard
 
-- [ ] 4.1 In `bloommcp/tests/tools/test_remove_outliers_tool.py`, alongside the existing
+- [x] 4.1 In `bloommcp/tests/tools/test_remove_outliers_tool.py`, alongside the existing
       `test_trimmed_run_composes_into_require_clean_read`, add a characterization test driving
       the real `SupabaseReader` + `SupabaseResultStore` over the shared in-memory object-store
       double (same harness — `FakeReader`/`FakeResultStore` can't exercise cross-manifest
@@ -128,12 +128,12 @@
       resolved frame's row count equals the trimmed count (not `qc` v2's un-trimmed count), and
       `resolved.source == "outliers_v1_cleaned"` (the qualified label — asserted as the exact
       string, not a substring/prose description).
-- [ ] 4.2 Add the inverse sanity check: `qc_clean` → `qc_clean` again (no trim ever run) still
+- [x] 4.2 Add the inverse sanity check: `qc_clean` → `qc_clean` again (no trim ever run) still
       resolves the newer `qc` version via `version="latest"` as today — confirms the fix doesn't
       regress the no-trim path. Assert `resolved.source == "v2_cleaned"` — **unqualified**, since
       no `outliers` version exists (this must be byte-for-byte what the pre-fix code already
       returns; do not qualify it — see design.md Decision 5).
-- [ ] 4.3 Add a third case proving the fix's own safety property: `qc_clean` (v1) →
+- [x] 4.3 Add a third case proving the fix's own safety property: `qc_clean` (v1) →
       `remove_outliers` (trims v1 → `outliers` v1) → `qc_clean` again (v2) → `remove_outliers`
       **again** — assert its `n_input_samples` matches `qc` v2's row count (proving it read the
       *fresh* clean via `latest_qc`, not its own stale prior trim), and that the resulting
@@ -151,11 +151,11 @@
 
 ## 5. Update affected docs/scripts referencing the old shared-class assumption
 
-- [ ] 5.1 In `bloommcp/tests/smoke/live_persistence_smoke.py`, update `RO_TOOL_CLASS` (currently
+- [x] 5.1 In `bloommcp/tests/smoke/live_persistence_smoke.py`, update `RO_TOOL_CLASS` (currently
       `"qc"`) to `"outliers"` and check every use site (the leg asserting a second
       `remove_outliers` commit "advances latest ... without clobbering the first") still makes
       sense against the dedicated class.
-- [ ] 5.2 Update `bloommcp/docs/local-validation.md`'s `remove_outliers` narrative, which
+- [x] 5.2 Update `bloommcp/docs/local-validation.md`'s `remove_outliers` narrative, which
       currently documents "persists under the same qc tool class, so its trimmed `_cleaned.csv`
       becomes the newest cleaned version" — no longer accurate.
 
@@ -176,7 +176,7 @@
 
 ## 7. Validate
 
-- [ ] 7.1 `npx -y -p @fission-ai/openspec openspec validate fix-bloommcp-remove-outliers-tool-class --strict`
+- [x] 7.1 `npx -y -p @fission-ai/openspec openspec validate fix-bloommcp-remove-outliers-tool-class --strict`
       passes.
-- [ ] 7.2 Full `bloommcp` unit test suite passes (`uv run --extra test pytest`), including the
+- [x] 7.2 Full `bloommcp` unit test suite passes (`uv run --extra test pytest`), including the
       new/updated tests above.

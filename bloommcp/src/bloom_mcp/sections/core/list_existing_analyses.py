@@ -19,6 +19,7 @@ TOOL_CLASSES = (
     "dimred",
     "clustering",
     "outlier",
+    "outliers",
     "viz",
     "correlation",
 )
