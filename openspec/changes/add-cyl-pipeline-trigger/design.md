@@ -351,6 +351,23 @@ queue + wrapper function, `bloom_workflows` grants) plus a companion manual roll
   scheduled, noted so it isn't lost.
 - The concurrent-duplicate-enqueue race's real fix (see Risks) — left for Phase 2 to decide against
   real GPU-cost pressure, not decided speculatively here.
+- **Whether the trigger route should ever call `resolve_params()` itself — not scheduled, granularity
+  mismatch makes it a real redesign, not a small addition.** `sleap_roots_contracts.resolve_params(scan,
+  overrides)` is inherently per-scan: it needs one scan's own `species_name`/`plant_age_days` row and
+  produces one resolved dict. The trigger route operates over a whole enumerated batch (a wave/
+  experiment can be hundreds of scans with differing metadata), so there is no single scan to resolve
+  against at request time, and nowhere to put N different resolved dicts —
+  `cyl_pipeline_runs.params`/`_dedup_preview`'s hash are both one-per-request, not one-per-scan.
+  Verified where resolution actually happens today: `bloomcli/src/bloomctl/cyl/download_for_predict.py`'s
+  `resolve_sidecar_params()` calls `resolve_params(scan, overrides={"mode": "cylinder"}).values`
+  per scan, at the point where that scan's own row is staged for predict — the natural place for it,
+  since per-scan metadata is already being read there for other reasons, and its output is presumably
+  what actually feeds the cluster-side stored `param_hash`. This route's `params` is therefore not a
+  stand-in for `resolve_params()`'s output; it is the caller's request-level override/intent, used only
+  for the informational dedup hash (see the "found in PR review" decision above). Building real
+  per-scan resolution into the trigger route — per-scan params, per-scan hash comparison instead of one
+  hash for the whole request — would be a legitimate Phase 2/3-shaped feature, not a Phase 1 fix.
+  Recorded here so it's a deliberate deferral, not a rediscovered gap.
 - `MAX_SCAN_IDS` (5000) and `MAX_PARAMS_BYTES` (10,000) are plain module-level constants in
   `pipeline.py`, matching `BATCH_SIZE`'s precedent — not yet env vars, revisit only if a real caller
   needs a different limit.
