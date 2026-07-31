@@ -104,6 +104,18 @@ def test_list_existing_analyses_reports_no_prior_runs_for_a_known_experiment(
     assert "No prior analyses found" in payload["message"]
 
 
+def test_list_existing_analyses_rejects_the_retired_experiment_filename_kwarg(
+    injected_ports,
+):
+    """The #552 rename (task 4.1) dropped ``experiment_filename`` in favor of
+    ``experiment`` — no test previously confirmed the old kwarg is actually gone rather
+    than silently still accepted alongside the new one (found in PR #571 review)."""
+    with pytest.raises(TypeError, match="experiment_filename"):
+        list_existing_analyses_mod.list_existing_analyses(
+            experiment_filename=_EXPERIMENT
+        )
+
+
 def test_list_existing_analyses_unknown_experiment_is_reported(injected_ports):
     result = list_existing_analyses_mod.list_existing_analyses("not_seeded.csv")
     payload = json.loads(result)

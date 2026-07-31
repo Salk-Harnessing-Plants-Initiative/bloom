@@ -112,7 +112,7 @@
 - [x] 6.2 `cd bloommcp && uv run --frozen --extra test pytest tests/` — full suite green,
       including the reworded assertions and the `list_existing_analyses` rename.
       Confirm specifically that the untouched traversal/guard tests
-      (`test_qc_shared_validator.py`, `test_qc_inspect_tool.py`'s traversal cases,
+      (`test_qc_inspect_tool.py::test_experiment_path_traversal_is_rejected`,
       `test_viz_tools.py`'s secret-file test) still pass unmodified — that's the actual
       evidence the "no behavior change" claim rests on, not just an incidental green run
       (see design.md's Risks section).
@@ -152,4 +152,62 @@
       PR's rename adds one more reason that page needs a refresh, but `_WIKI/` was
       deliberately outside this change's verify-grep scope (`bloommcp/{src,tests,docs}`
       only, per §6.1) and is a separate, pre-existing doc-drift problem, not something
-      this PR's diff caused. Left as a tracked follow-up.
+      this PR's diff caused. Left as a tracked follow-up. (A second stale `_WIKI/` doc
+      reference, `adding-a-section-tool.md:31`, was also found in eberrigan's PR #571
+      review round 2 — that one was a single self-contained code-example string, fixed
+      directly rather than deferred: see §8.4.)
+
+## 8. eberrigan's PR #571 review round 2 response (2026-07-31T19:26Z)
+
+- [x] 8.1 `langchain/tools/context_tools.py`'s `CONTEXT_MCP` string — the only LLM-facing
+      wording site outside `bloommcp/` (the system-prompt context payload the LangChain
+      agent injects). Missed by this change's `bloommcp/{src,tests,docs}`-scoped grep
+      (§6.1) since it lives under `langchain/`. Reworded "## CSV Experiment Files (MCP
+      Tools)" / "Files ... are CSV files on the filesystem — NOT database tables" /
+      "List CSV experiment files" off filename/CSV vocabulary, keeping the actionable
+      "never use query_database for these" rule (still correct — Tier 2 does not make
+      `query_database` valid for experiment data, it only changes what backs the MCP
+      tools' own reads).
+- [x] 8.2 `cross_experiment_correlations.py`'s three home-grown guards
+      (`_reject_reserved_encoding_characters`, `_reject_self_correlation`,
+      `_reject_dotted_stem`) had their `Field(description=...)` reworded by task 2.4 but
+      not their own raised `message`/`remedy` strings — still said "filename stem,"
+      "Rename the experiment file," and "Pass two distinct experiment filenames." Fixed
+      all three to match the schema's "experiment identifier" vocabulary; the dotted-stem
+      message now uses the same "single interior extension separator" framing as the
+      schema description (2.4) instead of re-deriving a second, inconsistent phrasing.
+      Guard conditions themselves untouched — text only, same as every other site in
+      this change.
+- [x] 8.3 `design.md`'s and this file's §6.2 citation of `test_qc_shared_validator.py` as
+      evidence for `_validate_experiment_name`'s unchanged behavior was wrong — that file
+      only exercises `_validate_trait_subset` and never calls `_validate_experiment_name`.
+      Corrected both citations to point at
+      `test_qc_inspect_tool.py::test_experiment_path_traversal_is_rejected` instead (the
+      actual traversal-payload test for that guard). The underlying safety claim itself
+      was never in question — only the citation.
+- [x] 8.4 `_WIKI/BLOOMMCP/adding-a-section-tool.md:31` — a `SummarizeTraitParams` code
+      example still showed `description="CSV filename from list_available_experiments."`
+      verbatim. Fixed to match the actual reworded `summarize_trait.py:17` description
+      (task 3.4). Unlike §7.4's `storage-workflow.md` (a compound staleness — wrong param
+      name *and* a wrong module path, a bigger doc revamp than this change's slice), this
+      was a single self-contained string with no other drift, so fixed directly rather
+      than deferred.
+- [x] 8.5 `openspec validate fix-bloommcp-experiment-identifier-wording --strict` was
+      reported failing (Requirement 1's SHALL landing past the first physical line of a
+      wrapped paragraph). Re-ran directly against openspec CLI v1.7.0 and it passes
+      cleanly (`valid: true`, matching the same false-positive pattern already documented
+      for PR #569 — v1.7.0 joins a requirement's full multi-line body before scanning for
+      SHALL/MUST). Reflowed the paragraph to lead with SHALL anyway — defensive, zero-risk,
+      and satisfies the reviewer's literal ask without depending on which openspec version
+      a future reader's `npx` resolves.
+- [x] 8.6 Added a test asserting the retired `experiment_filename=` kwarg is rejected by
+      `list_existing_analyses` (no test previously exercised this — the rename's own
+      completeness was unverified from the suite).
+- [x] 8.7 Parametrized `test_dotted_stem_rejected` over the leading/trailing-dot edge
+      cases this PR's own review round 1 derived (`.hidden`, `a.`) — previously only the
+      multi-interior-dot case (`my.experiment.v2.csv`) was covered.
+- [x] 8.8 Fixed the stale `payload["experiment_filename"]` assertion in
+      `tests/integration/test_versioned_storage_phase_a.py:364` to `payload["experiment"]`.
+      The module is still skipped at import (unrelated, pre-existing — it imports a
+      function path that no longer exists on this branch) so this doesn't change CI's
+      green/red status; fixed so the module isn't doubly stale if anyone re-enables it.

@@ -361,7 +361,7 @@ def test_list_existing_analyses_empty_when_no_dirs(tmp_path, monkeypatch):
     from bloom_mcp.tools.storage_tools import list_existing_analyses
     payload = json.loads(list_existing_analyses("bar.csv"))
 
-    assert payload["experiment_filename"] == "bar.csv"
+    assert payload["experiment"] == "bar.csv"
     assert payload["analyses"] == {}
     assert "No prior analyses" in payload["message"]
 

@@ -82,14 +82,15 @@ CONTEXT_GENERIC = """## Generic Database Tools (Supabase/PostgREST)
 - Nested joins: 'id,name,species(common_name)'
 """
 
-CONTEXT_MCP = """## CSV Experiment Files (MCP Tools)
+CONTEXT_MCP = """## Experiment Data (MCP Tools)
 
-Files like cylinder_traits, turface_traits are CSV files
-on the filesystem — NOT database tables. Never use query_database for these.
+Experiments like cylinder_traits, turface_traits are accessed through the MCP tools
+below, identified by an experiment identifier (not a table) — never use
+query_database for these.
 
 ### Discovery (always available)
-- list_available_experiments: List CSV experiment files
-- load_experiment_data: Show summary of a CSV experiment
+- list_available_experiments: List available experiment identifiers
+- load_experiment_data: Show summary of an experiment
 - list_existing_analyses: List prior analysis runs for an experiment
 
 ### Analysis and plotting

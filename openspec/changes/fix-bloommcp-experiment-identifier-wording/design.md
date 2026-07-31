@@ -158,11 +158,14 @@ then." That sentence draws the exact line this change needs to respect.
   untouched tests rather than resting solely on "the `if` condition isn't edited": both
   `bloommcp/tests/tools/test_viz_tools.py`'s traversal-payload test (around lines
   395-414, covering `../secret.csv`, `..\secret.csv`, an absolute path to a real secret
-  file, and `/etc/passwd`) and each tool's own parametrized guard tests (e.g.
-  `test_qc_inspect_tool.py`'s traversal cases, `test_qc_shared_validator.py`) assert on
+  file, and `/etc/passwd`) and each tool's own parametrized guard tests
+  (`test_qc_inspect_tool.py::test_experiment_path_traversal_is_rejected`) assert on
   `BloomMCPError.code == "invalid_input"` / rejection behavior, never on message text —
   so they keep passing unmodified through this change and independently prove the
   accept/reject decision is unchanged, rather than that claim resting on citation alone.
+  (Found in PR #571 review: an earlier draft of this citation also named
+  `test_qc_shared_validator.py` — that file only covers `_validate_trait_subset` and
+  never calls `_validate_experiment_name`, so it was dropped from this citation.)
 - **Race condition on the deferred `storage-backends.md` follow-up**: PR #557 (Tier 2's
   implementation) is open, approved, and CI-green as of this proposal — i.e. mergeable
   on short notice. If it merges before this change's PR does, `storage-backends.md`

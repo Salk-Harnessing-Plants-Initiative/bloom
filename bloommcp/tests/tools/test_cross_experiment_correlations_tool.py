@@ -648,7 +648,15 @@ def test_path_unsafe_experiment_name_rejected(bad_field):
 
 
 @pytest.mark.parametrize("bad_field", ["experiment_1", "experiment_2"])
-def test_dotted_stem_rejected(bad_field):
+@pytest.mark.parametrize(
+    "dotted_name",
+    [
+        "my.experiment.v2.csv",  # more than one dot
+        ".hidden",  # leading dot, no extension — found in PR #571 review
+        "a.",  # trailing dot, no extension — found in PR #571 review
+    ],
+)
+def test_dotted_stem_rejected(dotted_name, bad_field):
     """Regression test for the composite-key truncation bug found in review: a naive
     f"{Path(e1).stem}__x__{Path(e2).stem}" composite is silently truncated by
     AnalysisDir's own re-applied Path(...).stem whenever either original stem contains
@@ -656,9 +664,16 @@ def test_dotted_stem_rejected(bad_field):
     experiment's name and risking a storage collision. A first fix sanitized dots to
     underscores before joining, which reopened the identical collision class one level
     down ("my.experiment.csv" and "my_experiment.csv" both sanitize to "my_experiment").
-    Rejected outright rather than sanitized."""
+    Rejected outright rather than sanitized.
+
+    ``.hidden`` and ``a.`` are the leading/trailing-dot edge cases this PR's own review
+    round derived to show ``Path(name).stem`` still contains a ``.`` even though neither
+    looks like a "multi-dot" name at a glance (``Path(".hidden").stem == ".hidden"``,
+    ``Path("a.").stem == "a."``) — previously only the multi-interior-dot case was
+    covered by a test, leaving this exact edge case unverified from the suite itself.
+    """
     kwargs = {"experiment_1": _EXP_1, "experiment_2": _EXP_2}
-    kwargs[bad_field] = "my.experiment.v2.csv"
+    kwargs[bad_field] = dotted_name
     with pytest.raises(BloomMCPError) as exc:
         cross_experiment_correlations(CrossExperimentCorrelationsParams(**kwargs))
     assert exc.value.code == "invalid_input"

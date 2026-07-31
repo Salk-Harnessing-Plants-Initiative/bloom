@@ -2,15 +2,15 @@
 
 ### Requirement: Backend-Agnostic Experiment Identifier Wording
 
-Every LLM-facing tool-schema `description=`, discovery-tool docstring, and
-path-traversal validation message that documents the `experiment` (or
-`experiment_1`/`experiment_2`) input SHALL describe it as an experiment identifier,
-never a "CSV filename," so the text stays accurate both under the deployed
-filename-shaped identifier and under a future backend that resolves a different
-identifier shape (e.g. `str(experiment_id)`). Path-traversal validation guards
-(`tools/_qc_shared._validate_experiment_name`,
-`sections/sleap_roots/analysis/_viz_shared.validate_filename`) SHALL keep their exact
-accept/reject behavior — only their message text changes.
+The `experiment` (or `experiment_1`/`experiment_2`) input's documentation SHALL
+describe it as an experiment identifier, never a "CSV filename," in every
+LLM-facing tool-schema `description=`, discovery-tool docstring, and
+path-traversal validation message — so the text stays accurate both under the
+deployed filename-shaped identifier and under a future backend that resolves a
+different identifier shape (e.g. `str(experiment_id)`). Path-traversal
+validation guards (`tools/_qc_shared._validate_experiment_name`,
+`sections/sleap_roots/analysis/_viz_shared.validate_filename`) SHALL keep their
+exact accept/reject behavior — only their message text changes.
 
 #### Scenario: Tool schema description does not claim a CSV filename
 

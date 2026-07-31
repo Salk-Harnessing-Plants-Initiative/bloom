@@ -254,7 +254,7 @@ def _reject_reserved_encoding_characters(experiment_1: str, experiment_2: str) -
                     "two-experiment persisted run."
                 ),
                 remedy=(
-                    "Rename the experiment file to avoid these characters: "
+                    "Pass an experiment identifier without these characters: "
                     f"{list(_RESERVED_ENCODING_CHARS)!r}."
                 ),
             )
@@ -274,7 +274,7 @@ def _reject_self_correlation(experiment_1: str, experiment_2: str) -> None:
                 f"experiment_1 and experiment_2 are both {experiment_1!r} — "
                 "cross_experiment_correlations compares two different experiments."
             ),
-            remedy="Pass two distinct experiment filenames.",
+            remedy="Pass two distinct experiment identifiers.",
         )
 
 
@@ -312,13 +312,14 @@ def _reject_dotted_stem(experiment_1: str, experiment_2: str) -> None:
             raise BloomMCPError(
                 code="invalid_input",
                 message=(
-                    f"{label} ({name!r})'s filename stem ({stem!r}) contains a '.', "
-                    "which this tool's composite storage-key encoding cannot safely "
-                    "represent."
+                    f"{label} ({name!r}) contains a '.' that is not a single interior "
+                    "extension separator, which this tool's composite storage-key "
+                    "encoding cannot safely represent."
                 ),
                 remedy=(
-                    "Rename the experiment file so its stem (the part before the final "
-                    "extension) contains no '.' characters."
+                    "Pass an experiment identifier whose only '.' (if any) is a single "
+                    "interior extension separator (e.g. 'my_experiment.csv') — a "
+                    "leading dot, a trailing dot, or more than one '.' is rejected."
                 ),
             )
 
