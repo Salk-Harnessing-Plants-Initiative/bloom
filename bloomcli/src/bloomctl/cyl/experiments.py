@@ -7,7 +7,7 @@ from typing import Any
 import click
 
 from ..credentials import DEFAULT_PROFILE
-from ._output import MACHINE_FORMATS, print_table, render
+from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
 
 # Table columns for `experiments list`, in display order.
 EXPERIMENT_COLUMNS = ["Species", "Experiment", "Experiment ID"]
@@ -149,11 +149,7 @@ def list_experiments(
 
     from ..cli import _authed_client
 
-    # --json is an alias for --output json; reject a conflicting pair.
-    if as_json:
-        if output_fmt not in (None, "json"):
-            raise click.UsageError("Use either --json or --output, not both.")
-        output_fmt = "json"
+    output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
 
     client = _authed_client(profile)
     try:
