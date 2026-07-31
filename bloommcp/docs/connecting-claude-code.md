@@ -20,12 +20,17 @@ lab, or your experiments:
   `gene_patents` (patent status, government ID) is a confirmed example: it is not actually readable
   through this token today, despite the general rule above. Don't treat "virtually every table" as
   an unconditional guarantee of full database access — it's the default, not an absolute.
-- **Write access is confined to one Storage bucket** (`bloommcp-data`) — insert, update, and delete
-  are all possible there (delete only for previously-uploaded analysis outputs, never your raw input
-  files), and nowhere else. This token cannot write to any database table.
-- Verifying who ran a request (a separate, prior change) does **not** change any of the above — it's
-  an audit trail, not an access restriction. Every request still reads/writes with the same shared
-  permissions regardless of who's identified as making it.
+- **Write access is confined to one Storage bucket, plus one narrow database-table exception.** In
+  the `bloommcp-data` bucket, insert, update, and delete are all possible (delete only for
+  previously-uploaded analysis outputs, never your raw input files). The one exception: this token
+  can also insert and update a single database table, `public.bloommcp_usage` — an internal, rolling
+  per-caller usage aggregate (identity, first/last seen, request count, last tool called) upserted
+  once per tool call for operational tracking. It holds no scientific data. This token cannot write
+  to any other database table.
+- Verifying who ran a request (a separate, prior change) does **not** change the read/write scope
+  above — it's an audit trail, not a data-access restriction. Every request still reads/writes
+  scientific data with the same shared permissions regardless of who's identified as making it; the
+  `bloommcp_usage` write above is what records that identity, not a new door into anything else.
 
 If you'd rather not connect to the shared server at all — for a fully offline workflow with no
 access to Bloom's live data — skip to [No shared server? Run bloommcp fully
@@ -61,8 +66,7 @@ just won't be talking to staging. Always include `:8443` for the staging endpoin
 ## Where to get `<token>`
 
 `<TODO: name the BLOOMMCP_API_KEY contact/process — not yet determined at the time this guide was
-written. There is no self-service lookup for this token today; ask whoever maintains the bloommcp
-deployment.>`
+written. There is no self-service lookup for this token today.>`
 
 ## No shared server? Run bloommcp fully locally
 

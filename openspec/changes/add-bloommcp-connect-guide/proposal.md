@@ -60,23 +60,26 @@ assumed from the issue body):**
   ([20260605000000_create_bloommcp_data_bucket.sql:42-61](../../../supabase/migrations/20260605000000_create_bloommcp_data_bucket.sql#L42))
   **plus** a narrower `GRANT DELETE ON storage.objects TO bloom_agent`, scoped
   `USING (bucket_id = 'bloommcp-data' AND name ~ '^bloommcp_output/')`
-  ([20260723000000_grant_bloommcp_agent_output_delete.sql:40](../../../supabase/migrations/20260723000000_grant_bloommcp_agent_output_delete.sql#L40))
+  ([20260723000000_grant_bloommcp_agent_output_delete.sql:37](../../../supabase/migrations/20260723000000_grant_bloommcp_agent_output_delete.sql#L37))
   — an earlier draft of this proposal cited only INSERT/UPDATE and missed the DELETE grant. All
   three verbs stay confined to the single `bloommcp-data` bucket (DELETE further confined to its
   `bloommcp_output/` prefix — `bloommcp_input/` source CSVs are never agent-deletable), so "writes
   confined to the `bloommcp-data` bucket" survives, but "write access" in the guide must say
   insert/update/delete, not just the first two.
   [#406](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/406)'s caller-identity
-  verification (this repo's own prior change, `bloommcp-caller-identity`, still open as PR #563 at
-  time of writing — not yet merged to `staging`) is audit/attribution only and does not change any
-  of the above **today**. It will, however, the moment PR #563 merges:
-  `20260730000000_create_bloommcp_usage.sql`, part of that unmerged branch, grants `bloom_agent`
-  `INSERT, UPDATE` on a new `public.bloommcp_usage` table — a `public.*` table write, outside
-  Storage entirely, unlike every other write grant above. This proposal's own review process
-  briefly mis-flagged this migration as already-live because a concurrent session's checkout put
-  it on disk during review — confirmed via `git cat-file -e origin/staging:...` that it is **not**
-  on `origin/staging` as of this writing. It is a real, near-term staleness risk once #563 merges,
-  tracked as tasks.md 4.1 rather than silently discovered later.
+  verification (this repo's own prior change, `bloommcp-caller-identity`) is audit/attribution only
+  and does not change the read/write scope above **by itself**. It did, however, land a real
+  write-scope change as a side effect: `20260730000000_create_bloommcp_usage.sql`, merged to
+  `staging` via PR #563 on 2026-07-30 — ~90 minutes after this branch forked — grants `bloom_agent`
+  `INSERT, UPDATE` on a new `public.bloommcp_usage` table, a `public.*` table write outside Storage
+  entirely, unlike every other write grant above. **This is exactly the staleness risk this proposal
+  flagged as a future check (tasks.md 4.1), and it materialized before this PR merged**: a review of
+  this PR caught the shipped guide still asserting "this token cannot write to any database table,"
+  which stopped being true the moment #563 merged. `connecting-claude-code.md` and
+  `_WIKI/BLOOMMCP/README.md` are now updated (tasks.md 4.1, checked off) to disclose the
+  `bloommcp_usage` write grant as a narrow, non-scientific-data exception to the
+  Storage-bucket-only rule — the table itself holds only a per-caller usage aggregate (identity,
+  first/last seen, request count, last tool called), not scientific data.
 - **The shared key has no self-service distribution path today.** `BLOOMMCP_API_KEY` is a
   randomly-generated secret minted once by `scripts/generate-secrets.sh` and pushed to GitHub
   Secrets (`STAGING_BLOOMMCP_API_KEY`/`PROD_BLOOMMCP_API_KEY`) by
@@ -89,17 +92,13 @@ assumed from the issue body):**
 
 ### Review History
 
-An earlier draft of this proposal was reviewed by a 5-agent adversarial pass
-(spec quality, code/architecture fact-checking, GitHub issue alignment, TDD/verification strategy,
-and scientific-rigor/data-integrity). Findings folded into this revision: the DELETE-grant and
-`gene_patents` gaps above, tightened acceptance criteria on the live round-trip task (tasks.md 5),
-a falsifiability bar for the token placeholder (tasks.md 1.1), a new spec requirement covering the
-live-verification status itself (so it's checkable from spec.md, not only tasks.md prose), and a
-named risk in design.md about this guide doubling as a roadmap for anyone holding the shared key.
-Per an explicit decision with the issue owner, two acceptance items are deliberately **not**
-resolved by this change and are called out plainly rather than silently attempted: the real
-token-distribution contact (placeholder instead, see above) and the live authenticated round-trip
-against a real deployed key (ships unverified — see Scope/Non-Goals and tasks.md 5).
+An earlier draft of this proposal was reviewed by a 5-agent adversarial pass (spec quality,
+code/architecture fact-checking, GitHub issue alignment, TDD/verification strategy, and
+scientific-rigor/data-integrity); its findings are folded into the sections above rather than
+re-narrated here (the DELETE-grant and `gene_patents` corrections, the token-placeholder and
+live-round-trip decisions, and the roadmap risk in design.md) — self-referential process notes
+about a review go stale the moment the next fact changes, as happened with this section's original
+`bloommcp_usage`/PR #563 timeline note.
 
 ## What Changes
 

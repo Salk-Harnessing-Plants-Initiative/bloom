@@ -80,36 +80,39 @@ pattern is more widespread than this one table. A fully authoritative version of
 against the live deployed schema rather than migration files, is left as a follow-up
 (tasks.md 4.2), not attempted here.
 
-**A follow-up sweep while fixing this proposal found the gap is broader than one table, in the
-safer direction.** Diffing every RLS-enabled table (`ALTER TABLE ... ENABLE ROW LEVEL SECURITY`,
-~65 tables on `origin/staging`) against every `CREATE POLICY` mentioning `bloom_agent` found
-~30 candidates with no `bloom_agent`-targeting policy. Most were false positives from this
-codebase's own formatting — several `CREATE POLICY ... ON <table>` statements wrap the `TO
-bloom_agent` clause onto a second line (e.g. `gravi_scanners`), which a naive single-line grep
-misses entirely; re-checking those individually found the policy present. After removing those
-false positives, **~19 tables genuinely have zero policy mentions at all** — not for `bloom_agent`,
-not for `bloom_user`, not for `bloom_admin`, not for anyone (spot-checked: `assemblies`, `genes`,
-`gene_orthologs`, `gene_progress_notes`, `gene_candidate_scientists`, `gene_candidate_support`,
-`ortho_gene_id_map`, `phenotypers`, `plate_plant_traits_list`, `plates_exp`, `plates_scan_trait`,
-`plates_trait_source`, `scrna_de`, `translation_candidates`, `translation_lines`,
-`translation_project_users`, `translation_projects`, `video_jobs`, `cyl_scan_videos`). With RLS
-enabled and no policy at all, Postgres denies all rows to every role by default (none of
-`bloom_agent`/`bloom_user`/`bloom_admin` has `BYPASSRLS` or table ownership — confirmed: all three
-are plain `NOLOGIN` roles created without that attribute) — so in practice these tables look
-unreachable via PostgREST for *any* bloom role today, not merely `bloom_agent`.
+**Correction (post-review): the "~19 tables have zero policy" claim below was checked directly
+against their migrations and does not hold — every one of the 19 has at least one active
+`CREATE POLICY`, and the earlier "zero policy" framing understated exposure rather than
+overstating it.** The original sweep's false-positive problem was worse than the one gravi_*
+example it already caught: several of these tables' policies use human-readable, double-quoted
+names (e.g. `"Anon users can select video_jobs"`) rather than the bare unquoted identifiers the
+sweep's grep pattern was tuned for, so a real policy read as "no mention" purely from string
+shape, not from anything about the policy's target role. Two spot-checked directly are **more**
+exposed than either the original or corrected claim implied: `video_jobs` grants `anon` both
+`SELECT` and `INSERT`
+([20260126100000_create_video_jobs_queue.sql](../../../supabase/migrations/20260126100000_create_video_jobs_queue.sql)),
+and `scrna_de` grants `anon` `SELECT`
+([20260125210000_add_anon_select_policy_scrna_de.sql](../../../supabase/migrations/20260125210000_add_anon_select_policy_scrna_de.sql))
+on top of `authenticated` `SELECT`/`INSERT`/`UPDATE`
+([20250407232644_create_scrna_de.sql](../../../supabase/migrations/20250407232644_create_scrna_de.sql))
+— readable, and for `video_jobs` writable, by literally anyone hitting PostgREST unauthenticated,
+not merely by a role `bloom_agent` happens not to belong to. `assemblies` was also spot-checked and
+likewise has active `authenticated`-scoped `SELECT`/`INSERT`/`UPDATE` policies, not zero.
 
-**This is disclosed here, not folded into the shipped guide's content.** Two reasons: (1) this was
-a migration-file text sweep, not a live query against the deployed `pg_policies` view — the
-gravi_* false-positive above already proves that method under-catches real policies, so it could
-equally over-catch or miss something on the deployed schema (Supabase Studio also allows direct,
-un-migrated policy changes). (2) whether these ~19 tables are legacy/unused, intentionally
-locked down, or an unnoticed gap is a separate question from what a bloommcp connection guide needs
-to answer, and asserting a specific table inventory in a researcher-facing doc risks going stale or
-wrong the moment either is true. The guide keeps `gene_patents` as its one named, fully-verified
-example (RLS policy targets a different role **and** `bloom_agent` isn't a member of that role —
-both confirmed); it does not claim precision it doesn't have about the other ~19. If the team wants
-an authoritative "what can `bloom_agent` actually read" map, that's a separate, live-DB-verified
-piece of work, tracked as a suggestion in tasks.md, not attempted here.
+**None of this changes what the shipped guide tells researchers about `bloom_agent`'s own access**
+— none of these tables' policies target `bloom_agent`, so they don't add a new confirmed-readable
+example the way `gene_patents` is a confirmed-*unreadable* one; they just mean the original
+inventory of "tables with literally no policy for anyone" was itself unreliable. **This is disclosed
+here, not folded into the shipped guide's content**, and the original table-by-table list is struck
+rather than corrected item-by-item: the sweep method (migration-file text matching, not a live query
+against the deployed `pg_policies` view) has now produced false positives in both directions
+(missed real policies via the gravi_* line-wrap, and via these quoted-name misses) and Supabase
+Studio also allows direct, un-migrated policy changes, so no fixed list compiled this way should be
+treated as authoritative. The guide keeps `gene_patents` as its one named, fully-verified example
+(RLS policy targets a different role **and** `bloom_agent` isn't a member of that role — both
+confirmed); it does not claim precision it doesn't have about any other table. If the team wants an
+authoritative "what can `bloom_agent` actually read" map, that's a separate, live-DB-verified piece
+of work, tracked as a suggestion in tasks.md, not attempted here.
 
 ## Risks / Trade-offs
 
@@ -127,8 +130,11 @@ piece of work, tracked as a suggestion in tasks.md, not attempted here.
   disclosure — is worse for a legitimate researcher's ability to make an informed choice), but it
   wasn't previously named as a risk anywhere in this proposal; naming it here doesn't change the
   decision, just makes it visible.
-- **Risk:** `bloommcp_usage` (landing with PR #563, not yet merged) will add a `public.*` table
-  write grant for `bloom_agent` outside the `bloommcp-data` bucket the moment it merges, making the
-  guide's write-scope disclosure stale on that day. Mitigated by tasks.md 4.1, an explicit
-  re-verification task tied to that merge rather than an assumption this proposal's snapshot stays
-  accurate indefinitely.
+- **Risk (materialized, then resolved):** `bloommcp_usage`, tracked here as a landing-with-PR-#563
+  risk, merged to `staging` on 2026-07-30 — before this PR itself merged — and did add a `public.*`
+  table write grant for `bloom_agent` outside the `bloommcp-data` bucket, exactly as anticipated. A
+  review of this PR caught the guide still asserting no database table was writable. Resolved via
+  tasks.md 4.1: both `connecting-claude-code.md` and `_WIKI/BLOOMMCP/README.md` now disclose the
+  grant. This is the one risk on this list that stopped being hypothetical before merge — a reminder
+  that "tracked as a follow-up task" is not the same as "verified still accurate at merge time" for a
+  fast-moving repo.

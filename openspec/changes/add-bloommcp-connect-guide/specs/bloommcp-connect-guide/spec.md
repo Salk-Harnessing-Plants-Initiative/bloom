@@ -78,9 +78,9 @@ reaching staging).
 
 ### Requirement: Token-Contact Placeholder Is Unmissable, Not a Vague Non-Answer
 
-If the real contact/process for obtaining `BLOOMMCP_API_KEY` is not yet determined at the time the
-guide is written, the guide SHALL mark that spot with an explicit, visually unmistakable
-placeholder (e.g. a `<TODO: ...>`-style marker), rather than a sentence that reads as genuine
+The guide SHALL mark the `BLOOMMCP_API_KEY` contact/process spot with an explicit, visually
+unmistakable placeholder (e.g. a `<TODO: ...>`-style marker) if the real contact/process is not yet
+determined at the time the guide is written, rather than a sentence that reads as genuine
 information without actually naming a specific person, role, or channel.
 
 #### Scenario: An unresolved token contact is marked as a placeholder, not disguised as an answer
@@ -92,12 +92,12 @@ information without actually naming a specific person, role, or channel.
 
 ### Requirement: Live-Verification Status Is Stated, Not Silently Assumed
 
-Whether the guide's connect commands have been verified end-to-end with a real deployed
+The change's own tracking (tasks.md and the PR that introduces the guide) SHALL state explicitly
+whether the guide's connect commands have been verified end-to-end with a real deployed
 `BLOOMMCP_API_KEY` against both staging and production (a live `tools/list` round-trip, not merely
-the unauthenticated health/401 checks) SHALL be stated explicitly in the change's own tracking
-(tasks.md and the PR that introduces the guide) — it SHALL NOT be left implicit, silently assumed
-complete, or represented only by an unchecked checkbox with no accompanying statement of what,
-specifically, remains unverified.
+the unauthenticated health/401 checks). It SHALL NOT be left implicit, silently assumed complete, or
+represented only by an unchecked checkbox with no accompanying statement of what, specifically,
+remains unverified.
 
 #### Scenario: An unverified live round-trip is stated plainly, not just unchecked
 

@@ -60,11 +60,12 @@
 
 ## 4. Housekeeping this change's own review surfaced
 
-- [ ] 4.1 Once PR #563 (`bloommcp-caller-identity`, adds `bloommcp_usage`) merges to `staging`,
-      re-check whether `bloommcp_usage`'s `bloom_agent` grant (INSERT/UPDATE on a `public.*` table,
-      outside the `bloommcp-data` bucket) requires an update to this guide's write-scope warning —
-      it will, unless the guide is rewritten to account for it first. Do not let this go stale
-      silently; this is the specific, disclosed staleness risk named in design.md's Risks section.
+- [x] 4.1 PR #563 (`bloommcp-caller-identity`, adds `bloommcp_usage`) merged to `staging` on
+      2026-07-30, ~90 minutes after this branch forked. Re-checked: `bloommcp_usage`'s `bloom_agent`
+      grant (`INSERT`, `UPDATE` on `public.bloommcp_usage` — a `public.*` table, outside the
+      `bloommcp-data` bucket) did require a guide update, as flagged. Resolved: both
+      `bloommcp/docs/connecting-claude-code.md` and `_WIKI/BLOOMMCP/README.md` now disclose this as
+      a narrow, non-scientific-data exception to the Storage-bucket-only write claim.
 - [ ] 4.2 (Suggestion, not required for this change) If a fully authoritative "what can `bloom_agent`
       actually read" map is ever wanted, do it as a live query against the deployed `pg_policies`
       view (and role-membership grants), not a migration-file text sweep — this proposal's own quick
