@@ -62,14 +62,37 @@ def build_qc_set_record(qc_set: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def qc_set_sort_key(qc_set: dict[str, Any]) -> tuple[str, str, str, int]:
+    """Sort by species, then experiment name, then set name, then set id (id breaks ties so
+    output is deterministic run-to-run) — matching the other cyl list commands."""
+    exp = _experiment(qc_set)
+    species = (exp.get("species") or {}).get("common_name") or ""
+    sid = qc_set.get("id")
+    return (
+        species,
+        exp.get("name") or "",
+        qc_set.get("name") or "",
+        sid if sid is not None else -1,
+    )
+
+
 # --- supabase I/O ---
 
 
 def fetch_qc_sets(client: Any) -> list[dict[str, Any]]:
-    """All QC sets with their experiment/species relation and QC-code ids (for the count)."""
+    """QC sets for live experiments, with species + QC-code ids (for the count).
+
+    Inner-joins ``cyl_experiments`` and filters ``deleted_at IS NULL`` so a set attached to a
+    soft-deleted experiment is excluded — otherwise ``bloom_admin`` (whose RLS reads
+    ``USING (true)``) would see the tombstoned experiment's name that ``experiments list`` hides,
+    and other roles would get an orphan row. Ordered by id for a deterministic base fetch (the
+    display sort is applied client-side).
+    """
     return (
         client.table("cyl_qc_sets")
-        .select("*, cyl_experiments(*, species(*)), cyl_qc_codes(id)")
+        .select("*, cyl_experiments!inner(*, species(*)), cyl_qc_codes(id)")
+        .is_("cyl_experiments.deleted_at", "null")
+        .order("id")
         .execute()
         .data
         or []
@@ -102,11 +125,11 @@ def list_sets(output_fmt: str | None, profile: str) -> None:
         raw = fetch_qc_sets(client)
     except APIError as exc:
         raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
-    # No sort is imposed — rows are emitted in fetch order, as legacy did.
+    rows_data = sorted(raw, key=qc_set_sort_key)  # deterministic run-to-run
     if output_fmt:
-        records = [build_qc_set_record(s) for s in raw]
+        records = [build_qc_set_record(s) for s in rows_data]
         click.echo(render(records, QC_SET_FIELDS, output_fmt))
         return
 
-    rows = [build_qc_set_row(s) for s in raw]
+    rows = [build_qc_set_row(s) for s in rows_data]
     print_table("QC sets", QC_SET_COLUMNS, rows, empty="No QC sets found.")

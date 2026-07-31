@@ -55,6 +55,17 @@ def test_build_qc_set_record():
     }
 
 
+def test_build_qc_set_record_tolerates_missing_relations():
+    rec = qc.build_qc_set_record({"name": "x", "cyl_experiments": None, "cyl_qc_codes": None})
+    assert rec == {
+        "name": "x",
+        "species": None,
+        "experiment": None,
+        "experiment_id": None,
+        "qc_code_count": 0,
+    }
+
+
 def test_columns_match_legacy_exactly():
     """Five legacy columns, legacy header wording, no additions."""
     assert qc.QC_SET_COLUMNS == [
@@ -66,9 +77,9 @@ def test_columns_match_legacy_exactly():
     ]
 
 
-def test_no_sort_is_imposed():
-    """Rows are emitted in fetch order; the command must not reorder them."""
-    assert not hasattr(qc, "qc_set_sort_key")
+def test_qc_set_fields_are_the_machine_contract():
+    # the json/csv field names scripts depend on — pin them so a rename can't drift silently
+    assert qc.QC_SET_FIELDS == ["name", "species", "experiment", "experiment_id", "qc_code_count"]
 
 
 # --- query shape ------------------------------------------------------------
@@ -82,6 +93,14 @@ def test_fetch_qc_sets_builds_query():
             captured["select"] = sel
             return self
 
+        def is_(self, col, val):
+            captured["is_"] = (col, val)
+            return self
+
+        def order(self, col):
+            captured["order"] = col
+            return self
+
         def execute(self):
             return type("R", (), {"data": SETS})()
 
@@ -93,8 +112,11 @@ def test_fetch_qc_sets_builds_query():
     out = qc.fetch_qc_sets(_Client())
     assert out == SETS
     assert captured["table"] == "cyl_qc_sets"
-    assert "cyl_experiments(*, species(*))" in captured["select"]
+    # inner-join so the soft-delete filter drops sets on tombstoned experiments
+    assert "cyl_experiments!inner(*, species(*))" in captured["select"]
     assert "cyl_qc_codes(id)" in captured["select"]
+    assert captured["is_"] == ("cyl_experiments.deleted_at", "null")  # exclude soft-deleted
+    assert captured["order"] == "id"  # deterministic base fetch
 
 
 # --- command ----------------------------------------------------------------
@@ -115,7 +137,9 @@ def test_list_sets_output_json(monkeypatch):
     res = CliRunner().invoke(cli, ["cyl", "qc", "list-sets", "--output", "json"])
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)
-    # Order is not specified — compare without regard to it.
+    # Sorted deterministically (species, then experiment/name) regardless of fetch order:
+    # fetch order is [outliers(Rice), bad-scans(Canola)] → output [bad-scans, outliers].
+    assert [s["name"] for s in payload] == ["bad-scans", "outliers"]
     assert {s["name"]: s["qc_code_count"] for s in payload} == {"outliers": 3, "bad-scans": 1}
     assert all("id" not in s for s in payload)
 

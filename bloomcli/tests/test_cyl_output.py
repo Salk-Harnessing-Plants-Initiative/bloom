@@ -64,6 +64,42 @@ def test_empty_json_is_an_empty_array() -> None:
     assert json.loads(render([], FIELDS, "json")) == []
 
 
+def test_csv_escapes_commas_quotes_and_newlines() -> None:
+    """The whole reason for the stdlib csv writer: special chars round-trip inside one field
+    instead of corrupting the row."""
+    records = [
+        {
+            "name": 'a,b "c"\nd',
+            "species": None,
+            "experiment": "x",
+            "experiment_id": 1,
+            "qc_code_count": 2,
+        }
+    ]
+    parsed = list(csv.DictReader(io.StringIO(render(records, FIELDS, "csv"))))
+    assert len(parsed) == 1  # the embedded newline did not split the row
+    assert parsed[0]["name"] == 'a,b "c"\nd'  # comma, quote, and newline all preserved
+    assert parsed[0]["species"] == ""  # None → empty cell, not the string "None"
+
+
+def test_csv_ignores_extra_record_keys() -> None:
+    """extrasaction='ignore': a record richer than the declared fields doesn't raise, and the
+    extra keys never leak into the output."""
+    records = [
+        {**RECORDS[0], "id": 999, "internal": "SHOULD_NOT_APPEAR"},
+    ]
+    out = render(records, FIELDS, "csv")
+    assert "999" not in out and "SHOULD_NOT_APPEAR" not in out
+    parsed = list(csv.DictReader(io.StringIO(out)))
+    assert set(parsed[0].keys()) == set(FIELDS)
+
+
+def test_json_ignores_extra_record_keys() -> None:
+    records = [{**RECORDS[0], "id": 999, "internal": "SHOULD_NOT_APPEAR"}]
+    parsed = json.loads(render(records, FIELDS, "json"))
+    assert set(parsed[0].keys()) == set(FIELDS)
+
+
 def test_unknown_format_raises() -> None:
     with pytest.raises(ValueError):
         render(RECORDS, FIELDS, "yaml")
