@@ -39,6 +39,7 @@ from .ports import (
 
 if TYPE_CHECKING:
     from bloom_mcp.contract.provenance import Provenance
+    from bloom_mcp.data_access import SourceInfo
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ _MAX_ID_ATTEMPTS = 3
 # the original, actionable CommitFailedError surface promptly rather than
 # hold the caller for as long as a load-bearing call would.
 _CLEANUP_TIMEOUT_SECONDS = 5.0
+
 
 # `commit` is dispatched by FastMCP's Starlette server via a thread pool, so
 # two calls for the same (output_root, experiment, tool_class) can genuinely
@@ -100,7 +102,15 @@ class SupabaseResultStore:
         provenance: "Provenance",
         user_label: Optional[str] = None,
         source_csv: Optional[Path] = None,
+        source: Optional["SourceInfo"] = None,
     ) -> RunHandle:
+        if source is not None:
+            provenance = provenance.model_copy(
+                update={
+                    "source_id": source.source_id,
+                    "source_name": source.source_name,
+                }
+            )
         adir = AnalysisDir(self._output_root, experiment, tool_class)
         # Single-writer assumption (see _WIKI/BLOOMMCP/storage-workflow.md):
         # version_id is allocated from the current manifest now and the manifest
@@ -138,7 +148,9 @@ class SupabaseResultStore:
         # Serializes every commit for this (output_root, experiment, tool_class)
         # within this process — see the lock's module-level docstring for why
         # this is load-bearing, not defensive belt-and-suspenders.
-        lock = _commit_lock(self._output_root, adir.experiment_filename, adir.tool_class)
+        lock = _commit_lock(
+            self._output_root, adir.experiment_filename, adir.tool_class
+        )
         with lock:
             uploaded_keys: list[str] = []
             try:
@@ -204,7 +216,9 @@ class SupabaseResultStore:
                 # bypasses the lock (e.g. a future direct manifest writer) and
                 # against the still-open multi-instance case documented below.
                 fresh = adir.read_manifest()
-                if fresh is not None and any(v.id == version_id for v in fresh.versions):
+                if fresh is not None and any(
+                    v.id == version_id for v in fresh.versions
+                ):
                     raise RuntimeError(
                         f"version {version_id!r} was claimed by another writer "
                         f"during upload"
@@ -214,7 +228,9 @@ class SupabaseResultStore:
                     manifest = Manifest(
                         experiment=ExperimentBlock(
                             filename=adir.experiment_filename,
-                            source_path=str(state.source_csv) if state.source_csv else "",
+                            source_path=(
+                                str(state.source_csv) if state.source_csv else ""
+                            ),
                             input_sha256=sha,
                         ),
                         versions=[entry],

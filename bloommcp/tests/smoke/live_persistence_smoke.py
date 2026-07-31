@@ -9,8 +9,10 @@ MinIO), so it must override what ``.env.dev`` configures for in-container proces
     script (it derives the port from ``.env.dev``); we fall back to localhost:8000 only
     for a bare ``python tests/smoke/live_persistence_smoke.py`` invocation.
   * ``BLOOM_TRAITS_DIR`` / ``BLOOM_OUTPUT_DIR`` / ``BLOOM_PLOTS_DIR`` — ``.env.dev`` points
-    these at in-container ``/app/data/...`` paths; we override them with host temp dirs,
-    seeding the traits dir with the ``turface`` fixture.
+    these at in-container ``/app/data/...`` paths; we override them with host temp dirs.
+    ``BLOOM_TRAITS_DIR`` itself must still exist for boot validation, but its *contents*
+    are no longer read for the raw tier — see ``BLOOM_SMOKE_EXPERIMENT_ID`` below
+    (bloom#551: ``SupabaseReader``'s raw tier is DB-only, not a local-CSV read anymore).
 
 ``bloom_mcp.experiment_utils`` captures ``TRAITS_DIR`` / ``OUTPUT_DIR`` / ``PLOTS_DIR``
 from the environment **at import time**, so the env must be set *before* ``import
@@ -21,27 +23,33 @@ checked clean with no Supabase env — the Tier-0 lazy-validation contract — i
 subprocess first.
 
 A **Tier-3 ``qc_clean``** leg (#338) drives the granular cleanup tool through the real
-ports against the raw ``turface`` input:
+ports against a raw experiment already resolvable from Postgres:
 
-  * ``qc_clean(experiment="turface_raw.csv", max_nans_per_trait=0.1)`` commits a versioned
-    ``qc`` run whose committed outputs include ``_cleaned.csv`` and ``cleanup_log.json``;
-  * that run's manifest is schema v3 and every recorded ``output_sha256`` matches the bytes
+  * Set ``BLOOM_SMOKE_EXPERIMENT_ID`` to a numeric experiment id that already has trait
+    rows in whatever Postgres this smoke run points at — ``SupabaseReader``'s raw tier is
+    DB-only (bloom#551), so there is no local-CSV upload path for this script to seed the
+    input from anymore. Seeding that experiment into the dev stack's Postgres is not
+    automated by this script (no tracking issue filed yet for a smoke DB seeder);
+  * ``qc_clean(experiment=BLOOM_SMOKE_EXPERIMENT_ID, max_nans_per_trait=0.1)`` commits a
+    versioned ``qc`` run whose committed outputs include ``_cleaned.csv`` and
+    ``cleanup_log.json``;
+  * that run's manifest is schema v4 and every recorded ``output_sha256`` matches the bytes
     actually stored for **both** artifacts;
-  * a fresh ``SupabaseReader().load_experiment("turface_raw.csv", require_clean=True)`` then
-    resolves the committed **cleaned** version (source ``v<N>_cleaned``, not ``raw``) and that
-    frame has zero NaN cells in its trait columns — the qc_clean → pca_analysis contract.
+  * a fresh ``SupabaseReader().load_experiment(BLOOM_SMOKE_EXPERIMENT_ID, require_clean=True)``
+    then resolves the committed **cleaned** version (source ``v<N>_cleaned``, not ``raw``) and
+    that frame has zero NaN cells in its trait columns — the qc_clean → pca_analysis contract.
 
 A ``remove_outliers`` leg (#378) trims the cleaned version through the same real ports. This
-is also where the smoke's generic v3-provenance + version-advance guarantee (originally
+is also where the smoke's generic v4-provenance + version-advance guarantee (originally
 proven on a now-retired ``run_clustering_workflow`` leg — devendor-bloommcp-analysis C11.8
 repointed it here, since ``remove_outliers`` is the surviving seed-bearing consumer) lives:
 
   * ``remove_outliers(experiment="turface_raw.csv", method="mahalanobis", seed=42)`` commits a
     versioned ``qc`` run (same class — its trimmed ``_cleaned.csv`` becomes the newest cleaned
-    version) whose outputs include ``_cleaned.csv`` and ``outlier_report.json``, with a schema-v3
+    version) whose outputs include ``_cleaned.csv`` and ``outlier_report.json``, with a schema-v4
     manifest recording the resolved ``seed``, ``tool == "remove_outliers"`` (the composition
     anchor), and matching ``output_sha256`` for both artifacts;
-  * the same manifest is also asserted against the generic v3-provenance contract: schema v3,
+  * the same manifest is also asserted against the generic v4-provenance contract: schema v4,
     non-null real ``seed`` (== 42), ``agent`` == ``bloom_agent``, populated ``environment``, and
     matching ``output_sha256`` / ``output_keys`` maps;
   * a fresh ``require_clean=True`` read then resolves the **trimmed** version (``v<N>_cleaned``)
@@ -59,7 +67,7 @@ same real ports:
   * ``clustering(experiment="turface_raw.csv", method="kmeans", seed=42)`` resolves the latest
     cleaned version via ``require_clean=True`` (the trim if the leg above ran, else the qc_clean
     clean) and commits a versioned ``clustering`` run whose outputs are ``labels.csv`` +
-    ``cluster_result.json``, with a schema-v3 manifest recording the resolved ``seed``,
+    ``cluster_result.json``, with a schema-v4 manifest recording the resolved ``seed``,
     ``tool == "clustering"``, and matching ``output_sha256`` for both artifacts — the
     qc_clean → … → clustering(require_clean=True) composition, in parallel with pca_analysis.
 
@@ -67,7 +75,7 @@ A fourth, **hierarchical clustering** leg (#422) validates the deterministic arm
 
   * ``clustering(experiment="turface_raw.csv", method="hierarchical")`` resolves the latest
     cleaned version via ``require_clean=True`` and commits a versioned ``clustering`` run whose
-    outputs are ``labels.csv`` + ``cluster_result.json``, with a schema-v3 manifest recording
+    outputs are ``labels.csv`` + ``cluster_result.json``, with a schema-v4 manifest recording
     ``seed=None`` (hierarchical is deterministic — no RNG), ``tool == "clustering"``, and
     matching ``output_sha256`` for both artifacts.
 
@@ -76,7 +84,7 @@ A fifth, **``descriptive_stats``** leg (#488) *consumes* the same latest cleaned
   * ``descriptive_stats(experiment="turface_raw.csv")`` resolves the latest cleaned version via
     ``require_clean=True`` and commits a versioned ``stats`` run (a new tool class — its output
     does not compose as another tool's input) whose outputs include ``stats.csv``, with a
-    schema-v3 manifest recording ``seed=None`` (deterministic — no RNG), ``tool ==
+    schema-v4 manifest recording ``seed=None`` (deterministic — no RNG), ``tool ==
     "descriptive_stats"``, and matching ``output_sha256``. Asserted **structurally** (one row per
     reported trait, ``n_failed == 0``) rather than against the unit golden's exact numeric values
     — the smoke's cleaned input uses the ``qc_clean`` leg's own threshold, which may differ from
@@ -106,26 +114,23 @@ from pathlib import Path
 from typing import Callable, NamedTuple, Optional
 
 # --- constants ----------------------------------------------------------------
-# EXPECTED_SEED backs provenance_checks(), the generic v3-provenance assertion
+# EXPECTED_SEED backs provenance_checks(), the generic v4-provenance assertion
 # (schema/seed/agent/environment/output-keys) originally proven on the retired
 # legacy run_clustering_workflow leg; C11.8 (devendor-bloommcp-analysis) moved
 # that assertion onto the remove_outliers leg, which also resolves a fixed seed
 # of 42 (see RO_SEED below) — same value, no numeric change.
 EXPECTED_SEED = 42
 EXPECTED_AGENT = "bloom_agent"
-_HERE = Path(__file__).resolve().parent
 
 # --- Tier-3 qc_clean leg constants --------------------------------------------
-# A SECOND experiment, cleaned through the granular ``qc_clean`` tool (#338). Its
-# input is the *raw* (un-QC'd) turface table; ``qc_clean`` persists a versioned
-# ``qc`` run whose ``_cleaned.csv`` a later ``require_clean`` read must resolve.
-# The raw input is seeded into ``BLOOM_TRAITS_DIR`` (the deployed read path —
-# inputs have not yet migrated to ``bloommcp_input/``), matching the existing
-# fixture-upload pattern in ``_configure_live_env``.
-QC_EXPERIMENT = "turface_raw.csv"
+# A SECOND experiment, cleaned through the granular ``qc_clean`` tool (#338).
+# ``SupabaseReader``'s raw tier is DB-only (bloom#551) — this leg needs a REAL
+# numeric experiment id that already has trait rows in whatever Postgres this
+# smoke run points at, not a local CSV this script can seed itself. Set
+# BLOOM_SMOKE_EXPERIMENT_ID to that id before running `make bloommcp-smoke`.
+QC_EXPERIMENT = os.environ.get("BLOOM_SMOKE_EXPERIMENT_ID", "")
 QC_TOOL_CLASS = "qc"
 QC_MAX_NANS_PER_TRAIT = 0.1
-QC_FIXTURE = _HERE.parent / "fixtures" / "turface_19_raw_data.csv"
 CLEANED_CSV_NAME = (
     "_cleaned.csv"  # logical key qc_clean commits (and the reader resolves)
 )
@@ -187,7 +192,7 @@ def summarize(checks: list[Check]) -> tuple[str, int]:
         return "\n".join(lines), 1
     lines.append(
         "SMOKE PASSED ✅ — the qc_clean cleaned run, remove_outliers trimmed run "
-        "(incl. the generic v3-provenance + version-advance guarantee), AND the granular "
+        "(incl. the generic v4-provenance + version-advance guarantee), AND the granular "
         "clustering(kmeans), clustering(hierarchical), and descriptive_stats consumers "
         "all persist full provenance through the real ports; the qc_clean → "
         "remove_outliers → {clustering,descriptive_stats}(require_clean=True) "
@@ -205,11 +210,11 @@ def provenance_checks(
     output_keys: dict,
     output_sha256: dict,
 ) -> list[Check]:
-    """Assert the v3 provenance fields on the committed run's latest entry."""
+    """Assert the v4 provenance fields on the committed run's latest entry."""
     return [
         Check(
-            "manifest schema == 3",
-            schema_version == 3,
+            "manifest schema == 4",
+            schema_version == 4,
             f"schema_version={schema_version!r}",
         ),
         Check("seed non-null (B1)", seed is not None, f"seed={seed!r}"),
@@ -269,17 +274,17 @@ def qc_persist_checks(
     output_sha256: dict,
     expected_outputs: set,
 ) -> list[Check]:
-    """Assert the persisted ``qc_clean`` run: v3 manifest + the cleaned-output catalog.
+    """Assert the persisted ``qc_clean`` run: v4 manifest + the cleaned-output catalog.
 
     The Tier-3 analogue of :func:`provenance_checks`. ``qc_clean`` is deterministic
     (threshold filters, no ``random_state``), so it records ``seed=None`` — there is
-    no seed assertion here; what matters is a schema-v3 manifest whose committed
+    no seed assertion here; what matters is a schema-v4 manifest whose committed
     outputs expose **both** cleaned artifacts under one key-set.
     """
     return [
         Check(
-            "qc_clean: manifest schema == 3",
-            schema_version == 3,
+            "qc_clean: manifest schema == 4",
+            schema_version == 4,
             f"schema_version={schema_version!r}",
         ),
         Check(
@@ -325,7 +330,7 @@ def ro_persist_checks(
     output_sha256: dict,
     expected_outputs: set,
 ) -> list[Check]:
-    """Assert the persisted ``remove_outliers`` run: v3 manifest, recorded seed, catalog.
+    """Assert the persisted ``remove_outliers`` run: v4 manifest, recorded seed, catalog.
 
     The #378 analogue of :func:`qc_persist_checks`. Unlike ``qc_clean``, outlier
     detection is *stochastic*, so the run records the resolved integer ``seed`` — asserted
@@ -337,8 +342,8 @@ def ro_persist_checks(
     """
     return [
         Check(
-            "remove_outliers: manifest schema == 3",
-            schema_version == 3,
+            "remove_outliers: manifest schema == 4",
+            schema_version == 4,
             f"schema_version={schema_version!r}",
         ),
         Check(
@@ -415,7 +420,7 @@ def clustering_persist_checks(
     output_sha256: dict,
     expected_outputs: set,
 ) -> list[Check]:
-    """Assert the persisted ``clustering`` run: v3 manifest, recorded seed, catalog, lineage.
+    """Assert the persisted ``clustering`` run: v4 manifest, recorded seed, catalog, lineage.
 
     The #309 analogue of :func:`ro_persist_checks`. clustering is *stochastic*, so the run
     records the resolved integer ``seed`` — asserted here. Unlike ``remove_outliers`` it is a
@@ -427,8 +432,8 @@ def clustering_persist_checks(
     """
     return [
         Check(
-            "clustering: manifest schema == 3",
-            schema_version == 3,
+            "clustering: manifest schema == 4",
+            schema_version == 4,
             f"schema_version={schema_version!r}",
         ),
         Check(
@@ -469,15 +474,15 @@ def hierarchical_clustering_persist_checks(
     output_sha256: dict,
     expected_outputs: set,
 ) -> list[Check]:
-    """Assert the persisted hierarchical ``clustering`` run: v3 manifest, seed=None, catalog.
+    """Assert the persisted hierarchical ``clustering`` run: v4 manifest, seed=None, catalog.
 
     Hierarchical clustering is deterministic (no RNG), so provenance records ``seed=None``
     rather than the resolved integer seed. Otherwise mirrors :func:`clustering_persist_checks`.
     """
     return [
         Check(
-            "hierarchical clustering: manifest schema == 3",
-            schema_version == 3,
+            "hierarchical clustering: manifest schema == 4",
+            schema_version == 4,
             f"schema_version={schema_version!r}",
         ),
         Check(
@@ -518,7 +523,7 @@ def stats_persist_checks(
     output_sha256: dict,
     expected_outputs: set,
 ) -> list[Check]:
-    """Assert the persisted ``descriptive_stats`` run: v3 manifest, seed=None, catalog, lineage.
+    """Assert the persisted ``descriptive_stats`` run: v4 manifest, seed=None, catalog, lineage.
 
     The #488 analogue of :func:`hierarchical_clustering_persist_checks`.
     ``descriptive_stats`` is deterministic (no RNG), so provenance records ``seed=None``.
@@ -529,8 +534,8 @@ def stats_persist_checks(
     """
     return [
         Check(
-            "descriptive_stats: manifest schema == 3",
-            schema_version == 3,
+            "descriptive_stats: manifest schema == 4",
+            schema_version == 4,
             f"schema_version={schema_version!r}",
         ),
         Check(
@@ -657,23 +662,20 @@ def retry(
 
 # --- live wiring (exercised only with the dev stack up) -----------------------
 def _configure_live_env() -> None:
-    """Point BLOOM_*_DIR at host temp dirs (seeded with the fixture) before import.
+    """Point BLOOM_*_DIR at host temp dirs before import.
 
     The dirs are registered for cleanup at interpreter exit so a smoke run leaves
     no host litter. Env is set here *before* the first ``import bloom_mcp`` in
     ``main`` because ``experiment_utils`` captures the dir globals at import time.
+    ``BLOOM_TRAITS_DIR`` only needs to exist (boot validation still checks for the
+    directory) — its contents are never read by ``SupabaseReader``'s DB-only raw
+    tier, so unlike before this change there is no fixture to seed into it.
     """
-    if not QC_FIXTURE.exists():
-        raise FileNotFoundError(f"fixture not found: {QC_FIXTURE}")
     traits = Path(tempfile.mkdtemp(prefix="smoke_traits_"))
     out = Path(tempfile.mkdtemp(prefix="smoke_out_"))
     plots = Path(tempfile.mkdtemp(prefix="smoke_plots_"))
     for d in (traits, out, plots):
         atexit.register(shutil.rmtree, d, ignore_errors=True)
-    # Seed the raw qc_clean input as turface_raw.csv. The deployed reader resolves
-    # raw inputs from BLOOM_TRAITS_DIR (inputs have not yet moved to the
-    # bloommcp_input/ bucket), so the qc_clean leg uploads its fixture here.
-    shutil.copy(QC_FIXTURE, traits / QC_EXPERIMENT)
     os.environ["BLOOM_TRAITS_DIR"] = str(traits)
     os.environ["BLOOM_OUTPUT_DIR"] = str(out)
     os.environ["BLOOM_PLOTS_DIR"] = str(plots)
@@ -695,6 +697,21 @@ def main() -> int:
                 "BLOOM_AGENT_KEY present",
                 False,
                 "unset — export it from .env.dev (the make target does this)",
+            )
+        )
+        text, code = summarize(checks)
+        print(text)
+        return code
+
+    if not QC_EXPERIMENT:
+        checks.append(
+            Check(
+                "BLOOM_SMOKE_EXPERIMENT_ID present",
+                False,
+                "unset — set it to a numeric experiment id already seeded with trait "
+                "rows in the target Postgres. SupabaseReader's raw tier is DB-only "
+                "(bloom#551): there is no local-CSV upload path left for this script "
+                "to fall back to, so this leg cannot invent a valid experiment itself.",
             )
         )
         text, code = summarize(checks)
@@ -745,7 +762,7 @@ def main() -> int:
         checks.append(Check("qc_clean commits a cleaned run", False, f"error={exc!r}"))
 
     if qc_committed:
-        # Read the committed qc run back through the port, then assert the v3
+        # Read the committed qc run back through the port, then assert the v4
         # manifest + the cleaned-output catalog.
         qc_stored = retry(
             lambda: _ports.store().get_run(QC_EXPERIMENT, QC_TOOL_CLASS, "latest")
@@ -824,7 +841,7 @@ def main() -> int:
                     expected_outputs={CLEANED_CSV_NAME, RO_REPORT_NAME},
                 )
             )
-            # Generic v3 provenance (schema/seed/agent/environment/output-keys) —
+            # Generic v4 provenance (schema/seed/agent/environment/output-keys) —
             # the same contract the retired legacy clustering-workflow leg used to
             # prove, now anchored on remove_outliers (#412/devendor-bloommcp-analysis
             # C11.8: that leg drove run_clustering_workflow, retired in Phase 1).

@@ -509,6 +509,7 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
         provenance=provenance,
         user_label=params.user_label,
         source_csv=_ports.raw_source_for(params.experiment),
+        source=frame.resolved_source,
     )
     # Render + persist under the run's staging dir; on any partial failure remove the
     # staging dir so a long-lived server does not leak a half-written temp run.

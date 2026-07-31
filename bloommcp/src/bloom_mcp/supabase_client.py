@@ -6,7 +6,7 @@ prefix decisions in one place means future tools cannot accidentally
 upload to the wrong bucket, hit Supabase as service_role, or skip the
 required input/output prefix.
 
-Public surface (exactly three functions):
+Public surface:
 
     get_postgrest_client()           → supabase.Client authenticated as
                                        bloom_agent. Use for table reads
@@ -18,8 +18,9 @@ Public surface (exactly three functions):
                                        `bloommcp-data` bucket.
 
     call_rpc(function_name, params)  → list[dict] rows from a Postgres RPC
-                                       function (e.g. `record_bloommcp_usage`),
-                                       called as bloom_agent via PostgREST.
+                                       function (e.g. `get_experiment_traits`,
+                                       `record_bloommcp_usage`), called as
+                                       bloom_agent via PostgREST.
 
 For tool outputs, go through the `ResultStore` port (`bloom_mcp.result_store`)
 instead — its `SupabaseResultStore` adapter routes through the versioned
@@ -135,11 +136,13 @@ def call_rpc(function_name: str, params: dict) -> list[dict]:
     """Call a Postgres RPC function via PostgREST as bloom_agent, return its rows.
 
     Args:
-        function_name: a `bloom_agent`-granted RPC (e.g. `record_bloommcp_usage`).
+        function_name: a `bloom_agent`-granted RPC (e.g. `get_experiment_traits`,
+            `list_experiment_trait_sources`, `record_bloommcp_usage`).
         params: keyword arguments for the function, matching its SQL parameter
-            names exactly (e.g. `{"p_identity": "...", "p_action": "qc_clean"}`).
-            Sent as a JSON body that PostgREST binds as function arguments —
-            not string-interpolated SQL, so an attacker-influenced value in
+            names exactly (e.g. `{"experiment_id_": 42, "source_id_": None}`,
+            `{"p_identity": "...", "p_action": "qc_clean"}`). Sent as a JSON
+            body that PostgREST binds as function arguments — not
+            string-interpolated SQL, so an attacker-influenced value in
             `params` is not a SQL-injection vector.
 
     Raises:

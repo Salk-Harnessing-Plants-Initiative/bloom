@@ -1,6 +1,6 @@
-"""Manifest schema v3: new entries are v3 and v3 entries round-trip.
+"""Manifest schema v3/v4: new entries are v4 and both shapes round-trip.
 
-Maps the spec "Additive Manifest Schema v3" forward-direction scenarios.
+Maps the spec "Additive Manifest Schema v4" forward-direction scenarios.
 """
 
 from __future__ import annotations
@@ -33,19 +33,30 @@ def _v3_entry() -> VersionEntry:
     )
 
 
-def test_current_schema_version_is_3():
-    """The schema constant and a fresh manifest both report version 3."""
-    assert CURRENT_SCHEMA_VERSION == 3
+def test_current_schema_version_is_4():
+    """The schema constant and a fresh manifest both report version 4."""
+    assert CURRENT_SCHEMA_VERSION == 4
     manifest = Manifest(
         experiment=ExperimentBlock(
             filename="x.csv", source_path="bloommcp_input/x.csv", input_sha256="0" * 64
         )
     )
-    assert manifest.manifest_schema_version == 3
+    assert manifest.manifest_schema_version == 4
 
 
 def test_v3_version_entry_roundtrips_exactly():
-    """A v3 entry with the new sibling collections round-trips through JSON."""
+    """A v3-shaped entry (no source_id/source_name) round-trips through JSON."""
     entry = _v3_entry()
+    again = VersionEntry.model_validate(entry.model_dump(mode="json"))
+    assert again == entry
+    assert again.source_id is None
+    assert again.source_name is None
+
+
+def test_v4_version_entry_roundtrips_exactly():
+    """A v4 entry with source_id/source_name round-trips through JSON."""
+    entry = _v3_entry().model_copy(
+        update={"source_id": 7, "source_name": "reprocess-2026-07"}
+    )
     again = VersionEntry.model_validate(entry.model_dump(mode="json"))
     assert again == entry
