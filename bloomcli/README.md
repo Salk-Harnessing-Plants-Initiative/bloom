@@ -59,7 +59,7 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
   batch of per-scan `ResultEnvelope`s in one invocation (see below); the batch
   sibling of `ingest-result`, for the A4 per-batch pipeline.
 - **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets
-  (`--experiment-id` to scope to one experiment, `--json` for machine-readable output).
+  (`--experiment-id` to scope to one experiment, `--output csv|json` for machine-readable output).
 - **[read]** `bloomctl cyl datasets get <name>` — show one dataset's details and the
   unique traits it contains, via the `cyl_dataset_trait_names` view (`--json` output).
 - **[write]** `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
@@ -67,9 +67,9 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - **[read]** `bloomctl cyl experiments list` — list cylinder experiments (species,
   name, id), sorted by species then name (`--json` for machine-readable output).
 - **[read]** `bloomctl cyl accessions list --experiment-id N` — list the accessions
-  used in an experiment (`--json`).
+  used in an experiment (`--output csv|json` for machine-readable output).
 - **[read]** `bloomctl cyl accessions sample-counts [--species X]` — plant count per
-  accession, per species (`--json`).
+  accession, per species (`--output csv|json`).
 - **[read]** `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species,
   experiment, number of QC codes). Prints a table by default; `--output csv|json`
   for machine-readable output.
