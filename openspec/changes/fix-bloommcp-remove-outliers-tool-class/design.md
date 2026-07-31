@@ -115,33 +115,47 @@ table, regardless of any trim" (what `remove_outliers` itself needs as *input*, 
   actually work: `remove_outliers`'s own `"latest_qc"` read is untouched by this preference, so
   a fresh `qc_clean` is never hidden from the tool whose job is to trim it, while every *other*
   consumer sees the trim once one exists.
-- **Decision 4 (disclosed trade-off, not a bug): once any `outliers` version exists for an
-  experiment, a subsequent plain `qc_clean` re-run does not become "latest" for
-  `require_clean=True` consumers on its own.** It only becomes reachable once a fresh
-  `remove_outliers` run (which — per Decision 2 — always reads the current `qc` latest,
-  ignoring the stale trim) commits a new `outliers` version on top of it. This is the intended
-  reading of "give `remove_outliers` a dedicated class... structurally, not a warning" from the
-  #420 review thread: once an experiment has opted into outlier-trimming, the trimmed pipeline
-  output is the analysis-ready tier until the trim itself is redone, not until any clean happens
-  to be redone. **This is the one place a reviewer might want the heavier alternative instead
-  (lineage-aware staleness detection comparing `based_on_version` against the current `qc`
-  latest, falling back to the plain clean when the trim is provably stale) — flagged in Open
-  Questions**, but that alternative reintroduces a form of the original silent-revert (a
-  genuinely-superseded trim would fall back to an un-trimmed frame with no distinguishable
-  signal, since `_resolve_versioned_cleaned`'s `(path, label, error)` return has no channel for
-  a non-fatal advisory) and was rejected here for the same reason the issue's own "cheap interim"
-  was rejected: it re-admits a silent, easy-to-miss path back to un-trimmed data.
-- **Decision 5: `remove_outliers`' `provenance.based_on_version` stays unambiguous under this
-  design** — it is always the `qc`-class label the tool actually read via `version="latest_qc"`
-  (e.g. `"v3_cleaned"`, always a `qc`-class version), never an `outliers`-class label, so no new
-  cross-catalog ambiguity is introduced in the one place this codebase currently stamps
-  `based_on_version`. The **cross-class `"latest"` resolution's own returned `source` label**
-  (read by non-`remove_outliers` consumers, e.g. `pca_analysis`'s `frame.source`) is qualified
-  with the winning tool class — `f"{tool_class}_{entry.id}_cleaned"` (e.g. `"outliers_v2_cleaned"`
-  vs `"qc_v3_cleaned"`) — specifically for this new multi-class path, so a human or log reading
-  `frame.source` can tell which manifest it came from. The existing `"latest_qc"` and explicit
-  `"v<N>"` paths keep today's unqualified `f"{entry.id}_cleaned"` format unchanged (still
-  unambiguous — single class).
+- **Decision 4 (proposed, flagged for explicit reviewer sign-off — not asserted as settled):
+  once any `outliers` version exists for an experiment, a subsequent plain `qc_clean` re-run does
+  not become "latest" for `require_clean=True` consumers on its own.** It only becomes reachable
+  once a fresh `remove_outliers` run (which — per Decision 2 — always reads the current `qc`
+  latest, ignoring the stale trim) commits a new `outliers` version on top of it. This is **one
+  reasonable reading** of "give `remove_outliers` a dedicated class... structurally, not a
+  warning" from the #420 review thread — the alternative literal reading ("prefer whichever
+  manifest was touched most recently") is proven unfixable by the repro trace above, so some
+  departure from the literal wording is unavoidable; this is the specific departure chosen, not
+  the only possible one. **This is the central open judgment call in this design** (Open
+  Questions) — a lineage-aware alternative (comparing `based_on_version` against the current `qc`
+  latest, falling back to the plain clean when the trim is provably stale) was considered and
+  rejected because `_resolve_versioned_cleaned`'s `(path, label, error)` return has no channel for
+  a non-fatal advisory, so that alternative's fallback would be just as silent as the original
+  bug. The trade-off this decision accepts is asymmetric with, not equivalent to, the original
+  bug: it is auditable (the stale `outliers` entry's own `based_on_version` still names the `qc`
+  version it was trimmed from) and recoverable by a known action (re-run `remove_outliers`),
+  where the original bug was neither.
+- **Decision 5: qualify the resolved label with the tool class ONLY when `"latest"` actually
+  resolves via the `outliers` class — never when it resolves via `qc`.** `remove_outliers`'s
+  `provenance.based_on_version` is always the `qc`-class label it read via `version="latest_qc"`
+  (e.g. `"v3_cleaned"`), so no new ambiguity is introduced there. For the cross-class
+  `version="latest"` path: when it resolves via `outliers` (the new, previously-impossible case),
+  the label is qualified as `f"outliers_{entry.id}_cleaned"` so a human or log reading
+  `frame.source` can tell it came from a trim, not a plain clean. **When `"latest"` resolves via
+  `qc`** (which — since `outliers` always wins whenever it has any entry, per Decision 3 — means
+  exactly the case where no `outliers` version exists yet), **the label stays exactly
+  `f"{entry.id}_cleaned"`, unqualified, byte-for-byte what `version="latest"` already returns
+  today.** This is deliberately asymmetric,
+  not an oversight: it means the overwhelmingly common case (no trim has ever been made for this
+  experiment) has **zero observable change** to `ExperimentFrame.source` or any `based_on_version`
+  a downstream tool persists from it — `pca_analysis.py`, `clustering.py`, `descriptive_stats.py`,
+  `umap_analysis.py`, and `cross_experiment_correlations.py` all currently do
+  `based_on_version = frame.source` (verified — each stamps this today), so qualifying the label
+  unconditionally would silently change the persisted provenance format for every future run on
+  every experiment, not just ones with a trim, and would also break the existing
+  `test_storage_backend.py::test_resolve_versioned_cleaned_via_local_list_prefix_fallback`, which
+  asserts the exact unqualified `"v1_cleaned"` label for a qc-only manifest. Confining the new
+  format to the genuinely new case (an `outliers` version exists and wins) avoids both.
+  `version="latest_qc"` and explicit `"v<N>"` are qc-class-only by construction and always use
+  the unqualified format.
 - **Decision 6: `FakeReader` treats `"latest_qc"` as an alias for `"latest"`.** `FakeReader` has
   no notion of tool classes at all (`fake_reader.py:66-94` — one flat `{version_id: df}` map per
   experiment); it cannot model the `qc`/`outliers` split and was never meant to (the original
@@ -154,7 +168,18 @@ table, regardless of any trim" (what `remove_outliers` itself needs as *input*, 
   error on *either* checked class's manifest still propagates immediately as today's error
   string — it is never treated as a soft miss that falls through to the other class, matching
   the existing principle that a corrupt manifest is a hard failure, not something to silently
-  route around.
+  route around. This must hold in **both** iteration positions: a schema error on `outliers`
+  (checked first) must propagate without falling through to `qc`, **and** a schema error on `qc`
+  (checked second, reached only when `outliers` resolves to no entry) must propagate too — both
+  are tested (tasks.md 1.1f/1.1g).
+- **Decision 8: the shared `version="latest"` semantics change is disclosed on the consumer
+  tools, not only in this design doc.** `pca_analysis`, `umap_analysis`, `clustering`,
+  `descriptive_stats`, and `cross_experiment_correlations` all call `require_clean=True` /
+  `version="latest"` (the default) with no call-site change — but what "latest" *means* changes
+  for any experiment that has ever been trimmed (Decision 4). An agent or bench scientist reading
+  a tool's parameter description has no way to know this from the code alone. Each tool's
+  docstring/param description SHALL gain one sentence: "latest" resolves the most recent outlier
+  trim when one exists, not merely the most recent clean.
 
 ## Risks / Trade-offs
 
@@ -174,9 +199,15 @@ table, regardless of any trim" (what `remove_outliers` itself needs as *input*, 
   read instead of one) — negligible against the existing per-call round trips.
 - **Pre-existing `qc`-class-persisted trims are not retroactively protected** and are not
   scanned for by this change (Non-Goal) — anyone currently relying on a trim from before this
-  ships may already be silently analyzing un-trimmed data today, undetected. A follow-up issue
-  for a one-time audit script (`VersionEntry.tool == "remove_outliers"` entries in a `qc`
-  manifest that are not that manifest's current `latest`) is recommended but out of scope here.
+  ships may already be silently analyzing un-trimmed data today, undetected. A follow-up issue is
+  recommended, covering **both**: (a) a one-time audit script for the historical case
+  (`VersionEntry.tool == "remove_outliers"` entries in a `qc` manifest that are not that
+  manifest's current `latest`), and (b) the **ongoing** version of the same risk class this
+  change's own Decision 4 accepts going forward (an `outliers` entry whose `based_on_version`
+  no longer matches the current `qc`-class latest) — e.g. a non-blocking hint surfaced in
+  `list_existing_analyses` output. Neither is implemented in this change; a pure detect-and-log
+  addition (not a resolution-behavior change) would not reintroduce the silent-fallback problem
+  Decision 4 rejects, so it remains a reasonable follow-up rather than a rejected idea.
 - **Two independent version-number sequences per experiment** (`qc`'s own `v1, v2, ...` and
   `outliers`' own separate `v1, v2, ...`) is the same shape already accepted for every other
   tool-class pair (`stats`, `clustering`, `pca`, ...); not new to this change.
@@ -214,3 +245,13 @@ readable (they simply stop being resolved as "latest cleaned" until re-applied).
   didn't intend to also invalidate the trim looks identical, at this layer, to one they did).
   Recommend fixed priority (Decision 4) unless a reviewer has a concrete workflow where the
   lineage-aware behavior is needed.
+- **A cheaper middle option exists and is deliberately not implemented here: fixed-priority
+  resolution (no behavior change) plus a non-blocking staleness signal** (log a message, or
+  surface a hint in `list_existing_analyses`, when an `outliers` entry's `based_on_version`
+  no longer matches the current `qc`-class latest) rather than either resolving differently or
+  saying nothing. Unlike the issue's rejected "cheap interim" (a warning **instead of** the
+  structural fix) or the rejected lineage-aware fallback (a warning **substituting for** a
+  changed, silently-different return value), this would be a warning **in addition to** the
+  unchanged fixed-priority resolution — it doesn't reintroduce a silent fallback because nothing
+  about what is *returned* changes. Left to the follow-up issue (Risks) rather than this change,
+  to keep this proposal's surface area to the resolution fix itself.

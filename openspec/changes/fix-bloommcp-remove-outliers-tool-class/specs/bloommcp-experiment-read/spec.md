@@ -27,9 +27,11 @@ without reproducing dtype-based detection. Consumers SHALL depend only on this p
   one exists at all — a fixed priority, not a recency comparison — falling back to the `qc`
   class's `latest` entry when `outliers` has none, then the legacy un-versioned
   `qc_<stem>/<stem>_cleaned.csv`, then the raw input, returning the first tier that resolves
-- **AND** the returned source label is qualified with the resolved tool class (e.g.
-  `outliers_v2_cleaned` or `qc_v3_cleaned`) so the winning manifest is identifiable from the
-  label alone
+- **AND** when the `outliers` class wins, the returned source label is qualified with the tool
+  class (e.g. `outliers_v2_cleaned`) so the winning manifest is identifiable from the label
+  alone; when the `qc` class wins (no `outliers` version exists), the label is the unqualified
+  `f"{entry.id}_cleaned"` — byte-for-byte what `version="latest"` already returns today, so an
+  experiment that has never been trimmed sees no observable change
 
 #### Scenario: A later plain clean does not silently win over an existing trim
 
@@ -111,6 +113,14 @@ follow-up that migrates inputs to Supabase Storage can remove it.
 - **THEN** it downloads and returns the cleaned CSV from the `outliers`-class manifest, with a
   source label identifying it as such
 
+#### Scenario: An untrimmed experiment sees no change in the resolved label
+
+- **WHEN** `SupabaseReader.load_experiment(name)` is called for an experiment that has only ever
+  been cleaned, never trimmed (no `outliers_<stem>` manifest exists)
+- **THEN** the resolved cleaned CSV and its source label are byte-for-byte identical to what this
+  adapter returned before this change — the unqualified `f"{entry.id}_cleaned"` label, not the
+  tool-class-qualified form
+
 #### Scenario: Resolves the plain-clean output for version="latest_qc"
 
 - **WHEN** `SupabaseReader.load_experiment(name, version="latest_qc")` is called and both
@@ -130,3 +140,36 @@ follow-up that migrates inputs to Supabase Storage can remove it.
 - **WHEN** the `SupabaseReader` test suite runs
 - **THEN** it exercises the adapter against a monkeypatched `supabase_client` boundary (no
   `supabase.create_client` call) and passes with no `SUPABASE_URL`/`BLOOM_AGENT_KEY` configured
+
+### Requirement: FakeReader Adapter
+
+The system SHALL provide an in-memory `FakeReader` adapter implementing `ExperimentReader`,
+behaviourally equivalent to `SupabaseReader` for observable outcomes, so the full read path is
+testable with no live Supabase — **with one explicit, disclosed exception**: `FakeReader` has no
+notion of tool classes and cannot model the `qc`/`outliers` priority split. It treats
+`version="latest_qc"` as an alias for `version="latest"` rather than resolving a `qc`-class
+manifest specifically, since it has no manifests at all. The outliers-preferring behavior of
+`version="latest"` and the cross-manifest fallback in `_resolve_versioned_cleaned` are proved
+against the real `SupabaseReader`/`SupabaseResultStore` adapters over a shared in-memory object
+store, not against `FakeReader` (the same fakes-vs-adapters split the
+`bloommcp-remove-outliers-tool` capability already established for cross-port composition).
+
+#### Scenario: In-memory experiment loads without Supabase
+
+- **WHEN** a test seeds `FakeReader` with a fixture experiment and calls `load_experiment(name)`
+- **THEN** it returns the expected frame and declared roles with no network or Supabase access
+
+#### Scenario: `latest_qc` is aliased to `latest`
+
+- **WHEN** a test calls `FakeReader.load_experiment(name, version="latest_qc")`
+- **THEN** it resolves exactly as `version="latest"` would (`FakeReader` has no tool-class model
+  to resolve `latest_qc` against specifically), so existing `FakeReader`-seeded tests that switch
+  a call site from `"latest"` to `"latest_qc"` keep passing unchanged
+
+#### Scenario: Fake and Supabase adapters agree on single-class observable behaviour
+
+- **WHEN** the same scenario set (load, version selection, not-found, empty list) runs against
+  both `FakeReader` and `SupabaseReader` (on a monkeypatched boundary), for an experiment with no
+  `outliers`-class cleaned version
+- **THEN** both produce equivalent observable results — return shapes, source labels, and
+  not-found signalling match

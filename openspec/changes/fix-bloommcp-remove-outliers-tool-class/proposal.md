@@ -56,6 +56,13 @@ anyone who doesn't read it every time.
   `SupabaseReader` and `LocalReader` both call through the one shared `_resolve_versioned_cleaned`
   helper, so both adapters pick up the fix together. Explicit version pins (`version="v3"`) and
   the `version="raw"` tier are untouched — see Non-Goals.
+- **Qualify the resolved label with the tool class only when `"latest"` actually resolves via
+  `outliers`** (e.g. `"outliers_v2_cleaned"`), leaving the far more common qc-only case exactly as
+  it returns today (`"v3_cleaned"`, unqualified) — deliberately asymmetric so this change has
+  **zero observable effect** on any experiment that has never been trimmed (see design.md
+  Decision 5 for why unconditional qualification was considered and rejected: it would silently
+  change the persisted `based_on_version` format for every tool, on every experiment, and break
+  an existing passing test).
 - Update `remove_outliers.py`'s module docstring and the still-open
   `add-bloommcp-remove-outliers-tool` change's own proposal/design/tasks/spec text, which
   currently document the shared-class trade-off (including a spec **Scenario** that asserts the
@@ -72,9 +79,13 @@ anyone who doesn't read it every time.
 
 ## Non-Goals
 
-- **No warning/`superseded`-flag interim.** The issue's "cheap interim" option (detect + warn,
-  still revertible) is explicitly not pursued — matching the reviewer recommendation, a
-  structural fix removes the hazard rather than requiring every caller to notice a flag.
+- **No warning/`superseded`-flag *substituting for* the structural fix.** The issue's "cheap
+  interim" option (detect + warn, still silently revertible) is explicitly not pursued — matching
+  the reviewer recommendation, a structural fix removes the hazard rather than requiring every
+  caller to notice a flag. (A non-blocking staleness signal **in addition to** the unchanged
+  fixed-priority resolution — logging when a trim's `based_on_version` no longer matches the
+  current `qc` latest — is a different, non-contradictory idea and is left to the same follow-up
+  issue as the audit script above, not implemented here.)
 - **No change to explicit-version pinning across tool classes.** No shipped tool currently passes
   an explicit `version="v<N>"` for the cleaned tier (grep confirms the only two values used
   anywhere are the default `"latest"` and `qc_clean`'s own `version="raw"`), so resolving an
@@ -104,21 +115,27 @@ anyone who doesn't read it every time.
   in the deployed order`).
 - **Affected code:** `bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/remove_outliers.py`
   (tool_class constant, `version="latest_qc"` read, docstring),
-  `bloommcp/src/bloom_mcp/experiment_utils.py` (`_resolve_versioned_cleaned`),
+  `bloommcp/src/bloom_mcp/experiment_utils.py` (`_resolve_versioned_cleaned`,
+  `load_experiment_data` docstring),
+  `bloommcp/src/bloom_mcp/data_access/ports.py` (`ExperimentReader.load_experiment` docstring),
   `bloommcp/src/bloom_mcp/data_access/fake_reader.py` (`"latest_qc"` alias),
   `bloommcp/src/bloom_mcp/sections/core/list_existing_analyses.py` (`TOOL_CLASSES`),
   `bloommcp/src/bloom_mcp/manifest/__init__.py` (`CANONICAL_TOOL_CLASSES`),
-  `bloommcp/tests/tools/test_remove_outliers_tool.py` (new characterization coverage; delete the
-  now-invalidated `test_qc_class_rerun_reverts_latest_cleaned_order_dependence`),
+  the parameter descriptions of `pca_analysis.py`, `umap_analysis.py`, `clustering.py`,
+  `descriptive_stats.py`, and `cross_experiment_correlations.py` (one sentence each — design.md
+  Decision 8), `bloommcp/tests/tools/test_remove_outliers_tool.py` (new characterization
+  coverage; delete the now-invalidated
+  `test_qc_class_rerun_reverts_latest_cleaned_order_dependence`),
   `bloommcp/tests/smoke/live_persistence_smoke.py` (`RO_TOOL_CLASS = "qc"` → `"outliers"`),
   `bloommcp/docs/local-validation.md` (its `remove_outliers` narrative currently documents the
   shared-`qc`-class assumption), and the still-open
   `openspec/changes/add-bloommcp-remove-outliers-tool/` proposal set (corrected, not archived,
   by this change).
-- **Not affected:** `qc_clean`, `pca_analysis`, `umap_analysis`, `clustering`,
-  `descriptive_stats`, `cross_experiment_correlations` — all read through the same
-  `ExperimentReader` port with the default `version="latest"` and gain the trim-preferring
-  behavior automatically with no call-site change.
+- **No call-site or behavior change, docstring-only:** `qc_clean`, `pca_analysis`,
+  `umap_analysis`, `clustering`, `descriptive_stats`, `cross_experiment_correlations` — all read
+  through the same `ExperimentReader` port with the default `version="latest"` and gain the
+  trim-preferring behavior automatically; five of them gain a one-sentence docstring note
+  (Decision 8) but no code-path change.
 - **Relationship to #419:** filed alongside this issue in the same epic (#554, "Trace &
   reproduce") and assigned together, but orthogonal — #419 is about *gating persistence* of an
   untrustworthy-fit trim before it commits; this change is about *which manifest class* a trim

@@ -4,34 +4,48 @@
       `bloommcp/src/bloom_mcp/experiment_utils._resolve_versioned_cleaned` using the existing
       hand-built-manifest harness (`fake_supabase_storage` + `write_manifest`/`VersionEntry`,
       precedent: `test_resolve_versioned_cleaned_via_local_list_prefix_fallback` in
-      `bloommcp/tests/test_storage_backend.py:624-676`). Six cases, each with a concrete
-      expected `(path content / label, error)`:
-      (a) only `qc` has a `latest` entry, `version="latest"` → resolves it (today's behavior,
-          unchanged);
-      (b) only `outliers` has a `latest` entry, `version="latest"` → resolves it;
-      (c) both have entries → `version="latest"` resolves **`outliers`**, regardless of which
-          manifest's entry has the later `created_at` (this is the actual #420 repro — assert it
-          with the `qc` entry's `created_at` deliberately set *later* than the `outliers`
-          entry's, to prove this is not a recency comparison);
+      `bloommcp/tests/test_storage_backend.py:624-676`; for the schema-error cases, write invalid
+      raw JSON directly via `fake.write_json`, bypassing the `Manifest` model, per the technique
+      already used in that file's `test_list_prefix_parity_fake_vs_local`). Seven cases, each
+      with a concrete expected `(path content / label, error)`:
+      (a) only `qc` has a `latest` entry, `version="latest"` → resolves it, label **unqualified**
+          `f"{entry.id}_cleaned"` — byte-for-byte today's behavior, unchanged (this is the
+          overwhelmingly common no-trim case; assert the exact label string, not just that it
+          resolves, so a future accidental switch to unconditional qualification fails loudly);
+      (b) only `outliers` has a `latest` entry, `version="latest"` → resolves it, label
+          **qualified** `f"outliers_{entry.id}_cleaned"`;
+      (c) both have entries → `version="latest"` resolves **`outliers`** (qualified label),
+          regardless of which manifest's entry has the later `created_at` (this is the actual
+          #420 repro — assert it with the `qc` entry's `created_at` deliberately set *later*
+          than the `outliers` entry's, to prove this is not a recency comparison);
       (d) both have entries → `version="latest_qc"` resolves **`qc`** specifically, ignoring
-          `outliers`;
-      (e) only `qc` has a `latest` entry, `version="latest_qc"` → resolves it (same as (a) —
-          confirms `latest_qc` isn't a no-op alias that silently means something else when
-          `outliers` is absent);
+          `outliers`, with the **unqualified** label (same format as (a));
+      (e) only `qc` has a `latest` entry, `version="latest_qc"` → resolves it, unqualified label
+          (same as (a) — confirms `latest_qc` isn't a no-op alias that silently means something
+          else when `outliers` is absent);
       (f) the `outliers`-class manifest fails schema validation (`ManifestSchemaError`) while the
           `qc`-class manifest is valid, `version="latest"` → the schema error propagates
           immediately (the exact `f"manifest schema error for '{stem}': {e}"` shape), it is
-          **not** swallowed and does **not** fall through to the `qc` class.
+          **not** swallowed and does **not** fall through to the `qc` class;
+      (g) the mirror of (f): the `outliers`-class manifest has no `latest` entry (resolves to
+          "no entry", not an error) and the `qc`-class manifest fails schema validation,
+          `version="latest"` → the `qc` schema error still propagates immediately — this exercises
+          the loop reaching its *second* iteration before erroring, a logically distinct code
+          path from (f) (e.g. an over-broad `except`/`continue` around the whole loop would pass
+          (f) but silently swallow (g)).
 - [ ] 1.2 In `bloommcp/src/bloom_mcp/experiment_utils.py`, add
       `_CLEANED_TOOL_CLASSES_BY_PRIORITY = ("qc", "outliers")` (lowest to highest priority) next
       to `CLEANED_CSV_NAME`, and rewrite `_resolve_versioned_cleaned` to branch on `version`:
       `"latest"` → iterate `_CLEANED_TOOL_CLASSES_BY_PRIORITY` in *reverse* (highest priority
       first: `outliers`, then `qc`), returning the first class whose `get_version("latest")`
-      resolves, with the returned label qualified as `f"{tool_class}_{entry.id}_cleaned"`;
-      `"latest_qc"` → resolve the `qc` class only, using **today's exact unqualified**
-      `f"{entry.id}_cleaned"` label (byte-for-byte the old `"latest"` behavior); explicit
-      `"v<N>"` → unchanged, `qc` class only, unqualified label. A `ManifestSchemaError` on any
-      checked class propagates immediately in every branch (task 1.1f).
+      resolves — **qualify the label as `f"{tool_class}_{entry.id}_cleaned"` only when the
+      winning class is `outliers`; when the winning class is `qc`, use the plain, unqualified
+      `f"{entry.id}_cleaned"`** (this asymmetry is deliberate — see design.md Decision 5 — it
+      keeps the untrimmed-experiment case byte-for-byte identical to today, and is what makes
+      case 1.1(a) pass); `"latest_qc"` → resolve the `qc` class only, always the unqualified
+      label; explicit `"v<N>"` → unchanged, `qc` class only, unqualified label. A
+      `ManifestSchemaError` on any checked class, at any iteration position, propagates
+      immediately in every branch (tasks 1.1f/1.1g).
 - [ ] 1.3 Confirm all six cases from 1.1 pass; confirm no other existing test asserting the
       pre-fix single-class `_resolve_versioned_cleaned` behavior for plain `version="latest"`
       (no `outliers` class involved) regressed. Update the `version` docstring on
@@ -42,9 +56,16 @@
       `supabase_reader.py:85-87` and `local_reader.py:71-77` both pass `version` unchanged into
       `_resolve_versioned_cleaned` / `load_experiment_data`).
 - [ ] 1.4 In `bloommcp/src/bloom_mcp/data_access/fake_reader.py`, treat `version="latest_qc"` as
-      an alias for `"latest"` in `FakeReader.load_experiment` (`fake_reader.py:73,81`) — `FakeReader`
-      has no tool-class model at all, so this keeps every existing `FakeReader`-seeded
-      `remove_outliers` unit test passing once its call site changes (task 2.4).
+      an alias for `"latest"` in `FakeReader.load_experiment` — insert a standalone check before
+      the existing explicit-version branch (`fake_reader.py:73`), not an `elif` on it (design.md
+      Decision 6's wording was imprecise: the current code treats anything not in
+      `("latest", "raw")` as an explicit version-id lookup, so `"latest_qc"` needs its own
+      earlier branch, or it would 404 as a literal-but-nonexistent version id). `FakeReader` has
+      no tool-class model at all, so this keeps every existing `FakeReader`-seeded
+      `remove_outliers` unit test passing once its call site changes (task 2.4). Add one small,
+      targeted unit test asserting `FakeReader().load_experiment(name, version="latest_qc")`
+      resolves identically to `version="latest"` for a fixture with one seeded cleaned version —
+      don't rely solely on the ~20 pre-existing `remove_outliers` tests as indirect proof.
 
 ## 2. `remove_outliers`: dedicated tool class + explicit `latest_qc` read
 
@@ -61,16 +82,29 @@
       a fresh `remove_outliers` run is made (design.md Decision 4). Correct the docstring's
       existing `"outliers"` (plural)-as-retired-class claim to the verified `"outlier"`
       (singular).
-- [ ] 2.4 Update every `test_remove_outliers_tool.py` assertion that hardcodes `tool_class ==
-      "qc"` for a `remove_outliers`-committed run to `"outliers"` (at minimum the golden,
-      provenance, plots, and error-path tests — grep the file for `"qc"` string literals
-      alongside `store.get_run`/`store.create_run`/`_ports.store()` calls; do not rely on a
-      pre-counted line list going stale as the file changes). **Delete**
+- [ ] 2.4 Grep `test_remove_outliers_tool.py` for every `"qc"` string literal appearing alongside
+      a `store.get_run`/`store.create_run`/`_ports.store()` call for a `remove_outliers`-committed
+      run, and change each to `"outliers"` — do this exhaustively via the grep, not from a
+      pre-enumerated list (a partial list drawn up during proposal review already missed at least
+      the version-progression test asserting `v1`→`v2` supersession, and the barcode-less
+      success-path test, alongside the more obvious golden/provenance/plots/error-path ones — the
+      grep is the source of truth, any illustrative list is not). Pay particular attention to
+      tests whose assertion is a **negative check** (e.g. asserting a run was *not* committed
+      under `"qc"` after a rejected call) — an incorrectly-updated negative check silently
+      degenerates into an always-true assertion instead of failing loudly, which is a real
+      correctness risk, not just a coverage gap. **Delete**
       `test_qc_class_rerun_reverts_latest_cleaned_order_dependence` — its premise (remove_outliers
       shares the `qc` class) is invalidated by 2.1, and it is documented as a
-      characterization-not-a-fix test, not a behavior to preserve. Land 2.1, 2.2, and this task
-      in the **same commit** — flipping `_TOOL_CLASS` without also updating these assertions
-      leaves the suite red.
+      characterization-not-a-fix test, not a behavior to preserve. Update the test file's own
+      module docstring (currently says "tool class `qc`"). Land 2.1, 2.2, and this task in the
+      **same commit** — flipping `_TOOL_CLASS` without also updating these assertions leaves the
+      suite red.
+- [ ] 2.5 Add one sentence to the parameter/tool description of each of `pca_analysis.py`,
+      `umap_analysis.py`, `clustering.py`, `descriptive_stats.py`, and
+      `cross_experiment_correlations.py` (design.md Decision 8): "latest" now resolves the most
+      recent outlier trim when one exists for the experiment, not merely the most recent clean.
+      No call-site or behavior change in these files — docstring/description text only, so the
+      agent and any human reading a tool's schema can tell "latest" changed meaning.
 
 ## 3. Discovery / registry consistency
 
@@ -92,21 +126,28 @@
       `qc_clean` again (commits `qc` v2, un-trimmed) →
       `SupabaseReader().load_experiment(..., require_clean=True)`. Assert **concretely**: the
       resolved frame's row count equals the trimmed count (not `qc` v2's un-trimmed count), and
-      `resolved.source == "outliers_v1_cleaned"` (or whatever the actual entry id is — assert the
-      exact string, not a substring/prose description).
+      `resolved.source == "outliers_v1_cleaned"` (the qualified label — asserted as the exact
+      string, not a substring/prose description).
 - [ ] 4.2 Add the inverse sanity check: `qc_clean` → `qc_clean` again (no trim ever run) still
       resolves the newer `qc` version via `version="latest"` as today — confirms the fix doesn't
-      regress the no-trim path (`resolved.source == "qc_v2_cleaned"`).
+      regress the no-trim path. Assert `resolved.source == "v2_cleaned"` — **unqualified**, since
+      no `outliers` version exists (this must be byte-for-byte what the pre-fix code already
+      returns; do not qualify it — see design.md Decision 5).
 - [ ] 4.3 Add a third case proving the fix's own safety property: `qc_clean` (v1) →
       `remove_outliers` (trims v1 → `outliers` v1) → `qc_clean` again (v2) → `remove_outliers`
       **again** — assert its `n_input_samples` matches `qc` v2's row count (proving it read the
       *fresh* clean via `latest_qc`, not its own stale prior trim), and that the resulting
       `outliers` v2 becomes `version="latest"` afterward.
-- [ ] 4.4 File a follow-up GitHub issue (not implemented in this change) for a one-time, read-only
-      audit script identifying experiments where a `remove_outliers` run was already silently
-      superseded under the old shared-`qc` scheme (`VersionEntry.tool == "remove_outliers"` in a
-      `qc` manifest that is not that manifest's current `latest`) — link it from this change's
-      proposal.md once filed.
+- [ ] 4.4 File a follow-up GitHub issue (not implemented in this change), covering **both**: (a) a
+      one-time, read-only audit script identifying experiments where a `remove_outliers` run was
+      already silently superseded under the old shared-`qc` scheme
+      (`VersionEntry.tool == "remove_outliers"` in a `qc` manifest that is not that manifest's
+      current `latest`), and (b) the **ongoing** version of the same risk class this change's own
+      Decision 4 accepts going forward — a non-blocking staleness signal (e.g. in
+      `list_existing_analyses` output) when an `outliers` entry's `based_on_version` no longer
+      matches the current `qc`-class latest. Link it from this change's proposal.md once filed —
+      do not implement either part in this change (confirm with the user before filing, per this
+      session's norm of confirming before creating GitHub issues/PRs on their behalf).
 
 ## 5. Update affected docs/scripts referencing the old shared-class assumption
 

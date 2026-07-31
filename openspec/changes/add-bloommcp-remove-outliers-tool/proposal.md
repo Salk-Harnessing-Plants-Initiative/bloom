@@ -119,12 +119,18 @@ naive-dropna figure.)
 > documented order-dependence caveat below as a known trade-off flagged for review. #420
 > implements the "dedicated class" alternative that this proposal's own design.md Decision 1
 > flagged as the one open judgment call: `remove_outliers` now persists under its own
-> `tool_class="outliers"`, and the reader resolves "latest cleaned" as the newer of the `qc` /
-> `outliers` manifests, so a later `qc_clean` no longer silently reverts a trim. This proposal
-> is left otherwise unedited as the historical record of what actually shipped in PR #400; see
-> #420 for the corrected persistence contract, and the still-inaccurate scenario in this
-> proposal's own spec delta (`specs/bloommcp-remove-outliers-tool/spec.md`) is corrected by that
-> change rather than here, since this change is not being re-archived.
+> `tool_class="outliers"`, and — **not** a recency comparison (an early draft of #420 tried
+> "prefer whichever manifest committed most recently" and found it does not actually fix this
+> proposal's own order-dependence caveat, since the reverting `qc_clean` re-run is by
+> construction always the more recent commit) — the reader now gives `outliers` **fixed
+> priority** over `qc` for `version="latest"` whenever any `outliers` version exists, while
+> `remove_outliers`'s own read of its trimming input uses a new, distinct `version="latest_qc"`
+> so a fresh `qc_clean` is never hidden from the tool whose job is to trim it. See #420's
+> design.md for the full mechanism and its one disclosed trade-off. This proposal is left
+> otherwise unedited as the historical record of what actually shipped in PR #400; the
+> still-inaccurate scenario in this proposal's own spec delta
+> (`specs/bloommcp-remove-outliers-tool/spec.md`) is corrected by that change rather than here,
+> since this change is not being re-archived.
 - Tests cover the **5 contract patterns + the golden trim through the tool**: golden
   reproduction (flagged barcodes + counts), `tools/list` presence, schema round-trip,
   provenance (resolved integer seed) + links, property/invariant, delegation pinning, the
