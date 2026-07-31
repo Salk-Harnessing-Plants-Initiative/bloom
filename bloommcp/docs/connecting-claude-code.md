@@ -63,6 +63,10 @@ still succeeds — the certificate covers that hostname too — but the request 
 `200` response instead of an error. You won't get a clean failure telling you the port is wrong; you
 just won't be talking to staging. Always include `:8443` for the staging endpoint.
 
+**Replace `<token>` with your actual key, angle brackets and all removed** — pasting the placeholder
+literally (`Bearer <token>`) produces a header that looks fine and `claude mcp add` will still accept
+it, but every request then fails with no obvious error pointing at the token.
+
 ## Where to get `<token>`
 
 `<TODO: name the BLOOMMCP_API_KEY contact/process — not yet determined at the time this guide was

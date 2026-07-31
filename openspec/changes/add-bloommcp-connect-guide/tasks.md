@@ -75,15 +75,19 @@
 
 ## 5. The acceptance-gating check this change ships without
 
-- [ ] 5.1 **Not performed by this change — decision (2026-07-30, with the issue owner): open the PR
-      with this explicitly unverified**, called out plainly in the PR description (naming the
-      specific unmet #553 acceptance criterion), rather than silently shipping a guide that looks
-      complete. Whoever has Salk network access and a real deployed `BLOOMMCP_API_KEY` should, when
-      they pick this up:
+- [ ] 5.1 **Partially performed, still not a pass overall — updated 2026-07-31.** Staging: the
+      issue owner ran the guide's exact `claude mcp add --transport http bloommcp-staging
+      https://staging.bloom.salk.edu:8443/bloommcp/mcp --header "Authorization: Bearer <token>"`
+      command from their own machine on Salk network with a real deployed `BLOOMMCP_API_KEY`.
+      `claude mcp list` showed `bloommcp-staging ... Connected`, and a `list_available_experiments`
+      call returned real data — staging's `tools/list` round-trip is confirmed working
+      end-to-end. **Production is still untested** — not yet run against
+      `https://bloom.salk.edu/bloommcp/mcp`. Per this task's own pass criterion below, a pass on
+      staging alone does not satisfy the requirement; production remains the one blocking gap.
+      Whoever has Salk network access and the real deployed `BLOOMMCP_API_KEY` should:
       - Run the guide's own connect command (or a lighter-weight `curl`/`httpie` JSON-RPC
         `tools/list` call against the MCP endpoint, as a faster pre-flight check before installing
-        the `claude` CLI) against both `https://bloom.salk.edu/bloommcp/mcp` and
-        `https://staging.bloom.salk.edu:8443/bloommcp/mcp`.
+        the `claude` CLI) against `https://bloom.salk.edu/bloommcp/mcp`.
       - **Pass criterion:** a `tools/list` response listing at least one registered tool (e.g.
         `list_available_experiments`) from **both** environments independently. A pass on one
         environment and a failure on the other counts as a fail overall — the guide documents both
