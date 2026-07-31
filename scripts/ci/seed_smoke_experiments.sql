@@ -33,7 +33,7 @@
 -- time series, which is for a different (local dev, growth-over-time) purpose.
 
 CREATE OR REPLACE FUNCTION public._seed_smoke_experiment(
-    p_name text, p_n_plants int, p_n_traits int
+    p_name text, p_n_plants int, p_n_traits int, p_n_genotypes int DEFAULT 5
 ) RETURNS bigint
 LANGUAGE plpgsql
 AS $$
@@ -42,6 +42,7 @@ DECLARE
     v_experiment_id bigint;
     v_wave_id       bigint;
     v_accession_id  bigint;
+    v_geno_label    text;
     v_plant_id      bigint;
     v_scan_id       bigint;
     v_trait_id      int;
@@ -61,7 +62,20 @@ BEGIN
     END LOOP;
 
     FOR i IN 1..p_n_plants LOOP
-        INSERT INTO accessions (name) VALUES (p_name || '-acc-' || i::text)
+        -- Genotype label is DELIBERATELY not prefixed by p_name (unlike qr_code
+        -- below): cross_experiment_correlations (#489) needs genotypes that
+        -- overlap by name *and* carry >= min_samples replicates in BOTH
+        -- seeded experiments, so every call to this function shares the same
+        -- p_n_genotypes-sized pool of accession names, wrapping p_n_plants
+        -- across them (25 plants / 5 genotypes = 5 replicates each).
+        -- accessions.name is globally UNIQUE (not scoped per experiment), so
+        -- the second (and any later) experiment must resolve the SAME accession row the
+        -- first one created rather than re-inserting -- the ON CONFLICT DO
+        -- UPDATE no-op below is the standard upsert-and-fetch-id idiom (plain
+        -- DO NOTHING does not RETURNING on a conflict).
+        v_geno_label := 'smoke-geno-' || (((i - 1) % p_n_genotypes) + 1)::text;
+        INSERT INTO accessions (name) VALUES (v_geno_label)
+            ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
             RETURNING id INTO v_accession_id;
         INSERT INTO cyl_plants (wave_id, accession_id, germ_day, qr_code)
             VALUES (v_wave_id, v_accession_id, 5, p_name || '-qr-' || i::text)
