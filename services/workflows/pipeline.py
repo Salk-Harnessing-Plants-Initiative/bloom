@@ -16,8 +16,11 @@ with unchanged params. The real GPU-avoidance decision is made cluster-side by
 the predict loop's own skip-if-done check, which does know current models.
 """
 
+import json
+
 from fastapi import HTTPException
 from sleap_roots_contracts import compute_param_hash
+from sleap_roots_contracts.hashing import NonCanonicalizableError
 from supabase_client import app_client
 
 VALID_TARGET_LEVELS = {"scan", "wave", "experiment", "scan_ids"}
@@ -27,9 +30,42 @@ VALID_TARGET_LEVELS = {"scan", "wave", "experiment", "scan_ids"}
 # per-environment; ~25-50 per the canonical A4 design doc §6).
 BATCH_SIZE = 25
 
+# Both plain constants, not yet env vars (see design.md's Open Questions) — added
+# after a PR review found neither `scan_ids` length nor `params` size was bounded
+# anywhere in the request path.
+MAX_SCAN_IDS = 5000
+MAX_PARAMS_BYTES = 10_000
+
 
 def _is_positive_int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _validate_params_and_hash(params) -> str:
+    """Validate params are an object, bounded in size, and hashable — then return
+    the hash. Computed once, up front, before app_client() is ever called (cheap
+    rejection, matching every other validated field), and threaded through to
+    _dedup_preview instead of being recomputed there."""
+    if not isinstance(params, dict):
+        raise HTTPException(status_code=422, detail="params must be an object")
+    try:
+        size = len(json.dumps(params))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422, detail="params must be JSON-serializable"
+        ) from exc
+    if size > MAX_PARAMS_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"params must serialize to at most {MAX_PARAMS_BYTES} bytes",
+        )
+    try:
+        return compute_param_hash(params)
+    except (NonCanonicalizableError, TypeError, ValueError, RecursionError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="params must contain only finite, JSON-serializable values",
+        ) from exc
 
 
 def _validate_request(body: dict):
@@ -43,8 +79,7 @@ def _validate_request(body: dict):
     params = body.get("params")
     if params is None:
         params = {}
-    if not isinstance(params, dict):
-        raise HTTPException(status_code=422, detail="params must be an object")
+    param_hash = _validate_params_and_hash(params)
 
     scan_ids = body.get("scan_ids")
     target_id = body.get("target_id")
@@ -60,12 +95,20 @@ def _validate_request(body: dict):
                 status_code=422,
                 detail="scan_ids must be a non-empty array when target_level is scan_ids",
             )
+        if len(scan_ids) > MAX_SCAN_IDS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"scan_ids must contain at most {MAX_SCAN_IDS} entries",
+            )
         for sid in scan_ids:
             if not _is_positive_int(sid):
                 raise HTTPException(
                     status_code=422, detail="scan_ids entries must be positive integers"
                 )
-        return target_level, None, list(scan_ids), params
+        # Order-preserving dedup — a client-supplied duplicate is deduped, not
+        # rejected (see design.md's "Decision: scan_ids are deduplicated").
+        deduped = list(dict.fromkeys(scan_ids))
+        return target_level, None, deduped, params, param_hash
 
     if scan_ids is not None:
         raise HTTPException(
@@ -76,7 +119,7 @@ def _validate_request(body: dict):
         raise HTTPException(
             status_code=422, detail="target_id must be a positive integer"
         )
-    return target_level, target_id, None, params
+    return target_level, target_id, None, params, param_hash
 
 
 def _enumerate(
@@ -112,6 +155,7 @@ def _enumerate(
             client.table("cyl_scans_extended")
             .select("scan_id")
             .eq("wave_id", target_id)
+            .order("scan_id")
             .execute()
             .data
             or []
@@ -136,6 +180,7 @@ def _enumerate(
             client.table("cyl_scans_extended")
             .select("scan_id")
             .eq("experiment_id", target_id)
+            .order("scan_id")
             .execute()
             .data
             or []
@@ -158,12 +203,12 @@ def _enumerate(
     return list(scan_ids)
 
 
-def _dedup_preview(client, scan_ids: list[int], params: dict) -> set[int]:
+def _dedup_preview(client, scan_ids: list[int], request_hash: str) -> set[int]:
     """Which of `scan_ids` have at least one cyl_trait_sources row whose stored
     param_hash matches the request's params — informational only, see module
-    docstring. One batched query per table, not a per-scan loop."""
-    request_hash = compute_param_hash(params)
-
+    docstring. One batched query per table, not a per-scan loop. `request_hash` is
+    computed once in `_validate_request` and threaded through here rather than
+    recomputed."""
     trait_rows = (
         client.table("cyl_scan_traits")
         .select("scan_id, source_id")
@@ -231,7 +276,7 @@ def trigger_pipeline(body: dict, user_id: str) -> dict:
             status_code=422, detail="request body must be a JSON object"
         )
 
-    target_level, target_id, scan_ids_in, params = _validate_request(body)
+    target_level, target_id, scan_ids_in, params, param_hash = _validate_request(body)
     client = app_client()
     scan_ids = _enumerate(client, target_level, target_id, scan_ids_in)
     scan_count = len(scan_ids)
@@ -249,7 +294,7 @@ def trigger_pipeline(body: dict, user_id: str) -> dict:
         )
         return {"pipeline_run_id": run_id, "scan_count": 0, "reused_count": 0}
 
-    reused_scan_ids = _dedup_preview(client, scan_ids, params)
+    reused_scan_ids = _dedup_preview(client, scan_ids, param_hash)
     reused_count = len(reused_scan_ids)
 
     run_id = _insert_run(

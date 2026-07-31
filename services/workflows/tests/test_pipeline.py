@@ -39,6 +39,7 @@ class _Query:
         self._table = table_name
         self._filters = []
         self._insert_payload = None
+        self._order_key = None
 
     def select(self, *a, **k):
         return self
@@ -54,6 +55,11 @@ class _Query:
     def limit(self, *a, **k):
         return self
 
+    def order(self, key, **kwargs):
+        self._order_key = key
+        self._client.order_calls.append((self._table, key))
+        return self
+
     def insert(self, payload):
         self._insert_payload = payload
         return self
@@ -63,7 +69,10 @@ class _Query:
         if self._insert_payload is not None:
             return self._client._handle_insert(self._table, self._insert_payload)
         rows = self._client._table_rows(self._table)
-        return _Result(_apply_filters(rows, self._filters))
+        rows = _apply_filters(rows, self._filters)
+        if self._order_key is not None:
+            rows = sorted(rows, key=lambda r: r.get(self._order_key))
+        return _Result(rows)
 
 
 class _Rpc:
@@ -99,6 +108,7 @@ class _FakeClient:
             "cyl_trait_sources": cyl_trait_sources or [],
         }
         self.calls: list[str] = []
+        self.order_calls: list[tuple] = []
         self.rpc_calls: list[tuple] = []
         self.inserted_runs: list[dict] = []
         self.inserted_run_scans: list[dict] = []
@@ -206,6 +216,92 @@ def test_rejects_non_positive_target_id(bad_id):
     with pytest.raises(HTTPException) as ei:
         pipeline.trigger_pipeline(body, "user-1")
     assert ei.value.status_code == 422
+
+
+# --------------------------------------------------------------------------- #
+# PR #570 review fixes: scan_ids dedup/cap, params finite-value/size validation
+# --------------------------------------------------------------------------- #
+
+
+def test_scan_ids_with_duplicates_are_deduped(monkeypatch):
+    client = _FakeClient(cyl_scans_extended=[{"scan_id": 5}, {"scan_id": 7}])
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {
+        "target_level": "scan_ids",
+        "target_id": None,
+        "scan_ids": [5, 5, 7],
+        "params": {},
+    }
+    result = pipeline.trigger_pipeline(body, "user-1")
+    assert result["scan_count"] == 2
+    assert len(client.inserted_run_scans) == 2
+    assert {row["scan_id"] for row in client.inserted_run_scans} == {5, 7}
+
+
+def test_rejects_scan_ids_exceeding_max_length():
+    body = {
+        "target_level": "scan_ids",
+        "target_id": None,
+        "scan_ids": list(range(1, pipeline.MAX_SCAN_IDS + 2)),
+        "params": {},
+    }
+    with pytest.raises(HTTPException) as ei:
+        pipeline.trigger_pipeline(body, "user-1")
+    assert ei.value.status_code == 422
+
+
+def test_rejects_params_with_nan():
+    body = {
+        "target_level": "experiment",
+        "target_id": 5,
+        "params": {"age": float("nan")},
+    }
+    with pytest.raises(HTTPException) as ei:
+        pipeline.trigger_pipeline(body, "user-1")
+    assert ei.value.status_code == 422
+
+
+def test_rejects_params_with_infinity():
+    body = {
+        "target_level": "experiment",
+        "target_id": 5,
+        "params": {"age": float("inf")},
+    }
+    with pytest.raises(HTTPException) as ei:
+        pipeline.trigger_pipeline(body, "user-1")
+    assert ei.value.status_code == 422
+
+
+def test_rejects_params_exceeding_max_bytes():
+    big_value = "x" * (pipeline.MAX_PARAMS_BYTES + 100)
+    body = {
+        "target_level": "experiment",
+        "target_id": 5,
+        "params": {"note": big_value},
+    }
+    with pytest.raises(HTTPException) as ei:
+        pipeline.trigger_pipeline(body, "user-1")
+    assert ei.value.status_code == 422
+
+
+def test_params_validation_happens_before_app_client(monkeypatch):
+    """Non-finite params are rejected before app_client() is ever called — matching
+    the cheap-validation-first pattern already used for every other field."""
+    called = {"n": 0}
+
+    def _app_client():
+        called["n"] += 1
+        return _FakeClient()
+
+    monkeypatch.setattr(pipeline, "app_client", _app_client)
+    body = {
+        "target_level": "experiment",
+        "target_id": 5,
+        "params": {"age": float("nan")},
+    }
+    with pytest.raises(HTTPException):
+        pipeline.trigger_pipeline(body, "user-1")
+    assert called["n"] == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -324,6 +420,42 @@ def test_enumerate_existing_experiment_with_zero_scans_succeeds_with_scan_count_
     body = {"target_level": "experiment", "target_id": 9, "params": {}}
     result = pipeline.trigger_pipeline(body, "user-1")
     assert result["scan_count"] == 0
+
+
+def test_enumerate_wave_orders_by_scan_id(monkeypatch):
+    # Seeded deliberately out of scan_id order — if _enumerate didn't call
+    # .order("scan_id"), the fake would return rows in this scrambled order.
+    client = _FakeClient(
+        cyl_waves=[{"id": 3}],
+        cyl_scans_extended=[
+            {"scan_id": 30, "wave_id": 3},
+            {"scan_id": 10, "wave_id": 3},
+            {"scan_id": 20, "wave_id": 3},
+        ],
+    )
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {"target_level": "wave", "target_id": 3, "params": {}}
+    pipeline.trigger_pipeline(body, "user-1")
+    assert ("cyl_scans_extended", "scan_id") in client.order_calls
+    ordered_scan_ids = [row["scan_id"] for row in client.inserted_run_scans]
+    assert ordered_scan_ids == sorted(ordered_scan_ids)
+
+
+def test_enumerate_experiment_orders_by_scan_id(monkeypatch):
+    client = _FakeClient(
+        cyl_experiments=[{"id": 9}],
+        cyl_scans_extended=[
+            {"scan_id": 30, "experiment_id": 9},
+            {"scan_id": 10, "experiment_id": 9},
+            {"scan_id": 20, "experiment_id": 9},
+        ],
+    )
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {"target_level": "experiment", "target_id": 9, "params": {}}
+    pipeline.trigger_pipeline(body, "user-1")
+    assert ("cyl_scans_extended", "scan_id") in client.order_calls
+    ordered_scan_ids = [row["scan_id"] for row in client.inserted_run_scans]
+    assert ordered_scan_ids == sorted(ordered_scan_ids)
 
 
 # --------------------------------------------------------------------------- #
