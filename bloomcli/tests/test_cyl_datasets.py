@@ -47,8 +47,14 @@ def test_build_dataset_row_full():
 
 def test_build_dataset_row_tolerates_null_relations():
     row = ds.build_dataset_row(
-        {"name": "bare", "timepoints": None, "created_at": None,
-         "cyl_experiments": None, "cyl_qc_sets": None, "cyl_trait_sources": None}
+        {
+            "name": "bare",
+            "timepoints": None,
+            "created_at": None,
+            "cyl_experiments": None,
+            "cyl_qc_sets": None,
+            "cyl_trait_sources": None,
+        }
     )
     assert row == ["bare", "", "", "", "", "", ""]
 
@@ -58,7 +64,15 @@ def test_build_dataset_record_is_machine_readable():
     # raw timepoints list (not the display string) and the same field set as the columns
     assert rec["timepoints"] == [1, 3, 5]
     assert rec["species"] == "Canola"
-    assert set(rec) == {"name", "timepoints", "species", "experiment", "qc_set", "trait_source", "created"}
+    assert set(rec) == {
+        "name",
+        "timepoints",
+        "species",
+        "experiment",
+        "qc_set",
+        "trait_source",
+        "created",
+    }
 
 
 def test_fmt_timepoints_variants():
@@ -164,6 +178,113 @@ def test_list_passes_experiment_filter(monkeypatch):
     assert captured["experiment_id"] == 3
 
 
+def test_fetch_experiments_with_datasets_joins_names_and_sorts():
+    # two-step: experiment ids from cyl_datasets, then labels from cyl_experiments.
+    ds_rows = [{"experiment_id": 7}, {"experiment_id": 3}, {"experiment_id": 7}]
+    exp_rows = [
+        {"id": 7, "name": "Salt Screen", "species": {"common_name": "Rice"}},
+        {"id": 3, "name": "Drought", "species": {"common_name": "Arabidopsis"}},
+    ]
+    captured = {}
+
+    class _Q:
+        def __init__(self, table):
+            self.table = table
+
+        def select(self, sel):
+            return self
+
+        def in_(self, col, vals):
+            captured["in"] = (col, vals)
+            return self
+
+        def is_(self, col, val):
+            captured["is_"] = (col, val)
+            return self
+
+        def execute(self):
+            data = ds_rows if self.table == "cyl_datasets" else exp_rows
+            return type("R", (), {"data": data})()
+
+    class _Client:
+        def table(self, name):
+            return _Q(name)
+
+    out = ds.fetch_experiments_with_datasets(_Client())
+    assert captured["in"] == ("id", [3, 7])  # distinct ids, sorted
+    assert captured["is_"] == ("deleted_at", "null")  # soft-deleted excluded
+    assert out == [(3, "Drought (Arabidopsis)"), (7, "Salt Screen (Rice)")]
+
+
+def test_list_experiment_menu_filters(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(
+        ds,
+        "fetch_experiments_with_datasets",
+        lambda client: [(3, "Drought (Arabidopsis)"), (7, "Salt Screen (Rice)")],
+    )
+    captured = {}
+
+    def fake_fetch(client, experiment_id=None):
+        captured["experiment_id"] = experiment_id
+        return []
+
+    monkeypatch.setattr(ds, "fetch_datasets", fake_fetch)
+    # menu 0) All 1) Drought(3) 2) Salt Screen(7) → pick 2 → experiment 7
+    res = CliRunner().invoke(cli, ["cyl", "datasets", "list", "--experiment"], input="2\n")
+    assert res.exit_code == 0, res.output
+    assert captured["experiment_id"] == 7
+
+
+def test_list_experiment_menu_all_is_no_filter(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(
+        ds, "fetch_experiments_with_datasets", lambda client: [(3, "Drought (Arabidopsis)")]
+    )
+    captured = {}
+
+    def fake_fetch(client, experiment_id=None):
+        captured["experiment_id"] = experiment_id
+        return []
+
+    monkeypatch.setattr(ds, "fetch_datasets", fake_fetch)
+    res = CliRunner().invoke(cli, ["cyl", "datasets", "list", "--experiment"], input="0\n")
+    assert res.exit_code == 0, res.output
+    assert captured["experiment_id"] is None  # 0 = All experiments → no filter
+
+
+def test_list_experiment_and_id_conflict_rejected(monkeypatch):
+    _patch_authed(monkeypatch)
+    res = CliRunner().invoke(
+        cli, ["cyl", "datasets", "list", "--experiment", "--experiment-id", "3"]
+    )
+    assert res.exit_code != 0
+    assert "not both" in res.output.lower()
+
+
+def test_list_experiment_menu_none_available(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ds, "fetch_experiments_with_datasets", lambda client: [])
+    res = CliRunner().invoke(cli, ["cyl", "datasets", "list", "--experiment"], input="0\n")
+    assert res.exit_code != 0
+    assert "No experiments with datasets" in res.output
+
+
+def test_list_experiment_menu_stderr_clean_stdout_json(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(
+        ds, "fetch_experiments_with_datasets", lambda client: [(3, "Drought (Arabidopsis)")]
+    )
+    monkeypatch.setattr(ds, "fetch_datasets", lambda client, experiment_id=None: [FULL])
+    res = CliRunner().invoke(
+        cli, ["cyl", "datasets", "list", "--experiment", "--output", "json"], input="1\n"
+    )
+    assert res.exit_code == 0, res.output
+    json.loads(res.stdout)  # stdout is valid JSON — raises if the menu leaked in
+    assert "Select an experiment" not in res.stdout
+    assert "Select an experiment" in res.stderr
+
+
 def test_list_json_output(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(ds, "fetch_datasets", lambda client, experiment_id=None: [FULL])
@@ -216,7 +337,9 @@ def _patch_create_ok(monkeypatch, captured):
 def test_create_calls_rpc_with_legacy_param_shape(monkeypatch):
     captured = {}
     _patch_create_ok(monkeypatch, captured)
-    res = CliRunner().invoke(cli, ["cyl", "datasets", "create", "canola-v1", "1", "canola-cyl-sleap-v1"])
+    res = CliRunner().invoke(
+        cli, ["cyl", "datasets", "create", "canola-v1", "1", "canola-cyl-sleap-v1"]
+    )
     assert res.exit_code == 0, res.output
     assert captured == {
         "name": "canola-v1",
@@ -232,7 +355,18 @@ def test_create_forwards_qc_set_and_timepoints(monkeypatch):
     _patch_create_ok(monkeypatch, captured)
     res = CliRunner().invoke(
         cli,
-        ["cyl", "datasets", "create", "d", "1", "src", "--qc-set-name", "outliers", "--timepoints", "1,3,5"],
+        [
+            "cyl",
+            "datasets",
+            "create",
+            "d",
+            "1",
+            "src",
+            "--qc-set-name",
+            "outliers",
+            "--timepoints",
+            "1,3,5",
+        ],
     )
     assert res.exit_code == 0, res.output
     assert captured["qc_set_name"] == {"name": "outliers"}
@@ -243,7 +377,8 @@ def test_create_timepoints_repeatable(monkeypatch):
     captured = {}
     _patch_create_ok(monkeypatch, captured)
     res = CliRunner().invoke(
-        cli, ["cyl", "datasets", "create", "d", "1", "src", "--timepoints", "1", "--timepoints", "3"]
+        cli,
+        ["cyl", "datasets", "create", "d", "1", "src", "--timepoints", "1", "--timepoints", "3"],
     )
     assert res.exit_code == 0, res.output
     assert captured["timepoints"] == [1, 3]
@@ -254,7 +389,8 @@ def test_create_experiment_not_found_makes_no_rpc_call(monkeypatch):
     monkeypatch.setattr(ds, "fetch_experiment", lambda client, eid: None)
     monkeypatch.setattr(ds, "resolve_trait_source", lambda client, name: 42)
     monkeypatch.setattr(
-        ds, "create_cyl_dataset",
+        ds,
+        "create_cyl_dataset",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("RPC must not be called")),
     )
     res = CliRunner().invoke(cli, ["cyl", "datasets", "create", "d", "999", "src"])
@@ -267,7 +403,8 @@ def test_create_trait_source_not_found_makes_no_rpc_call(monkeypatch):
     monkeypatch.setattr(ds, "fetch_experiment", lambda client, eid: {"id": eid})
     monkeypatch.setattr(ds, "resolve_trait_source", lambda client, name: None)
     monkeypatch.setattr(
-        ds, "create_cyl_dataset",
+        ds,
+        "create_cyl_dataset",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("RPC must not be called")),
     )
     res = CliRunner().invoke(cli, ["cyl", "datasets", "create", "d", "1", "missing-src"])
@@ -364,7 +501,13 @@ def test_fetch_dataset_traits_queries_view():
             return type(
                 "R",
                 (),
-                {"data": [{"trait_name": "root_width_max"}, {"trait_name": "root_depth"}, {"trait_name": "root_depth"}]},
+                {
+                    "data": [
+                        {"trait_name": "root_width_max"},
+                        {"trait_name": "root_depth"},
+                        {"trait_name": "root_depth"},
+                    ]
+                },
             )()
 
     class _Client:
@@ -382,7 +525,9 @@ def test_fetch_dataset_traits_queries_view():
 def test_get_shows_metadata_and_traits(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(ds, "fetch_dataset_by_name", lambda client, name: GET_ROW)
-    monkeypatch.setattr(ds, "fetch_dataset_traits", lambda client, did: ["root_depth", "root_width_max"])
+    monkeypatch.setattr(
+        ds, "fetch_dataset_traits", lambda client, did: ["root_depth", "root_width_max"]
+    )
     res = CliRunner().invoke(cli, ["cyl", "datasets", "get", "canola-v1"])
     assert res.exit_code == 0, res.output
     assert "Dataset" in res.output  # table title (cell values may wrap across lines)
@@ -401,7 +546,9 @@ def test_get_not_found(monkeypatch):
 def test_get_json(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(ds, "fetch_dataset_by_name", lambda client, name: GET_ROW)
-    monkeypatch.setattr(ds, "fetch_dataset_traits", lambda client, did: ["root_depth", "root_width_max"])
+    monkeypatch.setattr(
+        ds, "fetch_dataset_traits", lambda client, did: ["root_depth", "root_width_max"]
+    )
     res = CliRunner().invoke(cli, ["cyl", "datasets", "get", "canola-v1", "--json"])
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)

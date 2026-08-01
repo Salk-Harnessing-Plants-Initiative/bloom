@@ -58,8 +58,10 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - **[write]** `bloomctl cyl batch-ingest-result <envelopes_dir>` — write back a
   batch of per-scan `ResultEnvelope`s in one invocation (see below); the batch
   sibling of `ingest-result`, for the A4 per-batch pipeline.
-- **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets
-  (`--experiment-id` to scope to one experiment, `--output csv|json` for machine-readable output).
+- **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets (all by
+  default). Scope to one experiment with `--experiment-id N` (scriptable) or
+  `--experiment` to **pick one from a menu** (needs a terminal). `--output csv|json`
+  for machine-readable output.
 - **[read]** `bloomctl cyl datasets get <name>` — show one dataset's details and the
   unique traits it contains, via the `cyl_dataset_trait_names` view (`--json` output).
 - **[write]** `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
