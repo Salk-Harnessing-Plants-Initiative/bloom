@@ -18,6 +18,12 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
+- `bloomctl cyl accessions` selectors are now interactive menus (shared with
+  `experiments list`). `accessions sample-counts --species` presents a numbered menu
+  of the species that have accessions (0 = All) instead of a typed common name — no
+  more exact-spelling/case guessing. `accessions list` keeps `--experiment-id N` for
+  scripts and opens an experiment menu when it is omitted (hybrid). The menus write to
+  stderr, so `--output json/csv` on stdout stays clean.
 - `bloomctl cyl experiments list` gains an interactive **species selector** and
   **output formats**. `--species` presents a numbered menu ("All species" + one per
   species that has experiments) and filters to the pick (interactive; needs a

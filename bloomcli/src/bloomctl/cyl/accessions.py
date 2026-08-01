@@ -13,6 +13,7 @@ import click
 
 from ..credentials import DEFAULT_PROFILE
 from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
+from ._select import select_from_menu
 
 ACCESSION_COLUMNS = ["Accession", "Accession ID"]
 SAMPLE_COUNT_COLUMNS = ["Species", "Accession", "Plants"]
@@ -101,14 +102,50 @@ def fetch_accession_sample_counts(client: Any, species: str | None = None) -> li
     return query.execute().data or []
 
 
+def fetch_species_with_accessions(client: Any) -> list[str]:
+    """Distinct species common names that have accessions, for the selector menu.
+
+    Sourced from the sample-counts view so the menu only offers species that actually have
+    accessions (no dead choices). De-duplicated, nulls dropped, sorted for a stable menu.
+    """
+    rows = client.table("cyl_accession_sample_counts").select("species_name").execute().data or []
+    return sorted({r["species_name"] for r in rows if r.get("species_name")})
+
+
+def fetch_experiments_with_accessions(client: Any) -> list[tuple[int, str]]:
+    """(experiment_id, "name (species)") for experiments that have accessions, for the menu.
+
+    cyl_experiment_accessions carries only ids, so the human labels are joined from
+    cyl_experiments (soft-deleted excluded). Sorted by label for a stable menu.
+    """
+    rows = client.table("cyl_experiment_accessions").select("experiment_id").execute().data or []
+    ids = sorted({r["experiment_id"] for r in rows if r.get("experiment_id") is not None})
+    if not ids:
+        return []
+    exps = (
+        client.table("cyl_experiments")
+        .select("id, name, species(common_name)")
+        .in_("id", ids)
+        .is_("deleted_at", "null")
+        .execute()
+        .data
+        or []
+    )
+    items = [
+        (e["id"], f"{e.get('name') or ''} ({(e.get('species') or {}).get('common_name') or '?'})")
+        for e in exps
+    ]
+    return sorted(items, key=lambda it: it[1].casefold())
+
+
 @accessions.command(name="list")
 @click.option(
     "--experiment-id",
     "--experiment_id",
     "experiment_id",
     type=int,
-    required=True,
-    help="List the accessions used in this experiment (id).",
+    default=None,
+    help="Accessions used in this experiment (id). Omit to pick from a menu.",
 )
 @click.option(
     "--output",
@@ -126,9 +163,13 @@ def fetch_accession_sample_counts(client: Any, species: str | None = None) -> li
     help="Credentials profile to use.",
 )
 def list_accessions(
-    experiment_id: int, output_fmt: str | None, as_json: bool, profile: str
+    experiment_id: int | None, output_fmt: str | None, as_json: bool, profile: str
 ) -> None:
-    """List the accessions used in a cylinder experiment."""
+    """List the accessions used in a cylinder experiment.
+
+    Pass --experiment-id for a specific experiment (scriptable), or omit it to pick one from a
+    menu (needs a terminal).
+    """
     from postgrest import APIError
 
     from ..cli import _authed_client
@@ -137,6 +178,13 @@ def list_accessions(
 
     client = _authed_client(profile)
     try:
+        if experiment_id is None:  # no id → pick an experiment from the menu
+            choices = fetch_experiments_with_accessions(client)
+            if not choices:
+                raise click.ClickException("No experiments with accessions found.")
+            experiment_id = select_from_menu(
+                choices, title="an experiment", prompt_label="Experiment"
+            )
         raw = fetch_experiment_accessions(client, experiment_id)
     except APIError as exc:
         raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
@@ -155,8 +203,9 @@ def list_accessions(
 @accessions.command(name="sample-counts")
 @click.option(
     "--species",
-    default=None,
-    help="Filter to one species by common name (case-sensitive, e.g. 'sorghum').",
+    "pick_species",
+    is_flag=True,
+    help="Pick a species from an interactive menu to filter by (needs a terminal).",
 )
 @click.option(
     "--output",
@@ -173,7 +222,7 @@ def list_accessions(
     show_default=True,
     help="Credentials profile to use.",
 )
-def sample_counts(species: str | None, output_fmt: str | None, as_json: bool, profile: str) -> None:
+def sample_counts(pick_species: bool, output_fmt: str | None, as_json: bool, profile: str) -> None:
     """Show the plant count per accession, per species (one plant = one individual grown).
 
     Counts are pooled across all experiments in the database (not scoped to one
@@ -182,6 +231,8 @@ def sample_counts(species: str | None, output_fmt: str | None, as_json: bool, pr
     appears as multiple rows, so a per-name total must sum across those rows.
     Plants not assigned to an accession are excluded, so summing the counts can be
     lower than the total plant count.
+
+    Pass --species to pick a species from a menu; omit it for all species.
     """
     from postgrest import APIError
 
@@ -191,6 +242,17 @@ def sample_counts(species: str | None, output_fmt: str | None, as_json: bool, pr
 
     client = _authed_client(profile)
     try:
+        species = None
+        if pick_species:  # menu of species that have accessions (0 = All)
+            names = fetch_species_with_accessions(client)
+            if not names:
+                raise click.ClickException("No species with accessions found.")
+            species = select_from_menu(
+                [(n, n) for n in names],
+                title="a species",
+                prompt_label="Species",
+                all_label="All species",
+            )
         raw = fetch_accession_sample_counts(client, species)
     except APIError as exc:
         raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc

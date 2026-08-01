@@ -182,14 +182,118 @@ def test_fetch_sample_counts_no_filter_omits_eq():
     assert captured["eq"] is None  # no filter → no .eq() call
 
 
+# --- menu fetchers ----------------------------------------------------------
+
+
+def test_fetch_species_with_accessions_dedups_sorts_drops_null():
+    rows = [
+        {"species_name": "Rice"},
+        {"species_name": "Canola"},
+        {"species_name": "Rice"},  # duplicate
+        {"species_name": None},  # dropped
+    ]
+
+    class _Q:
+        def select(self, sel):
+            self._sel = sel
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": rows})()
+
+    class _Client:
+        def table(self, name):
+            self.name = name
+            return _Q()
+
+    assert acc.fetch_species_with_accessions(_Client()) == ["Canola", "Rice"]
+
+
+def test_fetch_experiments_with_accessions_joins_names_and_sorts():
+    # two-step: ids from the accessions view, then labels from cyl_experiments.
+    acc_rows = [{"experiment_id": 7}, {"experiment_id": 3}, {"experiment_id": 7}]
+    exp_rows = [
+        {"id": 7, "name": "Salt Screen", "species": {"common_name": "Rice"}},
+        {"id": 3, "name": "Drought", "species": {"common_name": "Arabidopsis"}},
+    ]
+    captured = {}
+
+    class _Q:
+        def __init__(self, table):
+            self.table = table
+
+        def select(self, sel):
+            return self
+
+        def in_(self, col, vals):
+            captured["in"] = (col, vals)
+            return self
+
+        def is_(self, col, val):
+            captured["is_"] = (col, val)
+            return self
+
+        def execute(self):
+            data = acc_rows if self.table == "cyl_experiment_accessions" else exp_rows
+            return type("R", (), {"data": data})()
+
+    class _Client:
+        def table(self, name):
+            return _Q(name)
+
+    out = acc.fetch_experiments_with_accessions(_Client())
+    assert captured["in"] == ("id", [3, 7])  # distinct ids, sorted, passed to cyl_experiments
+    assert captured["is_"] == ("deleted_at", "null")  # soft-deleted experiments excluded
+    # labeled "name (species)" and sorted by label (Drought before Salt Screen)
+    assert out == [(3, "Drought (Arabidopsis)"), (7, "Salt Screen (Rice)")]
+
+
 # --- commands ---------------------------------------------------------------
 
 
-def test_list_requires_experiment_id(monkeypatch):
+def test_list_no_id_opens_experiment_menu(monkeypatch):
     _patch_authed(monkeypatch)
-    res = CliRunner().invoke(cli, ["cyl", "accessions", "list"])
+    monkeypatch.setattr(
+        acc,
+        "fetch_experiments_with_accessions",
+        lambda client: [(3, "Drought (Arabidopsis)"), (7, "Salt Screen (Rice)")],
+    )
+    captured = {}
+
+    def _fetch(client, eid):
+        captured["eid"] = eid
+        return EXP_ACC
+
+    monkeypatch.setattr(acc, "fetch_experiment_accessions", _fetch)
+    # menu 1) Drought(3) 2) Salt Screen(7) → pick 2 → experiment 7
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "list"], input="2\n")
+    assert res.exit_code == 0, res.output
+    assert captured["eid"] == 7  # picked experiment id reaches the fetch
+
+
+def test_list_no_id_non_tty_aborts(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(
+        acc, "fetch_experiments_with_accessions", lambda client: [(3, "Drought (Arabidopsis)")]
+    )
+    called = {"fetched": False}
+
+    def _fetch(client, eid):
+        called["fetched"] = True
+        return EXP_ACC
+
+    monkeypatch.setattr(acc, "fetch_experiment_accessions", _fetch)
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "list"], input="")
+    assert res.exit_code != 0  # no input → abort, never a guessed experiment
+    assert called["fetched"] is False
+
+
+def test_list_no_experiments_with_accessions(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_experiments_with_accessions", lambda client: [])
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "list"], input="1\n")
     assert res.exit_code != 0
-    assert "experiment-id" in res.output.lower() or "experiment_id" in res.output.lower()
+    assert "No experiments with accessions" in res.output
 
 
 def test_list_json_sorted(monkeypatch):
@@ -287,10 +391,10 @@ def test_sample_counts_json_sorted(monkeypatch):
     assert payload[0]["plant_count"] == 8
 
 
-def test_sample_counts_species_passed_to_fetch(monkeypatch):
-    # the --species option must actually reach fetch (a dropped arg would still
-    # pass the fetch-function test, so assert it at the command level).
+def test_sample_counts_menu_species_passed_to_fetch(monkeypatch):
+    # --species opens a menu; the picked name must reach the fetch.
     _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_species_with_accessions", lambda client: ["Canola", "Rice"])
     captured = {}
 
     def _fetch(client, species=None):
@@ -298,9 +402,47 @@ def test_sample_counts_species_passed_to_fetch(monkeypatch):
         return []
 
     monkeypatch.setattr(acc, "fetch_accession_sample_counts", _fetch)
-    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species", "Canola"])
+    # menu 0) All 1) Canola 2) Rice → pick 1 → Canola
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species"], input="1\n")
     assert res.exit_code == 0, res.output
     assert captured["species"] == "Canola"
+
+
+def test_sample_counts_menu_all_is_no_filter(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_species_with_accessions", lambda client: ["Canola"])
+    captured = {}
+
+    def _fetch(client, species=None):
+        captured["species"] = species
+        return []
+
+    monkeypatch.setattr(acc, "fetch_accession_sample_counts", _fetch)
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species"], input="0\n")
+    assert res.exit_code == 0, res.output
+    assert captured["species"] is None  # 0 = All species → no filter
+
+
+def test_sample_counts_menu_none_available(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_species_with_accessions", lambda client: [])
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species"], input="0\n")
+    assert res.exit_code != 0
+    assert "No species with accessions" in res.output
+
+
+def test_sample_counts_menu_stderr_clean_stdout_json(monkeypatch):
+    # menu on stderr; stdout stays valid JSON under --output json.
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_species_with_accessions", lambda client: ["Canola"])
+    monkeypatch.setattr(acc, "fetch_accession_sample_counts", lambda client, species=None: COUNTS)
+    res = CliRunner().invoke(
+        cli, ["cyl", "accessions", "sample-counts", "--species", "--output", "json"], input="1\n"
+    )
+    assert res.exit_code == 0, res.output
+    json.loads(res.stdout)  # stdout is valid JSON — raises if the menu leaked in
+    assert "Select a species" not in res.stdout
+    assert "Select a species" in res.stderr
 
 
 def test_sample_counts_table(monkeypatch):
@@ -329,11 +471,12 @@ def test_sample_counts_json_empty_is_empty_array(monkeypatch):
 
 
 def test_sample_counts_empty_echoes_species_filter(monkeypatch):
-    # an empty result with --species should name the filter, so a mistyped /
-    # case-mismatched species is distinguishable from an empty database.
+    # an empty result after picking a species should name it, so an empty species is
+    # distinguishable from an empty database.
     _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_species_with_accessions", lambda client: ["Canola"])
     monkeypatch.setattr(acc, "fetch_accession_sample_counts", lambda client, species=None: [])
-    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species", "Canola"])
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species"], input="1\n")
     assert res.exit_code == 0
     assert "No sample counts found for species 'Canola'." in res.output
 

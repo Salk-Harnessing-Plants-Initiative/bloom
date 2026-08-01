@@ -70,10 +70,14 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
   `--output csv|json` (default is the table; `--json` is an alias for
   `--output json`) — handy for grabbing an `experiment_id` for `cyl download`;
   `--limit` caps the fetch.
-- **[read]** `bloomctl cyl accessions list --experiment-id N` — list the accessions
-  used in an experiment (`--output csv|json` for machine-readable output).
-- **[read]** `bloomctl cyl accessions sample-counts [--species X]` — plant count per
-  accession, per species (`--output csv|json`).
+- **[read]** `bloomctl cyl accessions list` — list the accessions used in an
+  experiment. Pass `--experiment-id N` (scriptable), or omit it to **pick an
+  experiment from a menu** (needs a terminal). `--output csv|json` for
+  machine-readable output.
+- **[read]** `bloomctl cyl accessions sample-counts` — plant count per accession, per
+  species. Pass `--species` to **pick a species from a menu** (needs a terminal) and
+  filter to it; omit it for all species. `--output csv|json` for machine-readable
+  output.
 - **[read]** `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species,
   experiment, number of QC codes). Prints a table by default; `--output csv|json`
   for machine-readable output.
