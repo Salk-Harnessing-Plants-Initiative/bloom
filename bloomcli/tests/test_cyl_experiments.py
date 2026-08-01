@@ -29,11 +29,17 @@ def test_build_experiment_row():
 
 
 def test_build_experiment_row_tolerates_null_species():
-    assert ex.build_experiment_row({"id": 5, "name": "Exp 5", "species": None}) == ["", "Exp 5", "5"]
+    assert ex.build_experiment_row({"id": 5, "name": "Exp 5", "species": None}) == [
+        "",
+        "Exp 5",
+        "5",
+    ]
 
 
 def test_build_experiment_record():
-    rec = ex.build_experiment_record({"id": 7, "name": "Exp 7", "species": {"common_name": "Canola"}})
+    rec = ex.build_experiment_record(
+        {"id": 7, "name": "Exp 7", "species": {"common_name": "Canola"}}
+    )
     assert rec == {"species": "Canola", "experiment": "Exp 7", "experiment_id": 7}
 
 
@@ -313,6 +319,58 @@ def test_list_species_menu_none_available(monkeypatch):
     res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species"], input="0\n")
     assert res.exit_code != 0
     assert "No species" in res.output
+
+
+def test_list_species_menu_goes_to_stderr_stdout_stays_clean_json(monkeypatch):
+    # The whole point of err=True: the menu must not contaminate machine output. A script
+    # doing `--species --output json > data.json` must get pure JSON on stdout, menu on stderr.
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ex, "fetch_species_with_experiments", lambda client: [(3, "Canola")])
+    monkeypatch.setattr(ex, "fetch_experiments", lambda client, **kw: EXPS)
+    res = CliRunner().invoke(
+        cli, ["cyl", "experiments", "list", "--species", "--output", "json"], input="1\n"
+    )
+    assert res.exit_code == 0, res.output
+    json.loads(res.stdout)  # stdout is valid JSON — would raise if the menu leaked into it
+    assert "Select a species" not in res.stdout  # menu absent from stdout
+    assert "Select a species" in res.stderr  # menu present on stderr
+
+
+def test_list_species_menu_non_tty_aborts(monkeypatch):
+    # No stdin to answer the menu (pipe/CI) → abort loudly rather than pick a wrong species.
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ex, "fetch_species_with_experiments", lambda client: [(3, "Canola")])
+    captured = {"fetched": False}
+
+    def _fetch(client, **kw):
+        captured["fetched"] = True
+        return EXPS
+
+    monkeypatch.setattr(ex, "fetch_experiments", _fetch)
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species"], input="")
+    assert res.exit_code != 0  # Abort → non-zero exit, not a silent wrong result
+    assert captured["fetched"] is False  # never fetched with a guessed species
+
+
+def test_list_species_menu_out_of_range_reprompts(monkeypatch):
+    # Drive the REAL prompt (no monkeypatch of click.prompt) so IntRange validation runs:
+    # an out-of-range entry is rejected and re-asked, then a valid one resolves correctly.
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(
+        ex, "fetch_species_with_experiments", lambda client: [(3, "Canola"), (2, "Rice")]
+    )
+    captured = {}
+
+    def _fetch(client, *, species_id=None, limit=ex.DEFAULT_LIMIT):
+        captured["species_id"] = species_id
+        return [EXPS[1]]
+
+    monkeypatch.setattr(ex, "fetch_experiments", _fetch)
+    # menu offers 0..2; "9" is rejected and re-prompts, then "2" → Rice (id 2)
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species"], input="9\n2\n")
+    assert res.exit_code == 0, res.output
+    assert captured["species_id"] == 2  # resolved to the valid re-entry, did not crash
+    assert "is not in the range" in res.stderr  # IntRange rejected the bad entry
 
 
 # --- output formats ---------------------------------------------------------

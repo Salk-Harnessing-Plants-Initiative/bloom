@@ -11,7 +11,7 @@ from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
 
 # Table columns for `experiments list`, in display order.
 EXPERIMENT_COLUMNS = ["Species", "Experiment", "Experiment ID"]
-# Record fields for machine formats (json/csv/tsv) — must match build_experiment_record.
+# Record fields for machine formats (json/csv) — must match build_experiment_record.
 RECORD_FIELDS = ["species", "experiment", "experiment_id"]
 
 
@@ -48,6 +48,21 @@ def build_experiment_record(exp: dict[str, Any]) -> dict[str, Any]:
 DEFAULT_LIMIT = 1000
 
 
+def select_species_interactively(species: list[tuple[int, str]]) -> int | None:
+    """Prompt with a numbered menu (0 = All species) and return the chosen species_id, or None.
+
+    The menu and prompt are written to stderr so machine-format output on stdout stays clean.
+    ``click.prompt`` validates the number and re-prompts on a bad entry; with no input to read
+    (non-interactive) it aborts rather than returning a wrong choice.
+    """
+    click.echo("Select a species:", err=True)
+    click.echo("  0) All species", err=True)
+    for i, (_sid, name) in enumerate(species, start=1):
+        click.echo(f"  {i}) {name}", err=True)
+    choice = click.prompt("Species", type=click.IntRange(0, len(species)), err=True)
+    return None if choice == 0 else species[choice - 1][0]
+
+
 # --- supabase I/O ---
 
 
@@ -72,22 +87,8 @@ def fetch_species_with_experiments(client: Any) -> list[tuple[int, str]]:
         name = (row.get("species") or {}).get("common_name")
         if sid is not None and name and sid not in by_id:
             by_id[sid] = name
-    return sorted(by_id.items(), key=lambda kv: kv[1])
-
-
-def select_species_interactively(species: list[tuple[int, str]]) -> int | None:
-    """Prompt with a numbered menu (0 = All species) and return the chosen species_id, or None.
-
-    The menu and prompt are written to stderr so machine-format output on stdout stays clean.
-    ``click.prompt`` validates the number and re-prompts on a bad entry; with no input to read
-    (non-interactive) it aborts rather than returning a wrong choice.
-    """
-    click.echo("Select a species:", err=True)
-    click.echo("  0) All species", err=True)
-    for i, (_sid, name) in enumerate(species, start=1):
-        click.echo(f"  {i}) {name}", err=True)
-    choice = click.prompt("Species", type=click.IntRange(0, len(species)), err=True)
-    return None if choice == 0 else species[choice - 1][0]
+    # Sort by common name, id as tiebreak so a shared common name orders stably run-to-run.
+    return sorted(by_id.items(), key=lambda kv: (kv[1], kv[0]))
 
 
 def fetch_experiments(
