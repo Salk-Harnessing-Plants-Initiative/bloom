@@ -193,6 +193,30 @@ def test_fetch_species_with_experiments_dedups_and_sorts():
     assert "species(common_name)" in captured["select"]
 
 
+def test_fetch_species_with_experiments_id_breaks_common_name_tie():
+    # Two species sharing a common name → species_id decides order, so the menu is stable.
+    rows = [
+        {"species_id": 30, "species": {"common_name": "Maize"}},
+        {"species_id": 10, "species": {"common_name": "Maize"}},
+    ]
+
+    class _Q:
+        def select(self, sel):
+            return self
+
+        def is_(self, *a):
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": rows})()
+
+    class _Client:
+        def table(self, name):
+            return _Q()
+
+    assert ex.fetch_species_with_experiments(_Client()) == [(10, "Maize"), (30, "Maize")]
+
+
 def test_select_species_maps_choice_to_id(monkeypatch):
     monkeypatch.setattr("click.prompt", lambda *a, **k: 2)
     # menu: 1) Canola(10)  2) Rice(20) → choosing 2 returns id 20
