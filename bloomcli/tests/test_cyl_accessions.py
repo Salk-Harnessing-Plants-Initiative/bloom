@@ -193,9 +193,11 @@ def test_fetch_species_with_accessions_dedups_sorts_drops_null():
         {"species_name": None},  # dropped
     ]
 
+    captured = {}
+
     class _Q:
         def select(self, sel):
-            self._sel = sel
+            captured["select"] = sel
             return self
 
         def execute(self):
@@ -203,10 +205,12 @@ def test_fetch_species_with_accessions_dedups_sorts_drops_null():
 
     class _Client:
         def table(self, name):
-            self.name = name
+            captured["table"] = name
             return _Q()
 
     assert acc.fetch_species_with_accessions(_Client()) == ["Canola", "Rice"]
+    assert captured["table"] == "cyl_accession_sample_counts"  # the species-bearing view
+    assert captured["select"] == "species_name"  # a wrong column would silently blank the menu
 
 
 def test_fetch_experiments_with_accessions_joins_names_and_sorts():
@@ -223,6 +227,7 @@ def test_fetch_experiments_with_accessions_joins_names_and_sorts():
             self.table = table
 
         def select(self, sel):
+            captured.setdefault("selects", {})[self.table] = sel
             return self
 
         def in_(self, col, vals):
@@ -244,11 +249,39 @@ def test_fetch_experiments_with_accessions_joins_names_and_sorts():
     out = acc.fetch_experiments_with_accessions(_Client())
     assert captured["in"] == ("id", [3, 7])  # distinct ids, sorted, passed to cyl_experiments
     assert captured["is_"] == ("deleted_at", "null")  # soft-deleted experiments excluded
+    # the label needs id + name + the joined species — a dropped join would blank the menu label
+    assert captured["selects"]["cyl_experiment_accessions"] == "experiment_id"
+    assert captured["selects"]["cyl_experiments"] == "id, name, species(common_name)"
     # labeled "name (species)" and sorted by label (Drought before Salt Screen)
     assert out == [(3, "Drought (Arabidopsis)"), (7, "Salt Screen (Rice)")]
 
 
 # --- commands ---------------------------------------------------------------
+
+
+def test_list_experiment_id_bypasses_menu(monkeypatch):
+    # The scriptable path: a typed --experiment-id must reach the fetch WITHOUT ever
+    # opening the menu (a regression here would hang/break any pipeline).
+    _patch_authed(monkeypatch)
+    called = {"menu": False}
+
+    def _menu_fetch(client):
+        called["menu"] = True
+        return [(3, "Drought (Arabidopsis)")]
+
+    monkeypatch.setattr(acc, "fetch_experiments_with_accessions", _menu_fetch)
+    captured = {}
+
+    def _fetch(client, eid):
+        captured["eid"] = eid
+        return EXP_ACC
+
+    monkeypatch.setattr(acc, "fetch_experiment_accessions", _fetch)
+    # no stdin: if the menu wrongly opened, this would abort instead of exit 0
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "list", "--experiment-id", "7"])
+    assert res.exit_code == 0, res.output
+    assert captured["eid"] == 7  # typed id reaches the fetch unchanged
+    assert called["menu"] is False  # menu fetcher never called
 
 
 def test_list_no_id_opens_experiment_menu(monkeypatch):
