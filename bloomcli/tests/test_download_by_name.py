@@ -116,6 +116,9 @@ def test_ambiguous_name_lists_candidates_and_downloads_nothing(tmp_path, monkeyp
     assert "2 experiments match" in res.output
     assert "2025-11-20_soybean_cylinders" in res.output  # candidate labels listed
     assert "Cquesta soy" in res.output
+    # the candidate rows carry the id (to pass to --experiment-id) and the created date
+    assert "6" in res.output and "18" in res.output
+    assert "2026-01-15" in res.output
 
 
 def test_no_match_errors(tmp_path, monkeypatch):

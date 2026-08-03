@@ -64,7 +64,7 @@ BEGIN
     LEFT JOIN species s ON s.id = e.species_id
     WHERE e.deleted_at IS NULL
       AND e.name ILIKE pattern
-      AND (p_species IS NULL OR s.common_name ILIKE p_species)
+      AND (p_species IS NULL OR lower(s.common_name) = lower(btrim(p_species)))
     ORDER BY e.name, e.id
     LIMIT eff_limit;
 END;

@@ -249,7 +249,8 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     "--experiment_name",
     "experiment_name",
     default=None,
-    help="Resolve the experiment to download by name (fuzzy); an ambiguous name lists candidates "
+    help="Resolve the experiment to download by name (case-insensitive substring); an ambiguous "
+    "name lists candidates "
     "and exits without downloading. Mutually exclusive with --experiment-id / --scan-id.",
 )
 @click.option(
