@@ -49,7 +49,8 @@ Run `bloomctl --help` or `bloomctl <command> --help` for the full option list.
 - `bloomctl cyl experiments list` — list cylinder experiments (`--species` to pick
   one from a menu; `--output csv|json` to grab an id for `cyl download`).
 - `bloomctl cyl accessions list | sample-counts` — list the accessions in an
-  experiment, or the plant count per accession per species.
+  experiment, or the plant count per accession per species. Pick the experiment /
+  species from a menu, or pass `--experiment-id` (`accessions list` stays scriptable).
 - `bloomctl cyl qc list-sets` — list cylinder QC (quality-control) sets
   (`--output csv|json` for machine-readable output).
 

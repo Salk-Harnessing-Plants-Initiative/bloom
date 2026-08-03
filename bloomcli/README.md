@@ -46,7 +46,11 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - `bloomctl login` — bootstrap client config from the Bloom server and store
   credentials per profile.
 - **[read]** `bloomctl cyl download <out_dir> …` — download a cylinder experiment
-  or single scan (metadata `scans.csv` + per-frame images).
+  or single scan (metadata `scans.csv` + per-frame images). Select the experiment
+  by `--experiment-id N`, `--scan-id N`, or `--experiment-name "<text>"` (a
+  case-insensitive substring search on the experiment name, run server-side and
+  index-backed; `--species` to narrow; an ambiguous name lists the candidates and
+  exits without downloading).
 - **[read]** `bloomctl cyl download-for-predict <scan-id> <out>` — stage one scan
   into the predict-ready layout (see below); produces a **different** output tree
   than `cyl download` — use this only for A4 pipeline stage-in.
@@ -58,8 +62,10 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - **[write]** `bloomctl cyl batch-ingest-result <envelopes_dir>` — write back a
   batch of per-scan `ResultEnvelope`s in one invocation (see below); the batch
   sibling of `ingest-result`, for the A4 per-batch pipeline.
-- **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets
-  (`--experiment-id` to scope to one experiment, `--output csv|json` for machine-readable output).
+- **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets (all by
+  default). Scope to one experiment with `--experiment-id N` (scriptable) or
+  `--experiment` to **pick one from a menu** (needs a terminal). `--output csv|json`
+  for machine-readable output.
 - **[read]** `bloomctl cyl datasets get <name>` — show one dataset's details and the
   unique traits it contains, via the `cyl_dataset_trait_names` view (`--json` output).
 - **[write]** `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
@@ -70,10 +76,14 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
   `--output csv|json` (default is the table; `--json` is an alias for
   `--output json`) — handy for grabbing an `experiment_id` for `cyl download`;
   `--limit` caps the fetch.
-- **[read]** `bloomctl cyl accessions list --experiment-id N` — list the accessions
-  used in an experiment (`--output csv|json` for machine-readable output).
-- **[read]** `bloomctl cyl accessions sample-counts [--species X]` — plant count per
-  accession, per species (`--output csv|json`).
+- **[read]** `bloomctl cyl accessions list` — list the accessions used in an
+  experiment. Pass `--experiment-id N` (scriptable), or omit it to **pick an
+  experiment from a menu** (needs a terminal). `--output csv|json` for
+  machine-readable output.
+- **[read]** `bloomctl cyl accessions sample-counts` — plant count per accession, per
+  species. Pass `--species` to **pick a species from a menu** (needs a terminal) and
+  filter to it; omit it for all species. `--output csv|json` for machine-readable
+  output.
 - **[read]** `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species,
   experiment, number of QC codes). Prints a table by default; `--output csv|json`
   for machine-readable output.
