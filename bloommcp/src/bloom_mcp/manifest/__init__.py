@@ -5,6 +5,8 @@ bookkeeping (manifests, directories, code versions), not physical storage backen
 selection, which lives in the sibling `bloom_mcp.storage_backend`.
 """
 
+from bloom_mcp.experiment_utils import OUTLIERS_TOOL_CLASS, QC_TOOL_CLASS
+
 from .analysis_dir import AnalysisDir
 from .code_versions import get_code_versions
 from .manifest import (
@@ -23,13 +25,17 @@ from .schema import (
 )
 from .versioning import next_version_id, slugify, version_dir_name
 
+# `qc`/`outliers` reference the single-sourced constants in `experiment_utils`
+# (the producers, `qc_clean.py`/`remove_outliers.py`, do too) rather than
+# re-typing the literal — see `list_existing_analyses.TOOL_CLASSES` for the
+# same convention and its rationale (#420).
 CANONICAL_TOOL_CLASSES: tuple[str, ...] = (
-    "qc",
+    QC_TOOL_CLASS,
     "stats",
     "dimred",
     "clustering",
     "outlier",
-    "outliers",
+    OUTLIERS_TOOL_CLASS,
     "viz",
     "correlation",
     "heritability",

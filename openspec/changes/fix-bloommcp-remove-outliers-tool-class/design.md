@@ -181,6 +181,39 @@ table, regardless of any trim" (what `remove_outliers` itself needs as *input*, 
   docstring/param description SHALL gain one sentence: "latest" resolves the most recent outlier
   trim when one exists, not merely the most recent clean.
 
+## Post-review addendum
+
+A 5-lens subagent review of the implemented PR (#576) found two real gaps beyond the design
+above, both fixed on the same branch:
+
+- **Decision 7 understated the hard-error scope.** As shipped, only a `ManifestSchemaError` was
+  a hard error for `version="latest"`; every *other* failure to resolve an entry that exists
+  (missing `_cleaned.csv` output key, an unlocatable version directory, a failed download) was
+  still treated as a soft miss, falling through to the next class. That reproduces this change's
+  own target hazard — a storage hiccup on the `outliers` class silently resolving `qc`'s
+  otherwise-valid entry instead, with no error — just triggered by infrastructure instead of a
+  `qc_clean` re-run. Fixed: once `_resolve_one_class` finds an entry at all (`entry is not None`),
+  *any* subsequent failure to resolve it is now a hard error, unconditionally — only "no entry
+  exists" remains a soft miss. Regression test:
+  `test_latest_outliers_entry_exists_but_download_fails_is_a_hard_error`.
+- **Decision 4's disclosed trade-off had no observability.** The design accepted that a stale
+  trim (based on a superseded `qc` clean) keeps resolving as "latest cleaned" until a fresh
+  `remove_outliers` run supersedes it — but nothing surfaced that staleness at read time, only a
+  manual manifest diff could. Added `_log_if_trim_is_stale`: a non-blocking, best-effort
+  `logger.info` (never raises, never affects resolution) that fires when the resolved `outliers`
+  entry's `based_on_version` no longer matches the current `qc`-class latest. This is the "cheap
+  middle option" the Open Questions section below already named but hadn't implemented.
+- **Unrelated ripple-audit gap:** `qc_inspect.py`'s stated contract ("reads the raw frame, no
+  `require_clean`") never actually passed `version="raw"` — a pre-existing bug (order-dependent
+  on whether `qc_clean` had ever run) that this change's own `outliers`-preferring resolution made
+  materially worse (deterministic once any trim exists, not merely order-dependent). Fixed by
+  passing `version="raw"` explicitly; the 5-consumer docstring audit (Decision 8) should have
+  caught this 6th call site and didn't.
+- **Minor:** `QC_TOOL_CLASS` / `OUTLIERS_TOOL_CLASS` constants added to `experiment_utils.py` and
+  referenced by `qc_clean.py`, `remove_outliers.py`, `list_existing_analyses.TOOL_CLASSES`, and
+  `manifest.CANONICAL_TOOL_CLASSES` instead of each re-typing the literal string — the reviewer's
+  point that this duplication is exactly the drift class #420 itself is about.
+
 ## Risks / Trade-offs
 
 - **Decision 4's trade-off is real and is the central judgment call in this design** (see Open

@@ -82,14 +82,14 @@ from bloom_mcp.data_access import (
     ExperimentReadError,
 )
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
-from bloom_mcp.experiment_utils import CLEANED_CSV_NAME
+from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, OUTLIERS_TOOL_CLASS
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._qc_shared import _role_kwargs, _validate_trait_subset
 
 if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph (Tier-0)
     from matplotlib.figure import Figure
 
-_TOOL_CLASS = "outliers"
+_TOOL_CLASS = OUTLIERS_TOOL_CLASS
 _REPORT_NAME = "outlier_report.json"
 
 # ``goodness_of_fit.fit_quality`` values (mahalanobis chi-squared fit) whose flagged

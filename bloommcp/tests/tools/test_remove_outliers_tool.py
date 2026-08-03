@@ -113,6 +113,43 @@ def test_persisted_trimmed_table_has_output_rows_and_no_nans(injected_ports):
     assert result.n_output_samples < result.n_input_samples
 
 
+# ── outliers registered in the discovery-tool / canonical registries ────────
+
+
+def test_outliers_class_registered_in_discovery_and_canonical_registries():
+    """A typo in either registry would silently hide trimmed runs from
+    list_existing_analyses without any test noticing — assert membership
+    directly, not just indirectly via a live discoverability check."""
+    from bloom_mcp.manifest import CANONICAL_TOOL_CLASSES
+    from bloom_mcp.sections.core.list_existing_analyses import TOOL_CLASSES
+
+    assert "outliers" in TOOL_CLASSES
+    assert "outliers" in CANONICAL_TOOL_CLASSES
+
+
+def test_discoverable_via_list_existing_analyses(injected_ports):
+    """Live discoverability, mirroring the same pattern
+    cross_experiment_correlations uses for its own registered class."""
+    from bloom_mcp.sections.core import (
+        list_existing_analyses as list_existing_analyses_mod,
+    )
+
+    # _EXPERIMENT is reused across this whole file — clear the 30s response
+    # cache both before (so an earlier test's cached result can't leak in) and
+    # after (so this test's FakeReader/FakeResultStore-backed result doesn't
+    # leak into a later test), mirroring test_qc_tools_discovery.py's fixture.
+    list_existing_analyses_mod._RESPONSE_CACHE.clear()
+    try:
+        _run()
+        response = json.loads(
+            list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+        )
+    finally:
+        list_existing_analyses_mod._RESPONSE_CACHE.clear()
+
+    assert "outliers" in response["analyses"]
+
+
 def test_goodness_of_fit_is_dict_with_fit_quality_and_optional_types(injected_ports):
     """2.4 — goodness_of_fit is the delegate's fit-report dict; steer on fit_quality."""
     result = _run(method="mahalanobis")

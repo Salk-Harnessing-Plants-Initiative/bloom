@@ -180,3 +180,25 @@
       passes.
 - [x] 7.2 Full `bloommcp` unit test suite passes (`uv run --extra test pytest`), including the
       new/updated tests above.
+
+## 8. Post-review fixes (5-lens subagent review of PR #576)
+
+- [x] 8.1 `_resolve_one_class` now hard-errors on *any* failure to resolve an entry that exists
+      (not just `ManifestSchemaError`), for `version="latest"` too — previously a missing output
+      key / unlocatable version directory / failed download on `outliers` silently fell through
+      to `qc`'s valid entry, reproducing the #420 hazard via a storage failure instead of a
+      `qc_clean` re-run. See design.md's Post-review addendum. Regression test added.
+- [x] 8.2 Added `_log_if_trim_is_stale`: a non-blocking `logger.info` when the resolved `outliers`
+      entry's `based_on_version` no longer matches the current `qc` latest (design.md Decision
+      4's disclosed trade-off, now observable). Two tests: fires when stale, silent when current.
+- [x] 8.3 Fixed `qc_inspect.py` to pass `version="raw"` explicitly — its stated contract ("reads
+      the raw frame") was silently broken by the default `version="latest"`, a gap this PR's own
+      5-tool docstring audit (Decision 8) should have caught. Regression test added.
+- [x] 8.4 Added `QC_TOOL_CLASS`/`OUTLIERS_TOOL_CLASS` constants to `experiment_utils.py`;
+      `qc_clean.py`, `remove_outliers.py`, `list_existing_analyses.TOOL_CLASSES`, and
+      `manifest.CANONICAL_TOOL_CLASSES` now reference them instead of re-typing the literal.
+- [x] 8.5 Added tests asserting `"outliers"` membership in both registries, plus a live
+      discoverability test via `list_existing_analyses` (previously untested).
+- [ ] 8.6 File a follow-up GitHub issue covering both the historical audit and the ongoing
+      staleness-detection idea (task 4.4) — not filed yet; needs explicit go-ahead before creating
+      a public issue.

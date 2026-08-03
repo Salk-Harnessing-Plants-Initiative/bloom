@@ -1069,6 +1069,107 @@ def test_latest_schema_error_on_qc_propagates_second_iteration(_local_backend):
     assert err is not None and "manifest schema error for 'exp'" in err
 
 
+def test_latest_outliers_entry_exists_but_download_fails_is_a_hard_error(
+    _local_backend,
+):
+    """A schema-valid `outliers` entry names a version whose `_cleaned.csv` was
+    never actually uploaded (a partial commit, or a storage hiccup) — this must
+    propagate as a hard error, NOT fall through to `qc`'s otherwise-valid entry.
+    Falling through here would reproduce the exact #420 silent-revert hazard,
+    just triggered by a storage failure instead of a `qc_clean` re-run."""
+    from bloom_mcp import experiment_utils as eu
+    from bloom_mcp.manifest import (
+        ExperimentBlock,
+        Manifest,
+        VersionEntry,
+        get_code_versions,
+        write_manifest,
+    )
+
+    _write_cleaned_manifest(
+        _local_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+
+    # outliers manifest references v1, version_dir set, but its _cleaned.csv was
+    # never uploaded — no `upload_file` call, unlike `_write_cleaned_manifest`.
+    prefix = "bloommcp_output/outliers_exp/"
+    entry = VersionEntry(
+        id="v1",
+        created_at="2026-07-06T00:00:01Z",
+        tool="remove_outliers",
+        params={},
+        based_on_version="v1_cleaned",
+        code_versions=get_code_versions(),
+        outputs={"_cleaned.csv": "_cleaned.csv"},
+        version_dir="v1_2026-07-06",
+    )
+    manifest = Manifest(
+        experiment=ExperimentBlock(filename="exp.csv", source_path="", input_sha256=""),
+        versions=[entry],
+        latest="v1",
+    )
+    write_manifest(prefix, manifest)
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert path is None
+    assert label is None
+    assert err is not None
+    assert "download from storage failed" in err
+
+
+def test_latest_logs_when_resolved_trim_is_stale(_local_backend, caplog):
+    """The resolved `outliers` trim's `based_on_version` ("v1_cleaned") no longer
+    matches the current `qc` latest ("v2_cleaned") — a `qc_clean` has run since
+    the trim was made (design.md Decision 4's disclosed trade-off). This is
+    purely observational: the trim still correctly resolves as "latest cleaned",
+    but a log line makes the staleness visible at read time."""
+    from bloom_mcp import experiment_utils as eu
+
+    _write_cleaned_manifest(
+        _local_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    _write_cleaned_manifest(
+        _local_backend, "exp", "outliers", "v1", "2026-07-06T00:00:01Z", b"trim\n1\n"
+    )  # based_on_version="v1_cleaned" (via _write_cleaned_manifest's default)
+    _write_cleaned_manifest(
+        _local_backend, "exp", "qc", "v2", "2026-07-06T00:01:00Z", b"a,b\n3,4\n5,6\n"
+    )  # a fresh qc_clean re-run, after the trim
+
+    with caplog.at_level(logging.INFO, logger="bloom_mcp.experiment_utils"):
+        path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+
+    assert err is None
+    assert (
+        path is not None and path.read_bytes() == b"trim\n1\n"
+    )  # still resolves the trim
+    assert label == "outliers_v1_cleaned"
+    assert any("has run since this trim was made" in r.message for r in caplog.records)
+
+
+def test_latest_does_not_log_when_resolved_trim_is_current(_local_backend, caplog):
+    """The resolved `outliers` trim's `based_on_version` matches the current `qc`
+    latest exactly (the natural clean-then-trim order, no re-clean since) — no
+    staleness log should fire."""
+    from bloom_mcp import experiment_utils as eu
+
+    _write_cleaned_manifest(
+        _local_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    _write_cleaned_manifest(
+        _local_backend, "exp", "outliers", "v1", "2026-07-06T00:00:01Z", b"trim\n1\n"
+    )
+
+    with caplog.at_level(logging.INFO, logger="bloom_mcp.experiment_utils"):
+        path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+
+    assert err is None
+    assert path is not None
+    assert label == "outliers_v1_cleaned"
+    assert not any(
+        "has run since this trim was made" in r.message for r in caplog.records
+    )
+
+
 # ─── 6. BLOOM_LOCAL_ROOT (#479) ─────────────────────────────────────────────────
 
 
