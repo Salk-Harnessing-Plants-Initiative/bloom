@@ -40,6 +40,13 @@ _RAW = _FIXTURES / "turface_19_raw_data.csv"
 _GOLDEN = json.loads(
     (_FIXTURES / "turface_19_outlier_golden.json").read_text(encoding="utf-8")
 )
+# #419: mahalanobis's fit on turface_19 is untrustworthy (very_poor) -- the gate now
+# raises on that path, so isolation_forest is this fixture's "successful persisted
+# trim" characterization. _GOLDEN (mahalanobis) stays as the raise-path's historical
+# reference (the message embeds these same counts/barcodes).
+_GOLDEN_IFOREST = json.loads(
+    (_FIXTURES / "turface_19_outlier_iforest_golden.json").read_text(encoding="utf-8")
+)
 
 _EXPERIMENT = "turface_19.csv"
 
@@ -85,26 +92,105 @@ def _run(**overrides) -> RemoveOutliersResult:
     return remove_outliers(RemoveOutliersParams(**params))
 
 
+def _force_trustworthy_mahalanobis_fit(monkeypatch) -> None:
+    """(#419) Wrap the REAL delegate, overriding only the reported ``fit_quality`` to
+    an acceptable-or-better value so the fit-trustworthiness gate does not fire.
+
+    Neither turface_19 nor cylinder has a naturally-trustworthy mahalanobis fit (both
+    are poor/very_poor), so a test that needs the gate to pass through while still
+    exercising the REAL mahalanobis detection (real trimmed rows, real figures, real
+    threshold fields) has no fixture to run against. This forces just the one field
+    the gate reads, leaving everything else — the trim, the figures, the threshold —
+    genuinely delegate-produced.
+    """
+    real = remove_outliers_tool.remove_outlier_samples
+
+    def _spy(df, trait_cols=None, **kwargs):
+        trimmed_df, report = real(df, trait_cols, **kwargs)
+        if isinstance(report.get("goodness_of_fit"), dict):
+            report["goodness_of_fit"] = {
+                **report["goodness_of_fit"],
+                "fit_quality": "excellent",
+            }
+        return trimmed_df, report
+
+    monkeypatch.setattr(remove_outliers_tool, "remove_outlier_samples", _spy)
+
+
 # ── 2. Golden trim through the tool (characterization) ──────────────────────
 
 
-def test_golden_trim_counts_and_barcodes_match_recorded_snapshot(injected_ports):
-    """2.2 — mahalanobis@seed42 reproduces the recorded characterization golden.
+def test_mahalanobis_default_untrustworthy_fit_is_gated_not_persisted(injected_ports):
+    """2.2 (#419) — mahalanobis@seed42 on turface_19 has a very_poor chi-squared fit,
+    so the tool now raises assumption_violated instead of persisting the trim. The
+    raised message embeds the same counts/barcodes the old golden characterized
+    (n_outliers=8/n_input=158/n_output=150), so nothing is silently lost even though
+    the run is not committed."""
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="mahalanobis", seed=42)
 
-    NB: turface_19's chi-squared fit is poor; these are a method+seed pin, not truth.
-    """
-    result = _run(method="mahalanobis", seed=42)
+    assert exc.value.code == "assumption_violated"
+    assert "isolation_forest" in exc.value.remedy
+    msg = exc.value.message
+    assert f"n_outliers={_GOLDEN['n_outliers']}" in msg  # 8
+    assert f"n_input_samples={_GOLDEN['n_input_samples']}" in msg  # 158
+    assert f"n_output_samples={_GOLDEN['n_output_samples']}" in msg  # 150
+    assert "very_poor" in msg
+    for barcode in _GOLDEN["outlier_barcodes"]:
+        assert barcode in msg
+    assert store.list_runs(_EXPERIMENT, "outliers") == []
 
-    assert result.n_input_samples == _GOLDEN["n_input_samples"] == 158
-    assert result.n_outliers == _GOLDEN["n_outliers"] == 8
-    assert result.n_output_samples == _GOLDEN["n_output_samples"] == 150
-    assert sorted(result.outlier_barcodes) == _GOLDEN["outlier_barcodes"]
+
+def test_gate_fires_before_figure_generation_even_with_a_valid_plots_key(
+    injected_ports,
+):
+    """(#419 Decision 6 regression) The fit gate must fire before ANY figure handling —
+    not just before the invalid-plots-key path (covered by
+    test_unknown_plot_key_is_invalid_input_with_no_run, now on isolation_forest since
+    the gate would otherwise mask it). This pins the valid-key case too: an untrustworthy
+    mahalanobis fit with include_plots=True and a real, valid figure key still raises the
+    fit gate rather than reaching _make_figures at all — no figures are created (nothing
+    to leak), guarding against a future refactor that reorders the checks."""
+    _reader, store = injected_ports
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            method="mahalanobis",
+            include_plots=True,
+            plots=["mahalanobis_pc_analysis"],  # a real, valid mahalanobis figure key
+        )
+    assert exc.value.code == "assumption_violated"
+    assert "isolation_forest" in exc.value.remedy
+    assert plt.get_fignums() == []  # no figure was ever created
+    assert store.list_runs(_EXPERIMENT, "outliers") == []
+
+
+def test_isolation_forest_golden_trim_counts_and_barcodes_match_recorded_snapshot(
+    injected_ports,
+):
+    """2.2b (#419) — isolation_forest@seed42 is turface_19's new "successful
+    persisted trim" characterization, since mahalanobis is gated on this fixture
+    (see test_mahalanobis_default_untrustworthy_fit_is_gated_not_persisted)."""
+    result = _run(method="isolation_forest", seed=42)
+
+    assert result.n_input_samples == _GOLDEN_IFOREST["n_input_samples"] == 158
+    assert result.n_outliers == _GOLDEN_IFOREST["n_outliers"] == 16
+    assert result.n_output_samples == _GOLDEN_IFOREST["n_output_samples"] == 142
+    assert sorted(result.outlier_barcodes) == _GOLDEN_IFOREST["outlier_barcodes"]
+    assert result.fit_is_trustworthy is None
+    assert result.goodness_of_fit is None
 
 
 def test_persisted_trimmed_table_has_output_rows_and_no_nans(injected_ports):
     """2.3 — the persisted trimmed table has n_output_samples rows and no NaNs."""
     _reader, store = injected_ports
-    result = _run()
+    result = _run(method="isolation_forest")
     stored = store.get_run(_EXPERIMENT, "outliers", "latest")
     assert stored.output_keys[remove_outliers_tool.CLEANED_CSV_NAME].endswith(
         "_cleaned.csv"
@@ -155,7 +241,7 @@ def test_discoverable_via_list_existing_analyses(injected_ports):
     # leak into a later test), mirroring test_qc_tools_discovery.py's fixture.
     list_existing_analyses_mod._RESPONSE_CACHE.clear()
     try:
-        _run()
+        _run(method="isolation_forest")
         response = json.loads(
             list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
         )
@@ -165,16 +251,22 @@ def test_discoverable_via_list_existing_analyses(injected_ports):
     assert "outliers" in response["analyses"]
 
 
-def test_goodness_of_fit_is_dict_with_fit_quality_and_optional_types(injected_ports):
-    """2.4 — goodness_of_fit is the delegate's fit-report dict; steer on fit_quality."""
+def test_goodness_of_fit_true_fit_is_not_gated_dict_shape_and_types(
+    injected_ports, monkeypatch
+):
+    """2.4 (#419 regression) — an acceptable-or-better mahalanobis fit
+    (fit_is_trustworthy is True) is NOT gated, and goodness_of_fit is still the
+    delegate's fit-report dict with the expected shape. See
+    _force_trustworthy_mahalanobis_fit for why this fixture's fit must be forced."""
+    _force_trustworthy_mahalanobis_fit(monkeypatch)
     result = _run(method="mahalanobis")
     assert isinstance(result.goodness_of_fit, dict)
-    assert result.goodness_of_fit["fit_quality"] == "very_poor"
+    assert result.goodness_of_fit["fit_quality"] == "excellent"
     assert result.threshold_type == "chi_squared"
     assert isinstance(result.threshold_value, float)
-    # I6 — the machine-visible trust flag mirrors the poor fit so a downstream tool
-    # need not parse the goodness_of_fit dict / the description prose.
-    assert result.fit_is_trustworthy is False
+    # I6 — the machine-visible trust flag mirrors the (forced) good fit so a
+    # downstream tool need not parse the goodness_of_fit dict / the description prose.
+    assert result.fit_is_trustworthy is True
 
 
 # ── 3.1 tools/list presence ─────────────────────────────────────────────────
@@ -198,7 +290,7 @@ def test_remove_outliers_appears_in_tools_list():
 
 
 def test_valid_input_output_round_trip(injected_ports):
-    result = _run()
+    result = _run(method="isolation_forest")
     again = RemoveOutliersResult.model_validate(json.loads(result.model_dump_json()))
     assert again.n_output_samples == result.n_output_samples
 
@@ -220,7 +312,7 @@ def test_unknown_method_is_input_validation_error(injected_ports):
 
 def test_provenance_seed_recorded_and_links_returned(injected_ports):
     _reader, store = injected_ports
-    result = _run(seed=42)
+    result = _run(method="isolation_forest", seed=42)
 
     stored = store.get_run(_EXPERIMENT, "outliers", "latest")
     assert stored.tool == "remove_outliers"
@@ -238,16 +330,21 @@ def test_provenance_seed_recorded_and_links_returned(injected_ports):
     )
 
 
-def test_outlier_report_json_round_trips(fake_supabase_storage):
+def test_outlier_report_json_round_trips(fake_supabase_storage, monkeypatch):
     """The persisted outlier_report.json is valid JSON carrying the report (guards a
-    numpy-not-serializable regression). Uses the real store over the in-memory object
-    store so the committed bytes can be read back."""
+    numpy-not-serializable regression) -- including a real, numpy-typed
+    goodness_of_fit dict, not just the isolation_forest None case. Uses the real
+    store over the in-memory object store so the committed bytes can be read back.
+    turface_19's mahalanobis fit is untrustworthy (#419 gates it), so the fit is
+    forced trustworthy here purely to reach persistence with a real fit-report dict
+    intact -- see _force_trustworthy_mahalanobis_fit."""
+    _force_trustworthy_mahalanobis_fit(monkeypatch)
     reader = FakeReader()
     reader.add_cleaned_version(_EXPERIMENT, "v1", _cleaned_df(), make_latest=True)
     store = SupabaseResultStore()
     _ports.configure(reader=reader, store=store)
     try:
-        result = _run()
+        result = _run(method="mahalanobis")
         report_key = result.outputs["outlier_report.json"]
         payload = json.loads(fake_supabase_storage.objects[report_key].decode("utf-8"))
     finally:
@@ -260,7 +357,7 @@ def test_outlier_report_json_round_trips(fake_supabase_storage):
 
 
 def test_counts_and_removal_fraction_are_consistent(injected_ports):
-    result = _run()
+    result = _run(method="isolation_forest")
     assert 0 < result.n_output_samples <= result.n_input_samples
     assert result.n_outliers == result.n_input_samples - result.n_output_samples
     assert result.removal_fraction == round(
@@ -274,6 +371,11 @@ def test_counts_and_removal_fraction_are_consistent(injected_ports):
 def test_delegates_once_forwards_roles_seed_and_never_calls_vendored(
     injected_ports, monkeypatch
 ):
+    """The spy captures kwargs from the REAL delegate call, which happens before the
+    #419 fit-trustworthiness gate -- so this still verifies delegation/role/seed
+    forwarding for a mahalanobis call even though turface_19's untrustworthy fit means
+    the call ultimately raises rather than persists (asserted below, not the point of
+    this test)."""
     captured = {}
     real = remove_outliers_tool.remove_outlier_samples
 
@@ -284,7 +386,8 @@ def test_delegates_once_forwards_roles_seed_and_never_calls_vendored(
 
     monkeypatch.setattr(remove_outliers_tool, "remove_outlier_samples", _spy)
 
-    _run(method="mahalanobis", seed=42)
+    with pytest.raises(BloomMCPError):
+        _run(method="mahalanobis", seed=42)
 
     assert captured["n_calls"] == 1
     assert captured["kwargs"]["method"] == "mahalanobis"
@@ -295,6 +398,9 @@ def test_delegates_once_forwards_roles_seed_and_never_calls_vendored(
 
 
 def test_default_method_is_mahalanobis(injected_ports, monkeypatch):
+    """The spy captures kwargs before the #419 gate fires, so the declared default
+    (still mahalanobis -- Decision 4 of the fit-gate proposal defers changing it) is
+    verified even though turface_19's untrustworthy fit means this call raises."""
     captured = {}
     real = remove_outliers_tool.remove_outlier_samples
 
@@ -303,7 +409,8 @@ def test_default_method_is_mahalanobis(injected_ports, monkeypatch):
         return real(df, trait_cols, **kwargs)
 
     monkeypatch.setattr(remove_outliers_tool, "remove_outlier_samples", _spy)
-    _run()  # no method
+    with pytest.raises(BloomMCPError):
+        _run()  # no method
     assert captured["kwargs"]["method"] == "mahalanobis"
 
 
@@ -498,7 +605,7 @@ def test_trimmed_run_composes_into_require_clean_read(fake_supabase_storage):
     store = SupabaseResultStore()
     _ports.configure(reader=reader, store=store)
     try:
-        result = _run()
+        result = _run(method="isolation_forest")
         resolved = SupabaseReader().load_experiment(_EXPERIMENT, require_clean=True)
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
@@ -508,7 +615,11 @@ def test_trimmed_run_composes_into_require_clean_read(fake_supabase_storage):
     assert int(resolved.df[resolved.trait_cols].isna().sum().sum()) == 0
     # The reloaded trimmed table has the golden output rows — a persisted-NaN/wrong-rows
     # regression fails here (the FakeResultStore path can't reload).
-    assert len(resolved.df) == result.n_output_samples == _GOLDEN["n_output_samples"]
+    assert (
+        len(resolved.df)
+        == result.n_output_samples
+        == _GOLDEN_IFOREST["n_output_samples"]
+    )
 
 
 # ── 3.11 plots ──────────────────────────────────────────────────────────────
@@ -516,22 +627,31 @@ def test_trimmed_run_composes_into_require_clean_read(fake_supabase_storage):
 
 def test_default_is_report_only_no_plots(injected_ports):
     _reader, store = injected_ports
-    result = _run()
+    result = _run(method="isolation_forest")
     assert set(result.outputs) == {"_cleaned.csv", "outlier_report.json"}
 
 
 def test_include_plots_persists_requested_figure_as_link(injected_ports):
-    result = _run(include_plots=True, plots=["mahalanobis_pc_analysis"])
-    assert "mahalanobis_pc_analysis.png" in result.outputs
+    result = _run(
+        method="isolation_forest",
+        include_plots=True,
+        plots=["isolation_forest_analysis"],
+    )
+    assert "isolation_forest_analysis.png" in result.outputs
     assert "_cleaned.csv" in result.outputs
     # figures are links (object keys), not inline blobs
-    assert isinstance(result.outputs["mahalanobis_pc_analysis.png"], str)
+    assert isinstance(result.outputs["isolation_forest_analysis.png"], str)
 
 
 def test_unknown_plot_key_is_invalid_input_with_no_run(injected_ports):
+    """(#419 Decision 6) method=isolation_forest, not mahalanobis: the fit-
+    trustworthiness gate now fires before plot-key validation, so a mahalanobis call
+    against turface_19's untrustworthy fit would surface the gate's assumption_violated
+    instead of this test's intended invalid_input. That validation logic is
+    method-agnostic, so isolation_forest (never gated) exercises it just as well."""
     _reader, store = injected_ports
     with pytest.raises(BloomMCPError) as exc:
-        _run(include_plots=True, plots=["not_a_real_figure"])
+        _run(method="isolation_forest", include_plots=True, plots=["not_a_real_figure"])
     assert exc.value.code == "invalid_input"
     assert "not_a_real_figure" in exc.value.message
     assert store.list_runs(_EXPERIMENT, "outliers") == []
@@ -542,8 +662,8 @@ def test_unknown_plot_key_is_invalid_input_with_no_run(injected_ports):
 
 def test_second_run_increments_version_and_supersedes_latest(injected_ports):
     _reader, store = injected_ports
-    _run()
-    _run()
+    _run(method="isolation_forest")
+    _run(method="isolation_forest")
     assert [r.run_ref for r in store.list_runs(_EXPERIMENT, "outliers")] == ["v1", "v2"]
     assert store.get_run(_EXPERIMENT, "outliers", "latest").run_ref == "v2"
 
@@ -615,7 +735,7 @@ def test_provenance_records_based_on_version_of_cleaned_source(
         return real_create(**kwargs)
 
     monkeypatch.setattr(store, "create_run", _spy_create)
-    result = _run()
+    result = _run(method="isolation_forest")
 
     assert captured["based_on_version"] == "v1_cleaned" == result.source
 
@@ -759,11 +879,10 @@ def test_own_guard_rejects_returned_frame_missing_trait_column(
 
 def test_provided_seed_is_recorded_in_provenance(injected_ports):
     """A non-default seed is recorded in the persisted run's provenance (proves the
-    resolved integer is captured live, not hard-wired to 42). NB: the default
-    mahalanobis exact-SVD flagged set is seed-independent, so this asserts the *recorded*
-    seed, not a change in the flagged samples."""
+    resolved integer is captured live, not hard-wired to 42). Only the *recorded*
+    seed is asserted here, not a change in the flagged samples."""
     _reader, store = injected_ports
-    _run(seed=7)
+    _run(method="isolation_forest", seed=7)
     assert store.get_run(_EXPERIMENT, "outliers", "latest").seed == 7
 
 
@@ -797,8 +916,8 @@ def test_qc_clean_rerun_does_not_revert_existing_trim(fake_supabase_storage):
     _ports.configure(reader=SupabaseReader(), store=store)
     try:
         _commit_qc_clean(store, _cleaned_df())  # qc v1
-        result = (
-            _run()
+        result = _run(
+            method="isolation_forest"
         )  # remove_outliers reads qc v1 via latest_qc, commits outliers v1
         _commit_qc_clean(
             store, _cleaned_df()
@@ -808,7 +927,11 @@ def test_qc_clean_rerun_does_not_revert_existing_trim(fake_supabase_storage):
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
-    assert len(resolved.df) == result.n_output_samples == _GOLDEN["n_output_samples"]
+    assert (
+        len(resolved.df)
+        == result.n_output_samples
+        == _GOLDEN_IFOREST["n_output_samples"]
+    )
     assert resolved.source == "outliers_v1_cleaned"
 
 
@@ -841,18 +964,23 @@ def test_remove_outliers_picks_up_fresh_qc_clean_not_its_own_stale_trim(
     _ports.configure(reader=SupabaseReader(), store=store)
     try:
         _commit_qc_clean(store, _cleaned_df())  # qc v1
-        first = _run()  # trims qc v1 (158 rows) -> outliers v1 (150 rows)
+        first = _run(
+            method="isolation_forest"
+        )  # trims qc v1 (158 rows) -> outliers v1 (142 rows)
         assert first.n_input_samples == len(_cleaned_df())
 
         _commit_qc_clean(store, _cleaned_df())  # qc v2 — a fresh re-clean
-        second = _run()  # must read qc v2 via latest_qc, NOT the stale outliers v1 trim
+        second = _run(
+            method="isolation_forest"
+        )  # must read qc v2 via latest_qc, NOT the stale outliers v1 trim
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
     # If this tool had instead re-read its own stale trim, n_input_samples would be
-    # outliers v1's 150 (== _GOLDEN["n_output_samples"]), not qc v2's full row count.
+    # outliers v1's 142 (== _GOLDEN_IFOREST["n_output_samples"]), not qc v2's full row
+    # count.
     assert second.n_input_samples == len(_cleaned_df())
-    assert second.n_input_samples != _GOLDEN["n_output_samples"]
+    assert second.n_input_samples != _GOLDEN_IFOREST["n_output_samples"]
 
     resolved = SupabaseReader().load_experiment(_EXPERIMENT, require_clean=True)
     assert resolved.source == "outliers_v2_cleaned"
@@ -868,26 +996,38 @@ _MAHALANOBIS_FIGS = {
 }
 
 
-def test_include_plots_none_persists_full_mahalanobis_figure_set(injected_ports):
-    """plots=None persists EVERY figure the method produces (the delegate's full set)."""
-    result = _run(include_plots=True)  # plots defaults to None
+def test_include_plots_none_persists_full_mahalanobis_figure_set(
+    injected_ports, monkeypatch
+):
+    """plots=None persists EVERY figure the method produces (the delegate's full
+    set). Needs the REAL mahalanobis figures (not isolation_forest's single-figure
+    set), so the untrustworthy fit is forced trustworthy via monkeypatch rather than
+    repointed to a different method -- see _force_trustworthy_mahalanobis_fit."""
+    _force_trustworthy_mahalanobis_fit(monkeypatch)
+    result = _run(method="mahalanobis", include_plots=True)  # plots defaults to None
     assert _MAHALANOBIS_FIGS <= set(result.outputs)
 
 
 def test_include_plots_success_closes_all_figures(injected_ports):
-    """Figure-cleanup: a successful include_plots run leaks no matplotlib figures."""
+    """Figure-cleanup: a successful include_plots run leaks no matplotlib figures.
+    isolation_forest (never gated) keeps this a real assertion about cleanup, not a
+    vacuous pass on a run that never reached figure generation."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     plt.close("all")
-    _run(include_plots=True)
+    _run(method="isolation_forest", include_plots=True)
     assert plt.get_fignums() == []
 
 
 def test_unknown_plot_key_failure_closes_all_figures(injected_ports):
-    """Figure-cleanup on the validation-failure path (unknown plot key)."""
+    """Figure-cleanup on the validation-failure path (unknown plot key).
+    method=isolation_forest (#419 Decision 6, same reasoning as
+    test_unknown_plot_key_is_invalid_input_with_no_run): a mahalanobis call here would
+    hit the fit-trustworthiness gate before any figure is ever created, making the
+    cleanup assertion below vacuously true rather than a real test."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -895,13 +1035,16 @@ def test_unknown_plot_key_failure_closes_all_figures(injected_ports):
 
     plt.close("all")
     with pytest.raises(BloomMCPError):
-        _run(include_plots=True, plots=["not_a_real_figure"])
+        _run(method="isolation_forest", include_plots=True, plots=["not_a_real_figure"])
     assert plt.get_fignums() == []
 
 
 def test_persistence_failure_closes_all_figures(injected_ports, monkeypatch):
     """The reproduced leak — a failure in the persistence region (create_run/commit)
-    AFTER figures are made still closes every figure via the widened try/finally."""
+    AFTER figures are made still closes every figure via the widened try/finally.
+    method=isolation_forest (never gated): a mahalanobis call would raise at the
+    fit-trustworthiness gate before any figure is made, never reaching the persistence
+    region this test exists to exercise."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -915,7 +1058,7 @@ def test_persistence_failure_closes_all_figures(injected_ports, monkeypatch):
     monkeypatch.setattr(store, "commit", _boom)
     plt.close("all")
     with pytest.raises(BloomMCPError):
-        _run(include_plots=True)
+        _run(method="isolation_forest", include_plots=True)
     assert plt.get_fignums() == []
 
 
@@ -954,6 +1097,12 @@ _RAW_CYL = _FIXTURES / "cylinder_raw_data.csv"
 _GOLDEN_CYL = json.loads(
     (_FIXTURES / "cylinder_outlier_golden.json").read_text(encoding="utf-8")
 )
+# #419: cylinder's mahalanobis fit is also untrustworthy (poor) -- same split as
+# turface_19: _GOLDEN_CYL (mahalanobis) is now the raise-path's historical reference,
+# _GOLDEN_CYL_IFOREST is the new "successful persisted trim" characterization.
+_GOLDEN_CYL_IFOREST = json.loads(
+    (_FIXTURES / "cylinder_outlier_iforest_golden.json").read_text(encoding="utf-8")
+)
 _EXPERIMENT_CYL = "cylinder.csv"
 
 
@@ -980,18 +1129,48 @@ def injected_ports_cylinder():
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
-def test_cylinder_outlier_removal_matches_golden(injected_ports_cylinder):
+def test_cylinder_mahalanobis_default_untrustworthy_fit_is_gated_not_persisted(
+    injected_ports_cylinder,
+):
+    """(#419) cylinder's mahalanobis@seed42 fit is poor (untrustworthy), so the tool
+    raises assumption_violated instead of persisting -- same as turface_19. The
+    message embeds the historical characterization counts/barcodes."""
+    _reader, store = injected_ports_cylinder
+    with pytest.raises(BloomMCPError) as exc:
+        remove_outliers(
+            RemoveOutliersParams(
+                experiment=_EXPERIMENT_CYL, method="mahalanobis", seed=42
+            )
+        )
+
+    assert exc.value.code == "assumption_violated"
+    assert "isolation_forest" in exc.value.remedy
+    msg = exc.value.message
+    assert f"n_outliers={_GOLDEN_CYL['n_outliers']}" in msg  # 9
+    assert f"n_input_samples={_GOLDEN_CYL['n_input_samples']}" in msg  # 129
+    assert f"n_output_samples={_GOLDEN_CYL['n_output_samples']}" in msg  # 120
+    assert "poor" in msg
+    for barcode in _GOLDEN_CYL["outlier_barcodes"]:
+        assert barcode in msg
+    assert store.list_runs(_EXPERIMENT_CYL, "outliers") == []
+
+
+def test_cylinder_isolation_forest_outlier_removal_matches_golden(
+    injected_ports_cylinder,
+):
+    """(#419) isolation_forest@seed42 is cylinder's new "successful persisted trim"
+    characterization, since mahalanobis is gated on this fixture."""
     result = remove_outliers(
-        RemoveOutliersParams(experiment=_EXPERIMENT_CYL, method="mahalanobis", seed=42)
+        RemoveOutliersParams(
+            experiment=_EXPERIMENT_CYL, method="isolation_forest", seed=42
+        )
     )
 
-    assert result.n_input_samples == _GOLDEN_CYL["n_input_samples"] == 129
-    assert result.n_outliers == _GOLDEN_CYL["n_outliers"] == 9
-    assert result.n_output_samples == _GOLDEN_CYL["n_output_samples"] == 120
-    assert sorted(result.outlier_barcodes) == sorted(_GOLDEN_CYL["outlier_barcodes"])
-    assert result.fit_is_trustworthy is False
-    assert (
-        result.goodness_of_fit["fit_quality"]
-        == _GOLDEN_CYL["goodness_of_fit_fit_quality"]
-        == "poor"
+    assert result.n_input_samples == _GOLDEN_CYL_IFOREST["n_input_samples"] == 129
+    assert result.n_outliers == _GOLDEN_CYL_IFOREST["n_outliers"] == 13
+    assert result.n_output_samples == _GOLDEN_CYL_IFOREST["n_output_samples"] == 116
+    assert sorted(result.outlier_barcodes) == sorted(
+        _GOLDEN_CYL_IFOREST["outlier_barcodes"]
     )
+    assert result.fit_is_trustworthy is None
+    assert result.goodness_of_fit is None

@@ -184,6 +184,24 @@ never letting the delegate's error fall through to the contract's opaque `intern
 
 ### Requirement: Remove Outliers Reproduces the Golden Trim Through the Tool
 
+> **Note (superseded by #419, `fix-bloommcp-remove-outliers-fit-gate`):** this requirement and
+> its scenarios below describe the behavior as originally shipped (PR #400): a
+> `method=mahalanobis` call on the untrustworthy-fit turface_19 fixture **persists** the trim,
+> with `fit_is_trustworthy` surfaced as an advisory-only field. #419 adds a pre-commit gate:
+> when `fit_is_trustworthy is False` (as it is for this exact scenario — turface_19's chi-squared
+> fit is `very_poor`), the tool now raises a structured `assumption_violated` error instead of
+> persisting, naming `method="isolation_forest"` as the remedy. The `n_input_samples=158`/
+> `n_outliers=8`/`n_output_samples=150`/barcode characterization below is preserved as the
+> *historical* golden values — they now appear embedded in the raised error's message rather
+> than in a persisted, returned result. See that change's spec delta
+> (`bloommcp-remove-outliers-tool`'s "Remove Outliers Gates Persistence on Untrustworthy
+> Mahalanobis Fit" requirement) for the current behavior; turface_19's "successful persisted
+> trim" characterization moved to `method=isolation_forest`
+> (`turface_19_outlier_iforest_golden.json`). This spec is left as the historical record of what
+> PR #400 shipped rather than rewritten in place, since this change
+> (`add-bloommcp-remove-outliers-tool`) is not being re-opened/re-archived for #419 — mirroring
+> how #420's superseded-note above handles the same still-unarchived-capability situation.
+
 The `remove_outliers` tool SHALL, when invoked through the MCP boundary on the cleaned
 turface_19 fixture at `method=mahalanobis`, `seed=42`, reproduce a recorded golden
 characterization snapshot: the number of flagged outliers, the number of retained samples, and
