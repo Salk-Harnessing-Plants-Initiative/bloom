@@ -121,6 +121,26 @@ def test_ambiguous_name_lists_candidates_and_downloads_nothing(tmp_path, monkeyp
     assert "2026-01-15" in res.output
 
 
+def test_search_apierror_mapped_to_clean_clickexception(tmp_path, monkeypatch):
+    # The RPC RAISEs on a >200-char query (and on permission errors); that must surface as a
+    # clean CLI message, not a raw postgrest traceback — matching accessions/datasets.
+    from postgrest import APIError
+
+    _auth(monkeypatch)
+    _no_download(monkeypatch)
+
+    def _boom(client, query, species=None):
+        raise APIError({"message": "search query too long (max 200 characters)", "code": "P0001"})
+
+    monkeypatch.setattr(dl, "search_experiments", _boom)
+    res = CliRunner().invoke(
+        cli, ["cyl", "download", str(tmp_path / "out"), "--experiment-name", "x" * 201]
+    )
+    assert res.exit_code != 0
+    assert "search query too long" in res.output  # the mapped message
+    assert "Traceback" not in res.output  # not a raw traceback
+
+
 def test_no_match_errors(tmp_path, monkeypatch):
     _auth(monkeypatch)
     _no_download(monkeypatch)
