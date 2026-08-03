@@ -26,7 +26,7 @@ def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
     or computes it on the fly. Highlights traits above the threshold.
 
     Args:
-        filename: CSV filename from list_available_experiments
+        filename: experiment identifier from list_available_experiments
         threshold: H2 threshold line to highlight (default 0.5)
     """
     unsafe = validate_filename(filename)
@@ -36,7 +36,7 @@ def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
     try:
         df, trait_cols, config, source = _load_data(filename)
     except Exception:
-        return f"Could not load {filename!r}: the file could not be read as a CSV."
+        return f"Could not load {filename!r}: the experiment data could not be read."
     if df is None:
         return source
 

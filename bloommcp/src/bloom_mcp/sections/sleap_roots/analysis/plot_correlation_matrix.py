@@ -22,7 +22,7 @@ def plot_correlation_matrix(filename: str, traits: str = "") -> str:
     identifying redundant traits and discovering trait relationships.
 
     Args:
-        filename: CSV filename from list_available_experiments
+        filename: experiment identifier from list_available_experiments
         traits: Comma-separated trait names (empty = all traits)
     """
     unsafe = validate_filename(filename)
@@ -32,7 +32,7 @@ def plot_correlation_matrix(filename: str, traits: str = "") -> str:
     try:
         df, trait_cols, config, source = _load_data(filename)
     except Exception:
-        return f"Could not load {filename!r}: the file could not be read as a CSV."
+        return f"Could not load {filename!r}: the experiment data could not be read."
     if df is None:
         return source
 
