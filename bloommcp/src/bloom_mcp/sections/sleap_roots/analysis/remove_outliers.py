@@ -403,6 +403,7 @@ def remove_outliers(
             tool_class=_TOOL_CLASS,
             provenance=provenance,
             user_label=params.user_label,
+            source=frame.resolved_source,
         )
         outputs: dict[str, str] = {
             CLEANED_CSV_NAME: CLEANED_CSV_NAME,

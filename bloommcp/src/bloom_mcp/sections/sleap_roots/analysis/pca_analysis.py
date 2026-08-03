@@ -341,6 +341,7 @@ def pca_analysis(
                 provenance=prov,
                 user_label=params.user_label,
                 source_csv=source_snapshot,
+                source=frame.resolved_source,
             )
             _loadings_frame(pca).to_csv(run.staging_dir / _LOADINGS_NAME, index=True)
             _build_output_frame(frame, scores_df).to_csv(

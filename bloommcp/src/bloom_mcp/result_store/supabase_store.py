@@ -26,6 +26,7 @@ from bloom_mcp.manifest import (
     version_dir_name,
     write_manifest,
 )
+from bloom_mcp.storage_backend import active_backend_name
 
 from ._artifacts import hash_outputs, validate_outputs
 from ._locks import KeyedLock
@@ -39,6 +40,7 @@ from .ports import (
 
 if TYPE_CHECKING:
     from bloom_mcp.contract.provenance import Provenance
+    from bloom_mcp.data_access import SourceInfo
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,7 @@ _MAX_ID_ATTEMPTS = 3
 # the original, actionable CommitFailedError surface promptly rather than
 # hold the caller for as long as a load-bearing call would.
 _CLEANUP_TIMEOUT_SECONDS = 5.0
+
 
 # `commit` is dispatched by FastMCP's Starlette server via a thread pool, so
 # two calls for the same (output_root, experiment, tool_class) can genuinely
@@ -100,7 +103,15 @@ class SupabaseResultStore:
         provenance: "Provenance",
         user_label: Optional[str] = None,
         source_csv: Optional[Path] = None,
+        source: Optional["SourceInfo"] = None,
     ) -> RunHandle:
+        if source is not None:
+            provenance = provenance.model_copy(
+                update={
+                    "source_id": source.source_id,
+                    "source_name": source.source_name,
+                }
+            )
         adir = AnalysisDir(self._output_root, experiment, tool_class)
         # Single-writer assumption (see _WIKI/BLOOMMCP/storage-workflow.md):
         # version_id is allocated from the current manifest now and the manifest
@@ -138,7 +149,9 @@ class SupabaseResultStore:
         # Serializes every commit for this (output_root, experiment, tool_class)
         # within this process — see the lock's module-level docstring for why
         # this is load-bearing, not defensive belt-and-suspenders.
-        lock = _commit_lock(self._output_root, adir.experiment_filename, adir.tool_class)
+        lock = _commit_lock(
+            self._output_root, adir.experiment_filename, adir.tool_class
+        )
         with lock:
             uploaded_keys: list[str] = []
             try:
@@ -204,17 +217,40 @@ class SupabaseResultStore:
                 # bypasses the lock (e.g. a future direct manifest writer) and
                 # against the still-open multi-instance case documented below.
                 fresh = adir.read_manifest()
-                if fresh is not None and any(v.id == version_id for v in fresh.versions):
+                if fresh is not None and any(
+                    v.id == version_id for v in fresh.versions
+                ):
                     raise RuntimeError(
                         f"version {version_id!r} was claimed by another writer "
                         f"during upload"
                     )
 
                 if fresh is None:
+                    # A fresh catalog is starting for this (experiment,
+                    # tool_class) pair under the active backend — the moment a
+                    # #395 backend-mixing split would begin, if this
+                    # experiment already has history under a different
+                    # backend's own (physically disjoint) manifest. Logged at
+                    # info, not warning: this fires on every brand-new
+                    # experiment's first commit too — the overwhelmingly
+                    # common, non-mixing case — and warning-level would page
+                    # on-call for routine new-experiment onboarding in any
+                    # environment alerting on warning-and-above.
+                    logger.info(
+                        "Fresh manifest catalog started for %s/%s under "
+                        "storage backend %r; any history for this experiment "
+                        "under a different backend is not visible from this "
+                        "catalog.",
+                        adir.tool_class,
+                        adir.stem,
+                        active_backend_name(),
+                    )
                     manifest = Manifest(
                         experiment=ExperimentBlock(
                             filename=adir.experiment_filename,
-                            source_path=str(state.source_csv) if state.source_csv else "",
+                            source_path=(
+                                str(state.source_csv) if state.source_csv else ""
+                            ),
                             input_sha256=sha,
                         ),
                         versions=[entry],

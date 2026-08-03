@@ -506,6 +506,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         provenance=provenance,
         user_label=params.user_label,
         source_csv=_ports.raw_source_for(params.experiment),
+        source=frame.resolved_source,
     )
     cleaned_df.to_csv(run.staging_dir / CLEANED_CSV_NAME, index=False)
     (run.staging_dir / _LOG_NAME).write_text(

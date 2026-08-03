@@ -320,3 +320,33 @@ def test_v2_backcompat_parity(kind, stores, fake_supabase_storage):
     assert stored.seed == 5
     assert [r.run_ref for r in store.list_runs("v2.csv", "qc")] == ["v1", "v2"]
     assert store.get_run("v2.csv", "qc", "latest").run_ref == "v2"
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_create_run_with_source_records_identity_parity(kind, stores):
+    """bloom#551: create_run(..., source=SourceInfo(...)) merges source_id/
+    source_name into the committed VersionEntry on both backends; omitting it
+    leaves both None rather than a fabricated value."""
+    from bloom_mcp.data_access import SourceInfo
+
+    store = stores[kind]
+    run = store.create_run(
+        experiment="exp.csv",
+        tool_class="qc",
+        provenance=_prov(),
+        source=SourceInfo(
+            source_id=7, source_name="reprocess-2026-07", pipeline_run_id=None
+        ),
+    )
+    (run.staging_dir / "_cleaned.csv").write_bytes(b"data")
+    stored = store.commit(run, {"cleaned": "_cleaned.csv"})
+    assert stored.source_id == 7
+    assert stored.source_name == "reprocess-2026-07"
+
+    run_no_source = store.create_run(
+        experiment="exp2.csv", tool_class="qc", provenance=_prov()
+    )
+    (run_no_source.staging_dir / "_cleaned.csv").write_bytes(b"data")
+    stored_no_source = store.commit(run_no_source, {"cleaned": "_cleaned.csv"})
+    assert stored_no_source.source_id is None
+    assert stored_no_source.source_name is None

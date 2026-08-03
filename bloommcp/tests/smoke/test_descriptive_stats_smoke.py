@@ -14,16 +14,16 @@ pytestmark = pytest.mark.live_smoke
 
 
 def test_descriptive_stats_smoke(
-    call_tool, seeded_experiment: str, fixture_name: str
+    call_tool, db_experiment_id: str, fixture_name: str
 ) -> None:
-    call_tool("sleap_roots_qc_clean", {"experiment": seeded_experiment})
+    call_tool("sleap_roots_qc_clean", {"experiment": db_experiment_id})
 
     result = call_tool(
         "sleap_roots_descriptive_stats",
-        {"experiment": seeded_experiment},
+        {"experiment": db_experiment_id},
     )
 
-    assert result["experiment"] == seeded_experiment
+    assert result["experiment"] == db_experiment_id
     assert result["n_traits_reported"] > 0
     assert result["n_failed"] == 0
     assert result["run_ref"]

@@ -347,6 +347,10 @@ check: check-uv
 ## derive the host gateway from KONG_HTTP_PORT and let the driver use host temp
 ## dirs. The same target backs the CI gate, so local and CI never drift. The
 ## BLOOM_AGENT_KEY line is `@`-prefixed and never echoed.
+## Requires BLOOM_SMOKE_EXPERIMENT_ID (bloom#551): SupabaseReader's raw tier is
+## DB-only now, so the qc_clean leg needs a numeric experiment id that already has
+## trait rows in the target Postgres, not a local CSV this target can seed itself.
+## Export it in your shell or set it in .env.dev.
 .PHONY: bloommcp-smoke
 bloommcp-smoke: check-uv
 	@if [ ! -f .env.dev ]; then \
@@ -360,7 +364,9 @@ bloommcp-smoke: check-uv
 	@KONG_PORT=$$(sed -n 's/^KONG_HTTP_PORT=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); KONG_PORT=$${KONG_PORT:-8000}; \
 	BLOOM_AGENT_KEY=$$(sed -n 's/^BLOOM_AGENT_KEY=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
 	if [ -z "$$BLOOM_AGENT_KEY" ]; then echo "Error: BLOOM_AGENT_KEY is empty in .env.dev — run 'make init'."; exit 1; fi; \
+	SMOKE_EXPERIMENT_ID=$${BLOOM_SMOKE_EXPERIMENT_ID:-$$(sed -n 's/^BLOOM_SMOKE_EXPERIMENT_ID=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r')}; \
 	cd bloommcp && SUPABASE_URL="http://localhost:$${KONG_PORT}" BLOOM_AGENT_KEY="$$BLOOM_AGENT_KEY" \
+		BLOOM_SMOKE_EXPERIMENT_ID="$$SMOKE_EXPERIMENT_ID" \
 		uv run python tests/smoke/live_persistence_smoke.py
 
 ## Live plot-tool smoke (issue #472): calls a real plotting tool through the

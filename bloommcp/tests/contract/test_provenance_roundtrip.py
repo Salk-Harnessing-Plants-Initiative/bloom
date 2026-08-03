@@ -46,6 +46,22 @@ def test_per_artifact_hashes_empty_at_contract_time():
     assert prov.outputs == {}
 
 
+def test_source_id_and_name_default_to_none():
+    """A stamped Provenance carries no source identity until create_run sets it."""
+    prov = _make()
+    assert prov.source_id is None
+    assert prov.source_name is None
+
+
+def test_source_id_and_name_roundtrip_exactly():
+    """A Provenance carrying source_id/source_name survives JSON unchanged."""
+    prov = _make(source_id=7, source_name="reprocess-2026-07")
+    again = Provenance.model_validate(json.loads(prov.model_dump_json()))
+    assert again == prov
+    assert again.source_id == 7
+    assert again.source_name == "reprocess-2026-07"
+
+
 @given(
     seed=st.integers(min_value=0, max_value=2**32 - 1),
     environment=st.one_of(st.none(), st.text(min_size=1, max_size=40)),

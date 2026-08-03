@@ -1,9 +1,9 @@
 """Live smoke: ``cross_experiment_correlations`` through the real running dev stack (#489).
 
-Real MCP-transport call seeding BOTH oracle fixtures (turface_19 + cylinder)
+Real MCP-transport call resolving BOTH oracle fixtures (turface_19 + cylinder)
 simultaneously -- unlike every other smoke test in this package, this tool needs two
-experiments at once, so it does not use the parametrized ``seeded_experiment`` fixture
-(which seeds exactly one per test). ``cross_experiment_correlations`` requires a cleaned
+experiments at once, so it does not use the parametrized ``db_experiment_id`` fixture
+(which resolves exactly one per test). ``cross_experiment_correlations`` requires a cleaned
 version on both sides, so this calls ``qc_clean`` on each first, proving the
 qc_clean(x2) -> cross_experiment_correlations(require_clean=True) composition resolves
 against the real Supabase-backed ports -- including the composite ``experiment``/
@@ -12,48 +12,58 @@ against the real Supabase-backed ports -- including the composite ``experiment``
 
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
+import os
 
 import pytest
 
 pytestmark = pytest.mark.live_smoke
 
-# Mirrors conftest.py's own constants (not imported across modules -- pytest does not
-# treat this directory as a package, so a relative `from .conftest import ...` fails
-# collection; every other file here relies on injected fixtures instead, but this tool
-# needs TWO experiments seeded at once, which the single-experiment `seeded_experiment`
-# fixture can't do).
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_FIXTURES_DIR = _REPO_ROOT / "bloommcp" / "tests" / "fixtures"
-_TRAITS_DIR = _REPO_ROOT / "bloommcp" / "data" / "TRAITS_DIR"
-_FIXTURE_FILES = {
-    "turface_19": "turface_19_raw_data.csv",
-    "cylinder": "cylinder_raw_data.csv",
+# Mirrors conftest.py's own EXPERIMENT_ID_ENV_VARS (not imported across modules -- pytest
+# does not treat this directory as a package, so a relative `from .conftest import ...`
+# fails collection; every other file here relies on injected fixtures instead, but this
+# tool needs TWO experiments resolved at once, which the single-experiment
+# `db_experiment_id` fixture can't do).
+#
+# SupabaseReader's raw tier is DB-only (bloom#551): a tool call needs a numeric
+# experiment id, not a filename -- there is no local-CSV upload path left for this (or
+# any of the other 6 granular analysis) tool to seed itself from.
+_EXPERIMENT_ID_ENV_VARS = {
+    "turface_19": "BLOOM_SMOKE_EXPERIMENT_ID_TURFACE_19",
+    "cylinder": "BLOOM_SMOKE_EXPERIMENT_ID_CYLINDER",
 }
 
 
-def test_cross_experiment_correlations_smoke(call_tool) -> None:
-    _TRAITS_DIR.mkdir(parents=True, exist_ok=True)
-    turface_file = _FIXTURE_FILES["turface_19"]
-    cylinder_file = _FIXTURE_FILES["cylinder"]
-    shutil.copy(_FIXTURES_DIR / turface_file, _TRAITS_DIR / turface_file)
-    shutil.copy(_FIXTURES_DIR / cylinder_file, _TRAITS_DIR / cylinder_file)
+def _db_experiment_id(fixture_name: str) -> str:
+    env_var = _EXPERIMENT_ID_ENV_VARS[fixture_name]
+    experiment_id = os.environ.get(env_var, "")
+    if not experiment_id:
+        pytest.skip(
+            f"{env_var} is unset -- set it to a numeric experiment id already seeded "
+            f"with trait rows in Postgres for the {fixture_name!r} oracle fixture "
+            "(SupabaseReader's raw tier is DB-only; there is no local-CSV upload path "
+            "to fall back to)."
+        )
+    return experiment_id
 
-    call_tool("sleap_roots_qc_clean", {"experiment": turface_file})
-    call_tool("sleap_roots_qc_clean", {"experiment": cylinder_file})
+
+def test_cross_experiment_correlations_smoke(call_tool) -> None:
+    turface_id = _db_experiment_id("turface_19")
+    cylinder_id = _db_experiment_id("cylinder")
+
+    call_tool("sleap_roots_qc_clean", {"experiment": turface_id})
+    call_tool("sleap_roots_qc_clean", {"experiment": cylinder_id})
 
     result = call_tool(
         "sleap_roots_cross_experiment_correlations",
         {
-            "experiment_1": turface_file,
-            "experiment_2": cylinder_file,
+            "experiment_1": turface_id,
+            "experiment_2": cylinder_id,
             "min_samples": 3,
         },
     )
 
-    assert result["experiment_1"] == turface_file
-    assert result["experiment_2"] == cylinder_file
+    assert result["experiment_1"] == turface_id
+    assert result["experiment_2"] == cylinder_id
     # Both sides consumed a committed cleaned version, not raw (require_clean=True).
     assert result["source_1"].endswith("_cleaned")
     assert result["source_2"].endswith("_cleaned")

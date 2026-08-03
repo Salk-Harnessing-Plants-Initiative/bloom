@@ -13,7 +13,7 @@ from typing import Any
 import click
 
 from ..credentials import DEFAULT_PROFILE
-from ._output import print_table
+from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
 
 
 @click.group(name="datasets")
@@ -41,6 +41,16 @@ DATASET_COLUMNS = [
     "QC Set",
     "Trait Source",
     "Created",
+]
+# Machine-readable field names (json/csv), matching build_dataset_record below.
+DATASET_FIELDS = [
+    "name",
+    "timepoints",
+    "species",
+    "experiment",
+    "qc_set",
+    "trait_source",
+    "created",
 ]
 
 
@@ -80,7 +90,9 @@ def build_dataset_row(dataset: dict[str, Any]) -> list[str]:
     ]
 
 
-def fetch_datasets(client: Any, experiment_id: int | None = None) -> list[dict[str, Any]]:  # supabase I/O
+def fetch_datasets(
+    client: Any, experiment_id: int | None = None
+) -> list[dict[str, Any]]:  # supabase I/O
     """Query cyl_datasets joined to its experiment/species, QC set, and trait source.
 
     When ``experiment_id`` is given, restrict to datasets for that experiment.
@@ -103,11 +115,13 @@ def fetch_datasets(client: Any, experiment_id: int | None = None) -> list[dict[s
     help="Only list datasets for this experiment.",
 )
 @click.option(
-    "--json",
-    "as_json",
-    is_flag=True,
-    help="Emit the datasets as a JSON array instead of a table.",
+    "--output",
+    "output_fmt",
+    type=click.Choice(MACHINE_FORMATS),
+    default=None,
+    help="Emit machine-readable output (csv/json) instead of the table.",
 )
+@click.option("--json", "as_json", is_flag=True, help="Alias for --output json.")
 @click.option(
     "-p",
     "--profile",
@@ -115,15 +129,19 @@ def fetch_datasets(client: Any, experiment_id: int | None = None) -> list[dict[s
     show_default=True,
     help="Credentials profile to use.",
 )
-def list_datasets(experiment_id: int | None, as_json: bool, profile: str) -> None:
+def list_datasets(
+    experiment_id: int | None, output_fmt: str | None, as_json: bool, profile: str
+) -> None:
     """List cylinder trait datasets."""
     from ..cli import _authed_client
+
+    output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
 
     client = _authed_client(profile)
     found = fetch_datasets(client, experiment_id=experiment_id)
 
-    if as_json:
-        click.echo(json.dumps([build_dataset_record(d) for d in found]))
+    if output_fmt:
+        click.echo(render([build_dataset_record(d) for d in found], DATASET_FIELDS, output_fmt))
         return
 
     rows = [build_dataset_row(d) for d in found]
@@ -136,12 +154,7 @@ def list_datasets(experiment_id: int | None, as_json: bool, profile: str) -> Non
 def fetch_experiment(client: Any, experiment_id: int) -> dict[str, Any] | None:  # supabase I/O
     """Return the cyl_experiments row for `experiment_id`, or None if it does not exist."""
     rows = (
-        client.table("cyl_experiments")
-        .select("*")
-        .eq("id", experiment_id)
-        .limit(1)
-        .execute()
-        .data
+        client.table("cyl_experiments").select("*").eq("id", experiment_id).limit(1).execute().data
         or []
     )
     return rows[0] if rows else None
@@ -150,12 +163,7 @@ def fetch_experiment(client: Any, experiment_id: int) -> dict[str, Any] | None: 
 def resolve_trait_source(client: Any, name: str) -> int | None:  # supabase I/O
     """Return the cyl_trait_sources id for `name`, or None if it does not resolve."""
     rows = (
-        client.table("cyl_trait_sources")
-        .select("id")
-        .eq("name", name)
-        .limit(1)
-        .execute()
-        .data
+        client.table("cyl_trait_sources").select("id").eq("name", name).limit(1).execute().data
         or []
     )
     return rows[0]["id"] if rows else None
