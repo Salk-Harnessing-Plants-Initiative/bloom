@@ -7,8 +7,19 @@ Not a ``sleap-roots-analyze`` wrapper — reads through the injected
 import dataclasses
 import json
 import time
+from pathlib import Path
 
-from bloom_mcp.experiment_utils import OUTLIERS_TOOL_CLASS, QC_TOOL_CLASS
+# `trim_staleness` reads manifests directly through `AnalysisDir`/the storage
+# backend, not through the injected `ResultStore`/`ExperimentReader` ports this
+# file otherwise depends on exclusively (see test_persistence_import_guard.py).
+# Disclosed, narrow exception (design.md Decision 2, bloom#585): it is an
+# ambient, advisory-only hint layered on top of the analyses payload below, not
+# a replacement data path.
+from bloom_mcp.experiment_utils import (
+    OUTLIERS_TOOL_CLASS,
+    QC_TOOL_CLASS,
+    trim_staleness,
+)
 from bloom_mcp.tools import _ports
 
 # Kept intact across tool retirements (devendor-bloommcp-analysis) so historical
@@ -50,6 +61,14 @@ def list_existing_analyses(experiment_filename: str) -> str:
 
     Results are cached per experiment for 30 seconds.
 
+    The response includes a top-level ``trim_is_stale`` boolean whenever this
+    experiment has an ``outliers``-class (``remove_outliers``) version, so a
+    stale trim (a ``qc_clean`` has run since it was made) is visible without a
+    separate ``require_clean=True`` read. This field is advisory only: it is
+    omitted both when the experiment has never been trimmed and when the check
+    itself fails — if it is absent, check ``errors`` for a ``trim_staleness``
+    entry before concluding the experiment was never trimmed.
+
     Args:
         experiment_filename: CSV filename, e.g. "alfalfa_gwas_wave2.csv"
     """
@@ -80,12 +99,22 @@ def list_existing_analyses(experiment_filename: str) -> str:
         if runs:
             by_tool_class[tool_class] = [dataclasses.asdict(r) for r in runs]
 
+    trim_is_stale: bool | None = None
+    try:
+        staleness = trim_staleness(Path(experiment_filename).stem)
+        if staleness is not None:
+            trim_is_stale = staleness.is_stale
+    except Exception as exc:  # noqa: BLE001 - advisory-only; never fail the whole call
+        errors.append(f"trim_staleness: {exc}")
+
     response: dict = {
         "experiment_filename": experiment_filename,
         "analyses": by_tool_class,
     }
     if not by_tool_class:
         response["message"] = f"No prior analyses found for '{experiment_filename}'."
+    if trim_is_stale is not None:
+        response["trim_is_stale"] = trim_is_stale
     if errors:
         response["errors"] = errors
 

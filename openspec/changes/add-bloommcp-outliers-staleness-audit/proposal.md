@@ -96,9 +96,12 @@ left out of #420 to keep its scope to the resolution-logic fix, and filed as
   new `bloommcp/tests/scripts/test_audit_stale_outlier_trims.py`,
   `bloommcp/tests/test_storage_backend.py` (new `trim_staleness` unit tests alongside the existing
   staleness-log tests; fixes the missing-teardown gap in its own `_local_backend` fixture — see
-  tasks.md 1.1), `bloommcp/tests/conftest.py` (a new shared, properly-torn-down local-manifest-
-  backend fixture, promoted out of `test_storage_backend.py` rather than copy-pasted into new test
-  files), a new discovery test file for the `trim_is_stale` field,
+  tasks.md 1.1), `bloommcp/tests/conftest.py` (a new shared, properly-torn-down
+  `local_manifest_backend` fixture, promoted out of `test_storage_backend.py` rather than
+  copy-pasted into new test files), new `bloommcp/tests/manifest_fixtures.py` (the manifest-building
+  helper functions promoted alongside it — a separate module, not `conftest.py`, to avoid an actual
+  `sys.modules` name collision with `bloommcp/tests/smoke/conftest.py` found while running the full
+  suite), a new discovery test file for the `trim_is_stale` field,
   `bloommcp/tests/test_persistence_import_guard.py` (one-sentence docstring note disclosing the
   narrow, transitive `trim_staleness` exception for `list_existing_analyses.py`).
 - **No call-site or behavior change** to `remove_outliers`, `qc_clean`, or any `require_clean=True`

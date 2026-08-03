@@ -1,6 +1,6 @@
 ## 1. Fix and promote the shared local-manifest-backend test fixture
 
-- [ ] 1.1 In `bloommcp/tests/test_storage_backend.py`, confirm (by reading, not assuming) that its
+- [x] 1.1 In `bloommcp/tests/test_storage_backend.py`, confirm (by reading, not assuming) that its
       `_local_backend` fixture (`def _local_backend(monkeypatch, tmp_path)`) calls
       `reset_backend_for_tests()` only on entry, with no `yield`/teardown reset — a real,
       pre-existing gap. Note for context (do not rely on this file to demonstrate the gap): this
@@ -12,19 +12,28 @@
       from a file with no equivalent autouse net — exactly what tasks 3 and 4 are about to do. Do
       not attempt to prove the leak via a same-file, two-sequential-test regression test — it will
       not go red here, for the reason above.
-- [ ] 1.2 Fix by promoting `_local_backend`, `_write_cleaned_manifest`, and
-      `_write_invalid_schema_manifest` (currently private to `test_storage_backend.py`) into
-      `bloommcp/tests/conftest.py` as shared fixtures/helpers, function-scoped (consistent with
-      every other fixture already in that file). The promoted `local_manifest_backend` fixture
-      SHALL reset the backend (`reset_backend_for_tests()`) both on setup *and* on teardown (`yield`
-      then reset) — self-evidently correct given `_reset_backend`'s already-established
-      yield-then-reset shape in the same codebase, applied here at fixture scope instead of
-      module scope, so a test using `local_manifest_backend` from *any* file leaves no residue
-      regardless of whether that file has its own autouse net. Update `test_storage_backend.py` to
-      consume the promoted fixture/helpers instead of its own private copies — its full existing
+- [x] 1.2 Fix by promoting `_local_backend`, `_write_cleaned_manifest`, and
+      `_write_invalid_schema_manifest` (currently private to `test_storage_backend.py`) into shared
+      fixtures/helpers, function-scoped (consistent with every other fixture already in that file).
+      **Implementation deviation from the original plan, discovered mid-implementation:** the
+      `local_manifest_backend` fixture itself lives in `bloommcp/tests/conftest.py` as planned, but
+      the three plain helper functions were promoted to a new `bloommcp/tests/manifest_fixtures.py`
+      module instead — `bloommcp/tests/smoke/` has its own, unrelated `conftest.py`, and running the
+      full suite (not just the affected files in isolation) surfaced a real `sys.modules['conftest']`
+      collision under pytest's default no-`__init__.py` import mode: whichever `conftest.py` pytest
+      happened to import first won the shared bare-module-name slot, so `from conftest import
+      write_cleaned_manifest` intermittently resolved to the *other* file's `conftest` and failed.
+      Plain functions need an unambiguous import path; the fixture itself is unaffected (fixture
+      lookup goes through pytest's own plugin graph, not a plain import). The promoted
+      `local_manifest_backend` fixture SHALL reset the backend (`reset_backend_for_tests()`) both on
+      setup *and* on teardown (`yield` then reset) — self-evidently correct given `_reset_backend`'s
+      already-established yield-then-reset shape in the same codebase, applied here at fixture scope
+      instead of module scope, so a test using `local_manifest_backend` from *any* file leaves no
+      residue regardless of whether that file has its own autouse net. Updated `test_storage_backend.py`
+      to consume the promoted fixture/helpers instead of its own private copies — its full existing
       test suite (including `test_latest_logs_when_resolved_trim_is_stale` /
-      `test_latest_does_not_log_when_resolved_trim_is_current`) must keep passing unmodified.
-- [ ] 1.3 Confirm the full `test_storage_backend.py` suite is green after the promotion, and run the
+      `test_latest_does_not_log_when_resolved_trim_is_current`) keeps passing unmodified.
+- [x] 1.3 Confirm the full `test_storage_backend.py` suite is green after the promotion, and run the
       whole `bloommcp` suite once with `pytest --random-order` (or an equivalent forced-shuffle
       option, if the project has one available; otherwise, run each new test file created by tasks
       3-4 both on its own and as part of the full suite) to confirm no new test's outcome depends on
@@ -34,7 +43,7 @@
 
 ## 2. Extract the shared `trim_staleness` primitive
 
-- [ ] 2.1 Using the now-shared `local_manifest_backend` fixture, write failing unit tests for a new
+- [x] 2.1 Using the now-shared `local_manifest_backend` fixture, write failing unit tests for a new
       `experiment_utils.trim_staleness(stem)`, returning `None` or a `TrimStaleness(is_stale,
       outliers_based_on_version, current_qc_label)` `NamedTuple`: (a) no `outliers`-class version at
       all → `None`; (b) an `outliers`-class latest entry whose `based_on_version` matches the
@@ -44,7 +53,7 @@
       latest entry exists but the `qc`-class manifest has no `latest` entry at all (write only the
       `outliers` manifest, no `qc` manifest for that stem) → `is_stale=True`,
       `current_qc_label=None` — a new, previously-untested/unreached corner (design.md Decision 1).
-- [ ] 2.2 In `bloommcp/src/bloom_mcp/experiment_utils.py`, extract `trim_staleness(stem)` out of
+- [x] 2.2 In `bloommcp/src/bloom_mcp/experiment_utils.py`, extract `trim_staleness(stem)` out of
       `_log_if_trim_is_stale`'s body, returning the `TrimStaleness` `NamedTuple` (or `None`) from
       2.1 — this preserves the exact values `_log_if_trim_is_stale`'s current inline implementation
       logs today (do not drop them to a bare boolean). Rewrite `_log_if_trim_is_stale` to call
@@ -57,7 +66,7 @@
       interpolate `None` into the old sentence. It must keep swallowing all exceptions itself (never
       raise) exactly as it does today — `trim_staleness` itself does not swallow exceptions, so
       callers choose their own failure policy (task 3 chooses differently).
-- [ ] 2.3 Confirm the two pre-existing staleness-log tests
+- [x] 2.3 Confirm the two pre-existing staleness-log tests
       (`test_latest_logs_when_resolved_trim_is_stale`,
       `test_latest_does_not_log_when_resolved_trim_is_current`) pass unmodified — including their
       assertions on the logged message's interpolated values — plus the four new `trim_staleness`
@@ -66,11 +75,11 @@
 
 ## 3. Surface `trim_is_stale` in `list_existing_analyses`
 
-- [ ] 3.1 Grep `bloommcp/tests/` for any existing test that asserts exact/full-dict equality on
+- [x] 3.1 Grep `bloommcp/tests/` for any existing test that asserts exact/full-dict equality on
       `list_existing_analyses`'s JSON response for an experiment that has an `outliers`-class
       manifest (as opposed to membership checks, e.g. `"outliers" in response["analyses"]`, which
       an added key doesn't affect) — confirm whether any needs updating.
-- [ ] 3.2 Write failing tests (new file `bloommcp/tests/tools/test_list_existing_analyses_staleness.py`)
+- [x] 3.2 Write failing tests (new file `bloommcp/tests/tools/test_list_existing_analyses_staleness.py`)
       covering: no `outliers` version → no `trim_is_stale` key, no new `errors` entry; current trim
       → `"trim_is_stale": false`; stale trim → `"trim_is_stale": true`; a `trim_staleness` failure
       (monkeypatch `experiment_utils.trim_staleness` to raise) → `trim_is_stale` absent **and**
@@ -83,7 +92,7 @@
       contract. Use the `local_manifest_backend` fixture (task 1.2) for the manifest-backed cases;
       `injected_ports`' `FakeReader` can stay seeded with no experiments, since the "known
       experiment" guard only rejects when its `known` set is non-empty.
-- [ ] 3.3 In `bloommcp/src/bloom_mcp/sections/core/list_existing_analyses.py`, import
+- [x] 3.3 In `bloommcp/src/bloom_mcp/sections/core/list_existing_analyses.py`, import
       `trim_staleness` from `experiment_utils` (with a one-line comment recording why this is a
       disclosed exception to the ports-only dependency — design.md Decision 2), compute
       `stem = Path(experiment_filename).stem`, and wrap the call in `try/except`. Build the
@@ -93,17 +102,17 @@
       also failed — this is a deliberate fix to a latent ordering trap (appending to a list that
       might not have been attached to `response` yet). Set `response["trim_is_stale"]` only when
       the call succeeds and returns non-`None` (`result.is_stale`).
-- [ ] 3.4 Add two sentences to `list_existing_analyses`'s docstring: what `trim_is_stale` means and
+- [x] 3.4 Add two sentences to `list_existing_analyses`'s docstring: what `trim_is_stale` means and
       when it appears, and the advisory-only disclosure ("if absent, check `errors` for a
       `trim_staleness` entry before concluding the experiment was never trimmed").
-- [ ] 3.5 Apply whatever test updates task 3.1 found were needed; confirm the full discovery test
+- [x] 3.5 Apply whatever test updates task 3.1 found were needed; confirm the full discovery test
       suite (`test_qc_tools_discovery.py`, `test_remove_outliers_tool.py`'s
       `test_discoverable_via_list_existing_analyses`, `test_cross_experiment_correlations_tool.py`)
       still passes unmodified otherwise.
 
 ## 4. Historical silent-revert audit script
 
-- [ ] 4.1 Create `bloommcp/tests/scripts/test_audit_stale_outlier_trims.py`, loading
+- [x] 4.1 Create `bloommcp/tests/scripts/test_audit_stale_outlier_trims.py`, loading
       `bloommcp/scripts/audit_stale_outlier_trims.py` by path via `importlib.util` (mirroring
       `test_live_persistence_smoke_logic.py`'s pattern for loading the file — `bloommcp/scripts/`
       is not a package either; note this precedent covers only the by-path *loading* mechanism, not
@@ -138,7 +147,7 @@
       (f) `list_prefix` itself raising (monkeypatch it to simulate an unreachable backend) →
       `scan_for_stale_outlier_trims()` propagates the exception rather than reporting an empty
       "successful" scan (this is the one failure mode the function does *not* swallow — see 4.2).
-- [ ] 4.2 In `bloommcp/scripts/audit_stale_outlier_trims.py`, implement
+- [x] 4.2 In `bloommcp/scripts/audit_stale_outlier_trims.py`, implement
       `scan_for_stale_outlier_trims() -> dict` (`{"hits": [...], "errors": [...],
       "experiments_scanned": N}`), purely read-only — it must never import or call
       `write_manifest`, `upload_file`, or `write_json`. Call
@@ -157,7 +166,7 @@
       `None` — task 4.1d3 — there is no "current latest" to compare, so no hit). Report the most
       recently-committed `remove_outliers` entry (by `created_at`, not by list position) as the
       superseded trim.
-- [ ] 4.3 Add a `write_report(report: dict) -> str` helper that adds `scanned_at` (ISO-8601 UTC) and
+- [x] 4.3 Add a `write_report(report: dict) -> str` helper that adds `scanned_at` (ISO-8601 UTC) and
       `storage_backend` (the active backend's name) fields to the report dict, JSON-serializes it,
       and writes it via `supabase_client.write_json` to a timestamped key under
       `bloommcp_output/_audit_reports/` (returning the key written) — the payload itself, not only
@@ -178,7 +187,7 @@
       `storage_backend`, and the same `hits`/`errors`/`experiments_scanned` the scan produced — a
       test that only monkeypatches `write_report` away would leave the real write path unverified,
       which this task explicitly rules out.
-- [ ] 4.4 Write a unit test asserting `scan_for_stale_outlier_trims()` makes zero calls to any
+- [x] 4.4 Write a unit test asserting `scan_for_stale_outlier_trims()` makes zero calls to any
       write/upload path, even when it encounters hit-producing and error-producing manifests in the
       same run. Name the monkeypatch targets precisely rather than patching one arbitrary binding:
       this codebase's own `fake_supabase_storage` fixture (`bloommcp/tests/conftest.py`) already has
@@ -189,7 +198,7 @@
       incompletely-patched test doesn't give false assurance by trivially passing regardless of
       what `scan_for_stale_outlier_trims()` actually calls. This is the mechanical guard for the
       spec's "never mutates an experiment's own manifests" requirement, not merely a prose claim.
-- [ ] 4.5 Write the script's module docstring: purpose, that its core scan is read-only (the one
+- [x] 4.5 Write the script's module docstring: purpose, that its core scan is read-only (the one
       write is its own dedicated, self-describing report object, never a `qc_`/`outliers_`
       manifest — and note explicitly that this is a write to the shared bucket, a deliberately
       narrow reading of #585's "no data mutation" as "no experiment-manifest mutation"), and how to
@@ -200,7 +209,7 @@
 
 ## 5. Disclose the narrow import-guard exception
 
-- [ ] 5.1 In `bloommcp/tests/test_persistence_import_guard.py`'s module docstring, add one sentence
+- [x] 5.1 In `bloommcp/tests/test_persistence_import_guard.py`'s module docstring, add one sentence
       noting that `list_existing_analyses.py` has one disclosed, transitive exception to the
       ports-only dependency this guard's AST scan enforces (via `experiment_utils.trim_staleness`,
       which itself reads through `AnalysisDir` — the same pattern `_log_if_trim_is_stale` already
@@ -209,7 +218,7 @@
 
 ## 6. Validate
 
-- [ ] 6.1 `npx -y -p @fission-ai/openspec openspec validate add-bloommcp-outliers-staleness-audit --strict`
+- [x] 6.1 `npx -y -p @fission-ai/openspec openspec validate add-bloommcp-outliers-staleness-audit --strict`
       passes.
-- [ ] 6.2 Full `bloommcp` unit test suite passes (`uv run --extra test pytest`), including all new
+- [x] 6.2 Full `bloommcp` unit test suite passes (`uv run --extra test pytest`), including all new
       tests above.
