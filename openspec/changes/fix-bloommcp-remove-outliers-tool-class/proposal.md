@@ -95,9 +95,10 @@ anyone who doesn't read it every time.
 - **No retroactive fix for runs already persisted under the old shared-`qc` scheme.** Any
   `remove_outliers` run committed under `tool_class="qc"` before this change ships keeps the
   pre-existing hazard (still auditable via `based_on_version`, as today); only runs made after
-  this ships go to the protected `outliers` class. A follow-up issue for a one-time read-only
-  audit script (flagging experiments where this already happened) is recommended but not part of
-  this change.
+  this ships go to the protected `outliers` class. Filed as follow-up
+  [#585](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/585) (a one-time
+  read-only audit script flagging experiments where this already happened) — not part of this
+  change.
 - **No data migration.** Additive/behavioral only — a new manifest catalog going forward, plus a
   reader-resolution change. No existing manifest is rewritten.
 - **No automatic recovery of a fresh `qc_clean` once a trim exists.** This is the central,

@@ -232,15 +232,16 @@ above, both fixed on the same branch:
   read instead of one) — negligible against the existing per-call round trips.
 - **Pre-existing `qc`-class-persisted trims are not retroactively protected** and are not
   scanned for by this change (Non-Goal) — anyone currently relying on a trim from before this
-  ships may already be silently analyzing un-trimmed data today, undetected. A follow-up issue is
-  recommended, covering **both**: (a) a one-time audit script for the historical case
+  ships may already be silently analyzing un-trimmed data today, undetected. Filed as follow-up
+  [#585](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/585), covering
+  **both**: (a) a one-time audit script for the historical case
   (`VersionEntry.tool == "remove_outliers"` entries in a `qc` manifest that are not that
-  manifest's current `latest`), and (b) the **ongoing** version of the same risk class this
-  change's own Decision 4 accepts going forward (an `outliers` entry whose `based_on_version`
-  no longer matches the current `qc`-class latest) — e.g. a non-blocking hint surfaced in
-  `list_existing_analyses` output. Neither is implemented in this change; a pure detect-and-log
-  addition (not a resolution-behavior change) would not reintroduce the silent-fallback problem
-  Decision 4 rejects, so it remains a reasonable follow-up rather than a rejected idea.
+  manifest's current `latest`), and (b) surfacing the read-time staleness log (Post-review
+  addendum above) ambiently — e.g. a hint in `list_existing_analyses` output — rather than only
+  when something actually reads the experiment. Neither is implemented in this change; a pure
+  detect-and-log addition (not a resolution-behavior change) would not reintroduce the
+  silent-fallback problem Decision 4 rejects, so it remains a reasonable follow-up rather than a
+  rejected idea.
 - **Two independent version-number sequences per experiment** (`qc`'s own `v1, v2, ...` and
   `outliers`' own separate `v1, v2, ...`) is the same shape already accepted for every other
   tool-class pair (`stats`, `clustering`, `pca`, ...); not new to this change.

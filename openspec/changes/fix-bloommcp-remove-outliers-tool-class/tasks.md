@@ -138,16 +138,13 @@
       **again** — assert its `n_input_samples` matches `qc` v2's row count (proving it read the
       *fresh* clean via `latest_qc`, not its own stale prior trim), and that the resulting
       `outliers` v2 becomes `version="latest"` afterward.
-- [ ] 4.4 File a follow-up GitHub issue (not implemented in this change), covering **both**: (a) a
-      one-time, read-only audit script identifying experiments where a `remove_outliers` run was
-      already silently superseded under the old shared-`qc` scheme
+- [x] 4.4 Filed [#585](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/585),
+      covering **both**: (a) a one-time, read-only audit script identifying experiments where a
+      `remove_outliers` run was already silently superseded under the old shared-`qc` scheme
       (`VersionEntry.tool == "remove_outliers"` in a `qc` manifest that is not that manifest's
-      current `latest`), and (b) the **ongoing** version of the same risk class this change's own
-      Decision 4 accepts going forward — a non-blocking staleness signal (e.g. in
-      `list_existing_analyses` output) when an `outliers` entry's `based_on_version` no longer
-      matches the current `qc`-class latest. Link it from this change's proposal.md once filed —
-      do not implement either part in this change (confirm with the user before filing, per this
-      session's norm of confirming before creating GitHub issues/PRs on their behalf).
+      current `latest`), and (b) surfacing the read-time staleness log (task 8.2) ambiently (e.g.
+      in `list_existing_analyses` output) rather than only when something actually reads the
+      experiment. Neither is implemented in this change.
 
 ## 5. Update affected docs/scripts referencing the old shared-class assumption
 
@@ -199,6 +196,5 @@
       `manifest.CANONICAL_TOOL_CLASSES` now reference them instead of re-typing the literal.
 - [x] 8.5 Added tests asserting `"outliers"` membership in both registries, plus a live
       discoverability test via `list_existing_analyses` (previously untested).
-- [ ] 8.6 File a follow-up GitHub issue covering both the historical audit and the ongoing
-      staleness-detection idea (task 4.4) — not filed yet; needs explicit go-ahead before creating
-      a public issue.
+- [x] 8.6 Filed [#585](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/585)
+      covering both the historical audit and the ongoing staleness-detection idea (see task 4.4).
