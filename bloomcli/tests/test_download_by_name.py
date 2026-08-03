@@ -1,19 +1,21 @@
-"""Download by experiment name (`bloomctl cyl download --experiment-name`)."""
+"""Download by experiment name (`bloomctl cyl download --experiment-name`, server-side search)."""
 
 from click.testing import CliRunner
 from test_download_metadata import SCAN
 
 import bloomctl.auth as auth
 import bloomctl.cyl.download as dl
-import bloomctl.cyl.experiments as ex
 from bloomctl.cli import cli
 from bloomctl.credentials import Credentials
 
-EXPS = [
-    {"id": 2, "name": "Drought Response 2024", "species": {"common_name": "Arabidopsis"}},
-    {"id": 6, "name": "2025-11-20_soybean_cylinders", "species": {"common_name": "Soybean"}},
-    {"id": 18, "name": "2026-01-15 Cquesta soy", "species": {"common_name": "Soybean"}},
-]
+
+def _row(id, name, species="Soybean"):
+    return {
+        "id": id,
+        "name": name,
+        "species_name": species,
+        "created_at": "2026-01-15T00:00:00+00:00",
+    }
 
 
 def _auth(monkeypatch):
@@ -22,7 +24,6 @@ def _auth(monkeypatch):
         lambda *a, **k: Credentials("https://x/api", "KEY", "u@s.edu", "pw"),
     )
     monkeypatch.setattr(auth, "make_authed_client", lambda creds: object())
-    monkeypatch.setattr(ex, "fetch_experiments", lambda client, **k: EXPS)
 
 
 def _no_download(monkeypatch):
@@ -33,8 +34,52 @@ def _no_download(monkeypatch):
     )
 
 
+# --- search_experiments (RPC call shape) ------------------------------------
+
+
+def test_search_experiments_calls_rpc_with_bound_args():
+    captured = {}
+
+    class _Client:
+        def rpc(self, fn, params):
+            captured["fn"] = fn
+            captured["params"] = params
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": [_row(2, "X")]})()
+
+    out = dl.search_experiments(_Client(), "drought", species="Soybean")
+    assert captured["fn"] == "cyl_experiment_search"
+    assert captured["params"] == {"p_query": "drought", "p_species": "Soybean"}  # bound, not SQL
+    assert out[0]["id"] == 2
+
+
+def test_search_experiments_omits_species_when_none():
+    captured = {}
+
+    class _Client:
+        def rpc(self, fn, params):
+            captured["params"] = params
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": None})()
+
+    assert dl.search_experiments(_Client(), "drought") == []
+    assert captured["params"] == {"p_query": "drought"}  # no p_species key when unset
+
+
+# --- command wiring ---------------------------------------------------------
+
+
 def test_name_resolves_and_downloads(tmp_path, monkeypatch):
     _auth(monkeypatch)
+    monkeypatch.setattr(
+        dl,
+        "search_experiments",
+        lambda c, q, species=None: [_row(2, "Drought Response 2024", "Arabidopsis")],
+    )
     captured = {}
 
     def _fetch_scans(client, experiment_id, **k):
@@ -49,13 +94,21 @@ def test_name_resolves_and_downloads(tmp_path, monkeypatch):
         ["cyl", "download", str(tmp_path / "out"), "--experiment-name", "drought", "--meta-only"],
     )
     assert res.exit_code == 0, res.output
-    assert captured["experiment_id"] == 2  # resolved id flows to the experiment fetch
+    assert captured["experiment_id"] == 2  # resolved id flows to the scan fetch
     assert "Matched: Drought Response 2024 (Arabidopsis) (id 2)" in res.stderr
 
 
 def test_ambiguous_name_lists_candidates_and_downloads_nothing(tmp_path, monkeypatch):
     _auth(monkeypatch)
     _no_download(monkeypatch)
+    monkeypatch.setattr(
+        dl,
+        "search_experiments",
+        lambda c, q, species=None: [
+            _row(6, "2025-11-20_soybean_cylinders"),
+            _row(18, "2026-01-15 Cquesta soy"),
+        ],
+    )
     res = CliRunner().invoke(
         cli, ["cyl", "download", str(tmp_path / "out"), "--experiment-name", "soy", "--meta-only"]
     )
@@ -68,6 +121,7 @@ def test_ambiguous_name_lists_candidates_and_downloads_nothing(tmp_path, monkeyp
 def test_no_match_errors(tmp_path, monkeypatch):
     _auth(monkeypatch)
     _no_download(monkeypatch)
+    monkeypatch.setattr(dl, "search_experiments", lambda c, q, species=None: [])
     res = CliRunner().invoke(
         cli, ["cyl", "download", str(tmp_path / "out"), "--experiment-name", "sunflower"]
     )
@@ -75,18 +129,19 @@ def test_no_match_errors(tmp_path, monkeypatch):
     assert "No experiment matches" in res.output
 
 
-def test_species_narrows_name(tmp_path, monkeypatch):
+def test_species_reaches_the_search(tmp_path, monkeypatch):
     _auth(monkeypatch)
     captured = {}
 
-    def _fetch_scans(client, experiment_id, **k):
-        captured["experiment_id"] = experiment_id
-        return [SCAN]
+    def _search(c, q, species=None):
+        captured["q"] = q
+        captured["species"] = species
+        return [_row(18, "2026-01-15 Cquesta soy", "Soybean")]
 
-    monkeypatch.setattr(dl, "fetch_scans", _fetch_scans)
+    monkeypatch.setattr(dl, "search_experiments", _search)
+    monkeypatch.setattr(dl, "fetch_scans", lambda client, eid, **k: [SCAN])
     monkeypatch.setattr(dl, "fetch_genotypes", lambda c, ids: {})
 
-    # "cquesta" + --species Soybean → the single Soybean match (id 18)
     res = CliRunner().invoke(
         cli,
         [
@@ -101,7 +156,7 @@ def test_species_narrows_name(tmp_path, monkeypatch):
         ],
     )
     assert res.exit_code == 0, res.output
-    assert captured["experiment_id"] == 18
+    assert captured == {"q": "cquesta", "species": "Soybean"}  # both reach the search
 
 
 def test_name_and_id_conflict_rejected(tmp_path):

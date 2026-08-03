@@ -1,31 +1,43 @@
-"""Resolve an experiment by name — shared, client-free helper for the cyl commands.
+"""Classify the result of an experiment-name search into a single outcome.
 
-Kept pure (no I/O) so it is unit-testable and reusable: the caller fetches the experiments and
-decides what to do with the outcome. Matching is layered — a case-insensitive substring first
-(predictable), then a stdlib ``difflib`` approximate fallback (typo-tolerant) only when substring
-finds nothing.
+The matching itself runs server-side (the ``cyl_experiment_search`` RPC, trigram-indexed) so it
+scales; this module just turns the rows the RPC returns into one of three outcomes for the caller:
+``Resolved`` (exactly one experiment — its id/label), ``Ambiguous`` (several — the caller lists
+them and does not guess), or ``NoMatch`` (none). Pure (no I/O), so it is unit-testable.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from difflib import get_close_matches
 from typing import Any
+
+
+@dataclass(frozen=True)
+class Match:
+    """One matched experiment, with the fields shown on an ambiguous result."""
+
+    id: int
+    name: str
+    species: str | None
+    created: str | None  # YYYY-MM-DD
+
+    @property
+    def label(self) -> str:
+        return f"{self.name} ({self.species or '?'})"
 
 
 @dataclass(frozen=True)
 class Resolved:
     """Exactly one experiment matched."""
 
-    experiment_id: int
-    label: str  # "name (species)" — for the confirmation message
+    match: Match
 
 
 @dataclass(frozen=True)
 class Ambiguous:
     """Several experiments matched; the caller should surface these and not guess."""
 
-    candidates: list[tuple[int, str]]  # (experiment_id, "name (species)"), sorted by label
+    candidates: list[Match]
 
 
 @dataclass(frozen=True)
@@ -36,42 +48,24 @@ class NoMatch:
 Resolution = Resolved | Ambiguous | NoMatch
 
 
-def _label(exp: dict[str, Any]) -> str:
-    name = exp.get("name") or ""
-    species = (exp.get("species") or {}).get("common_name") or "?"
-    return f"{name} ({species})"
+def _match(row: dict[str, Any]) -> Match:
+    return Match(
+        id=row.get("id"),
+        name=row.get("name") or "",
+        species=row.get("species_name"),
+        created=str(row.get("created_at") or "")[:10] or None,
+    )
 
 
-def resolve_experiment(
-    experiments: list[dict[str, Any]], name: str, species: str | None = None
-) -> Resolution:
-    """Resolve ``name`` to a single experiment among ``experiments``.
+def classify(rows: list[dict[str, Any]]) -> Resolution:
+    """Turn ``cyl_experiment_search`` rows into a single ``Resolution``.
 
-    Each item is a ``cyl_experiments`` row joined to ``species`` (has ``id``, ``name``, and a
-    ``species.common_name``). ``species`` (a common name) narrows the pool first. Returns
-    ``Resolved`` on a single match, ``Ambiguous`` (sorted candidates) on several, ``NoMatch`` on
-    none. Never picks one when the name is ambiguous.
+    The rows are already the server-side matches (in ``ORDER BY name`` order); this only counts
+    them: none -> ``NoMatch``, one -> ``Resolved``, several -> ``Ambiguous`` (order preserved).
     """
-    pool = experiments
-    if species:
-        want = species.casefold()
-        pool = [
-            e
-            for e in pool
-            if ((e.get("species") or {}).get("common_name") or "").casefold() == want
-        ]
-
-    query = name.casefold().strip()
-    hits = [e for e in pool if query and query in (e.get("name") or "").casefold()]
-
-    if not hits:  # substring found nothing — fall back to approximate matching
-        names = [e.get("name") or "" for e in pool]
-        close = set(get_close_matches(name, names, n=5, cutoff=0.6))
-        hits = [e for e in pool if (e.get("name") or "") in close]
-
-    if not hits:
+    matches = [_match(r) for r in rows]
+    if not matches:
         return NoMatch()
-    if len(hits) == 1:
-        return Resolved(hits[0].get("id"), _label(hits[0]))
-    candidates = sorted(((e.get("id"), _label(e)) for e in hits), key=lambda c: c[1].casefold())
-    return Ambiguous(candidates)
+    if len(matches) == 1:
+        return Resolved(matches[0])
+    return Ambiguous(matches)

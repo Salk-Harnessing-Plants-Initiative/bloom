@@ -100,6 +100,19 @@ def fetch_scans(
     return query.limit(limit).execute().data or []
 
 
+def search_experiments(client: Any, query: str, species: str | None = None) -> list[dict[str, Any]]:
+    """Server-side experiment name search via the cyl_experiment_search RPC (trigram-indexed).
+
+    The query (and optional species) are passed as bound RPC arguments — never concatenated into
+    SQL — so no user text can alter the query. Returns matching live experiments (id, name,
+    species_name, created_at), capped server-side.
+    """
+    params: dict[str, Any] = {"p_query": query}
+    if species:
+        params["p_species"] = species
+    return client.rpc("cyl_experiment_search", params).execute().data or []
+
+
 def fetch_scan(client: Any, scan_id: Any) -> dict[str, Any] | None:
     """Single cyl_scans_extended row for one scan_id, or None if not found."""
     rows = (
@@ -307,7 +320,7 @@ def download(
     (--scan-id): metadata (scans.csv) and per-frame images."""
     from .. import auth
     from ..credentials import load_credentials
-    from ._resolve import Ambiguous, NoMatch, Resolved, resolve_experiment
+    from ._resolve import Ambiguous, NoMatch, Resolved, classify
 
     # Exactly one primary selector.
     if [experiment_id is not None, scan_id is not None, experiment_name is not None].count(
@@ -328,22 +341,22 @@ def download(
     except auth.AuthError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    if experiment_name is not None:  # resolve the name to a concrete experiment id
-        from .experiments import fetch_experiments
-
-        resolution = resolve_experiment(fetch_experiments(client), experiment_name, species=species)
-        if isinstance(resolution, NoMatch):
+    if experiment_name is not None:  # resolve the name to a concrete id (server-side search)
+        outcome = classify(search_experiments(client, experiment_name, species=species))
+        if isinstance(outcome, NoMatch):
             scope = f" for species {species!r}" if species else ""
             raise click.ClickException(f"No experiment matches {experiment_name!r}{scope}.")
-        if isinstance(resolution, Ambiguous):
-            listing = "\n".join(f"  {cid}  {label}" for cid, label in resolution.candidates)
+        if isinstance(outcome, Ambiguous):
+            listing = "\n".join(
+                f"  {m.id}  {m.label}  {m.created or ''}" for m in outcome.candidates
+            )
             raise click.ClickException(
-                f"{len(resolution.candidates)} experiments match {experiment_name!r} — "
+                f"{len(outcome.candidates)} experiments match {experiment_name!r} — "
                 f"narrow it (--species) or pass --experiment-id:\n{listing}"
             )
-        assert isinstance(resolution, Resolved)
-        experiment_id = resolution.experiment_id
-        click.echo(f"Matched: {resolution.label} (id {experiment_id})", err=True)
+        assert isinstance(outcome, Resolved)
+        experiment_id = outcome.match.id
+        click.echo(f"Matched: {outcome.match.label} (id {experiment_id})", err=True)
 
     if scan_id is not None:
         scan = fetch_scan(client, scan_id)
