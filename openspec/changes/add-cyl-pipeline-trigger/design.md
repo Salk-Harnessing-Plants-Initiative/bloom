@@ -88,6 +88,14 @@ proposal's reference-copy is still representative.
   unrelated PR's review process; (b) ask Benfica to coordinate first — the user chose to proceed
   independently instead.
 
+**Update, PR #570 review (Benfica, 2026-07-31, approving):** "#469 already has the claim/complete/fail
+wrapper shape for a pgmq queue, including the poison-message guard and dead-letter handling. Worth
+reusing rather than writing fresh." This is exactly the re-diff-before-building this section already
+calls for — Phase 2's dispatch-worker design should start from #469's claim/complete/fail wrapper
+shape (whatever it looks like by the time Phase 2 starts, per the "risk accepted" note above), not
+design one independently. Non-blocking for this Phase 1 PR (Phase 1 never claims/completes/fails a
+message — it only enqueues), recorded here so Phase 2 doesn't rediscover the pointer.
+
 ### Decision: defer the `bloom_workflows` `UPDATE` grant to Phase 2
 
 An earlier draft of this proposal granted `bloom_workflows` `UPDATE` on both new tables in Phase 1,
