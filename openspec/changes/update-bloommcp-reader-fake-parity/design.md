@@ -1,0 +1,101 @@
+## Context
+
+Issue #586 was split out of #325 ("fake↔adapter failure-injection parity for ResultStore/ExperimentReader") specifically to get an explicit yes/no on a scoping call `update-bloommcp-resultstore-fake-parity`'s design.md made without reviewer sign-off: that `SupabaseReader`/`FakeReader` has no analog to `ResultStore.commit`'s partial-write/collision hazard, so no reader-side failure-injection parity work is needed.
+
+Re-checking `load_experiment`'s cleaned-tier resolution (the default path — `version="latest"`) against that claim:
+
+- `SupabaseReader.load_experiment` → `experiment_utils._resolve_versioned_cleaned` → `_resolve_one_class` (`experiment_utils.py:370-460`).
+- `_resolve_one_class` has **three** failure points reading external state: `analysis_dir.get_version(version)` (`:405`), `list_prefix(analysis_dir.path)` (`:431`, only reached when `entry.version_dir` is unset), and `download_file(key, tmp)` (`:449`).
+- Two of the three are already `except Exception`-wrapped, converting failure into the function's own `(None, None, error_string)` contract (`:432-433`, `:450-459`).
+- The first — `get_version` — is wrapped only in `except ManifestSchemaError` (`:406-407`). `get_version` (`manifest/analysis_dir.py:56-66`) calls `self.read_manifest()` → `manifest/manifest.py:read_manifest` (`:45-51`), whose own body — `list_prefix(prefix)` then `read_json(_manifest_key(prefix))` — has **zero** exception handling anywhere in the call chain below `_resolve_one_class`.
+
+So a transient storage failure (network blip, RLS denial, timeout) during the manifest lookup is not a soft miss and not a caught hard error — it's an **uncaught exception** that propagates through `_resolve_one_class` → `_resolve_versioned_cleaned` → `SupabaseReader.load_experiment` (no try/except at that call site either, `supabase_reader.py:85-93`, which only inspects the returned `error` string) → `tools/_ports.py:load_frame` (catches only `ExperimentReadError`, `:74`) → `load_experiment_data`'s tool, registered via `contract/wrap.py:register`'s bare `mcp.tool()(tool)` (`:76-78`, no catch-all by design — see that function's own docstring on why a per-tool wrapper was tried and reverted) → the MCP client, as a raw traceback.
+
+This is structurally the same class of bug PR #465 fixed for `ResultStore.commit`: a multi-step operation (there: hash → per-output record → append; here: list-prefix-and-parse manifest → resolve entry → download file) where one step's failure mode was never given a contract-preserving conversion. The difference is direction (write vs. read) and severity (write: leaves `ResultStore` state inconsistent if unguarded; read: leaks an exception past every layer meant to sanitize it) — but the "does the fake need failure-injection surface to catch a regression here" question resolves identically: yes, because `FakeReader.load_experiment` (`fake_reader.py:66-103`) is a flat dict lookup with no way to simulate this at all, exactly like `FakeResultStore` before PR #465.
+
+`LocalReader.load_experiment` (`local_reader.py:58-99`) reaches the identical bug through `experiment_utils.load_experiment_data` (`experiment_utils.py:570-624`), which calls the same `_resolve_versioned_cleaned` and has the same "only inspect the `error` string, no try/except" pattern at its own call site (`:616-620`). Fixing `_resolve_one_class` at the shared source therefore fixes both real adapters from one call site — no separate fix needed in `supabase_reader.py` or `local_reader.py` themselves.
+
+## Goals / Non-Goals
+
+- Goals:
+  - Close the actual contract violation: convert the unguarded `get_version()` failure into the same caller-safe hard-error shape `_resolve_one_class`'s other two failure points already produce.
+  - Give `FakeReader` a failure-injection hook so a test exercising only the fake (the common case for tool-level tests, per `conftest.py`) can prove a mid-read storage failure surfaces as `ExperimentReadError`, not a raw exception or a silent success.
+  - Add `test_reader_parity.py` so this scenario runs against both `FakeReader` and `SupabaseReader` from one shared body, closing the "no `test_reader_parity.py` exists to extend" gap #586 names explicitly.
+  - Explicitly resolve #586: record that the prior scoping call was wrong, with the bug as evidence, so the issue closes with "found and fixed," not "confirmed, no action."
+- Non-Goals:
+  - Redesigning the existing (and, on inspection, pre-existing-independent-of-this-bug) collapse of every `_resolve_versioned_cleaned` hard error into `ExperimentNotFoundError` at the `load_experiment` call sites. That conflation already applies identically to the two failure points that were already correctly wrapped (missing output key, unlocatable version dir, failed download) — it is a deliberate design choice documented in `_resolve_one_class`'s own docstring ("Soft miss vs. hard error, precisely"), not something this bug introduces or that #586 asks to fix. This change only ensures the *third* failure point reaches that same, already-existing conversion instead of skipping it entirely.
+  - `SupabaseReader`'s raw tier (`resolve_source`/`list_sources`/RPC-backed `load_experiment`). Every step there is already `try/except Exception`-wrapped into `ExperimentReadError` (`supabase_reader.py:143`, `:230-244`), confirmed against the real adapter by the existing `test_rpc_failure_surfaces_as_experiment_read_error_not_raw`. No divergence, no fix, no new fake hook needed for this tier.
+  - Real concurrency or retry semantics. This is a single uncaught-exception bug on one read path, not a partial-state/rollback hazard — a read that fails leaves nothing to clean up, unlike a write. `fail_next_load` models "this call fails," not a multi-attempt retry protocol.
+  - Any change to the `ExperimentReader` Protocol. `fail_next_load` is additional public surface on the concrete `FakeReader` class only, invisible to Protocol-typed callers — same shape as `FakeResultStore`'s test-only hooks.
+
+## Decisions
+
+### A. Broaden `_resolve_one_class`'s exception handling to match its own sibling call sites — additively, not by replacing the existing message
+
+- Decision: change `experiment_utils.py:404-407` from
+  ```python
+  try:
+      entry = analysis_dir.get_version(version)
+  except ManifestSchemaError as e:
+      return None, None, f"manifest schema error for '{stem}': {e}"
+  ```
+  to
+  ```python
+  try:
+      entry = analysis_dir.get_version(version)
+  except ManifestSchemaError as e:
+      return None, None, f"manifest schema error for '{stem}': {e}"
+  except Exception as e:
+      logger.warning(
+          "manifest read failed for '%s' (version=%s)", stem, version, exc_info=True
+      )
+      return None, None, f"could not read manifest for '{stem}': {e}"
+  ```
+  i.e. a **second, additive** `except` clause below the existing one, not a merge into one generic branch. `test_storage_backend.py:958-996` (`test_latest_schema_error_on_outliers_propagates_first_iteration`, `..._on_qc_propagates_second_iteration`) assert the exact string `"manifest schema error for 'exp'"` from the first branch — an earlier draft of this decision that folded both cases into one message would have broken both tests for no behavioral gain. Keeping them separate also preserves a real, if narrow, diagnostic distinction: "the manifest's *contents* are malformed" (schema error, likely a real corruption/bug) vs. "the manifest could not be *read at all*" (storage/network — likely transient) are different failure classes worth telling apart in a log line, even though both collapse to the same caller-facing hard-error contract downstream.
+  `except Exception` necessarily also catches `ManifestSchemaError` if the second clause were reached first — Python's ordering (most-specific first) is what makes both branches reachable at all; get this order right or the schema-specific message is dead code.
+- Why here and not in `SupabaseReader`/`LocalReader` individually: both adapters already treat any non-empty `error` string from `_resolve_versioned_cleaned` identically (convert to `ExperimentNotFoundError`/return `(None, None, None, error)`), so fixing the shared source is sufficient and avoids duplicating the same `try/except` at two call sites that would otherwise need to stay in sync.
+- Alternatives considered: wrapping the whole `_resolve_one_class` body in one outer `try/except Exception` — rejected, since the function's docstring explicitly documents which returns are soft-miss (`None, None, None`) vs. hard-error, and a single outer catch would need the exact same conditional logic to preserve that distinction; the existing per-call-site pattern already does this correctly and is simpler to extend than to replace.
+
+### B. `FakeReader.fail_next_load` — a one-shot hook mirroring `fail_next_commit`
+
+- Decision: add
+  ```python
+  def fail_next_load(self, name: str, *, version: str = "latest") -> None:
+      """The next load_experiment(name, version=version) call raises
+      ExperimentReadError once, then clears itself."""
+  ```
+  backed by a `dict[tuple[str, str], bool]` (or equivalent), consumed at the top of `load_experiment` before any resolution logic runs. One-shot regardless of outcome, matching `fail_next_commit`'s contract.
+- Why a name+version key, not name-only: `_resolve_one_class`'s real bug is version-resolution-specific (it happens while resolving a *particular* committed entry) — keying on `(name, version)` lets a test target exactly the call shape it wants to prove fails safely, rather than making every version lookup for that experiment fail.
+- Why `ExperimentReadError` (the base class), not `ExperimentNotFoundError`: the real bug, once fixed, converts the storage failure into whatever `_resolve_one_class`'s existing hard-error contract produces — which today is collapsed to `ExperimentNotFoundError` by `load_experiment`'s caller-side handling (see Non-Goals — this collapsing is unchanged). `fail_next_load` raises the base `ExperimentReadError` because that is the actually-guaranteed contract (`ExperimentNotFoundError` is a subclass); a test asserting `pytest.raises(ExperimentReadError)` passes whichever concrete subclass either backend raises, which is what `test_reader_parity.py`'s shared scenario body needs to stay backend-agnostic.
+
+### C. Two distinct test additions, not one test doing double duty
+
+The first review pass flagged that a single "monkeypatch `list_prefix`, assert `ExperimentReadError`" test was being asked to serve two different purposes at once (pin the fix's own correctness vs. prove cross-adapter parity) with no test actually checking the one invariant that matters most (no silent fallback to different data). Splitting into two additions closes both gaps:
+
+**C1. Direct unit tests in `test_storage_backend.py`**, alongside its existing same-shape coverage of `_resolve_one_class`'s other two failure points:
+  - Red-before/green-after: seed a manifest with a resolvable `latest` entry, monkeypatch the local backend's `list_prefix` (the fixture `test_storage_backend.py` already uses) to raise during `get_version`, call `_resolve_one_class`/`_resolve_versioned_cleaned` directly, assert the hard-error tuple is returned — fails with an uncaught exception before Decision A, passes after.
+  - **The load-bearing safety test**: mirroring `test_latest_schema_error_on_outliers_propagates_first_iteration` exactly, seed a *valid, resolvable* `qc`-class `latest` entry alongside the induced failure on the higher-priority `outliers` class, and assert the call raises/returns the hard error rather than silently falling through to the seeded `qc` entry's data. `_resolve_versioned_cleaned`'s tier loop (`experiment_utils.py:520-529`) returns immediately on any non-`None` `error` from `_resolve_one_class`, before ever checking `qc` — this test pins that short-circuit against a regression that might weaken it (e.g. a future edit that turns this hard error into a soft miss "for consistency" with the truly-absent case, which would silently serve stale/wrong data instead of erroring). Without this test, `pytest.raises(ExperimentReadError)` alone would still pass even if a regression made the call silently return `qc` data instead of erroring, since nothing would be asserted about *which* data came back.
+  - A `LocalReader`-level case using this same file's local-backend fixture pattern, proving the fix also closes the identical path reached via `experiment_utils.load_experiment_data` — not left as an inference from the `SupabaseReader` coverage above.
+
+**C2. `test_reader_parity.py`** — one shared scenario, parametrized `fake`/`supabase`, structured like `test_store_parity.py`'s `_inject_commit_failure` helper, scoped narrowly to the externally-observable contract both adapters must share (not re-proving C1's internal invariant):
+  - `"fake"`: `reader.fail_next_load(name)`.
+  - `"supabase"`: `monkeypatch.setattr(bloom_mcp.manifest.manifest, "list_prefix", _boom)` — the exact call site `read_manifest` (`manifest.py:47`) uses. Using `bloom_mcp.manifest.manifest.list_prefix` (not `bloom_mcp.supabase_client.list_prefix`) matters: `fake_supabase_storage` (`conftest.py:103-104`) already monkeypatches both names independently (the manifest module re-binds its own copy at import time), so patching the manifest module's own name is what actually reaches `read_manifest` under that fixture.
+  - Both branches assert `pytest.raises(ExperimentReadError)`. Note this fake branch is necessarily weaker evidence than the supabase branch: `fail_next_load` raises directly rather than exercising any real conversion logic (reads have no partial-completion state for it to model, unlike `fail_next_commit`'s per-output checkpoint) — it proves the fake *can be made to* signal this failure mode for a caller-side test, not that a shared mechanism converts it. That asymmetry is accepted (see Non-Goals), not hidden.
+  - Also assert that a retry for the same `(name, version)` after the one-shot clears resolves normally — mirrors `test_commit_failure_is_retryable_and_does_not_leak`'s retry-succeeds check.
+
+- Add a `FakeReader`-only unit test in `test_fake_reader.py` for `fail_next_load` directly (one-shot behavior, key scoping by version), mirroring `test_fake_result_store.py`'s coverage of `fail_next_commit`.
+
+## Risks / Trade-offs
+
+- Adding a second `except Exception` clause at `experiment_utils.py:405` (Decision A) could, in principle, swallow a programming error (e.g. an `AttributeError` from a future refactor) and misreport it as a storage failure. Accepted: this is the exact same trade-off the function's other two failure points already make (`except Exception` around `list_prefix`/`download_file`), so this is bringing one call site in line with an already-accepted pattern, not introducing a new risk class. The new `logger.warning(exc_info=True)` call means the original exception is still visible in server logs even though it's collapsed into a generic caller-facing message.
+- `fail_next_load`'s one-shot, per-`(name, version)` scope means a test must call it immediately before the exact `load_experiment` call it wants to fail — same ergonomics (and same accepted trade-off) as `fail_next_commit`.
+- **Ripple effect, documented not fixed**: `AnalysisDir.get_version`/`read_manifest` — the same unguarded chain this change patches at one call site — is also reached from `result_store/supabase_store.py`: `list_runs` (`:326`), `get_run` (`:336`), and `create_run`'s own `adir.read_manifest()` call (`:122`, notably *outside* `commit()`'s hardened try/except from PR #465). None of these are touched by this change. Checked individually: `list_runs`'s only caller (`list_existing_analyses.py:75-79`) already wraps it in `except Exception`, so it's accidentally safe today; `get_run` has no production caller currently; `create_run`'s callers all route through `contract/wrap.py`'s `as_mcp_tool` catch-all (`:151-152`), which sanitizes any exception regardless of type. So there is no active bug here today, but it is the same latent pattern (an unguarded manifest read with safety resting on a caller-side catch-all rather than the read itself) — worth a reviewer's eyes, out of scope for this change, and not silently missed.
+- **Concurrent branch awareness**: PR #587 (issue #585's outliers-staleness audit, open at the time of writing) also edits `experiment_utils.py`, in a different region (`_log_if_trim_is_stale`/trim-staleness logic, ~line 529+) than this change's edit (~line 404-407) — no line-level conflict expected, but both touch the same file and are by the same author; merge whichever lands second by rebasing rather than assuming a clean auto-merge.
+
+## Migration Plan
+
+Purely additive to `fake_reader.py` (new hook) plus the one-line broadening in `experiment_utils.py` (behavior change confined to a previously-unreachable-safely failure path — today it crashes with a raw exception, so no existing passing test depends on that crash) and new tests. No schema change, no feature flag. Rollback is trivial: revert the single commit/PR — the new `fail_next_load` hook has no production caller and the `except Exception` clause is additive, so reverting drops cleanly back to today's (buggy) behavior with no cleanup required.
+
+## Open Questions
+
+None blocking. The one judgment call worth flagging for reviewer awareness: Decision A fixes the bug for `SupabaseReader` and `LocalReader` from a single shared call site rather than adding adapter-specific handling to either — this is a smaller, more surgical fix than the ResultStore change's fake-side restructuring (Decisions A–D there), because the underlying hazard here (an uncaught exception on read) is simpler than a partial-write's cleanup/retry semantics.
