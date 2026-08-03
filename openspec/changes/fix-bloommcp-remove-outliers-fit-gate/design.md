@@ -30,22 +30,27 @@ Confirmed by reading the shipped tool
   different pre-commit condition (a degenerate trim — Decision 6 of
   `add-bloommcp-remove-outliers-tool/design.md`). This change adds a second, independent
   pre-commit gate of the same shape and error code, not a new mechanism.
-- **Gating `poor` and `very_poor` identically is correct, not overcautious.** A candidate
-  objection is that cylinder's `"poor"` rating (846 traits vs. 129 samples) might just be a
-  high-dimensionality artifact, distinct from turface_19's `"very_poor"` (a more fundamental
-  non-Gaussian fit) — and that dimensionality-driven "poor" fits might still produce usable
-  trims worth persisting. The project's own fixtures refute this: turface_19 has the *more*
+- **Gating `poor` and `very_poor` identically is correct, not overcautious.** The primary
+  justification: both already sit in the delegate's own pre-existing `_UNTRUSTWORTHY_FIT` set
+  (unchanged by this proposal) — this is the delegate's own tiering, not a stricter line the MCP
+  invents. A secondary, weaker candidate objection is that cylinder's `"poor"` rating (846
+  traits vs. 129 samples) might just be a high-dimensionality artifact, distinct from
+  turface_19's `"very_poor"` (a more fundamental non-Gaussian fit), such that dimensionality-
+  driven "poor" fits might still produce usable trims worth persisting. The project's two
+  fixtures are at least suggestively inconsistent with that objection: turface_19 has the *more*
   favorable dimensionality (20 traits, 158 samples) yet is rated `very_poor`, while
-  dimensionality-stressed cylinder is only `poor` — the *milder* rating. If dimensionality drove
-  severity, cylinder should be worse; it isn't. Treating `poor`/`very_poor`/`unknown` as equally
-  untrustworthy (the existing `_UNTRUSTWORTHY_FIT` set, unchanged by this proposal) is the
-  delegate's own tiering, not a stricter line the MCP invents.
+  dimensionality-stressed cylinder is only `poor` — the milder rating. This is anecdotal support
+  from two confounded data points (different trait sets, different underlying assay biology,
+  different sample sizes affecting KS-test power), not a controlled demonstration that
+  dimensionality is irrelevant to fit severity in general — it should not be read as more than
+  a data point against carving out a dimensionality-based exception, which the primary
+  (delegate-tiering) justification above does not need anyway.
 - `add-bloommcp-remove-outliers-tool` (the capability's originating change) is still unarchived
   (`openspec list` shows 50/60 tasks) — there is no `openspec/specs/bloommcp-remove-outliers-tool/`
   base spec to formally `MODIFIED` against. `fix-bloommcp-remove-outliers-tool-class` (#420) hit
   the exact same situation and resolved it by **not** attempting a formal delta against this
   capability — it added an inline "Note (superseded by #420...)" to the pending change's own
-  `spec.md` instead. This change follows that precedent (task 1.7) rather than inventing a new
+  `spec.md` instead. This change follows that precedent (task 1.9) rather than inventing a new
   convention.
 
 ## Goals / Non-Goals
@@ -133,8 +138,10 @@ Confirmed by reading the shipped tool
   `plots` key now surfaces the fit gate's `assumption_violated`, not the plot-key `invalid_input`.
   This is deliberate, not an oversight: validating figure options for a run that is about to be
   rejected regardless is wasted work, and the fit check is the more fundamental gate. Two
-  existing tests assert the plot-key `invalid_input` shape against the turface_19/cylinder
-  mahalanobis-default fixtures specifically — since that validation logic is method-agnostic,
+  existing tests (`test_unknown_plot_key_is_invalid_input_with_no_run` and
+  `test_unknown_plot_key_failure_closes_all_figures`) assert the plot-key `invalid_input` shape
+  against the turface_19 mahalanobis-default fixture specifically — cylinder has no plot-key
+  test today, so only these two are affected — since that validation logic is method-agnostic,
   they move to `method="isolation_forest"` (never gated) rather than being weakened or dropped
   (task 1.2 in `tasks.md`).
 
@@ -154,7 +161,7 @@ Confirmed by reading the shipped tool
   Supabase-backed turface_19 data. That smoke path cleans at a different threshold than the unit
   golden (`max_nans_per_trait=0.1` → 187 samples, vs. the golden's canonical-default 0.2 → 158),
   so whether it actually trips the same untrustworthy-fit gate must be **verified empirically
-  during implementation**, not assumed either way (task 1.6/1.9).
+  during implementation**, not assumed either way (task 1.6).
 - **This is not incrementally landable.** The gate change and the golden/test repointing are
   inseparable — merging Decision 1 alone turns ~18 tests red — so this ships as one commit; there
   is no intermediate green state to split across.

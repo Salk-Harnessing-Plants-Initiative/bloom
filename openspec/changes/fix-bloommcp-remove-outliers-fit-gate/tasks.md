@@ -25,9 +25,11 @@ they exercise the real gap #419 describes), then implement the gate (1.3) to tur
         characterization in the message, names `isolation_forest` + `contamination=0.1` in the
         remedy, and commits no new run (assert against the fake `ResultStore`).
       - same for cylinder (`fit_quality="poor"`, `n_outliers=9`/`n_output_samples=120`).
-      - the two plot-key-validation tests currently asserting `invalid_input` on a bad `plots`
-        key against turface_19/cylinder mahalanobis defaults move to `method="isolation_forest"`
-        (Decision 6 — the fit gate now fires first and would otherwise mask them).
+      - `test_unknown_plot_key_is_invalid_input_with_no_run` and
+        `test_unknown_plot_key_failure_closes_all_figures` — the two tests currently asserting
+        `invalid_input` on a bad `plots` key, both against turface_19 mahalanobis defaults
+        (cylinder has no plot-key test today) — move to `method="isolation_forest"` (Decision 6 —
+        the fit gate now fires first and would otherwise mask them).
       - regression: `fit_is_trustworthy is True` (an acceptable-or-better mahalanobis fit) is
         **not** gated. No existing fixture has a trustworthy mahalanobis fit — use the codebase's
         existing monkeypatch pattern to stub `remove_outlier_samples`'s returned `report` (or

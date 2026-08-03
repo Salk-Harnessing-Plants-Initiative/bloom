@@ -26,8 +26,9 @@ review of #400/#420.
   **No run and no figures are persisted on this path.** The gate fires before any `plots=`
   validation/figure generation, so a call that combines an untrustworthy fit with an invalid
   `plots` key surfaces the fit gate, not the plot-key error (see design.md Decision 6) —
-  two existing plot-key-validation tests built on the untrustworthy-fit fixtures move to
-  `method="isolation_forest"` accordingly, since that validation logic is method-agnostic.
+  the two existing plot-key-validation tests (both built on turface_19, the only fixture either
+  currently exercises) move to `method="isolation_forest"` accordingly, since that validation
+  logic is method-agnostic.
 - The gate never fires when `fit_is_trustworthy` is `None` (`isolation_forest` — no chi-squared
   assumption) or `True` (an acceptable-or-better mahalanobis fit) — behavior is unchanged on
   those paths.
