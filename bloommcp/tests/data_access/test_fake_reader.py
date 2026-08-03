@@ -53,6 +53,20 @@ def test_latest_resolves_cleaned_then_falls_back_to_raw():
     assert len(frame.df) == 2
 
 
+def test_latest_qc_is_aliased_to_latest():
+    """FakeReader has no tool-class model (#420) — version="latest_qc" resolves
+    identically to version="latest" rather than 404ing as a literal-but-nonexistent
+    version id, so remove_outliers's own call-site switch doesn't break FakeReader
+    -seeded tests."""
+    reader = FakeReader()
+    reader.add_experiment("exp.csv", _raw())
+    reader.add_cleaned_version("exp.csv", "v3", _raw().iloc[:2])
+
+    frame = reader.load_experiment("exp.csv", version="latest_qc")
+    assert frame.source == "v3_cleaned"
+    assert len(frame.df) == 2
+
+
 def test_explicit_version_miss_raises_not_found():
     reader = FakeReader()
     reader.add_experiment("exp.csv", _raw())

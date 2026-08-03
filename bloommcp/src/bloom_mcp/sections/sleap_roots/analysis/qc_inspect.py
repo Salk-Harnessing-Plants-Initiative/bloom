@@ -421,7 +421,15 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
     _validate_experiment_name(params.experiment)
 
     # Read the RAW frame — qc_inspect inspects the raw missingness (no require_clean).
-    frame = reader.load_experiment(params.experiment)
+    # version="raw" explicitly: the default "latest" would resolve a cleaned (or,
+    # post-#420, a trimmed) version once one exists for this experiment, which
+    # defeats the whole point of this tool (picking qc_clean's thresholds BEFORE
+    # cleaning) — inspecting already-cleaned data to choose its own cleaning
+    # thresholds is circular. This was a latent bug even before #420 (order-
+    # dependent on whether qc_clean had ever run); #420's own outliers-preferring
+    # resolution makes it worse (deterministic once any trim exists, not merely
+    # order-dependent), which is what surfaced it during that PR's review.
+    frame = reader.load_experiment(params.experiment, version="raw")
     if params.trait_columns is not None:
         # An empty list is a caller mistake, not "inspect everything" — reject it
         # explicitly rather than silently falling through to all traits.

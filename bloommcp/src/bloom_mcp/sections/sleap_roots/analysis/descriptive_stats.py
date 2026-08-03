@@ -107,8 +107,10 @@ class DescriptiveStatsParams(BaseModel):
 
     experiment: str = Field(
         ...,
-        description="Experiment identifier to analyze. Must have a cleaned version "
-        "produced by qc_clean; descriptive_stats consumes it (require_clean).",
+        description="Experiment (CSV filename) to analyze. Must have a cleaned version "
+        "produced by qc_clean; descriptive_stats consumes it (require_clean). Resolves the "
+        "most recent outlier trim when one exists for the experiment, not merely the most "
+        "recent clean.",
     )
     trait_columns: Optional[list[str]] = Field(
         default=None,

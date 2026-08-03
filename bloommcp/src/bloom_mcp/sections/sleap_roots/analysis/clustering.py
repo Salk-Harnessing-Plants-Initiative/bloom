@@ -72,8 +72,10 @@ class ClusteringParams(BaseModel):
 
     experiment: str = Field(
         ...,
-        description="Experiment identifier to cluster. Must have a cleaned version "
-        "produced by qc_clean; clustering consumes it (require_clean).",
+        description="Experiment (CSV filename) to cluster. Must have a cleaned version "
+        "produced by qc_clean; clustering consumes it (require_clean). Resolves the most "
+        "recent outlier trim when one exists for the experiment, not merely the most "
+        "recent clean.",
     )
     method: Literal["kmeans", "gmm", "hierarchical"] = Field(
         default="kmeans",

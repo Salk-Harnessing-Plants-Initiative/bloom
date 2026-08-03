@@ -70,6 +70,15 @@ class FakeReader:
         version: str = "latest",
         require_clean: bool = False,
     ) -> ExperimentFrame:
+        # FakeReader has no notion of tool classes and cannot model the
+        # qc/outliers priority split (it has no manifests at all) — treat
+        # "latest_qc" as an alias for "latest" so callers that switch to it
+        # (remove_outliers's own input read) still resolve against the one
+        # flat `self._cleaned` map. The outliers-preferring cross-manifest
+        # behavior is proved against the real Supabase adapters instead.
+        if version == "latest_qc":
+            version = "latest"
+
         if version not in ("latest", "raw"):
             cleaned = self._cleaned.get(name, {}).get(version)
             if cleaned is None:

@@ -8,17 +8,23 @@ import dataclasses
 import json
 import time
 
+from bloom_mcp.experiment_utils import OUTLIERS_TOOL_CLASS, QC_TOOL_CLASS
 from bloom_mcp.tools import _ports
 
 # Kept intact across tool retirements (devendor-bloommcp-analysis) so historical
 # runs persisted under a retired tool class (stats, dimred, outlier, correlation)
 # still read back via list_existing_analyses. Do NOT prune retired classes.
+# `qc`/`outliers` reference the single-sourced constants in `experiment_utils`
+# (the producers, `qc_clean.py`/`remove_outliers.py`, do too) rather than
+# re-typing the literal — a typo here would silently hide trimmed runs from
+# this tool's output, exactly the drift class #420 is about.
 TOOL_CLASSES = (
-    "qc",
+    QC_TOOL_CLASS,
     "stats",
     "dimred",
     "clustering",
     "outlier",
+    OUTLIERS_TOOL_CLASS,
     "viz",
     "correlation",
 )
