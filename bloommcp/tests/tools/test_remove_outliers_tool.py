@@ -142,6 +142,35 @@ def test_mahalanobis_default_untrustworthy_fit_is_gated_not_persisted(injected_p
     assert store.list_runs(_EXPERIMENT, "outliers") == []
 
 
+def test_gate_fires_before_figure_generation_even_with_a_valid_plots_key(
+    injected_ports,
+):
+    """(#419 Decision 6 regression) The fit gate must fire before ANY figure handling —
+    not just before the invalid-plots-key path (covered by
+    test_unknown_plot_key_is_invalid_input_with_no_run, now on isolation_forest since
+    the gate would otherwise mask it). This pins the valid-key case too: an untrustworthy
+    mahalanobis fit with include_plots=True and a real, valid figure key still raises the
+    fit gate rather than reaching _make_figures at all — no figures are created (nothing
+    to leak), guarding against a future refactor that reorders the checks."""
+    _reader, store = injected_ports
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            method="mahalanobis",
+            include_plots=True,
+            plots=["mahalanobis_pc_analysis"],  # a real, valid mahalanobis figure key
+        )
+    assert exc.value.code == "assumption_violated"
+    assert "isolation_forest" in exc.value.remedy
+    assert plt.get_fignums() == []  # no figure was ever created
+    assert store.list_runs(_EXPERIMENT, "outliers") == []
+
+
 def test_isolation_forest_golden_trim_counts_and_barcodes_match_recorded_snapshot(
     injected_ports,
 ):
@@ -587,7 +616,9 @@ def test_trimmed_run_composes_into_require_clean_read(fake_supabase_storage):
     # The reloaded trimmed table has the golden output rows — a persisted-NaN/wrong-rows
     # regression fails here (the FakeResultStore path can't reload).
     assert (
-        len(resolved.df) == result.n_output_samples == _GOLDEN_IFOREST["n_output_samples"]
+        len(resolved.df)
+        == result.n_output_samples
+        == _GOLDEN_IFOREST["n_output_samples"]
     )
 
 
@@ -602,7 +633,9 @@ def test_default_is_report_only_no_plots(injected_ports):
 
 def test_include_plots_persists_requested_figure_as_link(injected_ports):
     result = _run(
-        method="isolation_forest", include_plots=True, plots=["isolation_forest_analysis"]
+        method="isolation_forest",
+        include_plots=True,
+        plots=["isolation_forest_analysis"],
     )
     assert "isolation_forest_analysis.png" in result.outputs
     assert "_cleaned.csv" in result.outputs

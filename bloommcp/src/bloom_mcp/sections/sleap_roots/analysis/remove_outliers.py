@@ -105,6 +105,18 @@ _REPORT_NAME = "outlier_report.json"
 # the machine-visible ``fit_is_trustworthy`` so a downstream tool need not parse prose.
 _UNTRUSTWORTHY_FIT = frozenset({"poor", "very_poor", "unknown"})
 
+# The delegate's own default for isolation_forest's ``contamination`` kwarg
+# (``sleap_roots_analyze.outlier_detection.detect_outliers_isolation_forest``) — quoted
+# in the #419 gate's remedy and the ``contamination`` field description below so the two
+# never drift apart from each other or from the delegate.
+_ISOLATION_FOREST_DEFAULT_CONTAMINATION = 0.1
+
+# Cap on how many outlier_barcodes the #419 fit-gate embeds in its (unpersisted) error
+# message — both characterized fixtures flag well under this today, but the message is
+# a plain string with no pagination, so a much noisier dataset shouldn't be able to
+# produce an unbounded one.
+_MAX_BARCODES_IN_MESSAGE = 50
+
 
 class RemoveOutliersParams(BaseModel):
     """Inputs for ``remove_outliers``.
@@ -145,8 +157,11 @@ class RemoveOutliersParams(BaseModel):
         default=None,
         gt=0.0,
         lt=0.5,
-        description="isolation_forest only: expected outlier fraction (e.g. 0.1, the "
-        "delegate's own default). Do not set for mahalanobis.",
+        description=(
+            "isolation_forest only: expected outlier fraction (e.g. "
+            f"{_ISOLATION_FOREST_DEFAULT_CONTAMINATION}, the delegate's own default). "
+            "Do not set for mahalanobis."
+        ),
     )
     include_plots: bool = Field(
         default=False,
@@ -268,6 +283,13 @@ def _fit_is_trustworthy(goodness_of_fit: Optional[dict]) -> Optional[bool]:
     return goodness_of_fit.get("fit_quality") not in _UNTRUSTWORTHY_FIT
 
 
+def _barcodes(report: dict) -> list[str]:
+    """Coerce the delegate's ``outlier_barcodes`` (``None`` for a barcode-less frame)
+    to a plain ``list[str]``. Shared by the fit-gate's raise (which sorts this for a
+    deterministic message) and the successful return path (which does not)."""
+    return [str(b) for b in (report.get("outlier_barcodes") or [])]
+
+
 @as_mcp_tool(
     input_model=RemoveOutliersParams,
     output_model=RemoveOutliersResult,
@@ -380,8 +402,17 @@ def remove_outliers(
             else None
         )
         # Nothing is persisted on this path, so the barcodes are embedded here — the
-        # only way a caller can still inspect what would have been flagged.
-        barcodes = sorted(str(b) for b in (report.get("outlier_barcodes") or []))
+        # only way a caller can still inspect what would have been flagged. Capped
+        # (_MAX_BARCODES_IN_MESSAGE) so a noisier dataset than today's two fixtures
+        # can't produce an unbounded plain-string message.
+        barcodes = sorted(_barcodes(report))
+        shown_barcodes = barcodes[:_MAX_BARCODES_IN_MESSAGE]
+        omitted = len(barcodes) - len(shown_barcodes)
+        barcodes_repr = (
+            f"{shown_barcodes} (+{omitted} more)"
+            if omitted > 0
+            else f"{shown_barcodes}"
+        )
         raise BloomMCPError(
             code="assumption_violated",
             message=(
@@ -389,13 +420,16 @@ def remove_outliers(
                 f"(fit_quality={fit_quality!r}) for {params.experiment!r} — the "
                 f"flagged threshold does not mean what it claims to. Would have "
                 f"flagged n_outliers={n_outliers} of n_input_samples={n_input} "
-                f"(n_output_samples={n_output}), outlier_barcodes={barcodes}. No run "
-                f"was persisted."
+                f"(n_output_samples={n_output}), outlier_barcodes={barcodes_repr}. No "
+                f"run was persisted."
             ),
             remedy=(
-                "Re-run with method='isolation_forest' and contamination=0.1 (the "
+                "Re-run with method='isolation_forest' and "
+                f"contamination={_ISOLATION_FOREST_DEFAULT_CONTAMINATION} (the "
                 "delegate's own default) — it has no chi-squared assumption to "
-                "violate."
+                "violate, though it also has no fit-quality self-diagnostic of its "
+                "own, so choose contamination deliberately rather than assuming the "
+                "default suits this data."
             ),
         )
 
@@ -511,9 +545,9 @@ def remove_outliers(
         fit_is_trustworthy=fit_is_trustworthy,
         # The delegate sets outlier_barcodes to None (not []) when the frame has no
         # barcode column, and the key is always present — so `.get(..., [])` returns
-        # None and `for b in None` would crash into an opaque internal_error. `or []`
+        # None and `for b in None` would crash into an opaque internal_error. `_barcodes`
         # coerces that valid barcode-less return to an empty list.
-        outlier_barcodes=[str(b) for b in (report.get("outlier_barcodes") or [])],
+        outlier_barcodes=_barcodes(report),
         run_ref=stored.run_ref,
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,

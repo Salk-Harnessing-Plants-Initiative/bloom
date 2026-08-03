@@ -63,7 +63,7 @@ Confirmed by reading the shipped tool
   caller would otherwise have received inline, so a caller reading the error is no worse
   informed than one reading a successful (today's) result, just told it wasn't persisted.
 - **Non-Goal:** changing the tool's declared default `method` away from `"mahalanobis"` — see
-  Decision 4 (Open Question).
+  Decision 4 (settled).
 - **Non-Goal:** an explicit opt-in bypass (e.g. `force_untrustworthy_fit`) — see Decision 5
   (Open Question).
 - **Non-Goal:** anything about `#420`'s `qc`/`outliers` tool-class resolution or `#585`'s
@@ -111,14 +111,28 @@ Confirmed by reading the shipped tool
   - Update `bloommcp/tests/smoke/test_remove_outliers_smoke.py`'s live-persistence assertions to
     drive `method="isolation_forest"` (the mahalanobis-default path used there today would now
     raise against real Supabase-backed data with the same fit problem).
-- **Decision 4 (open — flagged for reviewer sign-off, not adopted by default): should the
-  declared default `method` also change away from `"mahalanobis"`, given both tested reference
-  fixtures show an untrustworthy fit under it?** The issue itself raises this as a secondary
-  question ("also worth deciding"). Recommend **not** doing so in this change: it is an
-  independent, larger API decision (changes behavior for every caller that omits `method`, not
-  just ones whose data happens to fail the fit check), whereas this proposal's scope is the
-  narrower, more clearly-justified persistence-safety fix. Left as a candidate follow-up if a
-  reviewer wants it decided now instead.
+- **Decision 4 (settled: `method` stays `"mahalanobis"` — not left open).** An earlier draft of
+  this design left "should the declared default also change away from `mahalanobis`, given both
+  tested reference fixtures show an untrustworthy fit under it" as an open question deferred to
+  reviewer sign-off — a 5-lens PR review flagged that framing itself as a problem (3 of 5
+  reviewers independently raised it, and "recommend X, settle at review" reads as a
+  self-recommendation once nobody with authority over the default has actually settled it).
+  Deciding here instead: **keep `"mahalanobis"`.** Reasoning:
+  1. Changing a Pydantic field's default is an independent, strictly larger API change than a
+     persistence-safety fix — it silently changes behavior for *every* caller that omits
+     `method`, including ones whose data has a perfectly trustworthy mahalanobis fit (this
+     proposal's two known-bad fixtures are not evidence about data nobody has characterized yet).
+  2. The gate this proposal ships makes the *practical* consequence of the current default
+     small and self-correcting regardless of which way this decision goes: a caller who omits
+     `method` on untrustworthy-fit data gets an immediate, actionable error naming the better
+     method — not a silently-corrupted result. The default's "badness" was precisely the
+     silent-persistence hazard #419 exists to close; with that closed, an unhelpful-but-safe
+     default is a smaller residual problem than the schema/compatibility churn of changing it.
+  3. Reversible either way, and orthogonal to review sign-off on *this* change: if reference data
+     accumulates showing mahalanobis is untrustworthy on most real inputs (not just these two
+     characterized fixtures), that is its own, independently-decidable follow-up with its own
+     evidence base — not something to bundle into a persistence-gate fix under review-cycle time
+     pressure.
 - **Decision 5 (open — flagged for reviewer sign-off, not adopted by default): should a caller
   be able to opt in to persisting an untrustworthy-fit trim anyway** (e.g. `force_untrustworthy_fit:
   bool = False`), for a scientist who has already read `fit_is_trustworthy=False` and
@@ -187,19 +201,25 @@ Confirmed by reading the shipped tool
   rejected trim is whatever the calling agent's own transcript retains. No server-side audit
   trail exists for a gated attempt.
 - **A malformed or keyless `goodness_of_fit` dict is silently treated as trustworthy.**
-  `_fit_is_trustworthy` returns `None` (via `dict.get`) when `"fit_quality"` is absent, and
-  `None` is not gated — pre-existing helper behavior this change doesn't alter. The real
-  delegate is not observed to return such a dict, so this is a theoretical robustness gap, not a
-  reachable one today; called out so it isn't rediscovered as a surprise later.
+  `_fit_is_trustworthy` returns `True` — not `None` — when `"fit_quality"` is absent from an
+  otherwise-dict `goodness_of_fit`: `dict.get("fit_quality")` yields `None`, and `None not in
+  _UNTRUSTWORTHY_FIT` evaluates `True` (membership-test, not an identity/type check), so a
+  keyless dict reads as "fit is fine" and is **not** gated — a corrected, PR-review-caught
+  restatement of an earlier draft of this note, which wrongly said the result was `None`.
+  (`None` is the *actual* result only when `goodness_of_fit` itself is not a dict at all — e.g.
+  the `isolation_forest` case — a different, already-handled branch.) Pre-existing helper
+  behavior this change doesn't alter. The real delegate is not observed to return a
+  fit_quality-less dict, so this is a theoretical robustness gap, not a reachable one today;
+  called out so it isn't rediscovered as a surprise later.
 - **After this ships, the tool's *declared default* (`method="mahalanobis"`) raises on 100% of
-  the project's currently-characterized reference data.** Decision 4 defers changing the
-  default, which is defensible (the issue frames it as a secondary question) but does leave an
-  odd end state — a default that fails out-of-the-box on every fixture the team has tested
-  against — that the reviewer should weigh explicitly, not assume is incidental.
+  the project's currently-characterized reference data.** Decision 4 settles on keeping the
+  default rather than changing it (see that decision's reasoning) — this is a known, accepted
+  end state, not an oversight: an unhelpful default that fails safely (a clear, actionable error)
+  is preferred here over a schema-visible default change with its own independent blast radius.
 - **No retroactive protection.** An `outliers`-class run already persisted from an
   untrustworthy-fit mahalanobis trim before this ships stays exactly as it is — this change only
-  stops new ones. A one-time audit (same shape as `#585`'s for the tool-class fix) is a
-  reasonable follow-up, not this change's scope.
+  stops new ones. Filed as [#593](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/593)
+  (same shape as `#585`'s audit for the tool-class fix), not this change's scope.
 
 ## Migration Plan
 
@@ -210,8 +230,11 @@ golden/test changes from Decision 3 also need to unwind.
 
 ## Open Questions
 
-- **Decision 4** — keep `method="mahalanobis"` as the declared default, or switch to
-  `"isolation_forest"` given both reference fixtures fail the chi-squared assumption under
-  today's default? Recommend keeping mahalanobis as default; settle at review.
+- **Decision 4 is now settled** (see Decisions) — kept here only as a changelog note: a 5-lens
+  PR review flagged the prior "recommend X, settle at review" framing as itself a problem
+  (self-recommendation, not actual sign-off), so this design now states and justifies the kept
+  default directly instead of deferring it further.
 - **Decision 5** — add an opt-in bypass (`force_untrustworthy_fit`) for a caller that wants an
-  untrustworthy-fit trim persisted anyway? Recommend not adding it; settle at review.
+  untrustworthy-fit trim persisted anyway? Recommend not adding it; still open for reviewer
+  input if a concrete workflow surfaces the need (unlike Decision 4, no reviewer has raised this
+  one as needing to be settled before merge).

@@ -1,6 +1,7 @@
 {
   "_comment": "Characterization snapshot of remove_outliers (isolation_forest, seed=42, default contamination=0.1) on the turface_19 frame cleaned at clean_traits_for_analysis CANONICAL DEFAULTS -- the same cleaned input as turface_19_outlier_golden.json (mahalanobis). Added alongside the #419 fit-trustworthiness gate: mahalanobis's chi-squared fit on this fixture is very_poor, so the tool now raises assumption_violated on mahalanobis defaults (see the raise-path test) instead of persisting; isolation_forest has no chi-squared assumption to fail and is this fixture's new 'successful persisted trim' characterization. Recorded via the exact tool path (detect_columns on the cleaned frame -> remove_outlier_samples), 2026-08-03.",
   "_raw_source": "tests/fixtures/turface_19_raw_data.csv (from #338)",
+  "_determinism_note": "isolation_forest's random_state pins sklearn's IsolationForest sampling for a given sklearn/numpy version, but sklearn does not guarantee bit-identical results across its own releases -- unlike mahalanobis's closed-form chi-squared threshold. If this golden ever needs re-recording after a sleap-roots-analyze/sklearn/numpy version bump, that is expected drift, not a regression; re-derive via the same tool path and update this file.",
   "cleaning_params": {
     "max_zeros_per_trait": 0.5,
     "max_nans_per_trait": 0.2,
