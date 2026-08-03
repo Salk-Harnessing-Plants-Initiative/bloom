@@ -408,7 +408,7 @@ def test_rejects_unsafe_filename_before_any_read(
         "/etc/passwd",
     ):
         result = fn(unsafe_name)
-        assert "bare CSV filename" in result
+        assert "bare experiment identifier" in result
         assert "SECRET_MARKER_0xdeadbeef" not in result
 
     assert calls["n"] == 0
@@ -423,7 +423,7 @@ def test_valid_missing_filename_still_returns_not_found(
     behavior."""
     fn = getattr(module, fn_name)
     result = fn("does_not_exist.csv")
-    assert "bare CSV filename" not in result
+    assert "bare experiment identifier" not in result
     assert "not found" in result
 
 

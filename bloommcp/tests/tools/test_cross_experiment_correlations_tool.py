@@ -648,7 +648,16 @@ def test_path_unsafe_experiment_name_rejected(bad_field):
 
 
 @pytest.mark.parametrize("bad_field", ["experiment_1", "experiment_2"])
-def test_dotted_stem_rejected(bad_field):
+@pytest.mark.parametrize(
+    "dotted_name",
+    [
+        "my.experiment.v2.csv",  # more than one dot
+        ".hidden",  # leading dot, no extension — found in PR #571 review
+        "a.",  # trailing dot, no extension — found in PR #571 review
+        "a.b.c",  # more than one dot, minimal form — found in PR #571 review
+    ],
+)
+def test_dotted_stem_rejected(dotted_name, bad_field):
     """Regression test for the composite-key truncation bug found in review: a naive
     f"{Path(e1).stem}__x__{Path(e2).stem}" composite is silently truncated by
     AnalysisDir's own re-applied Path(...).stem whenever either original stem contains
@@ -656,13 +665,35 @@ def test_dotted_stem_rejected(bad_field):
     experiment's name and risking a storage collision. A first fix sanitized dots to
     underscores before joining, which reopened the identical collision class one level
     down ("my.experiment.csv" and "my_experiment.csv" both sanitize to "my_experiment").
-    Rejected outright rather than sanitized."""
+    Rejected outright rather than sanitized.
+
+    ``.hidden`` and ``a.`` are the leading/trailing-dot edge cases this PR's own review
+    round derived to show ``Path(name).stem`` still contains a ``.`` even though neither
+    looks like a "multi-dot" name at a glance (``Path(".hidden").stem == ".hidden"``,
+    ``Path("a.").stem == "a."``) — previously only the multi-interior-dot case was
+    covered by a test, leaving this exact edge case unverified from the suite itself.
+    """
     kwargs = {"experiment_1": _EXP_1, "experiment_2": _EXP_2}
-    kwargs[bad_field] = "my.experiment.v2.csv"
+    kwargs[bad_field] = dotted_name
     with pytest.raises(BloomMCPError) as exc:
         cross_experiment_correlations(CrossExperimentCorrelationsParams(**kwargs))
     assert exc.value.code == "invalid_input"
     assert bad_field in exc.value.message
+
+
+@pytest.mark.parametrize(
+    "accepted_name",
+    ["expA.csv", "a.b", "no_dot_at_all"],
+)
+def test_dotted_stem_accepts_a_single_interior_dot(accepted_name):
+    """Companion to ``test_dotted_stem_rejected``: pins the accept side of the same
+    boundary directly against ``_reject_dotted_stem`` (found in PR #571 review round 2 —
+    the reject side had test coverage, but nothing pinned that a single interior dot,
+    e.g. "a.b", is still accepted; a future regression that over-rejects would have
+    passed the suite silently). "no_dot_at_all" and "expA.csv" (single interior dot, the
+    ordinary case) must also stay accepted."""
+    xcorr_tool._reject_dotted_stem(accepted_name, "safe_partner.csv")
+    xcorr_tool._reject_dotted_stem("safe_partner.csv", accepted_name)
 
 
 # ── composite key is a length-prefixed, provably injective join (design.md D1) ───

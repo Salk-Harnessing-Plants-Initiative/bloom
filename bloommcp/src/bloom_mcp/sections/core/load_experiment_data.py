@@ -17,7 +17,7 @@ def load_experiment_data(filename: str) -> str:
     and a preview of missing data.
 
     Args:
-        filename: CSV filename from list_available_experiments
+        filename: experiment identifier from list_available_experiments
     """
     df, trait_cols, config, source = _load_data(filename)
     if df is None:

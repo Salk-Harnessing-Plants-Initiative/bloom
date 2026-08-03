@@ -53,7 +53,7 @@ def _now() -> float:
     return time.monotonic()
 
 
-def list_existing_analyses(experiment_filename: str) -> str:
+def list_existing_analyses(experiment: str) -> str:
     """List every prior analysis recorded on file for this experiment.
 
     Aggregates every recorded run across each tool class via the injected
@@ -84,17 +84,17 @@ def list_existing_analyses(experiment_filename: str) -> str:
     tool rather than only in a log line they can't see.
 
     Args:
-        experiment_filename: CSV filename, e.g. "alfalfa_gwas_wave2.csv"
+        experiment: experiment identifier, e.g. "alfalfa_gwas_wave2.csv"
     """
-    cached = _RESPONSE_CACHE.get(experiment_filename)
+    cached = _RESPONSE_CACHE.get(experiment)
     if cached is not None and _now() - cached[0] < _CACHE_TTL_SECONDS:
         return cached[1]
 
     known = {exp.filename for exp in _ports.reader().list_experiments()}
-    if known and experiment_filename not in known:
+    if known and experiment not in known:
         return json.dumps(
             {
-                "error": f"Experiment '{experiment_filename}' not found",
+                "error": f"Experiment '{experiment}' not found",
                 "available_experiments": ", ".join(sorted(known)),
             },
             indent=2,
@@ -106,7 +106,7 @@ def list_existing_analyses(experiment_filename: str) -> str:
 
     for tool_class in TOOL_CLASSES:
         try:
-            runs = store.list_runs(experiment_filename, tool_class)
+            runs = store.list_runs(experiment, tool_class)
         except Exception as exc:  # noqa: BLE001 - aggregate, never fail the whole call
             errors.append(f"{tool_class}: {exc}")
             continue
@@ -115,16 +115,16 @@ def list_existing_analyses(experiment_filename: str) -> str:
 
     staleness = None
     try:
-        staleness = trim_staleness(Path(experiment_filename).stem)
+        staleness = trim_staleness(Path(experiment).stem)
     except Exception as exc:  # noqa: BLE001 - advisory-only; never fail the whole call
         errors.append(f"trim_staleness: {safe_error_text(exc)}")
 
     response: dict = {
-        "experiment_filename": experiment_filename,
+        "experiment": experiment,
         "analyses": by_tool_class,
     }
     if not by_tool_class:
-        response["message"] = f"No prior analyses found for '{experiment_filename}'."
+        response["message"] = f"No prior analyses found for '{experiment}'."
     if staleness is not None:
         response["trim_is_stale"] = staleness.is_stale
         response["trim_based_on_qc_version"] = staleness.outliers_based_on_version
@@ -133,5 +133,5 @@ def list_existing_analyses(experiment_filename: str) -> str:
         response["errors"] = errors
 
     response_str = json.dumps(response, indent=2)
-    _RESPONSE_CACHE[experiment_filename] = (_now(), response_str)
+    _RESPONSE_CACHE[experiment] = (_now(), response_str)
     return response_str

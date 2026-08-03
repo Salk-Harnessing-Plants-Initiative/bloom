@@ -687,7 +687,8 @@ def load_experiment_data(
     manifest specifically, ignoring any trim.
 
     Args:
-        filename: CSV filename (e.g., "alfalfa_gwas_wave2.csv")
+        filename: experiment identifier (e.g., "alfalfa_gwas_wave2.csv" today; a
+            database-backed identifier once data-access-roadmap.md Tier 2 lands)
         traits_dir: Override for BLOOM_TRAITS_DIR
         output_dir: Override for BLOOM_OUTPUT_DIR
         require_clean: If True, fail when no cleaned CSV exists (for UMAP)
