@@ -9,6 +9,13 @@ Also guards the `storage/`→`manifest/` rename's BREAKING contract (#487)
 permanently: `bloom_mcp.storage` must stay gone (no compatibility alias) and
 `AnalysisWriter` must never resurface, so a future partial revert is caught by
 CI rather than a manual check.
+
+One disclosed, narrow exception (bloom#585): `sections/core/list_existing_analyses.py`
+imports `experiment_utils.trim_staleness`, which itself reads through
+`AnalysisDir` — a transitive, not direct, dependency this file's AST scan
+does not (and is not meant to) catch. It is an ambient, advisory-only signal
+layered on top of the ports-backed `analyses` payload, not a replacement data
+path — see `add-bloommcp-outliers-staleness-audit/design.md` Decision 2.
 """
 
 from __future__ import annotations

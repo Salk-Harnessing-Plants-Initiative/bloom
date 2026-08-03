@@ -8,7 +8,7 @@ import logging
 import os
 import pandas as pd
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +357,17 @@ CLEANED_CSV_NAME = "_cleaned.csv"
 QC_TOOL_CLASS = "qc"
 OUTLIERS_TOOL_CLASS = "outliers"
 
+# The `tool` value `remove_outliers` commits are recorded under. NOTE: this does
+# **not** eliminate the drift risk it single-sources against — the actual
+# persisted value is `func.__name__` of the decorated `remove_outliers` function
+# (see `contract/wrap.py`), not this constant; a future rename of that function
+# would silently desync this literal from what's actually written, with nothing
+# to catch it except the regression test in
+# `tests/test_remove_outliers_tool.py` that asserts this constant equals
+# `remove_outliers.remove_outliers.__name__`. Still worth single-sourcing the
+# *comparison* side (the audit script, test fixtures) against one name.
+REMOVE_OUTLIERS_TOOL_NAME = "remove_outliers"
+
 # Cleaned-producing tool classes, lowest to highest resolution priority. `outliers`
 # outranks `qc`: for version="latest", a trim (once one exists) is preferred over a
 # plain clean regardless of which was committed more recently — see
@@ -529,11 +540,97 @@ def _resolve_versioned_cleaned(
     return None, None, None
 
 
+def safe_error_text(exc: Exception, limit: int = 300) -> str:
+    """Bound and lightly redact an exception's text before it lands in a
+    persisted report or a live tool response.
+
+    Not a comprehensive secret scanner -- but the local storage backend
+    already redacts absolute host paths from its own errors
+    (`storage_backend._redacted_io_error`), and the Supabase backend's
+    `storage3`/`httpx` errors have no equivalent convention today. Truncates
+    to `limit` characters and strips anything that looks like an
+    `apikey`/`authorization`/`bearer` header fragment, so an accidental
+    credential/token substring doesn't propagate verbatim into a report file
+    described as something that "might later be pasted into a ticket," or
+    into a live MCP tool response.
+    """
+    import re
+
+    # Handles both "key=value"/"key: value" forms and a standalone "Bearer
+    # <token>" following an "Authorization:" prefix (consuming "Bearer" as
+    # part of the same match, not as a second, independent keyword match that
+    # would otherwise leave the actual token right after it untouched).
+    text = re.sub(
+        r"(?i)\b(apikey|authorization|bearer)\b[:=\s]*(?:bearer\s+)?\S+",
+        r"\1=<redacted>",
+        str(exc),
+    )
+    if len(text) > limit:
+        text = text[:limit] + "...<truncated>"
+    return text
+
+
+class TrimStaleness(NamedTuple):
+    """Result of comparing an experiment's `outliers`-class trim against the
+    current `qc`-class latest. `current_qc_label` is `None` only in the
+    no-`qc`-baseline-at-all corner (see `trim_staleness`)."""
+
+    is_stale: bool
+    outliers_based_on_version: str
+    current_qc_label: Optional[str]
+
+
+def trim_staleness(stem: str) -> Optional[TrimStaleness]:
+    """Whether `stem`'s current `outliers`-class trim is stale relative to the
+    current `qc`-class latest.
+
+    Returns `None` when no `outliers`-class version exists at all — there is
+    nothing to assess (distinct from "trimmed and current", which every caller
+    needs to be able to tell apart). Otherwise returns a `TrimStaleness` whose
+    `is_stale` is `True` when the trim's `based_on_version` no longer matches
+    the `qc`-class latest label (a `qc_clean` has run since the trim was made),
+    or when the `qc`-class manifest has **no** `latest` entry at all — a trim
+    with no live baseline to confirm it against is treated as a more
+    concerning state than "current," not silently equivalent to "nothing to
+    see" (this exact corner was previously unreached/untested). Under the
+    shipped `ExperimentReader` adapters this state cannot arise from a normal
+    commit (`remove_outliers` cannot itself commit without first successfully
+    reading a `qc`-class latest); its only realistic, non-corruption trigger is
+    a backend-split manifest history (bloom#573).
+
+    Propagates any manifest read failure to the caller — this function does
+    not swallow exceptions; callers choose their own failure policy (compare
+    `_log_if_trim_is_stale`, which does swallow, against
+    `sections.core.list_existing_analyses`, which does not).
+    """
+    from bloom_mcp.manifest import AnalysisDir
+
+    outliers_entry = AnalysisDir(
+        "bloommcp_output", f"{stem}.csv", OUTLIERS_TOOL_CLASS
+    ).get_version("latest")
+    if outliers_entry is None:
+        return None
+    qc_entry = AnalysisDir("bloommcp_output", f"{stem}.csv", QC_TOOL_CLASS).get_version(
+        "latest"
+    )
+    if qc_entry is None:
+        return TrimStaleness(
+            is_stale=True,
+            outliers_based_on_version=outliers_entry.based_on_version,
+            current_qc_label=None,
+        )
+    current_qc_label = f"{qc_entry.id}_cleaned"
+    return TrimStaleness(
+        is_stale=outliers_entry.based_on_version != current_qc_label,
+        outliers_based_on_version=outliers_entry.based_on_version,
+        current_qc_label=current_qc_label,
+    )
+
+
 def _log_if_trim_is_stale(stem: str, outliers_label: str) -> None:
-    """Best-effort, non-blocking: log when the resolved `outliers` trim's
-    `based_on_version` no longer matches the current `qc`-class latest — i.e.
-    a `qc_clean` has run since this trim was made. The trim still correctly
-    resolves as "latest cleaned" (design.md Decision 4's disclosed trade-off,
+    """Best-effort, non-blocking: log when `trim_staleness(stem)` reports the
+    resolved `outliers` trim as stale. The trim still correctly resolves as
+    "latest cleaned" (design.md Decision 4's disclosed trade-off,
     `fix-bloommcp-remove-outliers-tool-class`) until a fresh `remove_outliers`
     run supersedes it; this makes that staleness observable at read time
     rather than only discoverable by manually diffing manifests. Purely
@@ -541,28 +638,29 @@ def _log_if_trim_is_stale(stem: str, outliers_label: str) -> None:
     swallowed so observability can't become its own availability hazard.
     """
     try:
-        from bloom_mcp.manifest import AnalysisDir
-
-        outliers_entry = AnalysisDir(
-            "bloommcp_output", f"{stem}.csv", "outliers"
-        ).get_version("latest")
-        qc_entry = AnalysisDir("bloommcp_output", f"{stem}.csv", "qc").get_version(
-            "latest"
-        )
-        if outliers_entry is None or qc_entry is None:
+        result = trim_staleness(stem)
+        if result is None or not result.is_stale:
             return
-        current_qc_label = f"{qc_entry.id}_cleaned"
-        if outliers_entry.based_on_version != current_qc_label:
+        if result.current_qc_label is None:
             logger.info(
-                "resolved trim %r for %r is based on %r, but the current qc "
-                "latest is %r -- a qc_clean has run since this trim was made; "
-                "it remains 'latest cleaned' until a fresh remove_outliers "
-                "run supersedes it.",
+                "resolved trim %r for %r is based on %r, but no qc-class version "
+                "could be found for this experiment at all; it remains 'latest "
+                "cleaned' until a fresh remove_outliers run supersedes it.",
                 outliers_label,
                 stem,
-                outliers_entry.based_on_version,
-                current_qc_label,
+                result.outliers_based_on_version,
             )
+            return
+        logger.info(
+            "resolved trim %r for %r is based on %r, but the current qc "
+            "latest is %r -- a qc_clean has run since this trim was made; "
+            "it remains 'latest cleaned' until a fresh remove_outliers "
+            "run supersedes it.",
+            outliers_label,
+            stem,
+            result.outliers_based_on_version,
+            result.current_qc_label,
+        )
     except Exception:
         logger.debug("trim-staleness check failed (non-fatal)", exc_info=True)
 
