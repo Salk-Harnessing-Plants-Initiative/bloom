@@ -44,7 +44,7 @@ the `list` commands take `--output csv|json` for machine-readable output.
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `cyl experiments list`         | List experiments (species · name · id);`--species` opens a picker menu                                                 |
 | `cyl accessions list`          | Accessions in an experiment (`--experiment-id`, or pick from a menu)                                                     |
-| `cyl accessions sample-counts` | Plant count per accession/species (`--species` menu)                                                                     |
+| `cyl accessions sample-counts` | Plant count per accession/species (`--species NAME`, or `--species-menu`)                                                 |
 | `cyl datasets list` / `get`  | List trait datasets (`--experiment` menu) / show one dataset's traits                                                    |
 | `cyl qc list-sets`             | List cylinder QC sets                                                                                                      |
 | `cyl download <dir>`           | Download an experiment/scan:`scans.csv` + images. Select by `--experiment-id`, `--scan-id`, or `--experiment-name` |
@@ -112,7 +112,7 @@ bloomctl cyl experiments list --species
 
 # 3. (optional) Sanity-check the contents before pulling gigabytes of images:
 bloomctl cyl accessions list --experiment-id 42       # which accessions are in it
-bloomctl cyl accessions sample-counts --species       # plant count per accession
+bloomctl cyl accessions sample-counts --species-menu  # plant count per accession (pick a species)
 bloomctl cyl datasets list --experiment-id 42         # any trait datasets already built
 
 # 4. Download it — metadata only first to preview, then the full pull:

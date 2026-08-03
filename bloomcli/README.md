@@ -81,9 +81,9 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
   experiment from a menu** (needs a terminal). `--output csv|json` for
   machine-readable output.
 - **[read]** `bloomctl cyl accessions sample-counts` — plant count per accession, per
-  species. Pass `--species` to **pick a species from a menu** (needs a terminal) and
-  filter to it; omit it for all species. `--output csv|json` for machine-readable
-  output.
+  species. Filter with `--species NAME` (scriptable) or `--species-menu` to **pick a
+  species from a menu** (needs a terminal); omit both for all species. `--output csv|json`
+  for machine-readable output.
 - **[read]** `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species,
   experiment, number of QC codes). Prints a table by default; `--output csv|json`
   for machine-readable output.
@@ -127,7 +127,7 @@ bloomctl cyl experiments list --species
 
 # 3. (optional) Sanity-check the contents before pulling gigabytes of images:
 bloomctl cyl accessions list --experiment-id 42       # which accessions are in it
-bloomctl cyl accessions sample-counts --species       # plant count per accession
+bloomctl cyl accessions sample-counts --species-menu  # plant count per accession (pick a species)
 bloomctl cyl datasets list --experiment-id 42         # any trait datasets already built
 
 # 4. Download it — metadata only first to preview, then the full pull:
@@ -195,7 +195,8 @@ bloomctl cyl experiments list --output json | jq -r '.[] | "\(.experiment_id)\t\
 
 # what accessions / how many plants are in an experiment
 bloomctl cyl accessions list --experiment-id 42
-bloomctl cyl accessions sample-counts --species          # pick a species from the menu
+bloomctl cyl accessions sample-counts --species-menu     # pick a species from the menu
+bloomctl cyl accessions sample-counts --species Canola    # or filter directly (scriptable)
 
 # trait datasets and QC sets
 bloomctl cyl datasets list --experiment                  # pick the experiment from the menu

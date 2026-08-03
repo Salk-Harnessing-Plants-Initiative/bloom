@@ -204,9 +204,16 @@ def list_accessions(
 @accessions.command(name="sample-counts")
 @click.option(
     "--species",
+    "species_name",
+    default=None,
+    help="Filter to this species by exact common name (scriptable). Omit for all species.",
+)
+@click.option(
+    "--species-menu",
+    "--species_menu",
     "pick_species",
     is_flag=True,
-    help="Pick a species from an interactive menu to filter by (needs a terminal).",
+    help="Pick the species from an interactive menu instead of typing it (needs a terminal).",
 )
 @click.option(
     "--output",
@@ -223,7 +230,13 @@ def list_accessions(
     show_default=True,
     help="Credentials profile to use.",
 )
-def sample_counts(pick_species: bool, output_fmt: str | None, as_json: bool, profile: str) -> None:
+def sample_counts(
+    species_name: str | None,
+    pick_species: bool,
+    output_fmt: str | None,
+    as_json: bool,
+    profile: str,
+) -> None:
     """Show the plant count per accession, per species (one plant = one individual grown).
 
     Counts are pooled across all experiments in the database (not scoped to one
@@ -233,17 +246,21 @@ def sample_counts(pick_species: bool, output_fmt: str | None, as_json: bool, pro
     Plants not assigned to an accession are excluded, so summing the counts can be
     lower than the total plant count.
 
-    Pass --species to pick a species from a menu; omit it for all species.
+    Filter with --species NAME (scriptable) or --species-menu to pick from a menu;
+    omit both for all species.
     """
     from postgrest import APIError
 
     from ..cli import _authed_client
 
+    if species_name is not None and pick_species:
+        raise click.UsageError("Use either --species NAME or --species-menu, not both.")
+
     output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
 
     client = _authed_client(profile)
     try:
-        species = None
+        species = species_name  # typed value (scriptable), or None = all species
         if pick_species:  # menu of species that have accessions (0 = All)
             names = fetch_species_with_accessions(client)
             if not names:

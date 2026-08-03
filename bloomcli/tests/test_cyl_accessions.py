@@ -457,8 +457,40 @@ def test_sample_counts_json_sorted(monkeypatch):
     assert payload[0]["plant_count"] == 8
 
 
+def test_sample_counts_species_value_is_scriptable(monkeypatch):
+    # The 0.1.0a2 scriptable path: --species NAME filters directly, no menu, no stdin.
+    _patch_authed(monkeypatch)
+    called = {"menu": False}
+    monkeypatch.setattr(
+        acc,
+        "fetch_species_with_accessions",
+        lambda client: called.__setitem__("menu", True) or ["Canola"],
+    )
+    captured = {}
+
+    def _fetch(client, species=None):
+        captured["species"] = species
+        return []
+
+    monkeypatch.setattr(acc, "fetch_accession_sample_counts", _fetch)
+    # no stdin: if this wrongly opened the menu it would abort instead of exit 0
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species", "Canola"])
+    assert res.exit_code == 0, res.output
+    assert captured["species"] == "Canola"  # typed name reaches the fetch
+    assert called["menu"] is False  # the menu fetcher was never called
+
+
+def test_sample_counts_species_value_and_menu_conflict(monkeypatch):
+    _patch_authed(monkeypatch)
+    res = CliRunner().invoke(
+        cli, ["cyl", "accessions", "sample-counts", "--species", "Canola", "--species-menu"]
+    )
+    assert res.exit_code != 0
+    assert "not both" in res.output.lower()
+
+
 def test_sample_counts_menu_species_passed_to_fetch(monkeypatch):
-    # --species opens a menu; the picked name must reach the fetch.
+    # --species-menu opens a menu; the picked name must reach the fetch.
     _patch_authed(monkeypatch)
     monkeypatch.setattr(acc, "fetch_species_with_accessions", lambda client: ["Canola", "Rice"])
     captured = {}
@@ -469,7 +501,9 @@ def test_sample_counts_menu_species_passed_to_fetch(monkeypatch):
 
     monkeypatch.setattr(acc, "fetch_accession_sample_counts", _fetch)
     # menu 0) All 1) Canola 2) Rice → pick 1 → Canola
-    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species"], input="1\n")
+    res = CliRunner().invoke(
+        cli, ["cyl", "accessions", "sample-counts", "--species-menu"], input="1\n"
+    )
     assert res.exit_code == 0, res.output
     assert captured["species"] == "Canola"
 
@@ -484,7 +518,9 @@ def test_sample_counts_menu_all_is_no_filter(monkeypatch):
         return []
 
     monkeypatch.setattr(acc, "fetch_accession_sample_counts", _fetch)
-    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species"], input="0\n")
+    res = CliRunner().invoke(
+        cli, ["cyl", "accessions", "sample-counts", "--species-menu"], input="0\n"
+    )
     assert res.exit_code == 0, res.output
     assert captured["species"] is None  # 0 = All species → no filter
 
@@ -492,7 +528,9 @@ def test_sample_counts_menu_all_is_no_filter(monkeypatch):
 def test_sample_counts_menu_none_available(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(acc, "fetch_species_with_accessions", lambda client: [])
-    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species"], input="0\n")
+    res = CliRunner().invoke(
+        cli, ["cyl", "accessions", "sample-counts", "--species-menu"], input="0\n"
+    )
     assert res.exit_code != 0
     assert "No species with accessions" in res.output
 
@@ -503,7 +541,9 @@ def test_sample_counts_menu_stderr_clean_stdout_json(monkeypatch):
     monkeypatch.setattr(acc, "fetch_species_with_accessions", lambda client: ["Canola"])
     monkeypatch.setattr(acc, "fetch_accession_sample_counts", lambda client, species=None: COUNTS)
     res = CliRunner().invoke(
-        cli, ["cyl", "accessions", "sample-counts", "--species", "--output", "json"], input="1\n"
+        cli,
+        ["cyl", "accessions", "sample-counts", "--species-menu", "--output", "json"],
+        input="1\n",
     )
     assert res.exit_code == 0, res.output
     json.loads(res.stdout)  # stdout is valid JSON — raises if the menu leaked in
@@ -542,7 +582,9 @@ def test_sample_counts_empty_echoes_species_filter(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(acc, "fetch_species_with_accessions", lambda client: ["Canola"])
     monkeypatch.setattr(acc, "fetch_accession_sample_counts", lambda client, species=None: [])
-    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species"], input="1\n")
+    res = CliRunner().invoke(
+        cli, ["cyl", "accessions", "sample-counts", "--species-menu"], input="1\n"
+    )
     assert res.exit_code == 0
     assert "No sample counts found for species 'Canola'." in res.output
 

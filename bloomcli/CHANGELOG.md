@@ -31,12 +31,13 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   `--experiment-id` / `--scan-id` paths are unchanged. An ambiguous name lists the
   candidate experiments (id · name · species · created) and exits without
   downloading, so a pipeline never fetches a guessed experiment.
-- `bloomctl cyl accessions` selectors are now interactive menus (shared with
-  `experiments list`). `accessions sample-counts --species` presents a numbered menu
-  of the species that have accessions (0 = All) instead of a typed common name — no
-  more exact-spelling/case guessing. `accessions list` keeps `--experiment-id N` for
-  scripts and opens an experiment menu when it is omitted (hybrid). The menus write to
-  stderr, so `--output json/csv` on stdout stays clean.
+- `bloomctl cyl accessions` gains interactive menus (shared with `experiments list`),
+  alongside the existing scriptable flags. `accessions sample-counts` adds
+  `--species-menu` — a numbered menu of the species that have accessions (0 = All), so
+  you don't have to guess exact spelling/case; the typed `--species NAME` filter is
+  unchanged and still scriptable (the two are mutually exclusive). `accessions list`
+  keeps `--experiment-id N` for scripts and opens an experiment menu when it is omitted
+  (hybrid). The menus write to stderr, so `--output json/csv` on stdout stays clean.
 - `bloomctl cyl datasets list` gains a `--experiment` menu flag: pick an experiment
   that has datasets (0 = All) from a numbered menu. `--experiment-id N` stays for
   scripts, and `datasets list` with neither still lists all datasets. Menu on stderr.
