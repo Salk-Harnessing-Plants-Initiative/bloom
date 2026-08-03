@@ -8,6 +8,7 @@ import click
 
 from ..credentials import DEFAULT_PROFILE
 from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
+from ._select import select_from_menu
 
 # Table columns for `experiments list`, in display order.
 EXPERIMENT_COLUMNS = ["Species", "Experiment", "Experiment ID"]
@@ -51,16 +52,12 @@ DEFAULT_LIMIT = 1000
 def select_species_interactively(species: list[tuple[int, str]]) -> int | None:
     """Prompt with a numbered menu (0 = All species) and return the chosen species_id, or None.
 
-    The menu and prompt are written to stderr so machine-format output on stdout stays clean.
-    ``click.prompt`` validates the number and re-prompts on a bad entry; with no input to read
-    (non-interactive) it aborts rather than returning a wrong choice.
+    Thin wrapper over the shared ``select_from_menu`` so every cyl command renders its picker the
+    same way (menu on stderr; 0 = All; re-prompts on a bad entry; aborts non-interactively).
     """
-    click.echo("Select a species:", err=True)
-    click.echo("  0) All species", err=True)
-    for i, (_sid, name) in enumerate(species, start=1):
-        click.echo(f"  {i}) {name}", err=True)
-    choice = click.prompt("Species", type=click.IntRange(0, len(species)), err=True)
-    return None if choice == 0 else species[choice - 1][0]
+    return select_from_menu(
+        species, title="a species", prompt_label="Species", all_label="All species"
+    )
 
 
 # --- supabase I/O ---
