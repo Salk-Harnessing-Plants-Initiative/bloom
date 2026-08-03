@@ -100,6 +100,11 @@ next QC step. The constraints are fixed by the shipped code and the shipped dele
     clean follow-up if explicit clean-vs-trimmed separation is later wanted (e.g. a consumer
     that must read the un-trimmed clean after trimming). **Flagged for review** — the one place
     a reviewer might prefer the heavier option.
+    - **Adopted by #420 (`fix-bloommcp-remove-outliers-tool-class`).** The order-dependence
+      caveat this Decision accepted turned out to be a real, reproducible hazard in practice
+      (issue #420), and review recommended the heavier option over a warning-only interim. See
+      that change's design.md for the implementation (including why `tool_class="outliers"`,
+      not the already-retired singular `"outlier"`).
 - **Decision 2: read with `require_clean=True`; un-cleaned input is a self-correctable error.**
   The delegate's preconditions (NaN-free traits, unique index) are exactly what a `qc` cleaned
   version guarantees. `remove_outliers` is a *consumer*; requiring cleaned input keeps it from
@@ -229,12 +234,12 @@ no schema or data migration; old manifests are unaffected. Rollback = unregister
 
 ## Open Questions
 
-- **Decision 1 vs its alternative (the one remaining judgment call for review)** — reuse `qc`
-  class (composes free, order-dependent) vs a dedicated `outliers` class + a reader extension
-  (explicit separation, touches a shipped spec). The composition claim was **verified correct**
-  against `experiment_utils._resolve_versioned_cleaned` (resolution is `latest`-by-`entry.id`,
-  tool-agnostic), so reuse works. **Settle at review** only if a consumer must read the
-  un-trimmed clean *after* trimming — the sole reason to prefer the heavier alternative.
+- *(Resolved by #420, 2026-07-31)* **Decision 1 vs its alternative** — reuse `qc` class
+  (composes free, order-dependent) vs a dedicated `outliers` class + a reader extension
+  (explicit separation, touches a shipped spec). The order-dependence this Decision accepted was
+  filed as issue #420 during review, re-confirmed live in production behavior, and resolved in
+  favor of the dedicated-class alternative rather than a warning-only interim — see
+  `fix-bloommcp-remove-outliers-tool-class`.
 - *(Resolved during review)* **`plots` surface** — keep the MCP mapping-free: `plots=None`
   persists all delegate figures for the method; an explicit `plots` is validated in the body
   against the delegate's real figure keys and forwarded as `which=`. No friendly-name alias.

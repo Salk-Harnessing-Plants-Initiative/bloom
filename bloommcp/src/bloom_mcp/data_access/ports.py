@@ -132,11 +132,15 @@ class ExperimentReader(Protocol):
     ) -> ExperimentFrame:
         """Resolve ``name`` to an :class:`ExperimentFrame`.
 
-        ``version`` is ``"latest"`` (default), ``"raw"``, or an explicit
-        ``"v<N>"``. An explicit-version miss raises
-        :class:`ExperimentNotFoundError`; a ``"latest"`` miss falls through the
-        resolution order to the raw input. ``require_clean=True`` raises
-        :class:`CleanedVersionRequiredError` when no cleaned version exists.
+        ``version`` is ``"latest"`` (default — prefers an outlier trim over a
+        plain clean whenever one exists for the experiment), ``"latest_qc"``
+        (the plain-clean tier specifically, ignoring any trim — what
+        ``remove_outliers`` reads as its trimming input), ``"raw"``, or an
+        explicit ``"v<N>"`` (qc-class only). An explicit-version miss raises
+        :class:`ExperimentNotFoundError`; a ``"latest"``/``"latest_qc"`` miss
+        falls through the resolution order to the raw input.
+        ``require_clean=True`` raises :class:`CleanedVersionRequiredError` when
+        no cleaned version exists.
         """
         ...
 

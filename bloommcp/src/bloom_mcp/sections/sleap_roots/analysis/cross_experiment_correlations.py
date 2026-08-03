@@ -141,6 +141,8 @@ class CrossExperimentCorrelationsParams(BaseModel):
         ...,
         description="First experiment (CSV filename). Must have a cleaned version "
         "produced by qc_clean; cross_experiment_correlations consumes it (require_clean). "
+        "Resolves the most recent outlier trim when one exists for the experiment, not "
+        "merely the most recent clean. "
         "Must not contain '@' or '|' (reserved for this tool's persisted-run encoding), "
         "and its filename stem (the part before the final extension) must not contain "
         "'.' (this tool's composite storage-key encoding cannot safely represent a "
