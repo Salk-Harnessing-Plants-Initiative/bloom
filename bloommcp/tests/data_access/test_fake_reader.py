@@ -9,6 +9,7 @@ from bloom_mcp.data_access import (
     CleanedVersionRequiredError,
     ExperimentFrame,
     ExperimentNotFoundError,
+    ExperimentReadError,
     FakeReader,
 )
 
@@ -85,6 +86,38 @@ def test_unknown_experiment_raises_not_found():
     reader = FakeReader()
     with pytest.raises(ExperimentNotFoundError):
         reader.load_experiment("missing.csv")
+
+
+def test_fail_next_load_raises_once_then_clears():
+    """One-shot: the next matching load_experiment() call raises
+    ExperimentReadError, then a retry for the same (name, version) succeeds
+    normally -- mirrors FakeResultStore.fail_next_commit's contract."""
+    reader = FakeReader()
+    reader.add_experiment("exp.csv", _raw())
+
+    reader.fail_next_load("exp.csv", version="raw")
+    with pytest.raises(ExperimentReadError):
+        reader.load_experiment("exp.csv", version="raw")
+
+    # One-shot: cleared after raising, so a retry for the same key succeeds.
+    frame = reader.load_experiment("exp.csv", version="raw")
+    assert frame.source == "raw"
+
+
+def test_fail_next_load_is_scoped_to_name_and_version():
+    """The injected failure only fires for the exact (name, version) it was
+    registered for -- a different version for the same name is unaffected."""
+    reader = FakeReader()
+    reader.add_experiment("exp.csv", _raw())
+    reader.add_cleaned_version("exp.csv", "v3", _raw().iloc[:2])
+
+    reader.fail_next_load("exp.csv", version="v3")
+    # A different, non-failing version for the same name resolves normally.
+    frame = reader.load_experiment("exp.csv", version="raw")
+    assert frame.source == "raw"
+
+    with pytest.raises(ExperimentReadError):
+        reader.load_experiment("exp.csv", version="v3")
 
 
 def test_list_experiments_empty_then_populated():

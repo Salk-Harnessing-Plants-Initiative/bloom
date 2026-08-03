@@ -416,6 +416,21 @@ def _resolve_one_class(
         entry = analysis_dir.get_version(version)
     except ManifestSchemaError as e:
         return None, None, f"manifest schema error for '{stem}': {e}"
+    except Exception as e:
+        # `get_version` -> `read_manifest` -> `list_prefix`/`read_json` carries no
+        # exception handling of its own (unlike the list_prefix/download_file
+        # failure points below), so a transient storage/network failure during
+        # the manifest lookup itself must be caught here or it escapes as a raw,
+        # unhandled exception -- violating the same caller-safe contract this
+        # function's other two failure points already honor.
+        logger.warning(
+            "manifest read failed for '%s' (tool_class=%s, version=%s)",
+            stem,
+            tool_class,
+            version,
+            exc_info=True,
+        )
+        return None, None, f"could not read manifest for '{stem}': {e}"
 
     if entry is None:
         if version == "latest":
