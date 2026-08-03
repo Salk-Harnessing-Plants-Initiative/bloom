@@ -123,8 +123,12 @@ non-Pydantic function's parameter name, change.
   `tasks.md` §6.1's verify step for the authoritative list.
 - **Affected tests:** `bloommcp/tests/tools/test_viz_tools.py` (2 assertions),
   `bloommcp/tests/tools/test_qc_tools_discovery.py` (1 assertion on the renamed response
-  key). Confirmed via full-tree grep that no other test asserts on `experiment_filename`
-  or pins the old wording.
+  key). **Correction (found in PR #571 review round 2):** the full-tree grep this line
+  originally claimed found no other `experiment_filename` assertion was wrong —
+  `tests/integration/test_versioned_storage_phase_a.py:364` also asserted on it. Harmless
+  (that module is `pytest.skip(..., allow_module_level=True)` before it's even collected),
+  but the claim itself was inaccurate; both the assertion (fixed to `payload["experiment"]`)
+  and this line are now corrected rather than left overstated.
 - **Dependencies:** none — no `sleap-roots-analyze`/`sleap-roots-contracts` pin change.
 - **Branch/PR:** branches off `origin/staging`; PR targets `staging`. **Do not use a
   closing keyword** (`closes #552`/`fixes #552`) in the PR description: issue #552's own

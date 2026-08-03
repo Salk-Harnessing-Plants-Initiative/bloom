@@ -11,7 +11,7 @@ from bloom_mcp.tools import _ports
 def list_available_experiments() -> str:
     """List all experiments available for analysis.
 
-    Scans the data directory and shows each file with its row count,
+    Scans the data directory and shows each experiment with its row count,
     trait count, and auto-detected genotype column. Use this first to
     see what experiments are available before running analysis.
     """
@@ -20,7 +20,7 @@ def list_available_experiments() -> str:
     if not experiments:
         return "No experiments available"
 
-    lines = [f"Available experiments ({len(experiments)} files):\n"]
+    lines = [f"Available experiments ({len(experiments)} total):\n"]
 
     for exp in experiments:
         lines.append(

@@ -105,10 +105,12 @@
       (the `experiment_filename` identifier name in `manifest/analysis_dir.py`/
       `result_store/supabase_store.py` does NOT contain the literal string "CSV
       filename" and will not match this pattern at all — if it somehow does show up,
-      that's a real miss, not an expected exclusion). Expect exactly two hits under
+      that's a real miss, not an expected exclusion). Expect hits under
       `bloommcp/docs/data-access-roadmap.md` (its Tier 3 table row and its
-      Reconciliation-log entry) — these are a known, tracked follow-up (§7.3), not a
-      failure of this step.
+      Reconciliation-log entry — 3 matching lines, 4 occurrences of the literal phrase
+      total; **corrected in PR #571 review round 2** from an earlier "exactly two hits"
+      claim that undercounted the Reconciliation-log entry's own two occurrences) — these
+      are a known, tracked follow-up (§7.3), not a failure of this step.
 - [x] 6.2 `cd bloommcp && uv run --frozen --extra test pytest tests/` — full suite green,
       including the reworded assertions and the `list_existing_analyses` rename.
       Confirm specifically that the untouched traversal/guard tests
@@ -156,6 +158,26 @@
       reference, `adding-a-section-tool.md:31`, was also found in eberrigan's PR #571
       review round 2 — that one was a single self-contained code-example string, fixed
       directly rather than deferred: see §8.4.)
+- [ ] 7.5 **Found in PR #571 review round 3**: `list_existing_analyses`'s `experiment`
+      param has no explicit path-traversal guard, unlike all 9 sibling tools
+      (`_validate_experiment_name`/`validate_filename`) — currently safe only
+      incidentally (whatever consumes it downstream happens to apply `Path(...).stem`
+      first). Pre-existing, not introduced by this change's rename. Deliberately not
+      added here: this change's own scope is text-only/no-behavior-change (see
+      proposal.md), and adding a real validation guard is a behavioral change, not a
+      reword — doing it in this PR would contradict its own stated scope. Track as a
+      real (if minor) hardening follow-up.
+- [ ] 7.6 **Found in PR #571 review round 3**: neither path-traversal guard
+      (`_validate_experiment_name`, `validate_filename`) rejects an embedded NUL byte.
+      Pre-existing, unrelated to this change (guard conditions are explicitly unchanged
+      by design here — see §1). Track as a separate hardening follow-up alongside 7.5.
+- [ ] 7.7 **Found in PR #571 review round 3**: consider explicitly flagging
+      `list_existing_analyses`'s param rename as a breaking change for any external MCP
+      client that cached the old `experiment_filename` schema, in the PR description,
+      rather than folding it into "text-only, no functional behavior change" — the
+      rename itself doesn't change this tool's *internal* behavior, but it does change
+      its *external* calling contract for any such client. Action for the PR body, not
+      the code.
 
 ## 8. eberrigan's PR #571 review round 2 response (2026-07-31T19:26Z)
 
@@ -211,3 +233,55 @@
       The module is still skipped at import (unrelated, pre-existing — it imports a
       function path that no longer exists on this branch) so this doesn't change CI's
       green/red status; fixed so the module isn't doubly stale if anyone re-enables it.
+
+## 9. eberrigan's PR #571 review round 3 response (2026-08-03T16:08Z)
+
+Reviewed against the pre-round-2-push state (round 2's fixes, §8 above, hadn't been
+pushed to `origin` yet when this review ran), so it independently re-found some of the
+same class of miss plus several new ones the earlier rounds didn't catch:
+
+- [x] 9.1 5 plot tools (`plot_correlation_matrix.py`, `plot_heritability_bar.py`,
+      `plot_trait_boxplots.py`, `plot_trait_histograms.py`,
+      `plot_variance_decomposition.py`) each had an identical
+      `f"Could not load {filename!r}: the file could not be read as a CSV."` in their
+      generic `_load_data` exception handler — none contain the literal phrase "CSV
+      filename," so §6.1's verify-grep couldn't catch them. Reworded to `"...: the
+      experiment data could not be read."` (matches the "experiment data" phrasing
+      `CONTEXT_MCP`, §8.1, already uses). No test pinned the old string in any of the 5
+      files, so no test updates needed.
+- [x] 9.2 `summarize_trait.py`'s not-found remedy — `"Use a filename from
+      list_available_experiments."` — reworded to `"Use an experiment identifier from
+      list_available_experiments."` Same reason it slipped past §6.1: no literal "CSV
+      filename" substring.
+- [x] 9.3 `list_available_experiments.py` had two remaining "files" mentions the
+      literal-string verify-grep couldn't see (it targets "CSV filename", not bare
+      "files"): the docstring's "shows each file with its row count" → "shows each
+      experiment with its row count", and the runtime response's `f"Available
+      experiments ({len(experiments)} files):"` → `f"...({len(experiments)} total):"`.
+- [x] 9.4 Added `test_dotted_stem_accepts_a_single_interior_dot` (parametrized over
+      `expA.csv`, `a.b`, `no_dot_at_all`), calling `_reject_dotted_stem` directly —
+      pins the accept side of the boundary `test_dotted_stem_rejected` (§8.7) only pinned
+      the reject side of. Also added `a.b.c` to `test_dotted_stem_rejected`'s own
+      parametrize list, completing the exact four-case boundary table
+      (`.hidden`/`a.`/`a.b`/`a.b.c`) this PR's review derived.
+- [x] 9.5 `proposal.md`'s Impact section claimed "Confirmed via full-tree grep that no
+      other test asserts on `experiment_filename`" — false;
+      `tests/integration/test_versioned_storage_phase_a.py:364` did (fixed in §8.8, but
+      the claim itself was never corrected). Reworded the claim to say so directly
+      rather than leave it overstated.
+- [x] 9.6 `tasks.md` §6.1's own "expect exactly two hits" claim for
+      `data-access-roadmap.md` undercounted — actual is 3 matching lines / 4 occurrences
+      (the Reconciliation-log entry has two, not one). Corrected in place.
+- [x] 9.7 Added `test_list_existing_analyses_dispatches_through_fastmcp_by_keyword` —
+      calls the tool through an in-process `fastmcp.Client(server.mcp)` with
+      `{"experiment": ...}`, the one thing that's actually behavioral in this PR (every
+      other test called the renamed Python function directly, never exercising FastMCP's
+      own schema-derived keyword dispatch for the new param name end-to-end). Confirmed
+      the registered tool name is `core_list_existing_analyses` empirically (not
+      assumed) before writing the test.
+- [ ] 9.8 Three Suggestions deliberately **not** implemented — tracked as 7.5/7.6/7.7
+      instead: `list_existing_analyses`'s missing path-traversal guard and the
+      NUL-byte gap in both existing guards are real, pre-existing gaps, but fixing
+      either is a behavior change, which this change's own proposal.md scopes out
+      ("text-only... no functional behavior change"). The breaking-change framing ask
+      is for the PR description, not the code — see the PR body once this is pushed.

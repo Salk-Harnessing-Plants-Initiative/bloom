@@ -34,7 +34,7 @@ def plot_variance_decomposition(filename: str) -> str:
     try:
         df, trait_cols, config, source = _load_data(filename)
     except Exception:
-        return f"Could not load {filename!r}: the file could not be read as a CSV."
+        return f"Could not load {filename!r}: the experiment data could not be read."
     if df is None:
         return source
 

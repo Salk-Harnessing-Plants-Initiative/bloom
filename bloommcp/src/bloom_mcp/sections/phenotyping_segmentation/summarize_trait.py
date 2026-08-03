@@ -51,7 +51,7 @@ def summarize_trait(
         raise BloomMCPError(
             code="invalid_input",
             message=f"Could not load experiment {params.experiment!r}: {source}",
-            remedy="Use a filename from list_available_experiments.",
+            remedy="Use an experiment identifier from list_available_experiments.",
         )
     if params.trait not in df.columns:
         raise BloomMCPError(

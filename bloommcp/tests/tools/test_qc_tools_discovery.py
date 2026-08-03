@@ -104,6 +104,32 @@ def test_list_existing_analyses_reports_no_prior_runs_for_a_known_experiment(
     assert "No prior analyses found" in payload["message"]
 
 
+def test_list_existing_analyses_dispatches_through_fastmcp_by_keyword(
+    injected_ports,
+):
+    """Every other test here calls ``list_existing_analyses`` as a raw Python
+    function — none proves FastMCP's own schema-derived dispatch (which maps the
+    MCP call's JSON key back to this exact parameter name) still resolves correctly
+    through the actual registered tool after the #552 rename swapped
+    ``experiment_filename`` for ``experiment`` (found in PR #571 review round 2 —
+    the rename is the one thing in this change that's behavioral, not just text)."""
+    import asyncio
+
+    from fastmcp import Client
+
+    from bloom_mcp import server
+
+    async def _call():
+        async with Client(server.mcp) as client:
+            result = await client.call_tool(
+                "core_list_existing_analyses", {"experiment": _EXPERIMENT}
+            )
+            return result.data
+
+    payload = json.loads(asyncio.run(_call()))
+    assert payload["experiment"] == _EXPERIMENT
+
+
 def test_list_existing_analyses_rejects_the_retired_experiment_filename_kwarg(
     injected_ports,
 ):
