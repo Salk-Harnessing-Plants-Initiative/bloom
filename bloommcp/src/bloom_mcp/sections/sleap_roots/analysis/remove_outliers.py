@@ -58,10 +58,17 @@ structured :class:`BloomMCPError` — the contract's ``errors=`` path only yield
 no-NaN / row-count guard runs before any commit, so a delegate that *returns* rather
 than raises a degenerate frame still cannot ship a corrupt "cleaned" artifact.
 
-**Goodness of fit.** The mahalanobis chi-squared threshold is only meaningful when the
-data fit the χ² assumption; the returned ``goodness_of_fit`` dict carries a
-``fit_quality`` the agent should read — when it is poor (as on turface_19), prefer
-``method="isolation_forest"`` with an explicit ``contamination``.
+**Goodness of fit is enforced, not merely advisory (#419).** The mahalanobis
+chi-squared threshold is only meaningful when the data fit the χ² assumption. When the
+delegate's fit is untrustworthy (``fit_is_trustworthy`` would be ``False`` —
+poor/very_poor/unknown ``fit_quality``, as on both turface_19 and cylinder under
+mahalanobis defaults), the tool raises a structured ``assumption_violated`` error
+**before persisting anything** — naming ``method="isolation_forest"`` with an explicit
+``contamination`` as the remedy — rather than silently committing a trim on a bogus
+threshold. The error message embeds the counts and flagged barcodes so a caller can
+still inspect what would have been flagged even though nothing is persisted. This gate
+never fires for ``isolation_forest`` (no chi-squared assumption) or an
+acceptable-or-better mahalanobis fit.
 """
 
 from __future__ import annotations
@@ -138,8 +145,8 @@ class RemoveOutliersParams(BaseModel):
         default=None,
         gt=0.0,
         lt=0.5,
-        description="isolation_forest only: expected outlier fraction (e.g. 0.05). "
-        "Do not set for mahalanobis.",
+        description="isolation_forest only: expected outlier fraction (e.g. 0.1, the "
+        "delegate's own default). Do not set for mahalanobis.",
     )
     include_plots: bool = Field(
         default=False,
@@ -171,11 +178,11 @@ class RemoveOutliersResult(RunLinks):
     threshold_type: Optional[str] = None
     threshold_value: Optional[float] = None
     goodness_of_fit: Optional[dict] = None
-    # Machine-visible trust flag derived from goodness_of_fit.fit_quality: False when
-    # the mahalanobis chi-squared fit is poor/very_poor (the flagged set is unreliable —
-    # prefer isolation_forest), True when acceptable+, None when there is no fit report
-    # (isolation_forest has no chi-squared assumption). Lets the next tool gate on the
-    # threshold's trustworthiness without re-parsing the goodness_of_fit dict / prose.
+    # Machine-visible trust flag derived from goodness_of_fit.fit_quality: True when
+    # the mahalanobis fit is acceptable-or-better, None when there is no fit report
+    # (isolation_forest has no chi-squared assumption). NEVER False here (#419) — a
+    # poor/very_poor/unknown fit raises assumption_violated before this result is ever
+    # constructed, so an untrustworthy fit is never returned, only gated.
     fit_is_trustworthy: Optional[bool] = None
     outlier_barcodes: list[str]
 
@@ -271,12 +278,14 @@ def remove_outliers(
 ) -> RemoveOutliersResult:
     """Trim outlier samples from a cleaned experiment and persist the trimmed run.
 
-    Returns a numeric outlier report by default (no table inline). Read
-    ``fit_is_trustworthy`` / ``goodness_of_fit.fit_quality``: when the mahalanobis
-    chi-squared fit is poor (``fit_is_trustworthy=false``, as on turface_19), the
-    flagged set is unreliable — prefer ``method="isolation_forest"`` with an explicit
-    ``contamination``. Set ``include_plots=true`` when the user wants to see or inspect
-    the flagged outliers; the figures are persisted and returned as resource links.
+    Returns a numeric outlier report by default (no table inline). When the
+    mahalanobis chi-squared fit is untrustworthy (``fit_is_trustworthy`` would be
+    ``false`` — poor/very_poor/unknown ``goodness_of_fit.fit_quality``), this raises a
+    structured ``assumption_violated`` error instead of persisting the trim — the
+    message embeds the outlier counts and flagged barcodes, and the remedy names
+    ``method="isolation_forest"`` with an explicit ``contamination``. Set
+    ``include_plots=true`` when the user wants to see or inspect the flagged outliers
+    on a trustworthy-fit run; the figures are persisted and returned as resource links.
     """
     reader = _ports.reader()
     store = _ports.store()
@@ -352,6 +361,43 @@ def remove_outliers(
     n_input = int(report["n_input_samples"])
     n_outliers = int(report["n_outliers"])
     n_output = int(report["n_output_samples"])
+
+    # Fit-trustworthiness gate (#419) — BEFORE the structural guard below, before any
+    # plots=/figure handling, and before any ResultStore interaction. The mahalanobis
+    # chi-squared threshold means nothing when the data don't fit that distribution;
+    # fit_is_trustworthy used to be computed only in the return value, by which point
+    # persistence had already committed the untrustworthy-fit trim as the new "latest
+    # cleaned" version. Gating here instead means an untrustworthy fit never becomes
+    # canonical, not even advisorily. Never fires for isolation_forest
+    # (fit_is_trustworthy is always None — no chi-squared assumption to violate) or an
+    # acceptable-or-better mahalanobis fit (fit_is_trustworthy is True).
+    goodness_of_fit = convert_to_json_serializable(report.get("goodness_of_fit"))
+    fit_is_trustworthy = _fit_is_trustworthy(goodness_of_fit)
+    if fit_is_trustworthy is False:
+        fit_quality = (
+            goodness_of_fit.get("fit_quality")
+            if isinstance(goodness_of_fit, dict)
+            else None
+        )
+        # Nothing is persisted on this path, so the barcodes are embedded here — the
+        # only way a caller can still inspect what would have been flagged.
+        barcodes = sorted(str(b) for b in (report.get("outlier_barcodes") or []))
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=(
+                f"The mahalanobis chi-squared fit is untrustworthy "
+                f"(fit_quality={fit_quality!r}) for {params.experiment!r} — the "
+                f"flagged threshold does not mean what it claims to. Would have "
+                f"flagged n_outliers={n_outliers} of n_input_samples={n_input} "
+                f"(n_output_samples={n_output}), outlier_barcodes={barcodes}. No run "
+                f"was persisted."
+            ),
+            remedy=(
+                "Re-run with method='isolation_forest' and contamination=0.1 (the "
+                "delegate's own default) — it has no chi-squared assumption to "
+                "violate."
+            ),
+        )
 
     # Defense-in-depth guard before any commit — for a delegate that *returns* (rather
     # than raises on) a degenerate frame. Trimming only drops rows from an already
@@ -447,7 +493,6 @@ def remove_outliers(
         for fig in figures.values():
             _close_figure(fig)
 
-    goodness_of_fit = convert_to_json_serializable(report.get("goodness_of_fit"))
     return RemoveOutliersResult(
         experiment=params.experiment,
         source=frame.source,
@@ -463,7 +508,7 @@ def remove_outliers(
             else None
         ),
         goodness_of_fit=goodness_of_fit,
-        fit_is_trustworthy=_fit_is_trustworthy(goodness_of_fit),
+        fit_is_trustworthy=fit_is_trustworthy,
         # The delegate sets outlier_barcodes to None (not []) when the frame has no
         # barcode column, and the key is always present — so `.get(..., [])` returns
         # None and `for b in None` would crash into an opaque internal_error. `or []`

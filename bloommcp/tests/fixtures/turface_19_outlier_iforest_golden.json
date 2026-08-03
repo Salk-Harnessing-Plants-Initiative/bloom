@@ -1,0 +1,40 @@
+{
+  "_comment": "Characterization snapshot of remove_outliers (isolation_forest, seed=42, default contamination=0.1) on the turface_19 frame cleaned at clean_traits_for_analysis CANONICAL DEFAULTS -- the same cleaned input as turface_19_outlier_golden.json (mahalanobis). Added alongside the #419 fit-trustworthiness gate: mahalanobis's chi-squared fit on this fixture is very_poor, so the tool now raises assumption_violated on mahalanobis defaults (see the raise-path test) instead of persisting; isolation_forest has no chi-squared assumption to fail and is this fixture's new 'successful persisted trim' characterization. Recorded via the exact tool path (detect_columns on the cleaned frame -> remove_outlier_samples), 2026-08-03.",
+  "_raw_source": "tests/fixtures/turface_19_raw_data.csv (from #338)",
+  "cleaning_params": {
+    "max_zeros_per_trait": 0.5,
+    "max_nans_per_trait": 0.2,
+    "max_nans_per_sample": 0.0,
+    "min_samples_per_trait": 10
+  },
+  "cleaned_samples": 158,
+  "method": "isolation_forest",
+  "seed": 42,
+  "contamination": 0.1,
+  "n_input_samples": 158,
+  "n_outliers": 16,
+  "n_output_samples": 142,
+  "removal_fraction": 0.101266,
+  "threshold_type": null,
+  "threshold_value": null,
+  "outlier_barcodes": [
+    "42617MA2S8",
+    "5RT7GAKADY",
+    "9MHINZV0KI",
+    "9R7ATZEAZ4",
+    "AQW968QASW",
+    "DZX6OP5O9C",
+    "GBG8RVD5BJ",
+    "I9QT95YIY9",
+    "MYEVJGQGR3",
+    "TFXU5XQZXE",
+    "TRZPP4H4UM",
+    "UVA4M5QZG5",
+    "VLB782P4BZ",
+    "ZEKAOID92S",
+    "ZHEJSRUYQS",
+    "ZIVOKN9PTV"
+  ],
+  "goodness_of_fit_fit_quality": null,
+  "fit_is_trustworthy": null
+}

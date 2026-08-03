@@ -1,0 +1,38 @@
+{
+  "_comment": "Characterization snapshot of remove_outliers (isolation_forest, seed=42, default contamination=0.1) on the cylinder frame cleaned at clean_traits_for_analysis CANONICAL DEFAULTS -- the same cleaned input as cylinder_outlier_golden.json (mahalanobis). Added alongside the #419 fit-trustworthiness gate: mahalanobis's chi-squared fit on this fixture is poor, so the tool now raises assumption_violated on mahalanobis defaults (see the raise-path test) instead of persisting; isolation_forest has no chi-squared assumption to fail and is this fixture's new 'successful persisted trim' characterization. Recorded via the exact tool path (detect_columns on the cleaned frame -> remove_outlier_samples), 2026-08-03.",
+  "_raw_source": "tests/fixtures/cylinder_raw_data.csv",
+  "cleaning_params": {
+    "max_zeros_per_trait": 0.5,
+    "max_nans_per_trait": 0.2,
+    "max_nans_per_sample": 0.0,
+    "min_samples_per_trait": 10
+  },
+  "cleaned_samples": 129,
+  "cleaned_trait_cols_count": 846,
+  "method": "isolation_forest",
+  "seed": 42,
+  "contamination": 0.1,
+  "n_input_samples": 129,
+  "n_outliers": 13,
+  "n_output_samples": 116,
+  "removal_fraction": 0.100775,
+  "threshold_type": null,
+  "threshold_value": null,
+  "outlier_barcodes": [
+    "0X9FCG6QZQ",
+    "2W0MPUVMVT",
+    "4EPFJP937O",
+    "8VSWIXRD0W",
+    "AW2KERJIDU",
+    "E6Y0ZCHUMT",
+    "FQYNHNB3DM",
+    "K505AYXMJW",
+    "KFDGPU3AXO",
+    "M68C8AKY4F",
+    "Q7A1BIZ09S",
+    "ULR4LA8LSF",
+    "W6OKUQK89D"
+  ],
+  "goodness_of_fit_fit_quality": null,
+  "fit_is_trustworthy": null
+}
