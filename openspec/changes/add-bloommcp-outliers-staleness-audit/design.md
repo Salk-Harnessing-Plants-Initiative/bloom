@@ -79,30 +79,40 @@ on:
 
 ## Decisions
 
-- **Decision 1: extract `trim_staleness(stem) -> Optional[bool]` out of `_log_if_trim_is_stale`,
-  rather than writing a second, independent comparison for `list_existing_analyses`.** Both
-  surfaces need to answer the same question — "is a trim's `based_on_version` behind the current
-  `qc` latest" — and #420 already established the single-sourced-constant convention specifically
-  to prevent this drift class.
-  - **Return contract, precisely:** `None` when no `outliers`-class version exists at all
-    (nothing to assess — distinguishes "never trimmed" from "trimmed and current" for
-    `list_existing_analyses`, which needs that distinction to decide whether to include the field
-    at all — Decision 3). `True` when an `outliers`-class version exists but the `qc`-class
-    manifest has **no** `latest` entry at all — this is a **behavior change** from
-    `_log_if_trim_is_stale`'s current silent-return-on-either-`None` shape, made deliberately: an
-    `outliers` entry with no live `qc` baseline to compare against is a more concerning state than
-    "current," not an equivalent-to-"nothing to see" state, and today's silent handling of this
-    corner (untested, unreached by either existing test) was itself an oversight worth correcting
-    while this code is already being touched. `True`/`False` otherwise, via the existing
-    `based_on_version` comparison.
+- **Decision 1: extract `trim_staleness(stem)` out of `_log_if_trim_is_stale`, rather than writing
+  a second, independent comparison for `list_existing_analyses`.** Both surfaces need to answer the
+  same question — "is a trim's `based_on_version` behind the current `qc` latest" — and #420
+  already established the single-sourced-constant convention specifically to prevent this drift
+  class.
+  - **Return contract, precisely — a small `NamedTuple`, not a bare `Optional[bool]`:**
+    `trim_staleness` returns `None` when no `outliers`-class version exists at all (nothing to
+    assess — distinguishes "never trimmed" from "trimmed and current" for `list_existing_analyses`,
+    which needs that distinction to decide whether to include the field at all — Decision 3).
+    Otherwise it returns a `TrimStaleness(is_stale: bool, outliers_based_on_version: Optional[str],
+    current_qc_label: Optional[str])` — the values `_log_if_trim_is_stale`'s current inline
+    implementation logs today are preserved, not dropped to a bare boolean. `current_qc_label` is
+    `None` in the one case below where there is no `qc`-class baseline at all.
+  - **`is_stale` is `True` when an `outliers`-class version exists but the `qc`-class manifest has
+    no `latest` entry at all** — this is a **behavior change** from `_log_if_trim_is_stale`'s
+    current silent-return-on-either-`None` shape, made deliberately: an `outliers` entry with no
+    live `qc` baseline to compare against is a more concerning state than "current," not an
+    equivalent-to-"nothing to see" state, and today's silent handling of this corner (untested,
+    unreached by either existing test) was itself an oversight worth correcting while this code is
+    already being touched. Under the two shipped `ExperimentReader` adapters this state cannot
+    arise from normal commits (`remove_outliers` cannot itself commit without first successfully
+    reading a `qc`-class `latest` via `version="latest_qc"`) — its only realistic, non-corruption
+    trigger is the #573 backend-split scenario (the `qc` manifest exists but under a different,
+    currently-inactive storage backend than the one being read from). `is_stale` is `True`/`False`
+    otherwise, via the existing `based_on_version` comparison.
   - **`_log_if_trim_is_stale` becomes a thin wrapper**: log if and only if `trim_staleness(stem)`
-    is `True`. Its two existing tests only assert a fixed log substring, not the interpolated
-    `based_on_version` values from the old inline implementation — the refactor keeps rendering
-    those values by having `trim_staleness` return `(bool, based_on_version, current_qc_label)` as
-    a small `NamedTuple` when it has both entries to compare (or `None` when there is nothing to
-    assess), rather than a bare `Optional[bool]`, so no logged information is lost. Callers that
-    only care about the boolean use `.is_stale`; `list_existing_analyses` (Decision 3) uses the
-    same field.
+    returns non-`None` **and** its `is_stale` field is `True` (i.e. `result is not None and
+    result.is_stale`) — not merely "is truthy," since a `TrimStaleness` instance with `is_stale =
+    False` is itself a truthy tuple. The log message needs a second branch: the existing text
+    ("...a `qc_clean` has run since this trim was made...") is only accurate when
+    `current_qc_label` is not `None`; the new no-`qc`-baseline-at-all case (previous bullet) logs a
+    distinct message naming that no `qc`-class version could be found at all, rather than
+    interpolating a `None` into the old sentence. Callers needing only the boolean use `.is_stale`;
+    `list_existing_analyses` (Decision 3) uses the same field.
   - `trim_staleness` itself does not swallow exceptions — a manifest read failure propagates.
     `_log_if_trim_is_stale` wraps it in its own existing try/except-and-swallow (unchanged,
     purely observational, must never raise). `list_existing_analyses` wraps it differently
@@ -167,6 +177,17 @@ on:
     entry can be newly written into a `qc` manifest going forward — every hit this script can ever
     find is, by construction, a pre-#420 artifact; the script needs no separate "before #420
     shipped" timestamp cutoff.
+  - **Scope, precisely: the audit reports the manifest's *current* state only, matching #585's own
+    literal ask ("not that manifest's current `latest` pointer").** A manifest whose history
+    contains `qc_clean → remove_outliers → qc_clean → remove_outliers`, where the *second*
+    `remove_outliers` is the current `latest`, is **not** a hit — even though a real, temporary
+    exposure window existed between the second `qc_clean`'s commit and the second
+    `remove_outliers`'s commit, during which `version="latest"` under the old scheme resolved the
+    untrimmed clean. This is a deliberate scope boundary, not an oversight: reconstructing every
+    historical exposure window a manifest's version history ever passed through — as opposed to
+    reporting experiments whose trim is *currently* superseded — is the same heavier,
+    unscoped "which downstream runs consumed the bad data" lift already called out in Risks and
+    left to an Open Question, not a gap in the current-state rule itself.
 - **Decision 5: the audit script is a standalone script under `bloommcp/scripts/`, not a new MCP
   tool**, for the reasons in the original draft (one-time, read-only, whole-bucket scope, no
   natural `experiment` parameter, developer-run not agent-invoked) — see the "Enumeration
@@ -176,32 +197,52 @@ on:
     `f"{QC_TOOL_CLASS}_"` (not the bare literal `"qc_"` — single-sourced against the same constant
     `qc_clean.py`/`remove_outliers.py`/the registries already import, closing the exact
     literal-drift hole #420/#585 are both about), and derive each stem by stripping that prefix.
-  - **Per-manifest failure handling is deliberately broader than `_resolve_one_class`'s.**
-    `_resolve_one_class` (the live resolution path) only catches `ManifestSchemaError` and treats
-    every other failure as a hard error — correct there, because silently routing around a
-    partially-broken entry during a real read risks resurfacing #420's own hazard. This script is
-    a best-effort, read-only, one-shot forensic sweep over a potentially large bucket, where the
-    opposite failure mode (one corrupt manifest aborting the entire scan and reporting nothing)
-    is worse: it catches **any** exception per-stem (malformed JSON via `json.JSONDecodeError`,
-    `ManifestSchemaError`, a pydantic `ValidationError`, or a storage/network error from
-    `list_prefix`/`read_json` itself), records `{stem, error}` in the report's `errors` list, and
-    continues to the next stem.
+  - **A prefix enumerated by `list_prefix` with no `manifest.json` underneath it is a soft skip,
+    not an error.** `list_prefix("bloommcp_output/")` returns every immediate child folder under
+    that prefix, including a `qc_<stem>` folder that exists with no `manifest.json` inside it — a
+    real, reachable state: the legacy un-versioned `qc_<stem>/<stem>_cleaned.csv` tier predates
+    manifests entirely, and a crashed commit can leave an uploaded CSV with no manifest written
+    (`SupabaseResultStore.commit()` uploads outputs before writing the manifest). `AnalysisDir(...).
+    read_manifest()` returns `None` (not an exception) for this case; the scan checks for `None`
+    explicitly and skips the stem with **no** entry in either `hits` or `errors` — there is nothing
+    wrong here, so it is not reported as a failure.
+  - **Per-manifest failure handling (once a manifest *is* found) is deliberately broader than
+    `_resolve_one_class`'s narrowest catch.** `_resolve_one_class` (the live resolution path)
+    catches `ManifestSchemaError` specifically for "no entry found" vs. "found but corrupt," and
+    separately hard-errors on any failure once a specific entry is known to exist (a broader
+    `except Exception` around the `list_prefix`/`download_file` calls it makes while resolving a
+    found entry's content) — correct there, because silently routing around a partially-broken
+    entry during a real read risks resurfacing #420's own hazard. This script is a best-effort,
+    read-only, one-shot forensic sweep over a potentially large bucket, where the opposite failure
+    mode (one corrupt manifest aborting the entire scan and reporting nothing) is worse: for each
+    stem with a manifest present, it catches **any** exception (malformed JSON via
+    `json.JSONDecodeError`, `ManifestSchemaError`, a pydantic `ValidationError`, or a
+    storage/network error from `read_json` itself), records `{stem, error}` in the report's
+    `errors` list, and continues to the next stem.
   - **The top-level enumeration call (`list_prefix("bloommcp_output/")` itself) is not
     caught.** If the environment is unreachable or misconfigured, there is nothing to report at
     all — the script should fail loudly and exit non-zero with a clear message, not silently
     report an empty, misleadingly "successful" scan. This is different from a single bad manifest
     (which the script can route around) and is reflected in `main()`'s exit code (Decision 6).
-  - **The report is written to a timestamped JSON file, not only printed to stdout.** #420's own
-    Risks section frames this exact hazard in terms of research "already published/in progress"
-    riding on possibly-un-trimmed data — a finding worth persisting as a durable artifact
-    (`bloommcp_output/_audit_reports/stale_outlier_trims_<UTC-timestamp>.json`, written via the
-    same `active_backend()` write path other tools already use) rather than relying on whoever
-    runs the script to remember to redirect stdout. Writing this one report file is not a
-    violation of the "never mutates a manifest" guarantee (Requirement scope: no `manifest.json`
-    for any `qc_<stem>`/`outliers_<stem>` experiment prefix is touched; the audit report is a new,
-    separate object under its own prefix) — this distinction is made explicit in the spec
-    scenario text and is the one exception to "read-only" the script has, called out by name so it
-    isn't mistaken for scope creep on the "never mutates storage" guarantee.
+  - **The report is written to a timestamped JSON object, not only printed to stdout, and is
+    self-describing.** #420's own Risks section frames this exact hazard in terms of research
+    "already published/in progress" riding on possibly-un-trimmed data — a finding worth persisting
+    as a durable artifact (`bloommcp_output/_audit_reports/stale_outlier_trims_<UTC-timestamp>.json`,
+    written via `supabase_client.write_json` directly — the same primitive other tools' manifest
+    writes ultimately go through, but bypassing `manifest.write_manifest`/schema validation
+    entirely, since this is not a manifest) rather than relying on whoever runs the script to
+    remember to redirect stdout. The payload itself (not only the filename) carries `scanned_at`
+    (ISO-8601 UTC) and `storage_backend` (`"local"`/`"supabase"`, from the active backend at scan
+    time) alongside `hits`/`errors`/`experiments_scanned`, so the report remains self-describing —
+    including which backend was scanned, relevant given the #573 backend-split risk — if the file
+    is later moved, renamed, or pasted somewhere else. Writing this one report object is a
+    deliberate, disclosed, narrow exception to "read-only": it touches neither any `qc_<stem>` nor
+    `outliers_<stem>` prefix, so it does not violate the "never mutates an experiment's own
+    manifests" scenario, but it *is* a new write to the shared bucket, and #585's own words ("no
+    data mutation") are read here as "no experiment-manifest mutation" specifically — a narrower
+    reading than "no writes to storage at all." This interpretation is made explicit here, rather
+    than silently assumed, precisely so it can be confirmed (or overruled) at proposal approval
+    rather than discovered afterward.
 - **Decision 6: `main()`'s exit code distinguishes "couldn't run" from "ran and found things."**
   Exit `1` only if the top-level enumeration itself fails (nothing was scanned). Exit `0`
   whenever the scan completes — including when it reports hits and/or per-stem errors — since a

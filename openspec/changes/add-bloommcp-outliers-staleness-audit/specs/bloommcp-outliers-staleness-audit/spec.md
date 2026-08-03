@@ -120,6 +120,22 @@ to, or delete any object under any `qc_<stem>` or `outliers_<stem>` prefix; its 
 - **WHEN** a `qc_<stem>/manifest.json` contains only `qc_clean`-authored entries
 - **THEN** the scan does not report that experiment as a hit
 
+#### Scenario: The most recently-committed superseded trim is named when more than one exists
+
+- **WHEN** a `qc_<stem>/manifest.json` contains more than one `remove_outliers`-authored
+  `VersionEntry` in its history, and the manifest's current `latest` entry was authored by a
+  different tool
+- **THEN** the reported hit names the `remove_outliers` entry with the latest `created_at` among
+  them, not merely the first one encountered
+
+#### Scenario: A `qc_<stem>` prefix with no manifest at all is skipped, not reported
+
+- **WHEN** `list_prefix` enumerates a `qc_<stem>` prefix under which no `manifest.json` exists
+  (e.g. a legacy un-versioned cleaned CSV with no manifest ever written, or an interrupted commit
+  that uploaded outputs but never reached the manifest write)
+- **THEN** the scan records that stem in neither `hits` nor `errors` — a missing manifest for an
+  enumerated prefix is a normal, unremarkable state, not a failure
+
 #### Scenario: An unreadable manifest does not abort the scan
 
 - **WHEN** one `qc_<stem>/manifest.json` fails to parse or validate — whether malformed JSON, a
@@ -151,9 +167,12 @@ to, or delete any object under any `qc_<stem>` or `outliers_<stem>` prefix; its 
 - **THEN** the script exits `0`; a non-empty hit list or a partially-unreadable manifest are normal
   output, not a script failure
 
-#### Scenario: The report is persisted, not only printed
+#### Scenario: The report is persisted and self-describing, not only printed
 
 - **WHEN** the script runs to completion
 - **THEN** it writes the full report as JSON to a timestamped object under a dedicated
   `bloommcp_output/_audit_reports/` prefix (distinct from, and never overwriting, any
-  `qc_<stem>`/`outliers_<stem>` manifest), in addition to printing it to stdout
+  `qc_<stem>`/`outliers_<stem>` manifest), in addition to printing it to stdout — the payload
+  itself (not only the object's key/filename) includes a `scanned_at` UTC timestamp and the
+  `storage_backend` that was scanned, so the report remains interpretable if later moved, renamed,
+  or copied elsewhere
