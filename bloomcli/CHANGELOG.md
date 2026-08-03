@@ -23,7 +23,8 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   species that has experiments) and filters to the pick (interactive; needs a
   terminal). `--output csv|json` (default is the table; `--json` is an alias for
   `--output json`) makes it easy to pull an `experiment_id` for `cyl download`, and
-  `--limit` caps the fetch so the query is never unbounded. `--output` is the
+  `--limit` caps the fetch so the query is never unbounded (and warns on stderr when
+  the cap is hit, since the newest experiments are dropped first). `--output` is the
   standard machine-output selector for `cyl` list commands.
 - `bloomctl cyl batch-download-for-predict <out_dir>` — stage a batch of cylinder
   scans in one invocation. Reads scan_ids from `--scan-ids-file` (a JSON array,

@@ -178,6 +178,10 @@ def test_fetch_species_with_experiments_dedups_and_sorts():
             captured["is_"] = (col, val)
             return self
 
+        def limit(self, n):
+            captured["limit"] = n
+            return self
+
         def execute(self):
             return type("R", (), {"data": rows})()
 
@@ -191,6 +195,7 @@ def test_fetch_species_with_experiments_dedups_and_sorts():
     assert captured["table"] == "cyl_experiments"
     assert captured["is_"] == ("deleted_at", "null")  # only species of live experiments
     assert "species(common_name)" in captured["select"]
+    assert captured["limit"] == ex.DEFAULT_LIMIT  # bounded, never an unbounded query
 
 
 def test_fetch_species_with_experiments_id_breaks_common_name_tie():
@@ -205,6 +210,9 @@ def test_fetch_species_with_experiments_id_breaks_common_name_tie():
             return self
 
         def is_(self, *a):
+            return self
+
+        def limit(self, n):
             return self
 
         def execute(self):
@@ -425,6 +433,43 @@ def test_list_json_and_conflicting_output_rejected(monkeypatch):
     res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--json", "--output", "csv"])
     assert res.exit_code != 0
     assert "not both" in res.output.lower()
+
+
+def test_species_conflict_validated_before_prompt(monkeypatch):
+    # --species opens a menu that blocks on stdin. The --json/--output conflict must be caught
+    # first (fail fast) — with no stdin, a wrong order would hang/abort instead of usage-erroring.
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(
+        ex,
+        "fetch_species_with_experiments",
+        lambda client: (_ for _ in ()).throw(AssertionError("must not reach the menu")),
+    )
+    res = CliRunner().invoke(
+        cli, ["cyl", "experiments", "list", "--species", "--json", "--output", "csv"]
+    )
+    assert res.exit_code != 0
+    assert "not both" in res.output.lower()  # the conflict error, not an abort/hang
+
+
+def test_list_warns_when_capped(monkeypatch):
+    # fetch returns exactly `limit` rows → capped → a warning on stderr (not stdout).
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ex, "fetch_experiments", lambda client, **kw: EXPS[:2])
+    res = CliRunner().invoke(
+        cli, ["cyl", "experiments", "list", "--limit", "2", "--output", "json"]
+    )
+    assert res.exit_code == 0, res.output
+    assert "capped at --limit 2" in res.stderr  # warned
+    assert "capped" not in res.stdout  # stdout stays clean JSON
+    json.loads(res.stdout)
+
+
+def test_list_no_warning_when_under_cap(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ex, "fetch_experiments", lambda client, **kw: EXPS)  # 3 < limit
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--limit", "1000"])
+    assert res.exit_code == 0, res.output
+    assert "capped" not in res.stderr
 
 
 def test_list_limit_passed_through_and_capped(monkeypatch):

@@ -77,6 +77,7 @@ def fetch_species_with_experiments(client: Any) -> list[tuple[int, str]]:
         client.table("cyl_experiments")
         .select("species_id, species(common_name)")
         .is_("deleted_at", "null")
+        .limit(DEFAULT_LIMIT)  # bound the query, like fetch_experiments — never unbounded
         .execute()
         .data
         or []
@@ -163,6 +164,14 @@ def list_experiments(
         raw = fetch_experiments(client, species_id=species_id, limit=limit)
     except APIError as exc:
         raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
+    if len(raw) == limit:
+        # Fetch hit the cap; since results are ordered by id, the newest experiments are the
+        # ones dropped. Warn on stderr (not stdout) so machine output stays clean.
+        click.echo(
+            f"Warning: results capped at --limit {limit}; newer experiments may be omitted. "
+            "Narrow with --species or raise --limit.",
+            err=True,
+        )
     rows_data = sorted(raw, key=experiment_sort_key)
 
     if output_fmt:
