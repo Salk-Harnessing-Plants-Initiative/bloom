@@ -92,17 +92,11 @@ def fetch_scans(
     limit: int = 100000,
 ) -> list[dict[str, Any]]:
     """Query cyl_scans_extended for an experiment (legacy filter semantics)."""
-    query = (
-        client.table("cyl_scans_extended")
-        .select("*")
-        .eq("experiment_id", experiment_id)
-    )
+    query = client.table("cyl_scans_extended").select("*").eq("experiment_id", experiment_id)
     if plant_qr_code:
         query = query.eq("qr_code", plant_qr_code)
     else:
-        query = query.gte("plant_age_days", plant_age_min).lte(
-            "plant_age_days", plant_age_max
-        )
+        query = query.gte("plant_age_days", plant_age_min).lte("plant_age_days", plant_age_max)
     return query.limit(limit).execute().data or []
 
 
@@ -125,10 +119,7 @@ def fetch_genotypes(client: Any, accession_ids: list[Any]) -> dict[Any, str]:
     ids = sorted({a for a in accession_ids if a is not None})
     if not ids:
         return {}
-    rows = (
-        client.table("accessions").select("id, name").in_("id", ids).execute().data
-        or []
-    )
+    rows = client.table("accessions").select("id, name").in_("id", ids).execute().data or []
     return {row["id"]: row["name"] for row in rows}
 
 
@@ -187,7 +178,9 @@ def download_images(client: Any, scans: list[dict[str, Any]], out_dir: Path) -> 
     for scan in scans:
         for image in fetch_images(client, scan["scan_id"]):
             object_path = image.get("object_path", "")
-            result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
+            result = FrameResult(
+                scan.get("scan_id"), image.get("frame_number"), object_path, ok=False
+            )
             try:
                 data = bucket.download(object_path)
                 if data is None:
@@ -207,7 +200,9 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for f in result.frames:
-        line = f"{'OK  ' if f.ok else 'FAIL'} scan={f.scan_id} frame={f.frame_number} {f.object_path}"
+        line = (
+            f"{'OK  ' if f.ok else 'FAIL'} scan={f.scan_id} frame={f.frame_number} {f.object_path}"
+        )
         if not f.ok:
             line += f"  error={f.error}"
         lines.append(line)
@@ -235,6 +230,19 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     type=int,
     default=None,
     help="Download a single scan by ID (mutually exclusive with --experiment-id).",
+)
+@click.option(
+    "--experiment-name",
+    "--experiment_name",
+    "experiment_name",
+    default=None,
+    help="Resolve the experiment to download by name (fuzzy); an ambiguous name lists candidates "
+    "and exits without downloading. Mutually exclusive with --experiment-id / --scan-id.",
+)
+@click.option(
+    "--species",
+    default=None,
+    help="Narrow --experiment-name to one species (common name).",
 )
 @click.option(
     "-p",
@@ -286,6 +294,8 @@ def download(
     out_dir: Path,
     experiment_id: int | None,
     scan_id: int | None,
+    experiment_name: str | None,
+    species: str | None,
     profile: str,
     meta_only: bool,
     plant_qr_code: str | None,
@@ -293,14 +303,21 @@ def download(
     plant_age_max: int,
     limit: int,
 ) -> None:
-    """Download a cylinder experiment (--experiment-id) or a single scan (--scan-id):
-    metadata (scans.csv) and per-frame images."""
+    """Download a cylinder experiment (--experiment-id / --experiment-name) or a single scan
+    (--scan-id): metadata (scans.csv) and per-frame images."""
     from .. import auth
     from ..credentials import load_credentials
+    from ._resolve import Ambiguous, NoMatch, Resolved, resolve_experiment
 
-    # Exactly one of --experiment-id / --scan-id.
-    if (experiment_id is None) == (scan_id is None):
-        raise click.UsageError("Pass exactly one of --experiment-id or --scan-id.")
+    # Exactly one primary selector.
+    if [experiment_id is not None, scan_id is not None, experiment_name is not None].count(
+        True
+    ) != 1:
+        raise click.UsageError(
+            "Pass exactly one of --experiment-id, --scan-id, or --experiment-name."
+        )
+    if species and experiment_name is None:
+        raise click.UsageError("--species only applies with --experiment-name.")
 
     try:
         creds = load_credentials(profile)
@@ -310,6 +327,23 @@ def download(
         client = auth.make_authed_client(creds)
     except auth.AuthError as exc:
         raise click.ClickException(str(exc)) from exc
+
+    if experiment_name is not None:  # resolve the name to a concrete experiment id
+        from .experiments import fetch_experiments
+
+        resolution = resolve_experiment(fetch_experiments(client), experiment_name, species=species)
+        if isinstance(resolution, NoMatch):
+            scope = f" for species {species!r}" if species else ""
+            raise click.ClickException(f"No experiment matches {experiment_name!r}{scope}.")
+        if isinstance(resolution, Ambiguous):
+            listing = "\n".join(f"  {cid}  {label}" for cid, label in resolution.candidates)
+            raise click.ClickException(
+                f"{len(resolution.candidates)} experiments match {experiment_name!r} — "
+                f"narrow it (--species) or pass --experiment-id:\n{listing}"
+            )
+        assert isinstance(resolution, Resolved)
+        experiment_id = resolution.experiment_id
+        click.echo(f"Matched: {resolution.label} (id {experiment_id})", err=True)
 
     if scan_id is not None:
         scan = fetch_scan(client, scan_id)

@@ -18,6 +18,12 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
+- `bloomctl cyl download` can select the experiment by name: `--experiment-name
+  "<text>"` resolves a single experiment by a case-insensitive (typo-tolerant)
+  match on its name, then downloads it; `--species` narrows an ambiguous name. The
+  typed `--experiment-id` / `--scan-id` paths are unchanged. An ambiguous name lists
+  the candidate experiments (id · name · species) and exits without downloading, so
+  a pipeline never fetches a guessed experiment.
 - `bloomctl cyl accessions` selectors are now interactive menus (shared with
   `experiments list`). `accessions sample-counts --species` presents a numbered menu
   of the species that have accessions (0 = All) instead of a typed common name — no
