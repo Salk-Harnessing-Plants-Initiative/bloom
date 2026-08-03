@@ -8,6 +8,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Changed
+
+- `cyl accessions list`, `cyl accessions sample-counts`, and `cyl datasets list` now
+  take `--output [csv|json]` (with `--json` kept as an alias for `--output json`) —
+  the standard machine-output selector for `cyl` list commands, adding CSV export.
+  `datasets get` keeps `--json` (it returns a single object with a nested traits
+  array, which CSV can't represent); the write command `datasets create` is unaffected.
+
 ### Added
 
 - `bloomctl cyl batch-download-for-predict <out_dir>` — stage a batch of cylinder
@@ -71,6 +79,12 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   list the accessions used in an experiment, and the plant count per
   accession per species, with `--json`. Read the server-side `cyl_experiment_accessions`
   and `cyl_accession_sample_counts` views (new capability; no legacy equivalent).
+- `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species, experiment,
+  and QC-code count) for live experiments (sets on soft-deleted experiments are
+  excluded by default; `--include-deleted` lists them too), sorted deterministically
+  by species then experiment. Modeled on the legacy `cyl qc list-sets` command's
+  columns and header wording, and adds `--output csv|json` (the standard
+  machine-output selector for `cyl` list commands), which legacy did not have.
 - `bloomctl cyl ingest-result <envelope>` — write a per-scan `ResultEnvelope`
   back to Bloom via the `insert_cyl_result_envelope` RPC. Reads from a path or
   stdin (`-`), validates against `sleap-roots-contracts`, sends the original JSON

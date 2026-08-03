@@ -7,16 +7,18 @@ so the CLI reads a small result and never hits the PostgREST row cap.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import click
 
 from ..credentials import DEFAULT_PROFILE
-from ._output import print_table
+from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
 
 ACCESSION_COLUMNS = ["Accession", "Accession ID"]
 SAMPLE_COUNT_COLUMNS = ["Species", "Accession", "Plants"]
+# Machine-readable field names (json/csv), matching the record builders below.
+ACCESSION_FIELDS = ["accession_id", "accession_name"]
+SAMPLE_COUNT_FIELDS = ["accession_id", "species", "accession", "plant_count"]
 
 
 @click.group(name="accessions")
@@ -108,7 +110,14 @@ def fetch_accession_sample_counts(client: Any, species: str | None = None) -> li
     required=True,
     help="List the accessions used in this experiment (id).",
 )
-@click.option("--json", "as_json", is_flag=True, help="Emit accessions as a JSON array.")
+@click.option(
+    "--output",
+    "output_fmt",
+    type=click.Choice(MACHINE_FORMATS),
+    default=None,
+    help="Emit machine-readable output (csv/json) instead of the table.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Alias for --output json.")
 @click.option(
     "-p",
     "--profile",
@@ -116,11 +125,15 @@ def fetch_accession_sample_counts(client: Any, species: str | None = None) -> li
     show_default=True,
     help="Credentials profile to use.",
 )
-def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
+def list_accessions(
+    experiment_id: int, output_fmt: str | None, as_json: bool, profile: str
+) -> None:
     """List the accessions used in a cylinder experiment."""
     from postgrest import APIError
 
     from ..cli import _authed_client
+
+    output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
 
     client = _authed_client(profile)
     try:
@@ -129,8 +142,8 @@ def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
         raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
     data = sorted(raw, key=accession_sort_key)
 
-    if as_json:
-        click.echo(json.dumps([build_accession_record(r) for r in data]))
+    if output_fmt:
+        click.echo(render([build_accession_record(r) for r in data], ACCESSION_FIELDS, output_fmt))
         return
 
     rows = [build_accession_row(r) for r in data]
@@ -145,7 +158,14 @@ def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
     default=None,
     help="Filter to one species by common name (case-sensitive, e.g. 'sorghum').",
 )
-@click.option("--json", "as_json", is_flag=True, help="Emit counts as a JSON array.")
+@click.option(
+    "--output",
+    "output_fmt",
+    type=click.Choice(MACHINE_FORMATS),
+    default=None,
+    help="Emit machine-readable output (csv/json) instead of the table.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Alias for --output json.")
 @click.option(
     "-p",
     "--profile",
@@ -153,7 +173,7 @@ def list_accessions(experiment_id: int, as_json: bool, profile: str) -> None:
     show_default=True,
     help="Credentials profile to use.",
 )
-def sample_counts(species: str | None, as_json: bool, profile: str) -> None:
+def sample_counts(species: str | None, output_fmt: str | None, as_json: bool, profile: str) -> None:
     """Show the plant count per accession, per species (one plant = one individual grown).
 
     Counts are pooled across all experiments in the database (not scoped to one
@@ -167,6 +187,8 @@ def sample_counts(species: str | None, as_json: bool, profile: str) -> None:
 
     from ..cli import _authed_client
 
+    output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
+
     client = _authed_client(profile)
     try:
         raw = fetch_accession_sample_counts(client, species)
@@ -174,8 +196,10 @@ def sample_counts(species: str | None, as_json: bool, profile: str) -> None:
         raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
     data = sorted(raw, key=sample_count_sort_key)
 
-    if as_json:
-        click.echo(json.dumps([build_sample_count_record(r) for r in data]))
+    if output_fmt:
+        click.echo(
+            render([build_sample_count_record(r) for r in data], SAMPLE_COUNT_FIELDS, output_fmt)
+        )
         return
 
     rows = [build_sample_count_row(r) for r in data]

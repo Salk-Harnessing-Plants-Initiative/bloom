@@ -49,6 +49,8 @@ Run `bloomctl --help` or `bloomctl <command> --help` for the full option list.
 - `bloomctl cyl experiments list` — list cylinder experiments.
 - `bloomctl cyl accessions list | sample-counts` — list the accessions in an
   experiment, or the plant count per accession per species.
+- `bloomctl cyl qc list-sets` — list cylinder QC (quality-control) sets
+  (`--output csv|json` for machine-readable output).
 
 Read commands work for any logged-in user; write commands (`ingest-result`,
 `datasets create`) require an account with write access.

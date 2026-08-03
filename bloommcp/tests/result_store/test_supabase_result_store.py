@@ -93,6 +93,52 @@ def test_full_provenance_round_trips_through_commit(fake_supabase_storage):
     assert got.code_versions["sleap_roots_analyze"] == "0.1.0a2"
 
 
+def test_fresh_catalog_commit_logs_info(fake_supabase_storage, caplog):
+    """#395: allocating a fresh catalog (no existing manifest) logs an info
+    message naming the experiment, tool class, and active backend — the only
+    locally-observable signal that a backend-mixing split may be starting."""
+    import logging
+
+    store = SupabaseResultStore()
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "o.csv").write_bytes(b"x")
+
+    with caplog.at_level(logging.INFO):
+        store.commit(run, {"o": "o.csv"})
+
+    matches = [
+        r for r in caplog.records if "fresh manifest catalog" in r.getMessage().lower()
+    ]
+    assert len(matches) == 1
+    msg = matches[0].getMessage()
+    assert "qc" in msg
+    assert "exp" in msg
+    assert "supabase" in msg.lower()
+    assert matches[0].levelno == logging.INFO
+
+
+def test_second_commit_does_not_repeat_fresh_catalog_log(fake_supabase_storage, caplog):
+    """A second commit against an already-existing manifest does not log the
+    fresh-catalog message again — it only fires the first time a catalog is
+    created for an (experiment, tool_class) pair."""
+    import logging
+
+    store = SupabaseResultStore()
+    run1 = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run1.staging_dir / "o.csv").write_bytes(b"x")
+    store.commit(run1, {"o": "o.csv"})
+
+    run2 = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run2.staging_dir / "o.csv").write_bytes(b"y")
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        store.commit(run2, {"o": "o.csv"})
+
+    assert not any(
+        "fresh manifest catalog" in r.getMessage().lower() for r in caplog.records
+    )
+
+
 def test_input_sha256_lands_on_experiment_block_not_version_entry(
     fake_supabase_storage, tmp_path
 ):

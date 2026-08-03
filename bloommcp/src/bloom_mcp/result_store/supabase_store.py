@@ -26,6 +26,7 @@ from bloom_mcp.manifest import (
     version_dir_name,
     write_manifest,
 )
+from bloom_mcp.storage_backend import active_backend_name
 
 from ._artifacts import hash_outputs, validate_outputs
 from ._locks import KeyedLock
@@ -225,6 +226,25 @@ class SupabaseResultStore:
                     )
 
                 if fresh is None:
+                    # A fresh catalog is starting for this (experiment,
+                    # tool_class) pair under the active backend — the moment a
+                    # #395 backend-mixing split would begin, if this
+                    # experiment already has history under a different
+                    # backend's own (physically disjoint) manifest. Logged at
+                    # info, not warning: this fires on every brand-new
+                    # experiment's first commit too — the overwhelmingly
+                    # common, non-mixing case — and warning-level would page
+                    # on-call for routine new-experiment onboarding in any
+                    # environment alerting on warning-and-above.
+                    logger.info(
+                        "Fresh manifest catalog started for %s/%s under "
+                        "storage backend %r; any history for this experiment "
+                        "under a different backend is not visible from this "
+                        "catalog.",
+                        adir.tool_class,
+                        adir.stem,
+                        active_backend_name(),
+                    )
                     manifest = Manifest(
                         experiment=ExperimentBlock(
                             filename=adir.experiment_filename,

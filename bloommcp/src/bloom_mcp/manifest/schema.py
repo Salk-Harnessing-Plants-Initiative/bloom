@@ -1,4 +1,4 @@
-"""Pydantic models for manifest.json (schema version 4).
+"""Pydantic models for manifest.json (schema version 5).
 
 Every (experiment, tool_class) pair has one manifest.json in the
 bloommcp-data bucket listing all its runs. These models define what
@@ -9,14 +9,23 @@ fields (`seed`, `agent`, `environment`) and per-artifact content-addressing
 (`output_sha256`, `output_keys`) alongside the retained v2 `outputs` string map,
 and extended `code_versions` with `sleap-roots-analyze` / `sleap-roots-contracts`.
 
-Schema version 4 is an **additive** bump over v3: it adds optional `source_id`/
+Schema version 4 was an **additive** bump over v3: it added optional `source_id`/
 `source_name` fields to `VersionEntry`, identifying which Bloom database source
 (a `cyl_trait_sources` row) a DB-backed raw read resolved — the replacement
 identity signal for a read that no longer has an on-disk path to
 content-address via `RawSourced` (see `bloom_mcp.data_access.SourceSelectable`).
 
-Every new field across both bumps is optional, so previously-written v2 and v3
-manifests still validate and read without error (see
+Schema version 5 is an **additive** bump over v4: it adds an optional
+`storage_backend` field to `Manifest`, stamped with the active
+`BLOOM_STORAGE_BACKEND` name (`supabase` or `local`) on every write. This is
+the backend-mixing sentinel from #395: because the `supabase` and `local`
+backends each own a physically disjoint manifest, this field records which
+backend most recently wrote a given catalog, making a mixed-backend history
+split observable by inspecting the file directly (see
+`bloommcp/docs/storage-backends.md`).
+
+Every new field across all three bumps is optional, so previously-written v2,
+v3, and v4 manifests still validate and read without error (see
 `tests/contract/test_v2_backcompat.py`).
 
 Strict mode is on: passing an unknown field raises a ValidationError
@@ -29,7 +38,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 class _StrictModel(BaseModel):
@@ -111,3 +120,8 @@ class Manifest(_StrictModel):
     experiment: ExperimentBlock
     versions: list[VersionEntry] = Field(default_factory=list)
     latest: Optional[str] = None
+    # --- v5 additive (optional → v2/v3/v4 manifests still validate) ---
+    # Which object-storage backend (`supabase` or `local`) most recently wrote
+    # this manifest — the #395 backend-mixing sentinel. Absent on manifests
+    # written before this field existed.
+    storage_backend: Optional[str] = None
