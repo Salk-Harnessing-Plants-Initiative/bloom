@@ -256,6 +256,39 @@ def test_fetch_experiments_with_accessions_joins_names_and_sorts():
     assert out == [(3, "Drought (Arabidopsis)"), (7, "Salt Screen (Rice)")]
 
 
+def test_fetch_experiments_with_accessions_id_breaks_label_tie(monkeypatch):
+    # two experiments with an identical "name (species)" label -> id decides order (stable menu).
+    acc_rows = [{"experiment_id": 30}, {"experiment_id": 10}]
+    exp_rows = [
+        {"id": 30, "name": "Trial", "species": {"common_name": "Rice"}},
+        {"id": 10, "name": "Trial", "species": {"common_name": "Rice"}},
+    ]
+
+    class _Q:
+        def __init__(self, table):
+            self.table = table
+
+        def select(self, sel):
+            return self
+
+        def in_(self, col, vals):
+            return self
+
+        def is_(self, col, val):
+            return self
+
+        def execute(self):
+            data = acc_rows if self.table == "cyl_experiment_accessions" else exp_rows
+            return type("R", (), {"data": data})()
+
+    class _Client:
+        def table(self, name):
+            return _Q(name)
+
+    out = acc.fetch_experiments_with_accessions(_Client())
+    assert out == [(10, "Trial (Rice)"), (30, "Trial (Rice)")]  # same label -> lower id first
+
+
 # --- commands ---------------------------------------------------------------
 
 

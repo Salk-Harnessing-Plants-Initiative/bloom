@@ -109,7 +109,7 @@ def fetch_species_with_accessions(client: Any) -> list[str]:
     accessions (no dead choices). De-duplicated, nulls dropped, sorted for a stable menu.
     """
     rows = client.table("cyl_accession_sample_counts").select("species_name").execute().data or []
-    return sorted({r["species_name"] for r in rows if r.get("species_name")})
+    return sorted({r["species_name"] for r in rows if r.get("species_name")}, key=str.casefold)
 
 
 def fetch_experiments_with_accessions(client: Any) -> list[tuple[int, str]]:
@@ -135,7 +135,8 @@ def fetch_experiments_with_accessions(client: Any) -> list[tuple[int, str]]:
         (e["id"], f"{e.get('name') or ''} ({(e.get('species') or {}).get('common_name') or '?'})")
         for e in exps
     ]
-    return sorted(items, key=lambda it: it[1].casefold())
+    # id as a tiebreak so two experiments with the same "name (species)" label order stably.
+    return sorted(items, key=lambda it: (it[1].casefold(), it[0]))
 
 
 @accessions.command(name="list")
