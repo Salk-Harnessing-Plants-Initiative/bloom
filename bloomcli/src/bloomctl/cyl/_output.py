@@ -1,10 +1,55 @@
-"""Shared output helpers for `cyl` commands (table rendering)."""
+"""Shared output helpers for `cyl` commands (table and machine-readable rendering)."""
 
 from __future__ import annotations
 
-from typing import Sequence
+import csv
+import io
+import json
+from typing import Any, Mapping, Sequence
 
 import click
+
+# Machine-readable output formats for `--output` on list commands. Both are stdlib —
+# rendering must not add a runtime dependency.
+MACHINE_FORMATS = ("csv", "json")
+
+
+def resolve_output_format(output_fmt: str | None, as_json: bool) -> str | None:
+    """Resolve a list command's machine-output selection to one format (or None = table).
+
+    ``--output [csv|json]`` is the selector; ``--json`` is a back-compat alias for
+    ``--output json``. Combining ``--json`` with a conflicting ``--output`` is a usage error.
+    Shared so every ``cyl`` list command resolves the alias identically instead of
+    copy-pasting the guard.
+    """
+    if as_json:
+        if output_fmt not in (None, "json"):
+            raise click.UsageError("Use either --json or --output, not both.")
+        return "json"
+    return output_fmt
+
+
+def render(records: Sequence[Mapping[str, Any]], fieldnames: Sequence[str], fmt: str) -> str:
+    """Render records as a `fmt` document, fields in `fieldnames` order.
+
+    Empty input yields a well-formed empty document — a header-only CSV, or `[]` for JSON —
+    never a human message, so output stays pipeable. Uses the stdlib csv writer so values are
+    quoted/escaped correctly (commas, newlines, quotes); a ``None`` renders as an empty cell.
+    """
+    if fmt == "json":
+        return json.dumps([{k: r.get(k) for k in fieldnames} for r in records])
+    if fmt == "csv":
+        buf = io.StringIO()
+        # extrasaction="ignore": callers may pass richer records than the declared field
+        # set; the declared set is the contract.
+        writer = csv.DictWriter(
+            buf, fieldnames=list(fieldnames), extrasaction="ignore", lineterminator="\n"
+        )
+        writer.writeheader()
+        for record in records:
+            writer.writerow({k: record.get(k) for k in fieldnames})
+        return buf.getvalue().rstrip("\n")
+    raise ValueError(f"unsupported output format: {fmt!r} (expected one of {MACHINE_FORMATS})")
 
 
 def print_table(

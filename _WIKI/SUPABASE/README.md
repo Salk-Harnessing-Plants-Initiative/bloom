@@ -63,6 +63,21 @@ The sleap-roots pipeline write-back (changes D/E) is the one place where the DB,
 
 `EXECUTE` is revoked from `PUBLIC` and granted only to `bloom_writer`, `service_role`, `bloom_admin`, and `bloom_workflows` (the scoped, non-interactive service identity used by A4 cluster write-back pods). The three target tables have **no** direct INSERT/UPDATE policy for any role except `bloom_admin` (break-glass), so the RPC is the sole sanctioned writer — closing the forgeable-client-INSERT path that the legacy `authenticated` policies left open.
 
+### Pipeline-trigger tables (`cyl_pipeline_runs` / `cyl_pipeline_run_scans`)
+
+Phase 1 of the A4 pipeline-trigger route (`POST /workflows/pipeline`, bloom #11/#404) added `cyl_pipeline_runs` (one row per trigger request) and `cyl_pipeline_run_scans` (one row per enumerated scan). `bloom_workflows` holds `SELECT`+`INSERT` on both — **not** `UPDATE`, since this phase's route only ever inserts; a later phase adds its own small grant migration when a push-based status writer needs it, matching this role's "expand grants only when a new endpoint needs them" convention. The dedup preview also needed two new read paths on **existing** tables: a `SELECT` policy + column-scoped `GRANT SELECT (scan_id, source_id)` on `cyl_scan_traits` and `GRANT SELECT (id, metadata)` on `cyl_trait_sources` (to check all of a scan's prior sources, not just the newest), plus `SELECT (id)`-only existence-check access on `cyl_waves`/`cyl_experiments` (to distinguish "target exists but has zero scans" from "target doesn't exist" — `cyl_scans_extended`'s inner joins can't tell those apart on their own). Both tables are in the `supabase_realtime` publication (the web UI's future live-status panel subscribes without polling).
+
+`enqueue_cyl_pipeline_batch(p_run_id, p_batch_index, p_scan_ids)` is a separate `SECURITY DEFINER` function wrapping a new pgmq queue (see the next section) — its `EXECUTE` is granted to **`bloom_workflows` only**, a narrower grant than the write-back RPC's four-role list above; do not conflate the two.
+
+## pgmq queues
+
+`pgmq` (the Postgres Message Queue extension behind Supabase Queues) is enabled repo-wide (`20260715000000_enable_pgmq.sql`) but creates no queues on its own — each queue is created by whichever change needs it. The convention, established by `cyl_pipeline_dispatch` (Phase 1 of the A4 pipeline-trigger route, bloom #11/#404):
+
+- `pgmq.create('<queue_name>')`, guarded by an existence check (`pgmq.list_queues()`) so re-applying the migration is a no-op.
+- Access to the queue is never exposed directly — callers only ever get a purpose-built `SECURITY DEFINER` wrapper function (e.g. `enqueue_cyl_pipeline_batch`), never raw `pgmq.send`/`pgmq.read`.
+- `EXECUTE` on each wrapper function is explicitly revoked from `PUBLIC`, `anon`, **and** `authenticated` — not just `PUBLIC`. Supabase's default privileges grant new public-schema functions `EXECUTE` to `anon`/`authenticated` directly, so revoking only from `PUBLIC` leaves both able to call it. `EXECUTE` is then granted only to the specific role that needs it.
+- A negative-authorization integration test (`has_function_privilege` for `anon`/`authenticated`/`PUBLIC`, asserting `false`) should exist for every new wrapper function from the start, not discovered as a review follow-up.
+
 ## Storage buckets
 
 `bloom-storage` : The single S3 bucket the Supabase Storage API uses as its backend.

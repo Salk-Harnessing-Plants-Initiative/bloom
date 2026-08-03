@@ -201,6 +201,29 @@ def test_list_json_sorted(monkeypatch):
     assert [r["accession_name"] for r in payload] == ["Bay-0", "Col-0"]  # sorted by name
 
 
+def test_list_output_csv(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_experiment_accessions", lambda client, eid: EXP_ACC)
+    res = CliRunner().invoke(
+        cli, ["cyl", "accessions", "list", "--experiment-id", "7", "--output", "csv"]
+    )
+    assert res.exit_code == 0, res.output
+    lines = res.output.strip().splitlines()
+    assert lines[0] == "accession_id,accession_name"
+    assert lines[1] == "4,Bay-0"  # sorted first; accession_id value pinned (the join key)
+
+
+def test_list_json_and_conflicting_output_rejected(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_experiment_accessions", lambda client, eid: EXP_ACC)
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "accessions", "list", "--experiment-id", "7", "--json", "--output", "csv"],
+    )
+    assert res.exit_code != 0
+    assert "not both" in res.output.lower()
+
+
 def test_list_renders_table(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(acc, "fetch_experiment_accessions", lambda client, eid: EXP_ACC)
@@ -227,6 +250,27 @@ def test_list_json_empty_is_empty_array(monkeypatch):
     res = CliRunner().invoke(cli, ["cyl", "accessions", "list", "--experiment-id", "7", "--json"])
     assert res.exit_code == 0, res.output
     assert json.loads(res.output) == []
+
+
+def test_sample_counts_output_csv(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_accession_sample_counts", lambda client, species=None: COUNTS)
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--output", "csv"])
+    assert res.exit_code == 0, res.output
+    lines = res.output.strip().splitlines()
+    assert lines[0] == "accession_id,species,accession,plant_count"
+    # sorted first (Canola/Ames); pins every cell incl. accession_id + plant_count
+    assert lines[1] == "2,Canola,Ames,8"
+
+
+def test_sample_counts_json_and_conflicting_output_rejected(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_accession_sample_counts", lambda client, species=None: COUNTS)
+    res = CliRunner().invoke(
+        cli, ["cyl", "accessions", "sample-counts", "--json", "--output", "csv"]
+    )
+    assert res.exit_code != 0
+    assert "not both" in res.output.lower()
 
 
 def test_sample_counts_json_sorted(monkeypatch):
