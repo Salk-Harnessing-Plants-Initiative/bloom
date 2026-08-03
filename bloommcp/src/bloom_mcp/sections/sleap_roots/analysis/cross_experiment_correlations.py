@@ -139,8 +139,10 @@ class CrossExperimentCorrelationsParams(BaseModel):
 
     experiment_1: str = Field(
         ...,
-        description="First experiment (CSV filename). Must have a cleaned version "
+        description="First experiment identifier. Must have a cleaned version "
         "produced by qc_clean; cross_experiment_correlations consumes it (require_clean). "
+        "Resolves the most recent outlier trim when one exists for the experiment, not "
+        "merely the most recent clean. "
         "Must not contain '@' or '|' (reserved for this tool's persisted-run encoding), "
         "and its filename stem (the part before the final extension) must not contain "
         "'.' (this tool's composite storage-key encoding cannot safely represent a "
@@ -151,7 +153,7 @@ class CrossExperimentCorrelationsParams(BaseModel):
     )
     experiment_2: str = Field(
         ...,
-        description="Second experiment (CSV filename). Same requirements as experiment_1.",
+        description="Second experiment identifier. Same requirements as experiment_1.",
     )
     trait_columns_1: list[str] | None = Field(
         default=None,
@@ -253,7 +255,7 @@ def _reject_reserved_encoding_characters(experiment_1: str, experiment_2: str) -
                     "two-experiment persisted run."
                 ),
                 remedy=(
-                    "Rename the experiment file to avoid these characters: "
+                    "Pass an experiment identifier without these characters: "
                     f"{list(_RESERVED_ENCODING_CHARS)!r}."
                 ),
             )
@@ -273,7 +275,7 @@ def _reject_self_correlation(experiment_1: str, experiment_2: str) -> None:
                 f"experiment_1 and experiment_2 are both {experiment_1!r} — "
                 "cross_experiment_correlations compares two different experiments."
             ),
-            remedy="Pass two distinct experiment filenames.",
+            remedy="Pass two distinct experiment identifiers.",
         )
 
 
@@ -311,13 +313,14 @@ def _reject_dotted_stem(experiment_1: str, experiment_2: str) -> None:
             raise BloomMCPError(
                 code="invalid_input",
                 message=(
-                    f"{label} ({name!r})'s filename stem ({stem!r}) contains a '.', "
-                    "which this tool's composite storage-key encoding cannot safely "
-                    "represent."
+                    f"{label} ({name!r}) contains a '.' that is not a single interior "
+                    "extension separator, which this tool's composite storage-key "
+                    "encoding cannot safely represent."
                 ),
                 remedy=(
-                    "Rename the experiment file so its stem (the part before the final "
-                    "extension) contains no '.' characters."
+                    "Pass an experiment identifier whose only '.' (if any) is a single "
+                    "interior extension separator (e.g. 'my_experiment.csv') — a "
+                    "leading dot, a trailing dot, or more than one '.' is rejected."
                 ),
             )
 

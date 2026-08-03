@@ -61,7 +61,7 @@ from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.data_access.columns import resolve_columns, run_input_validation
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
-from bloom_mcp.experiment_utils import CLEANED_CSV_NAME
+from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, QC_TOOL_CLASS
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._qc_shared import (
     _CANONICAL_MAX_NANS_PER_SAMPLE,
@@ -71,7 +71,7 @@ from bloom_mcp.tools._qc_shared import (
     _validate_trait_subset,
 )
 
-_TOOL_CLASS = "qc"
+_TOOL_CLASS = QC_TOOL_CLASS
 _LOG_NAME = "cleanup_log.json"
 _VALIDATION_MODE = "warn"
 
@@ -94,7 +94,7 @@ class QCCleanParams(BaseModel):
     """
 
     experiment: str = Field(
-        ..., description="CSV filename from list_available_experiments."
+        ..., description="Experiment identifier from list_available_experiments."
     )
     trait_columns: Optional[list[str]] = Field(
         default=None,

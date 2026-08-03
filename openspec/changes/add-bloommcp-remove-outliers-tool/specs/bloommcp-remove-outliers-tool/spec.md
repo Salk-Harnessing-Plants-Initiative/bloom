@@ -218,6 +218,15 @@ ground-truth outliers.
 
 ### Requirement: Remove Outliers Persists a Versioned Trimmed Cleaned Run and Returns Links
 
+> **Note (superseded by #420, `fix-bloommcp-remove-outliers-tool-class`):** this requirement and
+> its scenarios below describe the tool class as originally shipped (PR #400):
+> `tool_class="qc"`, shared with `qc_clean`, with an explicitly order-dependent "latest cleaned"
+> resolution. #420 changes the persisted tool class to `outliers` and makes resolution
+> order-independent between a clean and a trim (see `bloommcp-experiment-read`'s "Version
+> selection resolves in the deployed order" requirement, as amended by #420). This spec is left
+> as the historical record of what PR #400 shipped rather than rewritten in place, since this
+> change (`add-bloommcp-remove-outliers-tool`) is not being re-opened/re-archived for #420.
+
 The `remove_outliers` tool SHALL persist its outputs as a versioned run via the `ResultStore`
 port under tool class `qc`, carrying the contract-stamped `Provenance` into the manifest. It
 SHALL set that provenance's `based_on_version` to the cleaned source version it trimmed (e.g.

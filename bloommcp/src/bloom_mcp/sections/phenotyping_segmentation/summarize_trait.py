@@ -14,7 +14,7 @@ class SummarizeTraitParams(BaseModel):
     """Inputs for ``summarize_trait``."""
 
     experiment: str = Field(
-        ..., description="CSV filename from list_available_experiments."
+        ..., description="Experiment identifier from list_available_experiments."
     )
     trait: str = Field(
         ..., description="Trait column to summarize (e.g. root_area_mean)."
@@ -51,7 +51,7 @@ def summarize_trait(
         raise BloomMCPError(
             code="invalid_input",
             message=f"Could not load experiment {params.experiment!r}: {source}",
-            remedy="Use a filename from list_available_experiments.",
+            remedy="Use an experiment identifier from list_available_experiments.",
         )
     if params.trait not in df.columns:
         raise BloomMCPError(

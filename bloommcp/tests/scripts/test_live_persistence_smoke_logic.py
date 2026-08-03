@@ -190,12 +190,12 @@ def test_ro_persist_checks_all_pass_on_valid_v5_entry():
 
 
 def test_ro_persist_checks_flags_wrong_tool():
-    # The provenance-based composition anchor: if the latest qc run is not the trim
-    # (e.g. a stray qc_clean re-run clobbered latest), the composition did not compose.
+    # The provenance-based composition anchor: if the latest outliers run is not the
+    # trim (e.g. a stray qc_clean re-run clobbered latest), the composition did not compose.
     kwargs = _good_ro_kwargs()
     kwargs["tool"] = "qc_clean"
     checks = smoke.ro_persist_checks(**kwargs)
-    assert any("latest qc run is the trim" in c.name and not c.ok for c in checks)
+    assert any("latest outliers run is the trim" in c.name and not c.ok for c in checks)
 
 
 def test_ro_persist_checks_flags_wrong_seed():

@@ -138,10 +138,12 @@ CLEANUP_LOG_NAME = "cleanup_log.json"  # logical key for the cleanup audit log
 
 # --- remove_outliers leg constants --------------------------------------------
 # The remove_outliers tool (#378) trims outlier samples from the CLEANED version
-# qc_clean just committed, persisting under the SAME ``qc`` tool class: its trimmed
-# ``_cleaned.csv`` becomes the newest cleaned version a later ``require_clean`` read
-# resolves — the qc_clean -> remove_outliers -> require_clean composition.
-RO_TOOL_CLASS = "qc"
+# qc_clean just committed, persisting under its own dedicated ``outliers`` tool
+# class (#420): the reader prefers it over ``qc`` for a later ``require_clean``
+# read — the qc_clean -> remove_outliers -> require_clean composition — while
+# remove_outliers's own next read (version="latest_qc") stays pinned to the plain
+# clean, so a later qc_clean re-run is never hidden from it.
+RO_TOOL_CLASS = "outliers"
 RO_REPORT_NAME = "outlier_report.json"  # logical key for the outlier report
 RO_SEED = 42  # remove_outliers is stochastic — resolves this fixed seed
 
@@ -337,8 +339,8 @@ def ro_persist_checks(
     here — and its committed outputs expose the trimmed ``_cleaned.csv`` + the
     ``outlier_report.json`` under one key-set. The ``tool == "remove_outliers"`` check is
     the *provenance-based composition anchor*: it proves the trim actually persisted and
-    became the newest ``qc`` run (the one a later ``require_clean`` read resolves),
-    independent of how many rows the trim happened to drop.
+    became the newest ``outliers`` run (the one a later ``require_clean`` read resolves
+    over ``qc``, per #420), independent of how many rows the trim happened to drop.
     """
     return [
         Check(
@@ -352,7 +354,7 @@ def ro_persist_checks(
             f"seed={seed!r}",
         ),
         Check(
-            "remove_outliers: latest qc run is the trim (tool == 'remove_outliers')",
+            "remove_outliers: latest outliers run is the trim (tool == 'remove_outliers')",
             tool == "remove_outliers",
             f"tool={tool!r}",
         ),
@@ -799,9 +801,9 @@ def main() -> int:
 
         # === remove_outliers leg (#378) =======================================
         # Trim outlier samples from the cleaned version qc_clean just committed,
-        # through the SAME real ports. remove_outliers persists under the same `qc`
-        # class, so its trimmed `_cleaned.csv` becomes the newest cleaned version a
-        # require_clean read resolves — proving qc_clean -> remove_outliers -> pca.
+        # through the SAME real ports. remove_outliers persists under its own
+        # dedicated `outliers` class (#420), which the reader prefers over `qc` for
+        # a later require_clean read — proving qc_clean -> remove_outliers -> pca.
         from bloom_mcp.sections.sleap_roots.analysis.remove_outliers import (  # noqa: E402
             RemoveOutliersParams,
             remove_outliers,

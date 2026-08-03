@@ -7,34 +7,47 @@ public detectors + ``remove_outliers_from_data``): the MCP contains **no** outli
 detection or removal logic and never touches the vendored
 ``bloom_mcp.outlier_detection`` filters.
 
-**Persists under tool class ``qc``**, alongside ``qc_clean`` (writing
-``CLEANED_CSV_NAME``), so the reader resolves whichever committed most recently as
-"latest cleaned" — prefer the natural ``qc_clean`` → ``remove_outliers`` order per
-experiment (the legacy ``run_outlier_workflow``, which persisted incompatibly under
-a distinct ``outliers`` class using the vendored detector, was retired by
-``devendor-bloommcp-analysis``).
+**Persists under its own dedicated tool class ``outliers``** (#420) — plural,
+deliberately distinct from the retired legacy ``outlier`` (singular) class the old,
+vendored-detector ``run_outlier_workflow`` used before ``devendor-bloommcp-analysis``
+retired it (that class is kept read-only for historical lookups, never written to
+again). Persisting under a class of its own, rather than sharing ``qc_clean``'s
+class, is what makes the trim's resolution as "latest cleaned" independent of
+whether ``qc_clean`` happens to run again afterward.
 
 On each call it reads the **cleaned** frame via the :class:`ExperimentReader` port
-with ``require_clean=True`` (outlier detection requires the NaN-free, unique-index
-table ``qc_clean`` produces), trims outlier samples with the chosen method
-(``mahalanobis`` default, or ``isolation_forest``) and seed, then persists a
-versioned run via the :class:`ResultStore` port under tool class ``qc`` — the
-trimmed table under ``CLEANED_CSV_NAME`` + the ``outlier_report.json`` + provenance.
+with ``require_clean=True`` and **``version="latest_qc"``** — the plain-clean tier
+specifically, ignoring any prior trim of its own (outlier detection requires the
+NaN-free, unique-index table ``qc_clean`` produces) — trims outlier samples with the
+chosen method (``mahalanobis`` default, or ``isolation_forest``) and seed, then
+persists a versioned run via the :class:`ResultStore` port under tool class
+``outliers`` — the trimmed table under ``CLEANED_CSV_NAME`` + the
+``outlier_report.json`` + provenance.
 
-**Composition.** Writing the trimmed table under ``CLEANED_CSV_NAME`` in the ``qc``
-tool class makes it the newest *cleaned version* the reader resolves, so
-``qc_clean → remove_outliers → pca_analysis`` composes through ``require_clean=True``
-with no reader change. The reader resolves "latest cleaned" as whichever ``qc`` run
-committed most recently, so prefer the natural clean→trim order once per experiment.
+**Composition.** For every *other* ``require_clean=True`` consumer (``pca_analysis``,
+``umap_analysis``, ``clustering``, ``descriptive_stats``,
+``cross_experiment_correlations``), the reader's default ``version="latest"``
+prefers the ``outliers`` class's latest entry over ``qc``'s whenever one exists at
+all — a fixed priority, not a recency comparison — so
+``qc_clean → remove_outliers → pca_analysis`` composes with no call-site change, and
+a later plain ``qc_clean`` re-run does **not** silently revert an existing trim.
+``remove_outliers`` itself reads via ``version="latest_qc"`` specifically so that
+same later ``qc_clean`` re-run *is* immediately visible to its own next invocation —
+without this, ``remove_outliers`` would keep re-trimming its own stale prior output
+forever, never seeing the fresh clean.
 
-**Order-dependence caveat (inherited).** Because the trim shares the ``qc`` class +
-``CLEANED_CSV_NAME``, "latest cleaned" is *order-dependent*: re-running ``qc_clean``
-after ``remove_outliers`` commits a newer un-trimmed clean, silently reverting "latest"
-so a later ``require_clean=True`` consumer reads the *un-trimmed* frame — no error or
-warning fires. This is the same caveat ``qc_clean`` documents for the shared class, and
-a dedicated ``outliers`` tool class is the tracked real fix (tasks 7.2). Until then each
-run records ``based_on_version = <cleaned source>`` in its provenance, so an un-trim is
-at least **auditable** from the manifest; the natural clean→trim order stays monotonic.
+**Disclosed trade-off (not a bug).** Once any ``outliers`` version exists for an
+experiment, a plain ``qc_clean`` re-run does not become "latest" for other
+consumers on its own — only a fresh ``remove_outliers`` run (which always reads the
+current ``qc`` clean via ``version="latest_qc"``) makes the new clean reachable
+again. This is the intentional fix for the #420 hazard (a `qc_clean` re-run
+silently reverting a trim with no signal): the trade-off is auditable (the stale
+``outliers`` entry's own ``based_on_version`` still names the ``qc`` version it was
+trimmed from) and recoverable by a known action (re-run ``remove_outliers``), unlike
+the silent revert it replaces. See
+``openspec/changes/fix-bloommcp-remove-outliers-tool-class/design.md`` for the full
+reasoning, including why a recency-based cross-class comparison (an earlier draft of
+this fix) does not actually work.
 
 **Structured errors, body-mapped.** ``require_clean`` with no cleaned version, a
 degenerate trim (the delegate raises ``ValueError``/``OutlierRemovalError`` when the
@@ -69,14 +82,14 @@ from bloom_mcp.data_access import (
     ExperimentReadError,
 )
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
-from bloom_mcp.experiment_utils import CLEANED_CSV_NAME
+from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, OUTLIERS_TOOL_CLASS
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._qc_shared import _role_kwargs, _validate_trait_subset
 
 if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph (Tier-0)
     from matplotlib.figure import Figure
 
-_TOOL_CLASS = "qc"
+_TOOL_CLASS = OUTLIERS_TOOL_CLASS
 _REPORT_NAME = "outlier_report.json"
 
 # ``goodness_of_fit.fit_quality`` values (mahalanobis chi-squared fit) whose flagged
@@ -96,7 +109,8 @@ class RemoveOutliersParams(BaseModel):
 
     experiment: str = Field(
         ...,
-        description="CSV filename from list_available_experiments (must be cleaned).",
+        description="Experiment identifier from list_available_experiments (must be "
+        "cleaned).",
     )
     method: Literal["mahalanobis", "isolation_forest"] = Field(
         default="mahalanobis",
@@ -271,7 +285,12 @@ def remove_outliers(
     # qc_clean produces. A missing cleaned version is the QC guardrail, mapped here to
     # a self-correctable assumption_violated (not the reader's raw message / tool_error).
     try:
-        frame = reader.load_experiment(params.experiment, require_clean=True)
+        # version="latest_qc": always the current plain clean, never a prior trim of
+        # our own — see the module docstring's Composition section for why (a fresh
+        # qc_clean must always be visible to the *next* remove_outliers call).
+        frame = reader.load_experiment(
+            params.experiment, require_clean=True, version="latest_qc"
+        )
     except CleanedVersionRequiredError:
         raise BloomMCPError(
             code="assumption_violated",

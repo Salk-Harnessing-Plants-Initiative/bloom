@@ -69,7 +69,8 @@ def parse_traits(traits: str, available: list) -> list:
 
 
 def validate_filename(filename: str) -> str | None:
-    """Return an error message if ``filename`` is not a bare CSV filename, else ``None``.
+    """Return an error message if ``filename`` is not a bare experiment identifier, else
+    ``None``.
 
     ``filename`` flows into ``TRAITS_DIR / filename`` + ``pd.read_csv`` (via
     ``load_experiment_data``), so a path with separators or ``..`` (or an absolute
@@ -95,5 +96,5 @@ def validate_filename(filename: str) -> str | None:
         or "\\" in filename
         or Path(filename).name != filename
     ):
-        return "filename must be a bare CSV filename (no path separators)."
+        return "filename must be a bare experiment identifier (no path separators)."
     return None

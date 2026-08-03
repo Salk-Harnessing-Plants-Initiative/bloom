@@ -87,13 +87,16 @@ real ports and asserts:
   clustering-workflow leg used to carry);
 - each recorded `output_sha256` matches the actual stored bytes for **both** artifacts;
 - a fresh `SupabaseReader().load_experiment("turface_raw.csv", require_clean=True)` now resolves
-  the committed **trimmed** version (`source` is `v<N>_cleaned`, **not** `raw`) with **fewer
-  rows** than the pre-trim clean and **zero NaN** trait cells;
+  the committed **trimmed** version (`source` is `outliers_v<N>_cleaned`, **not** `raw`) with
+  **fewer rows** than the pre-trim clean and **zero NaN** trait cells;
 - a **second** `remove_outliers` commit advances `latest` by exactly one version without
   clobbering the first (`get_run(first_ref)` still resolves).
 
-`remove_outliers` persists under the same `qc` tool class, so its trimmed `_cleaned.csv` becomes
-the newest cleaned version the reader resolves — this is the
+`remove_outliers` persists under its own dedicated **`outliers`** tool class (#420) — not `qc` —
+so a later plain `qc_clean` re-run cannot silently revert the trim. The reader prefers the
+`outliers` class's latest over `qc`'s whenever one exists, for every `require_clean=True`
+consumer except `remove_outliers` itself (which always reads the current `qc` clean via
+`version="latest_qc"`, so a fresh `qc_clean` is never hidden from it). This is the
 `qc_clean` → `remove_outliers` → `require_clean` composition proven end-to-end over the real
 ports.
 

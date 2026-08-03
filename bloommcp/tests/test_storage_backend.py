@@ -880,6 +880,296 @@ def test_resolve_versioned_cleaned_via_local_list_prefix_fallback(
     assert label == "v1_cleaned"
 
 
+# ─── 5b. #420 — outliers-preferring "latest" vs qc-only "latest_qc" ────────────
+
+
+def _write_cleaned_manifest(
+    tmp_path: Path,
+    stem: str,
+    tool_class: str,
+    version_id: str,
+    created_at: str,
+    content: bytes,
+) -> None:
+    """Write a valid one-version manifest + its cleaned CSV under `<tool_class>_<stem>/`."""
+    from bloom_mcp.manifest import (
+        ExperimentBlock,
+        Manifest,
+        VersionEntry,
+        get_code_versions,
+        write_manifest,
+    )
+    from bloom_mcp.supabase_client import upload_file
+
+    prefix = f"bloommcp_output/{tool_class}_{stem}/"
+    version_dir = f"{version_id}_2026-07-06"
+    src = tmp_path / f"{tool_class}_{version_id}_seed.csv"
+    src.write_bytes(content)
+    upload_file(f"{prefix}{version_dir}/_cleaned.csv", src)
+
+    entry = VersionEntry(
+        id=version_id,
+        created_at=created_at,
+        tool="qc_clean" if tool_class == "qc" else "remove_outliers",
+        params={},
+        based_on_version="raw" if tool_class == "qc" else f"{version_id}_cleaned",
+        code_versions=get_code_versions(),
+        outputs={"_cleaned.csv": "_cleaned.csv"},
+        version_dir=version_dir,
+    )
+    manifest = Manifest(
+        experiment=ExperimentBlock(
+            filename=f"{stem}.csv", source_path="", input_sha256=""
+        ),
+        versions=[entry],
+        latest=version_id,
+    )
+    write_manifest(prefix, manifest)
+
+
+def _write_invalid_schema_manifest(stem: str, tool_class: str) -> None:
+    """Write a manifest.json whose schema version is newer than this code understands."""
+    from bloom_mcp.supabase_client import write_json
+
+    prefix = f"bloommcp_output/{tool_class}_{stem}/"
+    write_json(f"{prefix}manifest.json", {"manifest_schema_version": 999})
+
+
+@pytest.fixture
+def _local_backend(monkeypatch, tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(root))
+    sb.reset_backend_for_tests()
+    return tmp_path
+
+
+def test_latest_resolves_qc_only_unqualified(_local_backend):
+    """(a) Only `qc` has a version — `version="latest"` resolves it, today's exact
+    unqualified label, unchanged. The overwhelmingly common (never-trimmed) case must
+    see zero observable change from this fix."""
+    from bloom_mcp import experiment_utils as eu
+
+    tmp_path = _local_backend
+    _write_cleaned_manifest(
+        tmp_path, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"a,b\n1,2\n"
+    assert label == "v1_cleaned"
+
+
+def test_latest_resolves_outliers_only_qualified(_local_backend):
+    """(b) Only `outliers` has a version — `version="latest"` resolves it, with the
+    tool-class-qualified label."""
+    from bloom_mcp import experiment_utils as eu
+
+    tmp_path = _local_backend
+    _write_cleaned_manifest(
+        tmp_path, "exp", "outliers", "v1", "2026-07-06T00:00:00Z", b"a,b\n3,4\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"a,b\n3,4\n"
+    assert label == "outliers_v1_cleaned"
+
+
+def test_latest_prefers_outliers_regardless_of_recency(_local_backend):
+    """(c) The actual #420 repro: `qc`'s entry is committed (and timestamped) LATER
+    than `outliers`'s, yet `version="latest"` must still resolve `outliers` — proving
+    this is a fixed priority, not a recency comparison. An earlier (wrong) draft of
+    this fix compared `created_at` across classes and would resolve `qc` here."""
+    from bloom_mcp import experiment_utils as eu
+
+    tmp_path = _local_backend
+    _write_cleaned_manifest(
+        tmp_path, "exp", "outliers", "v1", "2026-07-06T00:00:00Z", b"trim,ok\n1,1\n"
+    )
+    _write_cleaned_manifest(
+        tmp_path, "exp", "qc", "v2", "2026-07-06T23:59:59Z", b"untrimmed\n9\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"trim,ok\n1,1\n"
+    assert label == "outliers_v1_cleaned"
+
+
+def test_latest_qc_resolves_qc_ignoring_outliers(_local_backend):
+    """(d) `version="latest_qc"` resolves the `qc` class specifically, even when a
+    newer-looking `outliers` version exists — this is what `remove_outliers` itself
+    reads as its trimming input."""
+    from bloom_mcp import experiment_utils as eu
+
+    tmp_path = _local_backend
+    _write_cleaned_manifest(
+        tmp_path, "exp", "outliers", "v1", "2026-07-06T00:00:00Z", b"trim,ok\n1,1\n"
+    )
+    _write_cleaned_manifest(
+        tmp_path, "exp", "qc", "v2", "2026-07-06T23:59:59Z", b"untrimmed\n9\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest_qc")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"untrimmed\n9\n"
+    assert label == "v2_cleaned"  # unqualified — same format as version="latest_qc"
+
+
+def test_latest_qc_resolves_qc_only_unqualified(_local_backend):
+    """(e) `version="latest_qc"` with no `outliers` class at all resolves `qc`, with
+    the same unqualified label as (a) — confirms `latest_qc` isn't a no-op alias that
+    silently means something else when `outliers` is absent."""
+    from bloom_mcp import experiment_utils as eu
+
+    tmp_path = _local_backend
+    _write_cleaned_manifest(
+        tmp_path, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest_qc")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"a,b\n1,2\n"
+    assert label == "v1_cleaned"
+
+
+def test_latest_schema_error_on_outliers_propagates_first_iteration(_local_backend):
+    """(f) A schema error on `outliers` (checked first, higher priority) propagates
+    immediately — it is not swallowed and does not fall through to the valid `qc`
+    manifest."""
+    from bloom_mcp import experiment_utils as eu
+
+    tmp_path = _local_backend
+    _write_cleaned_manifest(
+        tmp_path, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    _write_invalid_schema_manifest("exp", "outliers")
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert path is None
+    assert label is None
+    assert err is not None and "manifest schema error for 'exp'" in err
+
+
+def test_latest_schema_error_on_qc_propagates_second_iteration(_local_backend):
+    """(g) The mirror of (f): `outliers` has no entry at all (resolves to "no entry",
+    not an error) and `qc` fails schema validation — the error must still propagate
+    once the loop reaches its second iteration, not be silently dropped by an
+    over-broad `except`/`continue` around the whole loop."""
+    from bloom_mcp import experiment_utils as eu
+
+    _write_invalid_schema_manifest("exp", "qc")
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert path is None
+    assert label is None
+    assert err is not None and "manifest schema error for 'exp'" in err
+
+
+def test_latest_outliers_entry_exists_but_download_fails_is_a_hard_error(
+    _local_backend,
+):
+    """A schema-valid `outliers` entry names a version whose `_cleaned.csv` was
+    never actually uploaded (a partial commit, or a storage hiccup) — this must
+    propagate as a hard error, NOT fall through to `qc`'s otherwise-valid entry.
+    Falling through here would reproduce the exact #420 silent-revert hazard,
+    just triggered by a storage failure instead of a `qc_clean` re-run."""
+    from bloom_mcp import experiment_utils as eu
+    from bloom_mcp.manifest import (
+        ExperimentBlock,
+        Manifest,
+        VersionEntry,
+        get_code_versions,
+        write_manifest,
+    )
+
+    _write_cleaned_manifest(
+        _local_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+
+    # outliers manifest references v1, version_dir set, but its _cleaned.csv was
+    # never uploaded — no `upload_file` call, unlike `_write_cleaned_manifest`.
+    prefix = "bloommcp_output/outliers_exp/"
+    entry = VersionEntry(
+        id="v1",
+        created_at="2026-07-06T00:00:01Z",
+        tool="remove_outliers",
+        params={},
+        based_on_version="v1_cleaned",
+        code_versions=get_code_versions(),
+        outputs={"_cleaned.csv": "_cleaned.csv"},
+        version_dir="v1_2026-07-06",
+    )
+    manifest = Manifest(
+        experiment=ExperimentBlock(filename="exp.csv", source_path="", input_sha256=""),
+        versions=[entry],
+        latest="v1",
+    )
+    write_manifest(prefix, manifest)
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert path is None
+    assert label is None
+    assert err is not None
+    assert "download from storage failed" in err
+
+
+def test_latest_logs_when_resolved_trim_is_stale(_local_backend, caplog):
+    """The resolved `outliers` trim's `based_on_version` ("v1_cleaned") no longer
+    matches the current `qc` latest ("v2_cleaned") — a `qc_clean` has run since
+    the trim was made (design.md Decision 4's disclosed trade-off). This is
+    purely observational: the trim still correctly resolves as "latest cleaned",
+    but a log line makes the staleness visible at read time."""
+    from bloom_mcp import experiment_utils as eu
+
+    _write_cleaned_manifest(
+        _local_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    _write_cleaned_manifest(
+        _local_backend, "exp", "outliers", "v1", "2026-07-06T00:00:01Z", b"trim\n1\n"
+    )  # based_on_version="v1_cleaned" (via _write_cleaned_manifest's default)
+    _write_cleaned_manifest(
+        _local_backend, "exp", "qc", "v2", "2026-07-06T00:01:00Z", b"a,b\n3,4\n5,6\n"
+    )  # a fresh qc_clean re-run, after the trim
+
+    with caplog.at_level(logging.INFO, logger="bloom_mcp.experiment_utils"):
+        path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+
+    assert err is None
+    assert (
+        path is not None and path.read_bytes() == b"trim\n1\n"
+    )  # still resolves the trim
+    assert label == "outliers_v1_cleaned"
+    assert any("has run since this trim was made" in r.message for r in caplog.records)
+
+
+def test_latest_does_not_log_when_resolved_trim_is_current(_local_backend, caplog):
+    """The resolved `outliers` trim's `based_on_version` matches the current `qc`
+    latest exactly (the natural clean-then-trim order, no re-clean since) — no
+    staleness log should fire."""
+    from bloom_mcp import experiment_utils as eu
+
+    _write_cleaned_manifest(
+        _local_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    _write_cleaned_manifest(
+        _local_backend, "exp", "outliers", "v1", "2026-07-06T00:00:01Z", b"trim\n1\n"
+    )
+
+    with caplog.at_level(logging.INFO, logger="bloom_mcp.experiment_utils"):
+        path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+
+    assert err is None
+    assert path is not None
+    assert label == "outliers_v1_cleaned"
+    assert not any(
+        "has run since this trim was made" in r.message for r in caplog.records
+    )
+
+
 # ─── 6. BLOOM_LOCAL_ROOT (#479) ─────────────────────────────────────────────────
 
 

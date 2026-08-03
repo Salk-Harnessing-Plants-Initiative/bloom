@@ -430,6 +430,28 @@ def test_report_run_is_under_qc_inspect_class_with_no_cleaned_artifact(injected_
     assert not any(name.endswith("_cleaned.csv") for name in result.outputs)
 
 
+def test_reads_raw_even_when_a_cleaned_version_already_exists():
+    """qc_inspect exists to pick qc_clean's thresholds BEFORE cleaning — it must
+    read the RAW frame even when a cleaned version already exists for the
+    experiment, not whatever version="latest" would resolve to (reading an
+    already-cleaned frame to choose its own cleaning thresholds is circular).
+    A cleaned version with a different row count makes an accidental
+    version="latest" read detectable."""
+    raw_df = _raw_df()
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, raw_df)
+    reader.add_cleaned_version(_EXPERIMENT, "v1", raw_df.iloc[:5], make_latest=True)
+    store = FakeResultStore()
+    _ports.configure(reader=reader, store=store)
+    try:
+        result = _run()
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert result.source == "raw"
+    assert result.n_samples == len(raw_df)
+
+
 # ── 3.8b read-only over the real resolver (negative composition) ────────────
 
 
