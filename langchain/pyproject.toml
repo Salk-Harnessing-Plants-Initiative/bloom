@@ -19,7 +19,9 @@ dependencies = [
     "uvicorn>=0.32.0",
     # Security floors for transitive FastAPI-stack deps (see issue #311):
     # pin past upstream CVE fix versions. Open floors per repo convention.
-    "cryptography>=48.0.1",
+    # cryptography floor bumped past CVE-2026-69247 (fixed in 50.0.0),
+    # disclosed 2026-08-03.
+    "cryptography>=50.0.0",
     "python-multipart>=0.0.31",
     "starlette>=1.1.0",
     "pydantic>=2.0.0",
