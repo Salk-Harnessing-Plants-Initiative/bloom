@@ -127,6 +127,21 @@ def test_outliers_class_registered_in_discovery_and_canonical_registries():
     assert "outliers" in CANONICAL_TOOL_CLASSES
 
 
+def test_remove_outliers_tool_name_constant_matches_the_real_function_name():
+    """`experiment_utils.REMOVE_OUTLIERS_TOOL_NAME` single-sources the *comparison*
+    side (the audit script, test fixtures) against one literal — but the value
+    actually persisted at commit time is `func.__name__` of this function
+    (`contract/wrap.py`), not the constant. A future rename of `remove_outliers`
+    would silently desync the two with nothing else to catch it; this regression
+    test is that catch (bloom#585 review)."""
+    from bloom_mcp.experiment_utils import REMOVE_OUTLIERS_TOOL_NAME
+    from bloom_mcp.sections.sleap_roots.analysis.remove_outliers import (
+        remove_outliers,
+    )
+
+    assert REMOVE_OUTLIERS_TOOL_NAME == remove_outliers.__name__
+
+
 def test_discoverable_via_list_existing_analyses(injected_ports):
     """Live discoverability, mirroring the same pattern
     cross_experiment_correlations uses for its own registered class."""

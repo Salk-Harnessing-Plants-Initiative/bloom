@@ -49,10 +49,18 @@ than swallowing it — each caller decides its own failure policy.
 `list_existing_analyses`'s JSON response SHALL include a top-level `trim_is_stale` boolean field
 whenever `trim_staleness` successfully resolves a non-`None` result for the queried experiment, so
 an agent or scientist can discover a stale trim without performing a `require_clean=True` read.
-The field SHALL be omitted (not `false`) both when the experiment has never been trimmed and when
-computing it failed; on failure, the failure SHALL be recorded in the response's existing `errors`
-list. The tool's documentation SHALL disclose that this field is advisory only — its absence does
-not, by itself, mean the experiment was never trimmed.
+When present, the response SHALL also include `trim_based_on_qc_version` and
+`trim_current_qc_version` (the latter `None` in the no-`qc`-baseline-at-all case) so a caller can
+tell ordinary staleness apart from that more concerning corner without relying on a server-side log
+line it cannot see. The `trim_is_stale` field SHALL be omitted (not `false`) both when the
+experiment has never been trimmed and when computing it failed; on failure, the failure SHALL be
+recorded in the response's existing `errors` list, using bounded/redacted exception text (see the
+shared `experiment_utils.safe_error_text` helper), and any unrelated tool-class error already
+collected SHALL still be present alongside it. The tool's documentation SHALL disclose that this
+field is advisory only — its absence does not, by itself, mean the experiment was never trimmed —
+and that responses (including `trim_is_stale`) are cached for up to 30 seconds with no
+invalidation hook on a `qc_clean`/`remove_outliers` commit, so a check performed immediately after
+such a commit may still return the pre-commit cached value.
 
 #### Scenario: Untrimmed experiment sees no new field
 
@@ -79,9 +87,27 @@ not, by itself, mean the experiment was never trimmed.
 - **WHEN** computing `trim_staleness` for the queried experiment raises (e.g. a manifest schema
   error, or the storage backend is unreachable)
 - **THEN** `list_existing_analyses` still returns its per-tool-class `analyses` results, appends a
-  `"trim_staleness: ..."`-prefixed description of the failure to the response's `errors` list, and
-  omits `trim_is_stale` — a caller that finds `trim_is_stale` absent SHALL be documented to check
-  `errors` for a `trim_staleness` entry before concluding the experiment was never trimmed
+  `"trim_staleness: ..."`-prefixed, bounded/redacted description of the failure to the response's
+  `errors` list, and omits `trim_is_stale` — a caller that finds `trim_is_stale` absent SHALL be
+  documented to check `errors` for a `trim_staleness` entry before concluding the experiment was
+  never trimmed
+
+#### Scenario: The staleness reason is distinguishable, not just the boolean
+
+- **WHEN** `list_existing_analyses(experiment_filename)` reports `"trim_is_stale": true`
+- **THEN** the response also includes `trim_current_qc_version` — a real `qc`-class version label
+  when a `qc_clean` ran since the trim was made, or `None` when no `qc`-class baseline exists for
+  this experiment at all — so a caller can tell ordinary staleness apart from that more concerning,
+  corruption-adjacent corner (`trim_staleness`'s no-baseline case) without needing the server-side
+  log line
+
+#### Scenario: A staleness result and an unrelated tool-class error both survive together
+
+- **WHEN** computing `trim_staleness` succeeds for the queried experiment, and, in the same call, a
+  different tool class's `list_runs` lookup fails
+- **THEN** the response includes both `trim_is_stale` (and its accompanying version fields) and the
+  unrelated tool-class's error in `errors` — neither is dropped because the other succeeded or
+  failed
 
 ### Requirement: One-time historical silent-revert audit
 
@@ -93,9 +119,15 @@ manifest's *current* `latest` entry was authored by a different tool — i.e., a
 trim was silently superseded by a later plain clean under the pre-#420 shared-`qc` scheme. A
 `remove_outliers`-authored entry that is not `latest` SHALL NOT be reported as a hit when the
 entry that *is* `latest` was itself also authored by `remove_outliers` (a legitimate,
-still-current re-trim — see #419 — is not a silent revert). The script SHALL NOT mutate, upload
-to, or delete any object under any `qc_<stem>` or `outliers_<stem>` prefix; its own report file
-(below) is the one object it writes, under a separate, dedicated prefix.
+still-current re-trim — see #419 — is not a silent revert); when more than one
+`remove_outliers`-authored entry could be "the superseded one," the tie SHALL resolve to the
+most recently *committed* entry even when two entries share an identical `created_at` (a real
+possibility at that field's second granularity). Each hit SHALL be annotated with a
+`post_420_status` reflecting whether a later, post-#420 `remove_outliers` run (against the
+separate `outliers_<stem>` manifest this scan does not otherwise read) has since remediated it.
+The script SHALL NOT mutate, upload to, or delete any object under any `qc_<stem>` or
+`outliers_<stem>` prefix; its own report file (below) is the one object it writes, under a
+separate, dedicated prefix.
 
 #### Scenario: A pre-#420 silent revert is reported
 
@@ -127,6 +159,30 @@ to, or delete any object under any `qc_<stem>` or `outliers_<stem>` prefix; its 
   different tool
 - **THEN** the reported hit names the `remove_outliers` entry with the latest `created_at` among
   them, not merely the first one encountered
+
+#### Scenario: A same-second tie still names the later-committed entry
+
+- **WHEN** two `remove_outliers`-authored `VersionEntry`s in the same manifest's history share an
+  identical `created_at` (second-granularity timestamps, e.g. a scripted backfill or a rapid
+  re-trim)
+- **THEN** the reported hit names the one committed later (by its position in the manifest's
+  version history), not whichever one a naive max-by-timestamp comparison would keep on a tie
+
+#### Scenario: A dangling `latest` pointer is reported as an error, not a crash
+
+- **WHEN** a `qc_<stem>/manifest.json` is schema-valid but its `latest` field names a version `id`
+  absent from its own `versions` list
+- **THEN** that stem's inconsistency is recorded in the report's error list and the scan continues
+  — it is not treated as a hit and does not raise
+
+#### Scenario: A hit is annotated with its current remediation status
+
+- **WHEN** a hit is reported for a stem
+- **THEN** it includes `post_420_status`: `"not_remediated"` when no `outliers_<stem>` manifest
+  exists at all, `"remediated_and_current"` when one exists and is not stale relative to the
+  current `qc`-class latest, `"remediated_but_stale_again"` when one exists but a further
+  `qc_clean` has since run, or `"unknown"` when computing this itself fails (never aborting the
+  scan over an annotation)
 
 #### Scenario: A `qc_<stem>` prefix with no manifest at all is skipped, not reported
 
@@ -173,6 +229,13 @@ to, or delete any object under any `qc_<stem>` or `outliers_<stem>` prefix; its 
 - **THEN** it writes the full report as JSON to a timestamped object under a dedicated
   `bloommcp_output/_audit_reports/` prefix (distinct from, and never overwriting, any
   `qc_<stem>`/`outliers_<stem>` manifest), in addition to printing it to stdout — the payload
-  itself (not only the object's key/filename) includes a `scanned_at` UTC timestamp and the
-  `storage_backend` that was scanned, so the report remains interpretable if later moved, renamed,
-  or copied elsewhere
+  itself (not only the object's key/filename) includes a `scanned_at` UTC timestamp, the
+  `storage_backend` that was scanned, and a `scope_note` describing the current-state-only
+  detection scope, so the report remains interpretable — including its own caveat — if later moved,
+  renamed, or copied elsewhere (e.g. pasted into a ticket with no memory of this script)
+
+#### Scenario: Two reports never collide, even within the same second
+
+- **WHEN** `write_report` is called twice in quick succession (plausibly within the same
+  wall-clock second — two engineers running the audit, or a retry after what looked like a hang)
+- **THEN** each call writes to a distinct key; neither silently overwrites the other

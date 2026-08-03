@@ -88,10 +88,12 @@ on:
     `trim_staleness` returns `None` when no `outliers`-class version exists at all (nothing to
     assess — distinguishes "never trimmed" from "trimmed and current" for `list_existing_analyses`,
     which needs that distinction to decide whether to include the field at all — Decision 3).
-    Otherwise it returns a `TrimStaleness(is_stale: bool, outliers_based_on_version: Optional[str],
+    Otherwise it returns a `TrimStaleness(is_stale: bool, outliers_based_on_version: str,
     current_qc_label: Optional[str])` — the values `_log_if_trim_is_stale`'s current inline
-    implementation logs today are preserved, not dropped to a bare boolean. `current_qc_label` is
-    `None` in the one case below where there is no `qc`-class baseline at all.
+    implementation logs today are preserved, not dropped to a bare boolean.
+    `outliers_based_on_version` is always populated (the trim always names what it was based on);
+    only `current_qc_label` is `Optional`, `None` in the one case below where there is no
+    `qc`-class baseline at all.
   - **`is_stale` is `True` when an `outliers`-class version exists but the `qc`-class manifest has
     no `latest` entry at all** — this is a **behavior change** from `_log_if_trim_is_stale`'s
     current silent-return-on-either-`None` shape, made deliberately: an `outliers` entry with no
@@ -249,6 +251,70 @@ on:
   non-empty hit list or a partially-unreadable manifest are the script's normal, successful
   output, not a script failure.
 
+## Post-review addendum
+
+An independent PR review (subagent team: Code Quality · Testing · Scientific Rigor · Security ·
+Behavioural Correctness) of the implemented PR found several real gaps beyond the design above,
+all fixed on the same branch:
+
+- **Decision 4's tie-break was untested against a same-second collision, and would have silently
+  mis-named the superseded entry.** `created_at` is second-granularity
+  (`contract/provenance.py`); two `remove_outliers` commits within the same wall-clock second (a
+  scripted backfill, or #419's own rapid-re-trim workflow) tie under a bare
+  `max(entries, key=created_at)`, and Python's `max()` keeps the *first*-encountered maximal
+  element — silently naming the *earlier* entry as superseded. Fixed: the tie-break now also keys
+  on each entry's position in `manifest.versions` (commit/append order), so a tie resolves to the
+  later-committed entry. Regression test confirmed load-bearing by temporarily reverting the fix
+  and watching it fail.
+- **A historical hit was reported identically forever, with no way to tell "still exposed" from
+  "already fixed."** `scan_for_stale_outlier_trims` only ever reads the legacy, combined
+  `qc_<stem>/manifest.json` — it never looked at the separate `outliers_<stem>` manifest a
+  post-#420 `remove_outliers` run would write. Fixed: each hit now carries `post_420_status`
+  (`"not_remediated"`, `"remediated_and_current"`, `"remediated_but_stale_again"`, or `"unknown"`
+  if the check itself fails), computed via `trim_staleness` — the same primitive
+  `list_existing_analyses` already surfaces, reused rather than re-implemented.
+- **`trim_is_stale` flattened two very different staleness reasons into one bit, in the one place
+  it matters most.** `trim_staleness` already distinguishes "a `qc_clean` ran since this trim was
+  made" from "no `qc`-class baseline exists at all" (a corruption-adjacent signal — Decision 1),
+  and the server-side log renders them differently — but `list_existing_analyses` collapsed both
+  into the same `trim_is_stale: true`, with the richer distinction visible only in a log line the
+  calling agent can't see. Fixed: the response now also includes `trim_based_on_qc_version` and
+  `trim_current_qc_version` (the latter `None` in exactly the no-baseline-at-all case) whenever
+  `trim_is_stale` is present, so the same distinction reaches whoever is actually calling the tool.
+- **Exception text reached a persisted report / a live tool response un-redacted.** The local
+  storage backend already redacts absolute host paths from its own errors
+  (`storage_backend._redacted_io_error`); the Supabase backend's `storage3`/`httpx` errors had no
+  equivalent convention, and both the audit script's per-stem `errors` and
+  `list_existing_analyses`'s `trim_staleness` failure message used raw `str(exc)`. Fixed: a new
+  `experiment_utils.safe_error_text` helper truncates and strips `apikey`/`authorization`/`bearer`
+  fragments before either destination — not a comprehensive secret scanner, but closes the
+  asymmetry with the local backend's existing convention.
+- **The persisted report had no scope caveat baked into the artifact itself, and its key could
+  collide.** The current-state-only scope note (Decision 4) lived only in this module's docstring
+  — a `"hits": []` result read months later, possibly pasted into a ticket with no memory of this
+  script, would likely be misread as "fully clear." Fixed: `write_report` now embeds a
+  `scope_note` string directly in the persisted payload. Separately, report keys were
+  per-second-timestamped with no collision check — two runs finishing in the same second (two
+  engineers, or a retry after what looked like a hang) would silently overwrite one another. Fixed:
+  the key now also carries a short random suffix.
+- **`REMOVE_OUTLIERS_TOOL_NAME` drift risk, now with an actual test guard.** The audit script and
+  test fixtures hardcoded the literal `"remove_outliers"` in several places, but the value actually
+  persisted at commit time is `func.__name__` of the decorated function (`contract/wrap.py`), not
+  any constant — a future rename would silently desync the two. A shared
+  `experiment_utils.REMOVE_OUTLIERS_TOOL_NAME` constant single-sources the *comparison* side, and a
+  new regression test (`test_remove_outliers_tool_name_constant_matches_the_real_function_name`)
+  asserts it equals `remove_outliers.remove_outliers.__name__` — the one part of this that can
+  actually be caught by a test, since the constant alone can't prevent the rename, only detect it.
+- **The 30-second response cache can serve a just-invalidated `trim_is_stale` value.**
+  `list_existing_analyses`'s existing per-experiment cache (pre-dating this change) has no
+  invalidation hook on a `qc_clean`/`remove_outliers` commit, so `trim_is_stale` inherits that
+  same, pre-existing staleness-window property — check, then commit the action that invalidates
+  the check, then re-check within the cache window, and the stale cached value comes back. Not
+  fixed structurally (that would mean threading a cache-invalidation call into every committing
+  tool, a materially larger change than this proposal's scope); disclosed explicitly in the tool's
+  own docstring instead, so a caller knows to wait out the window or treat their own just-completed
+  commit as invalidating their assumption.
+
 ## Risks / Trade-offs
 
 - **`trim_is_stale` adds one extra pair of manifest reads to `list_existing_analyses`** — bounded
@@ -283,6 +349,19 @@ on:
   policy backing `bloommcp-data`), and `bloommcp/src/bloom_mcp/identity.py` documents that every
   existing tool already reads under this same shared, bucket-wide role; there is no
   per-scientist/per-experiment RLS boundary for a bucket-wide scan to bypass.
+- **`list_existing_analyses.py`'s coupling to `AnalysisDir` (Decision 2) is a disclosed exception,
+  not a silently-hidden one, but it is still a coupling.** Any existing test for this file that
+  seeds only `FakeReader`/`FakeResultStore` (no `local_manifest_backend`) now hits a real
+  storage-backend construction attempt on every call — caught and turned into a permanent `errors`
+  entry when unconfigured (verified by
+  `test_no_storage_backend_configured_is_reported_not_raised`), so nothing breaks today, but the
+  `analyses` payload (via `ResultStore`) and `trim_is_stale` (via `AnalysisDir` directly) only
+  *happen* to agree on where an experiment's data lives because both currently resolve through the
+  same single active storage backend. If a future `ResultStore` adapter is ever backed by
+  something other than `AnalysisDir` (e.g. a DB-direct migration, already in progress for other
+  reads elsewhere in this codebase), `trim_staleness` could silently read from a different location
+  than `analyses` does, with nothing today catching that divergence. Not fixed here — flagged for
+  whoever builds that future adapter to reconcile.
 - **Cross-proposal sequencing hazard, same class #420's own design.md flagged for a different
   pair of changes.** `fix-bloommcp-remove-outliers-tool-class` (#420/PR #576) is merged into code
   but its OpenSpec change is **not yet archived** — the canonical

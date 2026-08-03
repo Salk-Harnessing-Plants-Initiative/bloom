@@ -357,6 +357,17 @@ CLEANED_CSV_NAME = "_cleaned.csv"
 QC_TOOL_CLASS = "qc"
 OUTLIERS_TOOL_CLASS = "outliers"
 
+# The `tool` value `remove_outliers` commits are recorded under. NOTE: this does
+# **not** eliminate the drift risk it single-sources against — the actual
+# persisted value is `func.__name__` of the decorated `remove_outliers` function
+# (see `contract/wrap.py`), not this constant; a future rename of that function
+# would silently desync this literal from what's actually written, with nothing
+# to catch it except the regression test in
+# `tests/test_remove_outliers_tool.py` that asserts this constant equals
+# `remove_outliers.remove_outliers.__name__`. Still worth single-sourcing the
+# *comparison* side (the audit script, test fixtures) against one name.
+REMOVE_OUTLIERS_TOOL_NAME = "remove_outliers"
+
 # Cleaned-producing tool classes, lowest to highest resolution priority. `outliers`
 # outranks `qc`: for version="latest", a trim (once one exists) is preferred over a
 # plain clean regardless of which was committed more recently — see
@@ -529,6 +540,36 @@ def _resolve_versioned_cleaned(
     return None, None, None
 
 
+def safe_error_text(exc: Exception, limit: int = 300) -> str:
+    """Bound and lightly redact an exception's text before it lands in a
+    persisted report or a live tool response.
+
+    Not a comprehensive secret scanner -- but the local storage backend
+    already redacts absolute host paths from its own errors
+    (`storage_backend._redacted_io_error`), and the Supabase backend's
+    `storage3`/`httpx` errors have no equivalent convention today. Truncates
+    to `limit` characters and strips anything that looks like an
+    `apikey`/`authorization`/`bearer` header fragment, so an accidental
+    credential/token substring doesn't propagate verbatim into a report file
+    described as something that "might later be pasted into a ticket," or
+    into a live MCP tool response.
+    """
+    import re
+
+    # Handles both "key=value"/"key: value" forms and a standalone "Bearer
+    # <token>" following an "Authorization:" prefix (consuming "Bearer" as
+    # part of the same match, not as a second, independent keyword match that
+    # would otherwise leave the actual token right after it untouched).
+    text = re.sub(
+        r"(?i)\b(apikey|authorization|bearer)\b[:=\s]*(?:bearer\s+)?\S+",
+        r"\1=<redacted>",
+        str(exc),
+    )
+    if len(text) > limit:
+        text = text[:limit] + "...<truncated>"
+    return text
+
+
 class TrimStaleness(NamedTuple):
     """Result of comparing an experiment's `outliers`-class trim against the
     current `qc`-class latest. `current_qc_label` is `None` only in the
@@ -539,7 +580,7 @@ class TrimStaleness(NamedTuple):
     current_qc_label: Optional[str]
 
 
-def trim_staleness(stem: str) -> Optional["TrimStaleness"]:
+def trim_staleness(stem: str) -> Optional[TrimStaleness]:
     """Whether `stem`'s current `outliers`-class trim is stale relative to the
     current `qc`-class latest.
 

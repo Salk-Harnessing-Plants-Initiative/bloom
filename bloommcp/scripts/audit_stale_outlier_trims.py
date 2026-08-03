@@ -24,14 +24,23 @@ every historical exposure window a manifest ever passed through (as opposed to
 reporting experiments whose trim is *currently* superseded) is a heavier, unscoped
 lift -- see `openspec/changes/add-bloommcp-outliers-staleness-audit/design.md`.
 
+Each hit also carries `post_420_status` (`"not_remediated"`, `"remediated_and_current"`,
+`"remediated_but_stale_again"`, or `"unknown"`): this legacy `qc_<stem>` manifest is
+never written to again after #420, so without this annotation a hit is reported
+identically forever, indistinguishable from "still exposed" from "already fixed" by a
+later, post-#420 `remove_outliers` run against the separate `outliers_<stem>` manifest.
+Computed via `trim_staleness` -- the same primitive `list_existing_analyses` surfaces.
+
 Read-only: the core scan (`scan_for_stale_outlier_trims`) never imports or calls
 `write_manifest`/`upload_file`/`write_json` -- it never touches a `qc_<stem>` or
 `outliers_<stem>` manifest. The one write this script performs is its own report,
-persisted as a new, timestamped, self-describing JSON object under a dedicated
-`bloommcp_output/_audit_reports/` prefix (never overwriting any experiment
-manifest) -- a deliberate, disclosed exception to "read-only," and the one place
-this script's behavior extends beyond #585's literal "report-only" ask (a durable
-artifact, not only stdout).
+persisted as a new, timestamped, self-describing JSON object (including this
+module's `SCOPE_NOTE` in the payload itself, and a random suffix in its key so
+two runs finishing in the same second can't clobber each other) under a
+dedicated `bloommcp_output/_audit_reports/` prefix (never overwriting any
+experiment manifest) -- a deliberate, disclosed exception to "read-only," and
+the one place this script's behavior extends beyond #585's literal
+"report-only" ask (a durable artifact, not only stdout).
 
 Run this against a real environment's bucket, not an empty local/dev one -- it
 finds nothing meaningful otherwise. It uses the same storage configuration
@@ -48,10 +57,16 @@ from __future__ import annotations
 
 import json
 import sys
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from bloom_mcp.experiment_utils import QC_TOOL_CLASS
+from bloom_mcp.experiment_utils import (
+    QC_TOOL_CLASS,
+    REMOVE_OUTLIERS_TOOL_NAME,
+    safe_error_text,
+    trim_staleness,
+)
 from bloom_mcp.manifest import AnalysisDir
 from bloom_mcp.storage_backend import active_backend_name
 from bloom_mcp.supabase_client import list_prefix, write_json
@@ -59,6 +74,21 @@ from bloom_mcp.supabase_client import list_prefix, write_json
 _QC_PREFIX = f"{QC_TOOL_CLASS}_"
 _OUTPUT_ROOT = "bloommcp_output"
 _REPORT_PREFIX = f"{_OUTPUT_ROOT}/_audit_reports/"
+
+# Persisted verbatim into every report (payload, not just this module's
+# docstring) so a report read months later -- possibly pasted into a ticket
+# with no memory of this script's source -- isn't misread as "fully clear"
+# when it's actually silent about a real, narrower gap.
+SCOPE_NOTE = (
+    "Reports only experiments whose trim is CURRENTLY superseded (the "
+    "manifest's current `latest` entry was authored by a tool other than "
+    "remove_outliers). A manifest whose history shows "
+    "qc_clean -> remove_outliers -> qc_clean -> remove_outliers, where the "
+    "second remove_outliers is the current latest, is NOT reported -- even "
+    "though a real, temporary exposure window existed between the two "
+    "qc_clean commits. This is a current-state audit, not a full historical "
+    "exposure-window reconstruction."
+)
 
 
 def scan_for_stale_outlier_trims() -> dict[str, Any]:
@@ -94,7 +124,7 @@ def scan_for_stale_outlier_trims() -> dict[str, Any]:
         except (
             Exception
         ) as exc:  # noqa: BLE001 - best-effort forensic sweep, see docstring
-            errors.append({"stem": stem, "error": str(exc)})
+            errors.append({"stem": stem, "error": safe_error_text(exc)})
             continue
 
         if manifest is None:
@@ -121,19 +151,29 @@ def scan_for_stale_outlier_trims() -> dict[str, Any]:
                 }
             )
             continue
-        if latest_entry.tool == "remove_outliers":
+        if latest_entry.tool == REMOVE_OUTLIERS_TOOL_NAME:
             # The current latest is itself a trim -- still live, not a hit,
             # regardless of how many earlier remove_outliers entries exist
             # (issue #419's legitimate re-trim pattern).
             continue
 
         remove_outliers_entries = [
-            v for v in manifest.versions if v.tool == "remove_outliers"
+            v for v in manifest.versions if v.tool == REMOVE_OUTLIERS_TOOL_NAME
         ]
         if not remove_outliers_entries:
             continue
 
-        superseded = max(remove_outliers_entries, key=lambda v: v.created_at)
+        # `created_at` is second-granularity (contract/provenance.py); two
+        # remove_outliers commits within the same wall-clock second would tie
+        # under a bare `max(..., key=created_at)`, and Python's max() keeps
+        # the FIRST maximal element -- silently naming the earlier, wrong
+        # entry as "superseded". manifest.versions is in commit/append order,
+        # so break ties on position (higher index = more recent).
+        superseded = max(
+            enumerate(remove_outliers_entries),
+            key=lambda pair: (pair[1].created_at, pair[0]),
+        )[1]
+
         hits.append(
             {
                 "stem": stem,
@@ -142,6 +182,7 @@ def scan_for_stale_outlier_trims() -> dict[str, Any]:
                 "current_latest_id": latest_entry.id,
                 "current_latest_tool": latest_entry.tool,
                 "current_latest_created_at": latest_entry.created_at,
+                "post_420_status": _post_420_status(stem),
             }
         )
 
@@ -152,22 +193,56 @@ def scan_for_stale_outlier_trims() -> dict[str, Any]:
     }
 
 
+def _post_420_status(stem: str) -> str:
+    """Whether a historical hit has since been remediated by a post-#420
+    `remove_outliers` run (which commits to the separate `outliers_<stem>`
+    manifest this scan's legacy `qc_<stem>` read never looks at) -- without
+    this, a hit is reported identically forever, indistinguishable from
+    "still exposed" vs. "already fixed", even though `trim_staleness` (the
+    same primitive `list_existing_analyses` uses) can answer that cheaply.
+
+    One of `"not_remediated"` (no post-#420 `remove_outliers` run at all),
+    `"remediated_and_current"`, `"remediated_but_stale_again"` (a fresh
+    `qc_clean` ran after that later trim), or `"unknown"` (the check itself
+    failed -- reported as a status, not silently swallowed into a crash of
+    the whole scan).
+    """
+    try:
+        result = trim_staleness(stem)
+    except Exception:  # noqa: BLE001 - annotation-only, must not abort the scan
+        return "unknown"
+    if result is None:
+        return "not_remediated"
+    return "remediated_but_stale_again" if result.is_stale else "remediated_and_current"
+
+
 def write_report(report: dict[str, Any]) -> str:
     """Persist `report` as a self-describing, timestamped JSON object.
 
-    Adds `scanned_at` (ISO-8601 UTC) and `storage_backend` to the payload
-    itself (not only the object's key) so the report stays interpretable if
-    later moved, renamed, or copied elsewhere. Writes under a dedicated
-    `_audit_reports/` prefix, distinct from any `qc_<stem>`/`outliers_<stem>`
-    manifest -- this is the one write this script performs.
+    Adds `scanned_at` (ISO-8601 UTC), `storage_backend`, and `scope_note` to
+    the payload itself (not only this module's docstring, and not only the
+    object's key) so the report stays interpretable -- including its own
+    detection-scope caveat -- if later moved, renamed, or copied elsewhere
+    (e.g. pasted into a ticket with no memory of this script's source).
+    Writes under a dedicated `_audit_reports/` prefix, distinct from any
+    `qc_<stem>`/`outliers_<stem>` manifest -- this is the one write this
+    script performs. The key includes a short random suffix (not just a
+    per-second timestamp) so two runs completing in the same wall-clock
+    second -- e.g. two engineers, or a retry after what looked like a hang --
+    can't silently overwrite one another.
     """
     now = datetime.now(timezone.utc)
     payload = {
         "scanned_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "storage_backend": active_backend_name(),
+        "scope_note": SCOPE_NOTE,
         **report,
     }
-    key = f"{_REPORT_PREFIX}stale_outlier_trims_{now.strftime('%Y%m%dT%H%M%SZ')}.json"
+    suffix = uuid.uuid4().hex[:8]
+    key = (
+        f"{_REPORT_PREFIX}stale_outlier_trims_"
+        f"{now.strftime('%Y%m%dT%H%M%SZ')}_{suffix}.json"
+    )
     write_json(key, payload)
     return key
 
@@ -185,11 +260,15 @@ def run() -> int:
     except (
         Exception
     ) as exc:  # noqa: BLE001 - top-level failure, reported then exits non-zero
-        print(f"error: could not enumerate manifests: {exc}", file=sys.stderr)
+        print(
+            f"error: could not enumerate manifests: {safe_error_text(exc)}",
+            file=sys.stderr,
+        )
         return 1
 
     key = write_report(report)
     print(json.dumps(report, indent=2))
+    print(f"scope: {SCOPE_NOTE}")
     print(
         f"{report['experiments_scanned']} experiments scanned, "
         f"{len(report['hits'])} hits, {len(report['errors'])} errors, "

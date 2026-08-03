@@ -72,6 +72,9 @@ def test_reports_a_silently_superseded_trim(local_manifest_backend):
     assert hit["current_latest_id"] == "v3"
     assert hit["current_latest_tool"] == "qc_clean"
     assert hit["current_latest_created_at"] == "2026-01-01T00:00:02Z"
+    assert (
+        hit["post_420_status"] == "not_remediated"
+    )  # no outliers_<stem> manifest at all
     assert report["errors"] == []
     assert report["experiments_scanned"] == 1
 
@@ -163,6 +166,61 @@ def test_hit_names_most_recently_committed_superseded_trim(local_manifest_backen
 
     hit = _hit_for(report, "exp_b2")
     assert hit["superseded_entry_id"] == "v3"  # not v2 -- the more recent one
+
+
+# --- (b3) tie-break when two remove_outliers entries share a created_at ------
+def test_hit_names_later_entry_on_a_same_second_created_at_tie(local_manifest_backend):
+    """`created_at` is second-granularity; two `remove_outliers` commits within
+    the same wall-clock second (a scripted backfill, or a rapid re-trim -- #419's
+    own workflow) must not fall back to `max()`'s first-encountered-wins default,
+    which would silently name the EARLIER entry as superseded."""
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp_b3",
+        "qc",
+        "v1",
+        "2026-01-01T00:00:00Z",
+        b"a\n1\n",
+        tool="qc_clean",
+        based_on_version="raw",
+    )
+    append_cleaned_version(
+        local_manifest_backend,
+        "exp_b3",
+        "qc",
+        "v2",
+        "2026-01-01T00:00:01Z",  # identical to v3's timestamp
+        b"trim\n1\n",
+        tool="remove_outliers",
+        based_on_version="v1_cleaned",
+    )
+    append_cleaned_version(
+        local_manifest_backend,
+        "exp_b3",
+        "qc",
+        "v3",
+        "2026-01-01T00:00:01Z",  # same second as v2 -- v3 is still the later commit
+        b"trim\n2\n",
+        tool="remove_outliers",
+        based_on_version="v1_cleaned",
+    )
+    append_cleaned_version(
+        local_manifest_backend,
+        "exp_b3",
+        "qc",
+        "v4",
+        "2026-01-01T00:00:02Z",
+        b"a\n1\n2\n",
+        tool="qc_clean",
+        based_on_version="raw",
+    )
+
+    report = audit.scan_for_stale_outlier_trims()
+
+    hit = _hit_for(report, "exp_b3")
+    assert (
+        hit["superseded_entry_id"] == "v3"
+    )  # the later-committed one, despite the tie
 
 
 # --- (c) no remove_outliers history at all ------------------------------------
@@ -291,6 +349,194 @@ def test_manifest_with_no_latest_pointer_is_not_a_hit(local_manifest_backend):
     assert report["errors"] == []
 
 
+# --- dangling manifest.latest pointer (no matching VersionEntry) -------------
+def test_dangling_latest_pointer_is_reported_as_an_error_not_a_crash(
+    local_manifest_backend,
+):
+    from bloom_mcp.manifest import (
+        ExperimentBlock,
+        Manifest,
+        VersionEntry,
+        get_code_versions,
+        write_manifest,
+    )
+
+    entry = VersionEntry(
+        id="v1",
+        created_at="2026-01-01T00:00:00Z",
+        tool="qc_clean",
+        params={},
+        based_on_version="raw",
+        code_versions=get_code_versions(),
+        outputs={"_cleaned.csv": "_cleaned.csv"},
+        version_dir="v1_2026-01-01",
+    )
+    manifest = Manifest(
+        experiment=ExperimentBlock(
+            filename="exp_dangling.csv", source_path="", input_sha256=""
+        ),
+        versions=[entry],
+        latest="v99",  # does not exist in `versions`
+    )
+    write_manifest("bloommcp_output/qc_exp_dangling/", manifest)
+
+    report = audit.scan_for_stale_outlier_trims()
+
+    assert report["hits"] == []
+    dangling_errors = [e for e in report["errors"] if e["stem"] == "exp_dangling"]
+    assert len(dangling_errors) == 1
+    assert "v99" in dangling_errors[0]["error"]
+    assert report["experiments_scanned"] == 1
+
+
+# --- post_420_status: has a hit already been remediated by a later, real trim? -
+def test_post_420_status_not_remediated_when_no_outliers_manifest_exists(
+    local_manifest_backend,
+):
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp_unremediated",
+        "qc",
+        "v1",
+        "2026-01-01T00:00:00Z",
+        b"a\n1\n",
+        tool="qc_clean",
+        based_on_version="raw",
+    )
+    append_cleaned_version(
+        local_manifest_backend,
+        "exp_unremediated",
+        "qc",
+        "v2",
+        "2026-01-01T00:00:01Z",
+        b"trim\n1\n",
+        tool="remove_outliers",
+        based_on_version="v1_cleaned",
+    )
+    append_cleaned_version(
+        local_manifest_backend,
+        "exp_unremediated",
+        "qc",
+        "v3",
+        "2026-01-01T00:00:02Z",
+        b"a\n1\n2\n",
+        tool="qc_clean",
+        based_on_version="raw",
+    )
+
+    hit = _hit_for(audit.scan_for_stale_outlier_trims(), "exp_unremediated")
+    assert hit["post_420_status"] == "not_remediated"
+
+
+def test_post_420_status_remediated_and_current_after_a_fresh_post_420_trim(
+    local_manifest_backend,
+):
+    # The legacy hit (pre-#420 pattern) ...
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp_fixed",
+        "qc",
+        "v1",
+        "2026-01-01T00:00:00Z",
+        b"a\n1\n",
+        tool="qc_clean",
+        based_on_version="raw",
+    )
+    append_cleaned_version(
+        local_manifest_backend,
+        "exp_fixed",
+        "qc",
+        "v2",
+        "2026-01-01T00:00:01Z",
+        b"trim\n1\n",
+        tool="remove_outliers",
+        based_on_version="v1_cleaned",
+    )
+    append_cleaned_version(
+        local_manifest_backend,
+        "exp_fixed",
+        "qc",
+        "v3",
+        "2026-01-01T00:00:02Z",
+        b"a\n1\n2\n",
+        tool="qc_clean",
+        based_on_version="raw",
+    )
+    # ... plus a post-#420-style trim, committed to the SEPARATE outliers_<stem>
+    # manifest, based on the current qc latest (v3) -- fully remediated.
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp_fixed",
+        "outliers",
+        "v1",
+        "2026-01-01T00:00:03Z",
+        b"trim\n2\n",
+        tool="remove_outliers",
+        based_on_version="v3_cleaned",
+    )
+
+    hit = _hit_for(audit.scan_for_stale_outlier_trims(), "exp_fixed")
+    assert hit["post_420_status"] == "remediated_and_current"
+
+
+def test_post_420_status_remediated_but_stale_again(local_manifest_backend):
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp_restale",
+        "qc",
+        "v1",
+        "2026-01-01T00:00:00Z",
+        b"a\n1\n",
+        tool="qc_clean",
+        based_on_version="raw",
+    )
+    append_cleaned_version(
+        local_manifest_backend,
+        "exp_restale",
+        "qc",
+        "v2",
+        "2026-01-01T00:00:01Z",
+        b"trim\n1\n",
+        tool="remove_outliers",
+        based_on_version="v1_cleaned",
+    )
+    append_cleaned_version(
+        local_manifest_backend,
+        "exp_restale",
+        "qc",
+        "v3",
+        "2026-01-01T00:00:02Z",
+        b"a\n1\n2\n",
+        tool="qc_clean",
+        based_on_version="raw",
+    )
+    # A post-#420 trim was made against v3 ...
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp_restale",
+        "outliers",
+        "v1",
+        "2026-01-01T00:00:03Z",
+        b"trim\n2\n",
+        tool="remove_outliers",
+        based_on_version="v3_cleaned",
+    )
+    # ... but a fourth qc_clean ran after that, staling the post-#420 trim too.
+    append_cleaned_version(
+        local_manifest_backend,
+        "exp_restale",
+        "qc",
+        "v4",
+        "2026-01-01T00:00:04Z",
+        b"a\n1\n2\n3\n",
+        tool="qc_clean",
+        based_on_version="raw",
+    )
+
+    hit = _hit_for(audit.scan_for_stale_outlier_trims(), "exp_restale")
+    assert hit["post_420_status"] == "remediated_but_stale_again"
+
+
 # --- (e) empty bucket ----------------------------------------------------------
 def test_empty_bucket_produces_empty_successful_report(local_manifest_backend):
     report = audit.scan_for_stale_outlier_trims()
@@ -362,6 +608,21 @@ def test_run_returns_zero_and_writes_report_on_success(local_manifest_backend, c
     assert written["errors"] == []
     assert "scanned_at" in written and written["scanned_at"].endswith("Z")
     assert written["storage_backend"] == "local"
+    assert written["scope_note"] == audit.SCOPE_NOTE
+    assert "current-state" in written["scope_note"].lower()
+
+
+def test_write_report_keys_never_collide_even_within_the_same_second(
+    local_manifest_backend,
+):
+    report = {"hits": [], "errors": [], "experiments_scanned": 0}
+
+    key_one = audit.write_report(report)
+    key_two = audit.write_report(report)
+
+    assert key_one != key_two
+    keys = _list_all_keys_under_report_prefix(local_manifest_backend)
+    assert len(keys) == 2
 
 
 def test_run_returns_one_and_writes_nothing_on_enumeration_failure(

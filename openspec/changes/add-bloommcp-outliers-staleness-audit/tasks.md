@@ -216,7 +216,46 @@
       uses from inside `experiment_utils.py`) — so a future reader of the guard understands its
       per-file `import` scan does not claim to catch transitive dependencies, by design.
 
-## 6. Validate
+## 6. Post-review fixes (independent PR review of implemented PR #587)
+
+- [x] 7.1 Fixed the audit's tie-break to resolve a same-second `created_at` collision to the
+      later-*committed* `remove_outliers` entry (position in `manifest.versions`), not whichever
+      one `max()` happens to keep first — regression test confirmed load-bearing by temporarily
+      reverting the fix and watching it fail.
+- [x] 7.2 Added `post_420_status` to each audit hit (`"not_remediated"` /
+      `"remediated_and_current"` / `"remediated_but_stale_again"` / `"unknown"`), computed via
+      `trim_staleness` against the separate `outliers_<stem>` manifest the legacy scan never
+      otherwise reads — without this, a hit was reported identically forever regardless of a later
+      remediation.
+- [x] 7.3 Added `trim_based_on_qc_version`/`trim_current_qc_version` to `list_existing_analyses`'s
+      response alongside `trim_is_stale`, so the ordinary-staleness-vs-no-qc-baseline distinction
+      `trim_staleness`/the server log already make reaches the calling agent, not only a log line.
+- [x] 7.4 Added `experiment_utils.safe_error_text` (bounded, `apikey`/`authorization`/`bearer`
+      redaction) and used it for both the audit script's per-stem errors and
+      `list_existing_analyses`'s `trim_staleness` failure message — closes an asymmetry with the
+      local storage backend's existing `_redacted_io_error` convention (Supabase-backend errors had
+      no equivalent).
+- [x] 7.5 Added a `scope_note` field to the audit report's persisted payload (not only this
+      module's docstring) describing the current-state-only detection scope, and a short random
+      suffix to the report's key so two runs finishing within the same wall-clock second cannot
+      silently overwrite one another.
+- [x] 7.6 Added `experiment_utils.REMOVE_OUTLIERS_TOOL_NAME` and a regression test
+      (`test_remove_outliers_tool_name_constant_matches_the_real_function_name`) asserting it
+      equals `remove_outliers.remove_outliers.__name__` — the actual persisted value is
+      `func.__name__` via `contract/wrap.py`, so the constant alone doesn't prevent drift on a
+      future rename, only this test catches it.
+- [x] 7.7 Documented (design.md Risks, `list_existing_analyses`'s docstring) that the existing
+      30-second response cache has no invalidation hook on a `qc_clean`/`remove_outliers` commit,
+      so `trim_is_stale` inherits that pre-existing staleness-window property — not fixed
+      structurally (out of this proposal's scope), disclosed instead.
+- [x] 7.8 Added regression tests for: a dangling `manifest.latest` pointer (schema-valid manifest,
+      `latest` names an id absent from `versions`) reported as an error, not a crash; `trim_is_stale`
+      co-occurring with an unrelated tool-class `errors` entry in the same call, proving neither is
+      dropped; and `write_report`'s persisted payload content (`scope_note`, key uniqueness).
+- [x] 7.9 Promoted `manifest_fixtures` imports in `test_storage_backend.py` to the top of the file
+      (previously local to the section that needed them, with a `noqa: E402`).
+
+## 7. Validate
 
 - [x] 6.1 `npx -y -p @fission-ai/openspec openspec validate add-bloommcp-outliers-staleness-audit --strict`
       passes.

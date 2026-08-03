@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from bloom_mcp import storage_backend as sb
+from manifest_fixtures import write_cleaned_manifest, write_invalid_schema_manifest
 
 
 @pytest.fixture(autouse=True)
@@ -882,13 +883,10 @@ def test_resolve_versioned_cleaned_via_local_list_prefix_fallback(
 
 # ─── 5b. #420 — outliers-preferring "latest" vs qc-only "latest_qc" ────────────
 #
-# `write_cleaned_manifest`/`write_invalid_schema_manifest` live in
-# `manifest_fixtures.py`; `local_manifest_backend` lives in `conftest.py` — both
-# promoted out of here (bloom#585) so other test files can build real, on-disk
-# manifests too.
-
-from manifest_fixtures import write_cleaned_manifest  # noqa: E402
-from manifest_fixtures import write_invalid_schema_manifest  # noqa: E402
+# `write_cleaned_manifest`/`write_invalid_schema_manifest` (imported at top of
+# file) live in `manifest_fixtures.py`; `local_manifest_backend` lives in
+# `conftest.py` — both promoted out of here (bloom#585) so other test files can
+# build real, on-disk manifests too.
 
 
 def test_latest_resolves_qc_only_unqualified(local_manifest_backend):
@@ -1254,6 +1252,37 @@ def test_latest_logs_distinct_message_when_no_qc_baseline_at_all(
         "no qc" in r.message.lower() and "could be found" in r.message.lower()
         for r in caplog.records
     )
+
+
+# ─── 5d. bloom#585 review — `safe_error_text` redaction/truncation ────────────
+
+
+def test_safe_error_text_truncates_long_messages():
+    from bloom_mcp.experiment_utils import safe_error_text
+
+    text = safe_error_text(RuntimeError("x" * 500), limit=50)
+    assert len(text) <= len("...<truncated>") + 50
+    assert text.endswith("...<truncated>")
+
+
+def test_safe_error_text_redacts_apikey_and_bearer_fragments():
+    from bloom_mcp.experiment_utils import safe_error_text
+
+    text = safe_error_text(
+        RuntimeError("request failed: apikey=sk_live_deadbeef1234 (401)")
+    )
+    assert "sk_live_deadbeef1234" not in text
+    assert "apikey=<redacted>" in text
+
+    text2 = safe_error_text(RuntimeError("Authorization: Bearer abc.def.ghi"))
+    assert "abc.def.ghi" not in text2
+
+
+def test_safe_error_text_leaves_ordinary_messages_unchanged():
+    from bloom_mcp.experiment_utils import safe_error_text
+
+    text = safe_error_text(RuntimeError("manifest schema error for 'exp': boom"))
+    assert text == "manifest schema error for 'exp': boom"
 
 
 # ─── 6. BLOOM_LOCAL_ROOT (#479) ─────────────────────────────────────────────────

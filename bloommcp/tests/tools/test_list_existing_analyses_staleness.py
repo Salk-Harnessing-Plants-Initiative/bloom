@@ -67,6 +67,10 @@ def test_current_trim_reports_not_stale(injected_ports, local_manifest_backend):
     )
 
     assert response["trim_is_stale"] is False
+    # Discriminator fields: a caller can tell "current" from "no qc baseline at
+    # all" without the server-side log line only #420/#585's own log call sees.
+    assert response["trim_based_on_qc_version"] == "v1_cleaned"
+    assert response["trim_current_qc_version"] == "v1_cleaned"
 
 
 def test_stale_trim_reports_stale(injected_ports, local_manifest_backend):
@@ -90,6 +94,67 @@ def test_stale_trim_reports_stale(injected_ports, local_manifest_backend):
     )
 
     assert response["trim_is_stale"] is True
+    assert response["trim_based_on_qc_version"] == "v1_cleaned"
+    assert response["trim_current_qc_version"] == "v2_cleaned"
+
+
+def test_no_qc_baseline_reports_stale_with_null_current_version(
+    injected_ports, local_manifest_backend
+):
+    """The no-`qc`-baseline-at-all corner (design.md Decision 1): `trim_is_stale`
+    is `True`, but `trim_current_qc_version` is `None` — a caller can tell this
+    apart from ordinary "a qc_clean ran since" staleness without needing the
+    server-side log line."""
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:00Z",
+        b"trim\n1\n",
+    )
+
+    response = json.loads(
+        list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+    )
+
+    assert response["trim_is_stale"] is True
+    assert response["trim_current_qc_version"] is None
+
+
+def test_trim_is_stale_and_an_unrelated_tool_class_error_both_survive_together(
+    injected_ports, local_manifest_backend, monkeypatch
+):
+    """A `trim_staleness` result and an unrelated tool-class `list_runs` failure
+    happening in the same call must both land in the response — neither should
+    silently drop the other (bloom#585 review: the two failure/success paths
+    populate `errors`/`trim_is_stale` independently, but only a co-occurrence
+    test proves neither write clobbers the other)."""
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:01Z",
+        b"trim\n1\n",
+    )
+    _reader, store = injected_ports
+
+    def _boom(_experiment, _tool_class):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(store, "list_runs", _boom)
+
+    response = json.loads(
+        list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+    )
+
+    assert response["trim_is_stale"] is False
+    assert any(e.startswith("qc: ") for e in response["errors"])
+    assert len(response["errors"]) == len(list_existing_analyses_mod.TOOL_CLASSES)
 
 
 def test_trim_staleness_failure_is_reported_not_raised(injected_ports, monkeypatch):

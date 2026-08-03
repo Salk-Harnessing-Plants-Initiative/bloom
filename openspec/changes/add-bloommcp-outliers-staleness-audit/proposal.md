@@ -106,5 +106,15 @@ left out of #420 to keep its scope to the resolution-logic fix, and filed as
   narrow, transitive `trim_staleness` exception for `list_existing_analyses.py`).
 - **No call-site or behavior change** to `remove_outliers`, `qc_clean`, or any `require_clean=True`
   consumer — this change only adds detection/reporting surfaces.
+- **Post-review addendum (design.md):** an independent PR review of the implemented change found
+  and fixed several further gaps — a same-second `created_at` tie-break bug in the audit script; a
+  `post_420_status` annotation per hit (via `trim_staleness`) so a historical hit isn't reported
+  identically forever after it's actually been remediated; `trim_based_on_qc_version`/
+  `trim_current_qc_version` alongside `trim_is_stale` in `list_existing_analyses`'s response, so the
+  ordinary-staleness-vs-no-baseline distinction reaches the calling agent, not only a log line; a
+  new `experiment_utils.safe_error_text` redaction/truncation helper used by both new error paths;
+  a `scope_note` embedded in the persisted audit report payload itself; collision-resistant report
+  keys; and a `REMOVE_OUTLIERS_TOOL_NAME` constant with a regression test guarding the one part of
+  its own drift risk a test actually can catch.
 - Refs: #585 (this issue, closes), #420 / PR #576 (`fix-bloommcp-remove-outliers-tool-class`,
-  the change that flagged both gaps and filed #585 as their follow-up).
+  the change that flagged both gaps and filed #585 as their follow-up), PR #587 (this change).

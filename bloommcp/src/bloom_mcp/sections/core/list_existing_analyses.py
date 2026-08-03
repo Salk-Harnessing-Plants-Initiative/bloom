@@ -18,6 +18,7 @@ from pathlib import Path
 from bloom_mcp.experiment_utils import (
     OUTLIERS_TOOL_CLASS,
     QC_TOOL_CLASS,
+    safe_error_text,
     trim_staleness,
 )
 from bloom_mcp.tools import _ports
@@ -59,7 +60,13 @@ def list_existing_analyses(experiment_filename: str) -> str:
     ``ResultStore``. Use this at the start of any analysis session to see
     what's already been done and avoid redundant computation.
 
-    Results are cached per experiment for 30 seconds.
+    Results are cached per experiment for 30 seconds — including ``trim_is_stale``
+    below, with no invalidation hook on a ``qc_clean``/``remove_outliers`` commit:
+    calling this, then running the action that makes a trim stale, then
+    re-checking within the cache window can return the pre-action, now-stale
+    cached value. Call again after the 30-second window (or treat a
+    just-completed commit as invalidating your own cached assumption about
+    this experiment) rather than trusting an immediate re-check.
 
     The response includes a top-level ``trim_is_stale`` boolean whenever this
     experiment has an ``outliers``-class (``remove_outliers``) version, so a
@@ -67,7 +74,14 @@ def list_existing_analyses(experiment_filename: str) -> str:
     separate ``require_clean=True`` read. This field is advisory only: it is
     omitted both when the experiment has never been trimmed and when the check
     itself fails — if it is absent, check ``errors`` for a ``trim_staleness``
-    entry before concluding the experiment was never trimmed.
+    entry before concluding the experiment was never trimmed. When present,
+    ``trim_based_on_qc_version`` names the ``qc``-class version the trim was
+    made from, and ``trim_current_qc_version`` names the ``qc``-class version
+    that is current now (``None`` when no ``qc``-class version exists for this
+    experiment at all — a corruption-adjacent state, not ordinary staleness;
+    see ``experiment_utils.trim_staleness``) — the same distinction the
+    server-side staleness log makes, now visible to whoever is calling this
+    tool rather than only in a log line they can't see.
 
     Args:
         experiment_filename: CSV filename, e.g. "alfalfa_gwas_wave2.csv"
@@ -99,13 +113,11 @@ def list_existing_analyses(experiment_filename: str) -> str:
         if runs:
             by_tool_class[tool_class] = [dataclasses.asdict(r) for r in runs]
 
-    trim_is_stale: bool | None = None
+    staleness = None
     try:
         staleness = trim_staleness(Path(experiment_filename).stem)
-        if staleness is not None:
-            trim_is_stale = staleness.is_stale
     except Exception as exc:  # noqa: BLE001 - advisory-only; never fail the whole call
-        errors.append(f"trim_staleness: {exc}")
+        errors.append(f"trim_staleness: {safe_error_text(exc)}")
 
     response: dict = {
         "experiment_filename": experiment_filename,
@@ -113,8 +125,10 @@ def list_existing_analyses(experiment_filename: str) -> str:
     }
     if not by_tool_class:
         response["message"] = f"No prior analyses found for '{experiment_filename}'."
-    if trim_is_stale is not None:
-        response["trim_is_stale"] = trim_is_stale
+    if staleness is not None:
+        response["trim_is_stale"] = staleness.is_stale
+        response["trim_based_on_qc_version"] = staleness.outliers_based_on_version
+        response["trim_current_qc_version"] = staleness.current_qc_label
     if errors:
         response["errors"] = errors
 
