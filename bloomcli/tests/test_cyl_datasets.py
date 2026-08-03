@@ -192,6 +192,7 @@ def test_fetch_experiments_with_datasets_joins_names_and_sorts():
             self.table = table
 
         def select(self, sel):
+            captured.setdefault("selects", {})[self.table] = sel
             return self
 
         def in_(self, col, vals):
@@ -213,7 +214,43 @@ def test_fetch_experiments_with_datasets_joins_names_and_sorts():
     out = ds.fetch_experiments_with_datasets(_Client())
     assert captured["in"] == ("id", [3, 7])  # distinct ids, sorted
     assert captured["is_"] == ("deleted_at", "null")  # soft-deleted excluded
+    # pin table + select shape — a dropped species join or wrong table would blank the menu label
+    assert captured["selects"]["cyl_datasets"] == "experiment_id"
+    assert captured["selects"]["cyl_experiments"] == "id, name, species(common_name)"
     assert out == [(3, "Drought (Arabidopsis)"), (7, "Salt Screen (Rice)")]
+
+
+def test_fetch_experiments_with_datasets_id_breaks_label_tie():
+    # two experiments with an identical "name (species)" label -> id decides order (stable menu).
+    ds_rows = [{"experiment_id": 30}, {"experiment_id": 10}]
+    exp_rows = [
+        {"id": 30, "name": "Trial", "species": {"common_name": "Rice"}},
+        {"id": 10, "name": "Trial", "species": {"common_name": "Rice"}},
+    ]
+
+    class _Q:
+        def __init__(self, table):
+            self.table = table
+
+        def select(self, sel):
+            return self
+
+        def in_(self, col, vals):
+            return self
+
+        def is_(self, col, val):
+            return self
+
+        def execute(self):
+            data = ds_rows if self.table == "cyl_datasets" else exp_rows
+            return type("R", (), {"data": data})()
+
+    class _Client:
+        def table(self, name):
+            return _Q(name)
+
+    out = ds.fetch_experiments_with_datasets(_Client())
+    assert out == [(10, "Trial (Rice)"), (30, "Trial (Rice)")]  # same label -> lower id first
 
 
 def test_list_experiment_menu_filters(monkeypatch):
@@ -234,6 +271,48 @@ def test_list_experiment_menu_filters(monkeypatch):
     res = CliRunner().invoke(cli, ["cyl", "datasets", "list", "--experiment"], input="2\n")
     assert res.exit_code == 0, res.output
     assert captured["experiment_id"] == 7
+
+
+def test_list_experiment_non_tty_aborts(monkeypatch):
+    # --experiment in a pipe/CI (no stdin) must abort, never list a guessed filter.
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(
+        ds, "fetch_experiments_with_datasets", lambda client: [(3, "Drought (Arabidopsis)")]
+    )
+    called = {"fetched": False}
+
+    def fake_fetch(client, experiment_id=None):
+        called["fetched"] = True
+        return []
+
+    monkeypatch.setattr(ds, "fetch_datasets", fake_fetch)
+    res = CliRunner().invoke(cli, ["cyl", "datasets", "list", "--experiment"], input="")
+    assert res.exit_code != 0  # aborted, not a guessed listing
+    assert called["fetched"] is False
+
+
+def test_list_experiment_id_bypasses_menu(monkeypatch):
+    # The scriptable path: a typed --experiment-id must reach fetch_datasets WITHOUT the menu.
+    _patch_authed(monkeypatch)
+    called = {"menu": False}
+
+    def _menu(client):
+        called["menu"] = True
+        return [(3, "Drought (Arabidopsis)")]
+
+    monkeypatch.setattr(ds, "fetch_experiments_with_datasets", _menu)
+    captured = {}
+
+    def fake_fetch(client, experiment_id=None):
+        captured["experiment_id"] = experiment_id
+        return []
+
+    monkeypatch.setattr(ds, "fetch_datasets", fake_fetch)
+    # no stdin: if the menu wrongly opened, this would abort instead of exit 0
+    res = CliRunner().invoke(cli, ["cyl", "datasets", "list", "--experiment-id", "5"])
+    assert res.exit_code == 0, res.output
+    assert captured["experiment_id"] == 5  # typed id reaches the fetch
+    assert called["menu"] is False  # menu fetcher never called
 
 
 def test_list_experiment_menu_all_is_no_filter(monkeypatch):

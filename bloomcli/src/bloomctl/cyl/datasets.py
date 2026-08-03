@@ -129,7 +129,8 @@ def fetch_experiments_with_datasets(client: Any) -> list[tuple[int, str]]:  # su
         (e["id"], f"{e.get('name') or ''} ({(e.get('species') or {}).get('common_name') or '?'})")
         for e in exps
     ]
-    return sorted(items, key=lambda it: it[1].casefold())
+    # id as a tiebreak so two experiments with the same "name (species)" label order stably.
+    return sorted(items, key=lambda it: (it[1].casefold(), it[0]))
 
 
 @datasets.command(name="list")
