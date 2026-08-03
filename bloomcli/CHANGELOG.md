@@ -10,6 +10,10 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Changed
 
+- Docs: `README.md` and the PyPI landing page (`README.pypi.md`) reworked for usability —
+  a **Quickstart**, a **Common conventions** section (profiles, `--output`, interactive menus,
+  read/write roles), a full **`cyl download`** section (incl. `--experiment-name`), and a
+  **"Finding what to download"** walkthrough with real examples for the read commands.
 - `cyl accessions list`, `cyl accessions sample-counts`, and `cyl datasets list` now
   take `--output [csv|json]` (with `--json` kept as an alias for `--output json`) —
   the standard machine-output selector for `cyl` list commands, adding CSV export.
