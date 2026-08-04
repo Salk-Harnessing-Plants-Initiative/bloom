@@ -1377,161 +1377,76 @@ def test_validate_storage_backend_output_subfolder_blocked_by_file(
         sb.validate_storage_backend()
 
 
-# ─── 7. Signed URL generation (#581) ───────────────────────────────────────────
+# ─── 5d. bloom#593 — shared `fit_is_trustworthy` primitive ────────────────────
+# Promoted from `remove_outliers.py`'s private `_fit_is_trustworthy`/
+# `_UNTRUSTWORTHY_FIT` (#419) so `remove_outliers`'s live gate and
+# `audit_untrustworthy_outlier_fits.py`'s retroactive scan (#593) share one
+# definition. Direct unit tests here, in the primitive's new home — the same
+# "test the promoted primitive directly, not only indirectly through a consumer"
+# pattern `trim_staleness` (5c above) already established. A pure function of a
+# dict; no manifest fixtures needed.
 
 
-class _FakeSignClient:
-    """Stand-in for the storage3 bucket client's create_signed_url method."""
+def test_fit_is_trustworthy_none_when_no_fit_report():
+    """No `goodness_of_fit` at all (e.g. an `isolation_forest` trim) — nothing to
+    trust or distrust."""
+    from bloom_mcp import experiment_utils as eu
 
-    def __init__(self, response):
-        self._response = response
-        self.calls: list[tuple[str, int]] = []
-
-    def create_signed_url(self, path, expires_in):
-        self.calls.append((path, expires_in))
-        return self._response
+    assert eu.fit_is_trustworthy(None) is None
 
 
-def test_supabase_create_signed_url_extracts_signedURL_key(monkeypatch):
-    client = _FakeSignClient({"signedURL": "http://kong:8000/sign/a?token=x"})
-    monkeypatch.setattr(
-        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
-    )
-    monkeypatch.delenv("BLOOM_PUBLIC_SUPABASE_URL", raising=False)
+@pytest.mark.parametrize("fit_quality", sorted(["poor", "very_poor", "unknown"]))
+def test_fit_is_trustworthy_false_for_untrustworthy_qualities(fit_quality):
+    from bloom_mcp import experiment_utils as eu
 
-    url = sb.SupabaseStorageBackend().create_signed_url("k", 3600)
-
-    assert client.calls == [("k", 3600)]
-    assert url == "http://kong:8000/sign/a?token=x"
+    assert eu.fit_is_trustworthy({"fit_quality": fit_quality}) is False
+    assert fit_quality in eu.UNTRUSTWORTHY_FIT_QUALITIES
 
 
-def test_supabase_create_signed_url_extracts_signedUrl_key_variant(monkeypatch):
-    client = _FakeSignClient({"signedUrl": "http://kong:8000/sign/b?token=y"})
-    monkeypatch.setattr(
-        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
-    )
-    monkeypatch.delenv("BLOOM_PUBLIC_SUPABASE_URL", raising=False)
+@pytest.mark.parametrize("fit_quality", ["excellent", "good", "acceptable"])
+def test_fit_is_trustworthy_true_for_acceptable_or_better(fit_quality):
+    from bloom_mcp import experiment_utils as eu
 
-    url = sb.SupabaseStorageBackend().create_signed_url("k", 3600)
-
-    assert url == "http://kong:8000/sign/b?token=y"
+    assert eu.fit_is_trustworthy({"fit_quality": fit_quality}) is True
+    assert fit_quality not in eu.UNTRUSTWORTHY_FIT_QUALITIES
 
 
-def test_supabase_create_signed_url_raises_when_no_extractable_key(monkeypatch):
-    client = _FakeSignClient({"error": "not found"})
-    monkeypatch.setattr(
-        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
-    )
+def test_fit_is_trustworthy_true_when_fit_quality_key_absent():
+    """A dict missing the `fit_quality` key entirely reads as trustworthy (`None
+    not in UNTRUSTWORTHY_FIT_QUALITIES` is `True`) — a documented, pre-existing
+    corner (see the fit-gate proposal's design.md), not new behavior from this
+    promotion."""
+    from bloom_mcp import experiment_utils as eu
 
-    with pytest.raises(Exception):
-        sb.SupabaseStorageBackend().create_signed_url("k", 3600)
-
-
-def test_supabase_create_signed_url_rewrites_internal_host_to_public_base(
-    monkeypatch,
-):
-    client = _FakeSignClient(
-        {"signedURL": "http://kong:8000/storage/v1/object/sign/bucket/k?token=x"}
-    )
-    monkeypatch.setattr(
-        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
-    )
-    monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
-    monkeypatch.setenv("BLOOM_PUBLIC_SUPABASE_URL", "https://bloom.salk.edu/api")
-
-    url = sb.SupabaseStorageBackend().create_signed_url("k", 3600)
-
-    assert url == "https://bloom.salk.edu/api/storage/v1/object/sign/bucket/k?token=x"
+    assert eu.fit_is_trustworthy({}) is True
 
 
-def test_supabase_create_signed_url_no_rewrite_when_public_url_unset(monkeypatch):
-    client = _FakeSignClient({"signedURL": "http://kong:8000/sign/k?token=x"})
-    monkeypatch.setattr(
-        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
-    )
-    monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
-    monkeypatch.delenv("BLOOM_PUBLIC_SUPABASE_URL", raising=False)
+def test_fit_is_trustworthy_true_for_an_out_of_enum_fit_quality_value():
+    """(#593 PR review) A `fit_quality` value outside the known tiers entirely —
+    a typo, or a future delegate release adding a new tier this codebase doesn't
+    know about yet — fails open (reads trustworthy) via the exact same membership
+    check as the missing-key case above. Documented as a known false-negative
+    risk (design.md Risks, `#593`'s `SCOPE_NOTE`) rather than a silent one."""
+    from bloom_mcp import experiment_utils as eu
 
-    url = sb.SupabaseStorageBackend().create_signed_url("k", 3600)
-
-    assert url == "http://kong:8000/sign/k?token=x"
+    assert eu.fit_is_trustworthy({"fit_quality": "moderate"}) is True
 
 
-def test_supabase_create_signed_url_no_rewrite_when_supabase_url_unset(monkeypatch):
-    client = _FakeSignClient({"signedURL": "http://kong:8000/sign/k?token=x"})
-    monkeypatch.setattr(
-        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
-    )
-    monkeypatch.delenv("SUPABASE_URL", raising=False)
-    monkeypatch.setenv("BLOOM_PUBLIC_SUPABASE_URL", "https://bloom.salk.edu/api")
+def test_remove_outliers_no_longer_defines_its_own_fit_trustworthy_primitives():
+    """(#593) Symbol-relocation regression guard, mirroring #403's
+    `test_role_pattern_lists_live_here_not_in_experiment_utils` (inverted
+    direction): the whole point of promoting these to `experiment_utils` is a
+    single source of truth, so a future accidental reintroduction of a local
+    shadow copy in `remove_outliers.py` must be caught, not silently
+    reintroducing the exact drift risk this promotion removes."""
+    from bloom_mcp.sections.sleap_roots.analysis import remove_outliers
 
-    url = sb.SupabaseStorageBackend().create_signed_url("k", 3600)
+    assert not hasattr(remove_outliers, "_UNTRUSTWORTHY_FIT")
+    assert not hasattr(remove_outliers, "_fit_is_trustworthy")
+    # _REPORT_NAME/_TOOL_CLASS stay as local aliases (matching this file's
+    # existing `_TOOL_CLASS = OUTLIERS_TOOL_CLASS` convention) — assert they
+    # reference the single-sourced values, not a re-typed literal.
+    from bloom_mcp import experiment_utils as eu
 
-    assert url == "http://kong:8000/sign/k?token=x"
-
-
-def test_supabase_create_signed_url_no_rewrite_when_url_not_on_internal_host(
-    monkeypatch,
-):
-    client = _FakeSignClient({"signedURL": "https://other.example/sign/k?token=x"})
-    monkeypatch.setattr(
-        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
-    )
-    monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
-    monkeypatch.setenv("BLOOM_PUBLIC_SUPABASE_URL", "https://bloom.salk.edu/api")
-
-    url = sb.SupabaseStorageBackend().create_signed_url("k", 3600)
-
-    assert url == "https://other.example/sign/k?token=x"
-
-
-def test_local_create_signed_url_returns_served_url(monkeypatch, tmp_path):
-    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost:8811/output")
-    url = sb.LocalStorageBackend(tmp_path).create_signed_url(
-        "bloommcp_output/qc_x/v1/_cleaned.csv", 3600
-    )
-    assert url == "http://localhost:8811/output/bloommcp_output/qc_x/v1/_cleaned.csv"
-
-
-def test_local_create_signed_url_strips_trailing_slash(monkeypatch, tmp_path):
-    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost:8811/output/")
-    url = sb.LocalStorageBackend(tmp_path).create_signed_url("k/f.csv", 3600)
-    assert url == "http://localhost:8811/output/k/f.csv"
-
-
-def test_local_create_signed_url_ignores_expires_in(monkeypatch, tmp_path):
-    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost:8811/output")
-    b = sb.LocalStorageBackend(tmp_path)
-    assert b.create_signed_url("k", 60) == b.create_signed_url("k", 999999)
-
-
-def test_local_create_signed_url_raises_when_unset_no_path_leak(monkeypatch, tmp_path):
-    monkeypatch.delenv("BLOOM_STORAGE_URL", raising=False)
-    with pytest.raises(Exception) as exc:
-        sb.LocalStorageBackend(tmp_path).create_signed_url("k", 3600)
-    msg = str(exc.value)
-    assert str(tmp_path) not in msg
-    assert "file://" not in msg
-
-
-def test_storage_backend_protocol_includes_create_signed_url(tmp_path):
-    assert isinstance(sb.SupabaseStorageBackend(), sb.StorageBackend)
-    assert isinstance(sb.LocalStorageBackend(tmp_path), sb.StorageBackend)
-    assert hasattr(sb.SupabaseStorageBackend, "create_signed_url")
-    assert hasattr(sb.LocalStorageBackend, "create_signed_url")
-
-
-def test_supabase_client_reexports_create_signed_url(monkeypatch):
-    import bloom_mcp.storage_backend as sb_module
-    import bloom_mcp.supabase_client as sc
-
-    captured = {}
-
-    class _FakeBackend:
-        def create_signed_url(self, key, expires_in):
-            captured["args"] = (key, expires_in)
-            return "http://x/signed"
-
-    monkeypatch.setattr(sb_module, "active_backend", lambda: _FakeBackend())
-    assert sc.create_signed_url("k", 3600) == "http://x/signed"
-    assert captured["args"] == ("k", 3600)
+    assert remove_outliers._REPORT_NAME is eu.OUTLIER_REPORT_NAME
+    assert remove_outliers.fit_is_trustworthy is eu.fit_is_trustworthy
