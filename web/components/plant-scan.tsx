@@ -3,6 +3,11 @@
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { useEffect, useMemo, useState } from "react";
 import { CylScanWithImages } from "@/lib/custom.types";
+import {
+  clampFrameIndex,
+  orderedFrames,
+  signedUrlsByPath,
+} from "./plant-scan.helpers";
 import Link from "next/link";
 
 // Long enough to page through a scan's frames without re-signing. Matches the
@@ -38,11 +43,7 @@ async function getFrameUrls(paths: string[]) {
     .from("images")
     .createSignedUrls(paths, FRAME_URL_TTL);
 
-  const byPath = new Map<string, string>();
-  for (const entry of data ?? []) {
-    if (entry.path && entry.signedUrl) byPath.set(entry.path, entry.signedUrl);
-  }
-  return byPath;
+  return signedUrlsByPath(data);
 }
 
 async function getVideoUrl(scan: CylScanWithImages) {
@@ -78,22 +79,20 @@ export default function PlantScan({
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [imageIsLoaded, setImageIsLoaded] = useState<boolean>(false);
-  const [frameIndex, setFrameIndex] = useState<number>(0);
+  const [requestedIndex, setRequestedIndex] = useState<number>(0);
 
   // Renderable frames (have an object_path), ordered by frame_number.
-  const frames = useMemo(
-    () =>
-      (scan?.cyl_images ?? [])
-        .filter((img) => img?.object_path)
-        .sort((a, b) => (a.frame_number ?? 0) - (b.frame_number ?? 0)),
-    [scan]
-  );
+  const frames = useMemo(() => orderedFrames(scan?.cyl_images), [scan]);
   const total = frames.length;
+
+  // Clamp on read, so a stale index from a shorter frame list can never point
+  // past the end even for the render before the reset effect below runs.
+  const frameIndex = clampFrameIndex(requestedIndex, total);
   const currentPath = frames[frameIndex]?.object_path ?? null;
 
   // Reset to the first frame when the scan (frame set) changes.
   useEffect(() => {
-    setFrameIndex(0);
+    setRequestedIndex(0);
   }, [frames]);
 
   // Detail view: sign every frame in one request, so paging costs no further
@@ -106,7 +105,7 @@ export default function PlantScan({
     }
     let active = true;
     setLoading(true);
-    getFrameUrls(frames.map((f) => f.object_path as string)).then((urls) => {
+    getFrameUrls(frames.map((f) => f.object_path)).then((urls) => {
       if (!active) return;
       setFrameUrls(urls);
       setLoading(false);
@@ -211,7 +210,9 @@ export default function PlantScan({
         <div className="mt-2 flex items-center justify-center gap-4 select-none">
           <button
             type="button"
-            onClick={() => setFrameIndex((i) => Math.max(0, i - 1))}
+            onClick={() =>
+              setRequestedIndex(clampFrameIndex(frameIndex - 1, total))
+            }
             disabled={frameIndex === 0}
             aria-label="Previous frame"
             className="rounded-md border border-stone-300 bg-white px-3 py-1 text-lg leading-none text-stone-600 hover:bg-stone-100 disabled:opacity-40 disabled:hover:bg-white"
@@ -223,7 +224,9 @@ export default function PlantScan({
           </span>
           <button
             type="button"
-            onClick={() => setFrameIndex((i) => Math.min(total - 1, i + 1))}
+            onClick={() =>
+              setRequestedIndex(clampFrameIndex(frameIndex + 1, total))
+            }
             disabled={frameIndex === total - 1}
             aria-label="Next frame"
             className="rounded-md border border-stone-300 bg-white px-3 py-1 text-lg leading-none text-stone-600 hover:bg-stone-100 disabled:opacity-40 disabled:hover:bg-white"
