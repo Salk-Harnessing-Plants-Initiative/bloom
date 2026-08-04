@@ -28,8 +28,10 @@ def _tok() -> str:
     return uuid.uuid4().hex[:10]
 
 
-def _seed_exp(cur, name, *, species="Sp", deleted=False):
+def _seed_exp(cur, name, *, species=None, deleted=False):
     """Seed one species + one cyl_experiment; return (experiment_id, species_id)."""
+    # species.common_name is UNIQUE, so the default has to be per-call unique.
+    species = species or f"Sp{_tok()}"
     cur.execute(
         "INSERT INTO species (common_name) VALUES (%s) RETURNING id", (species,)
     )
@@ -43,8 +45,9 @@ def _seed_exp(cur, name, *, species="Sp", deleted=False):
     return cur.fetchone()[0], species_id
 
 
-def _seed_many(cur, token, n, *, species="Sp"):
+def _seed_many(cur, token, n, *, species=None):
     """Seed n experiments whose names all contain `clamp<token>` (one shared species)."""
+    species = species or f"Sp{_tok()}"
     cur.execute(
         "INSERT INTO species (common_name) VALUES (%s) RETURNING id", (species,)
     )
