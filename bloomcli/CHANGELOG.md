@@ -8,6 +8,8 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a3] - 2026-08-04
+
 ### Changed
 
 - Docs: `README.md` and the PyPI landing page (`README.pypi.md`) reworked for usability —
