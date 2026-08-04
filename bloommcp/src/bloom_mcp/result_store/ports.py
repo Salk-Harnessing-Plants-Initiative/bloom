@@ -36,6 +36,21 @@ class CommitFailedError(ResultStoreError):
     """An upload or manifest write failed mid-commit (no partial run recorded)."""
 
 
+class ManifestReadError(ResultStoreError):
+    """Reading the version manifest failed (transient storage/network failure)."""
+
+
+class ManifestIncompatibleError(ManifestReadError):
+    """The version manifest's schema is newer than this server understands.
+
+    A subclass of :class:`ManifestReadError`, not a sibling — every existing
+    ``except ManifestReadError`` / ``except ResultStoreError`` / ``except Exception``
+    still catches it, but a caller that needs to distinguish "storage flaked" from
+    "manifest schema unsupported" (e.g. before deciding whether a retry could ever
+    help) can ``isinstance()``-check for this narrower type.
+    """
+
+
 @dataclass
 class RunHandle:
     """An in-progress run: write outputs into ``staging_dir``, then ``commit``.
