@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -95,8 +96,13 @@ class FakeResultStore:
         self._pending_collisions: dict[tuple[str, str], list[str]] = {}
         # One-shot: (experiment, tool_class) pairs armed by `fail_next_read`,
         # consumed by whichever of create_run/list_runs/get_run is called
-        # first for that key.
+        # first for that key. Guarded by its own lock (not `KeyedLock` — this
+        # protects one shared set's check-then-discard, not per-key mutual
+        # exclusion) so two threads racing the same armed key can't both
+        # observe it set before either discards it, which would break the
+        # documented one-shot contract.
         self._fail_next_read: set[tuple[str, str]] = set()
+        self._fail_next_read_lock = threading.Lock()
 
     def create_run(
         self,
@@ -296,12 +302,16 @@ class FakeResultStore:
         schema parsing is a real-backend-only concern this flat model has no
         equivalent of.
         """
-        self._fail_next_read.add((experiment, tool_class))
+        with self._fail_next_read_lock:
+            self._fail_next_read.add((experiment, tool_class))
 
     def _maybe_fail_read(self, experiment: str, tool_class: str) -> None:
         key = (experiment, tool_class)
-        if key in self._fail_next_read:
-            self._fail_next_read.discard(key)
+        with self._fail_next_read_lock:
+            armed = key in self._fail_next_read
+            if armed:
+                self._fail_next_read.discard(key)
+        if armed:
             raise ManifestReadError(
                 f"Simulated manifest read failure for {tool_class}/{_stem(experiment)}."
             )

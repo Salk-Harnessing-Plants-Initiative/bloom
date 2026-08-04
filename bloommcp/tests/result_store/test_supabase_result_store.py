@@ -487,6 +487,14 @@ _CALL_SITES = {
 def test_manifest_read_failure_raises_manifest_read_error_without_leaking(
     call_site, fake_supabase_storage, monkeypatch
 ):
+    """The generic branch's message is a fixed template that never
+    interpolates the underlying exception — this pins that template-design
+    decision (not a dynamic redaction step) against regression: if a future
+    edit adds `{exc}` to the message, this test catches it. It does not claim
+    the failure is transient (the branch also catches non-transient causes
+    like a corrupt manifest.json or a permanent permission denial — see
+    ports.py's ManifestReadError docstring), so the message doesn't say so
+    either."""
     import bloom_mcp.manifest.analysis_dir as _adir_mod
 
     def _boom(prefix):
@@ -501,7 +509,7 @@ def test_manifest_read_failure_raises_manifest_read_error_without_leaking(
         _CALL_SITES[call_site](store)
 
     msg = str(excinfo.value)
-    assert "transient" in msg.lower()
+    assert "manifest read failed" in msg.lower()
     assert "supabase" not in msg.lower()
     assert "http" not in msg.lower()
     assert "network down" not in msg
@@ -537,7 +545,7 @@ def test_create_run_guard_does_not_swallow_a_next_version_id_bug(
 ):
     """The try/except around create_run's manifest read must not also wrap
     next_version_id(...) -- a bug there must surface as itself, never
-    mislabeled as a transient storage failure (design.md's guard-scope
+    mislabeled as a manifest-read failure (design.md's guard-scope
     decision)."""
     import bloom_mcp.result_store.supabase_store as _store_mod
 

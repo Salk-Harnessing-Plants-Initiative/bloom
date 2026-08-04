@@ -86,30 +86,53 @@ one.
   there is no shared critical section to extend into. It gets its own try/except around
   `adir.read_manifest()` only — not the surrounding `next_version_id(...)` call, so a bug
   in that pure allocation logic (which does not raise today) can never be mislabeled as
-  a transient storage failure. This follows the same shape as `commit()`'s guard (log
+  a manifest-read failure. This follows the same shape as `commit()`'s guard (log
   server-side, raise a structured port error) without sharing code or a lock scope with
   it.
 
 - **Two error types, not one, with a real subclass relationship:**
-  `ManifestReadError(ResultStoreError)` for the generic/transient branch, and
+  `ManifestReadError(ResultStoreError)` for the generic branch, and
   `ManifestIncompatibleError(ManifestReadError)` for the `ManifestSchemaError` branch. A
   single shared type (collapsing both into one `ManifestReadError`, distinguished only
   by message text) was considered and rejected during review: nothing downstream could
-  `isinstance()`-branch on it, and a future automatic-retry wrapper (the same
-  "(transient — retry)" convention `CommitFailedError` already invites) could retry a
+  `isinstance()`-branch on it, and a future automatic-retry wrapper could retry a
   permanently-unsupported manifest forever, believing it transient. The subclass
   relationship means every existing `except ManifestReadError` / `except
   ResultStoreError` / `except Exception` still catches both, but a caller that cares can
   distinguish them.
 
-- **Message content mirrors each branch's actual safety profile.** The generic-exception
-  message never includes the raw exception text (`f"manifest read failed for
-  {tool_class}/{stem} (transient — retry)"`), matching `commit()`'s own established
-  no-leak convention (its message is exc-free by construction, not by redaction). The
-  schema-incompatible message does include the underlying `ManifestSchemaError`'s text,
-  matching `_resolve_one_class`'s existing (merged) convention for that same exception
-  type — its messages are structured schema-version detail, not raw storage/network
-  internals.
+- **`ManifestReadError`'s generic branch does not claim the failure is transient.**
+  Caught during review: `except ManifestSchemaError` is narrow (only a too-new or
+  missing schema version), so the generic `except Exception` fallback is genuinely a
+  catch-all — it also catches a `json.JSONDecodeError` from a truncated/corrupt
+  `manifest.json`, a `pydantic.ValidationError` from a shape-invalid one (`Manifest`
+  validates under `extra="forbid"`), and a permanent storage-permission/RLS denial, none
+  of which a retry would ever fix. An earlier draft's message included
+  `"(transient — retry)"` (mirroring `CommitFailedError`'s existing convention, where
+  upload/manifest-write failures genuinely are I/O-only) — that claim is dropped here
+  since it would be false for this branch's non-transient members. This is exactly the
+  same "collapsed distinction" risk that motivated splitting out
+  `ManifestIncompatibleError` in the first place, reappearing via a different path (bad
+  content vs. an unsupported schema version) — so `ManifestIncompatibleError`'s branch is
+  now logged at `error` (not `warning`), since an unsupported schema at least names an
+  actionable fix (a server upgrade) that the generic bucket may not.
+
+- **`ManifestIncompatibleError`'s message says "unsupported," not "newer."**
+  `validate_schema` raises `ManifestSchemaError` for two distinct causes — a schema
+  version newer than this code understands, *and* a manifest missing the
+  `manifest_schema_version` field entirely — so a message hardcoding "is newer than this
+  server understands" would misdescribe the missing-field case. "Unsupported" stays
+  accurate for either, with the underlying `ManifestSchemaError`'s own text still
+  interpolated for detail (matching `_resolve_one_class`'s existing (merged) convention
+  for that same exception type — its messages are structured schema-version detail, not
+  raw storage/network internals, so including them is not a leak).
+
+- **Message content otherwise mirrors each branch's actual safety profile.** The
+  generic-exception message never includes the raw exception text
+  (`f"manifest read failed for {tool_class}/{stem}"`), matching `commit()`'s own
+  established no-leak convention (its message is exc-free by construction, not by
+  redaction) — a regression test pins the template rather than asserting active
+  redaction, since there is no dynamic scrubbing step to test.
 
 - **`FakeResultStore` gets a `fail_next_read` hook, not real I/O to fail on.** A flat
   in-memory store has no read to fail organically, so the fake needs an explicit
@@ -119,7 +142,14 @@ one.
   `list_runs` / `get_run` is called *first* for that key (checked at the top of each
   method, before any other logic), raising `ManifestReadError` (the fake does not model
   the schema-incompatible subtype — manifest schema parsing is a real-backend-only
-  concern the flat in-memory model has no equivalent of).
+  concern the flat in-memory model has no equivalent of). Its check-then-discard on the
+  shared `_fail_next_read` set is itself guarded by a plain `threading.Lock` — flagged
+  during review: unlike `fail_next_commit` (only ever consumed inside `commit()`'s own
+  per-key lock), this hook had no mutual exclusion of its own, so two threads racing the
+  same armed key could both observe it set before either discarded it. Test-only code, so
+  production risk was nil, but the fix is cheap and keeps the "consumed by whichever is
+  called first" contract actually true under real concurrency, not just single-threaded
+  test usage.
 
 ## Risks / Trade-offs
 
@@ -133,6 +163,20 @@ one.
   consumes the flag on the wrong call — a false pass, not a false fail. Mitigated by an
   explicit ordering test (tasks.md 4.6) proving the "whichever is called first" contract,
   so this is a documented, tested property rather than an implicit assumption.
+- **Disclosed residual gap, out of scope for this change:** in `list_runs`,
+  `_guarded_manifest_read` wraps only `adir.list_versions()` itself — the list
+  comprehension projecting each returned `VersionEntry` through
+  `StoredRun.from_version_entry` runs *after* the guarded call returns, unguarded. A
+  failure there (not observed today — it is a plain dataclass/`.model_dump()`
+  projection over already-validated Pydantic models) would still escape as a raw
+  exception through `list_existing_analyses.py`'s `except Exception`, which — flagged
+  during review — stringifies it straight into agent-facing JSON
+  (`errors.append(f"{tool_class}: {exc}")`) rather than through that file's own
+  `safe_error_text()` helper (already used two lines below for a different error). This
+  change closes that leak only for failures inside the manifest read itself, which is
+  issue #596's actual scope (`AnalysisDir.read_manifest`/`list_versions`/`get_version`,
+  not `StoredRun.from_version_entry`'s projection step) — worth a follow-up if this
+  projection step ever grows a way to fail.
 
 ## Migration Plan
 

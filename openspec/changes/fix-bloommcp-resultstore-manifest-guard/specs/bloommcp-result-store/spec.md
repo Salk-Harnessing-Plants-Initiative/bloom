@@ -24,14 +24,14 @@ The system SHALL provide a `SupabaseResultStore` adapter implementing `ResultSto
 - **WHEN** an artifact upload or manifest write raises mid-commit
 - **THEN** the adapter surfaces a structured error (no traceback leak), cleans up the staging directory, and does not leave the manifest advanced to a partially-written version; the inherited single-writer / no-CAS limitation (concurrent commits may clobber an entry) is documented, not silently relied upon
 
-#### Scenario: A transient manifest read failure during create_run, list_runs, or get_run surfaces a structured error
+#### Scenario: A generic manifest read failure during create_run, list_runs, or get_run surfaces a structured error
 
-- **WHEN** the underlying manifest read (`AnalysisDir.read_manifest`/`list_versions`/`get_version`) raises a generic storage/network exception during `create_run`, `list_runs`, or `get_run`
-- **THEN** the adapter catches it at that call site, logs the original exception server-side (no host path/URL leak — the raised error's own message is exc-free), and raises a `ManifestReadError` instead of letting the raw exception escape; this guard is independent per call site and does not depend on `commit()`'s own hardened try/except or on any particular caller's error handling
+- **WHEN** the underlying manifest read (`AnalysisDir.read_manifest`/`list_versions`/`get_version`) raises any exception other than `ManifestSchemaError` — a storage/network blip, but also a corrupt/shape-invalid `manifest.json` or a permanent permission denial — during `create_run`, `list_runs`, or `get_run`
+- **THEN** the adapter catches it at that call site, logs the original exception server-side (no host path/URL leak — the raised error's own message is exc-free), and raises a `ManifestReadError` instead of letting the raw exception escape, without claiming the failure is transient or safe to retry; this guard is independent per call site and does not depend on `commit()`'s own hardened try/except or on any particular caller's error handling
 
 #### Scenario: A schema-incompatible manifest during create_run, list_runs, or get_run surfaces a distinguishable structured error
 
-- **WHEN** the underlying manifest read raises `ManifestSchemaError` (the manifest's schema version is newer than this server understands) during `create_run`, `list_runs`, or `get_run`
+- **WHEN** the underlying manifest read raises `ManifestSchemaError` (the manifest's schema version is missing or newer than this server understands) during `create_run`, `list_runs`, or `get_run`
 - **THEN** the adapter catches it at that call site, logs it server-side, and raises `ManifestIncompatibleError` — a subclass of `ManifestReadError`, so every existing `except ManifestReadError`/`except ResultStoreError`/`except Exception` still catches it, while a caller that needs to distinguish "storage flaked" from "manifest schema unsupported" can `isinstance()`-check for the narrower type
 
 ### Requirement: FakeResultStore Adapter

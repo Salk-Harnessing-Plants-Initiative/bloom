@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from pathlib import Path
 
 import pytest
@@ -235,8 +236,9 @@ def test_fail_next_read_fires_on_whichever_of_the_three_methods_is_called_first(
     store.fail_next_read("e.csv", "qc")
     with pytest.raises(ManifestReadError):
         store.list_runs("e.csv", "qc")
-    # Cleared by the call above — a subsequent get_run for the same key
-    # succeeds normally rather than raising a second time.
+    # Cleared by the call above — a subsequent get_run for the same key no
+    # longer raises ManifestReadError a second time; it runs the real lookup
+    # and (there being no committed run yet) raises RunNotFoundError instead.
     with pytest.raises(RunNotFoundError):
         store.get_run("e.csv", "qc", "latest")
 
@@ -247,3 +249,40 @@ def test_fail_next_read_fires_on_whichever_of_the_three_methods_is_called_first(
     store.fail_next_read("new.csv", "qc")
     with pytest.raises(ManifestReadError):
         store.create_run(experiment="new.csv", tool_class="qc", provenance=_prov())
+
+
+def test_fail_next_read_is_consumed_exactly_once_under_real_concurrency():
+    """`_maybe_fail_read`'s check-then-discard is guarded by its own lock so
+    two threads racing the same armed key can't both observe it set before
+    either discards it -- real thread concurrency (via a barrier), not just
+    scheduled back-to-back, mirroring how
+    `test_concurrent_commits_never_corrupt_each_others_data` exercises this
+    module's other one-shot hook under genuine concurrency."""
+    store = FakeResultStore()
+    store.fail_next_read("race.csv", "qc")
+
+    barrier = threading.Barrier(2)
+    results: dict[str, object] = {}
+
+    def _call(label):
+        barrier.wait()
+        try:
+            results[label] = store.list_runs("race.csv", "qc")
+        except ManifestReadError as exc:
+            results[label] = exc
+
+    t1 = threading.Thread(target=_call, args=("first",))
+    t2 = threading.Thread(target=_call, args=("second",))
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert set(results) == {"first", "second"}
+    outcomes = list(results.values())
+    raised = [o for o in outcomes if isinstance(o, ManifestReadError)]
+    succeeded = [o for o in outcomes if not isinstance(o, ManifestReadError)]
+    # Exactly one thread consumed the one-shot flag and raised; the other saw
+    # it already cleared and got the real (empty) result.
+    assert len(raised) == 1
+    assert succeeded == [[]]

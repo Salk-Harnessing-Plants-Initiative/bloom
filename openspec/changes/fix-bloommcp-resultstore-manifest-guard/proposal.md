@@ -2,9 +2,11 @@
 
 Issue #596 (deferred from #586/PR #588): `SupabaseResultStore.create_run`, `list_runs`,
 and `get_run` each read the manifest (`AnalysisDir.read_manifest`/`list_versions`/
-`get_version`) with no guard of their own. Today a transient storage/network failure, or
-a manifest whose schema version is newer than this server understands
-(`ManifestSchemaError`), escapes as a raw exception from all three call sites, and safety
+`get_version`) with no guard of their own. Today a storage/network failure (transient or
+not — a corrupt/shape-invalid `manifest.json`, a permanent permission denial, or an
+actual network blip all reach the same unguarded call), or a manifest whose schema
+version is unsupported (`ManifestSchemaError`: missing or newer than this server
+understands), escapes as a raw exception from all three call sites, and safety
 rests entirely on caller-side catch-alls — `@as_mcp_tool`'s exception mapping for
 `create_run`'s tool callers, `list_existing_analyses.py`'s own `except Exception` for
 `list_runs` (which today stringifies the raw exception straight into agent-facing JSON —
@@ -24,24 +26,27 @@ shared implementation to begin with).
 ## What Changes
 
 - Add two caller-safe errors to `result_store/ports.py`: `ManifestReadError
-  (ResultStoreError)` for a generic/transient read failure, and
+  (ResultStoreError)` for the generic branch — deliberately does not claim the failure
+  is transient, since it also covers non-transient causes (see design.md) — and
   `ManifestIncompatibleError(ManifestReadError)` — a subclass, not a sibling — for a
-  `ManifestSchemaError` (manifest schema newer than this server understands). Both
-  exported from `result_store/__init__.py`.
+  `ManifestSchemaError` (manifest schema missing or newer than this server understands).
+  Both exported from `result_store/__init__.py`.
 - Wrap `AnalysisDir.read_manifest()`/`list_versions()`/`get_version()` at each of
   `SupabaseResultStore.create_run`, `list_runs`, and `get_run` in its own `try/except`:
-  `ManifestSchemaError` first (→ `ManifestIncompatibleError`), then bare `Exception` (→
-  `ManifestReadError`). Each is logged server-side (no host path/URL leak) before
-  raising. The try body wraps only the read call itself, not surrounding pure logic
-  (e.g. `create_run`'s `next_version_id(...)` call), so a bug in that logic can't be
-  mislabeled as a storage failure.
+  `ManifestSchemaError` first (→ `ManifestIncompatibleError`, logged at `error`), then
+  bare `Exception` (→ `ManifestReadError`, logged via `logger.exception`). The try body
+  wraps only the read call itself, not surrounding pure logic (e.g. `create_run`'s
+  `next_version_id(...)` call), so a bug in that logic can't be mislabeled as a
+  manifest-read failure.
 - `create_run`'s new guard is independent of `commit()`'s existing hardened try/except —
   not folded into it (different call, outside `commit()`'s per-key lock; see design.md).
 - Add a `fail_next_read(experiment, tool_class)` one-shot injection hook to
   `FakeResultStore`, mirroring `fail_next_commit`'s established one-shot pattern, so the
   new guard is exercisable in `test_store_parity.py` with no live Supabase adapter (the
   in-memory fake has no real I/O of its own to fail). Consumed by whichever of
-  `create_run`/`list_runs`/`get_run` is called first for that key.
+  `create_run`/`list_runs`/`get_run` is called first for that key; its check-then-discard
+  is protected by its own `threading.Lock` so the one-shot contract holds under real
+  concurrency, not just single-threaded test usage.
 - No change to `list_existing_analyses.py` or any `create_run` tool caller — their
   existing catch-alls remain in place, now backstopping a structured `ManifestReadError`
   instead of an arbitrary exception type (and, incidentally, closing `list_runs`'

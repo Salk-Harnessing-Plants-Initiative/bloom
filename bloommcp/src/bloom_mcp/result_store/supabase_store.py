@@ -93,26 +93,36 @@ def _guarded_manifest_read(adir: AnalysisDir, read: Callable[[], T]) -> T:
     `commit()` is even reached (#596). `read` must wrap only the manifest read
     itself, never surrounding pure logic (e.g. `create_run`'s
     `next_version_id` call) — a bug there must surface as itself, not be
-    mislabeled as a transient storage failure.
+    mislabeled as a manifest-read failure.
+
+    The generic branch below deliberately does not claim the failure is
+    transient: it catches whatever `ManifestSchemaError` doesn't (a
+    `json.JSONDecodeError` from a truncated `manifest.json`, a
+    `pydantic.ValidationError` from a shape-invalid one, a permanent
+    permission/RLS denial from storage, or an actual transient network blip),
+    and only the last of those is safe to retry. Logged at `error` (not
+    `warning`): an unsupported schema at least names an actionable fix (a
+    server upgrade); this bucket may not.
     """
     try:
         return read()
     except ManifestSchemaError as exc:
-        logger.warning(
+        # `validate_schema` raises this both for "too new" and for "missing
+        # the manifest_schema_version field" — the message says "unsupported",
+        # not "newer", so it stays accurate for either underlying cause.
+        logger.error(
             "manifest schema unsupported for %s/%s",
             adir.tool_class,
             adir.stem,
             exc_info=True,
         )
         raise ManifestIncompatibleError(
-            f"manifest schema for {adir.tool_class}/{adir.stem} is newer than "
-            f"this server understands: {exc}"
+            f"manifest schema for {adir.tool_class}/{adir.stem} is unsupported: {exc}"
         ) from exc
     except Exception as exc:
         logger.exception("manifest read failed for %s/%s", adir.tool_class, adir.stem)
         raise ManifestReadError(
-            f"manifest read failed for {adir.tool_class}/{adir.stem} "
-            f"(transient — retry)"
+            f"manifest read failed for {adir.tool_class}/{adir.stem}"
         ) from exc
 
 

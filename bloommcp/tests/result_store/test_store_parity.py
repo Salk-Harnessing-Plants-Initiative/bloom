@@ -356,7 +356,16 @@ def test_create_run_with_source_records_identity_parity(kind, stores):
 def _inject_read_failure(kind, store, monkeypatch, *, experiment, tool_class):
     """Force the next manifest read for (experiment, tool_class) to fail —
     one shared scenario body, two structurally different injection
-    techniques per backend (mirrors `_inject_commit_failure` above)."""
+    techniques per backend (mirrors `_inject_commit_failure` above).
+
+    Not fully equivalent between backends, unlike `_inject_commit_failure`:
+    the fake's `fail_next_read` is one-shot and scoped to this one key, while
+    the supabase side's monkeypatch is persistent and global for the rest of
+    the test. Harmless for `test_manifest_read_failure_parity` below (one call
+    per parametrized case), but this helper does not itself prove one-shot
+    semantics on the supabase side — a future test asserting that would need
+    its own, backend-specific injection.
+    """
     if kind == "fake":
         store.fail_next_read(experiment, tool_class)
         return
