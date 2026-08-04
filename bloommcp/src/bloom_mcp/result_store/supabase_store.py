@@ -13,25 +13,33 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional, TypeVar
 
 from bloom_mcp import supabase_client as _sc
 from bloom_mcp.manifest import (
     AnalysisDir,
     ExperimentBlock,
     Manifest,
+    ManifestSchemaError,
     next_version_id,
     version_dir_name,
     write_manifest,
 )
 from bloom_mcp.storage_backend import active_backend_name
 
-from ._artifacts import hash_outputs, validate_outputs
+from ._artifacts import (
+    SIGNED_URL_EXPIRES_SECONDS,
+    build_output_links,
+    hash_outputs,
+    validate_outputs,
+)
 from ._locks import KeyedLock
 from .ports import (
     CommitFailedError,
+    ManifestIncompatibleError,
+    ManifestReadError,
     RunHandle,
     RunNotFoundError,
     RunStateError,
@@ -43,6 +51,8 @@ if TYPE_CHECKING:
     from bloom_mcp.data_access import SourceInfo
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 _OUTPUT_PREFIX = "bloommcp_output"
 
@@ -76,6 +86,49 @@ def _commit_lock(output_root: str, experiment: str, tool_class: str) -> KeyedLoc
     # in the shared registry — the two must never contend on each other's
     # locks even if given identical (output_root, experiment, tool_class).
     return KeyedLock(("supabase", output_root, experiment, tool_class))
+
+
+def _guarded_manifest_read(adir: AnalysisDir, read: Callable[[], T]) -> T:
+    """Run a manifest-read callable, converting a raw exception into a
+    caller-safe `ResultStore`-port error.
+
+    Guards `create_run`/`list_runs`/`get_run`'s own manifest read
+    independently of `commit()`'s existing hardened try/except (#324/PR #464)
+    — a different call, outside `commit()`'s per-key lock, often well before
+    `commit()` is even reached (#596). `read` must wrap only the manifest read
+    itself, never surrounding pure logic (e.g. `create_run`'s
+    `next_version_id` call) — a bug there must surface as itself, not be
+    mislabeled as a manifest-read failure.
+
+    The generic branch below deliberately does not claim the failure is
+    transient: it catches whatever `ManifestSchemaError` doesn't (a
+    `json.JSONDecodeError` from a truncated `manifest.json`, a
+    `pydantic.ValidationError` from a shape-invalid one, a permanent
+    permission/RLS denial from storage, or an actual transient network blip),
+    and only the last of those is safe to retry. Logged at `error` (not
+    `warning`): an unsupported schema at least names an actionable fix (a
+    server upgrade); this bucket may not.
+    """
+    try:
+        return read()
+    except ManifestSchemaError as exc:
+        # `validate_schema` raises this both for "too new" and for "missing
+        # the manifest_schema_version field" — the message says "unsupported",
+        # not "newer", so it stays accurate for either underlying cause.
+        logger.error(
+            "manifest schema unsupported for %s/%s",
+            adir.tool_class,
+            adir.stem,
+            exc_info=True,
+        )
+        raise ManifestIncompatibleError(
+            f"manifest schema for {adir.tool_class}/{adir.stem} is unsupported: {exc}"
+        ) from exc
+    except Exception as exc:
+        logger.exception("manifest read failed for %s/%s", adir.tool_class, adir.stem)
+        raise ManifestReadError(
+            f"manifest read failed for {adir.tool_class}/{adir.stem}"
+        ) from exc
 
 
 @dataclass
@@ -119,7 +172,8 @@ class SupabaseResultStore:
         # can allocate the same v<N>. Safe under bloommcp's one-container
         # topology; a compare-and-set (or re-allocate-at-commit) is on the
         # roadmap (#324).
-        version_id = next_version_id(adir.read_manifest())
+        manifest = _guarded_manifest_read(adir, adir.read_manifest)
+        version_id = next_version_id(manifest)
         version_dir = version_dir_name(version_id, user_label)
         # No orphan cleanup if commit() is never reached (crash, or the tool errors
         # before committing) — the deleted AnalysisWriter had a best-effort __del__
@@ -185,7 +239,7 @@ class SupabaseResultStore:
                 def key_for(rel: str) -> str:
                     return adir.key(f"{version_dir}/{rel}")
 
-                output_keys, output_sha256 = hash_outputs(
+                output_keys, output_sha256, output_size_bytes = hash_outputs(
                     run.staging_dir, outputs, key_for
                 )
                 # Upload the same staged bytes that were just hashed.
@@ -193,6 +247,19 @@ class SupabaseResultStore:
                     key = key_for(rel)
                     _sc.upload_file(key, run.staging_dir / rel)
                     uploaded_keys.append(key)
+
+                # Sign each just-uploaded key before the manifest is written —
+                # a signing failure (bloom#581 Decision 5) leaves `latest`
+                # un-advanced exactly like an upload failure, via the same
+                # except/cleanup block below.
+                output_links = build_output_links(
+                    output_keys,
+                    output_sha256,
+                    output_size_bytes,
+                    url_for=lambda key: _sc.create_signed_url(
+                        key, SIGNED_URL_EXPIRES_SECONDS
+                    ),
+                )
 
                 prov = state.provenance.model_copy(
                     update={
@@ -285,12 +352,13 @@ class SupabaseResultStore:
             # Success only: tear down staging and seal the handle.
             shutil.rmtree(run.staging_dir, ignore_errors=True)
             state.committed = True
-            return StoredRun.from_version_entry(
+            stored = StoredRun.from_version_entry(
                 entry,
                 tool_class=adir.tool_class,
                 experiment=adir.experiment_filename,
                 manifest_path=run.manifest_path,
             )
+            return replace(stored, output_links=output_links)
 
     @staticmethod
     def _cleanup_uploaded(keys: list[str], adir: AnalysisDir) -> None:
@@ -316,6 +384,7 @@ class SupabaseResultStore:
     def list_runs(self, experiment: str, tool_class: str) -> list[StoredRun]:
         adir = AnalysisDir(self._output_root, experiment, tool_class)
         manifest_path = f"{adir.path}manifest.json"
+        versions = _guarded_manifest_read(adir, adir.list_versions)
         return [
             StoredRun.from_version_entry(
                 entry,
@@ -323,7 +392,7 @@ class SupabaseResultStore:
                 experiment=experiment,
                 manifest_path=manifest_path,
             )
-            for entry in adir.list_versions()
+            for entry in versions
         ]
 
     def get_run(
@@ -333,7 +402,7 @@ class SupabaseResultStore:
         run_ref: str = "latest",
     ) -> StoredRun:
         adir = AnalysisDir(self._output_root, experiment, tool_class)
-        entry = adir.get_version(run_ref)
+        entry = _guarded_manifest_read(adir, lambda: adir.get_version(run_ref))
         if entry is None:
             raise RunNotFoundError(f"No run {run_ref!r} for {tool_class}/{adir.stem}.")
         return StoredRun.from_version_entry(

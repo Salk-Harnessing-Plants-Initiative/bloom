@@ -14,7 +14,7 @@ import bloom_mcp.contract as _contract
 import pytest
 from pydantic import ValidationError
 
-from bloom_mcp.contract import RunLinks
+from bloom_mcp.contract import OutputLink, RunLinks
 from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import PCAAnalysisResult
 from bloom_mcp.sections.sleap_roots.analysis.remove_outliers import (
     RemoveOutliersResult,
@@ -37,11 +37,59 @@ def test_run_links_in_all():
 # Field set
 # ---------------------------------------------------------------------------
 
-_EXPECTED_FIELDS = {"run_ref", "version_dir", "manifest_path", "outputs"}
+_EXPECTED_FIELDS = {
+    "run_ref",
+    "version_dir",
+    "manifest_path",
+    "outputs",
+    "output_links",
+}
 
 
 def test_run_links_field_set():
     assert set(RunLinks.model_fields.keys()) == _EXPECTED_FIELDS
+
+
+# ---------------------------------------------------------------------------
+# OutputLink (bloom#581)
+# ---------------------------------------------------------------------------
+
+
+def test_output_link_importable_and_in_all():
+    assert OutputLink is not None
+    assert "OutputLink" in _contract.__all__
+
+
+def test_output_link_field_set():
+    assert set(OutputLink.model_fields.keys()) == {"key", "url", "sha256", "size_bytes"}
+
+
+def test_output_link_rejects_negative_size_bytes():
+    with pytest.raises(ValidationError):
+        OutputLink(key="k", url="http://x", sha256="abc", size_bytes=-1)
+
+
+def test_output_link_accepts_zero_size_bytes():
+    link = OutputLink(key="k", url="http://x", sha256="abc", size_bytes=0)
+    assert link.size_bytes == 0
+
+
+def test_run_links_output_links_defaults_to_empty_dict():
+    links = RunLinks(run_ref="r1", version_dir="v1", manifest_path="m.json", outputs={})
+    assert links.output_links == {}
+
+
+def test_run_links_output_links_accepts_output_link_values():
+    link = OutputLink(key="k", url="http://x/k", sha256="abc123", size_bytes=42)
+    links = RunLinks(
+        run_ref="r1",
+        version_dir="v1",
+        manifest_path="m.json",
+        outputs={"a.csv": "a.csv"},
+        output_links={"a.csv": link},
+    )
+    assert links.output_links["a.csv"].url == "http://x/k"
+    assert links.output_links["a.csv"].size_bytes == 42
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +169,22 @@ def test_run_links_round_trip_via_pca_result():
     # Tool-specific fields also survive
     assert restored.experiment == instance.experiment
     assert restored.n_samples == instance.n_samples
+
+
+def test_run_links_output_links_round_trip_via_pca_result():
+    instance = _make_pca_result(
+        output_links={
+            "scores.csv": OutputLink(
+                key="pca/v1_pca/scores.csv",
+                url="http://x/scores.csv",
+                sha256="deadbeef",
+                size_bytes=123,
+            )
+        }
+    )
+    restored = PCAAnalysisResult.model_validate(instance.model_dump())
+    assert restored.output_links["scores.csv"].url == "http://x/scores.csv"
+    assert restored.output_links["scores.csv"].size_bytes == 123
 
 
 # ---------------------------------------------------------------------------
