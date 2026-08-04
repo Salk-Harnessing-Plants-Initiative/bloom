@@ -11,7 +11,6 @@ grants. Enqueue is used by the route; claim/complete/fail by the worker.
 import os
 
 from fastapi import HTTPException
-from postgrest import APIError
 
 from supabase_client import app_client
 from video import scan_in_experiment
@@ -29,22 +28,10 @@ def enqueue_experiment_scan_video(experiment_id: int, scan_id: int) -> dict:
             status_code=404,
             detail=f"Scan {scan_id} not found in experiment {experiment_id}",
         )
-    try:
-        res = client.rpc(
-            "enqueue_cyl_video",
-            {"p_scan_id": scan_id, "p_experiment_id": experiment_id},
-        ).execute()
-    except APIError as exc:
-        # 53400 = the backlog cap in enqueue_cyl_video fired (queue full).
-        if getattr(exc, "code", "") == "53400" or "queue is full" in (
-            getattr(exc, "message", "") or ""
-        ):
-            raise HTTPException(
-                status_code=503,
-                detail="Video generation queue is full — enqueue denied, try again later.",
-                headers={"Retry-After": "60"},
-            ) from exc
-        raise
+    res = client.rpc(
+        "enqueue_cyl_video",
+        {"p_scan_id": scan_id, "p_experiment_id": experiment_id},
+    ).execute()
     return {"job_id": res.data, "status": "queued"}
 
 

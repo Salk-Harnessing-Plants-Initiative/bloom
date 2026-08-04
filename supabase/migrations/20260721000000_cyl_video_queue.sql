@@ -78,13 +78,6 @@ BEGIN
     RETURN v_job_id;  -- already queued/processing
   END IF;
 
-  -- Cap the backlog: refuse a new job once 500 are already waiting (client should retry later).
-  IF (SELECT count(*) FROM public.cyl_video_jobs WHERE status IN ('queued', 'processing'))
-       >= 500 THEN
-    RAISE EXCEPTION 'video generation queue is full; retry later'
-      USING ERRCODE = '53400';
-  END IF;
-
   -- Insert the new job. If a concurrent enqueue won the race for this scan, the
   -- partial unique index raises unique_violation — reuse the winner's job.
   BEGIN
