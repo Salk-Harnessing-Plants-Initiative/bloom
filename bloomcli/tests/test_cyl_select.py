@@ -57,3 +57,25 @@ def test_menu_written_to_stderr(capsys, monkeypatch):
     assert "Select a species:" in out.err
     assert "0) All species" in out.err
     assert "1) Arabidopsis" in out.err
+
+
+# --- resolve_by_name (shared typed-name resolution: case-insensitive + trimmed) ---
+
+
+def test_resolve_by_name_case_insensitive():
+    items = [(3, "Canola"), (2, "Rice")]
+    assert sel.resolve_by_name(items, "canola") == 3  # case-insensitive
+    assert sel.resolve_by_name(items, "RICE") == 2
+
+
+def test_resolve_by_name_trims_whitespace():
+    assert sel.resolve_by_name([(3, "Canola")], "  canola  ") == 3
+
+
+def test_resolve_by_name_no_match_returns_none():
+    assert sel.resolve_by_name([(3, "Canola")], "Sorghum") is None
+
+
+def test_resolve_by_name_returns_first_on_duplicate_label():
+    # two case-variant labels resolve to the same casefold → the first item's value
+    assert sel.resolve_by_name([(3, "Rice"), (9, "rice")], "RICE") == 3

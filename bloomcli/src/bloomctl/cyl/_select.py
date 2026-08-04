@@ -12,6 +12,20 @@ from typing import Any
 import click
 
 
+def resolve_by_name(items: list[tuple[Any, str]], typed: str) -> Any:
+    """Resolve a typed name to its item's value, case-insensitively and whitespace-trimmed.
+
+    ``items`` are ``(value, label)`` pairs (e.g. ``(species_id, common_name)`` or ``(name, name)``).
+    Returns the first item's ``value`` whose label matches ``typed`` ignoring case and surrounding
+    whitespace, or ``None`` if none match. Shared so every ``--species``/name selector narrows the
+    same way (matching the server-side ``lower(btrim(...))`` the search RPC uses).
+    """
+    wanted = typed.strip().casefold()
+    return next(
+        (value for value, label in items if (label or "").strip().casefold() == wanted), None
+    )
+
+
 def select_from_menu(
     items: list[tuple[Any, str]],
     *,

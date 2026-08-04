@@ -152,6 +152,28 @@ def test_no_match_errors(tmp_path, monkeypatch):
     assert "No experiment matches" in res.output
 
 
+def test_no_match_with_species_names_the_species(tmp_path, monkeypatch):
+    # the no-match message scopes to the species when --species is given
+    _auth(monkeypatch)
+    _no_download(monkeypatch)
+    monkeypatch.setattr(dl, "search_experiments", lambda c, q, species=None: [])
+    res = CliRunner().invoke(
+        cli,
+        [
+            "cyl",
+            "download",
+            str(tmp_path / "out"),
+            "--experiment-name",
+            "zzz",
+            "--species",
+            "Soybean",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "No experiment matches 'zzz'" in res.output
+    assert "for species 'Soybean'" in res.output
+
+
 def test_species_reaches_the_search(tmp_path, monkeypatch):
     _auth(monkeypatch)
     captured = {}

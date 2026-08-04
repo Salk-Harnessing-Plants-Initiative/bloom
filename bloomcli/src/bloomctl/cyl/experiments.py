@@ -8,7 +8,7 @@ import click
 
 from ..credentials import DEFAULT_PROFILE
 from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
-from ._select import select_from_menu
+from ._select import resolve_by_name, select_from_menu
 
 # Table columns for `experiments list`, in display order.
 EXPERIMENT_COLUMNS = ["Species", "Experiment", "Experiment ID"]
@@ -110,7 +110,7 @@ def fetch_experiments(
     "--species",
     "species_name",
     default=None,
-    help="Filter to this species by exact common name (scriptable). Omit for all species.",
+    help="Filter to this species by common name (case-insensitive, scriptable). Omit for all species.",
 )
 @click.option(
     "--species-menu",
@@ -173,11 +173,8 @@ def list_experiments(
             if not choices:
                 raise click.ClickException("No species with cylinder experiments found.")
             species_id = select_species_interactively(choices)
-        elif species_name is not None:  # typed value → resolve the common name to an id
-            choices = fetch_species_with_experiments(client)
-            species_id = next(
-                (sid for sid, name in choices if name.casefold() == species_name.casefold()), None
-            )
+        elif species_name is not None:  # typed value → resolve the common name to an id (ci + trim)
+            species_id = resolve_by_name(fetch_species_with_experiments(client), species_name)
             if species_id is None:
                 raise click.ClickException(
                     f"No species named {species_name!r} with cylinder experiments."

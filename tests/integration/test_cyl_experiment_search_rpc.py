@@ -334,10 +334,14 @@ def _sql_body(path: Path) -> str:
 
 
 def test_migration_body_is_idempotent(pg_conn):
-    # CREATE EXTENSION / INDEX IF NOT EXISTS + CREATE OR REPLACE FUNCTION + REVOKE/GRANT
-    # all re-apply cleanly.
+    # Self-contained proof: apply the migration body TWICE in this transaction and assert both
+    # succeed (CREATE EXTENSION / INDEX IF NOT EXISTS + CREATE OR REPLACE FUNCTION + REVOKE/GRANT).
+    # Applying once here would only prove a clean re-apply if CI had already pushed it; running it
+    # twice proves idempotency regardless of prior state.
+    body = _sql_body(MIGRATION)
     with pg_conn.cursor() as cur:
-        cur.execute(_sql_body(MIGRATION))
+        cur.execute(body)  # first application (creates or replaces)
+        cur.execute(body)  # second application must not error on the now-existing objects
         cur.execute("SELECT 1 FROM pg_proc WHERE proname='cyl_experiment_search'")
         assert cur.fetchone() is not None
     pg_conn.rollback()

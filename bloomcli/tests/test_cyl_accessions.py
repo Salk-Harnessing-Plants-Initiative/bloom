@@ -458,14 +458,11 @@ def test_sample_counts_json_sorted(monkeypatch):
 
 
 def test_sample_counts_species_value_is_scriptable(monkeypatch):
-    # The 0.1.0a2 scriptable path: --species NAME filters directly, no menu, no stdin.
+    # Typed --species: resolves case-insensitively to the stored name, reaches the fetch, no menu.
     _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_species_with_accessions", lambda client: ["Canola", "Rice"])
     called = {"menu": False}
-    monkeypatch.setattr(
-        acc,
-        "fetch_species_with_accessions",
-        lambda client: called.__setitem__("menu", True) or ["Canola"],
-    )
+    monkeypatch.setattr(acc, "select_from_menu", lambda *a, **k: called.__setitem__("menu", True))
     captured = {}
 
     def _fetch(client, species=None):
@@ -473,11 +470,24 @@ def test_sample_counts_species_value_is_scriptable(monkeypatch):
         return []
 
     monkeypatch.setattr(acc, "fetch_accession_sample_counts", _fetch)
-    # no stdin: if this wrongly opened the menu it would abort instead of exit 0
-    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species", "Canola"])
+    # lowercase input, no stdin: resolves to canonical "Canola" with no menu prompt
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species", "canola"])
     assert res.exit_code == 0, res.output
-    assert captured["species"] == "Canola"  # typed name reaches the fetch
-    assert called["menu"] is False  # the menu fetcher was never called
+    assert captured["species"] == "Canola"  # case-insensitive → the canonical stored name
+    assert called["menu"] is False  # the menu (select_from_menu) was never opened
+
+
+def test_sample_counts_species_unknown_name_errors(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(acc, "fetch_species_with_accessions", lambda client: ["Canola"])
+    monkeypatch.setattr(
+        acc,
+        "fetch_accession_sample_counts",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fetch on a bad name")),
+    )
+    res = CliRunner().invoke(cli, ["cyl", "accessions", "sample-counts", "--species", "Sorghum"])
+    assert res.exit_code != 0
+    assert "No species named 'Sorghum'" in res.output  # clean error, not a silent empty table
 
 
 def test_sample_counts_species_value_and_menu_conflict(monkeypatch):

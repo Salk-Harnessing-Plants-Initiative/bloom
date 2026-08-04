@@ -13,7 +13,7 @@ import click
 
 from ..credentials import DEFAULT_PROFILE
 from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
-from ._select import select_from_menu
+from ._select import resolve_by_name, select_from_menu
 
 ACCESSION_COLUMNS = ["Accession", "Accession ID"]
 SAMPLE_COUNT_COLUMNS = ["Species", "Accession", "Plants"]
@@ -206,7 +206,7 @@ def list_accessions(
     "--species",
     "species_name",
     default=None,
-    help="Filter to this species by exact common name (scriptable). Omit for all species.",
+    help="Filter to this species by common name (case-insensitive, scriptable). Omit for all species.",
 )
 @click.option(
     "--species-menu",
@@ -260,7 +260,7 @@ def sample_counts(
 
     client = _authed_client(profile)
     try:
-        species = species_name  # typed value (scriptable), or None = all species
+        species = None
         if pick_species:  # menu of species that have accessions (0 = All)
             names = fetch_species_with_accessions(client)
             if not names:
@@ -271,6 +271,11 @@ def sample_counts(
                 prompt_label="Species",
                 all_label="All species",
             )
+        elif species_name is not None:  # typed value → resolve to the stored name (ci + trimmed)
+            names = fetch_species_with_accessions(client)
+            species = resolve_by_name([(n, n) for n in names], species_name)
+            if species is None:
+                raise click.ClickException(f"No species named {species_name!r} with accessions.")
         raw = fetch_accession_sample_counts(client, species)
     except APIError as exc:
         raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
