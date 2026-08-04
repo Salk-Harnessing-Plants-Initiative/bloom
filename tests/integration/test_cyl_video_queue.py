@@ -165,6 +165,24 @@ def test_wrappers_denied_to_public(pg_conn):
         pg_conn.rollback()
 
 
+def test_cyl_video_jobs_readable_by_bloom_user(pg_conn):
+    # The read policy must target the roles a real session actually holds (bloom_user via the JWT
+    # hook), not the raw `authenticated` role — otherwise the frontend poll can never read the
+    # table. Runs as bloom_user (RLS applies, unlike the BYPASSRLS supabase_admin the suite uses).
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id = _new_scan(cur)
+            cur.execute("SELECT public.enqueue_cyl_video(%s, %s)", (scan_id, 42))  # seed one job
+            cur.execute("SET LOCAL ROLE bloom_user")
+            cur.execute(
+                "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s", (scan_id,)
+            )
+            assert cur.fetchone()[0] == 1  # a real user session can read its job status
+            cur.execute("RESET ROLE")
+    finally:
+        pg_conn.rollback()
+
+
 def test_claim_dead_letters_poison_message(pg_conn):
     # A job that hard-crashes the worker never calls fail_job (attempts stays 0),
     # so dead-lettering must fall back to pgmq's read_ct. Simulate a message that

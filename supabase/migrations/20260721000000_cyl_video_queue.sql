@@ -45,12 +45,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS cyl_video_jobs_one_active_per_scan
   ON public.cyl_video_jobs(scan_id) WHERE status IN ('queued', 'processing');
 ALTER TABLE public.cyl_video_jobs ENABLE ROW LEVEL SECURITY;
 
--- Reads: the service (bloom_workflows) and authenticated users (frontend poll).
--- All writes go through the SECURITY DEFINER functions below, so no write grants.
-GRANT SELECT ON public.cyl_video_jobs TO bloom_workflows;
+-- Reads: real user sessions poll their job status. The custom_access_token_hook rewrites the JWT
+-- role claim to bloom_user / bloom_writer / bloom_admin (never the raw `authenticated` role), and
+-- PostgREST sets the session role from that claim — so the read policy targets those roles, not
+-- `authenticated` (which no real session holds, which would make this table unreadable). The
+-- service itself reads/writes only through the SECURITY DEFINER functions below (they bypass RLS as
+-- the owner), so bloom_workflows needs no direct SELECT grant or policy here. All writes go through
+-- those functions, so no write grants.
 DROP POLICY IF EXISTS cyl_video_jobs_read ON public.cyl_video_jobs;
 CREATE POLICY cyl_video_jobs_read ON public.cyl_video_jobs
-  FOR SELECT TO bloom_workflows, authenticated USING (true);
+  FOR SELECT TO bloom_user, bloom_writer, bloom_admin USING (true);
 
 -- 3. Wrapper functions -----------------------------------------------------
 -- SECURITY DEFINER so they run as the owner (which can use pgmq); bloom_workflows
