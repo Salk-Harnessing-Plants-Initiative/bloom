@@ -108,9 +108,16 @@ def fetch_experiments(
 @experiments.command(name="list")
 @click.option(
     "--species",
+    "species_name",
+    default=None,
+    help="Filter to this species by exact common name (scriptable). Omit for all species.",
+)
+@click.option(
+    "--species-menu",
+    "--species_menu",
     "pick_species",
     is_flag=True,
-    help="Pick a species from an interactive menu to filter by (needs a terminal).",
+    help="Pick the species from an interactive menu instead of typing it (needs a terminal).",
 )
 @click.option(
     "--output",
@@ -140,24 +147,41 @@ def fetch_experiments(
     help="Credentials profile to use.",
 )
 def list_experiments(
-    pick_species: bool, output_fmt: str | None, limit: int, as_json: bool, profile: str
+    species_name: str | None,
+    pick_species: bool,
+    output_fmt: str | None,
+    limit: int,
+    as_json: bool,
+    profile: str,
 ) -> None:
-    """List cylinder experiments. Pass --species to pick a species from a menu; use
-    --output csv/json to grab an id for `cyl download --experiment-id`."""
+    """List cylinder experiments. Filter with --species NAME (scriptable) or --species-menu to
+    pick from a menu; use --output csv/json to grab an id for `cyl download --experiment-id`."""
     from postgrest import APIError
 
     from ..cli import _authed_client
+
+    if species_name is not None and pick_species:
+        raise click.UsageError("Use either --species NAME or --species-menu, not both.")
 
     output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
 
     client = _authed_client(profile)
     try:
         species_id = None
-        if pick_species:
+        if pick_species:  # interactive picker
             choices = fetch_species_with_experiments(client)
             if not choices:
                 raise click.ClickException("No species with cylinder experiments found.")
             species_id = select_species_interactively(choices)
+        elif species_name is not None:  # typed value → resolve the common name to an id
+            choices = fetch_species_with_experiments(client)
+            species_id = next(
+                (sid for sid, name in choices if name.casefold() == species_name.casefold()), None
+            )
+            if species_id is None:
+                raise click.ClickException(
+                    f"No species named {species_name!r} with cylinder experiments."
+                )
         raw = fetch_experiments(client, species_id=species_id, limit=limit)
     except APIError as exc:
         raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc

@@ -23,7 +23,7 @@ bloomctl --version
 bloomctl login
 
 # 2. Find an experiment — pick a species from a menu, grab its id
-bloomctl cyl experiments list --species
+bloomctl cyl experiments list --species-menu
 
 # 3. Download it — by id, or just by name
 bloomctl cyl download ./out --experiment-id 42
@@ -42,7 +42,7 @@ the `list` commands take `--output csv|json` for machine-readable output.
 
 | Command                          | What it does                                                                                                               |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `cyl experiments list`         | List experiments (species · name · id);`--species` opens a picker menu                                                 |
+| `cyl experiments list`         | List experiments (species · name · id); filter with `--species NAME` or `--species-menu`                                  |
 | `cyl accessions list`          | Accessions in an experiment (`--experiment-id`, or pick from a menu)                                                     |
 | `cyl accessions sample-counts` | Plant count per accession/species (`--species NAME`, or `--species-menu`)                                                 |
 | `cyl datasets list` / `get`  | List trait datasets (`--experiment` menu) / show one dataset's traits                                                    |
@@ -78,9 +78,10 @@ Tags: `:staging` (latest staging build) · `:<version>` (matches the PyPI releas
 
 ## Notes
 
-- **Interactive menus** (the `--species` / `--experiment` pickers) need a terminal; in a pipe/CI
-  they abort rather than guess. For scripting, pass the id directly (e.g. `--experiment-id N`) and
-  use `--output json`.
+- **Species selector** — `--species NAME` filters by species (typed, scriptable); `--species-menu`
+  picks from a menu. Same on every command; the two are mutually exclusive.
+- **Interactive menus** (`--species-menu`, `--experiment`) need a terminal; in a pipe/CI they abort
+  rather than guess. For scripting, pass the typed value/id and use `--output json`.
 - **Read vs write** — browsing/downloading works for any account; the write commands
   (`ingest-result`, `datasets create`) need an account with write access.
 
@@ -102,7 +103,7 @@ bloomctl login
 #    → prompts for email + password; writes credentials to ~/.bloom
 
 # 2. Find the experiment — browse by species from a menu (menu prints to stderr):
-bloomctl cyl experiments list --species
+bloomctl cyl experiments list --species-menu
 #    Select a species:
 #      0) All species
 #      1) Arabidopsis

@@ -71,9 +71,9 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - **[write]** `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
   create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`).
 - **[read]** `bloomctl cyl experiments list` — list cylinder experiments (species,
-  name, id), sorted by species then name. Pass `--species` to **pick a species from
-  an interactive menu** (needs a terminal) and filter to it. Choose the output with
-  `--output csv|json` (default is the table; `--json` is an alias for
+  name, id), sorted by species then name. Filter with `--species NAME` (scriptable) or
+  `--species-menu` to **pick a species from a menu** (needs a terminal). Choose the output
+  with `--output csv|json` (default is the table; `--json` is an alias for
   `--output json`) — handy for grabbing an `experiment_id` for `cyl download`;
   `--limit` caps the fetch.
 - **[read]** `bloomctl cyl accessions list` — list the accessions used in an
@@ -100,9 +100,15 @@ These apply across the `cyl` commands, so the per-command sections below stay sh
 - **Machine-readable output** — the `list` commands take `--output csv|json` (with `--json` as a
   back-compat alias for `--output json`); the default is a human table. Pipe it: e.g.
   `cyl experiments list --output json | jq '.[].experiment_id'`.
-- **Interactive pickers** — the `--species` / `--experiment` menu flags print a numbered menu to
-  **stderr** (so `--output` on stdout stays clean) and need a terminal. In a pipe/CI there's no one
-  to answer, so they **abort rather than guess** — for scripting, pass the id directly instead.
+- **Species selector** — commands that filter by species take `--species <common-name>` (a typed,
+  scriptable value) or `--species-menu` to pick from a numbered menu; the two are mutually exclusive,
+  and omitting both means all species. `--species` is **always a value**, `--species-menu` is
+  **always the picker** — the same everywhere (`experiments list`, `accessions sample-counts`, and
+  the typed `--species` narrower on `download --experiment-name`).
+- **Interactive pickers** — the menu flags (`--species-menu`, and `--experiment` on `datasets list`)
+  print a numbered menu to **stderr** (so `--output` on stdout stays clean) and need a terminal. In
+  a pipe/CI there's no one to answer, so they **abort rather than guess** — for scripting, pass the
+  typed value/id instead.
 - **Read vs write** — see [Access & roles](#access--roles). Browsing/downloading works for any
   logged-in user; the **[write]** commands need an account with write access.
 
@@ -117,7 +123,7 @@ bloomctl login
 #    → prompts for email + password; writes credentials to ~/.bloom
 
 # 2. Find the experiment — browse by species from a menu (menu prints to stderr):
-bloomctl cyl experiments list --species
+bloomctl cyl experiments list --species-menu
 #    Select a species:
 #      0) All species
 #      1) Arabidopsis
@@ -190,7 +196,7 @@ The read commands help you go from "which experiment?" to an id you can feed `cy
 
 ```bash
 # browse experiments; pick a species from a menu, or list all as JSON
-bloomctl cyl experiments list --species
+bloomctl cyl experiments list --species-menu
 bloomctl cyl experiments list --output json | jq -r '.[] | "\(.experiment_id)\t\(.experiment)"'
 
 # what accessions / how many plants are in an experiment
