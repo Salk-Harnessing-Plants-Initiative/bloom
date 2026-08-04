@@ -79,7 +79,7 @@ services:
       - supanet
 
   #-------------------
-  # BLOOM WEB 
+  # BLOOM WEB
   #-------------------
   bloom-web:
     build:
@@ -179,7 +179,8 @@ services:
     networks:
       - supanet
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:5002/health"]
+      # Probe with python, not curl — curl is not installed in this image.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5002/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -279,11 +280,17 @@ services:
       # JWT langchain-agent uses). SERVICE_ROLE_KEY is deliberately NOT passed
       # in — bloommcp's storage access is gated by the bloom_agent RLS policies, and granting service_role would let a future code path silently bypass them.
       BLOOM_AGENT_KEY: ${BLOOM_AGENT_KEY}
-      BLOOM_TRAITS_DIR: /app/data/SLEAP_OUT_CSV
+      BLOOM_TRAITS_DIR: /app/data/TRAITS_DIR
       BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
       BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
       BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
+      # Verifies an optional X-Bloom-Identity header for usage tracking (#406)
+      # — never used as DB/Storage authority. Same secret GoTrue/PostgREST/
+      # langchain-agent already use; validated lazily (only if/when a request
+      # actually carries the header), so this has no effect until a client
+      # sends that header.
+      JWT_SECRET: ${JWT_SECRET}
       # numba AOT cache. bloommcp imports umap-learn, which uses
       # @numba.jit(cache=True); without this env var, numba tries to write
       # to site-packages/__pycache__/ and fails under read_only: true.
@@ -302,7 +309,7 @@ services:
       # restores the normal caching path.
       PYTHONPYCACHEPREFIX: /tmp/pycache
     volumes:
-      - ./bloommcp/data/SLEAP_OUT_CSV:/app/data/SLEAP_OUT_CSV
+      - ./bloommcp/data/TRAITS_DIR:/app/data/TRAITS_DIR
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
       - ./bloommcp/data/ANALYSIS_OUTPUT:/app/data/ANALYSIS_OUTPUT
     networks:
@@ -509,7 +516,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
 
-  
+
   # -------------------
   # Supabase Storage
   # -------------------
@@ -611,7 +618,7 @@ services:
         "-c",
         "log_min_messages=fatal"
       ]
-  
+
   # -------------------
   # Supavisor (Connection Pooler)
   # -------------------
@@ -772,7 +779,3 @@ volumes:
 networks:
   supanet:
     driver: bridge
-
-
-
-

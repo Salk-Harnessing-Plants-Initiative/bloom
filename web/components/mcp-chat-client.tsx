@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import styles from "./mcp-chat-client.module.css";
+import { filterPickerTools, type MCPTool } from "./mcp-chat-client.helpers";
 
 type Message = { from: "user" | "bot"; text: string };
 type Provider = "local";
@@ -20,11 +21,6 @@ type SuggestionPayload = {
 type FollowupAction = { label: string; prompt: string };
 type FollowupPayload = { tool: string; actions: FollowupAction[] };
 type ImagePayload = { tool: string; url: string; layout: string };
-
-interface MCPTool {
-  name: string;
-  description: string;
-}
 
 interface ThreadInfo {
   thread_id: string;
@@ -259,13 +255,7 @@ export default function MCPChat() {
           return;
         }
         const data = await r.json();
-        const HIDDEN_TOOLS = new Set([
-          "list_available_experiments",
-          "load_experiment_data",
-          "inspect_data_quality",
-          "list_existing_analyses",
-        ]);
-        setAvailableMcpTools((data.tools || []).filter((t: MCPTool) => !HIDDEN_TOOLS.has(t.name)));
+        setAvailableMcpTools(filterPickerTools(data.tools || []));
       } catch {
         setAvailableMcpTools([]);
       }

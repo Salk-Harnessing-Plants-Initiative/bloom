@@ -1,9 +1,9 @@
 """Object-storage backend selection for bloommcp.
 
-The five object-storage helpers in :mod:`bloom_mcp.supabase_client`
+The six object-storage helpers in :mod:`bloom_mcp.supabase_client`
 (``upload_file`` / ``download_file`` / ``write_json`` / ``read_json`` /
-``list_prefix``) delegate to the *active* backend selected here. Two backends
-exist:
+``list_prefix`` / ``delete_files``) delegate to the *active* backend selected
+here. Two backends exist:
 
 * :class:`SupabaseStorageBackend` — the deployed default (Supabase Storage in the
   ``bloommcp-data`` bucket). Its method bodies are the pre-backend
@@ -24,7 +24,7 @@ touches no filesystem at import, so ``import bloom_mcp`` stays side-effect-free.
 root fails fast at boot rather than mid-run.
 
 Out of scope: PostgREST/table access (``get_postgrest_client``) and
-``read_input_csv``, which rides that client — neither is one of the five swapped
+``read_input_csv``, which rides that client — neither is one of the six swapped
 helpers, so both are unaffected by the selected backend.
 """
 
@@ -50,7 +50,7 @@ _TMP_PREFIX = ".tmp-"
 
 @runtime_checkable
 class StorageBackend(Protocol):
-    """The five object-storage operations bloommcp's write/read paths use."""
+    """The six object-storage operations bloommcp's write/read paths use."""
 
     def upload_file(self, key: str, local_path: Path) -> None: ...
 
@@ -61,6 +61,10 @@ class StorageBackend(Protocol):
     def read_json(self, key: str) -> dict: ...
 
     def list_prefix(self, prefix: str) -> list[str]: ...
+
+    def delete_files(
+        self, keys: list[str], *, timeout_seconds: Optional[float] = None
+    ) -> None: ...
 
 
 def _json_bytes(payload: dict) -> bytes:
@@ -169,6 +173,16 @@ class SupabaseStorageBackend:
         client = get_storage_client()
         items = client.list(prefix)
         return [item["name"] for item in items]
+
+    def delete_files(
+        self, keys: list[str], *, timeout_seconds: Optional[float] = None
+    ) -> None:
+        from bloom_mcp.supabase_client import get_storage_client
+
+        if not keys:
+            return
+        client = get_storage_client(timeout_seconds=timeout_seconds)
+        client.remove(list(keys))
 
 
 # ─── Local filesystem backend (opt-in) ────────────────────────────────────────
@@ -294,6 +308,24 @@ class LocalStorageBackend:
         # backend — filtering keeps cross-backend list parity.
         return sorted(n for n in names if not n.startswith(_TMP_PREFIX))
 
+    def delete_files(
+        self, keys: list[str], *, timeout_seconds: Optional[float] = None
+    ) -> None:
+        # timeout_seconds is a Supabase-backend concept (network round-trip);
+        # local deletes are synchronous filesystem calls, so it's accepted
+        # for Protocol parity and otherwise ignored.
+        del timeout_seconds
+        first_error: Optional[StorageBackendError] = None
+        for key in keys:
+            try:
+                self._resolve(key).unlink(missing_ok=True)
+            except OSError as exc:
+                # Best-effort, matching the Supabase backend's single bulk
+                # call: one bad key must not abort deleting the rest.
+                first_error = first_error or _redacted_io_error(key, exc)
+        if first_error is not None:
+            raise first_error
+
 
 # ─── Selection ────────────────────────────────────────────────────────────────
 
@@ -331,16 +363,21 @@ def is_local_backend() -> bool:
 def _resolve_local_root() -> Path:
     """The local root for the ``local`` backend.
 
-    ``BLOOM_STORAGE_LOCAL_ROOT`` when set. Otherwise falls back to
-    ``BLOOM_OUTPUT_DIR`` — a **bridge-only, deprecated** default that reuses the
-    already-mounted dev dir so ``BLOOM_STORAGE_BACKEND=local`` needs no second var
-    in dev. Prefer setting ``BLOOM_STORAGE_LOCAL_ROOT`` explicitly; the fallback is
-    logged (not silent) so a fourth overlapping use of ``BLOOM_OUTPUT_DIR`` stays
-    observable.
+    Precedence: ``BLOOM_STORAGE_LOCAL_ROOT`` when explicitly set; otherwise
+    ``<BLOOM_LOCAL_ROOT>/output`` when the single ``BLOOM_LOCAL_ROOT`` variable
+    supplies a default (#479); otherwise ``BLOOM_OUTPUT_DIR`` — a **bridge-only,
+    deprecated** default that reuses the already-mounted dev dir so
+    ``BLOOM_STORAGE_BACKEND=local`` needs no second var in dev. Prefer setting
+    ``BLOOM_STORAGE_LOCAL_ROOT`` (or ``BLOOM_LOCAL_ROOT``) explicitly; the
+    ``BLOOM_OUTPUT_DIR`` fallback is logged (not silent) so a fourth overlapping
+    use of it stays observable.
     """
     explicit = os.environ.get("BLOOM_STORAGE_LOCAL_ROOT")
     if explicit:
         return Path(explicit)
+    local_root = os.environ.get("BLOOM_LOCAL_ROOT")
+    if local_root and is_local_backend():
+        return Path(local_root) / "output"
     fallback = os.environ.get("BLOOM_OUTPUT_DIR", "")
     if fallback:
         logger.warning(
@@ -349,6 +386,28 @@ def _resolve_local_root() -> Path:
             "is a deprecated dev bridge — set BLOOM_STORAGE_LOCAL_ROOT explicitly."
         )
     return Path(fallback)
+
+
+def _ensure_subfolder(path: Path, label: str) -> None:
+    """Auto-create a ``BLOOM_LOCAL_ROOT``-derived subfolder, failing clearly if blocked.
+
+    Duplicated from ``experiment_utils._ensure_subfolder`` (not imported) — this
+    module deliberately imports nothing from ``experiment_utils`` to avoid a
+    two-way module dependency (``experiment_utils`` already imports from this
+    module via ``is_local_backend``). Only the top-level ``BLOOM_LOCAL_ROOT``
+    folder must pre-exist; its subfolders auto-create here. ``label`` names the
+    subfolder in the raised error without leaking the absolute host path.
+    """
+    if path.exists() and not path.is_dir():
+        raise RuntimeError(f"BLOOM_LOCAL_ROOT's {label} exists but is not a directory.")
+    existed = path.exists()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.error("could not create BLOOM_LOCAL_ROOT's %s: %s", label, path)
+        raise RuntimeError(f"Could not create BLOOM_LOCAL_ROOT's {label}.") from exc
+    if not existed:
+        logger.info("created BLOOM_LOCAL_ROOT's %s: %s", label, path)
 
 
 def _unrecognized_backend_error(name: str) -> RuntimeError:
@@ -390,6 +449,27 @@ def active_backend() -> StorageBackend:
     return _active
 
 
+def active_backend_name() -> str:
+    """The name of whatever backend :func:`active_backend` actually resolved to.
+
+    Derived from the memoized backend object's type — not an independent
+    ``BLOOM_STORAGE_BACKEND`` env re-read like :func:`selected_backend_name` —
+    so it can never disagree with the backend instance actually performing
+    I/O, and building it first means an invalid env value raises here too
+    (the same validation any other storage call gets). Prefer this over
+    :func:`selected_backend_name` for anything treated as a durable record of
+    which backend did the work (e.g. the #395 ``storage_backend`` manifest
+    sentinel); ``selected_backend_name`` remains the right tool for pre-build
+    env checks (e.g. :func:`is_local_backend`).
+    """
+    backend = active_backend()
+    if isinstance(backend, SupabaseStorageBackend):
+        return "supabase"
+    if isinstance(backend, LocalStorageBackend):
+        return "local"
+    raise RuntimeError(f"unrecognized active backend type: {type(backend)!r}")
+
+
 def reset_backend_for_tests() -> None:
     """Clear the memoized backend so tests can re-select from a changed env."""
     global _active
@@ -402,24 +482,36 @@ def validate_storage_backend() -> None:
     Called from ``experiment_utils.validate_env`` (which ``server.main()`` runs
     before binding the port). Raising here names the offending value / root, so a
     misconfigured deploy fails at boot rather than on the first storage call.
+    When the root is the ``BLOOM_LOCAL_ROOT``-derived default
+    (``BLOOM_STORAGE_LOCAL_ROOT`` unset), it is auto-created if missing rather
+    than required to pre-exist; an explicitly-set ``BLOOM_STORAGE_LOCAL_ROOT`` (or
+    the ``BLOOM_OUTPUT_DIR`` bridge fallback when ``BLOOM_LOCAL_ROOT`` is also
+    unset) keeps the stricter must-exist contract.
     """
     name = _selected_backend_name()
     if name not in VALID_BACKENDS:
         raise _unrecognized_backend_error(name)
     if name == "local":
         root = _resolve_local_root()
-        # Only Path("") has empty .parts; Path(".").parts == (".",) and refers
-        # to CWD, which is not a safe output root for production use.
-        if not root.parts or str(root) == ".":
-            raise RuntimeError(
-                "BLOOM_STORAGE_BACKEND=local but neither BLOOM_STORAGE_LOCAL_ROOT "
-                "nor BLOOM_OUTPUT_DIR is set."
-            )
-        if not root.exists() or not root.is_dir():
-            raise RuntimeError(
-                f"BLOOM_STORAGE_BACKEND=local root {root} does not exist or is not "
-                f"a directory."
-            )
+        explicit = os.environ.get("BLOOM_STORAGE_LOCAL_ROOT")
+        derived_from_local_root = not explicit and bool(
+            os.environ.get("BLOOM_LOCAL_ROOT")
+        )
+        if derived_from_local_root:
+            _ensure_subfolder(root, "output root")
+        else:
+            # Only Path("") has empty .parts; Path(".").parts == (".",) and refers
+            # to CWD, which is not a safe output root for production use.
+            if not root.parts or str(root) == ".":
+                raise RuntimeError(
+                    "BLOOM_STORAGE_BACKEND=local but neither BLOOM_STORAGE_LOCAL_ROOT "
+                    "nor BLOOM_OUTPUT_DIR is set."
+                )
+            if not root.exists() or not root.is_dir():
+                raise RuntimeError(
+                    f"BLOOM_STORAGE_BACKEND=local root {root} does not exist or is not "
+                    f"a directory."
+                )
         if not os.access(root, os.W_OK):
             raise RuntimeError(
                 f"BLOOM_STORAGE_BACKEND=local root {root} is not writable."

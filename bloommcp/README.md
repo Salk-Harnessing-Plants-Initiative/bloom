@@ -1,17 +1,28 @@
 # bloom-mcp
 
-FastMCP server exposing SLEAP root-trait analysis tools (QC, descriptive stats,
-dimensionality reduction, clustering, outlier detection, correlation, and
-visualization) over the Model Context Protocol, backed by the bloom Supabase
-database.
+FastMCP server exposing SLEAP root-trait analysis tools (QC cleaning/inspection, PCA,
+clustering, outlier detection, and plotting) over the Model Context Protocol, backed by the
+bloom Supabase database. Every analysis/plotting tool delegates to
+[`sleap-roots-analyze`](https://github.com/talmolab/sleap-roots-analyze) — bloom-mcp is a thin
+MCP surface over it, not a second home for analysis code.
+
+**Connecting an AI client (Claude Code) to the hosted server?** See
+[docs/connecting-claude-code.md](docs/connecting-claude-code.md) — this README covers running and
+developing the server itself, not connecting a client to it.
 
 ## Layout
 
 Installable `uv` package under `src/bloom_mcp/`:
 
 - `bloom_mcp.server` — the FastMCP app and `/health` endpoint (`main()` entry point)
-- `bloom_mcp.tools` — MCP tool modules and the high-level `workflows`
-- `bloom_mcp.storage` — versioned, append-only analysis-artifact storage
+- `bloom_mcp.sections` — every MCP tool lives here, one section sub-server per
+  contributor/package, one file per tool (see
+  `docs/2026-06-29-bloom-mcp-contributor-namespacing.md`). `sections.sleap_roots` wraps
+  `sleap-roots-analyze` (PCA, QC, clustering, outlier removal, plotting);
+  `sections.core` holds the cross-cutting discovery tools.
+- `bloom_mcp.tools` — shared helpers only (`_ports`, `_qc_shared`, `_consumer_utils`),
+  not tools themselves
+- `bloom_mcp.manifest` — versioned, append-only analysis-artifact manifest/bookkeeping
 - `bloom_mcp.supabase_client` — single point of Supabase access
 
 ## Running

@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # trailing `chown -R` over the ~hundreds-of-MB site-packages tree on source changes.
 RUN addgroup --system bloom && adduser --system --ingroup bloom bloom \
     && mkdir -p /opt/venv \
-                /app/data/SLEAP_OUT_CSV \
+                /app/data/TRAITS_DIR \
                 /app/data/PLOTS_DIR \
                 /app/data/ANALYSIS_OUTPUT \
     && chown -R bloom:bloom /opt/venv /app

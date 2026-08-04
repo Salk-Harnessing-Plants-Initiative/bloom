@@ -39,7 +39,7 @@ Respond with the single chosen bucket value."""
 # common patterns dominate the router's prior.
 ROUTER_FEW_SHOTS = [
     ("List the experiments available for cylinder phenotyping.", "phenotyping"),
-    ("Run a QC report on cylinder_alfalfa_gwas_wave2.csv.", "analysis"),
+    ("Run a QC report on cylinder_traits.csv.", "analysis"),
     ("What's the expression of AT1G01010 in the dataset?", "scrna"),
     ("Detect outliers in the wave 2 traits using isolation forest.", "analysis"),
     ("How does the cylinder platform differ from turface?", "freeform"),

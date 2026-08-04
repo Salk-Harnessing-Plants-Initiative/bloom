@@ -13,7 +13,7 @@ import json
 from hypothesis import given, strategies as st
 
 from bloom_mcp.contract import Provenance
-from bloom_mcp.storage.schema import CodeVersions
+from bloom_mcp.manifest.schema import CodeVersions
 
 
 def _make(**overrides) -> Provenance:
@@ -44,6 +44,22 @@ def test_per_artifact_hashes_empty_at_contract_time():
     assert prov.output_sha256 == {}
     assert prov.output_keys == {}
     assert prov.outputs == {}
+
+
+def test_source_id_and_name_default_to_none():
+    """A stamped Provenance carries no source identity until create_run sets it."""
+    prov = _make()
+    assert prov.source_id is None
+    assert prov.source_name is None
+
+
+def test_source_id_and_name_roundtrip_exactly():
+    """A Provenance carrying source_id/source_name survives JSON unchanged."""
+    prov = _make(source_id=7, source_name="reprocess-2026-07")
+    again = Provenance.model_validate(json.loads(prov.model_dump_json()))
+    assert again == prov
+    assert again.source_id == 7
+    assert again.source_name == "reprocess-2026-07"
 
 
 @given(

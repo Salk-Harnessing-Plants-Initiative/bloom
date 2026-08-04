@@ -20,15 +20,24 @@ Endpoints:
                                                        a worker generates it and
                                                        updates cyl_video_jobs
                                                        (requires a Supabase user JWT)
+    POST /pipeline                                  - externally reachable as
+                                                       POST /workflows/pipeline
+                                                       (Caddy strips the /workflows
+                                                       prefix before proxying here,
+                                                       matching every route above):
+                                                       trigger an A4 sleap-roots
+                                                       pipeline run for a scan/wave/
+                                                       experiment/explicit scan list
+                                                       (requires a Supabase user JWT)
 """
 
-import os
 import logging
+import os
 
-from fastapi import FastAPI, Depends, Path
+import pipeline
+from auth import enforce_rate_limit, require_supabase_user
+from fastapi import Depends, FastAPI, Path
 from fastapi.middleware.cors import CORSMiddleware
-
-from auth import require_supabase_user, enforce_rate_limit
 from video import generate_experiment_scan_video
 from video_queue import enqueue_experiment_scan_video
 
@@ -110,3 +119,27 @@ def cyl_experiment_scan_video_queue(
         scan_id,
     )
     return {"experiment_id": experiment_id, "scan_id": scan_id, **result}
+
+
+@app.post("/pipeline")
+def trigger_pipeline_route(
+    body: dict,
+    user_id: str = Depends(require_supabase_user),
+):
+    """Trigger an A4 pipeline run (reachable externally at POST /workflows/pipeline
+    — Caddy's handle_path /workflows/* already strips that prefix before proxying
+    to this service, so this route is registered without it, matching every other
+    route above).
+
+    Requires a valid Supabase user JWT (Bearer). Rate-limited per user.
+    """
+    enforce_rate_limit(user_id)
+    result = pipeline.trigger_pipeline(body, user_id)
+    logger.info(
+        "Pipeline run %s triggered by %s (%d scans, %d reused)",
+        result["pipeline_run_id"],
+        user_id,
+        result["scan_count"],
+        result["reused_count"],
+    )
+    return result

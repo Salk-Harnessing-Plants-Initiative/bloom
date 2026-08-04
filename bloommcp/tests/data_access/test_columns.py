@@ -25,7 +25,7 @@ _RAW = _FIXTURES / "turface_19_raw_data.csv"
 
 
 def _turface() -> pd.DataFrame:
-    return pd.read_csv(_RAW)
+    return pd.read_csv(_RAW, encoding="utf-8")
 
 
 def test_resolves_turface_roles_and_detects_19_traits():
@@ -166,6 +166,28 @@ def test_run_input_validation_no_handler_accumulation(monkeypatch):
     w1 = run_input_validation(df, resolved)
     w2 = run_input_validation(df, resolved)
     assert len(w1) == len(w2) == 1
+
+
+def test_resolves_canonical_sample_id_over_later_metadata_patterns():
+    """bloom#551: a SupabaseReader-produced frame already has a literal
+    ``sample_id`` column (renamed from ``plant_qr_code``) *and* separate
+    ``plant_id`` / ``scan_id`` metadata columns that also match
+    SAMPLE_ID_PATTERNS. The already-canonical column must win, or the
+    caller-side rename-to-"sample_id" step fails because that name is
+    already taken by a different column.
+    """
+    df = pd.DataFrame(
+        {
+            "genotype": ["a", "b", "c"],
+            "sample_id": ["p1", "p2", "p3"],
+            "plant_id": [101, 102, 103],
+            "scan_id": [201, 202, 203],
+            "t1": [1.0, 2.0, 3.0],
+        }
+    )
+    r = resolve_columns(df)
+    assert r.sample_id == "sample_id"
+    assert r.genotype == "genotype"
 
 
 def test_degenerate_frames_do_not_raise():

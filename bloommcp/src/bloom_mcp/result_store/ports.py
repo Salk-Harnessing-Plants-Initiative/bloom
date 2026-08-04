@@ -1,7 +1,7 @@
 """Backend-agnostic result-persistence port and its value types.
 
-Tools depend on :class:`ResultStore`, never on ``AnalysisWriter``,
-``AnalysisDir``, or ``supabase``. Backend-specific concepts — the
+Tools depend on :class:`ResultStore`, never on ``AnalysisDir`` or
+``supabase`` directly. Backend-specific concepts — the
 ``<tool_class>_<stem>`` directory scheme, ``v<N>`` ids, the ``latest`` pointer,
 object keys — live inside the adapter; the port speaks in an **opaque**
 ``run_ref`` so a future orchestrator-owned / per-user-identity writer can
@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # avoid an import cycle; only used for typing
     from bloom_mcp.contract.provenance import Provenance
-    from bloom_mcp.storage.schema import VersionEntry
+    from bloom_mcp.data_access import SourceInfo
+    from bloom_mcp.manifest.schema import VersionEntry
 
 
 class ResultStoreError(Exception):
@@ -68,6 +69,8 @@ class StoredRun:
     environment: Optional[str]
     code_versions: dict[str, Optional[str]]
     input_validation: Optional[dict] = None
+    source_id: Optional[int] = None
+    source_name: Optional[str] = None
 
     @classmethod
     def from_version_entry(
@@ -95,6 +98,8 @@ class StoredRun:
             environment=entry.environment,
             code_versions=entry.code_versions.model_dump(mode="json"),
             input_validation=entry.input_validation,
+            source_id=entry.source_id,
+            source_name=entry.source_name,
         )
 
 
@@ -110,8 +115,16 @@ class ResultStore(Protocol):
         provenance: "Provenance",
         user_label: Optional[str] = None,
         source_csv: Optional[Path] = None,
+        source: Optional["SourceInfo"] = None,
     ) -> RunHandle:
-        """Allocate a version + staging dir for a new run on ``experiment``."""
+        """Allocate a version + staging dir for a new run on ``experiment``.
+
+        ``source``, when given, identifies which DB source/pipeline-run backed
+        the experiment read that produced this run (see
+        ``bloom_mcp.data_access.SourceSelectable``); it is merged into the
+        stored provenance so it survives to the committed ``VersionEntry``
+        without the caller building a modified ``Provenance`` itself.
+        """
         ...
 
     def commit(self, run: RunHandle, outputs: dict[str, str]) -> StoredRun:

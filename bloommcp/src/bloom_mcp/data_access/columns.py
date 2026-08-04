@@ -23,12 +23,31 @@ from typing import Optional
 import pandas as pd
 from sleap_roots_analyze import get_trait_columns
 
-# Auto-detect patterns for the role columns (case-insensitive exact match).
-# These are bloommcp's mapping of real-world column names to the canonical roles;
-# they moved here from ``experiment_utils`` so role matching lives in one place.
-GENOTYPE_PATTERNS = ["geno", "genotype", "accession", "species_name"]
+# Auto-detect patterns for the role columns (case-insensitive exact match, first
+# match wins). These are bloommcp's mapping of real-world column names to the
+# canonical roles; they moved here from ``experiment_utils`` so role matching
+# lives in one place.
+#
+# The canonical name itself (``"sample_id"``) MUST be the first entry: a
+# SupabaseReader-produced frame already carries a literal ``sample_id`` column
+# (renamed from ``plant_qr_code`` at pivot time) *and* an unrelated metadata
+# column (``plant_id`` -- traceability, or ``scan_id``) that also happens to
+# match a later pattern in this list. Without "sample_id" listed first,
+# ``_find_column`` would match one of those metadata columns instead of the
+# already-canonical one, and the caller-side rename-to-"sample_id" step then
+# fails outright because a column of that exact name already exists. Found via
+# bloom#551's live dev-stack-smoke qc_clean leg -- no prior test exercised
+# resolve_columns() against a real SupabaseReader-produced frame end to end.
+GENOTYPE_PATTERNS = ["genotype", "geno", "accession", "species_name"]
 REPLICATE_PATTERNS = ["rep", "replicate", "wave_number"]
-SAMPLE_ID_PATTERNS = ["barcode", "plant_qr_code", "scan_id", "plant_id", "plant_name"]
+SAMPLE_ID_PATTERNS = [
+    "sample_id",
+    "barcode",
+    "plant_qr_code",
+    "scan_id",
+    "plant_id",
+    "plant_name",
+]
 
 
 @dataclass(frozen=True)

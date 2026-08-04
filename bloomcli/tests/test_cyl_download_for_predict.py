@@ -66,7 +66,7 @@ def test_oracle_sidecar_is_accepted_by_discover_scans(tmp_path):
     assert sidecar["scan_key"] == "scan_1"
     assert set(sidecar["params"]) == {"species", "mode", "age"}
     assert sidecar["params"]["mode"] == "cylinder"
-    assert sidecar["image_ids"] == [1001, 1002]
+    assert sidecar["image_ids"] == ["1001", "1002"]
     assert sidecar["images_checksum"].startswith("sha256:")
 
     dfp.write_sidecar(sidecar, scan_dir / "scan_1.scan_metadata.json")
@@ -118,8 +118,24 @@ def test_build_sidecar_assembles_all_fields_in_input_order():
     sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES, PARAMS)
     assert set(sidecar) == {"scan_key", "params", "image_ids", "images_checksum"}
     assert sidecar["scan_key"] == dfp.scan_key_for(SCAN["scan_id"])
-    assert sidecar["image_ids"] == [1001, 1002]
+    assert sidecar["image_ids"] == ["1001", "1002"]
     assert sidecar["params"] == PARAMS
+
+
+def test_build_sidecar_image_ids_and_checksum_validate_as_input_ref():
+    """Regression for bloom#555: `image_ids` must be `list[str]` — the exact shape
+    `sleap_roots_contracts.InputRef` (and, in turn, trait_extractor's `ScanMetadata`)
+    requires. Validating against the real contract model, not just a literal list of
+    strings, catches this class of type bug even if the literal expectation above is
+    ever loosened."""
+    from sleap_roots_contracts import InputRef
+
+    sidecar = dfp.build_sidecar(SCAN, IMAGES, FRAME_BYTES, PARAMS)
+
+    input_ref = InputRef.model_validate(
+        {"image_ids": sidecar["image_ids"], "images_checksum": sidecar["images_checksum"]}
+    )
+    assert input_ref.image_ids == ["1001", "1002"]
 
 
 def test_resolve_sidecar_params_passes_mode_override(monkeypatch):
@@ -287,7 +303,7 @@ def test_cli_happy_path_writes_frames_and_sidecar(tmp_path, monkeypatch):
     assert (out / "scan_1" / "1.png").exists()
     sidecar = json.loads((out / "scan_1" / "scan_1.scan_metadata.json").read_text())
     assert sidecar["scan_key"] == "scan_1"
-    assert sidecar["image_ids"] == [1001, 1002]
+    assert sidecar["image_ids"] == ["1001", "1002"]
     assert sidecar["params"]["mode"] == "cylinder"
     assert sidecar["images_checksum"].startswith("sha256:")
 
@@ -538,3 +554,636 @@ def test_cli_echoes_what_it_cleared_on_rerun(tmp_path, monkeypatch):
     assert result2.exit_code == 0, result2.output
     # 0.png, 1.png, scan_1.scan_metadata.json from the first run.
     assert "3 existing file" in result2.output.lower()
+
+
+# --- batch: pure helpers ------------------------------------------------------
+
+
+def test_read_scan_ids_from_file(tmp_path):
+    path = tmp_path / "scan_ids.json"
+    path.write_text("[1, 2, 3]", encoding="utf-8")
+    assert dfp.read_scan_ids(str(path)) == [1, 2, 3]
+
+
+def test_read_scan_ids_empty_array_is_valid(tmp_path):
+    path = tmp_path / "scan_ids.json"
+    path.write_text("[]", encoding="utf-8")
+    assert dfp.read_scan_ids(str(path)) == []
+
+
+def test_read_scan_ids_from_stdin():
+    import io
+
+    assert dfp.read_scan_ids("-", stdin=io.StringIO("[1, 2]")) == [1, 2]
+
+
+def test_read_scan_ids_missing_path_raises(tmp_path):
+    with pytest.raises(ValueError, match="does not exist"):
+        dfp.read_scan_ids(str(tmp_path / "nope.json"))
+
+
+def test_read_scan_ids_directory_path_raises(tmp_path):
+    with pytest.raises(ValueError, match="does not exist"):
+        dfp.read_scan_ids(str(tmp_path))
+
+
+def test_read_scan_ids_non_json_raises(tmp_path):
+    path = tmp_path / "scan_ids.json"
+    path.write_text("{ not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="not valid JSON"):
+        dfp.read_scan_ids(str(path))
+
+
+@pytest.mark.parametrize("content", ['{"a": 1}', '"just a string"', "42", "[1, 2.5]", '[1, "x"]'])
+def test_read_scan_ids_non_integer_array_raises(tmp_path, content):
+    path = tmp_path / "scan_ids.json"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError, match="array of integers"):
+        dfp.read_scan_ids(str(path))
+
+
+def test_parse_scan_ids_flag_comma_separated():
+    assert dfp.parse_scan_ids_flag("1,2,3") == [1, 2, 3]
+
+
+def test_parse_scan_ids_flag_tolerates_spaces():
+    assert dfp.parse_scan_ids_flag(" 1, 2 , 3 ") == [1, 2, 3]
+
+
+def test_parse_scan_ids_flag_rejects_non_numeric():
+    with pytest.raises(ValueError, match="integers"):
+        dfp.parse_scan_ids_flag("1,abc,3")
+
+
+def test_scan_is_already_staged_true_for_valid_sidecar(tmp_path):
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1"}), encoding="utf-8"
+    )
+    assert dfp.scan_is_already_staged(scan_dir, "scan_1") is True
+
+
+def test_scan_is_already_staged_false_when_missing(tmp_path):
+    assert dfp.scan_is_already_staged(tmp_path / "scan_1", "scan_1") is False
+
+
+def test_scan_is_already_staged_false_when_unparseable(tmp_path):
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text("{ not json", encoding="utf-8")
+    assert dfp.scan_is_already_staged(scan_dir, "scan_1") is False
+
+
+def test_scan_is_already_staged_false_when_scan_key_mismatched(tmp_path):
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_999"}), encoding="utf-8"
+    )
+    assert dfp.scan_is_already_staged(scan_dir, "scan_1") is False
+
+
+def test_scan_is_already_staged_false_when_image_ids_are_int(tmp_path):
+    """Regression for bloom#555: a sidecar staged by the pre-fix build_sidecar() has
+    int image_ids. Without this check, scan_is_already_staged would treat it as valid
+    forever, and the batch resume path would never re-stage it with corrected str ids."""
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1", "image_ids": [1001, 1002]}), encoding="utf-8"
+    )
+    assert dfp.scan_is_already_staged(scan_dir, "scan_1") is False
+
+
+def test_scan_is_already_staged_true_when_image_ids_are_str(tmp_path):
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1", "image_ids": ["1001", "1002"]}), encoding="utf-8"
+    )
+    assert dfp.scan_is_already_staged(scan_dir, "scan_1") is True
+
+
+def _fetch_scan_for(scan_id_to_images):
+    """A fetch_scan stand-in returning a per-scan_id SCAN row (scan_id field matches).
+
+    Every scan_id "exists" (returns a row) — `scan_id_to_images` only customizes each scan's
+    image list (default IMAGES for any id not listed); it does not model a not-found scan (tests
+    for that override `fetch_scan` directly).
+    """
+
+    def _fetch_scan(client, scan_id):
+        return {**SCAN, "scan_id": scan_id}
+
+    return _fetch_scan
+
+
+def _fetch_images_for(scan_id_to_images):
+    def _fetch_images(client, scan_id):
+        return scan_id_to_images.get(scan_id, IMAGES)
+
+    return _fetch_images
+
+
+def _patch_batch(monkeypatch, scan_id_to_images=None, storage_responses=None):
+    """Batch-test analog of `_patch_common`: fetch_scan/fetch_images vary by scan_id.
+
+    `scan_id_to_images` maps scan_id -> its images list (default IMAGES for any id not listed);
+    an empty list simulates a "no frames found" failure for that scan_id.
+    """
+    scan_id_to_images = scan_id_to_images or {}
+    monkeypatch.setattr(
+        "bloomctl.credentials.load_credentials",
+        lambda *a, **k: Credentials("https://x/api", "KEY", "u@s.edu", "pw"),
+    )
+    monkeypatch.setattr(auth, "make_authed_client", lambda creds: _FakeClient(storage_responses))
+    monkeypatch.setattr(dfp, "fetch_scan", _fetch_scan_for(scan_id_to_images))
+    monkeypatch.setattr(dfp, "fetch_images", _fetch_images_for(scan_id_to_images))
+
+
+def test_stage_one_scan_success(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    client = auth.make_authed_client(None)
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+    assert result.status == "ok"
+    assert result.scan_key == "scan_1"
+    assert (tmp_path / "scan_1" / "scan_1.scan_metadata.json").exists()
+
+
+def test_stage_one_scan_not_found(monkeypatch, tmp_path):
+    _patch_batch(monkeypatch, scan_id_to_images={})
+    monkeypatch.setattr(dfp, "fetch_scan", lambda client, scan_id: None)
+    client = auth.make_authed_client(None)
+    result = dfp.stage_one_scan(client, 999, tmp_path)
+    assert result.status == "failed"
+    assert "not found" in result.error.lower()
+
+
+def test_stage_one_scan_zero_frames(monkeypatch, tmp_path):
+    _patch_batch(monkeypatch, scan_id_to_images={1: []})
+    client = auth.make_authed_client(None)
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+    assert result.status == "failed"
+    assert "no frames found" in result.error.lower()
+
+
+def test_stage_one_scan_invalid_frame_numbers(monkeypatch, tmp_path):
+    dup_images = [
+        {"id": 1001, "frame_number": 0, "object_path": "cyl-images/a.png"},
+        {"id": 1002, "frame_number": 0, "object_path": "cyl-images/b.png"},
+    ]
+    _patch_batch(monkeypatch, scan_id_to_images={1: dup_images})
+    client = auth.make_authed_client(None)
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+    assert result.status == "failed"
+
+
+def test_stage_one_scan_metadata_resolution_failure(monkeypatch, tmp_path):
+    _patch_batch(monkeypatch)
+
+    def _bad_scan(client, scan_id):
+        return {**SCAN, "scan_id": scan_id, "species_name": None}
+
+    monkeypatch.setattr(dfp, "fetch_scan", _bad_scan)
+    client = auth.make_authed_client(None)
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+    assert result.status == "failed"
+
+
+def test_stage_one_scan_partial_frame_failure(monkeypatch, tmp_path):
+    def _flaky_download(object_path):
+        if object_path == "cyl-images/b.png":
+            raise ConnectionError("simulated storage failure")
+        return f"bytes::{object_path}".encode()
+
+    _patch_batch(monkeypatch)
+
+    class _FlakyClient(_FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.storage._bucket.download = _flaky_download
+
+    client = _FlakyClient()
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+    assert result.status == "failed"
+    assert "frames failed to download" in result.error
+    assert not (tmp_path / "scan_1" / "scan_1.scan_metadata.json").exists()
+
+
+def test_stage_one_scan_isolates_unexpected_network_error(monkeypatch, tmp_path):
+    """A transient network/auth error from fetch_scan/fetch_images (not just the ValueError
+    validation cases already handled) must be isolated into a failed ScanResult, never raised —
+    review finding: this was previously uncaught and would crash the whole batch."""
+    _patch_batch(monkeypatch)
+
+    def _boom(client, scan_id):
+        raise ConnectionError("simulated transient network failure")
+
+    monkeypatch.setattr(dfp, "fetch_scan", _boom)
+    result = dfp.stage_one_scan(object(), 1, tmp_path)
+    assert result.status == "failed"
+    assert result.scan_key == "scan_1"
+    assert "simulated transient network failure" in result.error
+
+
+def test_stage_one_scan_isolates_unexpected_error_from_fetch_images(monkeypatch, tmp_path):
+    _patch_batch(monkeypatch)
+
+    def _boom(client, scan_id):
+        raise RuntimeError("simulated auth token expiry")
+
+    monkeypatch.setattr(dfp, "fetch_images", _boom)
+    result = dfp.stage_one_scan(object(), 1, tmp_path)
+    assert result.status == "failed"
+    assert "simulated auth token expiry" in result.error
+
+
+def test_batch_cli_isolates_unexpected_network_error_among_several(tmp_path, monkeypatch):
+    """The batch command itself must not crash if one scan's fetch raises something other
+    than the already-handled cases — the other scans must still be processed and reported."""
+    _patch_batch(monkeypatch)
+
+    def _flaky_fetch_scan(client, scan_id):
+        if scan_id == 2:
+            raise ConnectionError("simulated transient network failure")
+        return {**SCAN, "scan_id": scan_id}
+
+    monkeypatch.setattr(dfp, "fetch_scan", _flaky_fetch_scan)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1, 2, 3]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code != 0
+    assert (out / "scan_1" / "scan_1.scan_metadata.json").exists()
+    assert (out / "scan_3" / "scan_3.scan_metadata.json").exists()
+    assert "scan_2" in result.output
+    assert "simulated transient network failure" in result.output
+
+
+def test_stage_one_scan_already_staged_is_skipped(tmp_path, monkeypatch):
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1"}), encoding="utf-8"
+    )
+
+    def _boom(client, scan_id):
+        raise AssertionError("fetch_scan must not be called for an already-staged scan")
+
+    monkeypatch.setattr(dfp, "fetch_scan", _boom)
+    client = object()
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+    assert result.status == "skipped"
+
+
+def test_stage_one_scan_malformed_sidecar_triggers_full_redownload(tmp_path, monkeypatch):
+    """Review finding: `scan_is_already_staged` returning False for a malformed/mismatched
+    sidecar was only unit-tested at the helper level — nothing confirmed `stage_one_scan`
+    actually goes on to clear and successfully redownload, end to end."""
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text("{ not json", encoding="utf-8")
+    stale = scan_dir / "0.png"
+    stale.write_bytes(b"stale content from a previous run's malformed sidecar")
+
+    _patch_batch(monkeypatch)
+    client = _FakeClient()
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+
+    assert result.status == "ok"
+    sidecar_path = scan_dir / "scan_1.scan_metadata.json"
+    assert json.loads(sidecar_path.read_text(encoding="utf-8"))["scan_key"] == "scan_1"
+    assert stale.read_bytes() != b"stale content from a previous run's malformed sidecar"
+
+
+def test_stage_one_scan_stale_int_image_ids_sidecar_triggers_full_redownload(tmp_path, monkeypatch):
+    """Regression for bloom#555: a scan staged by the pre-fix build_sidecar() (int
+    image_ids) must be treated as not-staged and re-downloaded, not silently skipped
+    forever by the batch resume path."""
+    scan_dir = tmp_path / "scan_1"
+    scan_dir.mkdir()
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1", "image_ids": [1001, 1002]}), encoding="utf-8"
+    )
+
+    _patch_batch(monkeypatch)
+    client = _FakeClient()
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+
+    assert result.status == "ok"
+    sidecar = json.loads((scan_dir / "scan_1.scan_metadata.json").read_text(encoding="utf-8"))
+    assert sidecar["image_ids"] == ["1001", "1002"]
+
+
+def test_batch_cli_malformed_sidecar_triggers_full_redownload(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    scan_dir = out / "scan_1"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_999"}), encoding="utf-8"
+    )
+
+    _patch_batch(monkeypatch)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    sidecar = json.loads((scan_dir / "scan_1.scan_metadata.json").read_text())
+    assert sidecar["scan_key"] == "scan_1"
+
+
+# --- batch: command wiring -----------------------------------------------------
+
+
+def test_batch_cli_happy_path(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1, 2, 3]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    for scan_id in (1, 2, 3):
+        assert (out / f"scan_{scan_id}" / f"scan_{scan_id}.scan_metadata.json").exists()
+
+
+def test_batch_cli_json_all_ok(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1, 2, 3]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file), "--json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert len(payload) == 3
+    assert all(entry["status"] == "ok" for entry in payload)
+
+
+def test_batch_cli_isolates_one_bad_scan(tmp_path, monkeypatch):
+    """One bad scan among several does not abort the batch (always runs, mocked — no importorskip)."""
+    _patch_batch(monkeypatch, scan_id_to_images={2: []})
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1, 2, 3]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code != 0
+    assert (out / "scan_1" / "scan_1.scan_metadata.json").exists()
+    assert (out / "scan_3" / "scan_3.scan_metadata.json").exists()
+    assert not (out / "scan_2").exists()
+    assert "scan_2" in result.output
+
+
+def test_batch_cli_isolates_one_bad_scan_json(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch, scan_id_to_images={2: []})
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1, 2, 3]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file), "--json"]
+    )
+
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_1"]["status"] == "ok"
+    assert payload["scan_2"]["status"] == "failed"
+    assert payload["scan_2"]["error"]
+    assert payload["scan_3"]["status"] == "ok"
+
+
+def test_batch_oracle_discover_scans_accepts_the_survivors(tmp_path, monkeypatch):
+    """Manual, dev-machine only — self-skips in CI (mirrors the single-command's oracle test)."""
+    sleap_roots_predict = pytest.importorskip("sleap_roots_predict")
+
+    _patch_batch(monkeypatch, scan_id_to_images={2: []})
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1, 2, 3]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+    assert result.exit_code != 0
+
+    scans = sleap_roots_predict.discover_scans(out)
+    assert {s.scan_key for s in scans} == {"scan_1", "scan_3"}
+    assert all(s.error is None for s in scans)
+
+
+def test_batch_cli_empty_array_is_noop(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not out.exists()
+
+
+def test_batch_cli_malformed_scan_ids_source_makes_no_call(tmp_path, monkeypatch):
+    called = {"auth": False}
+    monkeypatch.setattr(
+        "bloomctl.credentials.load_credentials",
+        lambda *a, **k: called.__setitem__("auth", True) or Credentials("https://x/api", "KEY", "u@s.edu", "pw"),
+    )
+    bad = tmp_path / "scan_ids.json"
+    bad.write_text("{ not json", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(bad)])
+
+    assert result.exit_code != 0
+    assert not called["auth"]
+    assert not out.exists()
+
+
+def test_batch_cli_nonexistent_scan_ids_source_makes_no_call(tmp_path, monkeypatch):
+    called = {"auth": False}
+    monkeypatch.setattr(
+        "bloomctl.credentials.load_credentials",
+        lambda *a, **k: called.__setitem__("auth", True) or Credentials("https://x/api", "KEY", "u@s.edu", "pw"),
+    )
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(tmp_path / "nope.json")]
+    )
+
+    assert result.exit_code != 0
+    assert not called["auth"]
+
+
+def test_batch_cli_stdin(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", "-"], input="[1, 2]"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (out / "scan_1").exists()
+    assert (out / "scan_2").exists()
+
+
+def test_batch_cli_scan_ids_flag(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids", "1,2"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (out / "scan_1").exists()
+    assert (out / "scan_2").exists()
+
+
+def test_batch_cli_source_and_flag_both_given_is_usage_error(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli,
+        ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file), "--scan-ids", "1"],
+    )
+
+    assert result.exit_code != 0
+    assert not out.exists()
+
+
+def test_batch_cli_source_and_flag_both_omitted_is_usage_error(tmp_path):
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-download-for-predict", str(out)])
+
+    assert result.exit_code != 0
+    assert not out.exists()
+
+
+def test_batch_cli_already_staged_scan_is_skipped_not_redownloaded(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    out = tmp_path / "out"
+    scan_dir = out / "scan_1"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1"}), encoding="utf-8"
+    )
+
+    def _boom_download(object_path):
+        raise AssertionError("must not download frames for an already-staged scan")
+
+    class _AssertingClient(_FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.storage._bucket.download = _boom_download
+
+    monkeypatch.setattr(auth, "make_authed_client", lambda creds: _AssertingClient())
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(
+        CliRunner()
+        .invoke(cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file), "--json"])
+        .output
+    )
+    assert payload[0]["status"] == "skipped"
+
+
+def _mixed_status_setup(base_dir):
+    """A fresh out_dir + scan_ids.json for a 1-ok/1-skipped/1-failed batch (scan_ids.json: [1,2,3])."""
+    out = base_dir / "out"
+    scan_dir_2 = out / "scan_2"
+    scan_dir_2.mkdir(parents=True)
+    (scan_dir_2 / "scan_2.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_2"}), encoding="utf-8"
+    )
+    ids_file = base_dir / "scan_ids.json"
+    ids_file.write_text("[1, 2, 3]", encoding="utf-8")
+    return out, ids_file
+
+
+def test_batch_cli_mixed_statuses_json_output(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch, scan_id_to_images={3: []})
+    out, ids_file = _mixed_status_setup(tmp_path)
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file), "--json"]
+    )
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry["status"] for entry in json.loads(result.output)}
+    assert payload == {"scan_1": "ok", "scan_2": "skipped", "scan_3": "failed"}
+
+
+def test_batch_cli_mixed_statuses_default_output(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch, scan_id_to_images={3: []})
+    out, ids_file = _mixed_status_setup(tmp_path)
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+    assert result.exit_code != 0
+    assert "1 skipped" in result.output.lower()
+    assert "1 failed" in result.output.lower()
+    assert "scan_3" in result.output
+
+
+def test_batch_cli_profile_option_passed_through(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_load_credentials(profile):
+        captured["profile"] = profile
+        return Credentials("https://x/api", "KEY", "u@s.edu", "pw")
+
+    monkeypatch.setattr("bloomctl.credentials.load_credentials", fake_load_credentials)
+    monkeypatch.setattr(auth, "make_authed_client", lambda creds: _FakeClient())
+    monkeypatch.setattr(dfp, "fetch_scan", _fetch_scan_for({1: IMAGES}))
+    monkeypatch.setattr(dfp, "fetch_images", _fetch_images_for({1: IMAGES}))
+
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli,
+        ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file), "-p", "staging"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["profile"] == "staging"
+
+
+def test_batch_cli_registration_shows_in_help():
+    result = CliRunner().invoke(cli, ["cyl", "--help"])
+    assert "batch-download-for-predict" in result.output

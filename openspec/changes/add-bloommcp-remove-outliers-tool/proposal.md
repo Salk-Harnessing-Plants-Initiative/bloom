@@ -76,11 +76,11 @@ naive-dropna figure.)
     defense-in-depth (parity with `qc_clean`) it also runs its own pre-commit no-NaN / row-count
     guard for a delegate that *returns* rather than raises a degenerate frame, and persists
     nothing on any failure;
-  - **persists a versioned run via the `ResultStore` port under tool class `qc`** — the
-    trimmed trait CSV written under the shared `CLEANED_CSV_NAME` (`_cleaned.csv`) + the
-    outlier `report` (`outlier_report.json`) + provenance — so the reader's
-    `_resolve_versioned_cleaned` (which reads the latest `qc`-class `_cleaned.csv`) resolves
-    the **trimmed** table as the newest cleaned version and a downstream
+  - **[Superseded by #420 — see below] persists a versioned run via the `ResultStore` port
+    under tool class `qc`** — the trimmed trait CSV written under the shared `CLEANED_CSV_NAME`
+    (`_cleaned.csv`) + the outlier `report` (`outlier_report.json`) + provenance — so the
+    reader's `_resolve_versioned_cleaned` (which reads the latest `qc`-class `_cleaned.csv`)
+    resolves the **trimmed** table as the newest cleaned version and a downstream
     `pca_analysis (require_clean=True)` consumes it. This is the whole composition point and
     reuses `qc_clean`'s exact persistence shape (see design for the "latest-cleaned is
     order-dependent" caveat, inherited from `qc_clean` vs `run_qc_workflow`);
@@ -111,8 +111,26 @@ naive-dropna figure.)
   appears in MCP `tools/list`; add it to the module docstring's tool list.
 - **LEAVE** the existing `run_outlier_workflow` and the vendored `bloom_mcp.outlier_detection`
   in place — this **adds granularity alongside**; retirement of `source/*` + the bespoke
-  workflow tools stays **deferred to after Stage 1** (Tiers 0–4), per the roadmap. `qc` tool
-  class is shared with `qc_clean`; `run_outlier_workflow`'s `outlier` class is untouched.
+  workflow tools stays **deferred to after Stage 1** (Tiers 0–4), per the roadmap.
+  `run_outlier_workflow`'s `outlier` class is untouched.
+
+> **Superseded by #420 (`fix-bloommcp-remove-outliers-tool-class`).** This proposal shipped
+> (PR #400) persisting `remove_outliers` under the shared `qc` tool class, accepting the
+> documented order-dependence caveat below as a known trade-off flagged for review. #420
+> implements the "dedicated class" alternative that this proposal's own design.md Decision 1
+> flagged as the one open judgment call: `remove_outliers` now persists under its own
+> `tool_class="outliers"`, and — **not** a recency comparison (an early draft of #420 tried
+> "prefer whichever manifest committed most recently" and found it does not actually fix this
+> proposal's own order-dependence caveat, since the reverting `qc_clean` re-run is by
+> construction always the more recent commit) — the reader now gives `outliers` **fixed
+> priority** over `qc` for `version="latest"` whenever any `outliers` version exists, while
+> `remove_outliers`'s own read of its trimming input uses a new, distinct `version="latest_qc"`
+> so a fresh `qc_clean` is never hidden from the tool whose job is to trim it. See #420's
+> design.md for the full mechanism and its one disclosed trade-off. This proposal is left
+> otherwise unedited as the historical record of what actually shipped in PR #400; the
+> still-inaccurate scenario in this proposal's own spec delta
+> (`specs/bloommcp-remove-outliers-tool/spec.md`) is corrected by that change rather than here,
+> since this change is not being re-archived.
 - Tests cover the **5 contract patterns + the golden trim through the tool**: golden
   reproduction (flagged barcodes + counts), `tools/list` presence, schema round-trip,
   provenance (resolved integer seed) + links, property/invariant, delegation pinning, the

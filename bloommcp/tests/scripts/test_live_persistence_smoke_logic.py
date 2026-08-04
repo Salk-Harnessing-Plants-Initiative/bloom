@@ -14,9 +14,9 @@ import hashlib
 import importlib.util
 from pathlib import Path
 
-# Load the driver by path — `scripts/` is not an importable package (no __init__).
+# Load the driver by path — `tests/smoke/` is not an importable package (no __init__).
 _DRIVER_PATH = (
-    Path(__file__).resolve().parents[2] / "scripts" / "live_persistence_smoke.py"
+    Path(__file__).resolve().parents[1] / "smoke" / "live_persistence_smoke.py"
 )
 _spec = importlib.util.spec_from_file_location("live_persistence_smoke", _DRIVER_PATH)
 assert _spec and _spec.loader
@@ -45,7 +45,7 @@ def test_summarize_any_fail_exits_one_and_names_check():
 # --- provenance checks --------------------------------------------------------
 def _good_prov_kwargs():
     return dict(
-        schema_version=3,
+        schema_version=5,
         seed=42,
         agent="bloom_agent",
         environment="bloommcp==0.1.0+uvlock:abc",
@@ -54,7 +54,7 @@ def _good_prov_kwargs():
     )
 
 
-def test_provenance_checks_all_pass_on_valid_v3_entry():
+def test_provenance_checks_all_pass_on_valid_v5_entry():
     checks = smoke.provenance_checks(**_good_prov_kwargs())
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
 
@@ -72,7 +72,7 @@ def test_provenance_checks_flags_v2_schema():
     kwargs = _good_prov_kwargs()
     kwargs["schema_version"] = 2
     checks = smoke.provenance_checks(**kwargs)
-    assert any(c.name == "manifest schema == 3" and not c.ok for c in checks)
+    assert any(c.name == "manifest schema == 5" and not c.ok for c in checks)
 
 
 def test_provenance_checks_flags_wrong_agent_and_empty_environment():
@@ -113,7 +113,7 @@ def test_provenance_checks_flags_keyset_mismatch():
 # --- Tier-3 qc_clean leg checks -----------------------------------------------
 def _good_qc_kwargs():
     return dict(
-        schema_version=3,
+        schema_version=5,
         output_keys={
             "_cleaned.csv": "bloommcp_output/qc_turface_raw/v1/_cleaned.csv",
             "cleanup_log.json": "bloommcp_output/qc_turface_raw/v1/cleanup_log.json",
@@ -123,7 +123,7 @@ def _good_qc_kwargs():
     )
 
 
-def test_qc_persist_checks_all_pass_on_valid_v3_entry():
+def test_qc_persist_checks_all_pass_on_valid_v5_entry():
     checks = smoke.qc_persist_checks(**_good_qc_kwargs())
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
 
@@ -132,7 +132,7 @@ def test_qc_persist_checks_flags_v2_schema():
     kwargs = _good_qc_kwargs()
     kwargs["schema_version"] = 2
     checks = smoke.qc_persist_checks(**kwargs)
-    assert any(c.name == "qc_clean: manifest schema == 3" and not c.ok for c in checks)
+    assert any(c.name == "qc_clean: manifest schema == 5" and not c.ok for c in checks)
 
 
 def test_qc_persist_checks_flags_missing_cleaned_artifact():
@@ -172,7 +172,7 @@ def test_qc_cleaned_read_checks_flags_residual_nans():
 # --- remove_outliers leg checks (#378) ----------------------------------------
 def _good_ro_kwargs():
     return dict(
-        schema_version=3,
+        schema_version=5,
         seed=42,
         tool="remove_outliers",
         output_keys={
@@ -184,18 +184,18 @@ def _good_ro_kwargs():
     )
 
 
-def test_ro_persist_checks_all_pass_on_valid_v3_entry():
+def test_ro_persist_checks_all_pass_on_valid_v5_entry():
     checks = smoke.ro_persist_checks(**_good_ro_kwargs())
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
 
 
 def test_ro_persist_checks_flags_wrong_tool():
-    # The provenance-based composition anchor: if the latest qc run is not the trim
-    # (e.g. a stray qc_clean re-run clobbered latest), the composition did not compose.
+    # The provenance-based composition anchor: if the latest outliers run is not the
+    # trim (e.g. a stray qc_clean re-run clobbered latest), the composition did not compose.
     kwargs = _good_ro_kwargs()
     kwargs["tool"] = "qc_clean"
     checks = smoke.ro_persist_checks(**kwargs)
-    assert any("latest qc run is the trim" in c.name and not c.ok for c in checks)
+    assert any("latest outliers run is the trim" in c.name and not c.ok for c in checks)
 
 
 def test_ro_persist_checks_flags_wrong_seed():
@@ -366,7 +366,7 @@ def test_retry_reraises_after_exhausting_attempts():
 # --- clustering leg checks (#309) ---------------------------------------------
 def _good_cl_kwargs():
     return dict(
-        schema_version=3,
+        schema_version=5,
         seed=42,
         tool="clustering",
         source="v3_cleaned",
@@ -379,7 +379,7 @@ def _good_cl_kwargs():
     )
 
 
-def test_clustering_persist_checks_all_pass_on_valid_v3_entry():
+def test_clustering_persist_checks_all_pass_on_valid_v5_entry():
     checks = smoke.clustering_persist_checks(**_good_cl_kwargs())
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
 
@@ -422,3 +422,66 @@ def test_clustering_persist_checks_flags_missing_result_artifact():
     kwargs["output_sha256"] = {"labels.csv": "dead"}
     checks = smoke.clustering_persist_checks(**kwargs)
     assert any("committed outputs include" in c.name and not c.ok for c in checks)
+
+
+# --- descriptive_stats leg checks (#488) ---------------------------------------
+def _good_stats_kwargs():
+    return dict(
+        schema_version=5,
+        seed=None,
+        tool="descriptive_stats",
+        source="v3_cleaned",
+        output_keys={"stats.csv": "bloommcp_output/stats_turface_raw/v1/stats.csv"},
+        output_sha256={"stats.csv": "dead"},
+        expected_outputs={"stats.csv"},
+    )
+
+
+def test_stats_persist_checks_all_pass_on_valid_v5_entry():
+    checks = smoke.stats_persist_checks(**_good_stats_kwargs())
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_stats_persist_checks_flags_non_null_seed():
+    # descriptive_stats is deterministic — a non-None seed would be a reproducibility lie.
+    kwargs = _good_stats_kwargs()
+    kwargs["seed"] = 42
+    checks = smoke.stats_persist_checks(**kwargs)
+    assert any("seed == None" in c.name and not c.ok for c in checks)
+
+
+def test_stats_persist_checks_flags_wrong_tool():
+    kwargs = _good_stats_kwargs()
+    kwargs["tool"] = "run_descriptive_stats_workflow"
+    checks = smoke.stats_persist_checks(**kwargs)
+    assert any("tool == 'descriptive_stats'" in c.name and not c.ok for c in checks)
+
+
+def test_stats_persist_checks_flags_raw_source():
+    kwargs = _good_stats_kwargs()
+    kwargs["source"] = "raw"
+    checks = smoke.stats_persist_checks(**kwargs)
+    assert any("consumed a cleaned source" in c.name and not c.ok for c in checks)
+
+
+def test_stats_persist_checks_flags_missing_stats_csv():
+    kwargs = _good_stats_kwargs()
+    kwargs["output_keys"] = {}
+    kwargs["output_sha256"] = {}
+    checks = smoke.stats_persist_checks(**kwargs)
+    assert any("committed outputs include" in c.name and not c.ok for c in checks)
+
+
+def test_stats_result_checks_all_pass_on_valid_result():
+    checks = smoke.stats_result_checks(19, 0)
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_stats_result_checks_flags_zero_traits_reported():
+    checks = smoke.stats_result_checks(0, 0)
+    assert any("n_traits_reported > 0" in c.name and not c.ok for c in checks)
+
+
+def test_stats_result_checks_flags_nonzero_failed():
+    checks = smoke.stats_result_checks(18, 1)
+    assert any("n_failed == 0" in c.name and not c.ok for c in checks)

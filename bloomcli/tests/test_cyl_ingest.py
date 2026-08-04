@@ -16,6 +16,9 @@ FIXTURE = Path(__file__).parent / "fixtures" / "scan0K9E8BI.result.json"
 ENVELOPE = json.loads(FIXTURE.read_text(encoding="utf-8"))
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+PREDICTIONS_DIR = Path(__file__).parent / "fixtures" / "predictions_scan0K9E8BI"
+SCAN_KEY = "scan0K9E8BI"
+
 RESULT_OK = {"source_id": 55, "scan_id": 7, "trait_count": 2, "blob_count": 0, "was_noop": False}
 # The RPC returns a null scan_id on a no-op re-delivery (cyl-trait-writeback).
 RESULT_NOOP = {
@@ -462,3 +465,987 @@ def test_map_rpc_error_raise_strings_are_never_swallowed():
     for raw in re.findall(r"RAISE EXCEPTION\s+'([^']+)'", _current_migration_sql()):
         msg = raw.replace("%", "X")  # interpolate placeholders as Postgres would
         assert msg in ing.map_rpc_error(msg), f"RPC message swallowed: {raw!r}"
+
+
+# --- 2.x manifest reading + BlobRef construction (bloom #407) ---------------
+
+
+def test_load_predictions_manifest_reads_fixture():
+    manifest = ing.load_predictions_manifest(PREDICTIONS_DIR, SCAN_KEY)
+    assert manifest.scan_key == SCAN_KEY
+    assert len(manifest.artifacts) == 2
+    root_types = {a.root_type for a in manifest.artifacts}
+    assert root_types == {"primary", "crown"}
+
+
+def test_load_predictions_manifest_missing_file(tmp_path):
+    with pytest.raises(ing.BlobConstructionError) as excinfo:
+        ing.load_predictions_manifest(tmp_path, "no-such-scan")
+    assert "no-such-scan.predictions.json" in str(excinfo.value)
+
+
+def test_load_predictions_manifest_malformed_json(tmp_path):
+    bad = tmp_path / "badscan.predictions.json"
+    bad.write_text("{ not json", encoding="utf-8")
+    with pytest.raises(ing.BlobConstructionError):
+        ing.load_predictions_manifest(tmp_path, "badscan")
+
+
+def test_load_predictions_manifest_fails_schema_validation(tmp_path):
+    bad = tmp_path / "badscan.predictions.json"
+    bad.write_text(json.dumps({"scan_key": "badscan", "artifacts": [{"root_type": "bogus"}]}))
+    with pytest.raises(ing.BlobConstructionError):
+        ing.load_predictions_manifest(tmp_path, "badscan")
+
+
+def test_build_pending_blobs_from_manifest():
+    manifest = ing.load_predictions_manifest(PREDICTIONS_DIR, SCAN_KEY)
+    pending = ing.build_pending_blobs(manifest, PREDICTIONS_DIR, existing_blobs=[])
+    assert len(pending) == 2
+    by_root = {p.blob["root_type"]: p for p in pending}
+    primary = by_root["primary"]
+    assert primary.blob["kind"] == "predictions_slp"
+    assert primary.blob["scan_key"] == SCAN_KEY
+    assert primary.blob["checksum"] == (
+        "032e90ea6effacbc3542381fecc1d72b09390077b1edb2ff0fabc26f7eed0044"
+    )
+    assert primary.blob["file_size"] == 32
+    assert primary.blob["s3_location"] is None
+    assert primary.blob["box_link"] is None
+    assert primary.local_path == PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp"
+
+
+def test_build_pending_blobs_rejects_conflicting_existing_blob():
+    manifest = ing.load_predictions_manifest(PREDICTIONS_DIR, SCAN_KEY)
+    existing = [{"root_type": "primary", "scan_key": SCAN_KEY, "s3_location": "s3://already/there.slp"}]
+    with pytest.raises(ing.BlobConstructionError) as excinfo:
+        ing.build_pending_blobs(manifest, PREDICTIONS_DIR, existing_blobs=existing)
+    assert "primary" in str(excinfo.value)
+    assert SCAN_KEY in str(excinfo.value)
+
+
+# --- 3.x checksum verification (bloom #407) ---------------------------------
+
+
+def test_verify_blob_checksum_matches(tmp_path):
+    p = tmp_path / "a.slp"
+    p.write_bytes(b"hello")
+    import hashlib
+
+    ing.verify_blob_checksum(p, hashlib.sha256(b"hello").hexdigest())  # must not raise
+
+
+def test_verify_blob_checksum_mismatch_names_both(tmp_path):
+    p = tmp_path / "a.slp"
+    p.write_bytes(b"hello")
+    with pytest.raises(ing.BlobConstructionError) as excinfo:
+        ing.verify_blob_checksum(p, "deadbeef")
+    msg = str(excinfo.value)
+    assert "deadbeef" in msg
+    assert str(p) in msg
+
+
+def test_verify_blob_checksum_missing_file(tmp_path):
+    p = tmp_path / "does-not-exist.slp"
+    with pytest.raises(ing.BlobConstructionError) as excinfo:
+        ing.verify_blob_checksum(p, "deadbeef")
+    assert str(p) in str(excinfo.value)
+
+
+# --- 4.x upload + idempotency (bloom #407) ----------------------------------
+
+
+def test_blob_object_path_is_a_plain_string_join():
+    path = ing.blob_object_path("scan0K9E8BI", "idem123", "predictions_slp", "primary")
+    assert path == "scan0K9E8BI/idem123/predictions_slp.primary.slp"
+    assert "\\" not in path  # must never be a pathlib.Path (Windows backslash risk)
+
+
+class _NotFoundBucket:
+    """No object exists yet at any path."""
+
+    def __init__(self):
+        self.uploaded = {}
+
+    def download(self, object_path):
+        from storage3.exceptions import StorageApiError
+
+        raise StorageApiError("Object not found", "404", 404)
+
+    def upload(self, object_path, data):
+        self.uploaded[object_path] = data
+
+
+class _NotFoundStorage:
+    def __init__(self, bucket):
+        self.bucket = bucket
+
+    def from_(self, name):
+        assert name == "cyl-intermediates"
+        return self.bucket
+
+
+class _NotFoundClient:
+    def __init__(self):
+        self.bucket = _NotFoundBucket()
+        self.storage = _NotFoundStorage(self.bucket)
+
+
+def test_upload_blob_first_upload():
+    client = _NotFoundClient()
+    location, skipped = ing.upload_blob(client, PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp", "some/path.slp", "032e90ea6effacbc3542381fecc1d72b09390077b1edb2ff0fabc26f7eed0044")
+    assert skipped is False
+    assert location == "some/path.slp"
+    assert client.bucket.uploaded["some/path.slp"] == (
+        PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp"
+    ).read_bytes()
+
+
+class _ExistingBucket:
+    """An object already exists at `object_path` with `existing_bytes`."""
+
+    def __init__(self, object_path, existing_bytes):
+        self.object_path = object_path
+        self.existing_bytes = existing_bytes
+        self.upload_called = False
+
+    def download(self, object_path):
+        if object_path == self.object_path:
+            return self.existing_bytes
+        from storage3.exceptions import StorageApiError
+
+        raise StorageApiError("Object not found", "404", 404)
+
+    def upload(self, object_path, data):
+        self.upload_called = True
+
+
+def test_upload_blob_skips_when_existing_checksum_matches():
+    data = b"already uploaded bytes"
+    checksum = __import__("hashlib").sha256(data).hexdigest()
+    bucket = _ExistingBucket("some/path.slp", data)
+    client = type("C", (), {"storage": type("S", (), {"from_": lambda self, n: bucket})()})()
+    # local file content doesn't matter for a skip -- only the checksum comparison does
+    location, skipped = ing.upload_blob(client, PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp", "some/path.slp", checksum)
+    assert skipped is True
+    assert location == "some/path.slp"
+    assert bucket.upload_called is False
+
+
+def test_upload_blob_raises_on_path_collision():
+    bucket = _ExistingBucket("some/path.slp", b"different existing bytes")
+    client = type("C", (), {"storage": type("S", (), {"from_": lambda self, n: bucket})()})()
+    with pytest.raises(ing.BlobConstructionError) as excinfo:
+        ing.upload_blob(client, PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp", "some/path.slp", "expectedchecksum")
+    assert "some/path.slp" in str(excinfo.value)
+    assert bucket.upload_called is False
+
+
+def test_upload_pending_blobs_all_succeed():
+    manifest = ing.load_predictions_manifest(PREDICTIONS_DIR, SCAN_KEY)
+    pending = ing.build_pending_blobs(manifest, PREDICTIONS_DIR, existing_blobs=[])
+    client = _NotFoundClient()
+    report = ing.upload_pending_blobs(
+        client, pending, scan_key=SCAN_KEY, idempotency_key="idem123"
+    )
+    assert report.all_ok
+    assert len(report.outcomes) == 2
+    assert not report.failed
+    for outcome, p in zip(report.outcomes, pending):
+        assert outcome.ok
+        assert not outcome.skipped
+        assert p.blob["s3_location"] == outcome.location
+
+
+def test_upload_pending_blobs_one_failure_does_not_abort_the_batch():
+    manifest = ing.load_predictions_manifest(PREDICTIONS_DIR, SCAN_KEY)
+    pending = ing.build_pending_blobs(manifest, PREDICTIONS_DIR, existing_blobs=[])
+    # corrupt the primary artifact's expected checksum so its verify step fails
+    for p in pending:
+        if p.blob["root_type"] == "primary":
+            p.blob["checksum"] = "deliberately-wrong-checksum"
+    client = _NotFoundClient()
+    report = ing.upload_pending_blobs(
+        client, pending, scan_key=SCAN_KEY, idempotency_key="idem123"
+    )
+    assert not report.all_ok
+    assert len(report.failed) == 1
+    assert report.failed[0].root_type == "primary"
+    # the other (crown) blob still got uploaded -- one bad blob doesn't abort the batch
+    crown_outcome = next(o for o in report.outcomes if o.root_type == "crown")
+    assert crown_outcome.ok
+
+
+# --- 5.x wire --predictions-dir into the command (bloom #407) ---------------
+
+
+def test_cli_predictions_dir_omitted_pass_through_unchanged(monkeypatch):
+    """Regression guard: omitting --predictions-dir must not change existing
+    behavior at all (spec: 'No predictions-dir, envelope carrying blobs')."""
+    captured = {}
+
+    def cap(client, env):
+        captured["env"] = env
+        return RESULT_OK
+
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", cap)
+    env = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    env["blobs"] = [
+        {
+            "kind": "predictions_slp",
+            "root_type": "primary",
+            "scan_key": "scan0K9E8BI",
+            "s3_location": "s3://bucket/scan0K9E8BI.primary.slp",
+        }
+    ]
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", "-"], input=json.dumps(env))
+    assert res.exit_code == 0, res.output
+    assert captured["env"]["blobs"] == env["blobs"]
+
+
+def test_cli_predictions_dir_constructs_and_uploads_blobs(monkeypatch):
+    captured = {}
+
+    def cap(client, env):
+        captured["env"] = env
+        return RESULT_OK
+
+    def fake_upload(client, pending, *, scan_key, idempotency_key):
+        for p in pending:
+            p.blob["s3_location"] = f"s3://x/{p.blob['root_type']}.slp"
+        return ing.BlobUploadReport(
+            [ing.BlobUploadOutcome(root_type=p.blob["root_type"], ok=True) for p in pending]
+        )
+
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", cap)
+    monkeypatch.setattr(ing, "upload_pending_blobs", fake_upload)
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "ingest-result", str(FIXTURE), "--predictions-dir", str(PREDICTIONS_DIR)],
+    )
+    assert res.exit_code == 0, res.output
+    assert len(captured["env"]["blobs"]) == 2
+    root_types = {b["root_type"] for b in captured["env"]["blobs"]}
+    assert root_types == {"primary", "crown"}
+    for b in captured["env"]["blobs"]:
+        assert b["s3_location"] == f"s3://x/{b['root_type']}.slp"
+
+
+def test_cli_predictions_dir_upload_failure_makes_no_rpc_call(monkeypatch):
+    called = {"rpc": False}
+
+    def mark_rpc(client, env):
+        called["rpc"] = True
+        return RESULT_OK
+
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", mark_rpc)
+
+    def failing_upload(client, pending, *, scan_key, idempotency_key):
+        return ing.BlobUploadReport(
+            [
+                ing.BlobUploadOutcome(root_type="primary", ok=False, error="boom"),
+                ing.BlobUploadOutcome(root_type="crown", ok=True),
+            ]
+        )
+
+    monkeypatch.setattr(ing, "upload_pending_blobs", failing_upload)
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "ingest-result", str(FIXTURE), "--predictions-dir", str(PREDICTIONS_DIR)],
+    )
+    assert res.exit_code != 0
+    assert not called["rpc"]
+    assert "primary" in res.output
+    assert "boom" in res.output
+
+
+def test_cli_predictions_dir_conflicting_blob_makes_no_upload_or_rpc_call(monkeypatch):
+    called = {"upload": False, "rpc": False}
+
+    def mark_upload(client, pending, *, scan_key, idempotency_key):
+        called["upload"] = True
+        return ing.BlobUploadReport([])
+
+    def mark_rpc(client, env):
+        called["rpc"] = True
+        return RESULT_OK
+
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "upload_pending_blobs", mark_upload)
+    monkeypatch.setattr(ing, "call_insert_envelope", mark_rpc)
+
+    env = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    env["blobs"] = [
+        {"kind": "predictions_slp", "root_type": "primary", "scan_key": "scan0K9E8BI",
+         "s3_location": "s3://already/there.slp"}
+    ]
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "ingest-result", "-", "--predictions-dir", str(PREDICTIONS_DIR)],
+        input=json.dumps(env),
+    )
+    assert res.exit_code != 0
+    assert not called["upload"]
+    assert not called["rpc"]
+
+
+def test_cli_predictions_dir_missing_manifest_makes_no_call(monkeypatch, tmp_path):
+    called = {"auth": False, "rpc": False}
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
+    )
+    monkeypatch.setattr(
+        ing, "call_insert_envelope", lambda c, e: called.__setitem__("rpc", True) or RESULT_OK
+    )
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "ingest-result", str(FIXTURE), "--predictions-dir", str(tmp_path)],
+    )
+    assert res.exit_code != 0
+    assert not called["rpc"]
+
+
+# --- review follow-ups: PR #508 (bloom #407) -------------------------------
+
+
+def test_cli_predictions_dir_missing_idempotency_key_fails_actionably(monkeypatch, tmp_path):
+    """Regression: PredictionManifest's contract-level default ("") for
+    idempotency_key means an envelope can validly omit it; --predictions-dir
+    must fail fast with a readable message, not a raw KeyError/traceback."""
+    called = {"rpc": False}
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
+    )
+    monkeypatch.setattr(
+        ing, "call_insert_envelope", lambda c, e: called.__setitem__("rpc", True) or RESULT_OK
+    )
+    env = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    del env["provenance"]["idempotency_key"]
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "ingest-result", "-", "--predictions-dir", str(PREDICTIONS_DIR)],
+        input=json.dumps(env),
+    )
+    assert res.exit_code != 0
+    assert not called["rpc"]
+    assert "idempotency_key" in res.output
+    # Must not be a raw traceback -- click.ClickException output starts with "Error:".
+    assert "Traceback" not in res.output
+
+
+def test_upload_pending_blobs_missing_root_type_key_is_recorded_not_raised():
+    """A malformed PendingBlob (missing the 'root_type' key entirely) must be
+    recorded as a failed outcome, not raise an uncaught KeyError that kills
+    the whole batch -- the same 'one bad blob can't abort the batch'
+    guarantee the docstring already promises for every other failure mode."""
+    bad_blob = {
+        "kind": "predictions_slp",
+        "scan_key": SCAN_KEY,
+        "checksum": "irrelevant",
+        "file_size": 1,
+        "s3_location": None,
+        "box_link": None,
+    }
+    pending = [
+        ing.PendingBlob(
+            blob=bad_blob,
+            local_path=PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp",
+        )
+    ]
+    client = _NotFoundClient()
+    report = ing.upload_pending_blobs(
+        client, pending, scan_key=SCAN_KEY, idempotency_key="idem123"
+    )
+    assert not report.all_ok
+    assert len(report.failed) == 1
+    assert "root_type" in report.failed[0].error
+
+
+def test_upload_blob_reraises_non_404_storage_errors():
+    """A non-404 StorageApiError (permission denied, timeout, 5xx) during the
+    pre-upload existence check must propagate, not be silently reinterpreted
+    as 'object doesn't exist' -- that would mask real infra/permission
+    problems as ordinary first uploads."""
+    from storage3.exceptions import StorageApiError
+
+    class _ForbiddenBucket:
+        def download(self, object_path):
+            raise StorageApiError("permission denied", "403", 403)
+
+        def upload(self, object_path, data):
+            raise AssertionError("must not attempt upload after a non-404 existence-check error")
+
+    client = type("C", (), {"storage": type("S", (), {"from_": lambda self, n: _ForbiddenBucket()})()})()
+    with pytest.raises(StorageApiError):
+        ing.upload_blob(
+            client,
+            PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp",
+            "some/path.slp",
+            "irrelevant",
+        )
+
+
+def test_build_pending_blobs_rejects_path_traversal(tmp_path):
+    """A manifest artifact whose slp_path escapes predictions_dir (e.g. a
+    corrupted/malicious manifest pointing at ../../.. or an absolute path)
+    must be rejected before any file is read or uploaded -- predict-produced
+    manifests are trusted pipeline output today, but this is cheap
+    defense-in-depth against a buggy or tampered manifest reaching a shared,
+    multi-reader storage bucket."""
+    manifest_dict = json.loads(
+        (PREDICTIONS_DIR / "scan0K9E8BI.predictions.json").read_text()
+    )
+    manifest_dict["artifacts"][0]["slp_path"] = "../../../../etc/passwd"
+    (tmp_path / "scan0K9E8BI.predictions.json").write_text(json.dumps(manifest_dict))
+    manifest = ing.load_predictions_manifest(tmp_path, SCAN_KEY)
+    with pytest.raises(ing.BlobConstructionError) as excinfo:
+        ing.build_pending_blobs(manifest, tmp_path, existing_blobs=[])
+    assert "slp_path" in str(excinfo.value) or "outside" in str(excinfo.value).lower()
+
+
+def test_blob_object_path_rejects_path_separators_in_scan_key():
+    with pytest.raises(ing.BlobConstructionError):
+        ing.blob_object_path("scan/../evil", "idem123", "predictions_slp", "primary")
+
+
+def test_blob_object_path_rejects_path_separators_in_idempotency_key():
+    with pytest.raises(ing.BlobConstructionError):
+        ing.blob_object_path("scan0K9E8BI", "idem/../evil", "predictions_slp", "primary")
+
+
+# --- batch: pure helpers ------------------------------------------------------
+
+
+def _envelope_for(scan_key):
+    """A copy of the fixture envelope, re-keyed to `scan_key` (provenance + traits + idempotency)."""
+    env = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    env["provenance"]["scan_key"] = scan_key
+    env["provenance"]["idempotency_key"] = f"idem-{scan_key}"
+    for t in env["traits"]:
+        t["scan_key"] = scan_key
+    return env
+
+
+def _write_envelope(directory, scan_key):
+    path = directory / f"{scan_key}.result.json"
+    path.write_text(json.dumps(_envelope_for(scan_key)), encoding="utf-8")
+    return path
+
+
+def test_discover_envelopes_returns_sorted_paths(tmp_path):
+    _write_envelope(tmp_path, "scan_b")
+    _write_envelope(tmp_path, "scan_a")
+    paths = ing.discover_envelopes(tmp_path)
+    assert [p.name for p in paths] == ["scan_a.result.json", "scan_b.result.json"]
+
+
+def test_discover_envelopes_empty_dir_returns_empty_list(tmp_path):
+    assert ing.discover_envelopes(tmp_path) == []
+
+
+def test_discover_envelopes_missing_dir_raises(tmp_path):
+    with pytest.raises(ing.EnvelopeError):
+        ing.discover_envelopes(tmp_path / "nope")
+
+
+def test_discover_envelopes_file_instead_of_dir_raises(tmp_path):
+    f = tmp_path / "not_a_dir.txt"
+    f.write_text("x", encoding="utf-8")
+    with pytest.raises(ing.EnvelopeError):
+        ing.discover_envelopes(f)
+
+
+def test_discover_envelopes_is_non_recursive(tmp_path):
+    _write_envelope(tmp_path, "scan_top")
+    nested = tmp_path / "subdir"
+    nested.mkdir()
+    _write_envelope(nested, "scan_nested")
+    paths = ing.discover_envelopes(tmp_path)
+    assert [p.name for p in paths] == ["scan_top.result.json"]
+
+
+def test_ingest_one_envelope_malformed_json_file(tmp_path):
+    path = tmp_path / "bad.result.json"
+    path.write_text("{ not json", encoding="utf-8")
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "failed"
+    assert result.scan_key == "bad"
+    assert result.error
+
+
+def test_ingest_one_envelope_fails_contract_validation(tmp_path):
+    env = _envelope_for("scan_bad")
+    del env["provenance"]["params"]
+    path = tmp_path / "scan_bad.result.json"
+    path.write_text(json.dumps(env), encoding="utf-8")
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "failed"
+    assert result.scan_key == "scan_bad"
+
+
+def _skip_contract_validation(monkeypatch):
+    """`_envelope_for`'s re-keyed envelopes carry a hand-rolled idempotency_key that (correctly)
+    fails sleap-roots-contracts' derived-value check — these tests are about batch mechanics, not
+    contract validation (already covered by `test_ingest_one_envelope_fails_contract_validation`
+    and the unmodified-fixture blob-upload tests below), so bypass it."""
+    monkeypatch.setattr(ing, "validate_envelope", lambda data: None)
+
+
+def test_ingest_one_envelope_success(monkeypatch, tmp_path):
+    _skip_contract_validation(monkeypatch)
+    path = _write_envelope(tmp_path, "scan_ok")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "ok"
+    assert result.scan_key == "scan_ok"
+
+
+def test_ingest_one_envelope_noop_is_skipped(monkeypatch, tmp_path):
+    _skip_contract_validation(monkeypatch)
+    path = _write_envelope(tmp_path, "scan_dup")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_NOOP)
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "skipped"
+
+
+def test_ingest_one_envelope_rpc_error_is_mapped(monkeypatch, tmp_path):
+    _skip_contract_validation(monkeypatch)
+    path = _write_envelope(tmp_path, "scan_err")
+
+    def boom(client, env):
+        raise _api_error("unresolvable image_ids: matched 1 of 2 to a scan")
+
+    monkeypatch.setattr(ing, "call_insert_envelope", boom)
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "failed"
+    assert "cyl_images" in result.error
+
+
+def test_ingest_one_envelope_isolates_unexpected_error(monkeypatch, tmp_path):
+    """A non-APIError exception (e.g. a gotrue auth error or httpx timeout, not just the
+    already-handled postgrest.APIError) must be isolated into a failed ScanResult, never
+    raised — review finding: this was previously uncaught and would crash the whole batch."""
+    _skip_contract_validation(monkeypatch)
+    path = _write_envelope(tmp_path, "scan_timeout")
+
+    def boom(client, env):
+        raise TimeoutError("simulated network timeout")
+
+    monkeypatch.setattr(ing, "call_insert_envelope", boom)
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "failed"
+    assert result.scan_key == "scan_timeout"
+    assert "simulated network timeout" in result.error
+
+
+def test_batch_ingest_cli_isolates_unexpected_network_error_among_several(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+
+    def _flaky_call(client, env):
+        if env["provenance"]["scan_key"] == "scan_2":
+            raise TimeoutError("simulated network timeout")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _flaky_call)
+    for key in ("scan_1", "scan_2", "scan_3"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_1"]["status"] == "ok"
+    assert payload["scan_2"]["status"] == "failed"
+    assert "simulated network timeout" in payload["scan_2"]["error"]
+    assert payload["scan_3"]["status"] == "ok"
+
+
+def test_ingest_one_envelope_sends_envelope_unchanged(monkeypatch, tmp_path):
+    _skip_contract_validation(monkeypatch)
+    captured = {}
+    path = _write_envelope(tmp_path, "scan_ok")
+
+    def cap(client, env):
+        captured["env"] = env
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", cap)
+    ing.ingest_one_envelope(object(), path)
+    assert captured["env"]["provenance"]["scan_key"] == "scan_ok"
+
+
+def test_ingest_one_envelope_predictions_dir_missing_idempotency_key(monkeypatch, tmp_path):
+    _skip_contract_validation(monkeypatch)
+    env = _envelope_for("scan_noidem")
+    del env["provenance"]["idempotency_key"]
+    path = tmp_path / "scan_noidem.result.json"
+    path.write_text(json.dumps(env), encoding="utf-8")
+
+    result = ing.ingest_one_envelope(object(), path, predictions_dir=tmp_path / "predictions")
+    assert result.status == "failed"
+    assert "idempotency_key" in result.error
+
+
+def _nested_predictions_dir(base_dir, scan_key):
+    """Copy the flat PREDICTIONS_DIR fixture into base_dir/{scan_key}/ (predict's own nested
+    batch-output layout)."""
+    import shutil
+
+    nested = base_dir / scan_key
+    nested.mkdir(parents=True)
+    for f in PREDICTIONS_DIR.iterdir():
+        shutil.copy(f, nested / f.name.replace(SCAN_KEY, scan_key))
+    return base_dir
+
+
+def test_ingest_one_envelope_predictions_dir_missing_manifest(monkeypatch, tmp_path):
+    _skip_contract_validation(monkeypatch)
+    path = _write_envelope(tmp_path, "scan_ok")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+
+    result = ing.ingest_one_envelope(object(), path, predictions_dir=tmp_path / "predictions")
+    assert result.status == "failed"
+
+
+@pytest.mark.parametrize(
+    "malicious_scan_key",
+    ["../../evil", "..\\..\\evil", "/etc/passwd", "a/../../b"],
+)
+def test_ingest_one_envelope_rejects_path_traversal_scan_key(
+    monkeypatch, tmp_path, malicious_scan_key
+):
+    """Review finding: provenance.scan_key is producer-supplied JSON content with no
+    path-safety constraint from sleap-roots-contracts. Using it as a directory segment
+    (predictions_dir / scan_key) must be rejected before any local filesystem access, the
+    same way blob_object_path already rejects it for the object-storage key."""
+    _skip_contract_validation(monkeypatch)
+    env = _envelope_for("scan_ok")
+    env["provenance"]["scan_key"] = malicious_scan_key
+    path = tmp_path / "scan_ok.result.json"
+    path.write_text(json.dumps(env), encoding="utf-8")
+
+    called = {"manifest": False}
+
+    def _boom(*a, **k):
+        called["manifest"] = True
+        raise AssertionError("must not read any predictions manifest for an unsafe scan_key")
+
+    monkeypatch.setattr(ing, "load_predictions_manifest", _boom)
+
+    result = ing.ingest_one_envelope(
+        object(), path, predictions_dir=tmp_path / "predictions"
+    )
+    assert result.status == "failed"
+    assert not called["manifest"]
+    assert "scan_key" in result.error
+
+
+def test_ingest_one_envelope_predictions_dir_uploads_blobs(tmp_path, monkeypatch):
+    """Unmodified fixture (real scan_key + real idempotency_key) — exercises the full,
+    contract-validated happy path, not just batch mechanics."""
+    captured = {}
+    path = tmp_path / f"{SCAN_KEY}.result.json"
+    path.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    predictions_root = tmp_path / "predictions"
+    _nested_predictions_dir(predictions_root, SCAN_KEY)
+
+    def cap(client, env):
+        captured["env"] = env
+        return RESULT_OK
+
+    def fake_upload(client, pending, *, scan_key, idempotency_key):
+        for p in pending:
+            p.blob["s3_location"] = f"s3://x/{p.blob['root_type']}.slp"
+        return ing.BlobUploadReport(
+            [ing.BlobUploadOutcome(root_type=p.blob["root_type"], ok=True) for p in pending]
+        )
+
+    monkeypatch.setattr(ing, "call_insert_envelope", cap)
+    monkeypatch.setattr(ing, "upload_pending_blobs", fake_upload)
+
+    result = ing.ingest_one_envelope(object(), path, predictions_dir=predictions_root)
+    assert result.status == "ok"
+    assert len(captured["env"]["blobs"]) == 2
+
+
+def test_ingest_one_envelope_predictions_dir_upload_failure(tmp_path, monkeypatch):
+    called = {"rpc": False}
+    path = tmp_path / f"{SCAN_KEY}.result.json"
+    path.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    predictions_root = tmp_path / "predictions"
+    _nested_predictions_dir(predictions_root, SCAN_KEY)
+
+    def mark_rpc(client, env):
+        called["rpc"] = True
+        return RESULT_OK
+
+    def failing_upload(client, pending, *, scan_key, idempotency_key):
+        return ing.BlobUploadReport(
+            [ing.BlobUploadOutcome(root_type="primary", ok=False, error="boom")]
+        )
+
+    monkeypatch.setattr(ing, "call_insert_envelope", mark_rpc)
+    monkeypatch.setattr(ing, "upload_pending_blobs", failing_upload)
+
+    result = ing.ingest_one_envelope(object(), path, predictions_dir=predictions_root)
+    assert result.status == "failed"
+    assert not called["rpc"]
+
+
+# --- batch: command wiring -----------------------------------------------------
+
+
+def _patch_batch_authed(monkeypatch):
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: object())
+    _skip_contract_validation(monkeypatch)
+
+
+def test_batch_ingest_cli_happy_path(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    for key in ("scan_1", "scan_2", "scan_3"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_batch_ingest_cli_json_all_ok(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    for key in ("scan_1", "scan_2"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert len(payload) == 2
+    assert all(entry["status"] == "ok" for entry in payload)
+
+
+def test_batch_ingest_cli_mixed_statuses_json_output(monkeypatch, tmp_path):
+    """Review finding: this scenario (a batch with all three statuses at once — the normal
+    case in a real run, not an edge case) had no test on the ingest side, asymmetric with the
+    download side's equivalent test."""
+    _patch_batch_authed(monkeypatch)
+
+    def _selective_call(client, env):
+        scan_key = env["provenance"]["scan_key"]
+        if scan_key == "scan_2":
+            return RESULT_NOOP
+        if scan_key == "scan_3":
+            raise _api_error("unresolvable image_ids: matched 1 of 2 to a scan")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _selective_call)
+    for key in ("scan_1", "scan_2", "scan_3"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_1"]["status"] == "ok"
+    assert payload["scan_2"]["status"] == "skipped"
+    assert payload["scan_3"]["status"] == "failed"
+    assert "cyl_images" in payload["scan_3"]["error"]
+
+
+def test_batch_ingest_cli_mixed_statuses_default_output(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+
+    def _selective_call(client, env):
+        scan_key = env["provenance"]["scan_key"]
+        if scan_key == "scan_2":
+            return RESULT_NOOP
+        if scan_key == "scan_3":
+            raise _api_error("unresolvable image_ids: matched 1 of 2 to a scan")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _selective_call)
+    for key in ("scan_1", "scan_2", "scan_3"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "1 skipped" in result.output.lower()
+    assert "1 failed" in result.output.lower()
+    assert "scan_3" in result.output
+
+
+def test_batch_ingest_cli_isolates_one_bad_envelope(monkeypatch, tmp_path):
+    """Always runs (mocked, no importorskip) — the core isolation guarantee."""
+    _patch_batch_authed(monkeypatch)
+
+    def selective_call(client, env):
+        if env["provenance"]["scan_key"] == "scan_bad":
+            raise _api_error("invalid envelope: missing provenance.inputs object")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", selective_call)
+
+    _write_envelope(tmp_path, "scan_1")
+    _write_envelope(tmp_path, "scan_3")
+    bad_env = _envelope_for("scan_bad")
+    del bad_env["provenance"]["params"]
+    (tmp_path / "scan_bad.result.json").write_text(json.dumps(bad_env), encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "scan_bad" in result.output
+
+
+def test_batch_ingest_oracle_matches_extract_batch_output_shape(tmp_path, monkeypatch):
+    """Manual, dev-machine only — self-skips in CI (verifies discover_envelopes' flat-glob
+    assumption against the real extract_batch output shape)."""
+    pytest.importorskip("trait_extractor")
+    from trait_extractor.extractor import _SIDECAR_SUFFIX  # noqa: F401
+
+    # extract_batch's own output_dir is flat: {scan_key}.result.json directly, no nesting —
+    # discover_envelopes' non-recursive glob must match that, not a nested layout.
+    _write_envelope(tmp_path, "scan_1")
+    paths = ing.discover_envelopes(tmp_path)
+    assert len(paths) == 1
+    assert paths[0].parent == tmp_path
+
+
+def test_batch_ingest_cli_malformed_envelope_file_is_isolated(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    _write_envelope(tmp_path, "scan_1")
+    _write_envelope(tmp_path, "scan_3")
+    (tmp_path / "scan_bad.result.json").write_text("{ not json", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "scan_bad" in result.output
+
+
+def test_batch_ingest_cli_empty_dir_is_noop(monkeypatch, tmp_path):
+    called = {"auth": False}
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
+    )
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert not called["auth"]
+
+
+def test_batch_ingest_cli_nonexistent_dir_makes_no_call(monkeypatch, tmp_path):
+    called = {"auth": False}
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
+    )
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path / "nope")])
+
+    assert result.exit_code != 0
+    assert not called["auth"]
+
+
+def test_batch_ingest_cli_noop_reported_as_skipped(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_NOOP)
+    _write_envelope(tmp_path, "scan_1")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload[0]["status"] == "skipped"
+
+
+def test_batch_ingest_cli_predictions_dir_uploads_blobs(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+
+    def fake_upload(client, pending, *, scan_key, idempotency_key):
+        for p in pending:
+            p.blob["s3_location"] = f"s3://x/{p.blob['root_type']}.slp"
+        return ing.BlobUploadReport(
+            [ing.BlobUploadOutcome(root_type=p.blob["root_type"], ok=True) for p in pending]
+        )
+
+    monkeypatch.setattr(ing, "upload_pending_blobs", fake_upload)
+
+    envelopes_dir = tmp_path / "envelopes"
+    envelopes_dir.mkdir()
+    _write_envelope(envelopes_dir, SCAN_KEY)
+    predictions_root = tmp_path / "predictions"
+    _nested_predictions_dir(predictions_root, SCAN_KEY)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "cyl",
+            "batch-ingest-result",
+            str(envelopes_dir),
+            "--predictions-dir",
+            str(predictions_root),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+
+def test_batch_ingest_cli_predictions_dir_missing_manifest_isolates_one(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+
+    envelopes_dir = tmp_path / "envelopes"
+    envelopes_dir.mkdir()
+    _write_envelope(envelopes_dir, "scan_1")
+    _write_envelope(envelopes_dir, SCAN_KEY)
+    predictions_root = tmp_path / "predictions"
+    predictions_root.mkdir()
+    # Only SCAN_KEY has a predictions manifest; "scan_1" doesn't.
+    _nested_predictions_dir(predictions_root, SCAN_KEY)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "cyl",
+            "batch-ingest-result",
+            str(envelopes_dir),
+            "--predictions-dir",
+            str(predictions_root),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "scan_1" in result.output
+
+
+def test_batch_ingest_cli_profile_option_passed_through(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_authed_client(profile):
+        captured["profile"] = profile
+        return object()
+
+    monkeypatch.setattr(climod, "_authed_client", fake_authed_client)
+    _skip_contract_validation(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    _write_envelope(tmp_path, "scan_1")
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-ingest-result", str(tmp_path), "-p", "staging"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["profile"] == "staging"
+
+
+def test_batch_ingest_cli_registration_shows_in_help():
+    result = CliRunner().invoke(cli, ["cyl", "--help"])
+    assert "batch-ingest-result" in result.output

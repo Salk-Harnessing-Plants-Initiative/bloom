@@ -6,39 +6,32 @@ Transport: streamable-http on port 8811.
 Surfaces:
   - Combined surface at /mcp — every tool, including each section's tools
     (namespaced). This is the endpoint the agent uses; unchanged.
-  - One path per section (e.g. /phenotyping_segmentation/mcp) so a Claude
-    Desktop client can load just that section. See bloom_mcp/sections/.
+  - One path per section (e.g. /sleap_roots/mcp) so a Claude Desktop client
+    can load just that section. See bloom_mcp/sections/.
 
-Workflow tools (one MCP call runs the full analysis):
-  - run_qc_workflow
-  - run_outlier_workflow
-  - run_descriptive_stats_workflow
-  - run_dimensionality_reduction_workflow
-  - run_clustering_workflow
-
-Discovery tools (always-on):
-  - list_available_experiments
-  - load_experiment_data
-  - inspect_data_quality
-  - list_existing_analyses
-
-Direct tools (granular, available for ad-hoc use):
-  - qc_clean:          clean a raw trait table for analysis (delegates to
-                       sleap_roots_analyze.clean_traits_for_analysis)
-  - remove_outliers:   trim outlier samples from a cleaned experiment (delegates to
-                       sleap_roots_analyze.remove_outlier_samples)
-  - qc_inspect:        read-only NaN/missingness report + threshold recommendation at
-                       QC time (delegates to sleap_roots_analyze EDA functions)
-  - pca_analysis:      PCA on a cleaned experiment (require_clean; delegates to
-                       sleap_roots_analyze.perform_pca_analysis)
-  - clustering:        k-means / GMM / hierarchical on a cleaned experiment (require_clean;
-                       delegates to sleap_roots_analyze perform_kmeans_clustering /
-                       perform_gmm_clustering / hierarchical_cluster_labels)
-  - correlation_tools: 8 cross-experiment correlation tools
-  - viz_tools:         7 plotting tools
-
-Sections (per-package sub-servers, see bloom_mcp/sections/):
+Every tool lives in a section (per-contributor/package sub-server; see
+bloom_mcp/sections/) — there are no loose tools/*.py modules left to register
+here. Sections (namespace -> tools):
+  - core: cross-cutting discovery, not sleap-roots-analyze wrappers
+    (list_available_experiments, load_experiment_data, list_existing_analyses)
+  - sleap_roots: umbrella for the sleap-roots pipeline family. analysis/
+    populated (qc_clean, qc_inspect, pca_analysis, remove_outliers, clustering,
+    umap_analysis, descriptive_stats, + 5 plotting tools — histograms, boxplots,
+    correlation matrix, heritability bar, variance decomposition — each
+    delegating all analysis/plotting math to sleap_roots_analyze, never
+    re-implementing it);
+    extraction/ reserved for future sleap-roots trait-extraction tools (not
+    built here).
   - phenotyping_segmentation: Lin's segmentation tools (empty scaffold today)
+
+(The Phase-1 `run_*_workflow` tools — qc, outlier, stats, dimred, clustering —
+were retired: they duplicated the granular tools and/or upstream, some were
+broken, and they were the sole consumers of bloom-mcp's vendored analysis
+modules. The 8 `correlation_tools` were dropped together with the vendored
+`cross_experiment_correlations` module they wrapped — upstream's
+`cross_experiment_analysis` has a different contract, so rewiring would have
+silently changed numbers. See openspec/changes/devendor-bloommcp-analysis,
+which also moved every surviving tool into the sections/ layout above.)
 """
 
 import logging
@@ -46,6 +39,7 @@ import logging
 from fastmcp import FastMCP
 from fastmcp.utilities.lifespan import combine_lifespans
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount
@@ -58,25 +52,8 @@ from bloom_mcp.supabase_client import validate_env as validate_supabase_env
 from bloom_mcp.experiment_utils import validate_env as validate_data_env
 
 from bloom_mcp.auth import API_KEY, auth_provider
+from bloom_mcp.identity import IdentityMiddleware
 
-from bloom_mcp.tools import (
-    qc_tools,
-    viz_tools,
-    correlation_tools,
-    storage_tools,
-    qc_clean_tool,
-    remove_outliers_tool,
-    qc_inspect_tool,
-    pca_analysis_tool,
-    clustering_tool,
-)
-from bloom_mcp.tools.workflows import (
-    clustering as clustering_workflow,
-    dimred as dimred_workflow,
-    outlier as outlier_workflow,
-    qc as qc_workflow,
-    stats as stats_workflow,
-)
 from bloom_mcp.sections import SECTIONS
 
 logger = logging.getLogger(__name__)
@@ -85,31 +62,10 @@ logger = logging.getLogger(__name__)
 
 mcp = FastMCP("bloom-tools", auth=auth_provider)
 
-# --- Register All Tool Modules ---
-
-# Discovery tools (always-on)
-qc_tools.register(mcp)
-storage_tools.register(mcp)
-
-# Workflow tools
-qc_workflow.register(mcp)
-outlier_workflow.register(mcp)
-stats_workflow.register(mcp)
-dimred_workflow.register(mcp)
-clustering_workflow.register(mcp)
-
-# Direct tools (granular)
-qc_clean_tool.register(mcp)
-remove_outliers_tool.register(mcp)
-qc_inspect_tool.register(mcp)
-pca_analysis_tool.register(mcp)
-clustering_tool.register(mcp)
-correlation_tools.register(mcp)
-viz_tools.register(mcp)
-
 # --- Sections ---
 # Mount each section into the combined server so its tools appear on /mcp,
-# namespaced as <section>_<tool>, for the agent.
+# namespaced as <section>_<tool>, for the agent. Every tool lives in a
+# section — there is no per-tool server.py wiring left.
 for _name, _section in SECTIONS.items():
     mcp.mount(_section, namespace=_name)
 
@@ -131,6 +87,13 @@ def build_app() -> Starlette:
     section is mounted at /<section> (e.g. /phenotyping_segmentation/mcp). All
     sub-app lifespans are combined so every streamable-http session manager
     starts.
+
+    `IdentityMiddleware` wraps this single app (outside every `Mount`, so it
+    sees every request regardless of which section — or none — it resolves
+    to) to verify an optional `X-Bloom-Identity` header. It runs before
+    FastMCP's own per-section `BLOOMMCP_API_KEY` bearer check (wired via
+    `auth=` on each `FastMCP` instance, inside each `Mount`) — the two checks
+    are independent; see openspec add-bloommcp-caller-identity design.md.
     """
     combined_app = mcp.http_app(path="/mcp")
     section_apps = {
@@ -143,7 +106,11 @@ def build_app() -> Starlette:
     routes.append(Mount("/", app=combined_app))
 
     lifespans = [combined_app.lifespan, *(a.lifespan for a in section_apps.values())]
-    return Starlette(routes=routes, lifespan=combine_lifespans(*lifespans))
+    return Starlette(
+        routes=routes,
+        lifespan=combine_lifespans(*lifespans),
+        middleware=[Middleware(IdentityMiddleware)],
+    )
 
 
 # --- Entry Point ---
@@ -167,16 +134,24 @@ def main() -> None:
     from bloom_mcp.experiment_utils import validate_experiment_local_root
     from bloom_mcp.storage_backend import is_local_backend
 
-    validate_data_env()
+    # Printed before validation (not after) so the active backend is visible
+    # even when validate_data_env()/validate_supabase_env() fails fast below —
+    # otherwise a misconfigured deploy never reveals which backend it tried.
     fully_local = is_local_backend()
+    print(
+        f"Bloom MCP Server storage backend: "
+        f"{'local (fully-local/offline)' if fully_local else 'supabase'}"
+    )
+
+    validate_data_env()
     if fully_local:
         validate_experiment_local_root()
     else:
         validate_supabase_env()
 
     # Composition root: inject the persistence adapters into the tools layer.
-    # Tools depend on the ports (bloom_mcp.tools._ports), never on Supabase /
-    # AnalysisWriter directly. The reader is coupled to the object-storage backend
+    # Tools depend on the ports (bloom_mcp.tools._ports), never on Supabase
+    # directly. The reader is coupled to the object-storage backend
     # (both local in fully-local mode) so inputs and outputs never split stores.
     # NOTE: the store is SupabaseResultStore() in *both* branches on purpose — in
     # fully-local mode its object-storage ops route through the active local backend

@@ -139,8 +139,12 @@ jobs:
       - name: Run bloom_mcp package tests
         # Excludes the integration-marked full-fixture heritability/UMAP oracle
         # tests (bloommcp/tests/test_oracle.py) — they're known to intermittently
-        # stall in CI containers (#454) and run instead via /pre-merge.
-        run: cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration" -v --tb=short
+        # stall in CI containers (#454) and run instead via /pre-merge. Also
+        # excludes live_smoke-marked tests (bloommcp/tests/smoke/) — this job never
+        # brings up the dev stack, so they'd fail/hang here regardless of
+        # numerical risk; the CI-safe subset runs in dev-stack-smoke below, the
+        # full set via /pre-merge (#483).
+        run: cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration and not live_smoke" -v --tb=short
         env:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
@@ -161,7 +165,7 @@ jobs:
           wheel=$(echo dist/bloommcp-*.whl)
           test -f "$wheel" || { echo "expected exactly one wheel, got: $wheel"; exit 1; }
           uv run --no-project --with "$wheel" \
-            python -c "import bloom_mcp, bloom_mcp.tools, bloom_mcp.storage, bloom_mcp.server; assert 'site-packages' in bloom_mcp.__file__, bloom_mcp.__file__"
+            python -c "import bloom_mcp, bloom_mcp.tools, bloom_mcp.manifest, bloom_mcp.server; assert 'site-packages' in bloom_mcp.__file__, bloom_mcp.__file__; bloom_mcp.server.build_app()"
         env:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
@@ -183,6 +187,10 @@ jobs:
       # Checks workflows Python packages for vulnerabilities
       - name: Audit workflows dependencies
         run: cd services/workflows && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+
+      # Checks bloomcli (bloomctl CLI) Python packages for vulnerabilities
+      - name: Audit bloomcli dependencies
+        run: cd bloomcli && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
   docker-build:
     name: Build Docker Images & Scan for CVEs
@@ -275,6 +283,17 @@ jobs:
           cache-from: type=gha,scope=workflows
           cache-to: type=gha,mode=max,scope=workflows
 
+      - name: Build bloomcli image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./bloomcli
+          file: bloomcli/Dockerfile
+          tags: bloomcli:ci
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=bloomcli
+          cache-to: type=gha,mode=max,scope=bloomcli
+
       # Scan built images for CVEs and generate markdown report
       - name: Scan bloom-web image
         uses: aquasecurity/trivy-action@v0.35.0
@@ -326,6 +345,16 @@ jobs:
           output: 'trivy-workflows.txt'
           trivyignores: '.trivyignore'
 
+      - name: Scan bloomcli image
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'bloomcli:ci'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          format: 'table'
+          output: 'trivy-bloomcli.txt'
+          trivyignores: '.trivyignore'
+
       - name: Generate Trivy report
         if: always()
         run: |
@@ -334,7 +363,7 @@ jobs:
             echo ""
             echo "| Image | Critical | High |"
             echo "|-------|----------|------|"
-            for img in bloom-web langchain bloommcp caddy workflows; do
+            for img in bloom-web langchain bloommcp caddy workflows bloomcli; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
                 crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || echo 0)
@@ -343,7 +372,7 @@ jobs:
               fi
             done
             echo ""
-            for img in bloom-web langchain bloommcp caddy workflows; do
+            for img in bloom-web langchain bloommcp caddy workflows bloomcli; do
               file="trivy-${img}.txt"
               if [ -f "$file" ] && [ -s "$file" ]; then
                 cves=$(grep -oP 'CVE-\d+-\d+' "$file" | sort -u | tr '\n' ', ' | sed 's/,$//')
@@ -400,6 +429,14 @@ jobs:
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'workflows:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+
+      - name: Check bloomcli for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'bloomcli:ci'
           severity: 'CRITICAL'
           exit-code: '1'
           trivyignores: '.trivyignore'
@@ -643,6 +680,17 @@ jobs:
 
       - name: Create MinIO data directory
         run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci
+
+      # bloommcp/data/ is gitignored and untracked, so this fresh checkout never
+      # has it — without this, Docker would auto-create the three bind-mount
+      # leaves as root on the "Start remaining services" up -d --build step
+      # below, unwritable by the non-root bloommcp container user. Same class
+      # of bug as MinIO's directory above (issue #472); closed here for
+      # compose-health-check by issue #474. Reuses the unmodified dev-path
+      # script — see openspec/changes/add-bloommcp-prod-staging-data-dir-preflight/
+      # design.md.
+      - name: Ensure bloommcp data directories are writable
+        run: sh scripts/ensure_bloommcp_data_dirs.sh
 
       - name: Start MinIO and create buckets
         run: |
@@ -969,6 +1017,34 @@ jobs:
         # false-abort surface. See scripts/doctor.sh.
         run: DOCTOR_SKIP=1 make dev-up
 
+      # Regression guard (#478): docker-compose.dev.yml now sources
+      # BLOOM_STORAGE_BACKEND via ${VAR:-} interpolation instead of literal
+      # commented-out YAML. Plain dev-up (used above, no override) must never
+      # inherit fully-local mode — that's what `make dev-up-local` is for.
+      # NOTE: keep the literal substring "make dev-up" out of this step's run:
+      # block — test_dev_stack_smoke_skips_the_doctor_preflight (tests/unit/
+      # test_ci_dev_stack_smoke.py) requires DOCTOR_SKIP=1 on every step whose
+      # run: contains that substring, and this step isn't a dev-up invocation.
+      - name: Verify plain dev-up does not activate the local storage backend
+        run: |
+          for i in $(seq 1 30); do
+            if docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T bloommcp true 2>/tmp/dev_up_exec_wait.err; then
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::bloommcp container never became exec-able after 60s. Last stderr:"
+              tail -5 /tmp/dev_up_exec_wait.err 2>/dev/null
+              exit 1
+            fi
+            sleep 2
+          done
+          VALUE=$(docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T bloommcp sh -c 'echo "${BLOOM_STORAGE_BACKEND:-}"')
+          if [ -n "$VALUE" ]; then
+            echo "::error::plain dev-up left BLOOM_STORAGE_BACKEND=$VALUE (expected empty)"
+            exit 1
+          fi
+          echo "OK: BLOOM_STORAGE_BACKEND is empty on plain dev-up"
+
       # No manual waits — this is exactly what a developer types. The robustness
       # lives in the commands: migrate-local bounded-waits for the storage schema
       # before pushing, and `make check` bounded-waits for required services to
@@ -978,6 +1054,31 @@ jobs:
 
       - name: make check (verify services, roles, schemas, migrations)
         run: make check
+
+      # bloom#551 round-2 review: SupabaseReader's raw tier is DB-only now, so
+      # the smoke suite below needs numeric experiment ids backed by real trait
+      # rows in THIS job's own disposable Postgres (torn down with the stack at
+      # job end via the `down -v` Cleanup step below) — not a filename it can
+      # invent locally. Seeds two throwaway experiments directly (see
+      # scripts/ci/seed_smoke_experiments.sql for why direct INSERT, not the
+      # write-back RPC) and exports their ids for every subsequent step in this
+      # job. "cylinder" needs > 50 traits: test_descriptive_stats_smoke.py
+      # asserts truncated_in_summary for that fixture name specifically.
+      - name: Seed DB experiments for the granular smoke suite
+        run: |
+          docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T db-dev \
+            psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+            < scripts/ci/seed_smoke_experiments.sql
+          TURFACE_ID=$(docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T db-dev \
+            psql -U supabase_admin -d postgres -tAc \
+            "SELECT public._seed_smoke_experiment('smoke-turface', 25, 12);" | tr -d '\r')
+          CYLINDER_ID=$(docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T db-dev \
+            psql -U supabase_admin -d postgres -tAc \
+            "SELECT public._seed_smoke_experiment('smoke-cylinder', 25, 60);" | tr -d '\r')
+          echo "Seeded smoke-turface experiment id=$TURFACE_ID, smoke-cylinder experiment id=$CYLINDER_ID"
+          echo "BLOOM_SMOKE_EXPERIMENT_ID=$TURFACE_ID" >> "$GITHUB_ENV"
+          echo "BLOOM_SMOKE_EXPERIMENT_ID_TURFACE_19=$TURFACE_ID" >> "$GITHUB_ENV"
+          echo "BLOOM_SMOKE_EXPERIMENT_ID_CYLINDER=$CYLINDER_ID" >> "$GITHUB_ENV"
 
       # Live persistence smoke (issue #326): drive a workflow end-to-end through
       # the REAL SupabaseReader/SupabaseResultStore and assert the committed run
@@ -990,6 +1091,33 @@ jobs:
       # host gateway from KONG_HTTP_PORT; no repo secrets are needed.
       - name: make bloommcp-smoke (live persistence smoke through real ports)
         run: make bloommcp-smoke
+
+      # Live plot-tool smoke (issue #472): unlike bloommcp-smoke above (in-process,
+      # env-overridden to host temp dirs), this calls a real plotting tool through
+      # the bloommcp container's actual MCP transport — the only way to prove the
+      # real bind-mounted PLOTS_DIR write path works, since plotting tools always
+      # write straight to disk regardless of storage backend. Proves the
+      # ensure-bloommcp-data-dirs preflight (Makefile `dev-up` prerequisite) is
+      # actually wired in and not silently skipped (e.g. by DOCTOR_SKIP=1, which
+      # this job sets on `make dev-up` above).
+      - name: make bloommcp-plot-smoke (live plot-tool smoke through the real container)
+        run: make bloommcp-plot-smoke
+
+      # Granular per-tool smoke coverage (#483): each test calls a bloommcp tool
+      # through the real running container's MCP transport, over both the turface_19
+      # and cylinder oracle fixtures (see bloommcp/tests/fixtures/README.md). Only the
+      # `live_smoke`-but-not-`live_smoke_slow` (bounded-time) subset runs here; the
+      # full set (including numerically-risky cases like mahalanobis/gmm on cylinder
+      # and the per-trait MixedLM heritability/variance-decomposition plots) runs via
+      # /pre-merge against a locally-brought-up stack instead — see
+      # tests/unit/test_bloommcp_smoke_marker_split.py for the regression guard on
+      # this exact `-m` filter and the live_smoke/live_smoke_slow marker pairing.
+      - name: pytest tests/smoke/ (CI-safe live-smoke subset, both fixtures)
+        run: |
+          BLOOMMCP_PORT=$(sed -n 's/^BLOOMMCP_PORT=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r')
+          BLOOMMCP_API_KEY=$(sed -n 's/^BLOOMMCP_API_KEY=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r')
+          cd bloommcp && BLOOMMCP_PORT="${BLOOMMCP_PORT:-8811}" BLOOMMCP_API_KEY="$BLOOMMCP_API_KEY" \
+            uv run --frozen --extra test pytest tests/smoke/ -m "live_smoke and not live_smoke_slow" -v --tb=short
 
       # Guarded: if: failure() fires if an earlier, unrelated step fails
       # before .env.dev is ever generated (#455) — same defect class as

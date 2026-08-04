@@ -3,17 +3,19 @@
 Covers backend selection (`BLOOM_STORAGE_BACKEND`), the local filesystem backend
 (key→path mapping, listing, escape guard, overwrite, verbatim bytes, atomic
 writes, redacted errors), root resolution + boot-time validation, and
-parity/integrity (byte-identical manifest, hash-equality on disk, a workflow
-round-trip under `local`, the default-writes-no-local-files guard, and
-legacy-fallback disjointness). No live Supabase.
+parity/integrity (byte-identical manifest, hash-equality on disk, the
+default-writes-no-local-files guard, and legacy-fallback disjointness). No live
+Supabase. (The `run_qc_workflow` local round-trip test was removed when the
+Phase-1 workflow tools were retired — devendor-bloommcp-analysis C6.1 — its
+`local_workflow_env` fixture had no other consumer and was removed with it.)
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -21,8 +23,7 @@ from pathlib import Path
 import pytest
 
 from bloom_mcp import storage_backend as sb
-
-_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "turface_19_final_data.csv"
+from manifest_fixtures import write_cleaned_manifest, write_invalid_schema_manifest
 
 
 @pytest.fixture(autouse=True)
@@ -319,17 +320,137 @@ def test_read_permission_error_is_redacted(tmp_path, monkeypatch):
     assert key in msg
 
 
+def test_local_delete_files_removes_existing_and_ignores_missing(tmp_path):
+    b = _local(tmp_path)
+    src = _seed_file(tmp_path)
+    b.upload_file("bloommcp_output/qc_x/v1/a.csv", src)
+    b.upload_file("bloommcp_output/qc_x/v1/b.csv", src)
+    assert (tmp_path / "bloommcp_output/qc_x/v1/a.csv").exists()
+
+    b.delete_files(
+        [
+            "bloommcp_output/qc_x/v1/a.csv",
+            "bloommcp_output/qc_x/v1/missing.csv",  # never existed — no error
+        ]
+    )
+    assert not (tmp_path / "bloommcp_output/qc_x/v1/a.csv").exists()
+    assert (tmp_path / "bloommcp_output/qc_x/v1/b.csv").exists()  # untouched
+
+
+def test_local_delete_files_empty_list_is_noop(tmp_path):
+    b = _local(tmp_path)
+    b.delete_files([])  # must not raise
+
+
+def test_supabase_backend_delete_files_calls_bucket_remove(monkeypatch):
+    calls = []
+
+    class _FakeClient:
+        def remove(self, paths):
+            calls.append(list(paths))
+
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client",
+        lambda **_kwargs: _FakeClient(),
+    )
+
+    backend = sb.SupabaseStorageBackend()
+    backend.delete_files(
+        ["bloommcp_output/qc_x/v1/a.csv", "bloommcp_output/qc_x/v1/b.csv"]
+    )
+    assert calls == [["bloommcp_output/qc_x/v1/a.csv", "bloommcp_output/qc_x/v1/b.csv"]]
+
+
+def test_supabase_backend_delete_files_passes_timeout_override(monkeypatch):
+    captured = {}
+
+    class _FakeClient:
+        def remove(self, paths):
+            return paths
+
+    def _fake_get_storage_client(**kwargs):
+        captured.update(kwargs)
+        return _FakeClient()
+
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", _fake_get_storage_client
+    )
+
+    sb.SupabaseStorageBackend().delete_files(["k"], timeout_seconds=5.0)
+    assert captured == {"timeout_seconds": 5.0}
+
+
+def test_supabase_backend_delete_files_empty_list_skips_client(monkeypatch):
+    def _boom(**_kwargs):
+        raise AssertionError("get_storage_client called for an empty delete")
+
+    monkeypatch.setattr("bloom_mcp.supabase_client.get_storage_client", _boom)
+    sb.SupabaseStorageBackend().delete_files([])  # must not raise / not call the client
+
+
+class _FakeSbClient:
+    """Stand-in for `supabase.Client`, minimal enough for `.storage.from_()`."""
+
+    class storage:  # noqa: N801 - mirrors the real client's attribute name
+        @staticmethod
+        def from_(_bucket):
+            return "bucket-proxy"
+
+
+def test_get_storage_client_default_passes_no_options_override(monkeypatch):
+    import bloom_mcp.supabase_client as sc
+
+    captured = {}
+
+    def _fake_create_client(url, key, options=None):
+        captured["options"] = options
+        return _FakeSbClient()
+
+    monkeypatch.setenv("SUPABASE_URL", "http://x")
+    monkeypatch.setenv("BLOOM_AGENT_KEY", "k")
+    monkeypatch.setattr(sc.supabase, "create_client", _fake_create_client)
+
+    sc.get_storage_client()
+    assert captured["options"] is None
+
+
+def test_get_storage_client_timeout_override_builds_client_options(monkeypatch):
+    import bloom_mcp.supabase_client as sc
+
+    captured = {}
+
+    def _fake_create_client(url, key, options=None):
+        captured["options"] = options
+        return _FakeSbClient()
+
+    monkeypatch.setenv("SUPABASE_URL", "http://x")
+    monkeypatch.setenv("BLOOM_AGENT_KEY", "k")
+    monkeypatch.setattr(sc.supabase, "create_client", _fake_create_client)
+
+    sc.get_storage_client(timeout_seconds=5.0)
+    assert captured["options"].storage_client_timeout == 5.0
+
+
 # ─── 3. Root resolution + startup validation ──────────────────────────────────
 
 
 def test_root_prefers_dedicated_var(monkeypatch, tmp_path):
+    # Explicit BLOOM_STORAGE_LOCAL_ROOT wins outright — assert that holds even
+    # with BLOOM_LOCAL_ROOT also set (#479's middle tier), not just when it
+    # happens to be unset in the ambient test environment.
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path / "other"))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path / "unused"))
     assert sb._resolve_local_root() == tmp_path
 
 
 def test_root_falls_back_to_output_dir(monkeypatch, tmp_path):
+    # Explicitly clear BLOOM_LOCAL_ROOT so this exercises the true 2-tier
+    # fallback regardless of ambient env (e.g. a dev's shell profile) — a
+    # BLOOM_LOCAL_ROOT left set there would otherwise silently divert this to
+    # the #479 middle tier instead of BLOOM_OUTPUT_DIR.
     monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
     monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path))
     assert sb._resolve_local_root() == tmp_path
 
@@ -462,60 +583,206 @@ def test_local_layout_disjoint_from_legacy_fallback(monkeypatch, tmp_path):
     assert (tmp_path / "bloommcp_output" / "qc_exp" / "manifest.json").is_file()
 
 
-@pytest.fixture
-def local_workflow_env(monkeypatch, tmp_path):
-    """Real reader/store + local backend + a seeded raw input for a full workflow."""
-    from bloom_mcp import experiment_utils as eu
-    from bloom_mcp.data_access import SupabaseReader
+class _FakeSbStorageClient:
+    """In-memory stand-in for the storage3 bucket client that
+    `SupabaseStorageBackend`'s methods call via `get_storage_client()`.
+
+    Unlike the `fake_supabase_storage` fixture (which monkeypatches
+    `bloom_mcp.manifest.manifest`'s module-level `list_prefix`/`read_json`/
+    `write_json` directly, bypassing `storage_backend.active_backend()`
+    dispatch entirely), patching only `get_storage_client` lets the real
+    `SupabaseStorageBackend` class run through the real dispatch path — so a
+    test can toggle `BLOOM_STORAGE_BACKEND` mid-test and genuinely switch
+    between this fake and the real `LocalStorageBackend`.
+    """
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    def upload(self, *, path, file, file_options=None):
+        del file_options
+        self.objects[path] = file
+
+    def download(self, path):
+        if path not in self.objects:
+            raise KeyError(f"object not found: {path}")
+        return self.objects[path]
+
+    def list(self, prefix):
+        norm = (prefix.rstrip("/") + "/") if prefix else ""
+        names: set[str] = set()
+        for key in self.objects:
+            if key.startswith(norm):
+                names.add(key[len(norm) :].split("/", 1)[0])
+        return [{"name": n} for n in sorted(names) if n]
+
+    def remove(self, paths):
+        for p in paths:
+            self.objects.pop(p, None)
+
+
+def test_write_manifest_stamps_active_backend(monkeypatch, tmp_path):
+    """`write_manifest` stamps `Manifest.storage_backend` with whichever
+    backend is active at write time (#395's sentinel), for both `supabase`
+    (default) and `local`."""
+    from bloom_mcp.contract import Provenance
+    from bloom_mcp.manifest import AnalysisDir
     from bloom_mcp.result_store import SupabaseResultStore
-    from bloom_mcp.tools import _ports
 
-    root = tmp_path / "store"
-    root.mkdir()
-    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
-    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(root))
+    # One shared instance: SupabaseStorageBackend calls get_storage_client()
+    # fresh per method (stateless wrapper around real Supabase's server-side
+    # state) — the fake must hand back the SAME instance every call, or each
+    # upload/list/download would silently talk to a different empty store.
+    fake_client = _FakeSbStorageClient()
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client",
+        lambda **_kwargs: fake_client,
+    )
+
+    def _commit(experiment: str) -> None:
+        store = SupabaseResultStore()
+        run = store.create_run(
+            experiment=experiment,
+            tool_class="qc",
+            provenance=Provenance.stamp(tool="t", params={}, seed=1),
+        )
+        (run.staging_dir / "_cleaned.csv").write_bytes(b"data")
+        store.commit(run, {"cleaned": "_cleaned.csv"})
+
+    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
     sb.reset_backend_for_tests()
+    _commit("exp.csv")
+    manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+    assert manifest.storage_backend == "supabase"
 
-    traits = tmp_path / "traits"
-    traits.mkdir()
-    shutil.copy(_FIXTURE, traits / "turface.csv")
-    monkeypatch.setattr(eu, "TRAITS_DIR", traits)
-
-    _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
-    try:
-        yield root
-    finally:
-        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+    sb.reset_backend_for_tests()
+    _commit("exp2.csv")
+    manifest = AnalysisDir("bloommcp_output", "exp2.csv", "qc").read_manifest()
+    assert manifest.storage_backend == "local"
 
 
-def test_qc_workflow_local_roundtrip_with_hash_equality(local_workflow_env):
-    """A qc workflow under BLOOM_STORAGE_BACKEND=local writes real files, reads
-    back through _resolve_versioned_cleaned, and each on-disk hash matches the
-    recorded output_sha256."""
-    from bloom_mcp.data_access import SupabaseReader
-    from bloom_mcp.tools.workflows.qc import run_qc_workflow
+def test_manifest_identical_across_backends_except_storage_backend(
+    monkeypatch, tmp_path
+):
+    """A real commit through `SupabaseResultStore`/`write_manifest` (not a
+    hand-built dict, unlike `test_manifest_bytes_identical_fake_vs_local`
+    above) produces byte-identical manifests across backends except
+    `storage_backend`, which legitimately differs — the MODIFIED spec's core
+    claim for the #395 sentinel. Uses `_FakeSbStorageClient` (not the
+    `fake_supabase_storage` fixture) so `BLOOM_STORAGE_BACKEND` toggling
+    between the two commits genuinely switches the active backend."""
+    from bloom_mcp.contract import Provenance
+    from bloom_mcp.manifest import AnalysisDir
+    from bloom_mcp.result_store import SupabaseResultStore
 
-    root = local_workflow_env
-    resp = run_qc_workflow("turface.csv")
-    assert "error" not in resp, resp
-    assert resp["version_id"] == "v1"
+    # See test_write_manifest_stamps_active_backend for why this must be one
+    # shared instance, not a fresh one per get_storage_client() call.
+    fake_client = _FakeSbStorageClient()
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client",
+        lambda **_kwargs: fake_client,
+    )
 
-    out = root / "bloommcp_output" / "qc_turface"
-    assert (out / "manifest.json").is_file()
-    manifest = json.loads((out / "manifest.json").read_bytes())
-    entry = manifest["versions"][-1]
-    assert (out / entry["version_dir"] / "_cleaned.csv").is_file()
+    # One shared Provenance instance so created_at/code_versions/environment
+    # are identical across both commits, not just coincidentally equal.
+    prov = Provenance.stamp(tool="t", params={"n": 1}, seed=9)
 
-    # hash-equality: the bytes on disk match the recorded provenance hash
-    for name, sha in entry["output_sha256"].items():
-        key = entry["output_keys"][name]  # logical bloommcp_output/... key
-        on_disk = (root / key).read_bytes()
-        assert hashlib.sha256(on_disk).hexdigest() == sha
+    def _commit() -> None:
+        store = SupabaseResultStore()
+        run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=prov)
+        (run.staging_dir / "_cleaned.csv").write_bytes(b"data")
+        store.commit(run, {"cleaned": "_cleaned.csv"})
 
-    # read-back exercises the download_file local leg via _resolve_versioned_cleaned
-    frame = SupabaseReader().load_experiment("turface.csv", version="latest")
-    assert frame.source.startswith("v1")
-    assert len(frame.df) > 0
+    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+    sb.reset_backend_for_tests()
+    _commit()
+    supabase_manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+    sb.reset_backend_for_tests()
+    _commit()
+    local_manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    assert supabase_manifest.storage_backend == "supabase"
+    assert local_manifest.storage_backend == "local"
+
+    supabase_dump = supabase_manifest.model_dump(mode="json")
+    local_dump = local_manifest.model_dump(mode="json")
+    del supabase_dump["storage_backend"], local_dump["storage_backend"]
+    assert supabase_dump == local_dump
+
+    # Also compare the actual serialized bytes each store received (not a
+    # re-derived model_dump()), matching the spec's literal "byte-identical
+    # serialized manifest.json" claim.
+    supabase_raw = json.loads(
+        fake_client.objects["bloommcp_output/qc_exp/manifest.json"]
+    )
+    local_raw = json.loads(
+        (tmp_path / "bloommcp_output" / "qc_exp" / "manifest.json").read_bytes()
+    )
+    del supabase_raw["storage_backend"], local_raw["storage_backend"]
+    assert supabase_raw == local_raw
+
+
+def test_repeated_backend_flip_logs_once_not_on_return(monkeypatch, tmp_path, caplog):
+    """#395 spec scenario "Repeated backend flips do not repeatedly signal":
+    supabase -> local -> supabase logs the fresh-catalog message on the first
+    commit to each backend's own (initially-empty) catalog, but NOT again on
+    the return trip to supabase, whose manifest already exists from the first
+    commit."""
+    from bloom_mcp.contract import Provenance
+    from bloom_mcp.result_store import SupabaseResultStore
+
+    fake_client = _FakeSbStorageClient()
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client",
+        lambda **_kwargs: fake_client,
+    )
+
+    def _commit() -> None:
+        store = SupabaseResultStore()
+        run = store.create_run(
+            experiment="exp.csv",
+            tool_class="qc",
+            provenance=Provenance.stamp(tool="t", params={}, seed=1),
+        )
+        (run.staging_dir / "_cleaned.csv").write_bytes(b"data")
+        store.commit(run, {"cleaned": "_cleaned.csv"})
+
+    def _fresh_catalog_log_count() -> int:
+        return sum(
+            1
+            for r in caplog.records
+            if "fresh manifest catalog" in r.getMessage().lower()
+        )
+
+    with caplog.at_level(logging.INFO):
+        # supabase: first commit ever for this pair -> fresh catalog, logs.
+        monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+        sb.reset_backend_for_tests()
+        caplog.clear()
+        _commit()
+        assert _fresh_catalog_log_count() == 1
+
+        # flip to local: a different, still-empty catalog -> also logs.
+        monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+        sb.reset_backend_for_tests()
+        caplog.clear()
+        _commit()
+        assert _fresh_catalog_log_count() == 1
+
+        # flip back to supabase: its manifest already exists from the first
+        # commit above -> no log this time, even though a local-backed run
+        # happened in between (the documented residual gap).
+        monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+        sb.reset_backend_for_tests()
+        caplog.clear()
+        _commit()
+        assert _fresh_catalog_log_count() == 0
 
 
 # ─── 5. Cross-backend list_prefix parity + read-path fallback ──────────────────
@@ -567,7 +834,7 @@ def test_resolve_versioned_cleaned_via_local_list_prefix_fallback(
     list leg end-to-end in the read path (the qc round-trip never hits it because
     writers always set version_dir)."""
     from bloom_mcp import experiment_utils as eu
-    from bloom_mcp.storage import (
+    from bloom_mcp.manifest import (
         ExperimentBlock,
         Manifest,
         VersionEntry,
@@ -612,3 +879,550 @@ def test_resolve_versioned_cleaned_via_local_list_prefix_fallback(
     assert path is not None
     assert path.read_bytes() == b"trait,value\n1,2\n"
     assert label == "v1_cleaned"
+
+
+# ─── 5b. #420 — outliers-preferring "latest" vs qc-only "latest_qc" ────────────
+#
+# `write_cleaned_manifest`/`write_invalid_schema_manifest` (imported at top of
+# file) live in `manifest_fixtures.py`; `local_manifest_backend` lives in
+# `conftest.py` — both promoted out of here (bloom#585) so other test files can
+# build real, on-disk manifests too.
+
+
+def test_latest_resolves_qc_only_unqualified(local_manifest_backend):
+    """(a) Only `qc` has a version — `version="latest"` resolves it, today's exact
+    unqualified label, unchanged. The overwhelmingly common (never-trimmed) case must
+    see zero observable change from this fix."""
+    from bloom_mcp import experiment_utils as eu
+
+    tmp_path = local_manifest_backend
+    write_cleaned_manifest(
+        tmp_path, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"a,b\n1,2\n"
+    assert label == "v1_cleaned"
+
+
+def test_latest_resolves_outliers_only_qualified(local_manifest_backend):
+    """(b) Only `outliers` has a version — `version="latest"` resolves it, with the
+    tool-class-qualified label."""
+    from bloom_mcp import experiment_utils as eu
+
+    tmp_path = local_manifest_backend
+    write_cleaned_manifest(
+        tmp_path, "exp", "outliers", "v1", "2026-07-06T00:00:00Z", b"a,b\n3,4\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"a,b\n3,4\n"
+    assert label == "outliers_v1_cleaned"
+
+
+def test_latest_prefers_outliers_regardless_of_recency(local_manifest_backend):
+    """(c) The actual #420 repro: `qc`'s entry is committed (and timestamped) LATER
+    than `outliers`'s, yet `version="latest"` must still resolve `outliers` — proving
+    this is a fixed priority, not a recency comparison. An earlier (wrong) draft of
+    this fix compared `created_at` across classes and would resolve `qc` here."""
+    from bloom_mcp import experiment_utils as eu
+
+    tmp_path = local_manifest_backend
+    write_cleaned_manifest(
+        tmp_path, "exp", "outliers", "v1", "2026-07-06T00:00:00Z", b"trim,ok\n1,1\n"
+    )
+    write_cleaned_manifest(
+        tmp_path, "exp", "qc", "v2", "2026-07-06T23:59:59Z", b"untrimmed\n9\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"trim,ok\n1,1\n"
+    assert label == "outliers_v1_cleaned"
+
+
+def test_latest_qc_resolves_qc_ignoring_outliers(local_manifest_backend):
+    """(d) `version="latest_qc"` resolves the `qc` class specifically, even when a
+    newer-looking `outliers` version exists — this is what `remove_outliers` itself
+    reads as its trimming input."""
+    from bloom_mcp import experiment_utils as eu
+
+    tmp_path = local_manifest_backend
+    write_cleaned_manifest(
+        tmp_path, "exp", "outliers", "v1", "2026-07-06T00:00:00Z", b"trim,ok\n1,1\n"
+    )
+    write_cleaned_manifest(
+        tmp_path, "exp", "qc", "v2", "2026-07-06T23:59:59Z", b"untrimmed\n9\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest_qc")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"untrimmed\n9\n"
+    assert label == "v2_cleaned"  # unqualified — same format as version="latest_qc"
+
+
+def test_latest_qc_resolves_qc_only_unqualified(local_manifest_backend):
+    """(e) `version="latest_qc"` with no `outliers` class at all resolves `qc`, with
+    the same unqualified label as (a) — confirms `latest_qc` isn't a no-op alias that
+    silently means something else when `outliers` is absent."""
+    from bloom_mcp import experiment_utils as eu
+
+    tmp_path = local_manifest_backend
+    write_cleaned_manifest(
+        tmp_path, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest_qc")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"a,b\n1,2\n"
+    assert label == "v1_cleaned"
+
+
+def test_latest_schema_error_on_outliers_propagates_first_iteration(
+    local_manifest_backend,
+):
+    """(f) A schema error on `outliers` (checked first, higher priority) propagates
+    immediately — it is not swallowed and does not fall through to the valid `qc`
+    manifest."""
+    from bloom_mcp import experiment_utils as eu
+
+    tmp_path = local_manifest_backend
+    write_cleaned_manifest(
+        tmp_path, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    write_invalid_schema_manifest("exp", "outliers")
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert path is None
+    assert label is None
+    assert err is not None and "manifest schema error for 'exp'" in err
+
+
+def test_latest_schema_error_on_qc_propagates_second_iteration(local_manifest_backend):
+    """(g) The mirror of (f): `outliers` has no entry at all (resolves to "no entry",
+    not an error) and `qc` fails schema validation — the error must still propagate
+    once the loop reaches its second iteration, not be silently dropped by an
+    over-broad `except`/`continue` around the whole loop."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_invalid_schema_manifest("exp", "qc")
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert path is None
+    assert label is None
+    assert err is not None and "manifest schema error for 'exp'" in err
+
+
+def test_latest_outliers_entry_exists_but_download_fails_is_a_hard_error(
+    local_manifest_backend,
+):
+    """A schema-valid `outliers` entry names a version whose `_cleaned.csv` was
+    never actually uploaded (a partial commit, or a storage hiccup) — this must
+    propagate as a hard error, NOT fall through to `qc`'s otherwise-valid entry.
+    Falling through here would reproduce the exact #420 silent-revert hazard,
+    just triggered by a storage failure instead of a `qc_clean` re-run."""
+    from bloom_mcp import experiment_utils as eu
+    from bloom_mcp.manifest import (
+        ExperimentBlock,
+        Manifest,
+        VersionEntry,
+        get_code_versions,
+        write_manifest,
+    )
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+
+    # outliers manifest references v1, version_dir set, but its _cleaned.csv was
+    # never uploaded — no `upload_file` call, unlike `write_cleaned_manifest`.
+    prefix = "bloommcp_output/outliers_exp/"
+    entry = VersionEntry(
+        id="v1",
+        created_at="2026-07-06T00:00:01Z",
+        tool="remove_outliers",
+        params={},
+        based_on_version="v1_cleaned",
+        code_versions=get_code_versions(),
+        outputs={"_cleaned.csv": "_cleaned.csv"},
+        version_dir="v1_2026-07-06",
+    )
+    manifest = Manifest(
+        experiment=ExperimentBlock(filename="exp.csv", source_path="", input_sha256=""),
+        versions=[entry],
+        latest="v1",
+    )
+    write_manifest(prefix, manifest)
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert path is None
+    assert label is None
+    assert err is not None
+    assert "download from storage failed" in err
+
+
+def test_latest_logs_when_resolved_trim_is_stale(local_manifest_backend, caplog):
+    """The resolved `outliers` trim's `based_on_version` ("v1_cleaned") no longer
+    matches the current `qc` latest ("v2_cleaned") — a `qc_clean` has run since
+    the trim was made (design.md Decision 4's disclosed trade-off). This is
+    purely observational: the trim still correctly resolves as "latest cleaned",
+    but a log line makes the staleness visible at read time."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:01Z",
+        b"trim\n1\n",
+    )  # based_on_version="v1_cleaned" (via write_cleaned_manifest's default)
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "qc",
+        "v2",
+        "2026-07-06T00:01:00Z",
+        b"a,b\n3,4\n5,6\n",
+    )  # a fresh qc_clean re-run, after the trim
+
+    with caplog.at_level(logging.INFO, logger="bloom_mcp.experiment_utils"):
+        path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+
+    assert err is None
+    assert (
+        path is not None and path.read_bytes() == b"trim\n1\n"
+    )  # still resolves the trim
+    assert label == "outliers_v1_cleaned"
+    assert any("has run since this trim was made" in r.message for r in caplog.records)
+
+
+def test_latest_does_not_log_when_resolved_trim_is_current(
+    local_manifest_backend, caplog
+):
+    """The resolved `outliers` trim's `based_on_version` matches the current `qc`
+    latest exactly (the natural clean-then-trim order, no re-clean since) — no
+    staleness log should fire."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:01Z",
+        b"trim\n1\n",
+    )
+
+    with caplog.at_level(logging.INFO, logger="bloom_mcp.experiment_utils"):
+        path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+
+    assert err is None
+    assert path is not None
+    assert label == "outliers_v1_cleaned"
+    assert not any(
+        "has run since this trim was made" in r.message for r in caplog.records
+    )
+
+
+# ─── 5c. bloom#585 — shared `trim_staleness` primitive ────────────────────────
+
+
+def test_trim_staleness_none_when_never_trimmed(local_manifest_backend):
+    """(a) No `outliers`-class version at all — nothing to assess."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+
+    assert eu.trim_staleness("exp") is None
+
+
+def test_trim_staleness_false_when_trim_is_current(local_manifest_backend):
+    """(b) The trim's `based_on_version` matches the current `qc` latest exactly."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:01Z",
+        b"trim\n1\n",
+    )
+
+    result = eu.trim_staleness("exp")
+    assert result is not None
+    assert result.is_stale is False
+    assert result.outliers_based_on_version == "v1_cleaned"
+    assert result.current_qc_label == "v1_cleaned"
+
+
+def test_trim_staleness_true_when_qc_has_moved_on(local_manifest_backend):
+    """(c) A `qc_clean` has run since the trim was made."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:01Z",
+        b"trim\n1\n",
+    )
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "qc",
+        "v2",
+        "2026-07-06T00:01:00Z",
+        b"a,b\n3,4\n5,6\n",
+    )
+
+    result = eu.trim_staleness("exp")
+    assert result is not None
+    assert result.is_stale is True
+    assert result.outliers_based_on_version == "v1_cleaned"
+    assert result.current_qc_label == "v2_cleaned"
+
+
+def test_trim_staleness_true_when_no_qc_baseline_at_all(local_manifest_backend):
+    """(d) An `outliers`-class version exists but the `qc`-class manifest has no
+    `latest` entry at all — a new, previously-untested/unreached corner (design.md
+    Decision 1): treated as stale, not as "nothing to see"."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:00Z",
+        b"trim\n1\n",
+    )
+
+    result = eu.trim_staleness("exp")
+    assert result is not None
+    assert result.is_stale is True
+    assert result.current_qc_label is None
+
+
+def test_latest_logs_distinct_message_when_no_qc_baseline_at_all(
+    local_manifest_backend, caplog
+):
+    """The new no-`qc`-baseline-at-all case (design.md Decision 1) must not
+    interpolate `None` into the pre-existing "a qc_clean has run since..." message
+    — it needs its own distinct wording naming that no `qc`-class version could be
+    found at all."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:00Z",
+        b"trim\n1\n",
+    )
+
+    with caplog.at_level(logging.INFO, logger="bloom_mcp.experiment_utils"):
+        path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+
+    assert err is None
+    assert path is not None and label == "outliers_v1_cleaned"
+    assert not any(
+        "has run since this trim was made" in r.message for r in caplog.records
+    )
+    assert any(
+        "no qc" in r.message.lower() and "could be found" in r.message.lower()
+        for r in caplog.records
+    )
+
+
+# ─── 5d. bloom#585 review — `safe_error_text` redaction/truncation ────────────
+
+
+def test_safe_error_text_truncates_long_messages():
+    from bloom_mcp.experiment_utils import safe_error_text
+
+    text = safe_error_text(RuntimeError("x" * 500), limit=50)
+    assert len(text) <= len("...<truncated>") + 50
+    assert text.endswith("...<truncated>")
+
+
+def test_safe_error_text_redacts_apikey_and_bearer_fragments():
+    from bloom_mcp.experiment_utils import safe_error_text
+
+    text = safe_error_text(
+        RuntimeError("request failed: apikey=sk_live_deadbeef1234 (401)")
+    )
+    assert "sk_live_deadbeef1234" not in text
+    assert "apikey=<redacted>" in text
+
+    text2 = safe_error_text(RuntimeError("Authorization: Bearer abc.def.ghi"))
+    assert "abc.def.ghi" not in text2
+
+
+def test_safe_error_text_leaves_ordinary_messages_unchanged():
+    from bloom_mcp.experiment_utils import safe_error_text
+
+    text = safe_error_text(RuntimeError("manifest schema error for 'exp': boom"))
+    assert text == "manifest schema error for 'exp': boom"
+
+
+# ─── 6. BLOOM_LOCAL_ROOT (#479) ─────────────────────────────────────────────────
+
+
+def test_local_root_supplies_output_default_when_dedicated_unset(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.delenv("BLOOM_OUTPUT_DIR", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    assert sb._resolve_local_root() == tmp_path / "output"
+
+
+def test_dedicated_var_wins_over_local_root(monkeypatch, tmp_path):
+    dedicated = tmp_path / "dedicated"
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(dedicated))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    assert sb._resolve_local_root() == dedicated
+
+
+def test_local_root_inert_when_backend_not_local(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path / "unused"))
+    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)  # defaults to supabase
+    assert sb._resolve_local_root() == tmp_path
+
+
+def test_local_root_falls_back_to_output_dir_when_both_unset(monkeypatch, tmp_path):
+    """Existing 2-tier fallback is unchanged when BLOOM_LOCAL_ROOT is also unset."""
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_OUTPUT_DIR", str(tmp_path))
+    assert sb._resolve_local_root() == tmp_path
+
+
+def test_validate_storage_backend_creates_output_subfolder(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    sb.reset_backend_for_tests()
+    assert not (tmp_path / "output").exists()
+    sb.validate_storage_backend()
+    assert (tmp_path / "output").is_dir()
+
+
+def test_validate_storage_backend_explicit_override_still_strict(monkeypatch, tmp_path):
+    missing = tmp_path / "nope"
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(missing))
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))  # set but must not rescue
+    sb.reset_backend_for_tests()
+    with pytest.raises(RuntimeError, match="does not exist"):
+        sb.validate_storage_backend()
+
+
+def test_validate_storage_backend_output_subfolder_blocked_by_file(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    (tmp_path / "output").write_text("blocking file")
+    sb.reset_backend_for_tests()
+    with pytest.raises(RuntimeError, match="output root.*not a directory"):
+        sb.validate_storage_backend()
+
+
+# ─── 5d. bloom#593 — shared `fit_is_trustworthy` primitive ────────────────────
+# Promoted from `remove_outliers.py`'s private `_fit_is_trustworthy`/
+# `_UNTRUSTWORTHY_FIT` (#419) so `remove_outliers`'s live gate and
+# `audit_untrustworthy_outlier_fits.py`'s retroactive scan (#593) share one
+# definition. Direct unit tests here, in the primitive's new home — the same
+# "test the promoted primitive directly, not only indirectly through a consumer"
+# pattern `trim_staleness` (5c above) already established. A pure function of a
+# dict; no manifest fixtures needed.
+
+
+def test_fit_is_trustworthy_none_when_no_fit_report():
+    """No `goodness_of_fit` at all (e.g. an `isolation_forest` trim) — nothing to
+    trust or distrust."""
+    from bloom_mcp import experiment_utils as eu
+
+    assert eu.fit_is_trustworthy(None) is None
+
+
+@pytest.mark.parametrize("fit_quality", sorted(["poor", "very_poor", "unknown"]))
+def test_fit_is_trustworthy_false_for_untrustworthy_qualities(fit_quality):
+    from bloom_mcp import experiment_utils as eu
+
+    assert eu.fit_is_trustworthy({"fit_quality": fit_quality}) is False
+    assert fit_quality in eu.UNTRUSTWORTHY_FIT_QUALITIES
+
+
+@pytest.mark.parametrize("fit_quality", ["excellent", "good", "acceptable"])
+def test_fit_is_trustworthy_true_for_acceptable_or_better(fit_quality):
+    from bloom_mcp import experiment_utils as eu
+
+    assert eu.fit_is_trustworthy({"fit_quality": fit_quality}) is True
+    assert fit_quality not in eu.UNTRUSTWORTHY_FIT_QUALITIES
+
+
+def test_fit_is_trustworthy_true_when_fit_quality_key_absent():
+    """A dict missing the `fit_quality` key entirely reads as trustworthy (`None
+    not in UNTRUSTWORTHY_FIT_QUALITIES` is `True`) — a documented, pre-existing
+    corner (see the fit-gate proposal's design.md), not new behavior from this
+    promotion."""
+    from bloom_mcp import experiment_utils as eu
+
+    assert eu.fit_is_trustworthy({}) is True
+
+
+def test_fit_is_trustworthy_true_for_an_out_of_enum_fit_quality_value():
+    """(#593 PR review) A `fit_quality` value outside the known tiers entirely —
+    a typo, or a future delegate release adding a new tier this codebase doesn't
+    know about yet — fails open (reads trustworthy) via the exact same membership
+    check as the missing-key case above. Documented as a known false-negative
+    risk (design.md Risks, `#593`'s `SCOPE_NOTE`) rather than a silent one."""
+    from bloom_mcp import experiment_utils as eu
+
+    assert eu.fit_is_trustworthy({"fit_quality": "moderate"}) is True
+
+
+def test_remove_outliers_no_longer_defines_its_own_fit_trustworthy_primitives():
+    """(#593) Symbol-relocation regression guard, mirroring #403's
+    `test_role_pattern_lists_live_here_not_in_experiment_utils` (inverted
+    direction): the whole point of promoting these to `experiment_utils` is a
+    single source of truth, so a future accidental reintroduction of a local
+    shadow copy in `remove_outliers.py` must be caught, not silently
+    reintroducing the exact drift risk this promotion removes."""
+    from bloom_mcp.sections.sleap_roots.analysis import remove_outliers
+
+    assert not hasattr(remove_outliers, "_UNTRUSTWORTHY_FIT")
+    assert not hasattr(remove_outliers, "_fit_is_trustworthy")
+    # _REPORT_NAME/_TOOL_CLASS stay as local aliases (matching this file's
+    # existing `_TOOL_CLASS = OUTLIERS_TOOL_CLASS` convention) — assert they
+    # reference the single-sourced values, not a re-typed literal.
+    from bloom_mcp import experiment_utils as eu
+
+    assert remove_outliers._REPORT_NAME is eu.OUTLIER_REPORT_NAME
+    assert remove_outliers.fit_is_trustworthy is eu.fit_is_trustworthy

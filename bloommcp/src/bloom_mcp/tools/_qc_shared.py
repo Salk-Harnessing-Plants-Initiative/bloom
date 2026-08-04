@@ -1,14 +1,21 @@
-"""Shared helpers for the granular QC tools (``qc_clean`` #338, ``qc_inspect`` #360).
+"""Shared helpers for the granular QC + consumer tools.
 
-Both tools read the **raw** experiment frame and forward the adapter-detected role
-columns into ``sleap_roots_analyze`` delegates the same way, and both validate a
-caller-supplied ``trait_columns`` subset up front. Factoring these here keeps the
-two tools in lockstep rather than drifting as two copies.
+Originally just ``qc_clean``/``qc_inspect`` (#338, #360): both read the **raw**
+experiment frame and forward the adapter-detected role columns into
+``sleap_roots_analyze`` delegates the same way, and both validate a caller-supplied
+``trait_columns`` subset up front. ``_validate_trait_subset`` is also reused verbatim
+(``require_certified=True``) by the cleaned-frame consumers (``pca_analysis``,
+``clustering``, ``descriptive_stats``); ``_finite_or_none`` is shared by ``clustering``
+and ``descriptive_stats``, the two tools that coerce a non-finite delegate statistic to
+``None`` before it reaches the output model/persisted CSV. Factoring these here keeps
+the tool family in lockstep rather than drifting as separate copies.
 """
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -32,7 +39,7 @@ _CANONICAL_MAX_NANS_PER_SAMPLE = 0.0
 _CANONICAL_MIN_SAMPLES_PER_TRAIT = 10
 
 
-def _validate_experiment_name(experiment: str) -> None:
+def _validate_experiment_name(experiment: str, label: str = "experiment") -> None:
     """Reject an ``experiment`` that is anything but a bare filename.
 
     ``experiment`` flows into ``TRAITS_DIR / experiment`` + ``pd.read_csv``, so a path with
@@ -40,12 +47,34 @@ def _validate_experiment_name(experiment: str) -> None:
     read-and-persist tool like ``qc_inspect`` the contents could then surface in committed
     artifacts. Require a bare basename. (The cross-tool fix is to centralize this in
     ``load_experiment_data`` so the whole tool family is covered; this guards the QC tools now.)
+
+    ``Path(experiment).name != experiment`` alone is not enough: ``pathlib.Path`` only
+    treats ``\\`` as a separator on Windows, so on POSIX (the deploy target)
+    ``Path("..\\\\secret.csv").name`` equals the input unchanged and the traversal payload
+    would slip past this guard. Check for either separator explicitly (mirrors the fix in
+    ``sections/sleap_roots/analysis/_viz_shared.validate_filename``).
+
+    ``label`` names the offending field in the error message. Single-experiment callers
+    (``qc_inspect``) can rely on the ``"experiment"`` default; a multi-experiment caller
+    (``cross_experiment_correlations``, which validates two names) must pass its own
+    field's name so a caller can tell which of ``experiment_1``/``experiment_2`` failed
+    (found in review — the message previously never named the field, so a two-name caller
+    couldn't distinguish which one was rejected).
     """
-    if experiment in ("", ".", "..") or Path(experiment).name != experiment:
+    if (
+        experiment in ("", ".", "..")
+        or "/" in experiment
+        or "\\" in experiment
+        or Path(experiment).name != experiment
+    ):
         raise BloomMCPError(
             code="invalid_input",
-            message="experiment must be a bare CSV filename (no path separators).",
-            remedy="Pass a filename from list_available_experiments, e.g. 'my_experiment.csv'.",
+            message=(
+                f"{label} ({experiment!r}) must be a bare experiment identifier "
+                "(no path separators)."
+            ),
+            remedy="Pass an experiment identifier from list_available_experiments, "
+            "e.g. 'my_experiment.csv'.",
         )
 
 
@@ -95,7 +124,7 @@ def _validate_trait_subset(
         if not requested:
             raise BloomMCPError(
                 code="invalid_input",
-                message="trait_columns was given as an empty list.",
+                message=f"trait_columns for {experiment!r} was given as an empty list.",
                 remedy=(
                     "Omit trait_columns to analyze all certified-clean traits, or name at "
                     "least one certified trait column."
@@ -105,7 +134,10 @@ def _validate_trait_subset(
         if duplicates:
             raise BloomMCPError(
                 code="invalid_input",
-                message=f"trait_columns contains duplicate columns: {duplicates}.",
+                message=(
+                    f"trait_columns for {experiment!r} contains duplicate columns: "
+                    f"{duplicates}."
+                ),
                 remedy="List each trait column at most once.",
             )
         certified = set(frame.trait_cols)
@@ -128,7 +160,10 @@ def _validate_trait_subset(
         if non_numeric:
             raise BloomMCPError(
                 code="invalid_input",
-                message=f"trait_columns includes non-numeric columns: {non_numeric}.",
+                message=(
+                    f"trait_columns for {experiment!r} includes non-numeric columns: "
+                    f"{non_numeric}."
+                ),
                 remedy="Pass only numeric trait columns; identifiers/metadata cannot be analyzed.",
             )
         return
@@ -149,3 +184,18 @@ def _validate_trait_subset(
             message=f"trait_columns includes non-numeric columns: {non_numeric}.",
             remedy="Pass only numeric trait columns; metadata/identifier columns cannot be used as traits.",
         )
+
+
+def _finite_or_none(value: object) -> Optional[float]:
+    """Coerce a delegate statistic to a finite float, or ``None`` if it isn't one.
+
+    Shared by ``clustering`` (cophenetic_correlation/cut_height) and
+    ``descriptive_stats`` (mean/std/.../skewness/kurtosis) — both coerce a non-finite
+    (``inf``/``-inf``/``nan``) delegate value to ``None`` before it reaches the output
+    model or a persisted CSV, since ``json.dumps``/``to_json(allow_nan=False)`` would
+    otherwise emit or reject a bare ``Infinity``/``NaN`` token.
+    """
+    if value is None:
+        return None
+    as_float = float(value)
+    return as_float if math.isfinite(as_float) else None

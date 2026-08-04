@@ -26,8 +26,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from bloom_mcp.storage.code_versions import get_code_versions
-from bloom_mcp.storage.schema import CodeVersions, VersionEntry
+from bloom_mcp.manifest.code_versions import get_code_versions
+from bloom_mcp.manifest.schema import CodeVersions, VersionEntry
 
 # Set at container build to the image digest (`sha256:…`); the tightest
 # exact-environment identifier when bloom-mcp runs containerized.
@@ -123,6 +123,13 @@ class Provenance(BaseModel):
     # Input-contract validation findings (``qc_clean`` #403); None for tools that
     # don't validate their input. Carried verbatim into the manifest VersionEntry.
     input_validation: Optional[dict] = None
+    # Schema v4 additive: which DB source/pipeline-run backed the experiment read
+    # this run consumed, when the active ExperimentReader is SourceSelectable.
+    # Set via ResultStore.create_run(..., source=...), not by Provenance.stamp()
+    # (which has no experiment/reader context) — mirrors how input_validation is
+    # merged in by the caller via model_copy rather than stamped at contract time.
+    source_id: Optional[int] = None
+    source_name: Optional[str] = None
 
     @classmethod
     def stamp(
@@ -150,7 +157,7 @@ class Provenance(BaseModel):
         )
 
     def to_version_entry(self, *, version_id: str) -> VersionEntry:
-        """Project this provenance into a manifest VersionEntry (schema v3).
+        """Project this provenance into a manifest VersionEntry (schema v4).
 
         The version id is allocated at commit time by the `ResultStore`, so it is
         passed in. Per-artifact `output_sha256` / `output_keys` carry whatever is
@@ -174,4 +181,6 @@ class Provenance(BaseModel):
             output_sha256=self.output_sha256,
             output_keys=self.output_keys,
             input_validation=self.input_validation,
+            source_id=self.source_id,
+            source_name=self.source_name,
         )
