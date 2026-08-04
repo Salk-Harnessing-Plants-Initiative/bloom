@@ -257,3 +257,40 @@ def fake_bloommcp_rpc(monkeypatch):
     fake = _FakeRpc()
     monkeypatch.setattr(_sc, "call_rpc", fake)
     return fake
+
+
+# --- Local storage-backend fixture for manifest-level tests (bloom#585) -------
+#
+# `trim_staleness`/`_resolve_versioned_cleaned` read manifests through
+# `bloom_mcp.manifest.AnalysisDir`, a seam below `fake_supabase_storage`'s ports
+# (it talks to `bloom_mcp.storage_backend.active_backend()` directly). Tests that
+# need real, on-disk manifests use the `local` backend instead of faking it.
+# Promoted here (out of `test_storage_backend.py`, its original home) so any test
+# file can use it — originally fixture-local, it only reset the backend on
+# setup; promoted with a teardown reset added, so a test using it here can never
+# leak a stale backend into a test in a *different* file that has no equivalent
+# autouse net (test_storage_backend.py's own autouse `_reset_backend` fixture
+# happened to mask this for tests within that one file only).
+
+
+@pytest.fixture
+def local_manifest_backend(monkeypatch, tmp_path):
+    """Point the storage-backend seam at a throwaway local root for one test.
+
+    Returns `tmp_path` (the fixture's own scratch dir, not the storage root)
+    for parity with the fixture's original signature. Manifest-building
+    helpers (`write_cleaned_manifest` etc.) live in `manifest_fixtures.py`, a
+    plain (non-`conftest`) module name — `bloommcp/tests/smoke/` has its own,
+    unrelated `conftest.py`, and pytest's default (no-`__init__.py`) import
+    mode gives every same-named module one shared `sys.modules` slot, so a
+    bare `from conftest import ...` anywhere in the tree is ambiguous.
+    """
+    import bloom_mcp.storage_backend as sb
+
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(root))
+    sb.reset_backend_for_tests()
+    yield tmp_path
+    sb.reset_backend_for_tests()

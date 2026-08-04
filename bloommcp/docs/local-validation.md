@@ -75,8 +75,14 @@ storage round-trip rather than the in-memory fakes.
 ### Leg 2 — `remove_outliers` (outlier trim, stochastic; also the generic v3-provenance leg)
 
 Immediately after Leg 1 commits a cleaned version, runs
-`remove_outliers(experiment="turface_raw.csv", method="mahalanobis", seed=42)` through the same
-real ports and asserts:
+`remove_outliers(experiment="turface_raw.csv", method="isolation_forest", seed=42)` through the
+same real ports and asserts:
+
+(`method="isolation_forest"`, not `mahalanobis` — #419: a mahalanobis call raises
+`assumption_violated` instead of persisting when the chi-squared fit is untrustworthy, which
+both local reference fixtures are at their canonical cleaning threshold. This leg exercises
+persistence mechanics, not fit characterization, so isolation_forest — never gated — is used
+here regardless of this live experiment's own fit quality.)
 
 - the committed run's outputs include **`_cleaned.csv`** (the trimmed table) and
   **`outlier_report.json`**;

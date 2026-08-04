@@ -44,20 +44,31 @@ is also where the smoke's generic v5-provenance + version-advance guarantee (ori
 proven on a now-retired ``run_clustering_workflow`` leg — devendor-bloommcp-analysis C11.8
 repointed it here, since ``remove_outliers`` is the surviving seed-bearing consumer) lives:
 
-  * ``remove_outliers(experiment="turface_raw.csv", method="mahalanobis", seed=42)`` commits a
-    versioned ``qc`` run (same class — its trimmed ``_cleaned.csv`` becomes the newest cleaned
-    version) whose outputs include ``_cleaned.csv`` and ``outlier_report.json``, with a schema-v5
-    manifest recording the resolved ``seed``, ``tool == "remove_outliers"`` (the composition
-    anchor), and matching ``output_sha256`` for both artifacts;
+  * ``remove_outliers(experiment="turface_raw.csv", method="isolation_forest", seed=42)``
+    commits a versioned ``qc`` run (same class — its trimmed ``_cleaned.csv`` becomes the
+    newest cleaned version) whose outputs include ``_cleaned.csv`` and ``outlier_report.json``,
+    with a schema-v5 manifest recording the resolved ``seed``, ``tool == "remove_outliers"``
+    (the composition anchor), and matching ``output_sha256`` for both artifacts.
+    **method=isolation_forest, not mahalanobis (#419):** this leg exercises *persistence
+    mechanics* (versioning, provenance, require_clean composition), none of which are
+    mahalanobis-specific, and the #419 fit-trustworthiness gate now rejects a mahalanobis
+    trim outright when the chi-squared fit is untrustworthy — both local reference fixtures
+    (turface_19, cylinder) are untrustworthy under mahalanobis defaults at their canonical
+    cleaning threshold (see ``tests/tools/test_remove_outliers_tool.py``), and this smoke's
+    own cleaning threshold (``max_nans_per_trait=0.1``, see below) was never independently
+    confirmed *not* to be, so isolation_forest sidesteps that uncertainty entirely rather than
+    risking this leg (and the ~7 checks gated on it) going red on a live-data fit this script
+    cannot control for;
   * the same manifest is also asserted against the generic v5-provenance contract: schema v5,
     non-null real ``seed`` (== 42), ``agent`` == ``bloom_agent``, populated ``environment``, and
     matching ``output_sha256`` / ``output_keys`` maps;
   * a fresh ``require_clean=True`` read then resolves the **trimmed** version (``v<N>_cleaned``)
     with *no more* rows than the pre-trim clean and zero NaN trait cells — proving
     qc_clean → remove_outliers → require_clean end-to-end. (The row bound is ``<=``, not a
-    strict ``<``: the smoke cleans at its own threshold, so mahalanobis@seed42 may flag zero
-    outliers on that frame — a no-op trim, not a regression; the trim's persistence as the
-    resolvable latest is anchored on the ``tool`` provenance check above, not the row delta.)
+    strict ``<``: the smoke cleans at its own threshold, so isolation_forest@seed42/
+    contamination=0.1 may flag very few or many outliers depending on the frame's actual size —
+    not a regression either way; the trim's persistence as the resolvable latest is anchored on
+    the ``tool`` provenance check above, not the row delta.)
   * a second ``remove_outliers`` commit must advance ``latest`` from ``v<N>`` to ``v<N+1>``
     without clobbering the first — ``get_run(first_ref)`` still resolves it.
 
@@ -812,13 +823,15 @@ def main() -> int:
         n_pre_trim = len(cleaned_frame.df)  # the pre-trim clean row count
         print(
             f">>> running remove_outliers on {QC_EXPERIMENT} "
-            f"(mahalanobis, seed={RO_SEED}) through real ports ..."
+            # isolation_forest, not mahalanobis (#419) — see the module docstring's
+            # remove_outliers leg note for why.
+            f"(isolation_forest, seed={RO_SEED}) through real ports ..."
         )
         ro_committed = False
         try:
             remove_outliers(
                 RemoveOutliersParams(
-                    experiment=QC_EXPERIMENT, method="mahalanobis", seed=RO_SEED
+                    experiment=QC_EXPERIMENT, method="isolation_forest", seed=RO_SEED
                 )
             )
             ro_committed = True
@@ -894,7 +907,9 @@ def main() -> int:
             try:
                 remove_outliers(
                     RemoveOutliersParams(
-                        experiment=QC_EXPERIMENT, method="mahalanobis", seed=RO_SEED
+                        experiment=QC_EXPERIMENT,
+                        method="isolation_forest",
+                        seed=RO_SEED,
                     )
                 )
                 checks.append(Check("remove_outliers run #2 succeeds", True))
