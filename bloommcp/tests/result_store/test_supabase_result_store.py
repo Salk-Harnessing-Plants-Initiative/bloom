@@ -236,6 +236,50 @@ def test_commit_failure_cleans_up_orphaned_objects_from_partial_upload(
     assert not any(k.endswith("a.csv") for k in fake_supabase_storage.objects)
 
 
+def test_signing_failure_fails_commit_and_cleans_up_orphans(
+    fake_supabase_storage, monkeypatch
+):
+    """bloom#581 Decision 5: a signed-url generation failure fails the whole
+    commit, same as an upload failure — even though every output already
+    uploaded successfully before the signing step runs."""
+    import bloom_mcp.supabase_client as sc
+
+    store = SupabaseResultStore()
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"a")
+
+    def _boom(key, expires_in):
+        raise RuntimeError("signing service unavailable")
+
+    monkeypatch.setattr(sc, "create_signed_url", _boom)
+
+    with pytest.raises(CommitFailedError):
+        store.commit(run, {"a": "a.csv"})
+
+    assert store.list_runs("exp.csv", "qc") == []  # latest un-advanced
+    assert not any(k.endswith("a.csv") for k in fake_supabase_storage.objects)
+
+
+def test_signing_call_returning_no_url_fails_commit_not_silently_none(
+    fake_supabase_storage, monkeypatch
+):
+    """bloom#581: if create_signed_url ever yields no usable URL (e.g. the dict
+    extraction inside SupabaseStorageBackend found nothing to extract), commit
+    must fail loudly rather than build an OutputLink with a None/empty url."""
+    import bloom_mcp.supabase_client as sc
+
+    store = SupabaseResultStore()
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"a")
+
+    monkeypatch.setattr(sc, "create_signed_url", lambda key, expires_in: None)
+
+    with pytest.raises(Exception):
+        store.commit(run, {"a": "a.csv"})
+
+    assert store.list_runs("exp.csv", "qc") == []
+
+
 def test_cleanup_failure_does_not_mask_original_error(
     fake_supabase_storage, monkeypatch, caplog
 ):

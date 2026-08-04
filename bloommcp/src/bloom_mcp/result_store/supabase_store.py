@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -28,7 +28,12 @@ from bloom_mcp.manifest import (
 )
 from bloom_mcp.storage_backend import active_backend_name
 
-from ._artifacts import hash_outputs, validate_outputs
+from ._artifacts import (
+    SIGNED_URL_EXPIRES_SECONDS,
+    build_output_links,
+    hash_outputs,
+    validate_outputs,
+)
 from ._locks import KeyedLock
 from .ports import (
     CommitFailedError,
@@ -185,7 +190,7 @@ class SupabaseResultStore:
                 def key_for(rel: str) -> str:
                     return adir.key(f"{version_dir}/{rel}")
 
-                output_keys, output_sha256 = hash_outputs(
+                output_keys, output_sha256, output_size_bytes = hash_outputs(
                     run.staging_dir, outputs, key_for
                 )
                 # Upload the same staged bytes that were just hashed.
@@ -193,6 +198,19 @@ class SupabaseResultStore:
                     key = key_for(rel)
                     _sc.upload_file(key, run.staging_dir / rel)
                     uploaded_keys.append(key)
+
+                # Sign each just-uploaded key before the manifest is written —
+                # a signing failure (bloom#581 Decision 5) leaves `latest`
+                # un-advanced exactly like an upload failure, via the same
+                # except/cleanup block below.
+                output_links = build_output_links(
+                    output_keys,
+                    output_sha256,
+                    output_size_bytes,
+                    url_for=lambda key: _sc.create_signed_url(
+                        key, SIGNED_URL_EXPIRES_SECONDS
+                    ),
+                )
 
                 prov = state.provenance.model_copy(
                     update={
@@ -285,12 +303,13 @@ class SupabaseResultStore:
             # Success only: tear down staging and seal the handle.
             shutil.rmtree(run.staging_dir, ignore_errors=True)
             state.committed = True
-            return StoredRun.from_version_entry(
+            stored = StoredRun.from_version_entry(
                 entry,
                 tool_class=adir.tool_class,
                 experiment=adir.experiment_filename,
                 manifest_path=run.manifest_path,
             )
+            return replace(stored, output_links=output_links)
 
     @staticmethod
     def _cleanup_uploaded(keys: list[str], adir: AnalysisDir) -> None:

@@ -37,7 +37,13 @@ def test_run_links_in_all():
 # Field set
 # ---------------------------------------------------------------------------
 
-_EXPECTED_FIELDS = {"run_ref", "version_dir", "manifest_path", "outputs", "output_links"}
+_EXPECTED_FIELDS = {
+    "run_ref",
+    "version_dir",
+    "manifest_path",
+    "outputs",
+    "output_links",
+}
 
 
 def test_run_links_field_set():
@@ -69,9 +75,7 @@ def test_output_link_accepts_zero_size_bytes():
 
 
 def test_run_links_output_links_defaults_to_empty_dict():
-    links = RunLinks(
-        run_ref="r1", version_dir="v1", manifest_path="m.json", outputs={}
-    )
+    links = RunLinks(run_ref="r1", version_dir="v1", manifest_path="m.json", outputs={})
     assert links.output_links == {}
 
 

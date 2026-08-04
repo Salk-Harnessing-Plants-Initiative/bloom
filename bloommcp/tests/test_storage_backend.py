@@ -510,6 +510,7 @@ def test_local_store_roundtrip_matches_contract(monkeypatch, tmp_path):
 
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
     sb.reset_backend_for_tests()
 
     store = SupabaseResultStore()
@@ -527,6 +528,11 @@ def test_local_store_roundtrip_matches_contract(monkeypatch, tmp_path):
     assert "\\" not in stored.output_keys["cleaned"]
     assert stored.output_keys["cleaned"].startswith("bloommcp_output/qc_exp/")
     assert store.get_run("exp.csv", "qc", "latest").run_ref == "v1"
+
+    # bloom#581: local backend's served URL, built from the real key
+    link = stored.output_links["cleaned"]
+    assert link.url == f"http://localhost/output/{stored.output_keys['cleaned']}"
+    assert link.size_bytes == len(b"data")
 
     # real files on disk, laid out by key
     out = tmp_path / "bloommcp_output" / "qc_exp"
@@ -567,6 +573,7 @@ def test_local_layout_disjoint_from_legacy_fallback(monkeypatch, tmp_path):
 
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))  # == BLOOM_OUTPUT_DIR
+    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
     sb.reset_backend_for_tests()
 
     store = SupabaseResultStore()
@@ -620,6 +627,13 @@ class _FakeSbStorageClient:
         for p in paths:
             self.objects.pop(p, None)
 
+    def create_signed_url(self, path, expires_in):
+        # Realistic dict shape (bloom#581) — the real client returns a dict,
+        # not a bare string. No BLOOM_PUBLIC_SUPABASE_URL is set by the tests
+        # using this fake, so _to_public_url is a no-op and this is returned
+        # verbatim.
+        return {"signedURL": f"http://kong:8000/sign/{path}?expires_in={expires_in}"}
+
 
 def test_write_manifest_stamps_active_backend(monkeypatch, tmp_path):
     """`write_manifest` stamps `Manifest.storage_backend` with whichever
@@ -657,6 +671,7 @@ def test_write_manifest_stamps_active_backend(monkeypatch, tmp_path):
 
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
     sb.reset_backend_for_tests()
     _commit("exp2.csv")
     manifest = AnalysisDir("bloommcp_output", "exp2.csv", "qc").read_manifest()
@@ -702,6 +717,7 @@ def test_manifest_identical_across_backends_except_storage_backend(
 
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
     sb.reset_backend_for_tests()
     _commit()
     local_manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
@@ -725,6 +741,13 @@ def test_manifest_identical_across_backends_except_storage_backend(
     )
     del supabase_raw["storage_backend"], local_raw["storage_backend"]
     assert supabase_raw == local_raw
+
+    # bloom#581: output_links (and any URL/size sibling) is a StoredRun-only,
+    # request-time field — it must never appear in either serialized manifest.
+    for raw in (supabase_raw, local_raw):
+        for version in raw["versions"]:
+            assert "output_links" not in version
+            assert "size_bytes" not in version
 
 
 def test_repeated_backend_flip_logs_once_not_on_return(monkeypatch, tmp_path, caplog):
@@ -770,6 +793,7 @@ def test_repeated_backend_flip_logs_once_not_on_return(monkeypatch, tmp_path, ca
         # flip to local: a different, still-empty catalog -> also logs.
         monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
         monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+        monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
         sb.reset_backend_for_tests()
         caplog.clear()
         _commit()
