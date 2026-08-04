@@ -8,6 +8,7 @@ import click
 
 from ..credentials import DEFAULT_PROFILE
 from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
+from ._select import resolve_by_name, select_from_menu
 
 # Table columns for `experiments list`, in display order.
 EXPERIMENT_COLUMNS = ["Species", "Experiment", "Experiment ID"]
@@ -51,16 +52,12 @@ DEFAULT_LIMIT = 1000
 def select_species_interactively(species: list[tuple[int, str]]) -> int | None:
     """Prompt with a numbered menu (0 = All species) and return the chosen species_id, or None.
 
-    The menu and prompt are written to stderr so machine-format output on stdout stays clean.
-    ``click.prompt`` validates the number and re-prompts on a bad entry; with no input to read
-    (non-interactive) it aborts rather than returning a wrong choice.
+    Thin wrapper over the shared ``select_from_menu`` so every cyl command renders its picker the
+    same way (menu on stderr; 0 = All; re-prompts on a bad entry; aborts non-interactively).
     """
-    click.echo("Select a species:", err=True)
-    click.echo("  0) All species", err=True)
-    for i, (_sid, name) in enumerate(species, start=1):
-        click.echo(f"  {i}) {name}", err=True)
-    choice = click.prompt("Species", type=click.IntRange(0, len(species)), err=True)
-    return None if choice == 0 else species[choice - 1][0]
+    return select_from_menu(
+        species, title="a species", prompt_label="Species", all_label="All species"
+    )
 
 
 # --- supabase I/O ---
@@ -111,9 +108,16 @@ def fetch_experiments(
 @experiments.command(name="list")
 @click.option(
     "--species",
+    "species_name",
+    default=None,
+    help="Filter to this species by common name (case-insensitive, scriptable). Omit for all species.",
+)
+@click.option(
+    "--species-menu",
+    "--species_menu",
     "pick_species",
     is_flag=True,
-    help="Pick a species from an interactive menu to filter by (needs a terminal).",
+    help="Pick the species from an interactive menu instead of typing it (needs a terminal).",
 )
 @click.option(
     "--output",
@@ -143,24 +147,38 @@ def fetch_experiments(
     help="Credentials profile to use.",
 )
 def list_experiments(
-    pick_species: bool, output_fmt: str | None, limit: int, as_json: bool, profile: str
+    species_name: str | None,
+    pick_species: bool,
+    output_fmt: str | None,
+    limit: int,
+    as_json: bool,
+    profile: str,
 ) -> None:
-    """List cylinder experiments. Pass --species to pick a species from a menu; use
-    --output csv/json to grab an id for `cyl download --experiment-id`."""
+    """List cylinder experiments. Filter with --species NAME (scriptable) or --species-menu to
+    pick from a menu; use --output csv/json to grab an id for `cyl download --experiment-id`."""
     from postgrest import APIError
 
     from ..cli import _authed_client
+
+    if species_name is not None and pick_species:
+        raise click.UsageError("Use either --species NAME or --species-menu, not both.")
 
     output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
 
     client = _authed_client(profile)
     try:
         species_id = None
-        if pick_species:
+        if pick_species:  # interactive picker
             choices = fetch_species_with_experiments(client)
             if not choices:
                 raise click.ClickException("No species with cylinder experiments found.")
             species_id = select_species_interactively(choices)
+        elif species_name is not None:  # typed value → resolve the common name to an id (ci + trim)
+            species_id = resolve_by_name(fetch_species_with_experiments(client), species_name)
+            if species_id is None:
+                raise click.ClickException(
+                    f"No species named {species_name!r} with cylinder experiments."
+                )
         raw = fetch_experiments(client, species_id=species_id, limit=limit)
     except APIError as exc:
         raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc

@@ -307,7 +307,55 @@ def test_list_empty_json(monkeypatch):
     assert res.output.strip() == "[]"
 
 
-# --- --species menu ---------------------------------------------------------
+# --- --species value (scriptable) -------------------------------------------
+
+
+def test_list_species_value_resolves_and_filters(monkeypatch):
+    # --species NAME resolves the common name to a species_id and filters — no menu, no stdin.
+    _patch_authed(monkeypatch)
+    called = {"fetch_species": 0}
+
+    def _species(client):
+        called["fetch_species"] += 1
+        return [(3, "Canola"), (2, "Rice")]
+
+    monkeypatch.setattr(ex, "fetch_species_with_experiments", _species)
+    captured = {}
+
+    def _fetch(client, *, species_id=None, limit=ex.DEFAULT_LIMIT):
+        captured["species_id"] = species_id
+        return [EXPS[1]]
+
+    monkeypatch.setattr(ex, "fetch_experiments", _fetch)
+    # case-insensitive match; no stdin — a wrongly-opened menu would abort instead of exit 0
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species", "canola"])
+    assert res.exit_code == 0, res.output
+    assert captured["species_id"] == 3  # "canola" → Canola's id, passed to the fetch
+
+
+def test_list_species_value_unknown_name_errors(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setattr(ex, "fetch_species_with_experiments", lambda client: [(3, "Canola")])
+    monkeypatch.setattr(
+        ex,
+        "fetch_experiments",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fetch on a bad name")),
+    )
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species", "Sorghum"])
+    assert res.exit_code != 0
+    assert "No species named 'Sorghum'" in res.output  # clean error, not an empty table
+
+
+def test_list_species_value_and_menu_conflict(monkeypatch):
+    _patch_authed(monkeypatch)
+    res = CliRunner().invoke(
+        cli, ["cyl", "experiments", "list", "--species", "Canola", "--species-menu"]
+    )
+    assert res.exit_code != 0
+    assert "not both" in res.output.lower()
+
+
+# --- --species-menu ---------------------------------------------------------
 
 
 def test_list_species_menu_filters(monkeypatch):
@@ -324,7 +372,7 @@ def test_list_species_menu_filters(monkeypatch):
     monkeypatch.setattr(ex, "fetch_experiments", _fetch)
     # menu: 0) All  1) Canola  2) Rice → pick 1 → Canola (id 3)
     res = CliRunner().invoke(
-        cli, ["cyl", "experiments", "list", "--species", "--output", "json"], input="1\n"
+        cli, ["cyl", "experiments", "list", "--species-menu", "--output", "json"], input="1\n"
     )
     assert res.exit_code == 0, res.output
     assert captured["species_id"] == 3  # chosen menu entry → its species_id, passed to fetch
@@ -340,7 +388,7 @@ def test_list_species_menu_all_is_no_filter(monkeypatch):
         return EXPS
 
     monkeypatch.setattr(ex, "fetch_experiments", _fetch)
-    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species"], input="0\n")
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species-menu"], input="0\n")
     assert res.exit_code == 0, res.output
     assert captured["species_id"] is None  # 0 = All species → no filter
 
@@ -348,7 +396,7 @@ def test_list_species_menu_all_is_no_filter(monkeypatch):
 def test_list_species_menu_none_available(monkeypatch):
     _patch_authed(monkeypatch)
     monkeypatch.setattr(ex, "fetch_species_with_experiments", lambda client: [])
-    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species"], input="0\n")
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species-menu"], input="0\n")
     assert res.exit_code != 0
     assert "No species" in res.output
 
@@ -360,7 +408,7 @@ def test_list_species_menu_goes_to_stderr_stdout_stays_clean_json(monkeypatch):
     monkeypatch.setattr(ex, "fetch_species_with_experiments", lambda client: [(3, "Canola")])
     monkeypatch.setattr(ex, "fetch_experiments", lambda client, **kw: EXPS)
     res = CliRunner().invoke(
-        cli, ["cyl", "experiments", "list", "--species", "--output", "json"], input="1\n"
+        cli, ["cyl", "experiments", "list", "--species-menu", "--output", "json"], input="1\n"
     )
     assert res.exit_code == 0, res.output
     json.loads(res.stdout)  # stdout is valid JSON — would raise if the menu leaked into it
@@ -379,7 +427,7 @@ def test_list_species_menu_non_tty_aborts(monkeypatch):
         return EXPS
 
     monkeypatch.setattr(ex, "fetch_experiments", _fetch)
-    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species"], input="")
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species-menu"], input="")
     assert res.exit_code != 0  # Abort → non-zero exit, not a silent wrong result
     assert captured["fetched"] is False  # never fetched with a guessed species
 
@@ -399,7 +447,7 @@ def test_list_species_menu_out_of_range_reprompts(monkeypatch):
 
     monkeypatch.setattr(ex, "fetch_experiments", _fetch)
     # menu offers 0..2; "9" is rejected and re-prompts, then "2" → Rice (id 2)
-    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species"], input="9\n2\n")
+    res = CliRunner().invoke(cli, ["cyl", "experiments", "list", "--species-menu"], input="9\n2\n")
     assert res.exit_code == 0, res.output
     assert captured["species_id"] == 2  # resolved to the valid re-entry, did not crash
     assert "is not in the range" in res.stderr  # IntRange rejected the bad entry
@@ -445,7 +493,7 @@ def test_species_conflict_validated_before_prompt(monkeypatch):
         lambda client: (_ for _ in ()).throw(AssertionError("must not reach the menu")),
     )
     res = CliRunner().invoke(
-        cli, ["cyl", "experiments", "list", "--species", "--json", "--output", "csv"]
+        cli, ["cyl", "experiments", "list", "--species-menu", "--json", "--output", "csv"]
     )
     assert res.exit_code != 0
     assert "not both" in res.output.lower()  # the conflict error, not an abort/hang
