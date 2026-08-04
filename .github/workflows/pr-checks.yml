@@ -464,6 +464,11 @@ jobs:
 
   lint-cve-isolation:
     name: Lint CVE changes are isolated
+    # Only staging-bound PRs — that's where a suppression is authored and where
+    # isolating it keeps the diff reviewable. A main-bound PR is a promotion,
+    # which re-carries .trivyignore alongside every other staged change and so
+    # fails this lint by construction.
+    if: github.event.pull_request.base.ref == 'staging'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
