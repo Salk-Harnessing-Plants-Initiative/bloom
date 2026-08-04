@@ -11,7 +11,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Optional
