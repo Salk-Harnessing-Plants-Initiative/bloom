@@ -104,11 +104,8 @@ BEGIN
 END;
 $$;
 
--- claim: read one message (invisible for p_vt seconds), mark the job processing.
--- Poison-message guard: a job that hard-crashes the worker (OOM/SIGKILL) never
--- reaches fail_cyl_video_job, so its attempts counter never advances and it would
--- redeliver forever. pgmq's read_ct increments on every delivery regardless, so
--- past p_max_reads we dead-letter here rather than hand it out again.
+-- claim: hand the worker the next job — read one message (hidden for p_vt seconds
+-- so no other worker takes it), mark the job 'processing', and return its details.
 CREATE OR REPLACE FUNCTION public.claim_cyl_video_job(
   p_vt integer DEFAULT 120, p_max_reads integer DEFAULT 5
 )
@@ -126,6 +123,7 @@ BEGIN
 
   v_job_id := (r.message->>'job_id')::uuid;
 
+  -- if this job was already tried and reached max attemps mark as fail
   IF r.read_ct > p_max_reads THEN
     UPDATE public.cyl_video_jobs
     SET status = 'failed',
@@ -186,13 +184,11 @@ BEGIN
 END;
 $$;
 
--- These wrappers are SECURITY DEFINER and the public schema is PostgREST-exposed,
--- so any client-reachable EXECUTE grant would let anon/authenticated invoke them
--- directly via /rest/v1/rpc — bypassing the API's auth, rate limit, and scan
--- validation (e.g. setting an arbitrary path on any job). New functions get
--- EXECUTE granted to PUBLIC by default AND — under Supabase's default privileges —
--- directly to anon/authenticated, so PUBLIC alone is not enough. Revoke all three;
--- grant only bloom_workflows, the sanctioned caller.
+-- Lock EXECUTE to bloom_workflows only. These are SECURITY DEFINER on the
+-- PostgREST-exposed public schema, so any client-reachable grant lets anon/
+-- authenticated call them via /rest/v1/rpc, bypassing the API's auth and scan
+-- validation. Supabase grants EXECUTE to PUBLIC *and* anon/authenticated by
+-- default, so revoke all three before granting the one sanctioned caller.
 REVOKE EXECUTE ON FUNCTION public.enqueue_cyl_video(bigint, bigint) FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.claim_cyl_video_job(integer, integer) FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) FROM PUBLIC, anon, authenticated;
