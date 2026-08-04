@@ -142,9 +142,11 @@
 - [ ] 4.4 At the persistence step: only call `store.create_run(...)` / `.commit(...)` when
       `params.csv_content is None`; on the inline branch, skip straight to constructing
       `QCCleanResult` with `run_ref=None`, `version_dir=None`, `manifest_path=None`,
-      `outputs={}`, `output_links={}`, `experiment=None`, `source="inline"`,
-      `input_sha256=<computed hash>`, `next_step=None` (unconditionally — never compute the
-      `qc_inspect` nudge on this branch, regardless of `n_samples_dropped`).
+      `outputs={}`, `experiment=None`, `source="inline"`, `input_sha256=<computed hash>`,
+      `next_step=None` (unconditionally — never compute the `qc_inspect` nudge on this branch,
+      regardless of `n_samples_dropped`). (`QCCleanResult` has no `output_links` field on
+      `origin/staging` as of this change — that field ships in the not-yet-merged #595 on a
+      sibling branch; nothing to set here.)
 - [ ] 4.5 Adjust every reference to `params.experiment` used in error messages on the inline
       branch (e.g. the role-overrides unknown-column message, the genotype-blank message, the
       missing-role message) to read sensibly with no experiment name — use a fixed placeholder

@@ -72,7 +72,11 @@ consumer to accept `csv_content`. Its current shape is fixed by the shipped code
   and avoids a magic string (`"<inline>"`) a caller could mistake for a real identifier.
 - **Decision: `run_ref`, `version_dir`, `manifest_path` become `Optional[str] = None`;
   `outputs` stays `dict[str, str]` defaulting to `{}`.** All three are meaningless when nothing
-  is persisted. `output_links` already defaults to `{}` (existing field) — unchanged.
+  is persisted. (Note: `QCCleanResult` on `origin/staging` as of this change has no
+  `output_links` field — that field ships in the not-yet-merged signed-URL-download change
+  (#595/#581) on a sibling branch. Verified by reading `qc_clean.py` directly rather than relying
+  on an earlier read taken on a different branch, which briefly caused an inconsistency in this
+  document — corrected here.)
 - **Decision: exactly-one-of via a Pydantic `model_validator(mode="after")` on
   `QCCleanParams`, not two `Optional` fields left to the tool body to sort out.** Raising
   `ValueError` there is—per the tool-contract's existing "Invalid input is rejected before the
