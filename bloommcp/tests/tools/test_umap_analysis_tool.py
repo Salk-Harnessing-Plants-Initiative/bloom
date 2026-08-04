@@ -585,6 +585,16 @@ def test_persists_embedding_and_returns_links_not_the_vector(injected_ports):
     assert result.run_ref == stored.run_ref
     assert result.manifest_path == stored.manifest_path
 
+    # bloom#581: a signed link + hash + size per output.
+    assert set(result.output_links) == set(result.outputs)
+    for name, key in result.outputs.items():
+        link = result.output_links[name]
+        assert link.key == key
+        assert link.url
+        assert link.sha256 == stored.output_sha256[name]
+        assert link.size_bytes >= 0
+    assert stored.output_links == {}
+
     assert not hasattr(result, "embedding")
     dumped = result.model_dump()
     assert not any(

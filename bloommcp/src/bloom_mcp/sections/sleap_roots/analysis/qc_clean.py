@@ -57,7 +57,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from sleap_roots_analyze import clean_traits_for_analysis
 
-from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
+from bloom_mcp.contract import BloomMCPError, OutputLink, Provenance, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.data_access.columns import resolve_columns, run_input_validation
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
@@ -184,6 +184,7 @@ class QCCleanResult(BaseModel):
     version_dir: str
     manifest_path: str
     outputs: dict[str, str]
+    output_links: dict[str, OutputLink] = Field(default_factory=dict)
     next_step: Optional[str] = Field(
         default=None,
         description=(
@@ -556,5 +557,6 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,
         outputs=dict(stored.output_keys),
+        output_links=stored.output_links,
         next_step=next_step,
     )

@@ -58,7 +58,7 @@ from sleap_roots_analyze import (
     inspect_nan_samples,
 )
 
-from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
+from bloom_mcp.contract import BloomMCPError, OutputLink, Provenance, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.tools import _ports
@@ -174,6 +174,7 @@ class QCInspectResult(BaseModel):
     version_dir: str
     manifest_path: str
     outputs: dict[str, str]
+    output_links: dict[str, OutputLink] = Field(default_factory=dict)
 
 
 def _filter(
@@ -553,4 +554,5 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,
         outputs=dict(stored.output_keys),
+        output_links=stored.output_links,
     )

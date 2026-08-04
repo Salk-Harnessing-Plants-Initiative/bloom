@@ -580,6 +580,19 @@ def test_persists_labels_and_returns_links_not_the_vector(injected_ports):
     assert set(stored.output_keys) == {"labels.csv", "cluster_result.json"}
     assert set(result.outputs) == {"labels.csv", "cluster_result.json"}
     assert result.run_ref == stored.run_ref
+
+    # bloom#581: a signed link + hash + size per output — ClusteringResult
+    # duplicates RunLinks's fields inline rather than inheriting it, but still
+    # gets output_links wired in uniformly (Decision 6).
+    assert set(result.output_links) == set(result.outputs)
+    for name, key in result.outputs.items():
+        link = result.output_links[name]
+        assert link.key == key
+        assert link.url
+        assert link.sha256 == stored.output_sha256[name]
+        assert link.size_bytes >= 0
+    assert stored.output_links == {}
+
     # No field carries the N-length label vector inline (cluster_sizes/feature_names are short).
     dumped = result.model_dump()
     assert not any(isinstance(v, list) and len(v) > 50 for v in dumped.values())
