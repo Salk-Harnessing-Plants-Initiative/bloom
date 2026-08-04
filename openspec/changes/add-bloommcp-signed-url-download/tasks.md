@@ -112,7 +112,7 @@ landed together.
       **Done:** also added a shared `build_output_links(...)` helper to `_artifacts.py` (not
       anticipated at proposal time) so both adapters assemble the `OutputLink` dict identically,
       parameterized only by a `url_for(key)` callable — real signing vs. synthesized string.
-- [x] 2.4 Add the module constant `_SIGNED_URL_EXPIRES_SECONDS = 3600` and implement the
+- [x] 2.4 Add the module constant `SIGNED_URL_EXPIRES_SECONDS = 3600` and implement the
       per-output `OutputLink` construction in `SupabaseResultStore.commit` (calling
       `_sc.create_signed_url` per output key; a signing/extraction failure fails the whole
       commit, same as an upload failure) and `FakeResultStore.commit` (synthesized URL, no real
@@ -184,7 +184,7 @@ landed together.
       precedent exactly. 23 tests green.
 - [x] 4.3 Update `bloommcp/docs/storage-backends.md`: add a new section on `create_signed_url` /
       `output_links` / `BLOOM_STORAGE_URL` / `BLOOM_PUBLIC_SUPABASE_URL`, naming the code
-      constant (`_SIGNED_URL_EXPIRES_SECONDS`) for the 3600s expiry rather than restating the
+      constant (`SIGNED_URL_EXPIRES_SECONDS`) for the 3600s expiry rather than restating the
       number, and explicitly flagging the 100 KB inline-vs-link threshold as documentation-only
       guidance (no tool changes its response shape based on it). Add a caveat to the existing
       "Same output semantics as Supabase" bullet: a Supabase-backed signed URL always resolves;

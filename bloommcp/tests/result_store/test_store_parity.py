@@ -109,12 +109,21 @@ def test_output_links_parity(kind, stores):
     stored = store.commit(run, {"a": "a.csv", "b": "b.csv"})
 
     assert set(stored.output_links) == {"a", "b"}
+    urls_seen = set()
     for name, expected_bytes in (("a", b"aaa"), ("b", b"bb")):
         link = stored.output_links[name]
         assert link.key == stored.output_keys[name]
         assert link.sha256 == stored.output_sha256[name]
         assert link.size_bytes == len(expected_bytes)
-        assert link.url  # non-empty
+        assert link.url
+        # Bound to the correct key, not just truthy — both backends here
+        # synthesize a fake://signed/<key>?... URL (fake_supabase_storage
+        # backs the "supabase" kind too), so a bug that wired every output to
+        # the same URL (e.g. a closure-over-loop-variable mistake) would slip
+        # past a truthy-only check.
+        assert link.key in link.url
+        urls_seen.add(link.url)
+    assert len(urls_seen) == 2  # the two outputs never share a URL
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])

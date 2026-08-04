@@ -145,7 +145,7 @@ Confirmed by reading the shipped code:
   `docker-compose.dev.yml`'s `bloommcp` service as `BLOOM_STORAGE_URL: ${BLOOM_STORAGE_URL:-}`
   (dev/local-backend-only; `docker-compose.prod.yml` needs no equivalent since production never sets
   `BLOOM_STORAGE_BACKEND=local`).
-- **Decision 4: expiry is a hardcoded constant, `_SIGNED_URL_EXPIRES_SECONDS = 3600`** (1 hour), not a
+- **Decision 4: expiry is a hardcoded constant, `SIGNED_URL_EXPIRES_SECONDS = 3600`** (1 hour), not a
   per-call parameter or env var. The issue's own framing is "a real **short-lived** Supabase signed
   URL" — an hour satisfies that while comfortably outlasting a single chat session. Not configurable —
   avoids a knob nobody has asked for. `storage3==2.31.0` also exposes a batch `create_signed_urls`
@@ -173,7 +173,7 @@ Confirmed by reading the shipped code:
 - **Decision 7 (revised after review): *both* of this codebase's test doubles for the storage/
   result-store boundary need their own signed-link behavior — neither calls a real backend.**
   - `FakeResultStore.commit()` synthesizes its own deterministic fake link
-    (`f"fake://signed/{key}?expires_in={_SIGNED_URL_EXPIRES_SECONDS}"`) rather than calling
+    (`f"fake://signed/{key}?expires_in={SIGNED_URL_EXPIRES_SECONDS}"`) rather than calling
     `storage_backend.active_backend().create_signed_url(...)` — it never uploads real bytes to any
     backend, so calling the real seam would either hit whatever backend happens to be configured in the
     test process or fail against a key nothing ever wrote.
@@ -203,7 +203,7 @@ Confirmed by reading the shipped code:
   change extends that same requirement (via `MODIFIED`, full text preserved) with the threshold, the
   3600s expiry, and the `create_signed_url`/`output_links`/`BLOOM_STORAGE_URL`/`BLOOM_PUBLIC_SUPABASE_URL`
   documentation, rather than leaving the acceptance criterion backed only by a `tasks.md` checkbox.
-  `storage-backends.md`'s doc text names the code constant (`_SIGNED_URL_EXPIRES_SECONDS`) for the
+  `storage-backends.md`'s doc text names the code constant (`SIGNED_URL_EXPIRES_SECONDS`) for the
   3600s figure instead of restating "3600 seconds" as an independent fact, so the two can't drift; the
   100 KB figure has no code constant (never enforced — see Non-Goals) and is flagged in the doc as
   documentation-only. Byte size is chosen over row count because it is backend-agnostic and directly

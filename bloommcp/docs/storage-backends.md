@@ -56,7 +56,7 @@ artifacts other than the one just committed; browsing and downloading _historica
 runs is not yet supported (tracked separately).
 
 Backed by `StorageBackend.create_signed_url(key, expires_in)` — a 3600-second
-expiry (the `_SIGNED_URL_EXPIRES_SECONDS` constant in
+expiry (the `SIGNED_URL_EXPIRES_SECONDS` constant in
 `bloom_mcp/result_store/_artifacts.py`), not configurable per call.
 
 - **Supabase backend (default):** a real, time-limited signed URL from Supabase

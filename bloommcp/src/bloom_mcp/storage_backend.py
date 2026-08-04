@@ -192,26 +192,30 @@ class SupabaseStorageBackend:
         client = get_storage_client()
         response = client.create_signed_url(key, expires_in)
         url = _extract_signed_url(response)
-        if url is None:
+        if not url:
             raise StorageBackendError(f"could not extract a signed URL for key: {key}")
         return _to_public_url(url)
 
 
-def _extract_signed_url(response) -> Optional[str]:
+def _extract_signed_url(response: object) -> Optional[str]:
     """Best-effort extraction across storage3/supabase-py versions.
 
     ``create_signed_url`` returns a dict whose URL key casing
     (``signedURL``/``signed_url``/``signedUrl``) has drifted across client
     versions — mirrors the identical extraction ``services/workflows/video.py``'s
-    ``_signed_url`` already does for this exact client call.
+    ``_signed_url`` already does for this exact client call. Returns ``None``
+    for anything falsy (including an empty string, whether returned bare or as
+    a dict value) so the caller's single ``if not url`` check is sufficient —
+    an empty string must never be mistaken for a real, usable URL.
     """
     if isinstance(response, str):
-        return response
+        return response or None
     if isinstance(response, dict):
         return (
             response.get("signedURL")
             or response.get("signed_url")
             or response.get("signedUrl")
+            or None
         )
     return None
 
@@ -219,19 +223,32 @@ def _extract_signed_url(response) -> Optional[str]:
 def _to_public_url(url: str) -> str:
     """Rewrite a signed URL off the internal ``SUPABASE_URL`` host (e.g.
     ``http://kong:8000``, unreachable outside the Docker network in prod/staging)
-    onto ``BLOOM_PUBLIC_SUPABASE_URL``. A no-op if either is unset or ``url``
-    isn't on the internal host. Mirrors ``services/workflows/video.py``'s
-    ``_to_public_url`` and ``web/lib/supabase/storage-url.ts``'s
-    ``toPublicStorageUrl`` — the same pattern, a third independent instance.
+    onto ``BLOOM_PUBLIC_SUPABASE_URL``. A no-op if ``SUPABASE_URL`` is unset or
+    ``url`` isn't on the internal host — both harmless, since there's nothing to
+    rewrite. When ``SUPABASE_URL`` is set, ``url`` genuinely is on that internal
+    host, and ``BLOOM_PUBLIC_SUPABASE_URL`` is unset, that combination means a
+    real, unreachable-outside-Docker URL is about to be returned unmodified —
+    logged as a warning so a misconfigured deploy is observable, not silent.
+    Mirrors ``services/workflows/video.py``'s ``_to_public_url`` and
+    ``web/lib/supabase/storage-url.ts``'s ``toPublicStorageUrl`` — the same
+    pattern, a third independent instance.
     """
     internal = os.environ.get("SUPABASE_URL")
-    public = os.environ.get("BLOOM_PUBLIC_SUPABASE_URL")
-    if not internal or not public:
+    if not internal:
         return url
     internal = internal.rstrip("/")
-    if url.startswith(internal):
-        return public.rstrip("/") + url[len(internal) :]
-    return url
+    if not url.startswith(internal):
+        return url
+    public = os.environ.get("BLOOM_PUBLIC_SUPABASE_URL")
+    if not public:
+        logger.warning(
+            "create_signed_url returned a URL on the internal SUPABASE_URL host "
+            "(%s) but BLOOM_PUBLIC_SUPABASE_URL is not set — returning it "
+            "unmodified; it will be unreachable from outside the Docker network.",
+            internal,
+        )
+        return url
+    return public.rstrip("/") + url[len(internal) :]
 
 
 # ─── Local filesystem backend (opt-in) ────────────────────────────────────────
