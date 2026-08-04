@@ -1,5 +1,15 @@
 ## 1. Storage backend primitive
 
+**Post-merge note (PR #595 review response):** a remote merge of `staging` into this branch
+(bringing in `add-bloommcp-outliers-fit-audit`/#593) silently dropped the entire section-1.2 test
+section from `bloommcp/tests/test_storage_backend.py` — both branches had independently appended
+new content near the same location in that file, and the merge resolution kept only #593's side.
+The `storage_backend.py` implementation (tasks 1.3-1.5) was untouched, only its direct test
+coverage was lost; not caught until a post-merge PR review. Restored in full, folding in the
+review's own follow-up fixes (see tasks 1.2/1.3's "Done" notes below) in the same pass. Lesson: a
+shared-file "both sides append near the bottom" pattern is a real conflict-resolution risk worth
+watching for on any branch that stays open long enough to pick up a `staging` sync.
+
 - [x] 1.1 Confirmed already (no action needed at implementation time — recorded here so a
       reviewer doesn't treat it as an open risk): the pinned `storage3==2.31.0` (verified by
       reading `bloommcp/.venv/lib/python3.11/site-packages/storage3/_sync/file_api.py` directly)
@@ -26,6 +36,13 @@
         interface (both concrete backends satisfy `isinstance(..., StorageBackend)`).
       **Done:** 13 tests added; 11 failed red as expected (2 vacuously passed via
       `AttributeError`, which is fine pre-implementation — they assert real behavior post-1.3).
+      **Restored + extended post-review** (see the section-1 note above) with: a `signed_url`
+      snake_case casing test (the third documented casing, never actually exercised before); a
+      bare-empty-string and all-empty-dict-values response both raising (review caught that
+      `is None` alone let a falsy `""` through); a trailing-slash `SUPABASE_URL` rewrite test
+      (the analogous local-backend case was already covered, this one wasn't); and a
+      caplog-based test that a genuinely unrewritten internal-host URL logs a warning while the
+      harmless no-op cases stay silent.
 - [x] 1.3 Implement `create_signed_url(key: str, expires_in: int) -> str` on the `StorageBackend`
       Protocol, `SupabaseStorageBackend` (client call → dict-key extraction → internal-host
       rewrite via a small `_to_public_url`-shaped helper reading `SUPABASE_URL` /
