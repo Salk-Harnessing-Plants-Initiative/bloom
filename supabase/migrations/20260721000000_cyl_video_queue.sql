@@ -8,8 +8,8 @@
 -- them, so no pgmq grants or PostgREST schema exposure are needed.
 --
 -- Flow: enqueue -> (row 'queued' + pgmq.send) -> worker claim (pgmq.read + row
--- 'processing') -> complete (row 'complete' + pgmq.delete) or fail (retry via vt
--- expiry, or 'failed' + pgmq.archive as dead-letter after max attempts).
+-- 'processing') -> complete (row 'complete' + pgmq.delete) or fail (row 'failed' +
+-- pgmq.archive; terminal for now — retry/requeue is deferred to a polling redesign).
 
 BEGIN;
 
@@ -123,7 +123,10 @@ BEGIN
 
   v_job_id := (r.message->>'job_id')::uuid;
 
-  -- if this job was already tried and reached max attemps mark as fail
+  -- Poison-message guard: this message has been delivered more than p_max_reads times
+  -- (a worker that keeps crashing before it can mark the job failed). read_ct is pgmq's
+  -- own per-delivery counter, so it catches crashes that never run fail_cyl_video_job.
+  -- Dead-letter it instead of handing it out again.
   IF r.read_ct > p_max_reads THEN
     UPDATE public.cyl_video_jobs
     SET status = 'failed',
@@ -159,28 +162,32 @@ BEGIN
 END;
 $$;
 
--- fail: under max attempts, leave the message to redeliver after its vt expires
--- (row back to 'queued'); at max attempts, dead-letter it (archive) + mark failed.
+-- fail: terminal for now — record the error, mark the job 'failed', and dead-letter the
+-- message. Attempt-based retry/requeue (row back to 'queued', redeliver via vt expiry) is
+-- DEFERRED pending a polling-based requeue redesign (re-check if the job is actually done);
+-- the original logic is kept commented below so it's easy to restore. p_max_attempts is
+-- retained in the signature for that restore.
 CREATE OR REPLACE FUNCTION public.fail_cyl_video_job(
   p_job_id uuid, p_msg_id bigint, p_error text, p_max_attempts integer DEFAULT 3
 )
 RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pgmq
 AS $$
-DECLARE
-  v_attempts integer;
 BEGIN
   UPDATE public.cyl_video_jobs
-  SET attempts = attempts + 1, error = p_error
-  WHERE id = p_job_id
-  RETURNING attempts INTO v_attempts;
+  SET attempts = attempts + 1, status = 'failed', error = p_error, completed_at = now()
+  WHERE id = p_job_id;
+  PERFORM pgmq.archive('cyl_video_generation', p_msg_id);  -- dead-letter immediately
 
-  IF v_attempts >= p_max_attempts THEN
-    UPDATE public.cyl_video_jobs SET status = 'failed', completed_at = now() WHERE id = p_job_id;
-    PERFORM pgmq.archive('cyl_video_generation', p_msg_id);  -- dead-letter
-  ELSE
-    UPDATE public.cyl_video_jobs SET status = 'queued' WHERE id = p_job_id;
-  END IF;
+  -- -- DEFERRED requeue/retry (re-enable with the polling redesign):
+  -- --   v_attempts := (UPDATE ... SET attempts = attempts + 1, error = p_error
+  -- --                  WHERE id = p_job_id RETURNING attempts);
+  -- --   IF v_attempts >= p_max_attempts THEN
+  -- --     UPDATE ... SET status = 'failed', completed_at = now();
+  -- --     PERFORM pgmq.archive(...);            -- dead-letter at max attempts
+  -- --   ELSE
+  -- --     UPDATE ... SET status = 'queued';     -- requeue; redelivers after vt expiry
+  -- --   END IF;
 END;
 $$;
 

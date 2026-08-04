@@ -127,7 +127,9 @@ def test_complete_marks_complete_and_drops_message(pg_conn):
         pg_conn.rollback()
 
 
-def test_fail_retries_then_dead_letters(pg_conn):
+def test_fail_is_terminal(pg_conn):
+    # Retry/requeue is deferred (see local follow-ups): a single failure marks the job 'failed'
+    # and dead-letters the message immediately — no 'queued' redelivery.
     try:
         with pg_conn.cursor() as cur:
             scan_id = _new_scan(cur)
@@ -136,25 +138,17 @@ def test_fail_retries_then_dead_letters(pg_conn):
             cur.execute("SELECT * FROM public.claim_cyl_video_job(120)")
             _, _, _, msg_id = cur.fetchone()
 
-            # Under max attempts: back to 'queued' for redelivery.
             cur.execute(
-                "SELECT public.fail_cyl_video_job(%s, %s, %s, %s)",
-                (job_id, msg_id, "boom", 3),
+                "SELECT public.fail_cyl_video_job(%s, %s, %s)", (job_id, msg_id, "boom")
             )
             job = _job(cur, job_id)
-            assert job["status"] == "queued"
+            assert job["status"] == "failed"  # terminal on the first failure
             assert job["attempts"] == 1
             assert job["error"] == "boom"
 
-            # Reach max attempts: dead-lettered and marked failed.
-            for _ in range(2):
-                cur.execute(
-                    "SELECT public.fail_cyl_video_job(%s, %s, %s, %s)",
-                    (job_id, msg_id, "boom", 3),
-                )
-            job = _job(cur, job_id)
-            assert job["status"] == "failed"
-            assert job["attempts"] == 3
+            # Archived, not requeued: a fresh claim finds nothing.
+            cur.execute("SELECT * FROM public.claim_cyl_video_job(120)")
+            assert cur.fetchone() is None
     finally:
         pg_conn.rollback()
 
