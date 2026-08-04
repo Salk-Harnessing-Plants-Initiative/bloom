@@ -116,9 +116,9 @@ def append_cleaned_version(
     upload_file(f"{prefix}{version_dir}/_cleaned.csv", src)
 
     manifest = AnalysisDir("bloommcp_output", f"{stem}.csv", tool_class).read_manifest()
-    assert (
-        manifest is not None
-    ), f"append_cleaned_version requires an existing manifest for {stem!r}"
+    assert manifest is not None, (
+        f"append_cleaned_version requires an existing manifest for {stem!r}"
+    )
     entry = VersionEntry(
         id=version_id,
         created_at=created_at,
@@ -140,3 +140,100 @@ def write_invalid_schema_manifest(stem: str, tool_class: str) -> None:
 
     prefix = f"bloommcp_output/{tool_class}_{stem}/"
     write_json(f"{prefix}manifest.json", {"manifest_schema_version": 999})
+
+
+def write_outlier_trim_manifest(
+    tmp_path: Path,
+    stem: str,
+    tool_class: str,
+    version_id: str,
+    created_at: str,
+    *,
+    based_on_version: str,
+    goodness_of_fit: Optional[dict],
+    n_outliers: int,
+    n_input_samples: int,
+    n_output_samples: int,
+    method: str = "mahalanobis",
+    tool: str = "remove_outliers",
+) -> None:
+    """Write a fresh, one-version manifest whose entry has BOTH `_cleaned.csv` and
+    `outlier_report.json` populated in `outputs`/`output_keys` (#593).
+
+    `write_cleaned_manifest`/`append_cleaned_version` only ever write `_cleaned.csv`
+    and never populate `output_keys` at all -- fine for their own callers, but the
+    #593 audit script resolves `outlier_report.json`'s storage key via
+    `VersionEntry.output_keys`, exactly as a real `remove_outliers` commit does
+    (`result_store/_artifacts.py::hash_outputs`), so a test fixture that skips
+    `output_keys` entirely can't exercise it. Mirrors `write_cleaned_manifest`'s
+    "fresh, single-version manifest" shape (every #593 test needs only one version,
+    never an appended history) rather than `append_cleaned_version`'s shape.
+
+    `tool=` (default `"remove_outliers"`, overridable) exists so a test can build
+    the defensive "latest not remove_outliers-authored" case without a second,
+    bespoke helper. `goodness_of_fit=None` builds an isolation_forest-shaped report
+    (no fit assumption to trust).
+    """
+    import hashlib
+    import json
+
+    from bloom_mcp.manifest import (
+        ExperimentBlock,
+        Manifest,
+        VersionEntry,
+        get_code_versions,
+        write_manifest,
+    )
+    from bloom_mcp.supabase_client import upload_file, write_json
+
+    prefix = f"bloommcp_output/{tool_class}_{stem}/"
+    version_dir = f"{version_id}_2026-08-04"
+
+    cleaned_src = tmp_path / f"{tool_class}_{version_id}_cleaned.csv"
+    cleaned_src.write_bytes(b"trait\n1.0\n")
+    cleaned_key = f"{prefix}{version_dir}/_cleaned.csv"
+    upload_file(cleaned_key, cleaned_src)
+    cleaned_sha = hashlib.sha256(cleaned_src.read_bytes()).hexdigest()
+
+    report = {
+        "method": method,
+        "n_input_samples": n_input_samples,
+        "n_outliers": n_outliers,
+        "n_output_samples": n_output_samples,
+        "removal_fraction": (
+            round(n_outliers / n_input_samples, 6) if n_input_samples else 0.0
+        ),
+        "outlier_barcodes": [],
+        "threshold_type": "chi_squared" if goodness_of_fit is not None else None,
+        "threshold_value": 19.0 if goodness_of_fit is not None else None,
+        "goodness_of_fit": goodness_of_fit,
+    }
+    report_key = f"{prefix}{version_dir}/outlier_report.json"
+    write_json(report_key, report)
+    report_sha = hashlib.sha256(
+        json.dumps(report, indent=2).encode("utf-8")
+    ).hexdigest()
+
+    entry = VersionEntry(
+        id=version_id,
+        created_at=created_at,
+        tool=tool,
+        params={},
+        based_on_version=based_on_version,
+        code_versions=get_code_versions(),
+        outputs={
+            "_cleaned.csv": "_cleaned.csv",
+            "outlier_report.json": "outlier_report.json",
+        },
+        output_keys={"_cleaned.csv": cleaned_key, "outlier_report.json": report_key},
+        output_sha256={"_cleaned.csv": cleaned_sha, "outlier_report.json": report_sha},
+        version_dir=version_dir,
+    )
+    manifest = Manifest(
+        experiment=ExperimentBlock(
+            filename=f"{stem}.csv", source_path="", input_sha256=""
+        ),
+        versions=[entry],
+        latest=version_id,
+    )
+    write_manifest(prefix, manifest)

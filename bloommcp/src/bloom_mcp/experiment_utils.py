@@ -368,6 +368,38 @@ OUTLIERS_TOOL_CLASS = "outliers"
 # *comparison* side (the audit script, test fixtures) against one name.
 REMOVE_OUTLIERS_TOOL_NAME = "remove_outliers"
 
+# The logical output name `remove_outliers` persists its numeric detection report
+# under (`outlier_report.json`). Single-sourced here (promoted from
+# `remove_outliers.py`'s private `_REPORT_NAME`, #593) so a consumer that reads a
+# committed run's outputs by logical name — e.g. `audit_untrustworthy_outlier_fits.py`
+# resolving `VersionEntry.output_keys[OUTLIER_REPORT_NAME]` — imports the same
+# string rather than re-typing the literal.
+OUTLIER_REPORT_NAME = "outlier_report.json"
+
+# `goodness_of_fit.fit_quality` values (mahalanobis chi-squared fit) whose flagged
+# set should NOT be trusted as-is — mirrors the delegate's own tiering
+# (sleap_roots_analyze.outlier_detection: excellent/good/acceptable are trustworthy,
+# poor/very_poor/unknown are not). Promoted from `remove_outliers.py`'s private
+# `_UNTRUSTWORTHY_FIT` (#419) to here (#593) so `remove_outliers`'s live pre-commit
+# gate and `audit_untrustworthy_outlier_fits.py`'s retroactive scan share one
+# definition and can never silently disagree on what counts as untrustworthy.
+UNTRUSTWORTHY_FIT_QUALITIES = frozenset({"poor", "very_poor", "unknown"})
+
+
+def fit_is_trustworthy(goodness_of_fit: Optional[dict]) -> Optional[bool]:
+    """Derive the machine-visible mahalanobis fit-trust flag from a delegate report.
+
+    ``None`` when there is no fit report at all (e.g. an ``isolation_forest`` trim —
+    no chi-squared assumption to trust); otherwise ``False`` for a
+    poor/very_poor/unknown ``fit_quality`` and ``True`` for acceptable-or-better. See
+    :data:`UNTRUSTWORTHY_FIT_QUALITIES`. Promoted from `remove_outliers.py`'s private
+    `_fit_is_trustworthy` (#419) to here (#593) — see that constant's docstring.
+    """
+    if not isinstance(goodness_of_fit, dict):
+        return None
+    return goodness_of_fit.get("fit_quality") not in UNTRUSTWORTHY_FIT_QUALITIES
+
+
 # Cleaned-producing tool classes, lowest to highest resolution priority. `outliers`
 # outranks `qc`: for version="latest", a trim (once one exists) is preferred over a
 # plain clean regardless of which was committed more recently — see
