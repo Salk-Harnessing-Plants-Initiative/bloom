@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # avoid an import cycle; only used for typing
     from bloom_mcp.contract.provenance import Provenance
+    from bloom_mcp.data_access import SourceInfo
     from bloom_mcp.manifest.schema import VersionEntry
 
 
@@ -33,6 +34,30 @@ class RunStateError(ResultStoreError):
 
 class CommitFailedError(ResultStoreError):
     """An upload or manifest write failed mid-commit (no partial run recorded)."""
+
+
+class ManifestReadError(ResultStoreError):
+    """Reading the version manifest failed.
+
+    Covers everything :class:`ManifestIncompatibleError` doesn't: a transient
+    storage/network blip, but also a truncated/corrupt ``manifest.json`` or a
+    permanent permission denial — this type alone does not imply the failure
+    is safe to retry.
+    """
+
+
+class ManifestIncompatibleError(ManifestReadError):
+    """The version manifest's schema is unsupported by this server (missing
+    or newer than the schema version this code understands).
+
+    A subclass of :class:`ManifestReadError`, not a sibling — every existing
+    ``except ManifestReadError`` / ``except ResultStoreError`` / ``except Exception``
+    still catches it, but a caller that needs to distinguish "storage flaked" from
+    "manifest schema unsupported" (e.g. before deciding whether a retry could ever
+    help) can ``isinstance()``-check for this narrower type — check for it
+    *before* a broader ``except ManifestReadError`` if branching on both, since
+    this subclass would otherwise be swallowed by the parent's clause first.
+    """
 
 
 @dataclass
@@ -68,6 +93,8 @@ class StoredRun:
     environment: Optional[str]
     code_versions: dict[str, Optional[str]]
     input_validation: Optional[dict] = None
+    source_id: Optional[int] = None
+    source_name: Optional[str] = None
 
     @classmethod
     def from_version_entry(
@@ -95,6 +122,8 @@ class StoredRun:
             environment=entry.environment,
             code_versions=entry.code_versions.model_dump(mode="json"),
             input_validation=entry.input_validation,
+            source_id=entry.source_id,
+            source_name=entry.source_name,
         )
 
 
@@ -110,8 +139,16 @@ class ResultStore(Protocol):
         provenance: "Provenance",
         user_label: Optional[str] = None,
         source_csv: Optional[Path] = None,
+        source: Optional["SourceInfo"] = None,
     ) -> RunHandle:
-        """Allocate a version + staging dir for a new run on ``experiment``."""
+        """Allocate a version + staging dir for a new run on ``experiment``.
+
+        ``source``, when given, identifies which DB source/pipeline-run backed
+        the experiment read that produced this run (see
+        ``bloom_mcp.data_access.SourceSelectable``); it is merged into the
+        stored provenance so it survives to the committed ``VersionEntry``
+        without the caller building a modified ``Provenance`` itself.
+        """
         ...
 
     def commit(self, run: RunHandle, outputs: dict[str, str]) -> StoredRun:

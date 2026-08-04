@@ -17,7 +17,9 @@ dependencies = [
     "python-dotenv>=1.0.0",
     # Security floors for transitive FastAPI-stack deps (see issue #311):
     # pin past upstream CVE fix versions. Open floors per repo convention.
-    "cryptography>=48.0.1",
+    # cryptography floor bumped past CVE-2026-69247 (fixed in 50.0.0),
+    # disclosed 2026-08-03.
+    "cryptography>=50.0.0",
     "python-multipart>=0.0.31",
     "starlette>=1.1.0",
     # pydantic-settings GHSA-4xgf-cpjx-pc3j (disclosed 2026-06-19):
@@ -32,6 +34,11 @@ dependencies = [
     # Supabase PostgREST + Storage client, used by bloom_mcp.supabase_client
     # for CSV exchange via the bloommcp-data bucket.
     "supabase>=2.0.0",
+    # X-Bloom-Identity header verification (bloom_mcp.identity, #406). Already
+    # a transitive dependency via supabase-py's supabase_auth sub-dependency
+    # (resolved 2.13.0 in uv.lock) — promoted to direct since bloommcp now
+    # imports it itself, not just through supabase-py.
+    "pyjwt>=2.13.0",
     # Phase-2 foundation: the public root-trait analysis library (source of the
     # cross-tier oracle's perform_* functions) and the contracts schemas.
     "sleap-roots-analyze>=0.1.0a5",

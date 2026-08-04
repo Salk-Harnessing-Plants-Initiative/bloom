@@ -73,7 +73,9 @@ class ClusteringParams(BaseModel):
     experiment: str = Field(
         ...,
         description="Experiment (CSV filename) to cluster. Must have a cleaned version "
-        "produced by qc_clean; clustering consumes it (require_clean).",
+        "produced by qc_clean; clustering consumes it (require_clean). Resolves the most "
+        "recent outlier trim when one exists for the experiment, not merely the most "
+        "recent clean.",
     )
     method: Literal["kmeans", "gmm", "hierarchical"] = Field(
         default="kmeans",
@@ -493,6 +495,7 @@ def clustering(
             provenance=prov,
             user_label=params.user_label,
             source_csv=source_snapshot,
+            source=frame.resolved_source,
         )
         _labels_frame(result, frame).to_csv(run.staging_dir / _LABELS_NAME, index=False)
         (run.staging_dir / _RESULT_NAME).write_text(result.to_json())

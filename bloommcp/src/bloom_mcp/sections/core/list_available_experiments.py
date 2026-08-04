@@ -1,4 +1,4 @@
-"""list_available_experiments — discovery tool: list experiment CSV files.
+"""list_available_experiments — discovery tool: list available experiments.
 
 Not a ``sleap-roots-analyze`` wrapper — reads through the injected
 ``ExperimentReader`` port. Always-included in the agent's tool set (see
@@ -9,9 +9,9 @@ from bloom_mcp.tools import _ports
 
 
 def list_available_experiments() -> str:
-    """List all experiment CSV files available for analysis.
+    """List all experiments available for analysis.
 
-    Scans the data directory and shows each file with its row count,
+    Scans the data directory and shows each experiment with its row count,
     trait count, and auto-detected genotype column. Use this first to
     see what experiments are available before running analysis.
     """
@@ -20,7 +20,7 @@ def list_available_experiments() -> str:
     if not experiments:
         return "No experiments available"
 
-    lines = [f"Available experiments ({len(experiments)} files):\n"]
+    lines = [f"Available experiments ({len(experiments)} total):\n"]
 
     for exp in experiments:
         lines.append(
@@ -33,7 +33,7 @@ def list_available_experiments() -> str:
         )
 
     lines.append(
-        f"\nTo analyze an experiment, use its filename (e.g., '{experiments[0].filename}')"
+        f"\nTo analyze an experiment, use its identifier (e.g., '{experiments[0].filename}')"
     )
 
     return "\n".join(lines)

@@ -184,6 +184,24 @@ never letting the delegate's error fall through to the contract's opaque `intern
 
 ### Requirement: Remove Outliers Reproduces the Golden Trim Through the Tool
 
+> **Note (superseded by #419, `fix-bloommcp-remove-outliers-fit-gate`):** this requirement and
+> its scenarios below describe the behavior as originally shipped (PR #400): a
+> `method=mahalanobis` call on the untrustworthy-fit turface_19 fixture **persists** the trim,
+> with `fit_is_trustworthy` surfaced as an advisory-only field. #419 adds a pre-commit gate:
+> when `fit_is_trustworthy is False` (as it is for this exact scenario — turface_19's chi-squared
+> fit is `very_poor`), the tool now raises a structured `assumption_violated` error instead of
+> persisting, naming `method="isolation_forest"` as the remedy. The `n_input_samples=158`/
+> `n_outliers=8`/`n_output_samples=150`/barcode characterization below is preserved as the
+> *historical* golden values — they now appear embedded in the raised error's message rather
+> than in a persisted, returned result. See that change's spec delta
+> (`bloommcp-remove-outliers-tool`'s "Remove Outliers Gates Persistence on Untrustworthy
+> Mahalanobis Fit" requirement) for the current behavior; turface_19's "successful persisted
+> trim" characterization moved to `method=isolation_forest`
+> (`turface_19_outlier_iforest_golden.json`). This spec is left as the historical record of what
+> PR #400 shipped rather than rewritten in place, since this change
+> (`add-bloommcp-remove-outliers-tool`) is not being re-opened/re-archived for #419 — mirroring
+> how #420's superseded-note above handles the same still-unarchived-capability situation.
+
 The `remove_outliers` tool SHALL, when invoked through the MCP boundary on the cleaned
 turface_19 fixture at `method=mahalanobis`, `seed=42`, reproduce a recorded golden
 characterization snapshot: the number of flagged outliers, the number of retained samples, and
@@ -217,6 +235,15 @@ ground-truth outliers.
   gate on the fit without parsing the `goodness_of_fit` dict or the description prose
 
 ### Requirement: Remove Outliers Persists a Versioned Trimmed Cleaned Run and Returns Links
+
+> **Note (superseded by #420, `fix-bloommcp-remove-outliers-tool-class`):** this requirement and
+> its scenarios below describe the tool class as originally shipped (PR #400):
+> `tool_class="qc"`, shared with `qc_clean`, with an explicitly order-dependent "latest cleaned"
+> resolution. #420 changes the persisted tool class to `outliers` and makes resolution
+> order-independent between a clean and a trim (see `bloommcp-experiment-read`'s "Version
+> selection resolves in the deployed order" requirement, as amended by #420). This spec is left
+> as the historical record of what PR #400 shipped rather than rewritten in place, since this
+> change (`add-bloommcp-remove-outliers-tool`) is not being re-opened/re-archived for #420.
 
 The `remove_outliers` tool SHALL persist its outputs as a versioned run via the `ResultStore`
 port under tool class `qc`, carrying the contract-stamped `Provenance` into the manifest. It

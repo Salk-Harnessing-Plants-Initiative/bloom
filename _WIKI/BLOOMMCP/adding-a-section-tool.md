@@ -28,7 +28,7 @@ Every tool is four small pieces. Look at `summarize_trait` in the section file
    field's `description` is what the agent reads to know what to pass.
    ```python
    class SummarizeTraitParams(BaseModel):
-       experiment: str = Field(..., description="CSV filename from list_available_experiments.")
+       experiment: str = Field(..., description="Experiment identifier from list_available_experiments.")
        trait: str = Field(..., description="Trait column to summarize (e.g. root_area_mean).")
    ```
 2. **An output model** (Pydantic) — the structured result. Return this, not a

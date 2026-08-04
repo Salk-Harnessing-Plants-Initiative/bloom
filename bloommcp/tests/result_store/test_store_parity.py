@@ -13,6 +13,7 @@ from bloom_mcp.contract import Provenance
 from bloom_mcp.result_store import (
     CommitFailedError,
     FakeResultStore,
+    ManifestReadError,
     RunNotFoundError,
     RunStateError,
     SupabaseResultStore,
@@ -320,3 +321,87 @@ def test_v2_backcompat_parity(kind, stores, fake_supabase_storage):
     assert stored.seed == 5
     assert [r.run_ref for r in store.list_runs("v2.csv", "qc")] == ["v1", "v2"]
     assert store.get_run("v2.csv", "qc", "latest").run_ref == "v2"
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_create_run_with_source_records_identity_parity(kind, stores):
+    """bloom#551: create_run(..., source=SourceInfo(...)) merges source_id/
+    source_name into the committed VersionEntry on both backends; omitting it
+    leaves both None rather than a fabricated value."""
+    from bloom_mcp.data_access import SourceInfo
+
+    store = stores[kind]
+    run = store.create_run(
+        experiment="exp.csv",
+        tool_class="qc",
+        provenance=_prov(),
+        source=SourceInfo(
+            source_id=7, source_name="reprocess-2026-07", pipeline_run_id=None
+        ),
+    )
+    (run.staging_dir / "_cleaned.csv").write_bytes(b"data")
+    stored = store.commit(run, {"cleaned": "_cleaned.csv"})
+    assert stored.source_id == 7
+    assert stored.source_name == "reprocess-2026-07"
+
+    run_no_source = store.create_run(
+        experiment="exp2.csv", tool_class="qc", provenance=_prov()
+    )
+    (run_no_source.staging_dir / "_cleaned.csv").write_bytes(b"data")
+    stored_no_source = store.commit(run_no_source, {"cleaned": "_cleaned.csv"})
+    assert stored_no_source.source_id is None
+    assert stored_no_source.source_name is None
+
+
+def _inject_read_failure(kind, store, monkeypatch, *, experiment, tool_class):
+    """Force the next manifest read for (experiment, tool_class) to fail —
+    one shared scenario body, two structurally different injection
+    techniques per backend (mirrors `_inject_commit_failure` above).
+
+    Not fully equivalent between backends, unlike `_inject_commit_failure`:
+    the fake's `fail_next_read` is one-shot and scoped to this one key, while
+    the supabase side's monkeypatch is persistent and global for the rest of
+    the test. Harmless for `test_manifest_read_failure_parity` below (one call
+    per parametrized case), but this helper does not itself prove one-shot
+    semantics on the supabase side — a future test asserting that would need
+    its own, backend-specific injection.
+    """
+    if kind == "fake":
+        store.fail_next_read(experiment, tool_class)
+        return
+
+    import bloom_mcp.manifest.analysis_dir as _adir_mod
+
+    def _boom(prefix):
+        raise RuntimeError("simulated failure (manifest read)")
+
+    monkeypatch.setattr(_adir_mod, "read_manifest", _boom)
+
+
+_READ_CALL_SITES = {
+    "create_run": lambda store, experiment, tool_class: store.create_run(
+        experiment=experiment, tool_class=tool_class, provenance=_prov()
+    ),
+    "list_runs": lambda store, experiment, tool_class: store.list_runs(
+        experiment, tool_class
+    ),
+    "get_run": lambda store, experiment, tool_class: store.get_run(
+        experiment, tool_class, "latest"
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+@pytest.mark.parametrize("call_site", sorted(_READ_CALL_SITES))
+def test_manifest_read_failure_parity(kind, call_site, stores, monkeypatch):
+    """#596: a manifest-read failure at create_run/list_runs/get_run raises
+    ManifestReadError on both backends. FakeResultStore has no real read to
+    fail organically — `fail_next_read` is its only way to exercise the same
+    contract SupabaseResultStore's guard provides for a real storage/network
+    failure."""
+    store = stores[kind]
+    _inject_read_failure(
+        kind, store, monkeypatch, experiment="read-fail.csv", tool_class="qc"
+    )
+    with pytest.raises(ManifestReadError):
+        _READ_CALL_SITES[call_site](store, "read-fail.csv", "qc")

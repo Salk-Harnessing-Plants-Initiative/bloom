@@ -87,7 +87,7 @@ class QCInspectParams(BaseModel):
     """Inputs for ``qc_inspect`` — the same threshold knobs as ``qc_clean`` (no ``seed``)."""
 
     experiment: str = Field(
-        ..., description="CSV filename from list_available_experiments."
+        ..., description="Experiment identifier from list_available_experiments."
     )
     trait_columns: Optional[list[str]] = Field(
         default=None,
@@ -421,7 +421,15 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
     _validate_experiment_name(params.experiment)
 
     # Read the RAW frame — qc_inspect inspects the raw missingness (no require_clean).
-    frame = reader.load_experiment(params.experiment)
+    # version="raw" explicitly: the default "latest" would resolve a cleaned (or,
+    # post-#420, a trimmed) version once one exists for this experiment, which
+    # defeats the whole point of this tool (picking qc_clean's thresholds BEFORE
+    # cleaning) — inspecting already-cleaned data to choose its own cleaning
+    # thresholds is circular. This was a latent bug even before #420 (order-
+    # dependent on whether qc_clean had ever run); #420's own outliers-preferring
+    # resolution makes it worse (deterministic once any trim exists, not merely
+    # order-dependent), which is what surfaced it during that PR's review.
+    frame = reader.load_experiment(params.experiment, version="raw")
     if params.trait_columns is not None:
         # An empty list is a caller mistake, not "inspect everything" — reject it
         # explicitly rather than silently falling through to all traits.
@@ -509,6 +517,7 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
         provenance=provenance,
         user_label=params.user_label,
         source_csv=_ports.raw_source_for(params.experiment),
+        source=frame.resolved_source,
     )
     # Render + persist under the run's staging dir; on any partial failure remove the
     # staging dir so a long-lived server does not leak a half-written temp run.

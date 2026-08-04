@@ -13,7 +13,8 @@ from typing import Any
 import click
 
 from ..credentials import DEFAULT_PROFILE
-from ._output import print_table
+from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
+from ._select import select_from_menu
 
 
 @click.group(name="datasets")
@@ -41,6 +42,16 @@ DATASET_COLUMNS = [
     "QC Set",
     "Trait Source",
     "Created",
+]
+# Machine-readable field names (json/csv), matching build_dataset_record below.
+DATASET_FIELDS = [
+    "name",
+    "timepoints",
+    "species",
+    "experiment",
+    "qc_set",
+    "trait_source",
+    "created",
 ]
 
 
@@ -80,7 +91,9 @@ def build_dataset_row(dataset: dict[str, Any]) -> list[str]:
     ]
 
 
-def fetch_datasets(client: Any, experiment_id: int | None = None) -> list[dict[str, Any]]:  # supabase I/O
+def fetch_datasets(
+    client: Any, experiment_id: int | None = None
+) -> list[dict[str, Any]]:  # supabase I/O
     """Query cyl_datasets joined to its experiment/species, QC set, and trait source.
 
     When ``experiment_id`` is given, restrict to datasets for that experiment.
@@ -93,6 +106,33 @@ def fetch_datasets(client: Any, experiment_id: int | None = None) -> list[dict[s
     return query.execute().data or []
 
 
+def fetch_experiments_with_datasets(client: Any) -> list[tuple[int, str]]:  # supabase I/O
+    """(experiment_id, "name (species)") for experiments that have datasets, for the menu.
+
+    cyl_datasets carries only experiment_id, so the human labels are joined from cyl_experiments
+    (soft-deleted excluded). Sorted by label for a stable menu.
+    """
+    rows = client.table("cyl_datasets").select("experiment_id").execute().data or []
+    ids = sorted({r["experiment_id"] for r in rows if r.get("experiment_id") is not None})
+    if not ids:
+        return []
+    exps = (
+        client.table("cyl_experiments")
+        .select("id, name, species(common_name)")
+        .in_("id", ids)
+        .is_("deleted_at", "null")
+        .execute()
+        .data
+        or []
+    )
+    items = [
+        (e["id"], f"{e.get('name') or ''} ({(e.get('species') or {}).get('common_name') or '?'})")
+        for e in exps
+    ]
+    # id as a tiebreak so two experiments with the same "name (species)" label order stably.
+    return sorted(items, key=lambda it: (it[1].casefold(), it[0]))
+
+
 @datasets.command(name="list")
 @click.option(
     "--experiment-id",
@@ -100,14 +140,22 @@ def fetch_datasets(client: Any, experiment_id: int | None = None) -> list[dict[s
     "experiment_id",
     type=int,
     default=None,
-    help="Only list datasets for this experiment.",
+    help="Only list datasets for this experiment (id). Scriptable.",
 )
 @click.option(
-    "--json",
-    "as_json",
+    "--experiment",
+    "pick_experiment",
     is_flag=True,
-    help="Emit the datasets as a JSON array instead of a table.",
+    help="Pick an experiment from an interactive menu to filter by (needs a terminal).",
 )
+@click.option(
+    "--output",
+    "output_fmt",
+    type=click.Choice(MACHINE_FORMATS),
+    default=None,
+    help="Emit machine-readable output (csv/json) instead of the table.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Alias for --output json.")
 @click.option(
     "-p",
     "--profile",
@@ -115,15 +163,45 @@ def fetch_datasets(client: Any, experiment_id: int | None = None) -> list[dict[s
     show_default=True,
     help="Credentials profile to use.",
 )
-def list_datasets(experiment_id: int | None, as_json: bool, profile: str) -> None:
-    """List cylinder trait datasets."""
+def list_datasets(
+    experiment_id: int | None,
+    pick_experiment: bool,
+    output_fmt: str | None,
+    as_json: bool,
+    profile: str,
+) -> None:
+    """List cylinder trait datasets.
+
+    Lists all datasets by default. Pass --experiment-id N for one experiment (scriptable), or
+    --experiment to pick one from a menu (needs a terminal).
+    """
+    from postgrest import APIError
+
     from ..cli import _authed_client
 
-    client = _authed_client(profile)
-    found = fetch_datasets(client, experiment_id=experiment_id)
+    if pick_experiment and experiment_id is not None:
+        raise click.UsageError("Use either --experiment-id or --experiment, not both.")
 
-    if as_json:
-        click.echo(json.dumps([build_dataset_record(d) for d in found]))
+    output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
+
+    client = _authed_client(profile)
+    try:
+        if pick_experiment:  # menu of experiments that have datasets (0 = All)
+            choices = fetch_experiments_with_datasets(client)
+            if not choices:
+                raise click.ClickException("No experiments with datasets found.")
+            experiment_id = select_from_menu(
+                choices,
+                title="an experiment",
+                prompt_label="Experiment",
+                all_label="All experiments",
+            )
+        found = fetch_datasets(client, experiment_id=experiment_id)
+    except APIError as exc:
+        raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
+
+    if output_fmt:
+        click.echo(render([build_dataset_record(d) for d in found], DATASET_FIELDS, output_fmt))
         return
 
     rows = [build_dataset_row(d) for d in found]
@@ -136,12 +214,7 @@ def list_datasets(experiment_id: int | None, as_json: bool, profile: str) -> Non
 def fetch_experiment(client: Any, experiment_id: int) -> dict[str, Any] | None:  # supabase I/O
     """Return the cyl_experiments row for `experiment_id`, or None if it does not exist."""
     rows = (
-        client.table("cyl_experiments")
-        .select("*")
-        .eq("id", experiment_id)
-        .limit(1)
-        .execute()
-        .data
+        client.table("cyl_experiments").select("*").eq("id", experiment_id).limit(1).execute().data
         or []
     )
     return rows[0] if rows else None
@@ -150,12 +223,7 @@ def fetch_experiment(client: Any, experiment_id: int) -> dict[str, Any] | None: 
 def resolve_trait_source(client: Any, name: str) -> int | None:  # supabase I/O
     """Return the cyl_trait_sources id for `name`, or None if it does not resolve."""
     rows = (
-        client.table("cyl_trait_sources")
-        .select("id")
-        .eq("name", name)
-        .limit(1)
-        .execute()
-        .data
+        client.table("cyl_trait_sources").select("id").eq("name", name).limit(1).execute().data
         or []
     )
     return rows[0]["id"] if rows else None

@@ -9,6 +9,7 @@ deployment topology bloommcp runs in.
 
 from typing import Optional
 
+from bloom_mcp.storage_backend import active_backend_name
 from bloom_mcp.supabase_client import list_prefix, read_json, write_json
 
 from .schema import CURRENT_SCHEMA_VERSION, Manifest
@@ -51,7 +52,15 @@ def read_manifest(prefix: str) -> Optional[Manifest]:
 
 
 def write_manifest(prefix: str, manifest: Manifest) -> None:
-    """Save the manifest under `prefix`. Overwrites if it already exists."""
-    payload = manifest.model_dump(mode="json")
+    """Save the manifest under `prefix`. Overwrites if it already exists.
+
+    Stamps `storage_backend` with the active backend's name (#395) — derived
+    from what `active_backend()` actually resolved to, not an independent env
+    re-read, so it can't disagree with the backend that performs the write —
+    on a copy, so the caller's `manifest` instance is never mutated as a side
+    effect of writing it.
+    """
+    stamped = manifest.model_copy(update={"storage_backend": active_backend_name()})
+    payload = stamped.model_dump(mode="json")
     validate_schema(payload)
     write_json(_manifest_key(prefix), payload)

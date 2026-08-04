@@ -55,7 +55,7 @@ Seeds the raw `turface_19_raw_data.csv` fixture as `turface_raw.csv`, then runs
 asserts:
 
 - the committed run's outputs include **`_cleaned.csv`** and **`cleanup_log.json`**;
-- the run's manifest is **`manifest_schema_version == 3`**;
+- the run's manifest is **`manifest_schema_version == 5`**;
 - each recorded `output_sha256` matches the actual stored bytes for **both** artifacts;
 - `SupabaseReader().load_experiment("turface_raw.csv", require_clean=True)` then resolves the
   committed **cleaned** version (`source` is `v<N>_cleaned`, **not** `raw`);
@@ -75,25 +75,34 @@ storage round-trip rather than the in-memory fakes.
 ### Leg 2 — `remove_outliers` (outlier trim, stochastic; also the generic v3-provenance leg)
 
 Immediately after Leg 1 commits a cleaned version, runs
-`remove_outliers(experiment="turface_raw.csv", method="mahalanobis", seed=42)` through the same
-real ports and asserts:
+`remove_outliers(experiment="turface_raw.csv", method="isolation_forest", seed=42)` through the
+same real ports and asserts:
+
+(`method="isolation_forest"`, not `mahalanobis` — #419: a mahalanobis call raises
+`assumption_violated` instead of persisting when the chi-squared fit is untrustworthy, which
+both local reference fixtures are at their canonical cleaning threshold. This leg exercises
+persistence mechanics, not fit characterization, so isolation_forest — never gated — is used
+here regardless of this live experiment's own fit quality.)
 
 - the committed run's outputs include **`_cleaned.csv`** (the trimmed table) and
   **`outlier_report.json`**;
-- the run's manifest is **`manifest_schema_version == 3`** and records the resolved
+- the run's manifest is **`manifest_schema_version == 5`** and records the resolved
   `seed == 42` (outlier detection is stochastic, unlike `qc_clean`), `tool == "remove_outliers"`;
 - the **generic v3-provenance contract**: `agent == "bloom_agent"`, a populated `environment`,
   and matching `output_sha256` / `output_keys` maps (the same assertion the retired legacy
   clustering-workflow leg used to carry);
 - each recorded `output_sha256` matches the actual stored bytes for **both** artifacts;
 - a fresh `SupabaseReader().load_experiment("turface_raw.csv", require_clean=True)` now resolves
-  the committed **trimmed** version (`source` is `v<N>_cleaned`, **not** `raw`) with **fewer
-  rows** than the pre-trim clean and **zero NaN** trait cells;
+  the committed **trimmed** version (`source` is `outliers_v<N>_cleaned`, **not** `raw`) with
+  **fewer rows** than the pre-trim clean and **zero NaN** trait cells;
 - a **second** `remove_outliers` commit advances `latest` by exactly one version without
   clobbering the first (`get_run(first_ref)` still resolves).
 
-`remove_outliers` persists under the same `qc` tool class, so its trimmed `_cleaned.csv` becomes
-the newest cleaned version the reader resolves — this is the
+`remove_outliers` persists under its own dedicated **`outliers`** tool class (#420) — not `qc` —
+so a later plain `qc_clean` re-run cannot silently revert the trim. The reader prefers the
+`outliers` class's latest over `qc`'s whenever one exists, for every `require_clean=True`
+consumer except `remove_outliers` itself (which always reads the current `qc` clean via
+`version="latest_qc"`, so a fresh `qc_clean` is never hidden from it). This is the
 `qc_clean` → `remove_outliers` → `require_clean` composition proven end-to-end over the real
 ports.
 
@@ -108,7 +117,7 @@ and asserts, for each:
   else the Leg 1 clean; `source` is `v<N>_cleaned`, **not** `raw`);
 - the committed run's outputs are **`labels.csv`** (per-sample cluster labels with identity) and
   **`cluster_result.json`** (the serialized typed result);
-- the run's manifest is **`manifest_schema_version == 3`** and `tool == "clustering"`; kmeans
+- the run's manifest is **`manifest_schema_version == 5`** and `tool == "clustering"`; kmeans
   records the resolved `seed == 42` (stochastic), hierarchical records `seed == None`
   (deterministic — no RNG);
 - each recorded `output_sha256` matches the actual stored bytes for **both** artifacts.
@@ -129,7 +138,7 @@ asserts:
   — rather than the unit golden's exact numeric values (the smoke's cleaned input uses Leg 1's own
   threshold, which may differ from the unit golden's canonical-default clean);
 - the committed run's outputs include **`stats.csv`** (the full per-trait table, uncapped);
-- the run's manifest is **`manifest_schema_version == 3`**, `tool == "descriptive_stats"`, and
+- the run's manifest is **`manifest_schema_version == 5`**, `tool == "descriptive_stats"`, and
   records **`seed == None`** (deterministic — no RNG, unlike the stochastic legs above);
 - the recorded `output_sha256` matches the actual stored bytes for `stats.csv`.
 

@@ -8,7 +8,7 @@ import logging
 import os
 import pandas as pd
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -348,34 +348,102 @@ def detect_columns(df: pd.DataFrame) -> dict:
 CLEANED_CSV_NAME = "_cleaned.csv"
 
 
-def _resolve_versioned_cleaned(
-    o_dir: Path,
+# The two cleaned-producing tool classes' literal names, single-sourced here so
+# `qc_clean.py` and `remove_outliers.py` (the producers) and the registries in
+# `list_existing_analyses.py` / `manifest.CANONICAL_TOOL_CLASSES` (the discovery
+# surfaces) import the same string rather than each re-typing it — the drift #420
+# itself is about (a typo in one of these would silently desync a producer from
+# the resolution/discovery logic that looks for it).
+QC_TOOL_CLASS = "qc"
+OUTLIERS_TOOL_CLASS = "outliers"
+
+# The `tool` value `remove_outliers` commits are recorded under. NOTE: this does
+# **not** eliminate the drift risk it single-sources against — the actual
+# persisted value is `func.__name__` of the decorated `remove_outliers` function
+# (see `contract/wrap.py`), not this constant; a future rename of that function
+# would silently desync this literal from what's actually written, with nothing
+# to catch it except the regression test in
+# `tests/test_remove_outliers_tool.py` that asserts this constant equals
+# `remove_outliers.remove_outliers.__name__`. Still worth single-sourcing the
+# *comparison* side (the audit script, test fixtures) against one name.
+REMOVE_OUTLIERS_TOOL_NAME = "remove_outliers"
+
+# The logical output name `remove_outliers` persists its numeric detection report
+# under (`outlier_report.json`). Single-sourced here (promoted from
+# `remove_outliers.py`'s private `_REPORT_NAME`, #593) so a consumer that reads a
+# committed run's outputs by logical name — e.g. `audit_untrustworthy_outlier_fits.py`
+# resolving `VersionEntry.output_keys[OUTLIER_REPORT_NAME]` — imports the same
+# string rather than re-typing the literal.
+OUTLIER_REPORT_NAME = "outlier_report.json"
+
+# `goodness_of_fit.fit_quality` values (mahalanobis chi-squared fit) whose flagged
+# set should NOT be trusted as-is — mirrors the delegate's own tiering
+# (sleap_roots_analyze.outlier_detection: excellent/good/acceptable are trustworthy,
+# poor/very_poor/unknown are not). Promoted from `remove_outliers.py`'s private
+# `_UNTRUSTWORTHY_FIT` (#419) to here (#593) so `remove_outliers`'s live pre-commit
+# gate and `audit_untrustworthy_outlier_fits.py`'s retroactive scan share one
+# definition and can never silently disagree on what counts as untrustworthy.
+UNTRUSTWORTHY_FIT_QUALITIES = frozenset({"poor", "very_poor", "unknown"})
+
+
+def fit_is_trustworthy(goodness_of_fit: Optional[dict]) -> Optional[bool]:
+    """Derive the machine-visible mahalanobis fit-trust flag from a delegate report.
+
+    ``None`` when there is no fit report at all (e.g. an ``isolation_forest`` trim —
+    no chi-squared assumption to trust); otherwise ``False`` for a
+    poor/very_poor/unknown ``fit_quality`` and ``True`` for acceptable-or-better. See
+    :data:`UNTRUSTWORTHY_FIT_QUALITIES`. Promoted from `remove_outliers.py`'s private
+    `_fit_is_trustworthy` (#419) to here (#593) — see that constant's docstring.
+    """
+    if not isinstance(goodness_of_fit, dict):
+        return None
+    return goodness_of_fit.get("fit_quality") not in UNTRUSTWORTHY_FIT_QUALITIES
+
+
+# Cleaned-producing tool classes, lowest to highest resolution priority. `outliers`
+# outranks `qc`: for version="latest", a trim (once one exists) is preferred over a
+# plain clean regardless of which was committed more recently — see
+# `_resolve_versioned_cleaned` and
+# `openspec/changes/fix-bloommcp-remove-outliers-tool-class/design.md` for why a
+# recency comparison does not work (the reverting `qc_clean` re-run is, by
+# construction, always the more recent commit).
+_CLEANED_TOOL_CLASSES_BY_PRIORITY = (QC_TOOL_CLASS, OUTLIERS_TOOL_CLASS)
+
+
+def _resolve_one_class(
     stem: str,
     version: str,
+    tool_class: str,
 ) -> tuple[Optional[Path], Optional[str], Optional[str]]:
-    """Resolve a versioned cleaned CSV via the QC manifest.
+    """Resolve a versioned cleaned CSV from one tool class's manifest.
 
-    The manifest lives in the bloommcp-data bucket at
-    `bloommcp_output/qc_<stem>/manifest.json`; the cleaned CSV is
-    downloaded to a tmp Path so callers can `pd.read_csv(path)` unchanged.
-    Caller is responsible for the tmp file's lifetime (OS tmp cleanup
-    handles it on process exit).
+    Single-tool-class resolution, parameterized so `_resolve_versioned_cleaned`
+    can check more than one class for `version="latest"`. `version` here is
+    always `"latest"` or an explicit `"v<N>"` — never `"latest_qc"`, which is
+    resolved by the caller as `_resolve_one_class(stem, "latest", "qc")`.
 
-    `o_dir` is accepted for signature compatibility with the pre-migration
-    caller but is ignored — the storage prefix is fixed at
-    `bloommcp_output`.
+    Returns (path, source_label, error) exactly as `_resolve_versioned_cleaned`
+    documents, with the **unqualified** `f"{entry.id}_cleaned"` label — a caller
+    resolving across multiple classes qualifies it with the tool class itself.
 
-    Returns (path, source_label, error). On success, error is None and
-    path points at the downloaded tmp CSV. On miss with version="latest",
-    returns (None, None, None) so the caller falls back. On explicit
-    version="v<N>" miss, returns (None, None, error_string).
+    **Soft miss vs. hard error, precisely.** Only "no entry exists at all" for
+    `version="latest"` is a soft miss (`(None, None, None)`, letting the caller
+    fall through to another class or a lower tier). Once `entry is not None` —
+    the manifest names a specific committed version — every subsequent failure
+    to actually resolve it (no cleaned-CSV output key recorded, the version
+    directory can't be found, the download from storage fails) is a **hard
+    error**, even for `version="latest"`. Silently treating those as a soft
+    miss would let a transient storage failure or a corrupt/partial commit on
+    the higher-priority class fall through to a lower-priority class's valid
+    entry — reproducing the exact silent-revert hazard this module exists to
+    prevent, just triggered by infrastructure instead of a `qc_clean` re-run.
     """
     import tempfile
 
     from bloom_mcp.manifest import AnalysisDir, ManifestSchemaError
     from bloom_mcp.supabase_client import download_file, list_prefix
 
-    analysis_dir = AnalysisDir("bloommcp_output", f"{stem}.csv", "qc")
+    analysis_dir = AnalysisDir("bloommcp_output", f"{stem}.csv", tool_class)
     try:
         entry = analysis_dir.get_version(version)
     except ManifestSchemaError as e:
@@ -393,10 +461,10 @@ def _resolve_versioned_cleaned(
             ),
         )
 
+    # From here on `entry` names a real, committed version — any failure to
+    # resolve it is a hard error, never a soft miss, regardless of `version`.
     rel = entry.outputs.get(CLEANED_CSV_NAME)
     if not rel:
-        if version == "latest":
-            return None, None, None
         return None, None, (f"Version {entry.id} has no cleaned CSV output.")
 
     if entry.version_dir:
@@ -408,8 +476,6 @@ def _resolve_versioned_cleaned(
             return None, None, (f"Could not list {analysis_dir.path}: {e}")
         version_dir = next((n for n in siblings if n.startswith(f"{entry.id}_")), None)
         if version_dir is None:
-            if version == "latest":
-                return None, None, None
             return (
                 None,
                 None,
@@ -426,8 +492,6 @@ def _resolve_versioned_cleaned(
         download_file(key, tmp)
     except Exception as e:
         tmp.unlink(missing_ok=True)
-        if version == "latest":
-            return None, None, None
         return (
             None,
             None,
@@ -437,6 +501,200 @@ def _resolve_versioned_cleaned(
             ),
         )
     return tmp, f"{entry.id}_cleaned", None
+
+
+def _resolve_versioned_cleaned(
+    o_dir: Path,
+    stem: str,
+    version: str,
+) -> tuple[Optional[Path], Optional[str], Optional[str]]:
+    """Resolve a versioned cleaned CSV via the QC/outliers manifests.
+
+    The manifest lives in the bloommcp-data bucket at
+    `bloommcp_output/<tool_class>_<stem>/manifest.json`; the cleaned CSV is
+    downloaded to a tmp Path so callers can `pd.read_csv(path)` unchanged.
+    Caller is responsible for the tmp file's lifetime (OS tmp cleanup
+    handles it on process exit).
+
+    `version` behavior:
+      - `"latest"` checks every class in `_CLEANED_TOOL_CLASSES_BY_PRIORITY`,
+        highest priority first (`outliers` before `qc`), and returns the first
+        that resolves. `outliers` is preferred whenever it has *any* committed
+        version at all — a fixed priority, not a recency comparison. Its label
+        is qualified (`f"outliers_{entry.id}_cleaned"`) so it is
+        distinguishable from a plain clean; a `qc`-class resolution keeps
+        today's unqualified `f"{entry.id}_cleaned"` label — an experiment that
+        has never been trimmed sees no observable change.
+      - `"latest_qc"` resolves the `qc` class specifically, ignoring any
+        `outliers` version, with the unqualified label — this is what
+        `remove_outliers` reads as its trimming input, so a fresh `qc_clean`
+        is always visible to it regardless of any prior trim.
+      - An explicit `"v<N>"` resolves the `qc` class only, unqualified label —
+        unchanged from before this function checked more than one class (no
+        shipped caller currently passes an explicit cleaned-tier version, so
+        resolving a pin across two independently-numbered class sequences is
+        not yet a reachable question).
+      - `"raw"` is handled by the caller and never reaches this function.
+
+    A checked class with **no entry at all** is a soft miss (continues to the
+    next class / tier). A checked class **with an entry that fails to resolve**
+    — a schema error, a missing output key, an unlocatable version directory, a
+    failed download — is always a hard error, propagated immediately and never
+    treated as a soft miss that falls through to another class. See
+    `_resolve_one_class` for why: a class with a real, committed-but-unresolvable
+    entry silently deferring to a lower-priority class's valid entry would
+    reproduce the exact silent-revert hazard this function exists to prevent.
+
+    `o_dir` is accepted for signature compatibility with the pre-migration
+    caller but is ignored — the storage prefix is fixed at
+    `bloommcp_output`.
+
+    Returns (path, source_label, error). On success, error is None and
+    path points at the downloaded tmp CSV. On miss with version="latest" or
+    "latest_qc", returns (None, None, None) so the caller falls back. On
+    explicit version="v<N>" miss, returns (None, None, error_string).
+    """
+    if version == "latest_qc":
+        return _resolve_one_class(stem, "latest", "qc")
+
+    if version != "latest":
+        return _resolve_one_class(stem, version, "qc")
+
+    for tool_class in reversed(_CLEANED_TOOL_CLASSES_BY_PRIORITY):
+        path, label, error = _resolve_one_class(stem, "latest", tool_class)
+        if error:
+            return None, None, error
+        if path is not None:
+            if tool_class != "qc":
+                label = f"{tool_class}_{label}"
+                _log_if_trim_is_stale(stem, label)
+            return path, label, None
+    return None, None, None
+
+
+def safe_error_text(exc: Exception, limit: int = 300) -> str:
+    """Bound and lightly redact an exception's text before it lands in a
+    persisted report or a live tool response.
+
+    Not a comprehensive secret scanner -- but the local storage backend
+    already redacts absolute host paths from its own errors
+    (`storage_backend._redacted_io_error`), and the Supabase backend's
+    `storage3`/`httpx` errors have no equivalent convention today. Truncates
+    to `limit` characters and strips anything that looks like an
+    `apikey`/`authorization`/`bearer` header fragment, so an accidental
+    credential/token substring doesn't propagate verbatim into a report file
+    described as something that "might later be pasted into a ticket," or
+    into a live MCP tool response.
+    """
+    import re
+
+    # Handles both "key=value"/"key: value" forms and a standalone "Bearer
+    # <token>" following an "Authorization:" prefix (consuming "Bearer" as
+    # part of the same match, not as a second, independent keyword match that
+    # would otherwise leave the actual token right after it untouched).
+    text = re.sub(
+        r"(?i)\b(apikey|authorization|bearer)\b[:=\s]*(?:bearer\s+)?\S+",
+        r"\1=<redacted>",
+        str(exc),
+    )
+    if len(text) > limit:
+        text = text[:limit] + "...<truncated>"
+    return text
+
+
+class TrimStaleness(NamedTuple):
+    """Result of comparing an experiment's `outliers`-class trim against the
+    current `qc`-class latest. `current_qc_label` is `None` only in the
+    no-`qc`-baseline-at-all corner (see `trim_staleness`)."""
+
+    is_stale: bool
+    outliers_based_on_version: str
+    current_qc_label: Optional[str]
+
+
+def trim_staleness(stem: str) -> Optional[TrimStaleness]:
+    """Whether `stem`'s current `outliers`-class trim is stale relative to the
+    current `qc`-class latest.
+
+    Returns `None` when no `outliers`-class version exists at all — there is
+    nothing to assess (distinct from "trimmed and current", which every caller
+    needs to be able to tell apart). Otherwise returns a `TrimStaleness` whose
+    `is_stale` is `True` when the trim's `based_on_version` no longer matches
+    the `qc`-class latest label (a `qc_clean` has run since the trim was made),
+    or when the `qc`-class manifest has **no** `latest` entry at all — a trim
+    with no live baseline to confirm it against is treated as a more
+    concerning state than "current," not silently equivalent to "nothing to
+    see" (this exact corner was previously unreached/untested). Under the
+    shipped `ExperimentReader` adapters this state cannot arise from a normal
+    commit (`remove_outliers` cannot itself commit without first successfully
+    reading a `qc`-class latest); its only realistic, non-corruption trigger is
+    a backend-split manifest history (bloom#573).
+
+    Propagates any manifest read failure to the caller — this function does
+    not swallow exceptions; callers choose their own failure policy (compare
+    `_log_if_trim_is_stale`, which does swallow, against
+    `sections.core.list_existing_analyses`, which does not).
+    """
+    from bloom_mcp.manifest import AnalysisDir
+
+    outliers_entry = AnalysisDir(
+        "bloommcp_output", f"{stem}.csv", OUTLIERS_TOOL_CLASS
+    ).get_version("latest")
+    if outliers_entry is None:
+        return None
+    qc_entry = AnalysisDir("bloommcp_output", f"{stem}.csv", QC_TOOL_CLASS).get_version(
+        "latest"
+    )
+    if qc_entry is None:
+        return TrimStaleness(
+            is_stale=True,
+            outliers_based_on_version=outliers_entry.based_on_version,
+            current_qc_label=None,
+        )
+    current_qc_label = f"{qc_entry.id}_cleaned"
+    return TrimStaleness(
+        is_stale=outliers_entry.based_on_version != current_qc_label,
+        outliers_based_on_version=outliers_entry.based_on_version,
+        current_qc_label=current_qc_label,
+    )
+
+
+def _log_if_trim_is_stale(stem: str, outliers_label: str) -> None:
+    """Best-effort, non-blocking: log when `trim_staleness(stem)` reports the
+    resolved `outliers` trim as stale. The trim still correctly resolves as
+    "latest cleaned" (design.md Decision 4's disclosed trade-off,
+    `fix-bloommcp-remove-outliers-tool-class`) until a fresh `remove_outliers`
+    run supersedes it; this makes that staleness observable at read time
+    rather than only discoverable by manually diffing manifests. Purely
+    observational: never raises, never affects resolution — a failure here is
+    swallowed so observability can't become its own availability hazard.
+    """
+    try:
+        result = trim_staleness(stem)
+        if result is None or not result.is_stale:
+            return
+        if result.current_qc_label is None:
+            logger.info(
+                "resolved trim %r for %r is based on %r, but no qc-class version "
+                "could be found for this experiment at all; it remains 'latest "
+                "cleaned' until a fresh remove_outliers run supersedes it.",
+                outliers_label,
+                stem,
+                result.outliers_based_on_version,
+            )
+            return
+        logger.info(
+            "resolved trim %r for %r is based on %r, but the current qc "
+            "latest is %r -- a qc_clean has run since this trim was made; "
+            "it remains 'latest cleaned' until a fresh remove_outliers "
+            "run supersedes it.",
+            outliers_label,
+            stem,
+            result.outliers_based_on_version,
+            result.current_qc_label,
+        )
+    except Exception:
+        logger.debug("trim-staleness check failed (non-fatal)", exc_info=True)
 
 
 def load_experiment_data(
@@ -450,17 +708,25 @@ def load_experiment_data(
     """Load experiment CSV with auto-detected columns.
 
     Resolution order for version="latest" (the default):
-      1. Versioned manifest entry (qc_<stem>/manifest.json -> latest -> _cleaned.csv)
+      1. Versioned manifest entry, preferring a trim over a plain clean whenever one
+         exists (outliers_<stem>/manifest.json -> latest, else
+         qc_<stem>/manifest.json -> latest -> _cleaned.csv) — see
+         `_resolve_versioned_cleaned`
       2. Legacy un-versioned cleaned CSV (qc_<stem>/<stem>_cleaned.csv) — preserves
          pre-migration behaviour; replaced by v0_legacy after the Phase B migration runs
       3. Raw CSV from BLOOM_TRAITS_DIR
+    version="latest_qc" follows the same order but tier 1 resolves the qc-class
+    manifest specifically, ignoring any trim.
 
     Args:
-        filename: CSV filename (e.g., "alfalfa_gwas_wave2.csv")
+        filename: experiment identifier (e.g., "alfalfa_gwas_wave2.csv" today; a
+            database-backed identifier once data-access-roadmap.md Tier 2 lands)
         traits_dir: Override for BLOOM_TRAITS_DIR
         output_dir: Override for BLOOM_OUTPUT_DIR
         require_clean: If True, fail when no cleaned CSV exists (for UMAP)
-        version: "latest" (default), "raw", or an explicit "v<N>"
+        version: "latest" (default, outliers-preferring), "latest_qc" (qc-class
+            only, ignores any trim — what `remove_outliers` reads as its input),
+            "raw", or an explicit "v<N>" (qc-class only)
         allow_legacy_cleaned: If False, the un-versioned legacy cleaned CSV tier is
             skipped — it carries no manifest/hash lineage, so a certified-clean
             consumer must not be satisfied by a stale legacy file that may not
@@ -468,7 +734,8 @@ def load_experiment_data(
 
     Returns:
         (df, trait_cols, column_config, source_label)
-        source_label is one of "raw", "legacy_cleaned", or "v<N>_cleaned".
+        source_label is one of "raw", "legacy_cleaned", "v<N>_cleaned", or
+        "outliers_v<N>_cleaned".
         On error: (None, None, None, error_string)
     """
     t_dir = traits_dir or TRAITS_DIR
@@ -486,7 +753,7 @@ def load_experiment_data(
             config = detect_columns(df)
             return df, config["trait_cols"], config, source_label
 
-        if version == "latest":
+        if version in ("latest", "latest_qc"):
             legacy_path = o_dir / f"qc_{stem}" / f"{stem}_cleaned.csv"
             if allow_legacy_cleaned and legacy_path.exists():
                 df = pd.read_csv(legacy_path)

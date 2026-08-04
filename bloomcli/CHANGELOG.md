@@ -8,8 +8,56 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a3] - 2026-08-04
+
+### Changed
+
+- Docs: `README.md` and the PyPI landing page (`README.pypi.md`) reworked for usability —
+  a **Quickstart**, a **Common conventions** section (profiles, `--output`, interactive menus,
+  read/write roles), a full **`cyl download`** section (incl. `--experiment-name`), and a
+  **"Finding what to download"** walkthrough with real examples for the read commands.
+- `cyl datasets list` now takes `--output [csv|json]` (with `--json` kept as an alias for
+  `--output json`) — the standard machine-output selector, adding CSV export to the
+  `0.1.0a2` command. `datasets get` keeps `--json` (it returns a single object with a
+  nested traits array, which CSV can't represent); `datasets create` is unaffected.
+
 ### Added
 
+- `bloomctl cyl download` can select the experiment by name: `--experiment-name
+  "<text>"` resolves a single experiment by a case-insensitive substring match on its
+  name, then downloads it; `--species` narrows an ambiguous name. The match runs
+  server-side via the new `cyl_experiment_search` RPC (a `SECURITY INVOKER` function
+  taking the query as a bound parameter, trigram-indexed so it scales), so the CLI
+  never fetches the whole table and the query can't alter the SQL. The typed
+  `--experiment-id` / `--scan-id` paths are unchanged. An ambiguous name lists the
+  candidate experiments (id · name · species · created) and exits without
+  downloading, so a pipeline never fetches a guessed experiment.
+- `bloomctl cyl accessions list` / `sample-counts` — new commands (no `0.1.0a2`
+  equivalent), reading the server-side `cyl_experiment_accessions` /
+  `cyl_accession_sample_counts` views. `accessions list` lists the accessions used in an
+  experiment — `--experiment-id N` (scriptable) or an experiment menu when it is omitted
+  (hybrid). `accessions sample-counts` shows the plant count per accession per species —
+  `--species NAME` filters directly (scriptable) or `--species-menu` picks from a numbered
+  menu of species that have accessions (0 = All); the two are mutually exclusive, and
+  omitting both means all species. Both support `--output csv|json`; menus write to stderr
+  so `--output` on stdout stays machine-clean.
+- `bloomctl cyl qc list-sets` — new command (no `0.1.0a2` equivalent). List cylinder QC
+  sets (name, species, experiment, QC-code count) for live experiments (`--include-deleted`
+  also shows sets on soft-deleted experiments), sorted by species then experiment.
+  `--output csv|json` for machine-readable output.
+- `bloomctl cyl datasets list` gains a `--experiment` menu flag: pick an experiment
+  that has datasets (0 = All) from a numbered menu. `--experiment-id N` stays for
+  scripts, and `datasets list` with neither still lists all datasets. Menu on stderr.
+- `bloomctl cyl experiments list` gains **species selection** and **output formats**.
+  `--species NAME` filters to a species by common name (scriptable), and `--species-menu`
+  picks one from a numbered menu ("All species" + one per species that has experiments;
+  needs a terminal); the two are mutually exclusive and omitting both lists all species.
+  This follows the standard species selector — `--species` is always a typed value and
+  `--species-menu` is always the picker, matching `accessions sample-counts` (and the
+  typed `--species` on `download --experiment-name`). `--output csv|json` (default is the
+  table; `--json` is an alias for `--output json`) makes it easy to pull an `experiment_id`
+  for `cyl download`, and `--limit` caps the fetch so the query is never unbounded (and
+  warns on stderr when the cap is hit, since the newest experiments are dropped first).
 - `bloomctl cyl batch-download-for-predict <out_dir>` — stage a batch of cylinder
   scans in one invocation. Reads scan_ids from `--scan-ids-file` (a JSON array,
   path or `-` for stdin) or `--scan-ids 1,2,3` (comma-separated, mutually
@@ -67,10 +115,6 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 - `bloomctl cyl experiments list` — list cylinder experiments (species, name, id),
   sorted by species then name, with `--json` output. Ports the legacy
   `cyl experiments list` command.
-- `bloomctl cyl accessions list --experiment-id N` / `sample-counts [--species X]` —
-  list the accessions used in an experiment, and the plant count per
-  accession per species, with `--json`. Read the server-side `cyl_experiment_accessions`
-  and `cyl_accession_sample_counts` views (new capability; no legacy equivalent).
 - `bloomctl cyl ingest-result <envelope>` — write a per-scan `ResultEnvelope`
   back to Bloom via the `insert_cyl_result_envelope` RPC. Reads from a path or
   stdin (`-`), validates against `sleap-roots-contracts`, sends the original JSON

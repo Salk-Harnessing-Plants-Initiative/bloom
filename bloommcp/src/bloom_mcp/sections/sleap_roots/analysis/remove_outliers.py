@@ -7,34 +7,47 @@ public detectors + ``remove_outliers_from_data``): the MCP contains **no** outli
 detection or removal logic and never touches the vendored
 ``bloom_mcp.outlier_detection`` filters.
 
-**Persists under tool class ``qc``**, alongside ``qc_clean`` (writing
-``CLEANED_CSV_NAME``), so the reader resolves whichever committed most recently as
-"latest cleaned" — prefer the natural ``qc_clean`` → ``remove_outliers`` order per
-experiment (the legacy ``run_outlier_workflow``, which persisted incompatibly under
-a distinct ``outliers`` class using the vendored detector, was retired by
-``devendor-bloommcp-analysis``).
+**Persists under its own dedicated tool class ``outliers``** (#420) — plural,
+deliberately distinct from the retired legacy ``outlier`` (singular) class the old,
+vendored-detector ``run_outlier_workflow`` used before ``devendor-bloommcp-analysis``
+retired it (that class is kept read-only for historical lookups, never written to
+again). Persisting under a class of its own, rather than sharing ``qc_clean``'s
+class, is what makes the trim's resolution as "latest cleaned" independent of
+whether ``qc_clean`` happens to run again afterward.
 
 On each call it reads the **cleaned** frame via the :class:`ExperimentReader` port
-with ``require_clean=True`` (outlier detection requires the NaN-free, unique-index
-table ``qc_clean`` produces), trims outlier samples with the chosen method
-(``mahalanobis`` default, or ``isolation_forest``) and seed, then persists a
-versioned run via the :class:`ResultStore` port under tool class ``qc`` — the
-trimmed table under ``CLEANED_CSV_NAME`` + the ``outlier_report.json`` + provenance.
+with ``require_clean=True`` and **``version="latest_qc"``** — the plain-clean tier
+specifically, ignoring any prior trim of its own (outlier detection requires the
+NaN-free, unique-index table ``qc_clean`` produces) — trims outlier samples with the
+chosen method (``mahalanobis`` default, or ``isolation_forest``) and seed, then
+persists a versioned run via the :class:`ResultStore` port under tool class
+``outliers`` — the trimmed table under ``CLEANED_CSV_NAME`` + the
+``outlier_report.json`` + provenance.
 
-**Composition.** Writing the trimmed table under ``CLEANED_CSV_NAME`` in the ``qc``
-tool class makes it the newest *cleaned version* the reader resolves, so
-``qc_clean → remove_outliers → pca_analysis`` composes through ``require_clean=True``
-with no reader change. The reader resolves "latest cleaned" as whichever ``qc`` run
-committed most recently, so prefer the natural clean→trim order once per experiment.
+**Composition.** For every *other* ``require_clean=True`` consumer (``pca_analysis``,
+``umap_analysis``, ``clustering``, ``descriptive_stats``,
+``cross_experiment_correlations``), the reader's default ``version="latest"``
+prefers the ``outliers`` class's latest entry over ``qc``'s whenever one exists at
+all — a fixed priority, not a recency comparison — so
+``qc_clean → remove_outliers → pca_analysis`` composes with no call-site change, and
+a later plain ``qc_clean`` re-run does **not** silently revert an existing trim.
+``remove_outliers`` itself reads via ``version="latest_qc"`` specifically so that
+same later ``qc_clean`` re-run *is* immediately visible to its own next invocation —
+without this, ``remove_outliers`` would keep re-trimming its own stale prior output
+forever, never seeing the fresh clean.
 
-**Order-dependence caveat (inherited).** Because the trim shares the ``qc`` class +
-``CLEANED_CSV_NAME``, "latest cleaned" is *order-dependent*: re-running ``qc_clean``
-after ``remove_outliers`` commits a newer un-trimmed clean, silently reverting "latest"
-so a later ``require_clean=True`` consumer reads the *un-trimmed* frame — no error or
-warning fires. This is the same caveat ``qc_clean`` documents for the shared class, and
-a dedicated ``outliers`` tool class is the tracked real fix (tasks 7.2). Until then each
-run records ``based_on_version = <cleaned source>`` in its provenance, so an un-trim is
-at least **auditable** from the manifest; the natural clean→trim order stays monotonic.
+**Disclosed trade-off (not a bug).** Once any ``outliers`` version exists for an
+experiment, a plain ``qc_clean`` re-run does not become "latest" for other
+consumers on its own — only a fresh ``remove_outliers`` run (which always reads the
+current ``qc`` clean via ``version="latest_qc"``) makes the new clean reachable
+again. This is the intentional fix for the #420 hazard (a `qc_clean` re-run
+silently reverting a trim with no signal): the trade-off is auditable (the stale
+``outliers`` entry's own ``based_on_version`` still names the ``qc`` version it was
+trimmed from) and recoverable by a known action (re-run ``remove_outliers``), unlike
+the silent revert it replaces. See
+``openspec/changes/fix-bloommcp-remove-outliers-tool-class/design.md`` for the full
+reasoning, including why a recency-based cross-class comparison (an earlier draft of
+this fix) does not actually work.
 
 **Structured errors, body-mapped.** ``require_clean`` with no cleaned version, a
 degenerate trim (the delegate raises ``ValueError``/``OutlierRemovalError`` when the
@@ -45,10 +58,17 @@ structured :class:`BloomMCPError` — the contract's ``errors=`` path only yield
 no-NaN / row-count guard runs before any commit, so a delegate that *returns* rather
 than raises a degenerate frame still cannot ship a corrupt "cleaned" artifact.
 
-**Goodness of fit.** The mahalanobis chi-squared threshold is only meaningful when the
-data fit the χ² assumption; the returned ``goodness_of_fit`` dict carries a
-``fit_quality`` the agent should read — when it is poor (as on turface_19), prefer
-``method="isolation_forest"`` with an explicit ``contamination``.
+**Goodness of fit is enforced, not merely advisory (#419).** The mahalanobis
+chi-squared threshold is only meaningful when the data fit the χ² assumption. When the
+delegate's fit is untrustworthy (``fit_is_trustworthy`` would be ``False`` —
+poor/very_poor/unknown ``fit_quality``, as on both turface_19 and cylinder under
+mahalanobis defaults), the tool raises a structured ``assumption_violated`` error
+**before persisting anything** — naming ``method="isolation_forest"`` with an explicit
+``contamination`` as the remedy — rather than silently committing a trim on a bogus
+threshold. The error message embeds the counts and flagged barcodes so a caller can
+still inspect what would have been flagged even though nothing is persisted. This gate
+never fires for ``isolation_forest`` (no chi-squared assumption) or an
+acceptable-or-better mahalanobis fit.
 """
 
 from __future__ import annotations
@@ -69,21 +89,40 @@ from bloom_mcp.data_access import (
     ExperimentReadError,
 )
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
-from bloom_mcp.experiment_utils import CLEANED_CSV_NAME
+from bloom_mcp.experiment_utils import (
+    CLEANED_CSV_NAME,
+    OUTLIER_REPORT_NAME,
+    OUTLIERS_TOOL_CLASS,
+    # This module-level name shares its name with `RemoveOutliersResult.fit_is_
+    # trustworthy` (the Pydantic field, below) and was previously safe from
+    # shadowing only because the function was underscore-prefixed pre-#593. The
+    # local variable in `remove_outliers()` is deliberately named `trustworthy`,
+    # not `fit_is_trustworthy`, to avoid a future `fit_is_trustworthy =
+    # fit_is_trustworthy(...)` silently reassigning this import to a bool/None
+    # within that function's scope. Keep it that way if this function is ever
+    # touched again.
+    fit_is_trustworthy,
+)
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._qc_shared import _role_kwargs, _validate_trait_subset
 
 if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph (Tier-0)
     from matplotlib.figure import Figure
 
-_TOOL_CLASS = "qc"
-_REPORT_NAME = "outlier_report.json"
+_TOOL_CLASS = OUTLIERS_TOOL_CLASS
+_REPORT_NAME = OUTLIER_REPORT_NAME
 
-# ``goodness_of_fit.fit_quality`` values (mahalanobis chi-squared fit) whose flagged
-# set should NOT be trusted as-is — mirrors the delegate's own ✗ tiering
-# (outlier_detection: excellent/good ✓, acceptable ⚠, poor/very_poor ✗). Surfaced as
-# the machine-visible ``fit_is_trustworthy`` so a downstream tool need not parse prose.
-_UNTRUSTWORTHY_FIT = frozenset({"poor", "very_poor", "unknown"})
+# The delegate's own default for isolation_forest's ``contamination`` kwarg
+# (``sleap_roots_analyze.outlier_detection.detect_outliers_isolation_forest``) — quoted
+# in the #419 gate's remedy and the ``contamination`` field description below so the two
+# never drift apart from each other or from the delegate.
+_ISOLATION_FOREST_DEFAULT_CONTAMINATION = 0.1
+
+# Cap on how many outlier_barcodes the #419 fit-gate embeds in its (unpersisted) error
+# message — both characterized fixtures flag well under this today, but the message is
+# a plain string with no pagination, so a much noisier dataset shouldn't be able to
+# produce an unbounded one.
+_MAX_BARCODES_IN_MESSAGE = 50
 
 
 class RemoveOutliersParams(BaseModel):
@@ -96,7 +135,8 @@ class RemoveOutliersParams(BaseModel):
 
     experiment: str = Field(
         ...,
-        description="CSV filename from list_available_experiments (must be cleaned).",
+        description="Experiment identifier from list_available_experiments (must be "
+        "cleaned).",
     )
     method: Literal["mahalanobis", "isolation_forest"] = Field(
         default="mahalanobis",
@@ -124,8 +164,11 @@ class RemoveOutliersParams(BaseModel):
         default=None,
         gt=0.0,
         lt=0.5,
-        description="isolation_forest only: expected outlier fraction (e.g. 0.05). "
-        "Do not set for mahalanobis.",
+        description=(
+            "isolation_forest only: expected outlier fraction (e.g. "
+            f"{_ISOLATION_FOREST_DEFAULT_CONTAMINATION}, the delegate's own default). "
+            "Do not set for mahalanobis."
+        ),
     )
     include_plots: bool = Field(
         default=False,
@@ -157,11 +200,11 @@ class RemoveOutliersResult(RunLinks):
     threshold_type: Optional[str] = None
     threshold_value: Optional[float] = None
     goodness_of_fit: Optional[dict] = None
-    # Machine-visible trust flag derived from goodness_of_fit.fit_quality: False when
-    # the mahalanobis chi-squared fit is poor/very_poor (the flagged set is unreliable —
-    # prefer isolation_forest), True when acceptable+, None when there is no fit report
-    # (isolation_forest has no chi-squared assumption). Lets the next tool gate on the
-    # threshold's trustworthiness without re-parsing the goodness_of_fit dict / prose.
+    # Machine-visible trust flag derived from goodness_of_fit.fit_quality: True when
+    # the mahalanobis fit is acceptable-or-better, None when there is no fit report
+    # (isolation_forest has no chi-squared assumption). NEVER False here (#419) — a
+    # poor/very_poor/unknown fit raises assumption_violated before this result is ever
+    # constructed, so an untrustworthy fit is never returned, only gated.
     fit_is_trustworthy: Optional[bool] = None
     outlier_barcodes: list[str]
 
@@ -235,16 +278,11 @@ def _rows_subset(frame: ExperimentFrame, trimmed_df: pd.DataFrame) -> bool:
     return Counter(trimmed_df.index) <= Counter(frame.df.index)
 
 
-def _fit_is_trustworthy(goodness_of_fit: Optional[dict]) -> Optional[bool]:
-    """Derive the machine-visible trust flag from the delegate's fit report.
-
-    ``None`` when there is no fit report (isolation_forest — no chi-squared assumption
-    to trust); otherwise ``False`` for a poor/very_poor/unknown ``fit_quality`` and
-    ``True`` for acceptable-or-better. See :data:`_UNTRUSTWORTHY_FIT`.
-    """
-    if not isinstance(goodness_of_fit, dict):
-        return None
-    return goodness_of_fit.get("fit_quality") not in _UNTRUSTWORTHY_FIT
+def _barcodes(report: dict) -> list[str]:
+    """Coerce the delegate's ``outlier_barcodes`` (``None`` for a barcode-less frame)
+    to a plain ``list[str]``. Shared by the fit-gate's raise (which sorts this for a
+    deterministic message) and the successful return path (which does not)."""
+    return [str(b) for b in (report.get("outlier_barcodes") or [])]
 
 
 @as_mcp_tool(
@@ -257,12 +295,14 @@ def remove_outliers(
 ) -> RemoveOutliersResult:
     """Trim outlier samples from a cleaned experiment and persist the trimmed run.
 
-    Returns a numeric outlier report by default (no table inline). Read
-    ``fit_is_trustworthy`` / ``goodness_of_fit.fit_quality``: when the mahalanobis
-    chi-squared fit is poor (``fit_is_trustworthy=false``, as on turface_19), the
-    flagged set is unreliable — prefer ``method="isolation_forest"`` with an explicit
-    ``contamination``. Set ``include_plots=true`` when the user wants to see or inspect
-    the flagged outliers; the figures are persisted and returned as resource links.
+    Returns a numeric outlier report by default (no table inline). When the
+    mahalanobis chi-squared fit is untrustworthy (``fit_is_trustworthy`` would be
+    ``false`` — poor/very_poor/unknown ``goodness_of_fit.fit_quality``), this raises a
+    structured ``assumption_violated`` error instead of persisting the trim — the
+    message embeds the outlier counts and flagged barcodes, and the remedy names
+    ``method="isolation_forest"`` with an explicit ``contamination``. Set
+    ``include_plots=true`` when the user wants to see or inspect the flagged outliers
+    on a trustworthy-fit run; the figures are persisted and returned as resource links.
     """
     reader = _ports.reader()
     store = _ports.store()
@@ -271,7 +311,12 @@ def remove_outliers(
     # qc_clean produces. A missing cleaned version is the QC guardrail, mapped here to
     # a self-correctable assumption_violated (not the reader's raw message / tool_error).
     try:
-        frame = reader.load_experiment(params.experiment, require_clean=True)
+        # version="latest_qc": always the current plain clean, never a prior trim of
+        # our own — see the module docstring's Composition section for why (a fresh
+        # qc_clean must always be visible to the *next* remove_outliers call).
+        frame = reader.load_experiment(
+            params.experiment, require_clean=True, version="latest_qc"
+        )
     except CleanedVersionRequiredError:
         raise BloomMCPError(
             code="assumption_violated",
@@ -333,6 +378,55 @@ def remove_outliers(
     n_input = int(report["n_input_samples"])
     n_outliers = int(report["n_outliers"])
     n_output = int(report["n_output_samples"])
+
+    # Fit-trustworthiness gate (#419) — BEFORE the structural guard below, before any
+    # plots=/figure handling, and before any ResultStore interaction. The mahalanobis
+    # chi-squared threshold means nothing when the data don't fit that distribution;
+    # fit_is_trustworthy used to be computed only in the return value, by which point
+    # persistence had already committed the untrustworthy-fit trim as the new "latest
+    # cleaned" version. Gating here instead means an untrustworthy fit never becomes
+    # canonical, not even advisorily. Never fires for isolation_forest
+    # (fit_is_trustworthy is always None — no chi-squared assumption to violate) or an
+    # acceptable-or-better mahalanobis fit (fit_is_trustworthy is True).
+    goodness_of_fit = convert_to_json_serializable(report.get("goodness_of_fit"))
+    trustworthy = fit_is_trustworthy(goodness_of_fit)
+    if trustworthy is False:
+        fit_quality = (
+            goodness_of_fit.get("fit_quality")
+            if isinstance(goodness_of_fit, dict)
+            else None
+        )
+        # Nothing is persisted on this path, so the barcodes are embedded here — the
+        # only way a caller can still inspect what would have been flagged. Capped
+        # (_MAX_BARCODES_IN_MESSAGE) so a noisier dataset than today's two fixtures
+        # can't produce an unbounded plain-string message.
+        barcodes = sorted(_barcodes(report))
+        shown_barcodes = barcodes[:_MAX_BARCODES_IN_MESSAGE]
+        omitted = len(barcodes) - len(shown_barcodes)
+        barcodes_repr = (
+            f"{shown_barcodes} (+{omitted} more)"
+            if omitted > 0
+            else f"{shown_barcodes}"
+        )
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=(
+                f"The mahalanobis chi-squared fit is untrustworthy "
+                f"(fit_quality={fit_quality!r}) for {params.experiment!r} — the "
+                f"flagged threshold does not mean what it claims to. Would have "
+                f"flagged n_outliers={n_outliers} of n_input_samples={n_input} "
+                f"(n_output_samples={n_output}), outlier_barcodes={barcodes_repr}. No "
+                f"run was persisted."
+            ),
+            remedy=(
+                "Re-run with method='isolation_forest' and "
+                f"contamination={_ISOLATION_FOREST_DEFAULT_CONTAMINATION} (the "
+                "delegate's own default) — it has no chi-squared assumption to "
+                "violate, though it also has no fit-quality self-diagnostic of its "
+                "own, so choose contamination deliberately rather than assuming the "
+                "default suits this data."
+            ),
+        )
 
     # Defense-in-depth guard before any commit — for a delegate that *returns* (rather
     # than raises on) a degenerate frame. Trimming only drops rows from an already
@@ -402,6 +496,7 @@ def remove_outliers(
             tool_class=_TOOL_CLASS,
             provenance=provenance,
             user_label=params.user_label,
+            source=frame.resolved_source,
         )
         outputs: dict[str, str] = {
             CLEANED_CSV_NAME: CLEANED_CSV_NAME,
@@ -427,7 +522,6 @@ def remove_outliers(
         for fig in figures.values():
             _close_figure(fig)
 
-    goodness_of_fit = convert_to_json_serializable(report.get("goodness_of_fit"))
     return RemoveOutliersResult(
         experiment=params.experiment,
         source=frame.source,
@@ -443,12 +537,12 @@ def remove_outliers(
             else None
         ),
         goodness_of_fit=goodness_of_fit,
-        fit_is_trustworthy=_fit_is_trustworthy(goodness_of_fit),
+        fit_is_trustworthy=trustworthy,
         # The delegate sets outlier_barcodes to None (not []) when the frame has no
         # barcode column, and the key is always present — so `.get(..., [])` returns
-        # None and `for b in None` would crash into an opaque internal_error. `or []`
+        # None and `for b in None` would crash into an opaque internal_error. `_barcodes`
         # coerces that valid barcode-less return to an empty list.
-        outlier_barcodes=[str(b) for b in (report.get("outlier_barcodes") or [])],
+        outlier_barcodes=_barcodes(report),
         run_ref=stored.run_ref,
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,

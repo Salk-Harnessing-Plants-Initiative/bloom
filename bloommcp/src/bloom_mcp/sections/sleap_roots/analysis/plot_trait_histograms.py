@@ -28,7 +28,7 @@ def plot_trait_histograms(filename: str, traits: str = "") -> str:
     normality, skewness, and identifying unusual distributions.
 
     Args:
-        filename: CSV filename from list_available_experiments
+        filename: experiment identifier from list_available_experiments
         traits: Comma-separated trait names (empty = all traits)
     """
     unsafe = validate_filename(filename)
@@ -38,7 +38,7 @@ def plot_trait_histograms(filename: str, traits: str = "") -> str:
     try:
         df, trait_cols, config, source = _load_data(filename)
     except Exception:
-        return f"Could not load {filename!r}: the file could not be read as a CSV."
+        return f"Could not load {filename!r}: the experiment data could not be read."
     if df is None:
         return source
 

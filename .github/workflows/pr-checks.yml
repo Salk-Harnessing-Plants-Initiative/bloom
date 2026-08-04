@@ -1060,6 +1060,31 @@ jobs:
       - name: make check (verify services, roles, schemas, migrations)
         run: make check
 
+      # bloom#551 round-2 review: SupabaseReader's raw tier is DB-only now, so
+      # the smoke suite below needs numeric experiment ids backed by real trait
+      # rows in THIS job's own disposable Postgres (torn down with the stack at
+      # job end via the `down -v` Cleanup step below) — not a filename it can
+      # invent locally. Seeds two throwaway experiments directly (see
+      # scripts/ci/seed_smoke_experiments.sql for why direct INSERT, not the
+      # write-back RPC) and exports their ids for every subsequent step in this
+      # job. "cylinder" needs > 50 traits: test_descriptive_stats_smoke.py
+      # asserts truncated_in_summary for that fixture name specifically.
+      - name: Seed DB experiments for the granular smoke suite
+        run: |
+          docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T db-dev \
+            psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+            < scripts/ci/seed_smoke_experiments.sql
+          TURFACE_ID=$(docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T db-dev \
+            psql -U supabase_admin -d postgres -tAc \
+            "SELECT public._seed_smoke_experiment('smoke-turface', 25, 12);" | tr -d '\r')
+          CYLINDER_ID=$(docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T db-dev \
+            psql -U supabase_admin -d postgres -tAc \
+            "SELECT public._seed_smoke_experiment('smoke-cylinder', 25, 60);" | tr -d '\r')
+          echo "Seeded smoke-turface experiment id=$TURFACE_ID, smoke-cylinder experiment id=$CYLINDER_ID"
+          echo "BLOOM_SMOKE_EXPERIMENT_ID=$TURFACE_ID" >> "$GITHUB_ENV"
+          echo "BLOOM_SMOKE_EXPERIMENT_ID_TURFACE_19=$TURFACE_ID" >> "$GITHUB_ENV"
+          echo "BLOOM_SMOKE_EXPERIMENT_ID_CYLINDER=$CYLINDER_ID" >> "$GITHUB_ENV"
+
       # Live persistence smoke (issue #326): drive a workflow end-to-end through
       # the REAL SupabaseReader/SupabaseResultStore and assert the committed run
       # is a v3 manifest with real provenance whose output_sha256 == the bytes

@@ -14,7 +14,11 @@ dependencies = [
     "numpy>=2.0.0",
     "pillow>=12.0.0",
     # Security floor for the supabase auth/JWT transitive dep, per repo convention.
-    "cryptography>=48.0.1",
+    # Bumped past CVE-2026-69247 (fixed in 50.0.0), disclosed 2026-08-03.
+    "cryptography>=50.0.0",
+    # compute_param_hash for the pipeline-trigger dedup preview (params-only, not
+    # model-version-aware — see openspec/changes/add-cyl-pipeline-trigger/design.md).
+    "sleap-roots-contracts>=0.1.0a5",
 ]
 
 [project.optional-dependencies]
