@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 from bloom_mcp.contract import Provenance
-from bloom_mcp.result_store import CommitFailedError, SupabaseResultStore
+from bloom_mcp.result_store import (
+    CommitFailedError,
+    ManifestIncompatibleError,
+    ManifestReadError,
+    SupabaseResultStore,
+)
 from bloom_mcp.manifest import AnalysisDir
 from bloom_mcp.manifest.schema import CodeVersions
 
@@ -513,3 +518,100 @@ def test_noncolliding_commit_reads_manifest_twice_with_no_reallocation(
     assert stored.run_ref == run.version_id
     assert read_calls["n"] == 2  # pre-upload check + pre-write check, nothing more
     assert reallocations["n"] == 0
+
+
+# ── #596: create_run/list_runs/get_run guard their own manifest read ────────
+#
+# Each of these three call sites reads the manifest independently (create_run's
+# read sits outside commit()'s own hardened try/except — see design.md); none
+# had a guard of its own before this change, so a failing read escaped as a
+# raw exception. `read_manifest` is patched at `bloom_mcp.manifest.analysis_dir`
+# (the name as imported into that module), not at its definition site
+# (`bloom_mcp.manifest.manifest`) — `AnalysisDir.read_manifest`/`list_versions`/
+# `get_version` all resolve the bare name `read_manifest` against their own
+# module's globals, so patching the definition site would leave the
+# already-bound reference untouched.
+
+_CALL_SITES = {
+    "create_run": lambda store: store.create_run(
+        experiment="exp.csv", tool_class="qc", provenance=_prov()
+    ),
+    "list_runs": lambda store: store.list_runs("exp.csv", "qc"),
+    "get_run": lambda store: store.get_run("exp.csv", "qc", "latest"),
+}
+
+
+@pytest.mark.parametrize("call_site", sorted(_CALL_SITES))
+def test_manifest_read_failure_raises_manifest_read_error_without_leaking(
+    call_site, fake_supabase_storage, monkeypatch
+):
+    """The generic branch's message is a fixed template that never
+    interpolates the underlying exception — this pins that template-design
+    decision (not a dynamic redaction step) against regression: if a future
+    edit adds `{exc}` to the message, this test catches it. It does not claim
+    the failure is transient (the branch also catches non-transient causes
+    like a corrupt manifest.json or a permanent permission denial — see
+    ports.py's ManifestReadError docstring), so the message doesn't say so
+    either."""
+    import bloom_mcp.manifest.analysis_dir as _adir_mod
+
+    def _boom(prefix):
+        raise RuntimeError(
+            "network down: https://proj.supabase.co/storage/v1/object/secret"
+        )
+
+    monkeypatch.setattr(_adir_mod, "read_manifest", _boom)
+
+    store = SupabaseResultStore()
+    with pytest.raises(ManifestReadError) as excinfo:
+        _CALL_SITES[call_site](store)
+
+    msg = str(excinfo.value)
+    assert "manifest read failed" in msg.lower()
+    assert "supabase" not in msg.lower()
+    assert "http" not in msg.lower()
+    assert "network down" not in msg
+
+
+@pytest.mark.parametrize("call_site", sorted(_CALL_SITES))
+def test_manifest_schema_error_raises_manifest_incompatible_error(
+    call_site, fake_supabase_storage, monkeypatch
+):
+    import bloom_mcp.manifest.analysis_dir as _adir_mod
+    from bloom_mcp.manifest import ManifestSchemaError
+
+    def _boom(prefix):
+        raise ManifestSchemaError(
+            "manifest_schema_version 99 is newer than supported "
+            "(this code understands up to 3)"
+        )
+
+    monkeypatch.setattr(_adir_mod, "read_manifest", _boom)
+
+    store = SupabaseResultStore()
+    with pytest.raises(ManifestIncompatibleError) as excinfo:
+        _CALL_SITES[call_site](store)
+
+    # A subclass of ManifestReadError, not a sibling — every existing
+    # `except ManifestReadError` keeps catching it.
+    assert isinstance(excinfo.value, ManifestReadError)
+    assert "99" in str(excinfo.value)
+
+
+def test_create_run_guard_does_not_swallow_a_next_version_id_bug(
+    fake_supabase_storage, monkeypatch
+):
+    """The try/except around create_run's manifest read must not also wrap
+    next_version_id(...) -- a bug there must surface as itself, never
+    mislabeled as a manifest-read failure (design.md's guard-scope
+    decision)."""
+    import bloom_mcp.result_store.supabase_store as _store_mod
+
+    def _boom(manifest):
+        raise TypeError("boom: not a manifest read failure")
+
+    monkeypatch.setattr(_store_mod, "next_version_id", _boom)
+
+    store = SupabaseResultStore()
+    with pytest.raises(TypeError, match="boom: not a manifest read failure"):
+        store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())

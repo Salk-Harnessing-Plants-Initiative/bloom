@@ -14,6 +14,7 @@ import click
 
 from ..credentials import DEFAULT_PROFILE
 from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
+from ._select import select_from_menu
 
 
 @click.group(name="datasets")
@@ -105,6 +106,33 @@ def fetch_datasets(
     return query.execute().data or []
 
 
+def fetch_experiments_with_datasets(client: Any) -> list[tuple[int, str]]:  # supabase I/O
+    """(experiment_id, "name (species)") for experiments that have datasets, for the menu.
+
+    cyl_datasets carries only experiment_id, so the human labels are joined from cyl_experiments
+    (soft-deleted excluded). Sorted by label for a stable menu.
+    """
+    rows = client.table("cyl_datasets").select("experiment_id").execute().data or []
+    ids = sorted({r["experiment_id"] for r in rows if r.get("experiment_id") is not None})
+    if not ids:
+        return []
+    exps = (
+        client.table("cyl_experiments")
+        .select("id, name, species(common_name)")
+        .in_("id", ids)
+        .is_("deleted_at", "null")
+        .execute()
+        .data
+        or []
+    )
+    items = [
+        (e["id"], f"{e.get('name') or ''} ({(e.get('species') or {}).get('common_name') or '?'})")
+        for e in exps
+    ]
+    # id as a tiebreak so two experiments with the same "name (species)" label order stably.
+    return sorted(items, key=lambda it: (it[1].casefold(), it[0]))
+
+
 @datasets.command(name="list")
 @click.option(
     "--experiment-id",
@@ -112,7 +140,13 @@ def fetch_datasets(
     "experiment_id",
     type=int,
     default=None,
-    help="Only list datasets for this experiment.",
+    help="Only list datasets for this experiment (id). Scriptable.",
+)
+@click.option(
+    "--experiment",
+    "pick_experiment",
+    is_flag=True,
+    help="Pick an experiment from an interactive menu to filter by (needs a terminal).",
 )
 @click.option(
     "--output",
@@ -130,15 +164,41 @@ def fetch_datasets(
     help="Credentials profile to use.",
 )
 def list_datasets(
-    experiment_id: int | None, output_fmt: str | None, as_json: bool, profile: str
+    experiment_id: int | None,
+    pick_experiment: bool,
+    output_fmt: str | None,
+    as_json: bool,
+    profile: str,
 ) -> None:
-    """List cylinder trait datasets."""
+    """List cylinder trait datasets.
+
+    Lists all datasets by default. Pass --experiment-id N for one experiment (scriptable), or
+    --experiment to pick one from a menu (needs a terminal).
+    """
+    from postgrest import APIError
+
     from ..cli import _authed_client
+
+    if pick_experiment and experiment_id is not None:
+        raise click.UsageError("Use either --experiment-id or --experiment, not both.")
 
     output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
 
     client = _authed_client(profile)
-    found = fetch_datasets(client, experiment_id=experiment_id)
+    try:
+        if pick_experiment:  # menu of experiments that have datasets (0 = All)
+            choices = fetch_experiments_with_datasets(client)
+            if not choices:
+                raise click.ClickException("No experiments with datasets found.")
+            experiment_id = select_from_menu(
+                choices,
+                title="an experiment",
+                prompt_label="Experiment",
+                all_label="All experiments",
+            )
+        found = fetch_datasets(client, experiment_id=experiment_id)
+    except APIError as exc:
+        raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
 
     if output_fmt:
         click.echo(render([build_dataset_record(d) for d in found], DATASET_FIELDS, output_fmt))
