@@ -77,12 +77,23 @@ export default function ScanVideoButton({
       </div>
 
       {/* Encoding a full rotation is slow and runs synchronously upstream — say
-          so, rather than leaving a disabled button looking stuck. */}
+          so, rather than leaving a disabled button looking stuck. The bar is
+          deliberately indeterminate: the endpoint reports nothing until it
+          returns, so any percentage here would be invented. */}
       {status === "generating" && (
-        <p className="mt-2 text-sm text-stone-500 italic">
-          Encoding every frame of this scan. This can take a minute — leave the
-          page open.
-        </p>
+        <div className="mt-2">
+          <div
+            role="progressbar"
+            aria-label="Generating video"
+            className="h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-stone-200"
+          >
+            <div className="h-full w-full animate-pulse bg-lime-600" />
+          </div>
+          <p className="mt-2 text-sm text-stone-500 italic">
+            Encoding every frame of this scan. This can take a minute — leave
+            the page open.
+          </p>
+        </div>
       )}
 
       {status === "done" && result && (
