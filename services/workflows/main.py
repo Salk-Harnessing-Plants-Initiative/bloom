@@ -25,7 +25,7 @@ Endpoints:
 import os
 import logging
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Path
 from fastapi.middleware.cors import CORSMiddleware
 
 from auth import require_supabase_user, enforce_rate_limit
@@ -42,6 +42,16 @@ logger = logging.getLogger(__name__)
 CORS_ORIGINS = os.environ.get("WORKFLOWS_CORS_ORIGINS", "http://localhost:3000").split(
     ","
 )
+
+# Reject out-of-range ids at the boundary (422) before the enqueue RPC / DB. Ids are
+# Postgres bigint columns, so a positive value no larger than bigint max is the valid
+# range. A fresh Path() is needed per parameter (FastAPI binds the param name onto it).
+BIGINT_MAX = 9223372036854775807
+
+
+def _id_param():
+    return Path(gt=0, le=BIGINT_MAX)
+
 
 app = FastAPI(title="Bloom Workflows API", version="0.1.0")
 app.add_middleware(
@@ -61,8 +71,8 @@ def health():
 
 @app.post("/cyl/experiments/{experiment_id}/scans/{scan_id}/video")
 def cyl_experiment_scan_video(
-    experiment_id: int,
-    scan_id: int,
+    experiment_id: int = _id_param(),
+    scan_id: int = _id_param(),
     user_id: str = Depends(require_supabase_user),
 ):
     """On-demand: generate a cyl scan's video (validated against the experiment).
@@ -82,8 +92,8 @@ def cyl_experiment_scan_video(
 
 @app.post("/cyl/experiments/{experiment_id}/scans/{scan_id}/video/queue")
 def cyl_experiment_scan_video_queue(
-    experiment_id: int,
-    scan_id: int,
+    experiment_id: int = _id_param(),
+    scan_id: int = _id_param(),
     user_id: str = Depends(require_supabase_user),
 ):
     """Queued: enqueue a cyl scan's video for the worker to generate.
