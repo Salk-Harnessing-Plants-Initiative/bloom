@@ -6,6 +6,7 @@ import {
 
 import PlantImage from "@/components/plant-image";
 import PlantScan from "@/components/plant-scan";
+import ScanVideoButton from "@/components/scan-video-button";
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
 
@@ -80,6 +81,12 @@ export default async function Image({
       </div>
       <div className="table-auto select-none pr-8 pb-8">
         {scan && <PlantScan scan={scan} thumb={false} />}
+        {scan && (
+          <ScanVideoButton
+            experimentId={Number(experimentId)}
+            scanId={scan.id}
+          />
+        )}
       </div>
     </div>
   );
