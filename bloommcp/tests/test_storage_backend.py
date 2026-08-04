@@ -1351,3 +1351,163 @@ def test_validate_storage_backend_output_subfolder_blocked_by_file(
     sb.reset_backend_for_tests()
     with pytest.raises(RuntimeError, match="output root.*not a directory"):
         sb.validate_storage_backend()
+
+
+# ─── 7. Signed URL generation (#581) ───────────────────────────────────────────
+
+
+class _FakeSignClient:
+    """Stand-in for the storage3 bucket client's create_signed_url method."""
+
+    def __init__(self, response):
+        self._response = response
+        self.calls: list[tuple[str, int]] = []
+
+    def create_signed_url(self, path, expires_in):
+        self.calls.append((path, expires_in))
+        return self._response
+
+
+def test_supabase_create_signed_url_extracts_signedURL_key(monkeypatch):
+    client = _FakeSignClient({"signedURL": "http://kong:8000/sign/a?token=x"})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+    monkeypatch.delenv("BLOOM_PUBLIC_SUPABASE_URL", raising=False)
+
+    url = sb.SupabaseStorageBackend().create_signed_url("k", 3600)
+
+    assert client.calls == [("k", 3600)]
+    assert url == "http://kong:8000/sign/a?token=x"
+
+
+def test_supabase_create_signed_url_extracts_signedUrl_key_variant(monkeypatch):
+    client = _FakeSignClient({"signedUrl": "http://kong:8000/sign/b?token=y"})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+    monkeypatch.delenv("BLOOM_PUBLIC_SUPABASE_URL", raising=False)
+
+    url = sb.SupabaseStorageBackend().create_signed_url("k", 3600)
+
+    assert url == "http://kong:8000/sign/b?token=y"
+
+
+def test_supabase_create_signed_url_raises_when_no_extractable_key(monkeypatch):
+    client = _FakeSignClient({"error": "not found"})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    with pytest.raises(Exception):
+        sb.SupabaseStorageBackend().create_signed_url("k", 3600)
+
+
+def test_supabase_create_signed_url_rewrites_internal_host_to_public_base(
+    monkeypatch,
+):
+    client = _FakeSignClient(
+        {"signedURL": "http://kong:8000/storage/v1/object/sign/bucket/k?token=x"}
+    )
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+    monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
+    monkeypatch.setenv("BLOOM_PUBLIC_SUPABASE_URL", "https://bloom.salk.edu/api")
+
+    url = sb.SupabaseStorageBackend().create_signed_url("k", 3600)
+
+    assert url == "https://bloom.salk.edu/api/storage/v1/object/sign/bucket/k?token=x"
+
+
+def test_supabase_create_signed_url_no_rewrite_when_public_url_unset(monkeypatch):
+    client = _FakeSignClient({"signedURL": "http://kong:8000/sign/k?token=x"})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+    monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
+    monkeypatch.delenv("BLOOM_PUBLIC_SUPABASE_URL", raising=False)
+
+    url = sb.SupabaseStorageBackend().create_signed_url("k", 3600)
+
+    assert url == "http://kong:8000/sign/k?token=x"
+
+
+def test_supabase_create_signed_url_no_rewrite_when_supabase_url_unset(monkeypatch):
+    client = _FakeSignClient({"signedURL": "http://kong:8000/sign/k?token=x"})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.setenv("BLOOM_PUBLIC_SUPABASE_URL", "https://bloom.salk.edu/api")
+
+    url = sb.SupabaseStorageBackend().create_signed_url("k", 3600)
+
+    assert url == "http://kong:8000/sign/k?token=x"
+
+
+def test_supabase_create_signed_url_no_rewrite_when_url_not_on_internal_host(
+    monkeypatch,
+):
+    client = _FakeSignClient({"signedURL": "https://other.example/sign/k?token=x"})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+    monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
+    monkeypatch.setenv("BLOOM_PUBLIC_SUPABASE_URL", "https://bloom.salk.edu/api")
+
+    url = sb.SupabaseStorageBackend().create_signed_url("k", 3600)
+
+    assert url == "https://other.example/sign/k?token=x"
+
+
+def test_local_create_signed_url_returns_served_url(monkeypatch, tmp_path):
+    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost:8811/output")
+    url = sb.LocalStorageBackend(tmp_path).create_signed_url(
+        "bloommcp_output/qc_x/v1/_cleaned.csv", 3600
+    )
+    assert url == "http://localhost:8811/output/bloommcp_output/qc_x/v1/_cleaned.csv"
+
+
+def test_local_create_signed_url_strips_trailing_slash(monkeypatch, tmp_path):
+    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost:8811/output/")
+    url = sb.LocalStorageBackend(tmp_path).create_signed_url("k/f.csv", 3600)
+    assert url == "http://localhost:8811/output/k/f.csv"
+
+
+def test_local_create_signed_url_ignores_expires_in(monkeypatch, tmp_path):
+    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost:8811/output")
+    b = sb.LocalStorageBackend(tmp_path)
+    assert b.create_signed_url("k", 60) == b.create_signed_url("k", 999999)
+
+
+def test_local_create_signed_url_raises_when_unset_no_path_leak(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_URL", raising=False)
+    with pytest.raises(Exception) as exc:
+        sb.LocalStorageBackend(tmp_path).create_signed_url("k", 3600)
+    msg = str(exc.value)
+    assert str(tmp_path) not in msg
+    assert "file://" not in msg
+
+
+def test_storage_backend_protocol_includes_create_signed_url(tmp_path):
+    assert isinstance(sb.SupabaseStorageBackend(), sb.StorageBackend)
+    assert isinstance(sb.LocalStorageBackend(tmp_path), sb.StorageBackend)
+    assert hasattr(sb.SupabaseStorageBackend, "create_signed_url")
+    assert hasattr(sb.LocalStorageBackend, "create_signed_url")
+
+
+def test_supabase_client_reexports_create_signed_url(monkeypatch):
+    import bloom_mcp.storage_backend as sb_module
+    import bloom_mcp.supabase_client as sc
+
+    captured = {}
+
+    class _FakeBackend:
+        def create_signed_url(self, key, expires_in):
+            captured["args"] = (key, expires_in)
+            return "http://x/signed"
+
+    monkeypatch.setattr(sb_module, "active_backend", lambda: _FakeBackend())
+    assert sc.create_signed_url("k", 3600) == "http://x/signed"
+    assert captured["args"] == ("k", 3600)

@@ -66,6 +66,8 @@ class StorageBackend(Protocol):
         self, keys: list[str], *, timeout_seconds: Optional[float] = None
     ) -> None: ...
 
+    def create_signed_url(self, key: str, expires_in: int) -> str: ...
+
 
 def _json_bytes(payload: dict) -> bytes:
     """Canonical JSON serialization shared by both backends.
@@ -183,6 +185,53 @@ class SupabaseStorageBackend:
             return
         client = get_storage_client(timeout_seconds=timeout_seconds)
         client.remove(list(keys))
+
+    def create_signed_url(self, key: str, expires_in: int) -> str:
+        from bloom_mcp.supabase_client import get_storage_client
+
+        client = get_storage_client()
+        response = client.create_signed_url(key, expires_in)
+        url = _extract_signed_url(response)
+        if url is None:
+            raise StorageBackendError(f"could not extract a signed URL for key: {key}")
+        return _to_public_url(url)
+
+
+def _extract_signed_url(response) -> Optional[str]:
+    """Best-effort extraction across storage3/supabase-py versions.
+
+    ``create_signed_url`` returns a dict whose URL key casing
+    (``signedURL``/``signed_url``/``signedUrl``) has drifted across client
+    versions — mirrors the identical extraction ``services/workflows/video.py``'s
+    ``_signed_url`` already does for this exact client call.
+    """
+    if isinstance(response, str):
+        return response
+    if isinstance(response, dict):
+        return (
+            response.get("signedURL")
+            or response.get("signed_url")
+            or response.get("signedUrl")
+        )
+    return None
+
+
+def _to_public_url(url: str) -> str:
+    """Rewrite a signed URL off the internal ``SUPABASE_URL`` host (e.g.
+    ``http://kong:8000``, unreachable outside the Docker network in prod/staging)
+    onto ``BLOOM_PUBLIC_SUPABASE_URL``. A no-op if either is unset or ``url``
+    isn't on the internal host. Mirrors ``services/workflows/video.py``'s
+    ``_to_public_url`` and ``web/lib/supabase/storage-url.ts``'s
+    ``toPublicStorageUrl`` — the same pattern, a third independent instance.
+    """
+    internal = os.environ.get("SUPABASE_URL")
+    public = os.environ.get("BLOOM_PUBLIC_SUPABASE_URL")
+    if not internal or not public:
+        return url
+    internal = internal.rstrip("/")
+    if url.startswith(internal):
+        return public.rstrip("/") + url[len(internal) :]
+    return url
 
 
 # ─── Local filesystem backend (opt-in) ────────────────────────────────────────
@@ -325,6 +374,20 @@ class LocalStorageBackend:
                 first_error = first_error or _redacted_io_error(key, exc)
         if first_error is not None:
             raise first_error
+
+    def create_signed_url(self, key: str, expires_in: int) -> str:
+        # expires_in is accepted for Protocol parity with the Supabase adapter
+        # and ignored — this is an opt-in dev feature with no real credential/
+        # expiry enforcement (see the class docstring's Windows-atomicity caveat
+        # for the same rhetorical shape).
+        del expires_in
+        base = os.environ.get("BLOOM_STORAGE_URL")
+        if not base:
+            raise StorageBackendError(
+                "BLOOM_STORAGE_URL is not set; cannot construct a served URL "
+                "for the local storage backend"
+            )
+        return f"{base.rstrip('/')}/{key}"
 
 
 # ─── Selection ────────────────────────────────────────────────────────────────
