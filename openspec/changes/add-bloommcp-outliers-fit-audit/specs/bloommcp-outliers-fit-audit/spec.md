@@ -32,8 +32,8 @@ re-run `remove_outliers`, or otherwise alter the flagged run.
   `remove_outliers`-authored and whose persisted `outlier_report.json` records
   `goodness_of_fit.fit_quality` of `"poor"`, `"very_poor"`, or `"unknown"`
 - **THEN** the report includes a hit naming the stem, the flagged version's id, its
-  `based_on_version`, `created_at`, the recorded `fit_quality`, and the report's `n_outliers` /
-  `n_input_samples` / `n_output_samples`
+  `based_on_version`, `created_at`, the recorded `fit_quality`, the trim's `method`, and the
+  report's `n_outliers` / `n_input_samples` / `n_output_samples`
 
 #### Scenario: A trustworthy-fit or isolation_forest trim is not a hit
 
@@ -41,6 +41,23 @@ re-run `remove_outliers`, or otherwise alter the flagged run.
   an acceptable-or-better `fit_quality`, or has `goodness_of_fit` absent entirely (an
   `isolation_forest` trim)
 - **THEN** that experiment is not reported as a hit
+
+#### Scenario: A latest entry not authored by remove_outliers is not a hit
+
+- **WHEN** the audit scans an `outliers_<stem>` manifest whose current `latest` entry's `tool` is
+  not `"remove_outliers"` (not expected in a real `outliers_<stem>` manifest, since only
+  `remove_outliers` writes to that tool class, but defensive rather than assumed)
+- **THEN** that experiment is not reported as a hit and the scan does not crash
+
+#### Scenario: A pre-#420 legacy qc-manifest entry is out of scope, not a hit
+
+- **WHEN** an experiment's `qc_<stem>` manifest's current `latest` entry is
+  `remove_outliers`-authored with an untrustworthy fit, but that experiment has no
+  `outliers_<stem>` manifest at all (a pre-#420 trim never superseded by any subsequent
+  `qc_clean` or post-#420 `remove_outliers` run)
+- **THEN** the audit does not report it — this scan is deliberately scoped to `outliers_<stem>`
+  manifests only (see design.md Decision 2); this narrower edge case is a disclosed, tracked
+  scope limit, not a silent gap
 
 #### Scenario: A manifest read or report read failure does not abort the scan
 
@@ -63,3 +80,9 @@ re-run `remove_outliers`, or otherwise alter the flagged run.
   `bloommcp_output/_audit_reports/`, including `scanned_at`, `storage_backend`, and a `scope_note`
   describing the scan's own scope limits, in the payload itself — not only in the script's
   docstring — so the report remains self-describing if read or copied elsewhere later
+
+#### Scenario: Two reports completed within the same second never collide
+
+- **WHEN** two runs of the script complete their report-writing step within the same wall-clock
+  second (e.g. two engineers, or a retry)
+- **THEN** each produces a distinct report object key — neither silently overwrites the other

@@ -147,6 +147,16 @@ constants and one function are *defined*, not what they compute. Rollback = reve
 `experiment_utils.py` extraction and the new script/test files; no manifest or schema migration
 either way.
 
+**Commit/PR plan (per a git-workflow review pass on this proposal):** unlike `#585` — which fused
+its analogous primitive-extraction refactor with its new script in one commit — this change ships
+the Decision 1 refactor (tasks.md section 1) as its own commit, verified green in isolation,
+*before* the audit script's commit (sections 2-3) lands on top. Elevated care versus `#585`'s
+precedent because `remove_outliers.py` is the file `#419` just shipped a behavior-sensitive gate
+in; bisectability matters more here than it did for `#585`'s refactor target. One PR into
+`staging` (matching `#585`'s actual PR strategy — splitting this small, additive, no-behavior-
+change capability across two PRs would be disproportionate overhead), reviewed as ≥2 commits
+within it.
+
 ## Open Questions
 
 - **Decision 2's scope gap** — extend `#585`'s own script to also check `goodness_of_fit` on the

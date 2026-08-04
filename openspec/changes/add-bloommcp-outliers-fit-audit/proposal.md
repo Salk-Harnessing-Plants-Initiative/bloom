@@ -73,5 +73,7 @@ analogous retroactive-audit follow-up `fix-bloommcp-remove-outliers-tool-class` 
   - new `bloommcp/tests/scripts/test_audit_untrustworthy_outlier_fits.py`
   - `bloommcp/tests/manifest_fixtures.py` (one new, additive helper function)
 - **No call-site or behavior change** to `remove_outliers` or any `require_clean=True` consumer.
+- **PR target:** `staging` (this repo's standard integration branch — matching `#419`/`#585`'s
+  own PRs). See design.md's Migration Plan for the recommended commit split.
 - Refs: #593 (this issue, closes), #419 / PR #592 (the change that disclosed this gap and filed
   #593 as its follow-up), #585 / PR #587 (the analogous precedent this change's shape follows).
