@@ -7,6 +7,7 @@ import {
   clampFrameIndex,
   orderedFrames,
   signedUrlsByPath,
+  usableUrl,
 } from "./plant-scan.helpers";
 import Link from "next/link";
 
@@ -31,7 +32,7 @@ async function getImageUrl(path: string, thumb: boolean, height: number) {
       : {}
   );
 
-  return data?.signedUrl ?? "";
+  return usableUrl(data?.signedUrl);
 }
 
 // Sign every frame of a scan in one request, keyed by path so a partial or
@@ -46,6 +47,8 @@ async function getFrameUrls(paths: string[]) {
   return signedUrlsByPath(data);
 }
 
+// Null when the scan has no stored video — most don't, and an empty string here
+// would render the download icon pointing at the current page.
 async function getVideoUrl(scan: CylScanWithImages) {
   const supabase = createClientSupabaseClient();
 
@@ -53,9 +56,9 @@ async function getVideoUrl(scan: CylScanWithImages) {
 
   const { data } = await supabase.storage
     .from("videos")
-    .createSignedUrl(path, 3600);
+    .createSignedUrl(path, FRAME_URL_TTL);
 
-  return data?.signedUrl ?? "";
+  return usableUrl(data?.signedUrl);
 }
 
 const defaultHeight = 100;
@@ -126,7 +129,7 @@ export default function PlantScan({
     setLoading(true);
     getImageUrl(currentPath, true, height || defaultHeight).then((url) => {
       if (!active) return;
-      setFrameUrls(new Map([[currentPath, url]]));
+      setFrameUrls(url ? new Map([[currentPath, url]]) : new Map());
       setLoading(false);
     });
     return () => {

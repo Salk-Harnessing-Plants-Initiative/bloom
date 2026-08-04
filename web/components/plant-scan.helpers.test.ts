@@ -3,6 +3,7 @@ import {
   clampFrameIndex,
   orderedFrames,
   signedUrlsByPath,
+  usableUrl,
   type ScanFrame,
   type SignedUrlEntry,
 } from "./plant-scan.helpers";
@@ -164,6 +165,28 @@ describe("clampFrameIndex", () => {
   });
 });
 
+describe("usableUrl", () => {
+  it("passes a real signed URL through", () => {
+    expect(usableUrl("https://x/1.png?token=a")).toBe("https://x/1.png?token=a");
+  });
+
+  it("maps a failed signing to null, not an empty src/href", () => {
+    // The signing helpers report failure as "", which slips past a `!== null`
+    // guard and makes the browser re-request the current document.
+    expect(usableUrl("")).toBeNull();
+    expect(usableUrl("   ")).toBeNull();
+  });
+
+  it("maps null and undefined to null", () => {
+    expect(usableUrl(null)).toBeNull();
+    expect(usableUrl(undefined)).toBeNull();
+  });
+
+  it("trims surrounding whitespace", () => {
+    expect(usableUrl("  https://x/1.png  ")).toBe("https://x/1.png");
+  });
+});
+
 describe("signedUrlsByPath", () => {
   const entries: SignedUrlEntry[] = [
     { path: "frames/1.png", signedUrl: "https://x/1?token=a" },
@@ -187,6 +210,7 @@ describe("signedUrlsByPath", () => {
     const urls = signedUrlsByPath([
       { path: "frames/1.png", signedUrl: "https://x/1?token=a" },
       { path: "frames/2.png", signedUrl: null },
+      { path: "frames/3.png", signedUrl: "" },
       { path: null, signedUrl: "https://x/orphan" },
       { path: "frames/4.png" },
     ]);
@@ -194,6 +218,7 @@ describe("signedUrlsByPath", () => {
     expect(urls.size).toBe(1);
     expect(urls.get("frames/1.png")).toBe("https://x/1?token=a");
     expect(urls.has("frames/2.png")).toBe(false);
+    expect(urls.has("frames/3.png")).toBe(false);
   });
 
   it("returns an empty map for null, undefined, or no entries", () => {

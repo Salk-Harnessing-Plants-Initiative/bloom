@@ -48,6 +48,16 @@ export function clampFrameIndex(index: number, total: number): number {
   return Math.min(Math.max(Math.trunc(index), 0), total - 1);
 }
 
+// A signed URL we can actually put in an href/src, or null. Signing helpers
+// report failure as an empty string, which passes a `!== null` guard and lands
+// in the DOM as `src=""` / `href=""` — the browser then resolves that against
+// the current document and re-requests the page. Normalising to null keeps
+// those guards meaningful.
+export function usableUrl(url: string | null | undefined): string | null {
+  const trimmed = url?.trim();
+  return trimmed ? trimmed : null;
+}
+
 // Signed URLs keyed by storage path. Keying by path (rather than trusting the
 // response order) means a partial or reordered batch response can't shift a
 // URL onto the wrong frame — a missing path simply has no URL.
@@ -56,7 +66,8 @@ export function signedUrlsByPath(
 ): Map<string, string> {
   const byPath = new Map<string, string>();
   for (const entry of entries ?? []) {
-    if (entry?.path && entry?.signedUrl) byPath.set(entry.path, entry.signedUrl);
+    const url = usableUrl(entry?.signedUrl);
+    if (entry?.path && url) byPath.set(entry.path, url);
   }
   return byPath;
 }
