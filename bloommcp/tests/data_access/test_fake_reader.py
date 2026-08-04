@@ -120,6 +120,17 @@ def test_fail_next_load_is_scoped_to_name_and_version():
         reader.load_experiment("exp.csv", version="v3")
 
 
+def test_fail_next_load_fires_even_for_an_unseeded_experiment():
+    """The injected failure is checked before any resolution logic -- including
+    the not-found check -- so it takes priority even over an experiment that
+    was never seeded at all. Pins that ordering against a future regression
+    that might move the check after the not-found path."""
+    reader = FakeReader()
+    reader.fail_next_load("missing.csv", version="raw")
+    with pytest.raises(ExperimentReadError):
+        reader.load_experiment("missing.csv", version="raw")
+
+
 def test_list_experiments_empty_then_populated():
     reader = FakeReader()
     assert reader.list_experiments() == []
