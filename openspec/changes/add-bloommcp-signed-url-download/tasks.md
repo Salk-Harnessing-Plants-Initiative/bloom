@@ -149,8 +149,10 @@ there is no intermediate green state to split across (mirrors the `#419` precede
 - [ ] 4.4 Update this file's existing forward-reference ("this reshapes the same
       `supabase_client.py` storage boundary that #388... will build signed-URL downloads on") to
       reflect that this piece has landed, with #388's remaining upload/explorer thirds pending.
-- [ ] 4.5 Update `bloommcp/docs/roadmap.md` and `bloommcp/docs/data-access-roadmap.md`'s entries
-      tracking this work as pending, to reflect it shipping.
+- [ ] 4.5 Update `bloommcp/docs/roadmap.md`'s Deferred-line entry for "#388 Part 2 — download
+      outputs / signed URLs" to reflect it shipping. (`bloommcp/docs/data-access-roadmap.md` is
+      the unrelated DB-direct-trait-read program's roadmap — confirmed it has no entry for this
+      work; no update needed there.)
 - [ ] 4.6 Update each of the 8 tools' `Result` model docstrings/field descriptions to mention
       `output_links` alongside the existing `outputs` description.
 

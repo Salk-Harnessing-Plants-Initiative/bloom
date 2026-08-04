@@ -54,7 +54,7 @@ scoped out as the place to start.
   `bloom_mcp/result_store/{ports,_artifacts,supabase_store,fake_store}.py`, all 8
   `sections/sleap_roots/analysis/*.py` tool files, `bloommcp/tests/conftest.py`,
   `bloommcp/docs/storage-backends.md`, `bloommcp/docs/roadmap.md`,
-  `bloommcp/docs/data-access-roadmap.md`, `docker-compose.dev.yml`, `docker-compose.prod.yml`
+  `docker-compose.dev.yml`, `docker-compose.prod.yml`
 - Unaffected: `manifest.json` schema and bytes (no version bump — signed URLs are ephemeral
   and are never persisted into the manifest), `get_run`/`list_runs`/`list_existing_analyses`
   (deliberately out of scope — see Non-Goals), the `supabase`/`storage3` dependency pin
