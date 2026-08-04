@@ -3,6 +3,8 @@
 from .fake_store import FakeResultStore
 from .ports import (
     CommitFailedError,
+    ManifestIncompatibleError,
+    ManifestReadError,
     ResultStore,
     ResultStoreError,
     RunHandle,
@@ -15,6 +17,8 @@ from .supabase_store import SupabaseResultStore
 __all__ = [
     "CommitFailedError",
     "FakeResultStore",
+    "ManifestIncompatibleError",
+    "ManifestReadError",
     "ResultStore",
     "ResultStoreError",
     "RunHandle",

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from ._artifacts import hash_outputs, validate_outputs
 from ._locks import KeyedLock
 from .ports import (
     CommitFailedError,
+    ManifestReadError,
     RunHandle,
     RunNotFoundError,
     RunStateError,
@@ -92,6 +94,15 @@ class FakeResultStore:
         # to commit()'s pre-append recheck, simulating a collision that lands
         # after the pre-record check already passed. See `seed_collision`.
         self._pending_collisions: dict[tuple[str, str], list[str]] = {}
+        # One-shot: (experiment, tool_class) pairs armed by `fail_next_read`,
+        # consumed by whichever of create_run/list_runs/get_run is called
+        # first for that key. Guarded by its own lock (not `KeyedLock` — this
+        # protects one shared set's check-then-discard, not per-key mutual
+        # exclusion) so two threads racing the same armed key can't both
+        # observe it set before either discards it, which would break the
+        # documented one-shot contract.
+        self._fail_next_read: set[tuple[str, str]] = set()
+        self._fail_next_read_lock = threading.Lock()
 
     def create_run(
         self,
@@ -103,6 +114,7 @@ class FakeResultStore:
         source_csv: Optional[Path] = None,
         source: Optional["SourceInfo"] = None,
     ) -> RunHandle:
+        self._maybe_fail_read(experiment, tool_class)
         if source is not None:
             provenance = provenance.model_copy(
                 update={
@@ -251,6 +263,7 @@ class FakeResultStore:
             return stored
 
     def list_runs(self, experiment: str, tool_class: str) -> list[StoredRun]:
+        self._maybe_fail_read(experiment, tool_class)
         return list(self._runs.get((experiment, tool_class), []))
 
     def get_run(
@@ -259,6 +272,7 @@ class FakeResultStore:
         tool_class: str,
         run_ref: str = "latest",
     ) -> StoredRun:
+        self._maybe_fail_read(experiment, tool_class)
         runs = self._runs.get((experiment, tool_class), [])
         if not runs:
             raise RunNotFoundError(f"No runs for {tool_class}/{_stem(experiment)}.")
@@ -272,6 +286,35 @@ class FakeResultStore:
         )
 
     # --- Test-only failure/collision injection ------------------------------
+
+    def fail_next_read(self, experiment: str, tool_class: str) -> None:
+        """The next `create_run`/`list_runs`/`get_run` call for
+        `(experiment, tool_class)` — whichever is called first — raises
+        `ManifestReadError` once, then clears itself.
+
+        Mirrors `fail_next_commit`'s one-shot pattern: #596 guards each of the
+        three read call sites against a real manifest-read failure on
+        `SupabaseResultStore`, but this fake's flat in-memory dict has no read
+        of its own to fail organically — this hook is the only way to
+        exercise that guard's contract without a live Supabase adapter. Only
+        the generic `ManifestReadError` is simulated, not the
+        schema-incompatible subtype (`ManifestIncompatibleError`) — manifest
+        schema parsing is a real-backend-only concern this flat model has no
+        equivalent of.
+        """
+        with self._fail_next_read_lock:
+            self._fail_next_read.add((experiment, tool_class))
+
+    def _maybe_fail_read(self, experiment: str, tool_class: str) -> None:
+        key = (experiment, tool_class)
+        with self._fail_next_read_lock:
+            armed = key in self._fail_next_read
+            if armed:
+                self._fail_next_read.discard(key)
+        if armed:
+            raise ManifestReadError(
+                f"Simulated manifest read failure for {tool_class}/{_stem(experiment)}."
+            )
 
     def fail_next_commit(
         self, experiment: str, tool_class: str, *, after_outputs: int = 0
