@@ -45,13 +45,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS cyl_video_jobs_one_active_per_scan
   ON public.cyl_video_jobs(scan_id) WHERE status IN ('queued', 'processing');
 ALTER TABLE public.cyl_video_jobs ENABLE ROW LEVEL SECURITY;
 
--- Reads: real user sessions poll their job status. The custom_access_token_hook rewrites the JWT
--- role claim to bloom_user / bloom_writer / bloom_admin (never the raw `authenticated` role), and
--- PostgREST sets the session role from that claim — so the read policy targets those roles, not
--- `authenticated` (which no real session holds, which would make this table unreadable). The
--- service itself reads/writes only through the SECURITY DEFINER functions below (they bypass RLS as
--- the owner), so bloom_workflows needs no direct SELECT grant or policy here. All writes go through
--- those functions, so no write grants.
+-- Frontend polls job status: real sessions get role bloom_user/writer/admin from the JWT hook
+-- (never `authenticated`), so the read policy targets those. The service touches the table only via
+-- the SECURITY DEFINER wrappers below (which bypass RLS), so it needs no direct grant.
 DROP POLICY IF EXISTS cyl_video_jobs_read ON public.cyl_video_jobs;
 CREATE POLICY cyl_video_jobs_read ON public.cyl_video_jobs
   FOR SELECT TO bloom_user, bloom_writer, bloom_admin USING (true);
@@ -76,6 +72,11 @@ BEGIN
   LIMIT 1;
   IF v_job_id IS NOT NULL THEN
     RETURN v_job_id;  -- already queued/processing
+  END IF;
+
+  -- Skip if a video already exists for this scan
+  IF EXISTS (SELECT 1 FROM public.cyl_scan_videos WHERE scan_id = p_scan_id) THEN
+    RETURN NULL;  -- already generated; nothing enqueued
   END IF;
 
   -- Insert the new job. If a concurrent enqueue won the race for this scan, the

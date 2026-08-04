@@ -32,6 +32,11 @@ def enqueue_experiment_scan_video(experiment_id: int, scan_id: int) -> dict:
         "enqueue_cyl_video",
         {"p_scan_id": scan_id, "p_experiment_id": experiment_id},
     ).execute()
+    if res.data is None:
+        return {
+            "job_id": None,
+            "status": "exists",
+        }  # a video already exists; nothing enqueued
     return {"job_id": res.data, "status": "queued"}
 
 

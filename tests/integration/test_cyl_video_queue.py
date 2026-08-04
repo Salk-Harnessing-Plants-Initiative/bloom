@@ -42,6 +42,26 @@ def test_enqueue_creates_queued_job(pg_conn):
         pg_conn.rollback()
 
 
+def test_enqueue_skips_when_video_already_exists(pg_conn):
+    # A scan that already has a video (cyl_scan_videos row) must not be re-enqueued: enqueue
+    # returns NULL and creates no job, so the worker never re-renders an existing video.
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id = _new_scan(cur)
+            cur.execute(
+                "INSERT INTO public.cyl_scan_videos (scan_id, path, frames) VALUES (%s, %s, %s)",
+                (scan_id, f"cyl-videos/{scan_id}.mp4", 72),
+            )
+            cur.execute("SELECT public.enqueue_cyl_video(%s, %s)", (scan_id, 42))
+            assert cur.fetchone()[0] is None  # skipped — no job id returned
+            cur.execute(
+                "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s", (scan_id,)
+            )
+            assert cur.fetchone()[0] == 0  # and no job row created
+    finally:
+        pg_conn.rollback()
+
+
 def test_enqueue_is_idempotent_per_scan(pg_conn):
     # The partial unique index + fast-path must collapse repeat enqueues into one job.
     try:

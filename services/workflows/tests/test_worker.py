@@ -150,3 +150,13 @@ def test_enqueue_returns_job_id(monkeypatch):
     assert result == {"job_id": "job-42", "status": "queued"}
     assert client.rpc_calls[0][0] == "enqueue_cyl_video"
     assert client.rpc_calls[0][1] == {"p_scan_id": 5, "p_experiment_id": 1}
+
+
+def test_enqueue_skips_when_video_exists(monkeypatch):
+    # enqueue_cyl_video returns NULL when a video already exists for the scan → status "exists".
+    client = _EnqueueClient(job_id=None)  # RPC returns NULL
+    monkeypatch.setattr(video_queue, "app_client", lambda: client)
+    monkeypatch.setattr(video_queue, "scan_in_experiment", lambda c, e, s: True)
+
+    result = video_queue.enqueue_experiment_scan_video(1, 5)
+    assert result == {"job_id": None, "status": "exists"}
