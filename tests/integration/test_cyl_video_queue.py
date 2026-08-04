@@ -55,7 +55,8 @@ def test_enqueue_skips_when_video_already_exists(pg_conn):
             cur.execute("SELECT public.enqueue_cyl_video(%s, %s)", (scan_id, 42))
             assert cur.fetchone()[0] is None  # skipped — no job id returned
             cur.execute(
-                "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s", (scan_id,)
+                "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s",
+                (scan_id,),
             )
             assert cur.fetchone()[0] == 0  # and no job row created
     finally:
@@ -74,7 +75,8 @@ def test_enqueue_is_idempotent_per_scan(pg_conn):
 
             assert first == second
             cur.execute(
-                "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s", (scan_id,)
+                "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s",
+                (scan_id,),
             )
             assert cur.fetchone()[0] == 1
     finally:
@@ -172,7 +174,8 @@ def test_wrappers_denied_to_public(pg_conn):
                     )
                     assert cur.fetchone()[0] is False, f"{role} must NOT execute {sig}"
                 cur.execute(
-                    "SELECT has_function_privilege('bloom_workflows', %s, 'EXECUTE')", (sig,)
+                    "SELECT has_function_privilege('bloom_workflows', %s, 'EXECUTE')",
+                    (sig,),
                 )
                 assert cur.fetchone()[0] is True, f"bloom_workflows must execute {sig}"
     finally:
@@ -186,10 +189,13 @@ def test_cyl_video_jobs_readable_by_bloom_user(pg_conn):
     try:
         with pg_conn.cursor() as cur:
             scan_id = _new_scan(cur)
-            cur.execute("SELECT public.enqueue_cyl_video(%s, %s)", (scan_id, 42))  # seed one job
+            cur.execute(
+                "SELECT public.enqueue_cyl_video(%s, %s)", (scan_id, 42)
+            )  # seed one job
             cur.execute("SET LOCAL ROLE bloom_user")
             cur.execute(
-                "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s", (scan_id,)
+                "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s",
+                (scan_id,),
             )
             assert cur.fetchone()[0] == 1  # a real user session can read its job status
             cur.execute("RESET ROLE")
@@ -206,7 +212,9 @@ def test_claim_dead_letters_poison_message(pg_conn):
             scan_id = _new_scan(cur)
             cur.execute("SELECT public.enqueue_cyl_video(%s, %s)", (scan_id, 1))
             job_id = cur.fetchone()[0]
-            cur.execute("SELECT msg_id FROM public.cyl_video_jobs WHERE id = %s", (job_id,))
+            cur.execute(
+                "SELECT msg_id FROM public.cyl_video_jobs WHERE id = %s", (job_id,)
+            )
             msg_id = cur.fetchone()[0]
 
             # Pretend the worker has already crashed on this message many times.
@@ -220,7 +228,134 @@ def test_claim_dead_letters_poison_message(pg_conn):
             assert cur.fetchone() is None
 
             job = _job(cur, job_id)
-            assert job["status"] == "failed"   # dead-lettered by read_ct...
-            assert job["attempts"] == 0        # ...even though fail_job never ran
+            assert job["status"] == "failed"  # dead-lettered by read_ct...
+            assert job["attempts"] == 0  # ...even though fail_job never ran
+
+            # The message was genuinely archived (moved to pgmq's archive table), not merely
+            # hidden — a hidden message would also make the claim above return None.
+            cur.execute(
+                "SELECT count(*) FROM pgmq.a_cyl_video_generation WHERE msg_id = %s",
+                (msg_id,),
+            )
+            assert cur.fetchone()[0] == 1
     finally:
         pg_conn.rollback()
+
+
+def test_complete_is_idempotent_on_redelivery(pg_conn):
+    # If a completion RPC is lost, the message redelivers and the worker re-completes. Calling
+    # complete_cyl_video_job twice (the msg_id already deleted on the first call) must be a
+    # harmless no-op that leaves the job 'complete' — the worker's "leave for idempotent
+    # completion" strategy (worker.py) depends on this.
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id = _new_scan(cur)
+            cur.execute("SELECT public.enqueue_cyl_video(%s, %s)", (scan_id, 1))
+            job_id = cur.fetchone()[0]
+            cur.execute("SELECT * FROM public.claim_cyl_video_job(120)")
+            _, _, _, msg_id = cur.fetchone()
+
+            path = f"cyl-videos/{scan_id}.mp4"
+            cur.execute(
+                "SELECT public.complete_cyl_video_job(%s, %s, %s)",
+                (job_id, msg_id, path),
+            )
+            # Second call with the same (already-deleted) msg_id must not raise.
+            cur.execute(
+                "SELECT public.complete_cyl_video_job(%s, %s, %s)",
+                (job_id, msg_id, path),
+            )
+            job = _job(cur, job_id)
+            assert job["status"] == "complete"  # still complete, no error
+            assert job["path"] == path
+    finally:
+        pg_conn.rollback()
+
+
+def test_cyl_video_jobs_hidden_from_anon_and_authenticated(pg_conn):
+    # The read policy targets bloom_user/writer/admin only. Raw anon/authenticated (a session
+    # that never got a JWT-hook role) must not read job status — either RLS hides every row
+    # (count 0) or the role lacks SELECT entirely (permission denied). Both are acceptable;
+    # what must NOT happen is a raw role reading another lab's job rows.
+    import psycopg
+
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id = _new_scan(cur)
+            cur.execute("SELECT public.enqueue_cyl_video(%s, %s)", (scan_id, 1))
+            for role in ("anon", "authenticated"):
+                cur.execute("SAVEPOINT s")
+                cur.execute(f"SET LOCAL ROLE {role}")
+                try:
+                    cur.execute(
+                        "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s",
+                        (scan_id,),
+                    )
+                    seen = cur.fetchone()[0]
+                except psycopg.errors.InsufficientPrivilege:
+                    seen = "denied"
+                cur.execute(
+                    "ROLLBACK TO SAVEPOINT s"
+                )  # clears any abort + restores role
+                assert seen in (0, "denied"), (
+                    f"{role} must not read job rows, saw {seen}"
+                )
+    finally:
+        pg_conn.rollback()
+
+
+def test_concurrent_enqueue_dedupes_to_one_job(pg_conn, pg_conninfo):
+    # Two INDEPENDENT connections enqueue the SAME scan at once. The partial unique index +
+    # the unique_violation handler must collapse them to ONE job (both calls returning the same
+    # job_id, exactly one row). This exercises the real race the single-connection idempotency
+    # test cannot — that one enqueues twice in one transaction and only hits the read fast-path.
+    import threading
+
+    import psycopg
+
+    with psycopg.connect(pg_conninfo, autocommit=True) as seed, seed.cursor() as cur:
+        cur.execute("INSERT INTO public.cyl_scans DEFAULT VALUES RETURNING id")
+        scan_id = cur.fetchone()[0]
+
+    results = {}
+    barrier = threading.Barrier(2)
+
+    def racer(key):
+        with psycopg.connect(pg_conninfo, autocommit=True) as c, c.cursor() as cur:
+            barrier.wait()  # fire both enqueues as simultaneously as possible
+            cur.execute("SELECT public.enqueue_cyl_video(%s, %s)", (scan_id, 1))
+            results[key] = cur.fetchone()[0]
+
+    try:
+        threads = [threading.Thread(target=racer, args=(k,)) for k in ("a", "b")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        assert (
+            results.get("a") is not None and results["a"] == results["b"]
+        )  # one job_id
+        with psycopg.connect(pg_conninfo, autocommit=True) as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s",
+                (scan_id,),
+            )
+            assert cur.fetchone()[0] == 1  # exactly one job row, not two
+    finally:
+        # Rows are committed (independent connections), so clean up explicitly, including the
+        # one pgmq message the winning enqueue sent (the loser's unique_violation sent none).
+        with psycopg.connect(pg_conninfo, autocommit=True) as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT msg_id FROM public.cyl_video_jobs WHERE scan_id = %s",
+                (scan_id,),
+            )
+            for (mid,) in cur.fetchall():
+                if mid is not None:
+                    cur.execute(
+                        "SELECT pgmq.delete('cyl_video_generation', %s)", (mid,)
+                    )
+            cur.execute(
+                "DELETE FROM public.cyl_video_jobs WHERE scan_id = %s", (scan_id,)
+            )
+            cur.execute("DELETE FROM public.cyl_scans WHERE id = %s", (scan_id,))
