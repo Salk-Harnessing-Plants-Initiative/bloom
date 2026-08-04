@@ -37,6 +37,7 @@ def local_env(monkeypatch, tmp_path):
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(store))
     monkeypatch.setenv("BLOOM_EXPERIMENT_LOCAL_ROOT", str(inp))
+    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
     sb.reset_backend_for_tests()
     try:
         yield inp, store

@@ -86,7 +86,7 @@ tools ·`find_tools`+ RAG-MCP (Phase 3) · URL-namespace versioning · api-diff 
 
 | #388 part | Builds on | Gated by | Size |
 |---|---|---|---|
-| 2 — download outputs / signed URLs | `create_signed_url` on the `StorageBackend` seam (#389) | just needs #389 merged; wants C | small |
+| 2 — download outputs / signed URLs | `create_signed_url` on the `StorageBackend` seam (#389) | ✅ **done** — landed as [#581](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/581); see `storage-backends.md`'s "Downloading outputs" section | small |
 | 1 — upload inputs via chat | `ExperimentReader` + `bloommcp_input/` consolidation | input consolidation + a provenance decision for ad-hoc CSVs | medium |
 | 3 — web + CLI file explorer | `list_prefix`/signed-URL + web/CLI surfaces | **deferred per-user-identity + real RLS** (else the explorer exposes all users' files under the shared `bloom_agent`) | large |
 

@@ -378,4 +378,5 @@ def pca_analysis(
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,
         outputs=dict(stored.output_keys),
+        output_links=stored.output_links,
     )

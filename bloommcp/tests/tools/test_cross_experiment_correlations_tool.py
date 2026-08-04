@@ -845,10 +845,20 @@ def test_source_csv_content_addresses_both_inputs(injected_ports):
 
 def test_genotype_means_artifacts_persisted(injected_ports):
     _reader, store = injected_ports
-    _run()
+    result = _run()
     stored = store.get_run(_COMPOSITE_KEY, "correlation", "latest")
     assert "genotype_means_1.csv" in stored.output_keys
     assert "genotype_means_2.csv" in stored.output_keys
+
+    # bloom#581: a signed link + hash + size per output.
+    assert set(result.output_links) == set(result.outputs)
+    for name, key in result.outputs.items():
+        link = result.output_links[name]
+        assert link.key == key
+        assert link.url
+        assert link.sha256 == stored.output_sha256[name]
+        assert link.size_bytes >= 0
+    assert stored.output_links == {}
 
 
 # ── summary serializable, no full matrix inline ──────────────────────────────
