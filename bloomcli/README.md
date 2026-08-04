@@ -46,7 +46,11 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - `bloomctl login` — bootstrap client config from the Bloom server and store
   credentials per profile.
 - **[read]** `bloomctl cyl download <out_dir> …` — download a cylinder experiment
-  or single scan (metadata `scans.csv` + per-frame images).
+  or single scan (metadata `scans.csv` + per-frame images). Select the experiment
+  by `--experiment-id N`, `--scan-id N`, or `--experiment-name "<text>"` (a
+  case-insensitive substring search on the experiment name, run server-side and
+  index-backed; `--species` to narrow; an ambiguous name lists the candidates and
+  exits without downloading).
 - **[read]** `bloomctl cyl download-for-predict <scan-id> <out>` — stage one scan
   into the predict-ready layout (see below); produces a **different** output tree
   than `cyl download` — use this only for A4 pipeline stage-in.
@@ -58,29 +62,167 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
 - **[write]** `bloomctl cyl batch-ingest-result <envelopes_dir>` — write back a
   batch of per-scan `ResultEnvelope`s in one invocation (see below); the batch
   sibling of `ingest-result`, for the A4 per-batch pipeline.
-- **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets
-  (`--experiment-id` to scope to one experiment, `--output csv|json` for machine-readable output).
+- **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets (all by
+  default). Scope to one experiment with `--experiment-id N` (scriptable) or
+  `--experiment` to **pick one from a menu** (needs a terminal). `--output csv|json`
+  for machine-readable output.
 - **[read]** `bloomctl cyl datasets get <name>` — show one dataset's details and the
   unique traits it contains, via the `cyl_dataset_trait_names` view (`--json` output).
 - **[write]** `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
   create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`).
 - **[read]** `bloomctl cyl experiments list` — list cylinder experiments (species,
-  name, id), sorted by species then name. Pass `--species` to **pick a species from
-  an interactive menu** (needs a terminal) and filter to it. Choose the output with
-  `--output csv|json` (default is the table; `--json` is an alias for
+  name, id), sorted by species then name. Filter with `--species NAME` (scriptable) or
+  `--species-menu` to **pick a species from a menu** (needs a terminal). Choose the output
+  with `--output csv|json` (default is the table; `--json` is an alias for
   `--output json`) — handy for grabbing an `experiment_id` for `cyl download`;
   `--limit` caps the fetch.
-- **[read]** `bloomctl cyl accessions list --experiment-id N` — list the accessions
-  used in an experiment (`--output csv|json` for machine-readable output).
-- **[read]** `bloomctl cyl accessions sample-counts [--species X]` — plant count per
-  accession, per species (`--output csv|json`).
+- **[read]** `bloomctl cyl accessions list` — list the accessions used in an
+  experiment. Pass `--experiment-id N` (scriptable), or omit it to **pick an
+  experiment from a menu** (needs a terminal). `--output csv|json` for
+  machine-readable output.
+- **[read]** `bloomctl cyl accessions sample-counts` — plant count per accession, per
+  species. Filter with `--species NAME` (scriptable) or `--species-menu` to **pick a
+  species from a menu** (needs a terminal); omit both for all species. `--output csv|json`
+  for machine-readable output.
 - **[read]** `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species,
   experiment, number of QC codes). Prints a table by default; `--output csv|json`
   for machine-readable output.
 
-(Full `cyl download` usage docs are still forthcoming; run any command
-with `--help` in the meantime. `cyl ingest-result` and `cyl download-for-predict`
-are documented in full below.)
+Run `bloomctl <command> --help` for the full option list of any command.
+
+## Common conventions
+
+These apply across the `cyl` commands, so the per-command sections below stay short:
+
+- **Profiles** — every command takes `-p/--profile <name>` (default `prod`). `bloomctl login`
+  writes a profile; use separate profiles to keep prod / staging / local logins side by side
+  (`bloomctl login --server <url> -p staging`, then `… -p staging` on any command).
+- **Machine-readable output** — the `list` commands take `--output csv|json` (with `--json` as a
+  back-compat alias for `--output json`); the default is a human table. Pipe it: e.g.
+  `cyl experiments list --output json | jq '.[].experiment_id'`.
+- **Species selector** — commands that filter by species take `--species <common-name>` (a typed,
+  scriptable value) or `--species-menu` to pick from a numbered menu; the two are mutually exclusive,
+  and omitting both means all species. `--species` is **always a value**, `--species-menu` is
+  **always the picker** — the same everywhere (`experiments list`, `accessions sample-counts`, and
+  the typed `--species` narrower on `download --experiment-name`).
+- **Interactive pickers** — the menu flags (`--species-menu`, and `--experiment` on `datasets list`)
+  print a numbered menu to **stderr** (so `--output` on stdout stays clean) and need a terminal. In
+  a pipe/CI there's no one to answer, so they **abort rather than guess** — for scripting, pass the
+  typed value/id instead.
+- **Read vs write** — see [Access & roles](#access--roles). Browsing/downloading works for any
+  logged-in user; the **[write]** commands need an account with write access.
+
+## Worked example: from login to a downloaded experiment
+
+A start-to-finish walkthrough for the common task — *"get me the images + metadata for the soybean
+drought experiment."*
+
+```bash
+# 1. Log in (once). Defaults to prod; use --server + -p for a named staging/local profile.
+bloomctl login
+#    → prompts for email + password; writes credentials to ~/.bloom
+
+# 2. Find the experiment — browse by species from a menu (menu prints to stderr):
+bloomctl cyl experiments list --species-menu
+#    Select a species:
+#      0) All species
+#      1) Arabidopsis
+#      2) Soybean
+#    → prints the table; note the experiment_id you want, e.g. 42
+#    (or skip this and let `download` resolve the name — see step 4)
+
+# 3. (optional) Sanity-check the contents before pulling gigabytes of images:
+bloomctl cyl accessions list --experiment-id 42       # which accessions are in it
+bloomctl cyl accessions sample-counts --species-menu  # plant count per accession (pick a species)
+bloomctl cyl datasets list --experiment-id 42         # any trait datasets already built
+
+# 4. Download it — metadata only first to preview, then the full pull:
+bloomctl cyl download ./soy-drought --experiment-id 42 --meta-only   # scans.csv only
+bloomctl cyl download ./soy-drought --experiment-id 42               # scans.csv + all frames
+#    …or without ever looking up the id:
+bloomctl cyl download ./soy-drought --experiment-name "drought" --species Soybean
+```
+
+Result: `./soy-drought/scans.csv` (one row per scan) plus `./soy-drought/images/Wave{n}/…` (the
+frames). Hand that directory to your analysis — or use `cyl download-for-predict` to stage scans for
+the SLEAP-roots pipeline (below). For scripting, swap the menus for explicit ids and add
+`--output json` (see [Common conventions](#common-conventions)).
+
+## `bloomctl cyl download`
+
+Download a whole experiment (or a single scan): the metadata table `scans.csv` plus every frame
+image, into `<out_dir>`.
+
+```
+bloomctl cyl download <out_dir>
+  ( --experiment-id N | --scan-id N | --experiment-name "<text>" [--species <name>] )
+  [--meta-only] [--plant-qr-code QR] [--plant-age-min D] [--plant-age-max D]
+  [--limit N] [-p/--profile PROFILE]
+```
+
+Pick **exactly one** target:
+
+- `--experiment-id N` — download the whole experiment by id (the scriptable path).
+- `--scan-id N` — download a single scan.
+- `--experiment-name "<text>"` — resolve the experiment **by name** (a case-insensitive substring
+  match, run server-side) and download it. `--species <name>` narrows when a name is ambiguous.
+  - one match → downloads it (prints `Matched: <name> (id N)` to stderr);
+  - several matches → lists the candidates (id · name · species · created) and **exits without
+    downloading** — so a pipeline never fetches the wrong experiment;
+  - no match → a clear error.
+
+Other options: `--meta-only` (write `scans.csv`, skip images), `--plant-qr-code` (one plant),
+`--plant-age-min/--plant-age-max` (age window in days, default 0–1000), `--limit` (max scans,
+default 100000).
+
+```bash
+# by id, or just by name
+bloomctl cyl download ./out --experiment-id 42
+bloomctl cyl download ./out --experiment-name "drought 2024"
+
+# narrow an ambiguous name to one species; metadata only
+bloomctl cyl download ./out --experiment-name soy --species Soybean --meta-only
+
+# a single scan
+bloomctl cyl download ./out --scan-id 9001
+```
+
+> `--experiment-name` requires the `cyl_experiment_search` DB function (migration
+> `…_add_cyl_experiment_search.sql`) to be applied on the server you're pointed at.
+
+## Finding what to download
+
+The read commands help you go from "which experiment?" to an id you can feed `cyl download`:
+
+```bash
+# browse experiments; pick a species from a menu, or list all as JSON
+bloomctl cyl experiments list --species-menu
+bloomctl cyl experiments list --output json | jq -r '.[] | "\(.experiment_id)\t\(.experiment)"'
+
+# what accessions / how many plants are in an experiment
+bloomctl cyl accessions list --experiment-id 42
+bloomctl cyl accessions sample-counts --species-menu     # pick a species from the menu
+bloomctl cyl accessions sample-counts --species Canola    # or filter directly (scriptable)
+
+# trait datasets and QC sets
+bloomctl cyl datasets list --experiment                  # pick the experiment from the menu
+bloomctl cyl datasets get canola-v1
+bloomctl cyl qc list-sets --output csv
+```
+
+- `experiments list` — species · name · id, sorted; `--limit` caps the fetch (default/max 1000 and
+  warns on stderr if it's hit).
+- `accessions list` — accessions used in one experiment; hybrid selector (`--experiment-id`, or a
+  menu when omitted).
+- `accessions sample-counts` — plant count per accession per species, **pooled across all
+  experiments** (a total headcount, not a per-experiment replicate count).
+- `datasets list` / `get` — trait datasets (filter by `--experiment`); `get <name>` shows one
+  dataset's details and the unique traits it contains.
+- `qc list-sets` — QC sets for live experiments; `--include-deleted` also shows sets on
+  soft-deleted experiments.
+
+(`cyl ingest-result`, `cyl download-for-predict`, and their batch siblings are documented in full
+below.)
 
 ## `bloomctl cyl download-for-predict`
 
