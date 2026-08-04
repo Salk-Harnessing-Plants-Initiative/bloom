@@ -128,6 +128,8 @@ BEGIN
   -- own per-delivery counter, so it catches crashes that never run fail_cyl_video_job.
   -- Dead-letter it instead of handing it out again.
   IF r.read_ct > p_max_reads THEN
+    RAISE WARNING 'cyl_video_job % dead-lettered after % deliveries (poison message)',
+      v_job_id, r.read_ct;
     UPDATE public.cyl_video_jobs
     SET status = 'failed',
         error = coalesce(error, format('dead-lettered after %s deliveries', r.read_ct)),
@@ -137,9 +139,11 @@ BEGIN
     RETURN;  -- poison message — do not hand it to the worker again
   END IF;
 
+  -- Guard on the non-terminal states: a terminal job never keeps a live message today, but
+  -- guarding here means no future stray-message path can revive a 'complete'/'failed' job.
   UPDATE public.cyl_video_jobs
   SET status = 'processing', started_at = now()
-  WHERE id = v_job_id;
+  WHERE id = v_job_id AND status IN ('queued', 'processing');
 
   RETURN QUERY SELECT
     v_job_id,
@@ -205,5 +209,14 @@ GRANT EXECUTE ON FUNCTION public.enqueue_cyl_video(bigint, bigint) TO bloom_work
 GRANT EXECUTE ON FUNCTION public.claim_cyl_video_job(integer, integer) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.fail_cyl_video_job(uuid, bigint, text, integer) TO bloom_workflows;
+
+-- Deterministic DEFINER identity: pin the owner to postgres (rolbypassrls = true), which
+-- these functions rely on to write RLS-protected cyl_video_jobs and to use pgmq. Without an
+-- explicit owner the DEFINER role would be whoever applies the migration. Matches the
+-- established SECURITY DEFINER convention (e.g. insert_cyl_result_envelope).
+ALTER FUNCTION public.enqueue_cyl_video(bigint, bigint) OWNER TO postgres;
+ALTER FUNCTION public.claim_cyl_video_job(integer, integer) OWNER TO postgres;
+ALTER FUNCTION public.complete_cyl_video_job(uuid, bigint, text) OWNER TO postgres;
+ALTER FUNCTION public.fail_cyl_video_job(uuid, bigint, text, integer) OWNER TO postgres;
 
 COMMIT;

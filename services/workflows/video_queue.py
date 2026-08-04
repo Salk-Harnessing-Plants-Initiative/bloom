@@ -55,7 +55,7 @@ def complete_job(client, job_id: str, msg_id: int, path: str) -> None:
 
 
 def fail_job(client, job_id: str, msg_id: int, error) -> None:
-    """Record a failure (retry via vt expiry, or dead-letter after max attempts)."""
+    """Record a terminal failure: mark the job 'failed' and dead-letter the message."""
     client.rpc(
         "fail_cyl_video_job",
         {"p_job_id": job_id, "p_msg_id": msg_id, "p_error": str(error)[:500]},

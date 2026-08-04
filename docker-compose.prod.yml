@@ -257,6 +257,9 @@ services:
       - db-prod
     restart: unless-stopped
     command: ["python", "worker.py"]
+    # Let an in-flight render finish on SIGTERM before SIGKILL (> WORKFLOWS_WORKER_VT_SECONDS,
+    # default 120s), so a deploy doesn't strand a job in 'processing' mid-encode.
+    stop_grace_period: 150s
 
   # -------------------
   # Bloom MCP Server
