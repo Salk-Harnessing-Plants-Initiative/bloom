@@ -93,6 +93,14 @@ from bloom_mcp.experiment_utils import (
     CLEANED_CSV_NAME,
     OUTLIER_REPORT_NAME,
     OUTLIERS_TOOL_CLASS,
+    # This module-level name shares its name with `RemoveOutliersResult.fit_is_
+    # trustworthy` (the Pydantic field, below) and was previously safe from
+    # shadowing only because the function was underscore-prefixed pre-#593. The
+    # local variable in `remove_outliers()` is deliberately named `trustworthy`,
+    # not `fit_is_trustworthy`, to avoid a future `fit_is_trustworthy =
+    # fit_is_trustworthy(...)` silently reassigning this import to a bool/None
+    # within that function's scope. Keep it that way if this function is ever
+    # touched again.
     fit_is_trustworthy,
 )
 from bloom_mcp.tools import _ports

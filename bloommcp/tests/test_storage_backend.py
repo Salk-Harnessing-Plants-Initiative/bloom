@@ -1397,6 +1397,17 @@ def test_fit_is_trustworthy_true_when_fit_quality_key_absent():
     assert eu.fit_is_trustworthy({}) is True
 
 
+def test_fit_is_trustworthy_true_for_an_out_of_enum_fit_quality_value():
+    """(#593 PR review) A `fit_quality` value outside the known tiers entirely —
+    a typo, or a future delegate release adding a new tier this codebase doesn't
+    know about yet — fails open (reads trustworthy) via the exact same membership
+    check as the missing-key case above. Documented as a known false-negative
+    risk (design.md Risks, `#593`'s `SCOPE_NOTE`) rather than a silent one."""
+    from bloom_mcp import experiment_utils as eu
+
+    assert eu.fit_is_trustworthy({"fit_quality": "moderate"}) is True
+
+
 def test_remove_outliers_no_longer_defines_its_own_fit_trustworthy_primitives():
     """(#593) Symbol-relocation regression guard, mirroring #403's
     `test_role_pattern_lists_live_here_not_in_experiment_utils` (inverted

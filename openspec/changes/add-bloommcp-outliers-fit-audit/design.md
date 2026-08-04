@@ -126,6 +126,23 @@
 - **The Decision 2 scope gap is real, not hypothetical**, though expected to be small and
   shrinking (see Decision 2's reasoning). Not fixed here; left as an explicit, disclosed Non-Goal
   and Open Question rather than silently absent from either this design or the issue it closes.
+- **A known false-negative risk in `fit_is_trustworthy` itself, surfaced by a PR review: a
+  `goodness_of_fit` dict with no `fit_quality` key at all reads as trustworthy** (`dict.get`
+  returns `None`; `None not in UNTRUSTWORTHY_FIT_QUALITIES` is `True`). This is the live `#419`
+  gate's own pre-existing behavior, unchanged by Decision 1's promotion — but it matters *more*
+  for this audit than it did for the gate: the gate only ever evaluates a report the currently-
+  running `sleap_roots_analyze` just produced (which always includes `fit_quality`, if a
+  goodness-of-fit dict is present at all), while this audit specifically targets runs old enough
+  to predate the `#419` gate — some of that scanned population may also predate whatever
+  `sleap_roots_analyze` release first introduced `fit_quality` tiering. A legacy report shaped
+  with `goodness_of_fit` present but no tiering ever computed is arguably the *most* suspect case
+  (an untrustworthy fit that was never even checked), yet reads as clean today. Not fixed here —
+  changing `fit_is_trustworthy`'s behavior would need its own decision (it's shared with the live
+  gate; Decision 1's entire point was that the two must never diverge, so this isn't a change to
+  make unilaterally inside an audit script) — but now disclosed in `SCOPE_NOTE` (persisted into
+  every report) and pinned by a regression test (`test_fit_is_trustworthy_true_when_fit_quality_key_absent`
+  in `test_storage_backend.py`, plus an equivalent out-of-enum-value test) so this is a known,
+  tracked limitation rather than a silent one.
 - **Same single-active-backend limitation `#585` already inherits** (open issue #573: `supabase`/
   `local` backends each own a physically disjoint manifest) — this script reads through the same
   `AnalysisDir`/storage-backend seam, so a backend-split experiment's history could give an

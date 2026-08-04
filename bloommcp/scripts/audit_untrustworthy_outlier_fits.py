@@ -79,7 +79,14 @@ SCOPE_NOTE = (
     "Reports only experiments whose CURRENT latest outliers_<stem> entry has an "
     "untrustworthy recorded fit. Does NOT scan legacy qc_<stem> manifests for a "
     "never-superseded pre-#420 remove_outliers entry with no outliers_<stem> "
-    "manifest at all -- see design.md Decision 2 (add-bloommcp-outliers-fit-audit)."
+    "manifest at all -- see design.md Decision 2 (add-bloommcp-outliers-fit-audit). "
+    "KNOWN FALSE-NEGATIVE RISK: a goodness_of_fit dict with no fit_quality key at "
+    "all reads as trustworthy (fails open, matching the #419 live gate's own "
+    "behavior) -- this audit specifically targets runs old enough to predate that "
+    "gate, and some may equally predate whatever sleap-roots-analyze release "
+    "introduced fit_quality tiering, meaning the oldest, arguably most-suspect "
+    "runs are the ones most likely to silently pass this check. See design.md's "
+    "Risks section."
 )
 
 
@@ -149,24 +156,44 @@ def scan_for_untrustworthy_outlier_fits() -> dict[str, Any]:
             report_key = latest_entry.output_keys[OUTLIER_REPORT_NAME]
             report = read_json(report_key)
             trustworthy = fit_is_trustworthy(report.get("goodness_of_fit"))
-            if trustworthy is not False:
-                continue
-            hits.append(
-                {
-                    "stem": stem,
-                    "run_ref": latest_entry.id,
-                    "based_on_version": latest_entry.based_on_version,
-                    "created_at": latest_entry.created_at,
-                    "fit_quality": report["goodness_of_fit"]["fit_quality"],
-                    "method": report["method"],
-                    "n_outliers": report["n_outliers"],
-                    "n_input_samples": report["n_input_samples"],
-                    "n_output_samples": report["n_output_samples"],
-                }
-            )
         except Exception as exc:  # noqa: BLE001 - best-effort forensic sweep, see docstring
             errors.append({"stem": stem, "error": safe_error_text(exc)})
             continue
+        if trustworthy is not False:
+            continue
+        # A real hit is confirmed at this point (fit_is_trustworthy already
+        # guarantees goodness_of_fit is a dict with a present, untrustworthy
+        # fit_quality — see its own docstring — so that lookup is safe to
+        # bare-index). The remaining fields are auxiliary context from the same
+        # persisted report, not part of the hit determination itself, and are
+        # NOT guaranteed present on an old/legacy report this audit specifically
+        # targets (this audit's whole purpose is finding runs old enough to
+        # predate the #419 gate — some may equally predate whatever report
+        # fields a later sleap-roots-analyze release added). A confirmed hit
+        # must never silently downgrade into a generic error just because one
+        # of these auxiliary fields happens to be missing — `.get()` with a
+        # disclosed fallback here, not a bare index inside this same try/except.
+        hits.append(
+            {
+                "stem": stem,
+                # The experiment's original filename (from the manifest's own
+                # ExperimentBlock), not just the storage-prefix stem, so a
+                # zero-context reader of the persisted report months later
+                # doesn't have to reverse-engineer it.
+                "experiment_filename": manifest.experiment.filename,
+                "run_ref": latest_entry.id,
+                "based_on_version": latest_entry.based_on_version,
+                "created_at": latest_entry.created_at,
+                "fit_quality": report["goodness_of_fit"]["fit_quality"],
+                # Always "mahalanobis" in practice (isolation_forest has no
+                # goodness_of_fit, so it can never reach this branch) — the
+                # fallback documents that invariant rather than assuming it.
+                "method": report.get("method", "mahalanobis"),
+                "n_outliers": report.get("n_outliers"),
+                "n_input_samples": report.get("n_input_samples"),
+                "n_output_samples": report.get("n_output_samples"),
+            }
+        )
 
     return {
         "hits": hits,
@@ -209,7 +236,11 @@ def run() -> int:
     Returns `1` only when the scan couldn't run at all (enumeration failed --
     nothing to report). Returns `0` whenever the scan completes, including when
     it reports hits and/or per-stem errors: those are the script's normal,
-    successful output, not a script failure.
+    successful output, not a script failure. Notably, `0` is returned even when
+    EVERY scanned stem individually errored (e.g. "0 hits, 500 errors") -- fine
+    for this script's intended manual, one-shot, human-reads-the-output use, but
+    worth knowing before wrapping this in any future automation that greps the
+    exit code alone rather than the printed/persisted `errors` count.
     """
     try:
         report = scan_for_untrustworthy_outlier_fits()

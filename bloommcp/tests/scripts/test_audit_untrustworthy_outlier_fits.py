@@ -286,14 +286,18 @@ def test_missing_output_key_for_report_is_recorded_as_an_error(local_manifest_ba
     assert report["experiments_scanned"] == 1
 
 
-def test_unreadable_report_json_is_recorded_as_an_error_not_a_crash(
+def test_genuinely_malformed_report_json_is_recorded_as_an_error_not_a_crash(
     local_manifest_backend,
 ):
-    from bloom_mcp.supabase_client import write_json
+    """(#593 PR review) Distinct from the schema-incomplete case below: this is
+    actually-invalid JSON syntax (a truncated/corrupt file), which `read_json`
+    itself cannot parse -- a different failure mode than a well-formed-but-
+    incomplete report."""
+    from bloom_mcp.supabase_client import upload_file
 
     write_outlier_trim_manifest(
         local_manifest_backend,
-        "exp_badreport",
+        "exp_badjson",
         "outliers",
         "v1",
         "2026-01-01T00:00:00Z",
@@ -303,19 +307,62 @@ def test_unreadable_report_json_is_recorded_as_an_error_not_a_crash(
         n_input_samples=158,
         n_output_samples=150,
     )
-    # Corrupt the report after the fact: overwrite with a payload whose
-    # goodness_of_fit is not a dict, forcing a KeyError inside the scan when it
-    # tries to read n_outliers/etc. from an otherwise-empty report.
-    write_json(
-        "bloommcp_output/outliers_exp_badreport/v1_2026-08-04/outlier_report.json",
-        {"goodness_of_fit": {"fit_quality": "very_poor"}},  # missing n_outliers etc.
+    corrupt = local_manifest_backend / "corrupt_report.json"
+    corrupt.write_bytes(b"{not valid json")
+    upload_file(
+        "bloommcp_output/outliers_exp_badjson/v1_2026-08-04/outlier_report.json",
+        corrupt,
     )
 
     report = audit.scan_for_untrustworthy_outlier_fits()
 
-    errors = [e for e in report["errors"] if e["stem"] == "exp_badreport"]
+    assert report["hits"] == []
+    errors = [e for e in report["errors"] if e["stem"] == "exp_badjson"]
     assert len(errors) == 1
     assert report["experiments_scanned"] == 1
+
+
+def test_untrustworthy_fit_is_still_a_hit_when_auxiliary_fields_are_missing(
+    local_manifest_backend,
+):
+    """(#593 PR review, Important Issue #2) A real hit must never silently
+    downgrade into a generic error just because an auxiliary field (`method`,
+    `n_outliers`, etc.) happens to be absent from an old/legacy report -- this
+    audit specifically targets runs old enough to predate the #419 gate, some
+    of which may equally predate whatever report fields a later
+    sleap-roots-analyze release added. Only `goodness_of_fit.fit_quality`
+    (which `fit_is_trustworthy` already guarantees is present once it returns
+    `False`) is required; everything else defaults."""
+    from bloom_mcp.supabase_client import write_json
+
+    write_outlier_trim_manifest(
+        local_manifest_backend,
+        "exp_legacyreport",
+        "outliers",
+        "v1",
+        "2026-01-01T00:00:00Z",
+        based_on_version="v1_cleaned",
+        goodness_of_fit={"fit_quality": "very_poor"},
+        n_outliers=8,
+        n_input_samples=158,
+        n_output_samples=150,
+    )
+    # Overwrite with a well-formed but minimal report -- only goodness_of_fit
+    # present, no method/n_outliers/n_input_samples/n_output_samples at all.
+    write_json(
+        "bloommcp_output/outliers_exp_legacyreport/v1_2026-08-04/outlier_report.json",
+        {"goodness_of_fit": {"fit_quality": "very_poor"}},
+    )
+
+    report = audit.scan_for_untrustworthy_outlier_fits()
+
+    hit = _hit_for(report, "exp_legacyreport")
+    assert hit["fit_quality"] == "very_poor"
+    assert hit["method"] == "mahalanobis"  # defaulted, not a bare KeyError
+    assert hit["n_outliers"] is None
+    assert hit["n_input_samples"] is None
+    assert hit["n_output_samples"] is None
+    assert report["errors"] == []
 
 
 # --- (h) malformed manifest.json -----------------------------------------------
