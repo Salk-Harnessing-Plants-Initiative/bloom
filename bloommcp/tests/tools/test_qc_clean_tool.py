@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -20,6 +21,7 @@ from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._inline_input import compute_input_sha256
 from bloom_mcp.sections.sleap_roots.analysis import qc_clean as qc_clean_tool
 from bloom_mcp.sections.sleap_roots.analysis.qc_clean import (
     QCCleanParams,
@@ -1068,13 +1070,138 @@ def test_cylinder_cleaned_table_matches_golden_shape_and_roles(injected_ports_cy
     assert result.removed_traits == _GOLDEN_CYL["removed_traits"] == []
     assert result.cleaned_nan_cells_remaining == _GOLDEN_CYL["cleaned_trait_nans"] == 0
 
-    assert result.sample_id_column == _GOLDEN_CYL["role_columns"]["barcode_col"] == (
-        "plant_qr_code"
+    assert (
+        result.sample_id_column
+        == _GOLDEN_CYL["role_columns"]["barcode_col"]
+        == ("plant_qr_code")
     )
-    assert result.genotype_column == _GOLDEN_CYL["role_columns"]["genotype_col"] == "Geno"
+    assert (
+        result.genotype_column == _GOLDEN_CYL["role_columns"]["genotype_col"] == "Geno"
+    )
     assert (
         result.replicate_column == _GOLDEN_CYL["role_columns"]["replicate_col"] == "Rep"
     )
     assert sorted(result.excluded_columns) == sorted(
         _GOLDEN_CYL["excluded_from_traits"]
     )
+
+
+# ── inline csv_content input (#582 — ephemeral, no persistence) ─────────────
+
+
+def test_mutual_exclusivity_both_given_is_invalid_input(injected_ports):
+    reader, _store = injected_ports
+    csv_text = _RAW.read_text(encoding="utf-8")
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean({"experiment": _EXPERIMENT, "csv_content": csv_text})
+    assert exc.value.code == "invalid_input"
+
+
+def test_mutual_exclusivity_neither_given_is_invalid_input(injected_ports):
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean({"max_nans_per_trait": _MNT})
+    assert exc.value.code == "invalid_input"
+
+
+def test_inline_cleaning_matches_the_file_based_oracle(injected_ports):
+    """Equivalence oracle: the same turface_19 raw text fed as csv_content produces
+    the identical cleaned-table shape and role resolution as the file-based path."""
+    file_based = _run()
+    csv_text = _RAW.read_text(encoding="utf-8")
+    inline = qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
+
+    assert inline.n_samples_out == file_based.n_samples_out
+    assert inline.n_traits_out == file_based.n_traits_out
+    assert inline.removed_traits == file_based.removed_traits
+    assert inline.genotype_column == file_based.genotype_column
+    assert inline.sample_id_column == file_based.sample_id_column
+
+
+def test_inline_call_never_persists_a_run(injected_ports):
+    _reader, store = injected_ports
+    store.create_run = MagicMock(
+        side_effect=AssertionError("create_run must not be called for csv_content")
+    )
+    store.commit = MagicMock(
+        side_effect=AssertionError("commit must not be called for csv_content")
+    )
+    csv_text = _RAW.read_text(encoding="utf-8")
+
+    result = qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
+
+    store.create_run.assert_not_called()
+    store.commit.assert_not_called()
+    assert result.run_ref is None
+    assert result.version_dir is None
+    assert result.manifest_path is None
+    assert result.outputs == {}
+
+
+def test_inline_result_reports_summary_hash_and_no_experiment_identity(injected_ports):
+    csv_text = _RAW.read_text(encoding="utf-8")
+    result = qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
+
+    assert result.experiment is None
+    assert result.source == "inline"
+    assert result.input_sha256 == compute_input_sha256(csv_text)
+
+
+def test_inline_call_never_touches_the_reader_port(injected_ports):
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(
+        side_effect=AssertionError("load_experiment must not be called for csv_content")
+    )
+    csv_text = _RAW.read_text(encoding="utf-8")
+
+    qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
+
+    reader.load_experiment.assert_not_called()
+
+
+def test_inline_result_never_nudges_toward_qc_inspect(injected_ports):
+    """Canonical defaults drop 29 turface_19 samples on the experiment path (see
+    test_dropped_samples_nudge_points_to_qc_inspect) — the inline path must not
+    recommend qc_inspect (it has no csv_content support) nor interpolate the
+    caller's absent experiment identity into any advisory message."""
+    csv_text = _RAW.read_text(encoding="utf-8")
+    result = qc_clean(QCCleanParams(csv_content=csv_text))  # canonical defaults
+    assert result.n_samples_dropped == 29  # sanity: this run really drops samples
+    assert result.next_step is None
+
+
+def test_inline_call_honors_sample_id_column_override(injected_ports):
+    csv_text = (
+        "my_id,geno,tA,tB\n"
+        + "\n".join(
+            f"s{i},{'g1' if i % 2 == 0 else 'g2'},{float(i)},{float(2 * i)}"
+            for i in range(16)
+        )
+        + "\n"
+    )
+    result = qc_clean(QCCleanParams(csv_content=csv_text, sample_id_column="my_id"))
+    assert result.sample_id_column == "my_id"
+    assert result.source == "inline"
+
+
+def test_inline_call_honors_exclude_columns(injected_ports):
+    csv_text = _RAW.read_text(encoding="utf-8")
+    result = qc_clean(
+        QCCleanParams(
+            csv_content=csv_text,
+            max_nans_per_trait=_MNT,
+            exclude_columns=["Total.Root.Length.mm"],
+        )
+    )
+    assert "Total.Root.Length.mm" not in result.kept_trait_columns
+    assert "Total.Root.Length.mm" in result.excluded_columns
+
+
+def test_inline_roleless_error_message_names_csv_content_not_none(injected_ports):
+    """The inline branch's error messages must not interpolate the literal string
+    'None' where an experiment name is normally shown."""
+    roleless_csv = "colA,colB\n1.0,2.0\n3.0,4.0\n"
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(csv_content=roleless_csv))
+    assert exc.value.code == "assumption_violated"
+    assert "None" not in exc.value.message
+    assert "csv_content" in exc.value.message
