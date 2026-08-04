@@ -1351,3 +1351,67 @@ def test_validate_storage_backend_output_subfolder_blocked_by_file(
     sb.reset_backend_for_tests()
     with pytest.raises(RuntimeError, match="output root.*not a directory"):
         sb.validate_storage_backend()
+
+
+# ─── 5d. bloom#593 — shared `fit_is_trustworthy` primitive ────────────────────
+# Promoted from `remove_outliers.py`'s private `_fit_is_trustworthy`/
+# `_UNTRUSTWORTHY_FIT` (#419) so `remove_outliers`'s live gate and
+# `audit_untrustworthy_outlier_fits.py`'s retroactive scan (#593) share one
+# definition. Direct unit tests here, in the primitive's new home — the same
+# "test the promoted primitive directly, not only indirectly through a consumer"
+# pattern `trim_staleness` (5c above) already established. A pure function of a
+# dict; no manifest fixtures needed.
+
+
+def test_fit_is_trustworthy_none_when_no_fit_report():
+    """No `goodness_of_fit` at all (e.g. an `isolation_forest` trim) — nothing to
+    trust or distrust."""
+    from bloom_mcp import experiment_utils as eu
+
+    assert eu.fit_is_trustworthy(None) is None
+
+
+@pytest.mark.parametrize("fit_quality", sorted(["poor", "very_poor", "unknown"]))
+def test_fit_is_trustworthy_false_for_untrustworthy_qualities(fit_quality):
+    from bloom_mcp import experiment_utils as eu
+
+    assert eu.fit_is_trustworthy({"fit_quality": fit_quality}) is False
+    assert fit_quality in eu.UNTRUSTWORTHY_FIT_QUALITIES
+
+
+@pytest.mark.parametrize("fit_quality", ["excellent", "good", "acceptable"])
+def test_fit_is_trustworthy_true_for_acceptable_or_better(fit_quality):
+    from bloom_mcp import experiment_utils as eu
+
+    assert eu.fit_is_trustworthy({"fit_quality": fit_quality}) is True
+    assert fit_quality not in eu.UNTRUSTWORTHY_FIT_QUALITIES
+
+
+def test_fit_is_trustworthy_true_when_fit_quality_key_absent():
+    """A dict missing the `fit_quality` key entirely reads as trustworthy (`None
+    not in UNTRUSTWORTHY_FIT_QUALITIES` is `True`) — a documented, pre-existing
+    corner (see the fit-gate proposal's design.md), not new behavior from this
+    promotion."""
+    from bloom_mcp import experiment_utils as eu
+
+    assert eu.fit_is_trustworthy({}) is True
+
+
+def test_remove_outliers_no_longer_defines_its_own_fit_trustworthy_primitives():
+    """(#593) Symbol-relocation regression guard, mirroring #403's
+    `test_role_pattern_lists_live_here_not_in_experiment_utils` (inverted
+    direction): the whole point of promoting these to `experiment_utils` is a
+    single source of truth, so a future accidental reintroduction of a local
+    shadow copy in `remove_outliers.py` must be caught, not silently
+    reintroducing the exact drift risk this promotion removes."""
+    from bloom_mcp.sections.sleap_roots.analysis import remove_outliers
+
+    assert not hasattr(remove_outliers, "_UNTRUSTWORTHY_FIT")
+    assert not hasattr(remove_outliers, "_fit_is_trustworthy")
+    # _REPORT_NAME/_TOOL_CLASS stay as local aliases (matching this file's
+    # existing `_TOOL_CLASS = OUTLIERS_TOOL_CLASS` convention) — assert they
+    # reference the single-sourced values, not a re-typed literal.
+    from bloom_mcp import experiment_utils as eu
+
+    assert remove_outliers._REPORT_NAME is eu.OUTLIER_REPORT_NAME
+    assert remove_outliers.fit_is_trustworthy is eu.fit_is_trustworthy

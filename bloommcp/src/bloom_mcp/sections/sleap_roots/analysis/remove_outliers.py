@@ -89,7 +89,12 @@ from bloom_mcp.data_access import (
     ExperimentReadError,
 )
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
-from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, OUTLIERS_TOOL_CLASS
+from bloom_mcp.experiment_utils import (
+    CLEANED_CSV_NAME,
+    OUTLIER_REPORT_NAME,
+    OUTLIERS_TOOL_CLASS,
+    fit_is_trustworthy,
+)
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._qc_shared import _role_kwargs, _validate_trait_subset
 
@@ -97,13 +102,7 @@ if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph (Tier-0)
     from matplotlib.figure import Figure
 
 _TOOL_CLASS = OUTLIERS_TOOL_CLASS
-_REPORT_NAME = "outlier_report.json"
-
-# ``goodness_of_fit.fit_quality`` values (mahalanobis chi-squared fit) whose flagged
-# set should NOT be trusted as-is — mirrors the delegate's own ✗ tiering
-# (outlier_detection: excellent/good ✓, acceptable ⚠, poor/very_poor ✗). Surfaced as
-# the machine-visible ``fit_is_trustworthy`` so a downstream tool need not parse prose.
-_UNTRUSTWORTHY_FIT = frozenset({"poor", "very_poor", "unknown"})
+_REPORT_NAME = OUTLIER_REPORT_NAME
 
 # The delegate's own default for isolation_forest's ``contamination`` kwarg
 # (``sleap_roots_analyze.outlier_detection.detect_outliers_isolation_forest``) — quoted
@@ -271,18 +270,6 @@ def _rows_subset(frame: ExperimentFrame, trimmed_df: pd.DataFrame) -> bool:
     return Counter(trimmed_df.index) <= Counter(frame.df.index)
 
 
-def _fit_is_trustworthy(goodness_of_fit: Optional[dict]) -> Optional[bool]:
-    """Derive the machine-visible trust flag from the delegate's fit report.
-
-    ``None`` when there is no fit report (isolation_forest — no chi-squared assumption
-    to trust); otherwise ``False`` for a poor/very_poor/unknown ``fit_quality`` and
-    ``True`` for acceptable-or-better. See :data:`_UNTRUSTWORTHY_FIT`.
-    """
-    if not isinstance(goodness_of_fit, dict):
-        return None
-    return goodness_of_fit.get("fit_quality") not in _UNTRUSTWORTHY_FIT
-
-
 def _barcodes(report: dict) -> list[str]:
     """Coerce the delegate's ``outlier_barcodes`` (``None`` for a barcode-less frame)
     to a plain ``list[str]``. Shared by the fit-gate's raise (which sorts this for a
@@ -394,8 +381,8 @@ def remove_outliers(
     # (fit_is_trustworthy is always None — no chi-squared assumption to violate) or an
     # acceptable-or-better mahalanobis fit (fit_is_trustworthy is True).
     goodness_of_fit = convert_to_json_serializable(report.get("goodness_of_fit"))
-    fit_is_trustworthy = _fit_is_trustworthy(goodness_of_fit)
-    if fit_is_trustworthy is False:
+    trustworthy = fit_is_trustworthy(goodness_of_fit)
+    if trustworthy is False:
         fit_quality = (
             goodness_of_fit.get("fit_quality")
             if isinstance(goodness_of_fit, dict)
@@ -542,7 +529,7 @@ def remove_outliers(
             else None
         ),
         goodness_of_fit=goodness_of_fit,
-        fit_is_trustworthy=fit_is_trustworthy,
+        fit_is_trustworthy=trustworthy,
         # The delegate sets outlier_barcodes to None (not []) when the frame has no
         # barcode column, and the key is always present — so `.get(..., [])` returns
         # None and `for b in None` would crash into an opaque internal_error. `_barcodes`
