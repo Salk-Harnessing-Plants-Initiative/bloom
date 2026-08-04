@@ -150,3 +150,28 @@ def test_enqueue_returns_job_id(monkeypatch):
     assert result == {"job_id": "job-42", "status": "queued"}
     assert client.rpc_calls[0][0] == "enqueue_cyl_video"
     assert client.rpc_calls[0][1] == {"p_scan_id": 5, "p_experiment_id": 1}
+
+
+def test_enqueue_queue_full_maps_to_503(monkeypatch):
+    # The backlog cap in enqueue_cyl_video raises SQLSTATE 53400 → the API returns 503, not 500.
+    from postgrest import APIError
+
+    class _FullClient:
+        def rpc(self, name, params):
+            return self
+
+        def execute(self):
+            raise APIError(
+                {
+                    "code": "53400",
+                    "message": "video generation queue is full; retry later",
+                }
+            )
+
+    monkeypatch.setattr(video_queue, "app_client", lambda: _FullClient())
+    monkeypatch.setattr(video_queue, "scan_in_experiment", lambda c, e, s: True)
+
+    with pytest.raises(HTTPException) as ei:
+        video_queue.enqueue_experiment_scan_video(1, 5)
+    assert ei.value.status_code == 503
+    assert "try again later" in ei.value.detail.lower()
