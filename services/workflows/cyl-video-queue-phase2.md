@@ -19,6 +19,25 @@ scale.
 
 That's the whole scope: enqueue → consume → render → record status. Nothing more.
 
+## What this is for (the trigger, and why there will be many jobs at once)
+
+The whole point of this queue is that video generation should happen **automatically when a
+cylinder scan finishes uploading** — once all of a scan's rotation images (~72) are in, that scan's
+video job is enqueued on its own, with no manual step. (The enqueue path exists today; wiring it to
+the upload-completion event is part of standing this up.)
+
+That has a direct consequence for scale: scans upload continuously, and many scans across many
+experiments finish around the same time, so **a lot of video jobs get enqueued at once** — in
+bursts, not a trickle. This is exactly why the "how much can be queued at once" (backpressure)
+question below is a real one for us, not a hypothetical.
+
+**Part 3 follow-up (after the relevant packages are moved into this repo):** today a scan is assumed
+to be ~72 images — a hardcoded cap, because `cyl_scans` has no column for how many images a scan is
+supposed to have. The follow-up is to send the scan's **expected total image count** to the database
+at upload time. That gives us two things: a reliable "this scan's upload is actually complete"
+signal to trigger on (all expected images present), and support for **any** number of images per
+scan instead of assuming 72.
+
 ## What v1 defers to v2 (not built)
 
 All of these are tracked under the queue-hardening parent, **#604**:
