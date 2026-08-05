@@ -43,31 +43,70 @@ MAX_INLINE_CSV_BYTES = 5 * 1024 * 1024
 # time it fires. `_estimate_header_columns` below is the actual guard — a cheap
 # pre-parse estimate that rejects before `pandas.read_csv` is ever called;
 # `df.shape[1] > MAX_INLINE_CSV_COLUMNS` after parsing is kept only as an exact
-# backstop for the rare residual case (a header value containing an embedded
-# newline inside quotes, which a single-line pre-check cannot see) where the
-# cheap estimate would miss the true count.
+# backstop, not the primary guard.
 MAX_INLINE_CSV_COLUMNS = 2000
+
+# Caps how much of csv_content `_estimate_header_columns` will scan looking for
+# the header row's closing boundary. A row-aware scan (see below) must read an
+# unterminated quoted field until it finds the closing quote or gives up — an
+# attacker who never closes the quote could otherwise force a scan of the
+# entire payload, defeating the point of a "cheap" pre-parse check. No real
+# header row (even at MAX_INLINE_CSV_COLUMNS columns with generous name
+# lengths) comes close to this.
+_MAX_HEADER_SCAN_BYTES = 256 * 1024
 
 _BOM = "﻿"
 
 
-def _estimate_header_columns(csv_content: str) -> int:
-    """Cheap, O(header-length) column-count estimate — does not parse the body.
-
-    Parses only the first line via `csv.reader` (not a naive `.count(",")`,
-    which would overcount — and so falsely reject an otherwise-fine payload —
-    the moment a single header name contains a quoted comma). This function's
-    job is purely to reject an absurdly wide payload before the expensive
-    `pandas.read_csv` call runs at all; `parse_inline_csv_frame`'s post-parse
-    `df.shape[1]` check is the exact backstop for the one case this single-line
-    estimate cannot see: a header value containing an embedded newline within
-    quotes.
+def _bounded_lines(text: str):
+    """Yield ``text``'s lines like iterating ``io.StringIO(text)``, but raise
+    ``BloomMCPError`` if more than `_MAX_HEADER_SCAN_BYTES` is consumed without
+    the caller stopping — the guard against an unterminated quote forcing
+    `_estimate_header_columns` to scan the whole payload (see its docstring).
     """
-    header_line = csv_content.split("\n", 1)[0]
+    consumed = 0
+    for line in io.StringIO(text):
+        consumed += len(line)
+        if consumed > _MAX_HEADER_SCAN_BYTES:
+            raise BloomMCPError(
+                code="invalid_input",
+                message=(
+                    f"csv_content's header row could not be determined within "
+                    f"the first {_MAX_HEADER_SCAN_BYTES} bytes."
+                ),
+                remedy=(
+                    "Ensure the header row is well-formed (every quote closed) "
+                    "and not unusually large, or register the data as an "
+                    "experiment instead of passing it inline."
+                ),
+            )
+        yield line
+
+
+def _estimate_header_columns(csv_content: str) -> int:
+    """Cheap column-count estimate for the header row — does not parse the body.
+
+    Feeds `csv.reader` a bounded line iterator (`_bounded_lines`), not a naive
+    ``csv_content.split("\\n", 1)[0]``. The naive split cuts a row short the
+    moment any field contains a literal newline inside quotes (valid CSV) —
+    reproduced directly: a crafted header whose first cell is a quoted value
+    containing one embedded newline made the naive split's estimate say "1
+    column" for a real ~480,000-column row, letting the expensive
+    `pandas.read_csv` call run anyway (~5-9s of CPU) before the post-parse
+    backstop caught it — exactly the cost this guard exists to avoid.
+    `csv.reader` fed a genuine line iterator instead handles this correctly:
+    it keeps consuming lines from the iterator until the quoted field's
+    closing quote is found and the row is complete, the same way iterating a
+    real file handles a multi-line quoted CSV field. `_bounded_lines` caps how
+    far it will do that (an unterminated quote would otherwise force scanning
+    the entire payload), rejecting outright rather than guessing when the
+    header's true extent can't be found cheaply.
+    """
     try:
-        return len(next(csv.reader([header_line])))
+        row = next(csv.reader(_bounded_lines(csv_content)))
     except StopIteration:
         return 0
+    return len(row)
 
 
 def parse_inline_csv_frame(csv_content: str) -> ExperimentFrame:
@@ -157,9 +196,12 @@ def parse_inline_csv_frame(csv_content: str) -> ExperimentFrame:
             remedy="Supply CSV content with a header row naming at least one column.",
         )
     if df.shape[1] > MAX_INLINE_CSV_COLUMNS:
-        # Exact backstop for the rare case _estimate_header_columns undercounts
-        # (a quoted comma inside a header name) — the common case is already
-        # rejected above, before the parse ever ran.
+        # Exact backstop, not the primary guard: _estimate_header_columns
+        # above already uses the same csv.reader-based, multi-line-aware
+        # tokenization pandas itself effectively performs, so this should not
+        # fire in practice — kept as defense-in-depth against any residual
+        # divergence between the two, at the cost of the parse already having
+        # run.
         raise BloomMCPError(
             code="invalid_input",
             message=(

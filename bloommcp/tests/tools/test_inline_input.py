@@ -285,6 +285,103 @@ def test_wide_csv_dos_repro_is_rejected_fast():
     ), f"rejection took {elapsed:.2f}s — the pre-parse guard didn't fire"
 
 
+def test_embedded_newline_in_header_cell_does_not_bypass_the_guard():
+    """Regression: a naive `csv_content.split("\\n", 1)[0]` (the round-1 fix's
+    implementation) cuts a row short the moment any field contains a literal
+    newline inside quotes (valid CSV) — reproduced directly: a header whose
+    first cell is a quoted value with one embedded newline made the estimate
+    say "1 column" for a real ~480,000-column row, letting pandas.read_csv run
+    anyway (~5.5s CPU measured) before the post-parse backstop finally caught
+    it. The fix must count the true width via the header row's real extent,
+    not a line fragment, and reject fast — not after paying the parse cost."""
+    import time
+
+    helper = _import_helper()
+    n = 480_000
+    headers = ['"h0\nrest_of_h0"'] + [f"c{i}" for i in range(1, n)]
+    header_line = ",".join(headers)
+    row = ",".join("1" for _ in range(n))
+    content = f"{header_line}\n{row}\n"
+    assert len(content.encode("utf-8")) < helper.MAX_INLINE_CSV_BYTES
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        start = time.perf_counter()
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(content)
+        elapsed = time.perf_counter() - start
+        # The load-bearing assertion: pandas.read_csv must never be reached,
+        # regardless of which specific pre-parse guard (column-count-over-
+        # limit, or the header-scan cap firing first because the true row is
+        # itself too large to cheaply finish counting) ends up firing first —
+        # both are safe, fast outcomes; only reaching pandas.read_csv is not.
+        mock_read_csv.assert_not_called()
+
+    assert exc.value.code == "invalid_input"
+    assert (
+        elapsed < 2.0
+    ), f"rejection took {elapsed:.2f}s — a pre-parse guard didn't fire"
+
+
+def test_embedded_newline_past_legitimate_looking_columns_is_still_counted_correctly():
+    """The reviewer's exact concern: an attacker pads legitimate-looking
+    columns first (to look like a normal call) before the embedded-newline
+    trick. Row is small enough (well under the header-scan cap) that this
+    must be resolved by genuinely counting through the embedded newline, not
+    merely by the scan cap giving up — proving the fix counts correctly, not
+    just fails safe when it can't."""
+    helper = _import_helper()
+    n_cols = helper.MAX_INLINE_CSV_COLUMNS + 500
+    headers = [f"c{i}" for i in range(n_cols - 1)] + ['"last\nwith_newline"']
+    header_line = ",".join(headers)
+    row = ",".join("1" for _ in range(n_cols))
+    content = f"{header_line}\n{row}\n"
+    assert len(content.encode("utf-8")) < helper._MAX_HEADER_SCAN_BYTES
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(content)
+        mock_read_csv.assert_not_called()
+    assert exc.value.code == "invalid_input"
+    assert str(n_cols) in exc.value.message
+
+
+def test_legitimate_embedded_newline_in_header_cell_is_counted_correctly():
+    """The positive counterpart: a genuinely small, well-formed header whose
+    one cell contains an embedded newline must still be counted and accepted
+    correctly — csv.reader's multi-line-aware tokenization, not a naive
+    single-line split, must recover the true row, not just reject anything
+    with a newline in a quoted field."""
+    helper = _import_helper()
+    content = '"Barcode with\nnote",geno,traitA\nS1,g1,1.0\nS2,g2,2.0\n'
+    frame = helper.parse_inline_csv_frame(content)
+    assert frame.df.shape[1] == 3
+    assert list(frame.df.columns)[0] == "Barcode with\nnote"
+
+
+def test_unterminated_quote_in_header_is_rejected_without_scanning_everything():
+    """The residual pathological case the bounded scan exists for: an
+    unterminated quote would otherwise force csv.reader to consume the entire
+    payload looking for a closing quote that never comes — re-introducing the
+    same CPU-cost problem this whole guard exists to avoid, just one level
+    deeper. Must reject outright, fast, rather than scan the whole payload."""
+    import time
+
+    helper = _import_helper()
+    # One huge, never-closed quoted field followed by a lot of filler — large
+    # enough that scanning it all would itself be slow, but comfortably under
+    # MAX_INLINE_CSV_BYTES.
+    filler = "x" * (2 * helper.MAX_INLINE_CSV_BYTES // 3)
+    content = f'"unterminated{filler}\n'
+
+    start = time.perf_counter()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(content)
+    elapsed = time.perf_counter() - start
+
+    assert exc.value.code == "invalid_input"
+    assert elapsed < 1.0, f"rejection took {elapsed:.2f}s — the scan cap didn't fire"
+
+
 def test_quoted_comma_in_header_does_not_cause_a_false_positive_rejection():
     """A naive `.count(",")` estimate would overcount the moment a single header
     name contains a quoted comma, falsely rejecting an otherwise-fine payload.

@@ -143,11 +143,14 @@
 - [x] 4.4 At the persistence step: only call `store.create_run(...)` / `.commit(...)` when
       `params.csv_content is None`; on the inline branch, skip straight to constructing
       `QCCleanResult` with `run_ref=None`, `version_dir=None`, `manifest_path=None`,
-      `outputs={}`, `experiment=None`, `source="inline"`, `input_sha256=<computed hash>`,
-      `next_step=None` (unconditionally — never compute the `qc_inspect` nudge on this branch,
-      regardless of `n_samples_dropped`). (`QCCleanResult` has no `output_links` field on
-      `origin/staging` as of this change — that field ships in the not-yet-merged #595 on a
-      sibling branch; nothing to set here.)
+      `outputs={}`, `output_links={}`, `experiment=None`, `source="inline"`,
+      `input_sha256=<computed hash>`, `next_step=None` (unconditionally — never compute the
+      `qc_inspect` nudge on this branch, regardless of `n_samples_dropped`). **Superseded note:**
+      an earlier draft of this task said `QCCleanResult` had no `output_links` field "as of this
+      change" — that was true only before `origin/staging` picked up #595's `output_links`/
+      `OutputLink` mid-PR; §7.1 below records the actual reconciliation (`output_links={}` inline,
+      `stored.output_links` when persisted). A future rollout tool's author should treat
+      `output_links` as a real field to set on both branches, not skip it.
 - [x] 4.5 Adjust every reference to `params.experiment` used in error messages on the inline
       branch (e.g. the role-overrides unknown-column message, the genotype-blank message, the
       missing-role message) to read sensibly with no experiment name — use a fixed placeholder
@@ -192,43 +195,88 @@
       live Claude Code ↔ dev-bloommcp connection available here; left for a human reviewer/the PR
       author to confirm before merge.
 
-## 7. Post-PR review fixes (two independent review passes on PR #608)
+## 7. Post-PR review fixes, round 1 (two independent review passes on PR #608)
 
-- [x] 8.1 Merge conflict: `origin/staging` picked up the signed-URL-download change (`OutputLink`/
+- [x] 7.1 Merge conflict: `origin/staging` picked up the signed-URL-download change (`OutputLink`/
       `output_links` on `QCCleanResult`) while this PR was open — merged and reconciled both sets
       of changes (kept `input_sha256` alongside `output_links`; both branches of `qc_clean` now
       set `output_links` appropriately: `stored.output_links` when persisted, `{}` inline).
-- [x] 8.2 Mutual-exclusivity error message was silently discarded by the contract layer's generic
+- [x] 7.2 Mutual-exclusivity error message was silently discarded by the contract layer's generic
       `from_input_validation` mapping (verified empirically) — moved the check from a
       `model_validator` into `qc_clean`'s body (matching the existing B-4 pattern), so the
       specific message actually reaches the caller.
-- [x] 8.3 **Blocking: wide-CSV CPU-cost DoS.** A column-count guard checked only after
+- [x] 7.3 **Blocking: wide-CSV CPU-cost DoS.** A column-count guard checked only after
       `pandas.read_csv` had already parsed the content — reproduced the reported case (~480,000
       columns, 4.69 MB, under the byte cap, ~7.7s CPU) and confirmed a post-parse-only check does
       not prevent it. Fixed with a pre-parse, `csv.reader`-based header-line column estimate that
       rejects before the expensive parse ever runs (verified: same repro now rejected in ~0.002s);
-      the post-parse `df.shape[1]` check is kept only as an exact backstop.
-- [x] 8.4 Uncaught `UnicodeEncodeError` in the `.encode("utf-8")` calls (byte-size guard and
+      the post-parse `df.shape[1]` check is kept only as an exact backstop. **This fix itself had
+      a bypass — see §8.1.**
+- [x] 7.4 Uncaught `UnicodeEncodeError` in the `.encode("utf-8")` calls (byte-size guard and
       `compute_input_sha256`) — both now wrapped, mapping to `invalid_input`.
-- [x] 8.5 `test_zero_columns_is_rejected` didn't exercise the code path its name claimed (a real
+- [x] 7.5 `test_zero_columns_is_rejected` didn't exercise the code path its name claimed (a real
       `pandas.read_csv(io.StringIO(...))` call cannot return a 0-column frame without first
       raising `EmptyDataError`) — fixed to mock the return value directly.
-- [x] 8.6 Equivalence oracle strengthened to check every resolved-roles/shape field the result
+- [x] 7.6 Equivalence oracle strengthened to check every resolved-roles/shape field the result
       exposes (`replicate_column`, `excluded_columns`, `kept_trait_columns`,
-      `cleaned_nan_cells_remaining`), not a partial subset.
-- [x] 8.7 Added regression tests pinning "csv_content never appears in a log record" (success path
-      and forced `internal_error` path) — previously disclosed as a risk but untested.
-- [x] 8.8 Cosmetic: `_INLINE_EXPERIMENT_LABEL` shortened to `"csv_content"` (reads cleanly through
+      `cleaned_nan_cells_remaining`), not a partial subset. **Still overclaimed — see §8.3.**
+- [x] 7.7 Added regression tests pinning "csv_content never appears in a log record" (success path
+      and forced `internal_error` path) — previously disclosed as a risk but untested. **The
+      success-path test was vacuous — see §8.2.**
+- [x] 7.8 Cosmetic: `_INLINE_EXPERIMENT_LABEL` shortened to `"csv_content"` (reads cleanly through
       `!r`; the prior `"the supplied csv_content"` read awkwardly once quoted).
-- [x] 8.9 OpenSpec: moved the mutual-exclusivity requirement to `## ADDED Requirements` (it is a
+- [x] 7.9 OpenSpec: moved the mutual-exclusivity requirement to `## ADDED Requirements` (it is a
       wholly new requirement, not a modification of an existing one) and corrected its text to
       describe body-level enforcement instead of a model validator.
-- [x] 8.10 Full suite re-verified green (1033 passed) after all fixes; `black`/`ruff` clean;
+- [x] 7.10 Full suite re-verified green (1033 passed) after all fixes; `black`/`ruff` clean;
       `check-uv-locks.py` clean; server boots; `openspec validate --strict` passes.
 
-## 8. Follow-ups (out of this change's spec deltas)
+## 8. Post-PR review fixes, round 2 (re-review of the round-1 fix commit)
 
-- [ ] 8.1 File (or confirm filed) follow-up issues for the remaining consumer-tool rollout per
+- [x] 8.1 **Blocking: the round-1 DoS fix (§7.3) itself had a bypass via an embedded newline in a
+      header cell — reproduced directly, ~5.5s CPU wasted before the post-parse backstop caught
+      it.** `_estimate_header_columns`'s naive `csv_content.split("\n", 1)[0]` cuts a row short the
+      moment any field contains a literal newline inside quotes (valid CSV): a header whose first
+      cell is `"h0\nrest_of_h0"` made the estimate say "1 column" for a real ~480,000-column row,
+      letting `pandas.read_csv` run anyway. Fixed by feeding `csv.reader` a bounded line iterator
+      (`_bounded_lines`) instead of a pre-split string — `csv.reader` then handles a multi-line
+      quoted field correctly the same way iterating a real file does (pulling more lines until the
+      quote closes), while `_bounded_lines` caps total bytes scanned (256 KiB) so an unterminated
+      quote can't force scanning the whole payload instead. Verified: the exact repro now rejects
+      via the pre-parse guard again (not the post-parse backstop).
+- [x] 8.2 **Important: `test_csv_content_never_appears_in_logs_on_success` was vacuous.**
+      `run_input_validation` (`bloom_mcp/data_access/columns.py`) sets `logger.propagate = False`
+      on `bloom_mcp.input_validation` for the call's duration, restoring it in `finally` — this
+      makes `caplog` structurally blind to that logger regardless of content (verified
+      empirically: even `caplog.at_level(level, logger=name)` captures nothing from a
+      `propagate=False` logger, since `caplog`'s capture relies on propagation to root, which
+      `propagate=False` specifically suppresses). The test passed for the trivial reason that
+      nothing was captured, not because the marker was checked against real output. Fixed by
+      attaching a handler directly to the relevant loggers (`_capture_all_logs`), bypassing
+      `caplog` entirely — a directly-attached handler fires regardless of `propagate`.
+- [x] 8.3 Equivalence-oracle docstring overclaim ("every resolved-roles/shape field") — added the
+      two fields that were actually missing: `validation_warnings` and `input_nan_summary` (the
+      fields most likely to expose a real inline-vs-file NaN/dtype divergence).
+- [x] 8.4 `proposal.md` still described the mutual-exclusivity rule as "enforced by a Pydantic
+      model validator" — stale after §7.2 moved it to a body-level check; `spec.md` had already
+      been corrected but `proposal.md` hadn't, so the two contradicted each other. Fixed.
+- [x] 8.5 `design.md`/`tasks.md` §4.4 still said `QCCleanResult` has no `output_links` field "as
+      of this change, nothing to set here" — stale after the §7.1 staging-merge reconciliation
+      that added it. Fixed, with a note that a future rollout tool's author should treat
+      `output_links` as a real field to set, not skip.
+- [x] 8.6 `_estimate_header_columns`'s `except StopIteration: return 0` branch, previously flagged
+      as unreachable dead code (a 1-element list passed to `csv.reader` never raises
+      `StopIteration`) — the §8.1 rewrite genuinely changed this: `_bounded_lines("")` yields zero
+      lines, so `next(csv.reader(...))` on truly empty `csv_content` now does raise
+      `StopIteration` for real. No longer dead; already covered functionally by the existing
+      `test_empty_string_is_rejected` end-to-end test.
+- [x] 8.7 tasks.md numbering: this file's own §7 items were numbered 8.1–8.10, colliding with the
+      old §8 "Follow-ups" (also 8.1) — renumbered §7 to 7.1–7.10 and this round to §8, pushing
+      Follow-ups to §9.
+
+## 9. Follow-ups (out of this change's spec deltas)
+
+- [ ] 9.1 File (or confirm filed) follow-up issues for the remaining consumer-tool rollout per
       #582: `pca_analysis`, `clustering`, `remove_outliers`, `descriptive_stats`,
       `cross_experiment_correlations`, `umap_analysis` — each imports
       `bloom_mcp.tools._inline_input` and gets its own thorough test pass, per the issue's

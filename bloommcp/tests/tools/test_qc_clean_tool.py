@@ -10,7 +10,9 @@ the ``ResultStore`` port — no QC logic in the MCP.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -1152,6 +1154,8 @@ def test_inline_cleaning_matches_the_file_based_oracle(injected_ports):
     assert inline.replicate_column == file_based.replicate_column
     assert inline.excluded_columns == file_based.excluded_columns
     assert inline.cleaned_nan_cells_remaining == file_based.cleaned_nan_cells_remaining
+    assert inline.validation_warnings == file_based.validation_warnings
+    assert inline.input_nan_summary == file_based.input_nan_summary
 
 
 def test_inline_call_never_persists_a_run(injected_ports):
@@ -1247,21 +1251,62 @@ def test_inline_roleless_error_message_names_csv_content_not_none(injected_ports
 # ── csv_content never appears in logs (design.md's disclosed risk) ──────────
 
 
-def test_csv_content_never_appears_in_logs_on_success(injected_ports, caplog):
+@contextlib.contextmanager
+def _capture_all_logs():
+    """Manually attach a handler directly to every logger in qc_clean's inline
+    call graph, bypassing pytest's `caplog`.
+
+    `bloom_mcp.data_access.columns.run_input_validation` sets
+    `logger.propagate = False` on `bloom_mcp.input_validation` for the
+    duration of validation (restoring it in `finally`) so its advisory
+    `_WarningCapture` messages don't leak into the real logging pipeline on a
+    normal call. This makes `caplog` structurally blind to that logger:
+    verified empirically that even `caplog.at_level(level, logger=name)`
+    captures nothing from a `propagate=False` logger, regardless of level —
+    `caplog`'s capture relies on propagation to the root logger, which this
+    logger deliberately suppresses. A handler attached directly to the logger
+    object fires regardless of `propagate`, since `propagate` only controls
+    whether a record additionally bubbles up to ancestor loggers' handlers.
+    """
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    loggers = [
+        logging.getLogger(),  # root — catch-all for anything else in the path
+        logging.getLogger("bloom_mcp.input_validation"),
+        logging.getLogger("bloom_mcp.contract.errors"),
+    ]
+    old_levels = {lg: lg.level for lg in loggers}
+    for lg in loggers:
+        lg.addHandler(handler)
+        lg.setLevel(logging.DEBUG)
+    try:
+        yield records
+    finally:
+        for lg in loggers:
+            lg.removeHandler(handler)
+            lg.setLevel(old_levels[lg])
+
+
+def test_csv_content_never_appears_in_logs_on_success(injected_ports):
     """The one load-bearing safety property of the whole feature: csv_content is
     never persisted (proven elsewhere) AND never logged. Provenance.stamp's
     params=data.model_dump() carries the raw text in memory for the call's
     duration (disclosed in design.md) — this pins that it never reaches a log
-    record on the successful path."""
+    record on the successful path.
+
+    Does NOT use `caplog` (see `_capture_all_logs`'s docstring for why a
+    `propagate=False` logger makes that structurally vacuous here)."""
     marker = "MARKER_" + "Q" * 64
     csv_text = f"Barcode,geno,traitA,traitB\nS1,{marker},1.0,2.0\nS2,g2,3.0,4.0\n"
-    with caplog.at_level("DEBUG"):
+    with _capture_all_logs() as records:
         qc_clean(QCCleanParams(csv_content=csv_text, min_samples_per_trait=1))
-    assert marker not in caplog.text
+    logged_text = "\n".join(r.getMessage() for r in records)
+    assert marker not in logged_text
 
 
 def test_csv_content_never_appears_in_logs_on_internal_error(
-    injected_ports, monkeypatch, caplog
+    injected_ports, monkeypatch
 ):
     """Same invariant on the internal_error path, where the contract layer logs
     the exception server-side (contract/errors.py's from_exception) — the log
@@ -1275,11 +1320,12 @@ def test_csv_content_never_appears_in_logs_on_internal_error(
 
     monkeypatch.setattr(qc_clean_tool, "clean_traits_for_analysis", _boom)
 
-    with caplog.at_level("DEBUG"):
+    with _capture_all_logs() as records:
         with pytest.raises(BloomMCPError) as exc:
             qc_clean(QCCleanParams(csv_content=csv_text))
 
     assert exc.value.code == "internal_error"
     assert marker not in exc.value.message
     assert marker not in exc.value.remedy
-    assert marker not in caplog.text
+    logged_text = "\n".join(r.getMessage() for r in records)
+    assert marker not in logged_text

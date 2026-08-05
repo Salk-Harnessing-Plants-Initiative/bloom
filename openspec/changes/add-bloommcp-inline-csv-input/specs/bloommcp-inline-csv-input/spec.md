@@ -71,22 +71,64 @@ per-column overhead (measured: approximately 480,000 columns in a single row, 4.
 approximately 7.7 seconds of CPU) — a real, reproducible denial-of-service vector against the
 shared container, which has no rate limiting in front of this path and no persistence step to
 create natural backpressure. The system SHALL therefore estimate the column count from the
-content's header line alone — before `pandas.read_csv` is ever invoked — and reject content whose
+content's header row alone — before `pandas.read_csv` is ever invoked — and reject content whose
 estimated count exceeds `MAX_INLINE_CSV_COLUMNS` (2000) with a `BloomMCPError`
-(`invalid_input`) naming the estimated count and the limit. A post-parse `df.shape[1]` check
-SHALL be retained as an exact backstop for the rare case the header-only estimate cannot resolve
-(e.g. a header value containing an embedded newline within quotes), but SHALL NOT be the primary
-guard, since by the time it runs the expensive parse has already completed.
+(`invalid_input`) naming the estimated count and the limit.
+
+This header-row estimate SHALL correctly resolve the row's true extent even when a header cell
+contains a literal newline inside quotes (valid CSV) — a naive single-line split (e.g.
+`csv_content.split("\n", 1)[0]`) cuts such a row short and undercounts, which was found to let
+the exact denial-of-service payload above bypass this guard entirely when one header cell carried
+an embedded newline (reproduced: the estimate reported "1 column," and `pandas.read_csv` ran
+anyway, costing several seconds of CPU before a post-parse check caught it — defeating the
+guard's purpose). The estimate SHALL instead read the header row via a multi-line-aware
+tokenizer (the same mechanism by which iterating a real file correctly handles a quoted field
+spanning multiple physical lines), bounded to a fixed maximum number of bytes scanned so that an
+*unterminated* quote cannot force scanning the entire payload in search of a closing quote that
+never comes — content whose header row cannot be resolved within that bound SHALL be rejected
+outright with a `BloomMCPError` (`invalid_input`), rather than guessed at.
+
+A post-parse `df.shape[1]` check SHALL be retained as an exact backstop for any residual
+divergence between the header-row estimate and `pandas.read_csv`'s own tokenization, but SHALL
+NOT be the primary guard, since by the time it runs the expensive parse has already completed.
 
 #### Scenario: A wide-but-short CSV is rejected before pandas.read_csv runs
 
-- **WHEN** `parse_inline_csv_frame` is called with content whose header line implies more than
+- **WHEN** `parse_inline_csv_frame` is called with content whose header row implies more than
   `MAX_INLINE_CSV_COLUMNS` columns, sized well under `MAX_INLINE_CSV_BYTES`
-- **THEN** it raises `BloomMCPError(code="invalid_input")` naming the estimated column count and
-  the limit, and `pandas.read_csv` is never called — verified by a spy/mock asserting zero calls
+- **THEN** it raises `BloomMCPError(code="invalid_input")`, and `pandas.read_csv` is never
+  called — verified by a spy/mock asserting zero calls
 - **AND** the reproduction of the reported denial-of-service shape (~480,000 columns, ~4.69 MB)
   is rejected in well under one second, not after paying the multi-second parse cost a
   post-parse-only check would incur
+
+#### Scenario: An embedded newline in a header cell cannot bypass the guard
+
+- **WHEN** `parse_inline_csv_frame` is called with content shaped like the denial-of-service
+  payload above, except one header cell is a quoted value containing a literal newline —
+  crafted so that a naive single-line split would undercount the row's true width
+- **THEN** the guard still resolves the row's true column count (or rejects via the scan-bound
+  below, whichever applies), `pandas.read_csv` is never called, and rejection happens in well
+  under one second — not after the multi-second parse cost a naive single-line estimate would
+  have let through
+
+#### Scenario: A legitimate embedded newline in a header cell is counted correctly, not just tolerated
+
+- **WHEN** `parse_inline_csv_frame` is called with a small, well-formed header whose one cell
+  contains a literal newline inside quotes, and a column count safely under
+  `MAX_INLINE_CSV_COLUMNS` — including the case where legitimate-looking columns precede the
+  newline-bearing cell
+- **THEN** the content is accepted, with that cell's value (embedded newline included) preserved
+  intact as the column name — proving the estimate genuinely counts through the embedded newline
+  rather than merely failing safe when it cannot
+
+#### Scenario: An unterminated quote in the header is rejected without scanning the whole payload
+
+- **WHEN** `parse_inline_csv_frame` is called with content whose header row opens a quote that
+  never closes, followed by a large amount of filler content
+- **THEN** it raises `BloomMCPError(code="invalid_input")` once a fixed maximum scan size is
+  exceeded, rather than scanning arbitrarily far (up to the entire payload) looking for a closing
+  quote that does not exist — rejection happens quickly regardless of how much filler follows
 
 #### Scenario: A header value containing a quoted comma is not falsely rejected
 

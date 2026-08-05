@@ -39,8 +39,12 @@ assumed to generalize to tools this change does not touch.
   per-tool change (out of scope here) will import — built once, not once per tool.
 - **MODIFY** `qc_clean` (the sole consumer touched by this change) to accept `csv_content: str`
   as a sibling to `experiment: str` on `QCCleanParams` — **mutually exclusive, exactly one
-  required**, enforced by a Pydantic model validator so a bad call fails before the tool body
-  runs (the existing contract's input-validation path, no new error code). When `csv_content`
+  required**, enforced as the first check in `qc_clean`'s own body (raising `BloomMCPError`
+  directly, the same pattern the tool's existing genotype/sample_id-collision check already
+  uses) so a bad call fails before the reader or parser runs. (A Pydantic `model_validator` was
+  the first draft; moved to the body during review, since a validator's raised `ValueError` is
+  remapped by the contract layer into a generic message that discards the validator's own text —
+  see design.md.) When `csv_content`
   is given, `qc_clean` skips the `ExperimentReader` port entirely, cleans the in-memory frame
   exactly as it does an adapter-sourced one (identical role resolution, thresholds, validation,
   no-NaN guarantee), and returns the **same small summary** it always returns (in/out counts,

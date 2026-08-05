@@ -72,11 +72,12 @@ consumer to accept `csv_content`. Its current shape is fixed by the shipped code
   and avoids a magic string (`"<inline>"`) a caller could mistake for a real identifier.
 - **Decision: `run_ref`, `version_dir`, `manifest_path` become `Optional[str] = None`;
   `outputs` stays `dict[str, str]` defaulting to `{}`.** All three are meaningless when nothing
-  is persisted. (Note: `QCCleanResult` on `origin/staging` as of this change has no
-  `output_links` field — that field ships in the not-yet-merged signed-URL-download change
-  (#595/#581) on a sibling branch. Verified by reading `qc_clean.py` directly rather than relying
-  on an earlier read taken on a different branch, which briefly caused an inconsistency in this
-  document — corrected here.)
+  is persisted. `output_links: dict[str, OutputLink]` gets the same treatment: `{}` on the
+  inline path, `stored.output_links` on the persisted path — added when `origin/staging` (and
+  therefore this branch, after merging it) picked up `output_links`/`OutputLink` mid-PR via the
+  signed-URL-download change (#595/#581); an earlier draft of this document incorrectly said
+  `QCCleanResult` had no such field, written from a read taken on a different branch before that
+  merge — corrected here and reconciled in the implementation (see tasks.md §7.1).
 - **Decision: exactly-one-of enforced in `qc_clean`'s tool body, not a Pydantic
   `model_validator`.** A `model_validator(mode="after")` was the first implementation, but a
   `ValueError` raised there is remapped by `BloomMCPError.from_input_validation` into a generic
@@ -106,19 +107,38 @@ consumer to accept `csv_content`. Its current shape is fixed by the shipped code
   into `server.py`) and this path has no persistence step to create natural backpressure. See the
   `MAX_INLINE_CSV_COLUMNS` decision below for the actual fix. The byte cap remains useful for what
   it does bound (aggregate payload size / in-memory frame size), just not CPU cost in isolation.
-- **Decision: `MAX_INLINE_CSV_COLUMNS = 2000`, enforced via a cheap PRE-PARSE header-line
+- **Decision: `MAX_INLINE_CSV_COLUMNS = 2000`, enforced via a cheap PRE-PARSE header-row
   estimate — not a post-parse `df.shape[1]` check.** A first draft checked column count only
   *after* `pandas.read_csv` returned, which does not prevent the CPU-cost DoS above: the expensive
-  parse has already run by the time a post-parse check can fire. The actual guard,
-  `_estimate_header_columns`, parses only the first line via `csv.reader` (not a naive
-  `str.count(",")`, which would overcount — and so falsely reject an otherwise-fine payload — the
-  moment a single header name contains a quoted comma) and rejects before `pandas.read_csv` is
-  ever called. Verified the fix against the exact reported shape (~480,000 columns, 4.69 MB):
-  rejection now takes ~0.002s instead of ~7.7s. The post-parse `df.shape[1] > MAX_INLINE_CSV_COLUMNS`
-  check is retained only as an exact backstop for the one case the header-only estimate cannot
-  see — a header value containing an embedded newline within quotes — not as the primary guard.
-  2000 is generous headroom over any real phenotyping table (`turface_19` has 20 trait columns;
-  `cylinder` has 846) while still bounding the pathological case.
+  parse has already run by the time a post-parse check can fire. Verified the fix against the
+  exact reported shape (~480,000 columns, 4.69 MB): rejection now takes ~0.002s instead of ~7.7s.
+  The post-parse `df.shape[1] > MAX_INLINE_CSV_COLUMNS` check is retained only as an exact
+  backstop for any residual divergence, not as the primary guard. 2000 is generous headroom over
+  any real phenotyping table (`turface_19` has 20 trait columns; `cylinder` has 846) while still
+  bounding the pathological case.
+  - **Revision: the first implementation of the pre-parse estimate (`csv_content.split("\n",
+    1)[0]`, then `csv.reader` on that one line) itself had a bypass, found in a second review
+    round and reproduced directly.** A naive line-split cuts the header row short the moment any
+    field contains a literal newline inside quotes (valid CSV) — a header whose first cell was a
+    quoted value with one embedded newline made the estimate say "1 column" for a real
+    ~480,000-column row, letting `pandas.read_csv` run anyway (~5.5s of CPU measured) before the
+    post-parse backstop finally caught it, defeating the whole point. Fixed by feeding
+    `csv.reader` a *bounded line iterator* (`_bounded_lines`) instead of a pre-split string:
+    `csv.reader` then handles a multi-line quoted field correctly the same way iterating a real
+    file does — pulling more lines from the iterator until the field's closing quote is found and
+    the row is complete — recovering the header row's true extent instead of a fragment. The
+    bound (`_MAX_HEADER_SCAN_BYTES = 256 KiB`) caps how much `_bounded_lines` will read before
+    giving up and rejecting outright: without it, an *unterminated* quote would force scanning
+    the entire payload looking for a closing quote that never comes, reintroducing the exact
+    CPU-cost problem this guard exists to avoid, one level deeper. 256 KiB is generous headroom
+    over any legitimate header row (even 2000 columns with unusually long names) while still
+    being cheap to scan. Verified both directions: the exact bypass repro is rejected fast again
+    (via either the corrected column count or the scan cap, whichever resolves first — both are
+    safe outcomes), a header using the embedded-newline trick *past* ~2500 legitimate-looking
+    columns (small enough to stay under the scan cap) is still counted correctly through the
+    embedded newline rather than merely failing safe, and a genuinely small, legitimate header
+    cell containing an embedded newline is accepted and counted correctly (not just tolerated by
+    accident).
 - **Decision: `input_sha256` is computed by the helper over the exact UTF-8-encoded
   `csv_content` string** (`hashlib.sha256(csv_content.encode("utf-8")).hexdigest()`) —
   independent of, and not reusing, `Provenance.stamp`'s own `input_sha256` field (that field is
@@ -149,6 +169,11 @@ consumer to accept `csv_content`. Its current shape is fixed by the shipped code
   unreachability isn't provable across every pandas version/configuration; the corresponding
   tests were adjusted to mock `pandas.read_csv`'s return value directly so they honestly test the
   branch they claim to, rather than asserting on a string that cannot actually reach it.
+  **A third branch flagged in the same review round, `_estimate_header_columns`'s `except
+  StopIteration: return 0`, is a different story: the DoS-bypass rewrite below made it genuinely
+  reachable** (`_bounded_lines("")` yields zero lines, so `next(csv.reader(...))` on empty
+  `csv_content` now does raise `StopIteration`) — not dead code kept for defense-in-depth, but a
+  real path exercised by the existing `test_empty_string_is_rejected` end-to-end test.
 - **Decision: strip every leading UTF-8 BOM (`﻿`, one or more) from `csv_content` before
   parsing — not just the first one.** `csv_content` is a `str`, so Python's `encoding="utf-8-sig"`
   BOM-stripping (which only applies when *decoding bytes*) never runs. A caller pasting CSV text
