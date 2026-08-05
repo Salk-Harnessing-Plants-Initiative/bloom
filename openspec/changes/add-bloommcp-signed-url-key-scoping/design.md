@@ -1,0 +1,199 @@
+## Context
+
+Traced every path that reaches `create_signed_url` (there is exactly one production call site):
+
+- `StorageBackend.create_signed_url(key, expires_in)` is a `Protocol` method
+  (`storage_backend.py:69`), implemented by `SupabaseStorageBackend` (calls the real Supabase
+  Storage client's signing method on whatever `key` it's given, no check) and
+  `LocalStorageBackend` (string-concatenates `key` onto `BLOOM_STORAGE_URL`, no check — notably
+  the *one* method on that backend that skips the root-containment guard (`_resolve()`) its six
+  siblings all use).
+- The **only** production caller is `SupabaseResultStore.commit()`
+  (`result_store/supabase_store.py:256-268`), inside `build_output_links(...,
+  url_for=lambda key: _sc.create_signed_url(key, SIGNED_URL_EXPIRES_SECONDS))`. `build_output_links`
+  (`result_store/_artifacts.py:65-84`) is shared by `FakeResultStore.commit()` too, which never
+  calls the real backend (`url_for` there just formats `f"fake://signed/{key}?..."`).
+- The `key` values `build_output_links` is handed (`output_keys`, from `hash_outputs`) are
+  produced by a `key_for(rel)` closure defined *inside the same `commit()` call*
+  (`supabase_store.py:239-240`: `adir.key(f"{version_dir}/{rel}")`; `fake_store.py:199-200`:
+  `f"{state.prefix}{version_dir}/{rel}"`) — `adir`/`state.prefix` come from this call's own
+  `experiment`/`tool_class` (set in `create_run()`), and `version_dir` is allocated earlier in
+  this same `commit()` invocation. The **exact same closure** is used to upload the bytes moments
+  before signing (`supabase_store.py:246-249`). There is no branch, optional parameter, or
+  alternate code path by which a different key could reach `url_for`.
+- `get_run`/`list_runs` never populate `output_links` at all (`StoredRun.output_links` defaults to
+  `{}`; only `commit()`'s own return value carries the freshly-built dict) — so listing or
+  resolving historical runs, however many, never triggers a signing call for anything other than
+  what a caller's own `commit()` invocation just produced.
+- No file under `sections/` or `tools/` calls `create_signed_url`/`build_output_links`/
+  `active_backend()` directly — all 8 consumer tools reach this only through
+  `_ports.store().commit()`.
+- `identity.py`'s `IdentityMiddleware` is a raw ASGI middleware wrapping the whole app
+  (`server.py`'s `build_app()`), and its own module docstring documents — as an already-reviewed,
+  deliberate decision — that a `ContextVar` it previously set was removed: FastMCP's
+  `StreamableHTTPSessionManager` starts tool dispatch in one long-lived `asyncio` task *per
+  session*, and a `ContextVar` set by a *later* request's middleware (a different task) can never
+  reach an already-running dispatch task. The middleware now only records usage at the ASGI layer
+  itself; there is no accessor, contextvar, or thread-local exposing "who is calling right now" to
+  `result_store`/`tools` code. `tools/_ports.py`'s `reader()`/`store()` are plain module globals
+  with zero per-call/per-caller parameterization.
+- The already-shipped `bloommcp-caller-identity` capability's own ADDED requirement, "Caller
+  Identity Never Grants Database or Storage Authority," states identity "SHALL NOT be used as an
+  authorization principal for any database or Storage operation... regardless of whether the
+  caller identity verified successfully, failed verification, or was absent."
+
+## Goals / Non-Goals
+
+- **Goals:** make the "keys are always correctly scoped" invariant structural (enforced by
+  `commit()` itself) rather than merely true-by-construction-today; record the identity-vs-
+  narrower-check decision the issue's acceptance criteria requires; zero behavior change for the
+  8 existing call sites.
+- **Non-Goals:** extending `#406/#563` identity to carry Storage authority (see Decision below); a
+  web/CLI file explorer (explicitly out of scope in the issue); changing `create_signed_url`'s
+  signature or either backend's implementation; adding per-user/per-experiment authentication to
+  the shared `bloom_agent` Storage role (a much larger effort the issue doesn't ask for).
+
+## Decisions
+
+- **Decision (the one the issue's acceptance criteria requires recording): a narrower structural
+  scoping check inside `ResultStore.commit()`, not extending caller identity to carry Storage
+  authority.** Three independent reasons converge on this:
+  1. **No plumbing exists today.** Reaching `create_signed_url` from an identity-aware context
+     would require *building* a mechanism to carry per-request identity into the tool-dispatch
+     code path — exactly the mechanism `#406/#563` already attempted (a `ContextVar`) and reverted
+     for a structural reason (FastMCP's per-session dispatch task can't see a later request's
+     context). This isn't "reuse an existing wire," it's "solve the problem #406/#563 already gave
+     up on solving at this granularity."
+  2. **It would reverse an already-reviewed decision.** `bloommcp-caller-identity`'s own spec
+     states identity must never become a DB/Storage authorization principal, unconditionally. This
+     change should reaffirm that, not carve out a Storage-specific exception the day after it
+     shipped.
+  3. **The narrower check needs nothing new.** `commit()` already knows the exact prefix that
+     scopes this call — `output_root`, `tool_class`, the experiment stem, and the `version_dir` it
+     just allocated — because it computed all four to do the upload one line above where it signs.
+     A structural check is a same-function, few-line addition, not a new subsystem.
+- **Decision: enforce inside `build_output_links` (shared by both adapters), not inside
+  `create_signed_url` itself.** The `StorageBackend` Protocol is a generic object-storage
+  primitive with no concept of "run" or "scope" — giving it one would mean threading
+  run/experiment context through a Protocol six other call sites (`upload_file`, `download_file`,
+  etc.) don't need, for a check only `commit()`'s one signing call actually requires. Enforcing at
+  `build_output_links` also gets `FakeResultStore` the identical guarantee for free (both adapters
+  call the same shared function), keeping fake/real parity — a repeatedly-reinforced convention in
+  this codebase (`#325`, `#586`, `#596`).
+- **Decision: `build_output_links` takes a new required `expected_prefix: str` parameter; a
+  mismatched key raises `KeyScopeGuardError`, a private `RuntimeError` subclass local to
+  `_artifacts.py` — not a new public `ResultStoreError`.** `RuntimeError` matches this same file
+  family's existing idiom for "a structural invariant was violated, this should never happen"
+  (`supabase_store.py` already raises bare `RuntimeError` for "could not allocate a free version
+  id" and "version was claimed by another writer during upload" — the same class of
+  defense-in-depth check), so every existing `except RuntimeError`/`except Exception` still catches
+  it unchanged. **Post-review refinement:** the dedicated subclass (rather than a bare
+  `RuntimeError`, as originally implemented) exists so `commit()`'s `except` block can tell this
+  structural, never-transient failure apart from an actual transient one and word the resulting
+  `CommitFailedError` message accordingly — reviewers flagged that the original blanket
+  "(transient — retry)" message would mislead a caller into retrying a failure that, by definition,
+  fails identically every time. Still not promoted to `ports.py`: introducing a new
+  `ResultStoreError` subclass there would add public API surface for a condition that (a) should
+  never actually fire and (b) is immediately caught and remapped to `CommitFailedError` anyway — see
+  next decision.
+- **Decision: no new contract-layer wiring — the existing `except Exception` in both `commit()`
+  implementations already catches this and converts it to `CommitFailedError`.** Both
+  `SupabaseResultStore.commit()` (`supabase_store.py:344-366`) and `FakeResultStore.commit()`
+  (`fake_store.py:272-289`) wrap their entire commit body in a broad `except Exception as exc:
+  raise CommitFailedError(...) from exc`, which already best-effort-cleans-up any uploaded objects
+  and leaves the run retryable — the exact same path a real signing failure already takes
+  (`bloom#581`'s own "signing failure fails the whole commit" requirement). A scoping violation is
+  simply one more way that block can fail; no new exception-handling structure needed, only an
+  `isinstance(exc, KeyScopeGuardError)` branch inside the existing block to pick an accurate message
+  (see the decision above) — the fail-closed, no-partial-run, cleaned-up-orphans behavior is
+  inherited automatically either way.
+- **Decision: `expected_prefix` is computed from the same source data as the keys it checks, not
+  independently re-derived.** Both adapters pass `key_for("")` — the *exact same closure* used to
+  build every real output key moments earlier — rather than a second, separately-written string
+  template. **Post-review refinement:** the original implementation passed
+  `adir.key(f"{version_dir}/")` (`SupabaseResultStore`) / `f"{state.prefix}{version_dir}/"`
+  (`FakeResultStore`) — structurally equivalent to `key_for("")` by construction today, but written
+  as an independent template rather than a literal reuse of `key_for`, so a reviewer's "can never
+  independently drift" claim was only incidentally true, not structurally guaranteed. Calling
+  `key_for("")` directly makes that guarantee actual: the expected prefix and the actual keys share
+  one code path, so they cannot drift apart from a future refactor of `key_for`/`AnalysisDir`'s path
+  format even in principle.
+- **Decision: `create_signed_url`'s own docstring/spec gains a documentation-only clarification of
+  the trust boundary, not new runtime behavior.** Making explicit, at the primitive's own
+  contract, that it performs no ownership check and callers are responsible for restricting keys
+  to their own authorized scope — so a future reader of `storage_backend.py` alone (without
+  tracing into `result_store`) still learns where the actual guarantee lives.
+
+## Risks / Trade-offs
+
+- **This fixes a latent gap, not a live bug.** Every current call site is already provably
+  correctly-scoped (traced in Context above); this change makes that invariant unbreakable by a
+  future refactor rather than fixing anything exploitable today. Worth stating plainly so this
+  isn't mistaken for a security incident response.
+- **The guard can never be exercised by any real call path today** (by design — every real key is
+  correctly scoped). Tests must inject a deliberately-wrong key via a test-only seam rather than
+  through an end-to-end `qc_clean(...)` call, since no such call can produce one. **A first
+  instinct — monkeypatching `AnalysisDir.key` (or the `key_for` closure it backs) — does not
+  work**: `expected_prefix` and every real `output_keys` entry are both derived from that same
+  method on the same `adir` instance, so patching it corrupts both sides identically and the
+  mismatch the test needs never occurs (found during review). The seam that actually works is the
+  module-level `build_output_links` name each adapter module imports
+  (`from ._artifacts import build_output_links`) — monkeypatch *that* with a wrapper delegating to
+  the real function but substituting a wrong `expected_prefix`, leaving `output_keys`/`url_for`
+  untouched. This mirrors how `#581`'s own "signing failure" tests already work (monkeypatching
+  `supabase_client.create_signed_url` directly, one level further down the same call chain, since
+  no real input makes a well-formed signing call fail either).
+- **`LocalStorageBackend.create_signed_url` still has no containment check of its own** (unlike
+  its six siblings, which call `_resolve()`). Out of scope here — the guard added lives in
+  `ResultStore.commit()`, which both backends' `create_signed_url` sit behind identically, so the
+  fix protects both regardless of backend. Flagged as a residual asymmetry at the primitive level,
+  not a gap in the actual guarantee this change ships.
+- **This guard is a new trigger funneling into the pre-existing #464/PR#464 racing-writer cleanup
+  hazard — not a new bug, but worth naming explicitly.** `commit()`'s `version_dir` is deterministic
+  (`version_id` + today's date, no nonce), so two commits that ever raced to the *same*
+  `(output_root, experiment, tool_class, version_id)` would upload to the exact same physical object
+  keys. The per-process `KeyedLock` (`_commit_lock`) makes that impossible for two calls *within one
+  process*, but the still-open multi-instance case (a second bloommcp server process, flagged inline
+  at `supabase_store.py`'s "claimed by another writer during upload" recheck) has no such lock. In
+  that cross-process race, if this guard were ever the thing that fails on one of the two racing
+  writers (it cannot today — see the point above — but a future refactor is exactly the scenario this
+  change defends against), that writer's `_cleanup_uploaded(uploaded_keys, adir)` deletes the literal
+  keys *this* writer uploaded — which, under the race, are the same keys the *other*, possibly-winning
+  writer also just uploaded to and whose manifest entry now depends on. This isn't a gap this change
+  introduces (any of `commit()`'s other failure branches — a real signing failure, the "claimed by
+  another writer" `RuntimeError` itself — already funnel into the identical cleanup-vs-race hazard);
+  it's one more path into a hazard #464/#324's own follow-up work should account for, not something
+  this narrower change can fix by itself without touching the multi-instance story it explicitly
+  scopes out (see Non-Goals).
+- **`services/workflows/video.py` has a structurally similar unscoped `create_signed_url` call
+  against the raw Supabase SDK bucket object**, outside bloommcp's `StorageBackend` abstraction
+  entirely. Same latent risk shape (a signing call with no caller-side scope check), but a different
+  service and a different code path — out of scope for this change, which only touches bloommcp's
+  `ResultStore.commit()`. Flagged here so it isn't lost; worth its own follow-up issue rather than
+  folding into this one, since fixing it means auditing `video.py`'s own call sites, not extending
+  this guard.
+- **This change's spec deltas MODIFY requirements that don't exist yet in `openspec/specs/`** —
+  they exist only in the still-unarchived `add-bloommcp-signed-url-download`. `openspec validate
+  --strict` passing is not evidence the delta targets a real requirement (verified: the validator
+  only checks each delta file's own internal shape, never cross-references the base spec or
+  sibling changes). This change MUST NOT be archived independently of
+  `add-bloommcp-signed-url-download` — see tasks.md's header note, the binding statement of this
+  constraint.
+
+## Migration Plan
+
+Not strictly additive at the signature level: `build_output_links` gains a new *required*
+keyword-only parameter, which is a breaking change to that helper's own call contract. It's
+harmless here only because it's an internal (non-tool-facing) helper with exactly two call sites,
+both updated atomically in this same commit — no caller ever observes an intermediate state where
+one call site is updated and the other isn't (see tasks.md's Commit plan note, which calls this out
+explicitly as a same-commit requirement). No schema, manifest, or public/tool-facing API change.
+Existing correctly-scoped calls are unaffected (every current key already satisfies the new check
+by construction). Rollback = revert the parameter and its two call sites.
+
+## Open Questions
+
+None — the issue's own acceptance criteria are fully addressed by the decisions above: (1) the
+guard structurally rejects an out-of-scope key, (2) the identity-vs-narrower-check decision is
+recorded, (3) no behavior change for any of the 8 legitimate call sites (verified: their existing
+test suites require no changes).

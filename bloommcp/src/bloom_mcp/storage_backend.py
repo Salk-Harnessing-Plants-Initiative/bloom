@@ -1,9 +1,9 @@
 """Object-storage backend selection for bloommcp.
 
-The six object-storage helpers in :mod:`bloom_mcp.supabase_client`
+The seven object-storage helpers in :mod:`bloom_mcp.supabase_client`
 (``upload_file`` / ``download_file`` / ``write_json`` / ``read_json`` /
-``list_prefix`` / ``delete_files``) delegate to the *active* backend selected
-here. Two backends exist:
+``list_prefix`` / ``delete_files`` / ``create_signed_url``) delegate to the
+*active* backend selected here. Two backends exist:
 
 * :class:`SupabaseStorageBackend` — the deployed default (Supabase Storage in the
   ``bloommcp-data`` bucket). Its method bodies are the pre-backend
@@ -24,8 +24,8 @@ touches no filesystem at import, so ``import bloom_mcp`` stays side-effect-free.
 root fails fast at boot rather than mid-run.
 
 Out of scope: PostgREST/table access (``get_postgrest_client``) and
-``read_input_csv``, which rides that client — neither is one of the six swapped
-helpers, so both are unaffected by the selected backend.
+``read_input_csv``, which rides that client — neither is one of the seven
+swapped helpers, so both are unaffected by the selected backend.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ _TMP_PREFIX = ".tmp-"
 
 @runtime_checkable
 class StorageBackend(Protocol):
-    """The six object-storage operations bloommcp's write/read paths use."""
+    """The seven object-storage operations bloommcp's write/read paths use."""
 
     def upload_file(self, key: str, local_path: Path) -> None: ...
 
@@ -66,7 +66,20 @@ class StorageBackend(Protocol):
         self, keys: list[str], *, timeout_seconds: Optional[float] = None
     ) -> None: ...
 
-    def create_signed_url(self, key: str, expires_in: int) -> str: ...
+    def create_signed_url(self, key: str, expires_in: int) -> str:
+        """Sign/serve a download URL for ``key``, valid for ``expires_in`` seconds.
+
+        Performs NO ownership or scope check of its own (bloom#598) — this is
+        a generic object-storage primitive with no concept of "run" or
+        "experiment" ownership, and it will sign whatever syntactically valid
+        key it's given. The one production caller, ``ResultStore.commit()``,
+        is responsible for restricting ``key`` to its own authorized scope
+        before calling this (see ``result_store/_artifacts.py``'s
+        ``build_output_links`` for that enforcement). A future caller outside
+        ``ResultStore.commit()`` SHOULD NOT assume this primitive itself
+        provides any ownership guarantee.
+        """
+        ...
 
 
 def _json_bytes(payload: dict) -> bytes:
