@@ -157,7 +157,7 @@ def call_rpc(function_name: str, params: dict) -> list[dict]:
 
 # ─── Generic storage helpers ──────────────────────────────────────────────────
 #
-# These six helpers are the storage primitives SupabaseResultStore uses to
+# These eight helpers are the storage primitives SupabaseResultStore uses to
 # store the versioned-output catalog. They take an object `key` that
 # includes any prefix structure (e.g. `bloommcp_output/qc_my_exp/v1_.../_cleaned.csv`)
 
@@ -198,7 +198,7 @@ def get_storage_client(*, timeout_seconds: float | None = None):
     return supabase.create_client(url, key, options=options).storage.from_(BUCKET)
 
 
-# The six helpers below delegate to the process's active storage backend
+# The eight helpers below delegate to the process's active storage backend
 # (`bloom_mcp.storage_backend`), selected by `BLOOM_STORAGE_BACKEND` (default
 # `supabase`). Their names + signatures are unchanged, so every caller and the
 # `fake_supabase_storage` test fixture (which monkeypatches these module-level
@@ -280,3 +280,13 @@ def create_signed_url(key: str, expires_in: int) -> str:
     from bloom_mcp.storage_backend import active_backend
 
     return active_backend().create_signed_url(key, expires_in)
+
+
+def get_object_size(key: str) -> int:
+    """Return the real byte size of the object at `key` (bloom#599).
+
+    Raises if `key` has no backing object — never returns a fabricated `0`.
+    """
+    from bloom_mcp.storage_backend import active_backend
+
+    return active_backend().get_object_size(key)
