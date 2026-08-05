@@ -294,6 +294,17 @@ def test_persists_artifacts_and_returns_links_not_matrices(injected_ports):
     assert result.run_ref == stored.run_ref
     assert result.manifest_path == stored.manifest_path
 
+    # bloom#581: a signed link + hash + size per output, on the tool's own result
+    # (get_run's stored above never carries them — see Decision 1).
+    assert set(result.output_links) == set(result.outputs)
+    for name, key in result.outputs.items():
+        link = result.output_links[name]
+        assert link.key == key
+        assert link.url
+        assert link.sha256 == stored.output_sha256[name]
+        assert link.size_bytes >= 0
+    assert stored.output_links == {}
+
     # Links, not blobs: no field carries the N×k score / loadings matrices inline.
     assert not hasattr(result, "scores") and not hasattr(result, "loadings")
     dumped = result.model_dump()

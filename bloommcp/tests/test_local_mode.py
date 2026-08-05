@@ -251,6 +251,7 @@ def test_fully_local_qc_clean_to_pca_no_supabase(monkeypatch, tmp_path, reset_po
     monkeypatch.setattr(eu, "TRAITS_DIR", inp)
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(store))
+    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
     monkeypatch.delenv("BLOOM_EXPERIMENT_LOCAL_ROOT", raising=False)
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("BLOOM_AGENT_KEY", raising=False)
@@ -650,6 +651,7 @@ def test_fully_local_qc_clean_to_pca_via_local_root_only(
     )
 
     root = _local_root_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("BLOOM_AGENT_KEY", raising=False)
 

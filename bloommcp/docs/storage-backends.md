@@ -42,6 +42,50 @@ Two env vars look like they'd control this and don't:
   Storage → bucket `bloommcp-data`.
 - **The bloommcp MCP read tools** (`list_existing_analyses`, `load_experiment_data`, …).
 
+## Downloading outputs: signed URLs (`output_links`)
+
+Every consumer tool (`qc_clean`, `qc_inspect`, `pca_analysis`, `remove_outliers`,
+`descriptive_stats`, `cross_experiment_correlations`, `umap_analysis`, `clustering`)
+returns an `output_links` field alongside its existing `outputs` (object-key) field:
+one entry per output, each carrying a downloadable `url`, the artifact's `sha256`
+(matching the manifest's `output_sha256` — verify what you downloaded against it),
+and its `size_bytes`. This is populated only on the result a tool call itself
+returns — resolving or listing a prior run (`list_existing_analyses`, or reading
+`get_run`/`list_runs` through the `ResultStore` port) never carries signed links for
+artifacts other than the one just committed; browsing and downloading _historical_
+runs is not yet supported (tracked separately).
+
+Backed by `StorageBackend.create_signed_url(key, expires_in)` — a 3600-second
+expiry (the `SIGNED_URL_EXPIRES_SECONDS` constant in
+`bloom_mcp/result_store/_artifacts.py`), not configurable per call.
+
+- **Supabase backend (default):** a real, time-limited signed URL from Supabase
+  Storage's own signing call. Because `SUPABASE_URL` points at the internal Docker
+  network host (`http://kong:8000` in staging/production — unreachable from
+  outside it), the signed URL's host is rewritten onto `BLOOM_PUBLIC_SUPABASE_URL`
+  (set to `${NEXT_PUBLIC_SUPABASE_URL}` in both compose files) before it's
+  returned — the same internal-host-rewrite pattern `services/workflows/video.py`
+  and `web/lib/supabase/storage-url.ts` already use for their own signed URLs. A
+  missing `BLOOM_PUBLIC_SUPABASE_URL` is a silent no-op (the raw internal-host URL
+  is returned unchanged) — harmless in local dev (nothing outside the Docker
+  network needs to resolve it there), a real gap in a deployed environment.
+- **Local backend (opt-in):** a served URL built from `BLOOM_STORAGE_URL`
+  (`f"{BLOOM_STORAGE_URL}/{key}"`), ignoring the expiry — this is a dev-only
+  convenience with no real credential enforcement, matching this backend's other
+  documented caveats. **bloommcp does not itself serve `BLOOM_STORAGE_LOCAL_ROOT`
+  over HTTP** — `BLOOM_STORAGE_URL` only supplies the base URL for something an
+  operator has separately stood up to do that (mirroring how `BLOOM_PLOTS_URL`
+  already assumes an existing server for `PLOTS_DIR`). Without it configured,
+  `create_signed_url` raises rather than fabricate a `file://` URI.
+
+**Inline-vs-link size threshold: 100 KB, documentation-only.** No bloommcp tool
+inlines output content in its response regardless of size — every consumer
+tool's docstring documents a deliberate "links, not blobs" contract, and this
+threshold does not change that. It exists so a caller deciding whether to fetch
+`output_links[...].url` and show its contents inline (versus just linking to it)
+has both a concrete number and the `size_bytes` data needed to apply it
+themselves.
+
 ## Opt-in: the `local` backend (real files on disk)
 
 Set `BLOOM_STORAGE_BACKEND=local` to run fully offline — local input, local
@@ -101,7 +145,10 @@ output root):
 - **Same output semantics as Supabase:** manifest/versioning are unchanged; the
   backend overwrites in place, copies bytes verbatim (so the recorded
   `output_sha256` matches the file on disk), and reads resolve back through the
-  same manifest/versioned-cleaned path.
+  same manifest/versioned-cleaned path. One difference: a Supabase-backed
+  `output_links[...].url` always resolves; the local backend's constructed URL
+  only resolves if `BLOOM_STORAGE_URL`'s root is separately being served over
+  HTTP (see "Downloading outputs" above) — bloommcp doesn't run that server.
 - **Atomic writes (POSIX):** on POSIX filesystems the backend writes a temp file,
   `fsync`s it, then `os.replace`s it into place, so a crash mid-write never leaves
   a truncated `manifest.json`. **On Windows/NTFS** `os.replace` over an existing
@@ -192,6 +239,7 @@ commit path uses only object-storage helpers routed through the active backend),
 it is Supabase-free; a tool that reads a database table is not part of that path.
 Production and staging stay on Supabase; `local` is opt-in for local/dev.
 
-Related: this reshapes the same `supabase_client.py` storage boundary that #388
-(user-facing upload/download of bloommcp files) will build signed-URL downloads
-on; the two are independent.
+Related: this reshapes the same `supabase_client.py` storage boundary #388
+(user-facing upload/download of bloommcp files) is scoped against. Its
+"return output CSVs" third has landed — see "Downloading outputs" above; the
+ad-hoc upload and file-explorer thirds remain open, tracked separately.

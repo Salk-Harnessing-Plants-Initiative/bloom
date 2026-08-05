@@ -37,3 +37,6 @@ def test_stored_run_from_version_entry_accepts_the_real_version_entry_type():
     assert run.run_ref == "v1"
     assert run.tool == "qc_clean"
     assert run.outputs == {"cleaned": "_cleaned.csv"}
+    # bloom#581: from_version_entry (used by get_run/list_runs) never signs —
+    # output_links defaults to empty regardless of what the entry carries.
+    assert run.output_links == {}

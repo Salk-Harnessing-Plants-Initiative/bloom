@@ -285,6 +285,17 @@ def test_provenance_stamped_seed_none_and_links_returned(injected_ports):
     assert result.run_ref == stored.run_ref
     assert result.manifest_path == stored.manifest_path
     assert load_bearing <= set(result.outputs)
+
+    # bloom#581: a signed link + hash + size per output.
+    assert set(result.output_links) == set(result.outputs)
+    for name, key in result.outputs.items():
+        link = result.output_links[name]
+        assert link.key == key
+        assert link.url
+        assert link.sha256 == stored.output_sha256[name]
+        assert link.size_bytes >= 0
+    assert stored.output_links == {}
+
     # Links, not blobs: no inline field carries a large payload.
     dumped = result.model_dump()
     assert not any(

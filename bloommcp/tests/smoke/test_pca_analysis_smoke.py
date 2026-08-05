@@ -33,3 +33,13 @@ def test_pca_analysis_smoke(call_tool, db_experiment_id: str) -> None:
     # tool, but nothing beyond #489's own smoke test asserted on `outputs` to pin it
     # going forward (found in review) -- this is that second, independent tool.
     assert set(result["outputs"]) == {"loadings.csv", "scores.csv", "pca_result.json"}
+    # bloom#581: output_links is a MORE deeply nested structure (dict of
+    # OutputLink objects, each with key/url/sha256/size_bytes) than `outputs`
+    # (a plain dict[str, str]) -- pin that it also survives real MCP transport.
+    assert set(result["output_links"]) == set(result["outputs"])
+    for name, key in result["outputs"].items():
+        link = result["output_links"][name]
+        assert link["key"] == key
+        assert link["url"]
+        assert link["sha256"]
+        assert link["size_bytes"] >= 0

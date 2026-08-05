@@ -127,6 +127,10 @@ services:
       - "${BLOOMMCP_PORT}:8811"
     environment:
       SUPABASE_URL: http://kong:8000
+      # Public base for rewriting signed URLs (bloom#581's output_links) off
+      # the internal kong host so they're usable by outside callers — mirrors
+      # the workflows service's identical WORKFLOWS_PUBLIC_SUPABASE_URL above.
+      BLOOM_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
       # bloommcp authenticates to PostgREST + Storage as bloom_agent — same
       # JWT langchain-agent uses. SERVICE_ROLE_KEY is deliberately NOT passed
       # in so a future code path can't silently bypass the
@@ -163,6 +167,11 @@ services:
       BLOOM_STORAGE_LOCAL_ROOT: ${BLOOM_STORAGE_LOCAL_ROOT:-}
       BLOOM_EXPERIMENT_LOCAL_ROOT: ${BLOOM_EXPERIMENT_LOCAL_ROOT:-}
       BLOOM_LOCAL_ROOT: ${BLOOM_LOCAL_ROOT:-}
+      # Served-URL base the local backend uses to construct output_links URLs
+      # (bloom#581) — only meaningful with BLOOM_STORAGE_BACKEND=local, and
+      # only if something is separately serving BLOOM_STORAGE_LOCAL_ROOT over
+      # HTTP at this base (bloommcp does not run that server itself).
+      BLOOM_STORAGE_URL: ${BLOOM_STORAGE_URL:-}
       # Kept in sync with docker-compose.prod.yml for dev/prod parity, even
       # though dev has a writable root FS. See the prod compose for rationale.
       NUMBA_CACHE_DIR: /tmp/numba

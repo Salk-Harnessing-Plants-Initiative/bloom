@@ -196,6 +196,15 @@ def test_provenance_and_persisted_run(injected_ports, monkeypatch):
     assert result.run_ref == stored.run_ref
     assert result.manifest_path == stored.manifest_path
 
+    # bloom#581: a signed link + hash + size per output.
+    assert set(result.output_links) == set(result.outputs)
+    link = result.output_links["stats.csv"]
+    assert link.key == result.outputs["stats.csv"]
+    assert link.url
+    assert link.sha256 == stored.output_sha256["stats.csv"]
+    assert link.size_bytes >= 0
+    assert stored.output_links == {}
+
 
 def test_3_3b_source_label_and_bounded_payload(injected_ports):
     """3.3b — result.source is the resolved cleaned source, and no *other* field is
