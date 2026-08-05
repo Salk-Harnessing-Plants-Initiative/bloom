@@ -192,9 +192,43 @@
       live Claude Code ↔ dev-bloommcp connection available here; left for a human reviewer/the PR
       author to confirm before merge.
 
-## 7. Follow-ups (out of this change's spec deltas)
+## 7. Post-PR review fixes (two independent review passes on PR #608)
 
-- [ ] 7.1 File (or confirm filed) follow-up issues for the remaining consumer-tool rollout per
+- [x] 8.1 Merge conflict: `origin/staging` picked up the signed-URL-download change (`OutputLink`/
+      `output_links` on `QCCleanResult`) while this PR was open — merged and reconciled both sets
+      of changes (kept `input_sha256` alongside `output_links`; both branches of `qc_clean` now
+      set `output_links` appropriately: `stored.output_links` when persisted, `{}` inline).
+- [x] 8.2 Mutual-exclusivity error message was silently discarded by the contract layer's generic
+      `from_input_validation` mapping (verified empirically) — moved the check from a
+      `model_validator` into `qc_clean`'s body (matching the existing B-4 pattern), so the
+      specific message actually reaches the caller.
+- [x] 8.3 **Blocking: wide-CSV CPU-cost DoS.** A column-count guard checked only after
+      `pandas.read_csv` had already parsed the content — reproduced the reported case (~480,000
+      columns, 4.69 MB, under the byte cap, ~7.7s CPU) and confirmed a post-parse-only check does
+      not prevent it. Fixed with a pre-parse, `csv.reader`-based header-line column estimate that
+      rejects before the expensive parse ever runs (verified: same repro now rejected in ~0.002s);
+      the post-parse `df.shape[1]` check is kept only as an exact backstop.
+- [x] 8.4 Uncaught `UnicodeEncodeError` in the `.encode("utf-8")` calls (byte-size guard and
+      `compute_input_sha256`) — both now wrapped, mapping to `invalid_input`.
+- [x] 8.5 `test_zero_columns_is_rejected` didn't exercise the code path its name claimed (a real
+      `pandas.read_csv(io.StringIO(...))` call cannot return a 0-column frame without first
+      raising `EmptyDataError`) — fixed to mock the return value directly.
+- [x] 8.6 Equivalence oracle strengthened to check every resolved-roles/shape field the result
+      exposes (`replicate_column`, `excluded_columns`, `kept_trait_columns`,
+      `cleaned_nan_cells_remaining`), not a partial subset.
+- [x] 8.7 Added regression tests pinning "csv_content never appears in a log record" (success path
+      and forced `internal_error` path) — previously disclosed as a risk but untested.
+- [x] 8.8 Cosmetic: `_INLINE_EXPERIMENT_LABEL` shortened to `"csv_content"` (reads cleanly through
+      `!r`; the prior `"the supplied csv_content"` read awkwardly once quoted).
+- [x] 8.9 OpenSpec: moved the mutual-exclusivity requirement to `## ADDED Requirements` (it is a
+      wholly new requirement, not a modification of an existing one) and corrected its text to
+      describe body-level enforcement instead of a model validator.
+- [x] 8.10 Full suite re-verified green (1033 passed) after all fixes; `black`/`ruff` clean;
+      `check-uv-locks.py` clean; server boots; `openspec validate --strict` passes.
+
+## 8. Follow-ups (out of this change's spec deltas)
+
+- [ ] 8.1 File (or confirm filed) follow-up issues for the remaining consumer-tool rollout per
       #582: `pca_analysis`, `clustering`, `remove_outliers`, `descriptive_stats`,
       `cross_experiment_correlations`, `umap_analysis` — each imports
       `bloom_mcp.tools._inline_input` and gets its own thorough test pass, per the issue's

@@ -127,10 +127,19 @@ def test_header_only_zero_data_rows_is_rejected():
 
 
 def test_zero_columns_is_rejected():
+    """A real ``pandas.read_csv(io.StringIO(...))`` call cannot actually return a
+    non-empty, zero-column frame — any content that would produce one instead
+    raises ``EmptyDataError`` first (verified: blank/whitespace/comma-only
+    strings all take that path). The ``df.shape[1] == 0`` guard is kept as
+    defense-in-depth against a pandas behavior change; mock the return value
+    directly so this test exercises that specific branch rather than relying on
+    a real string that cannot actually reach it."""
     helper = _import_helper()
-    with pytest.raises(BloomMCPError) as exc:
-        helper.parse_inline_csv_frame("\n\n\n")
+    with patch("pandas.read_csv", return_value=pd.DataFrame(index=[0, 1])):
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(_VALID_CSV)
     assert exc.value.code == "invalid_input"
+    assert "column" in exc.value.message.lower()
 
 
 def test_decode_failure_is_a_structured_error():
@@ -143,6 +152,25 @@ def test_decode_failure_is_a_structured_error():
     assert exc.value.code == "invalid_input"
 
 
+def test_lone_surrogate_encode_failure_is_a_structured_error():
+    """A lone UTF-16 surrogate (e.g. from a lossy upstream decode) raises
+    UnicodeEncodeError on `.encode("utf-8")` — must be mapped explicitly, since
+    it happens before pandas.read_csv is ever called and would otherwise become
+    an opaque internal_error."""
+    helper = _import_helper()
+    content = "Barcode,geno,traitA\nS1,\ud800,1.0\n"
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(content)
+    assert exc.value.code == "invalid_input"
+
+
+def test_compute_input_sha256_lone_surrogate_is_a_structured_error():
+    helper = _import_helper()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.compute_input_sha256("\ud800")
+    assert exc.value.code == "invalid_input"
+
+
 # ── 1.9 leading BOM ──────────────────────────────────────────────────────────
 
 
@@ -152,6 +180,18 @@ def test_leading_utf8_bom_is_stripped_before_parsing():
     frame = helper.parse_inline_csv_frame(bom_content)
     assert "Barcode" in frame.df.columns
     assert "﻿Barcode" not in frame.df.columns
+
+
+def test_repeated_leading_boms_are_all_stripped():
+    """A double-encoded/re-saved file can carry more than one leading BOM —
+    stripping only the first would leave a mangled column name and break role
+    detection for it."""
+    helper = _import_helper()
+    repeated_bom_content = "﻿﻿﻿" + _VALID_CSV
+    frame = helper.parse_inline_csv_frame(repeated_bom_content)
+    assert "Barcode" in frame.df.columns
+    assert not any(col.startswith("﻿") for col in frame.df.columns)
+    assert frame.sample_id_col == "Barcode"
 
 
 # ── 1.10 CRLF ────────────────────────────────────────────────────────────────
@@ -178,12 +218,102 @@ def test_non_ascii_content_survives_parsing_intact():
 # ── 1.12 duplicate / whitespace headers ─────────────────────────────────────
 
 
-def test_duplicate_and_whitespace_headers_match_direct_pandas_behavior():
+def test_duplicate_headers_match_direct_pandas_behavior():
     helper = _import_helper()
     content = "Barcode,geno,geno,traitA\nS1,g1,g1dup,1.0\n"
     direct = pd.read_csv(io.StringIO(content))
     frame = helper.parse_inline_csv_frame(content)
     assert list(frame.df.columns) == list(direct.columns)
+
+
+def test_whitespace_only_header_matches_direct_pandas_behavior():
+    """A genuinely blank/whitespace-only column name — distinct from a duplicate
+    name — pinned separately so the two edge cases aren't conflated."""
+    helper = _import_helper()
+    content = "Barcode,geno, ,traitA\nS1,g1,x,1.0\n"
+    direct = pd.read_csv(io.StringIO(content))
+    frame = helper.parse_inline_csv_frame(content)
+    assert list(frame.df.columns) == list(direct.columns)
+
+
+# ── column-count guard ───────────────────────────────────────────────────────
+
+
+def test_too_many_columns_is_rejected_before_parsing():
+    """The DoS-relevant case: a wide-but-short CSV can sit comfortably under
+    MAX_INLINE_CSV_BYTES while still costing real CPU in pandas.read_csv's
+    per-column overhead (measured externally: ~480k columns, 4.69 MB, ~7.7s
+    CPU). The guard must reject via the cheap header estimate BEFORE
+    pandas.read_csv ever runs — a post-parse-only check would already have
+    paid that cost by the time it fires."""
+    helper = _import_helper()
+    n_cols = helper.MAX_INLINE_CSV_COLUMNS + 1
+    header = ",".join(f"c{i}" for i in range(n_cols))
+    row = ",".join("1" for _ in range(n_cols))
+    content = f"{header}\n{row}\n"
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(content)
+        mock_read_csv.assert_not_called()
+    assert exc.value.code == "invalid_input"
+    assert str(helper.MAX_INLINE_CSV_COLUMNS) in exc.value.message
+
+
+def test_wide_csv_dos_repro_is_rejected_fast():
+    """Reproduces the exact adversarial shape the review's DoS finding used —
+    a single header + single data row of ~480,000 narrow columns, under the
+    byte cap — and asserts it is rejected in well under a second, not after
+    paying the ~7.7s CPU cost a post-parse-only check would incur."""
+    import time
+
+    helper = _import_helper()
+    n = 480_000
+    header = ",".join(f"c{i}" for i in range(n))
+    row = ",".join("1" for _ in range(n))
+    content = f"{header}\n{row}\n"
+    assert len(content.encode("utf-8")) < helper.MAX_INLINE_CSV_BYTES
+
+    start = time.perf_counter()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(content)
+    elapsed = time.perf_counter() - start
+
+    assert exc.value.code == "invalid_input"
+    assert (
+        elapsed < 1.0
+    ), f"rejection took {elapsed:.2f}s — the pre-parse guard didn't fire"
+
+
+def test_quoted_comma_in_header_does_not_cause_a_false_positive_rejection():
+    """A naive `.count(",")` estimate would overcount the moment a single header
+    name contains a quoted comma, falsely rejecting an otherwise-fine payload.
+    Construct exactly MAX_INLINE_CSV_COLUMNS real columns, with one header
+    value containing a quoted comma (which would push a naive count 1 over the
+    limit) — the csv.reader-based estimate must count it correctly as one
+    column and accept the content."""
+    helper = _import_helper()
+    n_cols = helper.MAX_INLINE_CSV_COLUMNS
+    headers = ['"h0, extra"'] + [f"h{i}" for i in range(1, n_cols)]
+    header_line = ",".join(headers)
+    row = ",".join("1" for _ in range(n_cols))
+    content = f"{header_line}\n{row}\n"
+
+    # A naive comma-count would see n_cols + 1 "columns" (the quoted comma adds
+    # one) and wrongly reject; assert that doesn't happen.
+    frame = helper.parse_inline_csv_frame(content)
+    assert frame.df.shape[1] == n_cols
+
+
+def test_column_count_at_the_limit_is_accepted():
+    helper = _import_helper()
+    n_cols = helper.MAX_INLINE_CSV_COLUMNS
+    header = ",".join(f"c{i}" for i in range(n_cols))
+    row = ",".join("1" for _ in range(n_cols))
+    content = f"{header}\n{row}\n"
+
+    frame = helper.parse_inline_csv_frame(content)
+    assert frame.df.shape[1] == n_cols
 
 
 # ── 1.13 sha256 ──────────────────────────────────────────────────────────────

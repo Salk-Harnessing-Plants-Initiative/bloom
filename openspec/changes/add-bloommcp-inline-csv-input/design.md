@@ -77,21 +77,48 @@ consumer to accept `csv_content`. Its current shape is fixed by the shipped code
   (#595/#581) on a sibling branch. Verified by reading `qc_clean.py` directly rather than relying
   on an earlier read taken on a different branch, which briefly caused an inconsistency in this
   document — corrected here.)
-- **Decision: exactly-one-of via a Pydantic `model_validator(mode="after")` on
-  `QCCleanParams`, not two `Optional` fields left to the tool body to sort out.** Raising
-  `ValueError` there is—per the tool-contract's existing "Invalid input is rejected before the
-  tool body runs" guarantee—automatically mapped to `invalid_input` before `qc_clean`'s body
-  executes. No new error code, no new contract-layer change.
+- **Decision: exactly-one-of enforced in `qc_clean`'s tool body, not a Pydantic
+  `model_validator`.** A `model_validator(mode="after")` was the first implementation, but a
+  `ValueError` raised there is remapped by `BloomMCPError.from_input_validation` into a generic
+  `"Input did not match the tool's schema (<root>: value_error)"` — the validator's own message
+  text is discarded, not merely a value (verified empirically: `qc_clean({"experiment": ...,
+  "csv_content": ...})` returned exactly that generic string, with no mention of either field).
+  Reworked to raise `BloomMCPError` directly as the first lines of `qc_clean`'s body, the same
+  pattern the existing genotype/sample_id-collision check (B-4) in this file already uses — this
+  is what actually gets the specific, actionable message to the caller. Trade-off: a bare
+  `QCCleanParams(experiment=..., csv_content=...)` construction that is never passed to
+  `qc_clean` no longer raises at construction time (only calling `qc_clean` with it does) —
+  accepted, since this matches how B-4's own check already behaves and no code in this repo
+  constructs `QCCleanParams` for a purpose other than calling `qc_clean` with it.
 - **Decision: `MAX_INLINE_CSV_BYTES = 5 * 1024 * 1024` (5 MiB), checked against the UTF-8
-  encoded byte length of `csv_content` before parsing.** bloommcp runs in a shared container
-  (see `project.md`'s data-dir/MinIO constraints); an unbounded inline string is a caller-
-  controlled allocation with no upload step to rate-limit it first. 5 MiB is generous headroom
-  over any realistic phenotyping table (the `turface_19` fixture — 187 samples × 20 traits — is
-  ~30 KB; a 10,000-row × 200-column table is still only a few MB as text) while bounding
-  worst-case memory (pandas' in-memory representation is a multiple of the raw text size). Over
-  the cap raises `BloomMCPError(code="invalid_input", …)` naming the byte count and the limit.
-  **Open question for reviewers:** this number is a judgment call, not derived from a measured
-  constraint — flag if 5 MiB is wrong for real Claude Code usage patterns.
+  encoded byte length of `csv_content` before parsing — but NOT sufficient on its own.**
+  bloommcp runs in a shared container; an unbounded inline string is a caller-controlled
+  allocation with no upload step to rate-limit it first. 5 MiB comfortably covers real
+  phenotyping tables (`turface_19`: 187×20, ~30 KB; the `cylinder` fixture: 129×846, ~0.83 MB) —
+  an earlier draft of this section claimed a "10,000-row × 200-column" table would also fit in "a
+  few MB," which was simply wrong arithmetic (that shape is closer to 20 MB as text); corrected
+  here rather than left standing. **A byte cap alone does not bound CPU cost**, which is the more
+  important finding: a pathologically wide-but-short CSV (many narrow columns) can sit
+  comfortably under this cap while still costing real CPU in `pandas.read_csv`'s per-column
+  overhead. Measured directly: ~480,000 columns in a single row, 4.69 MB (under the cap), cost
+  ~7.7s of CPU — a real, reproducible denial-of-service vector, since bloommcp has no rate
+  limiting in front of this path (FastMCP ships a `RateLimitingMiddleware` but it is not wired
+  into `server.py`) and this path has no persistence step to create natural backpressure. See the
+  `MAX_INLINE_CSV_COLUMNS` decision below for the actual fix. The byte cap remains useful for what
+  it does bound (aggregate payload size / in-memory frame size), just not CPU cost in isolation.
+- **Decision: `MAX_INLINE_CSV_COLUMNS = 2000`, enforced via a cheap PRE-PARSE header-line
+  estimate — not a post-parse `df.shape[1]` check.** A first draft checked column count only
+  *after* `pandas.read_csv` returned, which does not prevent the CPU-cost DoS above: the expensive
+  parse has already run by the time a post-parse check can fire. The actual guard,
+  `_estimate_header_columns`, parses only the first line via `csv.reader` (not a naive
+  `str.count(",")`, which would overcount — and so falsely reject an otherwise-fine payload — the
+  moment a single header name contains a quoted comma) and rejects before `pandas.read_csv` is
+  ever called. Verified the fix against the exact reported shape (~480,000 columns, 4.69 MB):
+  rejection now takes ~0.002s instead of ~7.7s. The post-parse `df.shape[1] > MAX_INLINE_CSV_COLUMNS`
+  check is retained only as an exact backstop for the one case the header-only estimate cannot
+  see — a header value containing an embedded newline within quotes — not as the primary guard.
+  2000 is generous headroom over any real phenotyping table (`turface_19` has 20 trait columns;
+  `cylinder` has 846) while still bounding the pathological case.
 - **Decision: `input_sha256` is computed by the helper over the exact UTF-8-encoded
   `csv_content` string** (`hashlib.sha256(csv_content.encode("utf-8")).hexdigest()`) —
   independent of, and not reusing, `Provenance.stamp`'s own `input_sha256` field (that field is
@@ -99,22 +126,39 @@ consumer to accept `csv_content`. Its current shape is fixed by the shipped code
   conventions, which the inline path never reaches). The two `input_sha256` computations happen
   to share a name but serve different tiers (manifest-level vs. this-response-only) — worth
   reviewer attention so nobody conflates them as the same code path.
-- **Decision: malformed CSV (unparseable, zero rows, zero columns, decode failure) raises
-  `BloomMCPError(code="invalid_input", …)` from the helper, not a bare `pandas`/`Unicode`
-  exception.** `qc_clean` is declared with `errors=(ExperimentReadError,)` today; a raw
-  `pandas.errors.ParserError` would fall through to the contract's opaque `internal_error` if
-  raised from inside the tool body without translation, which is the exact anti-pattern
-  `qc_clean`'s own file-based error handling already avoids for its other structural failures.
-  The helper does the mapping itself so `qc_clean` does not need `errors=` extended.
-- **Decision: strip a single leading UTF-8 BOM (`﻿`) from `csv_content` before parsing.**
-  `csv_content` is a `str`, so Python's `encoding="utf-8-sig"` BOM-stripping (which only applies
-  when *decoding bytes*) never runs. A caller pasting CSV text copied out of Excel or Windows
-  Notepad routinely carries a literal `﻿` before the header row; left in place, the first
-  column name becomes `"﻿Barcode"` instead of `"Barcode"`, silently breaking
-  `resolve_columns`'s sample-id/genotype pattern matching for that one column — exactly the kind
-  of parsing edge case this helper exists to guard. The helper SHALL strip at most one leading
-  `﻿` before handing the string to `pandas.read_csv`, mirroring what `utf-8-sig` decoding
-  would have done had the content arrived as bytes.
+- **Decision: malformed CSV (unparseable, zero rows, zero columns, encode failure, decode
+  failure) raises `BloomMCPError(code="invalid_input", …)` from the helper, not a bare
+  `pandas`/`Unicode` exception.** `qc_clean` is declared with `errors=(ExperimentReadError,)`
+  today; a raw `pandas.errors.ParserError` would fall through to the contract's opaque
+  `internal_error` if raised from inside the tool body without translation, which is the exact
+  anti-pattern `qc_clean`'s own file-based error handling already avoids for its other structural
+  failures. The helper does the mapping itself so `qc_clean` does not need `errors=` extended.
+  **A gap found during review:** the `.encode("utf-8")` calls (the byte-size guard, and
+  independently `compute_input_sha256`) ran outside any `try/except`. A lone UTF-16 surrogate in
+  `csv_content` (reachable via a lossy upstream decode) raises `UnicodeEncodeError` there — before
+  `pandas.read_csv` is ever called — and would otherwise propagate as an opaque `internal_error`,
+  contradicting this module's own guarantee. Both call sites now wrap the encode step explicitly.
+  **A second finding, not acted on (kept as documented, intentional dead code):** three
+  independent review passes found that `df.shape[1] == 0` (checked after a successful parse) and
+  the `except UnicodeDecodeError` clause around `pandas.read_csv` are not reachable through any
+  real `csv_content` string — a `pandas.read_csv(io.StringIO(...))` call on an already-decoded
+  `str` cannot itself raise `UnicodeDecodeError`, and every blank/whitespace/comma-only input that
+  might otherwise produce a zero-column frame raises `EmptyDataError` first instead. Both are kept
+  as defense-in-depth against a future pandas behavior change rather than removed, since the
+  ongoing cost of two short branches is lower than the risk of removing a guard whose
+  unreachability isn't provable across every pandas version/configuration; the corresponding
+  tests were adjusted to mock `pandas.read_csv`'s return value directly so they honestly test the
+  branch they claim to, rather than asserting on a string that cannot actually reach it.
+- **Decision: strip every leading UTF-8 BOM (`﻿`, one or more) from `csv_content` before
+  parsing — not just the first one.** `csv_content` is a `str`, so Python's `encoding="utf-8-sig"`
+  BOM-stripping (which only applies when *decoding bytes*) never runs. A caller pasting CSV text
+  copied out of Excel or Windows Notepad routinely carries a literal `﻿` before the header row;
+  left in place, the first column name becomes `"﻿Barcode"` instead of `"Barcode"`, silently
+  breaking `resolve_columns`'s sample-id/genotype pattern matching for that one column. A first
+  draft stripped only a single leading BOM (`if csv_content.startswith(_BOM): ...`) — reviewed and
+  found to leave a mangled column name when a double-encoded or re-saved file carries more than
+  one (e.g. `"﻿﻿﻿Barcode"` → stripping one still leaves `"﻿﻿Barcode"`). Fixed to
+  `csv_content.lstrip(_BOM)`, which strips every leading occurrence.
 - **Decision: suppress `qc_clean`'s `qc_inspect` nudge (`next_step`) entirely on the inline
   path.** `qc_clean.py`'s existing `next_step` advisory (built when `n_samples_dropped > 0`)
   interpolates `params.experiment!r}` into a "Run qc_inspect on {experiment!r}…" message. On the
@@ -125,22 +169,42 @@ consumer to accept `csv_content`. Its current shape is fixed by the shipped code
   help, `qc_clean` SHALL set `next_step=None` unconditionally on the inline path, regardless of
   `n_samples_dropped`. Found during review, not obvious from reading `qc_clean.py` alone since
   the nudge is a late, easy-to-miss addition near the end of the function.
+- **Decision: `_INLINE_EXPERIMENT_LABEL = "csv_content"`, not a full sentence.** Every error
+  message that would normally interpolate `{params.experiment!r}` uses this placeholder in the
+  same spot for the inline path, so it is always rendered through `!r`. An earlier draft used
+  `"the supplied csv_content"`, which reads awkwardly once quoted (`'the supplied csv_content'`)
+  — a bare `"csv_content"` reads cleanly as `'csv_content'` in the same messages a real
+  experiment name (`'turface_19_raw.csv'`) would otherwise occupy.
+- **Deferred, not implemented (reviewer suggestions, non-blocking):** (1) extracting the
+  `if is_inline: ... else: ...` persistence/result-shaping block in `qc_clean` into standalone
+  helper functions, ahead of any second consumer tool actually needing the same shape — premature
+  given only one caller exists; revisit once a second tool's rollout PR shows what's genuinely
+  shared vs. per-tool. (2) An explicit advisory string field (beyond `source="inline"`,
+  `run_ref=None`, and the `csv_content` field description) stating non-persistence in the
+  result itself — the existing signals already communicate this both structurally and in the
+  schema description; a redundant free-text field adds surface area without a concrete gap it
+  closes. Both are one-line additions to make later if a second tool's needs prove them out.
 
 ## Risks / Trade-offs
 
 - **`Provenance.params` carries the raw CSV text in memory for the duration of the call.** See
   Context above — accepted because it is never persisted or logged on this path, but a future
   refactor that adds logging around `Provenance` (e.g. an audit trail) must exclude `csv_content`
-  explicitly or this stops being true. Not fixed here since no such logging exists today. Traced
-  the current error-logging path (`contract/wrap.py` → `contract/errors.py`) during review: a
-  `BloomMCPError` raised directly (as the helper and `qc_clean`'s own validation do) is re-raised
-  unmapped and never logged; only the `internal_error` path calls `logger.error(...)`, and that
-  call does not dump local variables — so today's code path genuinely never writes `csv_content`
-  to a log. No test currently pins this invariant; a cheap follow-up would assert no log record
-  emitted during a `qc_clean(csv_content=...)` call contains the input text, but it is not added
-  here since there is no logging call on this path to regress against yet.
-- **The 5 MiB cap is a first guess, not a measured limit.** Easy to change (one module
-  constant) if real usage says otherwise; flagged as an open decision above.
+  explicitly or this stops being true. Traced the current error-logging path (`contract/wrap.py`
+  → `contract/errors.py`) during review: a `BloomMCPError` raised directly (as the helper and
+  `qc_clean`'s own validation do) is re-raised unmapped and never logged; only the `internal_error`
+  path calls `logger.error(...)`, and that call does not dump local variables — so today's code
+  path genuinely never writes `csv_content` to a log. **Now pinned by regression tests**
+  (`test_csv_content_never_appears_in_logs_on_success` /
+  `..._on_internal_error` in `test_qc_clean_tool.py`), added after multiple review passes flagged
+  the invariant as real but untested — both a successful call and a forced `internal_error` are
+  exercised with a unique marker embedded in the content, asserting it never appears in
+  `caplog.text` or in the returned error's `message`/`remedy`.
+- **The 5 MiB byte cap and the 2000-column cap are both judgment calls, not measured limits.**
+  Easy to change (module constants) if real usage says otherwise. The column cap in particular
+  was added specifically in response to a demonstrated CPU-cost DoS (see the
+  `MAX_INLINE_CSV_COLUMNS` decision above) rather than derived from a load test — 2000 is simply
+  generous headroom over any real phenotyping table seen in this repo's fixtures.
 - **No streaming / chunked parsing.** `pandas.read_csv` on a `StringIO` loads the full frame at
   once, same as every other adapter — consistent with existing behavior, not a new limitation.
 - **`QCCleanResult`'s `experiment`/`run_ref`/`version_dir`/`manifest_path` widen from required
@@ -162,8 +226,12 @@ remove with it.
 
 ## Open Questions
 
-- **`MAX_INLINE_CSV_BYTES` value** — proposed 5 MiB (above); confirm before implementation or
-  adjust.
-- **Row-count cap in addition to a byte cap?** A byte cap already bounds memory; the issue does
-  not ask for a separate row limit and none is proposed here, but a reviewer may want one for a
-  pathologically wide-but-short file. Deferred unless requested.
+- **`MAX_INLINE_CSV_BYTES` (5 MiB) and `MAX_INLINE_CSV_COLUMNS` (2000) values** — both are
+  judgment calls (see Risks above), not derived from a measured production constraint; flag if
+  either is wrong for real Claude Code usage patterns. (The column cap was resolved from
+  "deferred unless requested" to "implemented" during review, once a concrete CPU-cost DoS was
+  demonstrated against the byte cap alone — see the `MAX_INLINE_CSV_COLUMNS` decision above.)
+- **Row-count cap independent of column count?** Not proposed — a pathologically tall-but-narrow
+  CSV is still bounded by `MAX_INLINE_CSV_BYTES` (many rows of a few columns each still
+  accumulates bytes linearly, unlike the columns case, which showed CPU cost decoupled from byte
+  size). Revisit only if a similar decoupled-cost repro is demonstrated for rows.

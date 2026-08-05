@@ -1102,30 +1102,56 @@ def test_cylinder_cleaned_table_matches_golden_shape_and_roles(injected_ports_cy
 
 def test_mutual_exclusivity_both_given_is_invalid_input(injected_ports):
     reader, _store = injected_ports
+    reader.load_experiment = MagicMock(
+        side_effect=AssertionError("load_experiment must not be called")
+    )
     csv_text = _RAW.read_text(encoding="utf-8")
     with pytest.raises(BloomMCPError) as exc:
         qc_clean({"experiment": _EXPERIMENT, "csv_content": csv_text})
     assert exc.value.code == "invalid_input"
+    # The specific, actionable message must reach the caller — not the contract
+    # layer's generic "(<root>: value_error)" fallback (see qc_clean.py's NOTE on
+    # QCCleanParams for why this is enforced in the body, not a model_validator).
+    assert "exactly one" in exc.value.message.lower()
+    reader.load_experiment.assert_not_called()
 
 
 def test_mutual_exclusivity_neither_given_is_invalid_input(injected_ports):
     with pytest.raises(BloomMCPError) as exc:
         qc_clean({"max_nans_per_trait": _MNT})
     assert exc.value.code == "invalid_input"
+    assert "exactly one" in exc.value.message.lower()
+
+
+def test_inline_empty_csv_content_fails_through_the_full_tool_path(injected_ports):
+    """csv_content="" passes the mutual-exclusivity check (it is not None) and must
+    fail two layers deeper, inside parse_inline_csv_frame — exercised here through
+    qc_clean itself, not just the raw helper (test_inline_input.py only covers the
+    latter)."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean({"csv_content": ""})
+    assert exc.value.code == "invalid_input"
 
 
 def test_inline_cleaning_matches_the_file_based_oracle(injected_ports):
     """Equivalence oracle: the same turface_19 raw text fed as csv_content produces
-    the identical cleaned-table shape and role resolution as the file-based path."""
+    the identical cleaned-table shape and role resolution as the file-based path —
+    checking every resolved-roles/shape field the result exposes, not just a subset."""
     file_based = _run()
     csv_text = _RAW.read_text(encoding="utf-8")
     inline = qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
 
+    assert inline.n_samples_in == file_based.n_samples_in
     assert inline.n_samples_out == file_based.n_samples_out
+    assert inline.n_traits_in == file_based.n_traits_in
     assert inline.n_traits_out == file_based.n_traits_out
+    assert inline.kept_trait_columns == file_based.kept_trait_columns
     assert inline.removed_traits == file_based.removed_traits
     assert inline.genotype_column == file_based.genotype_column
     assert inline.sample_id_column == file_based.sample_id_column
+    assert inline.replicate_column == file_based.replicate_column
+    assert inline.excluded_columns == file_based.excluded_columns
+    assert inline.cleaned_nan_cells_remaining == file_based.cleaned_nan_cells_remaining
 
 
 def test_inline_call_never_persists_a_run(injected_ports):
@@ -1216,3 +1242,44 @@ def test_inline_roleless_error_message_names_csv_content_not_none(injected_ports
     assert exc.value.code == "assumption_violated"
     assert "None" not in exc.value.message
     assert "csv_content" in exc.value.message
+
+
+# ── csv_content never appears in logs (design.md's disclosed risk) ──────────
+
+
+def test_csv_content_never_appears_in_logs_on_success(injected_ports, caplog):
+    """The one load-bearing safety property of the whole feature: csv_content is
+    never persisted (proven elsewhere) AND never logged. Provenance.stamp's
+    params=data.model_dump() carries the raw text in memory for the call's
+    duration (disclosed in design.md) — this pins that it never reaches a log
+    record on the successful path."""
+    marker = "MARKER_" + "Q" * 64
+    csv_text = f"Barcode,geno,traitA,traitB\nS1,{marker},1.0,2.0\nS2,g2,3.0,4.0\n"
+    with caplog.at_level("DEBUG"):
+        qc_clean(QCCleanParams(csv_content=csv_text, min_samples_per_trait=1))
+    assert marker not in caplog.text
+
+
+def test_csv_content_never_appears_in_logs_on_internal_error(
+    injected_ports, monkeypatch, caplog
+):
+    """Same invariant on the internal_error path, where the contract layer logs
+    the exception server-side (contract/errors.py's from_exception) — the log
+    call must not carry csv_content, and neither may the message returned to
+    the caller."""
+    marker = "MARKER_" + "Q" * 64
+    csv_text = f"Barcode,geno,traitA,traitB\nS1,{marker},1.0,2.0\nS2,g2,3.0,4.0\n"
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("undeclared internal failure")
+
+    monkeypatch.setattr(qc_clean_tool, "clean_traits_for_analysis", _boom)
+
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(BloomMCPError) as exc:
+            qc_clean(QCCleanParams(csv_content=csv_text))
+
+    assert exc.value.code == "internal_error"
+    assert marker not in exc.value.message
+    assert marker not in exc.value.remedy
+    assert marker not in caplog.text

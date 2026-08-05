@@ -1,3 +1,34 @@
+## ADDED Requirements
+
+### Requirement: QC Clean Enforces Mutually Exclusive Input Selection
+
+`qc_clean` SHALL enforce, as the first check in its tool body — before the reader, the parser, or
+any other validation runs — that exactly one of `experiment` or `csv_content` is provided;
+neither supplying both nor supplying neither is a valid call. On violation it SHALL raise a
+`BloomMCPError` directly with a specific, actionable message naming both fields, rather than via
+a Pydantic `model_validator`: a `model_validator`'s raised `ValueError` is remapped by the
+contract layer's `BloomMCPError.from_input_validation` into a generic
+`"Input did not match the tool's schema (<root>: value_error)"` message that discards the
+validator's own text (verified empirically) — enforcing the rule in the body, the same pattern
+`qc_clean` already uses for its genotype/sample_id-collision check, is what lets the specific
+message actually reach the caller. Because this validation lives in the function body rather than
+a model validator, it fires for every call routed through `qc_clean` (including the
+`@as_mcp_tool`-wrapped dict/`params` call shapes), but a bare `QCCleanParams(experiment=...,
+csv_content=...)` construction that is never passed to `qc_clean` itself does not raise.
+
+#### Scenario: Supplying both experiment and csv_content is rejected with a specific message
+
+- **WHEN** `qc_clean` is invoked with both `experiment` and `csv_content` set
+- **THEN** it raises a `BloomMCPError` (code `invalid_input`) whose message names both fields and
+  states that exactly one is required, before any reader or parsing call occurs — not the
+  contract layer's generic schema-mismatch message
+
+#### Scenario: Supplying neither experiment nor csv_content is rejected with a specific message
+
+- **WHEN** `qc_clean` is invoked with both `experiment` and `csv_content` absent
+- **THEN** it raises the same specific `BloomMCPError` (code `invalid_input`) before any reader or
+  parsing call occurs
+
 ## MODIFIED Requirements
 
 ### Requirement: QC Clean Operates on Raw Input and Reads via the Port
@@ -42,9 +73,10 @@ structured `BloomMCPError` (never a raw traceback or leaked backend internals), 
 
 - **WHEN** a valid request is serialized to the tool's input schema and the result is
   validated against the output schema
-- **THEN** both validate without loss, and an invalid input (e.g. neither `experiment` nor
-  `csv_content` given, or a cleanup threshold out of `[0,1]`) yields a `BloomMCPError` with an
-  `input`/validation code
+- **THEN** both validate without loss, and an invalid input (e.g. a cleanup threshold out of
+  `[0,1]`) yields a `BloomMCPError` with an `input`/validation code — the separate mutual-
+  exclusivity check (see "QC Clean Enforces Mutually Exclusive Input Selection") is a body-level
+  check, not a schema-level one, since both fields are individually optional in the schema
 
 #### Scenario: A caller-supplied trait column that is unknown or non-numeric is rejected
 
@@ -65,25 +97,15 @@ structured `BloomMCPError` (never a raw traceback or leaked backend internals), 
 - **THEN** the stamped `Provenance` records the tool name, the cleanup-threshold and
   trait-selection params, and `seed = None` (QC applies no `random_state`)
 
-### Requirement: QC Clean Enforces Mutually Exclusive Input Selection
+#### Scenario: csv_content never appears in a log record
 
-`QCCleanParams` SHALL enforce, via a model validator evaluated before the tool body runs, that
-exactly one of `experiment` or `csv_content` is provided — neither supplying both nor supplying
-neither is a valid call. This validation SHALL run for every construction of `QCCleanParams`
-(not only calls routed through `@as_mcp_tool`'s `model_validate`), since Pydantic model
-validators execute at instantiation regardless of caller.
-
-#### Scenario: Supplying both experiment and csv_content is rejected before the tool runs
-
-- **WHEN** `QCCleanParams` is constructed with both `experiment` and `csv_content` set
-- **THEN** validation fails with a `BloomMCPError` (code `invalid_input`) before `qc_clean`'s
-  body executes, and no reader or parsing call occurs
-
-#### Scenario: Supplying neither experiment nor csv_content is rejected
-
-- **WHEN** `QCCleanParams` is constructed with both `experiment` and `csv_content` absent
-- **THEN** validation fails with a `BloomMCPError` (code `invalid_input`) before `qc_clean`'s
-  body executes
+- **WHEN** `qc_clean` is invoked with `csv_content` — on a successful call, and on a call that
+  hits the contract's `internal_error` path (an undeclared exception from the delegated
+  cleanup)
+- **THEN** no emitted log record contains the `csv_content` text, and the returned
+  `BloomMCPError`'s `message`/`remedy` do not contain it either — `Provenance.stamp`'s
+  `params=data.model_dump()` carries the raw text in memory for the call's duration (see
+  design.md), but it is never logged or returned
 
 ### Requirement: QC Clean Persists a Versioned Cleaned Run and Returns Links
 
@@ -148,6 +170,8 @@ be `None` with `outputs` empty; the caller receives the same small in/out summar
 - **WHEN** `qc_clean` is invoked with `csv_content` equal to the text of the `turface_19` raw
   fixture, using the same thresholds as the existing file-based oracle
   (`turface_19_qc_golden.json`)
-- **THEN** the resulting `n_samples_out`, `n_traits_out`, `removed_traits`, and resolved role
-  columns are identical to the file-based oracle's result — the ephemeral and persisted paths
-  clean the same input identically
+- **THEN** the resulting `n_samples_in`/`n_samples_out`, `n_traits_in`/`n_traits_out`,
+  `kept_trait_columns`, `removed_traits`, `genotype_column`, `sample_id_column`,
+  `replicate_column`, `excluded_columns`, and `cleaned_nan_cells_remaining` are all identical to
+  the file-based oracle's result — the ephemeral and persisted paths clean the same input
+  identically, checked field-for-field rather than on a partial subset

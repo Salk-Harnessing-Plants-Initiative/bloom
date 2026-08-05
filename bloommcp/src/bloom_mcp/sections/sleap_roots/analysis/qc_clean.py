@@ -20,7 +20,12 @@ a real plant/scan — enforced at the bloommcp level, so it holds even when
 ``sleap-roots-contracts`` is absent), and runs analyze's input contract in ``warn``
 mode via :func:`run_input_validation`. A missing required role returns a structured
 ``BloomMCPError`` listing the available columns and naming the override
-(``sample_id_column`` / ``genotype_column``); no run is persisted.
+(``sample_id_column`` / ``genotype_column``); no run is persisted. **This
+traceability guarantee is structural, not identity-backed, on the ``csv_content``
+path (#582):** the same genotype/sample-id role columns are still required and
+resolved, so every row is still traceable *within the supplied table*, but there is
+no registered experiment behind it — nothing to trace *back to* in Bloom's own
+database, since the content was never registered.
 
 On each call it reads a frame via one of two mutually exclusive input paths: a
 registered ``experiment`` (the **raw** frame via the injected :class:`ExperimentReader`
@@ -62,7 +67,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from sleap_roots_analyze import clean_traits_for_analysis
 
 from bloom_mcp.contract import BloomMCPError, OutputLink, Provenance, as_mcp_tool
@@ -82,8 +87,11 @@ from bloom_mcp.tools._qc_shared import (
 
 # Placeholder used in error messages on the csv_content path, where there is no
 # experiment name to interpolate (see QC Clean Enforces Mutually Exclusive Input
-# Selection / the next_step-suppression scenario in the #582 spec delta).
-_INLINE_EXPERIMENT_LABEL = "the supplied csv_content"
+# Selection / the next_step-suppression scenario in the #582 spec delta). Kept
+# short and free of embedded punctuation since it is always interpolated with
+# `!r` alongside a real experiment name in the same f-strings — "csv_content"
+# reads cleanly as 'csv_content'; a full sentence would read awkwardly quoted.
+_INLINE_EXPERIMENT_LABEL = "csv_content"
 
 _TOOL_CLASS = QC_TOOL_CLASS
 _LOG_NAME = "cleanup_log.json"
@@ -179,14 +187,15 @@ class QCCleanParams(BaseModel):
         description="Optional slug appended to the version directory name.",
     )
 
-    @model_validator(mode="after")
-    def _exactly_one_input(self) -> "QCCleanParams":
-        if (self.experiment is None) == (self.csv_content is None):
-            raise ValueError(
-                "Exactly one of experiment or csv_content must be provided "
-                "(both or neither is not a valid call)."
-            )
-        return self
+    # NOTE: the exactly-one-of-experiment/csv_content rule is enforced in the tool
+    # body (qc_clean's first lines), not here as a @model_validator. A validator's
+    # raised ValueError is remapped by the contract layer's from_input_validation
+    # into a generic "(<root>: value_error)" message — the author's own message
+    # text is discarded, not merely a value. Enforcing it in the body (the same
+    # pattern the B-4 genotype/sample_id-collision check below already uses) lets
+    # qc_clean raise BloomMCPError directly, so the specific, actionable message
+    # actually reaches the caller. Verified empirically: a model_validator here
+    # produces "Input did not match the tool's schema (<root>: value_error)."
 
 
 class QCCleanResult(BaseModel):
@@ -253,6 +262,22 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     versioned run; inline ``csv_content`` never persists anything (#582) — a one-off
     check, not a registered experiment.
     """
+    # Exactly one of experiment / csv_content — checked first, before touching the
+    # reader or the parser, so a bad call fails immediately with a specific message
+    # (see the NOTE on QCCleanParams for why this lives here and not in a validator).
+    if (params.experiment is None) == (params.csv_content is None):
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                "Exactly one of experiment or csv_content must be provided "
+                "(both or neither is not a valid call)."
+            ),
+            remedy=(
+                "Supply exactly one of experiment (a registered experiment "
+                "identifier) or csv_content (raw CSV text for a one-off analysis)."
+            ),
+        )
+
     is_inline = params.csv_content is not None
     # Used in error messages where an experiment name would normally be interpolated —
     # there is no experiment identity on the inline path.
