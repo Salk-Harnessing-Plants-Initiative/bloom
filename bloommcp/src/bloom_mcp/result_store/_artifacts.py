@@ -67,12 +67,31 @@ def build_output_links(
     output_sha256: dict[str, str],
     output_size_bytes: dict[str, int],
     url_for: Callable[[str], str],
+    *,
+    expected_prefix: str,
 ) -> dict[str, OutputLink]:
     """Build the per-output ``OutputLink`` dict ``commit()`` attaches to its
     ``StoredRun`` (bloom#581). ``url_for(key)`` supplies the URL — a real
     signed call for ``SupabaseResultStore``, a synthesized string for
     ``FakeResultStore`` — so this one assembly step is shared by both.
+
+    ``expected_prefix`` is the prefix ``commit()`` itself just computed for
+    this run (bloom#598) — every key in ``output_keys`` MUST fall under it,
+    since a key outside it would mean signing something this run did not
+    itself just upload. Checked before any ``url_for`` call, so a violation
+    never reaches the signing primitive (which performs no ownership check of
+    its own). A mismatch is a structural bug, never a caller-input condition —
+    raises ``RuntimeError``, which both adapters' ``commit()`` already catch
+    via their existing broad ``except Exception`` and convert to
+    ``CommitFailedError``, the same fail-closed/cleanup path a signing
+    failure already takes.
     """
+    for name, key in output_keys.items():
+        if not key.startswith(expected_prefix):
+            raise RuntimeError(
+                f"output key {key!r} (output {name!r}) is outside the "
+                f"expected run prefix {expected_prefix!r}"
+            )
     return {
         name: OutputLink(
             key=output_keys[name],

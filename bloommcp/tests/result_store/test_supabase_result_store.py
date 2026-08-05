@@ -279,6 +279,58 @@ def test_signing_failure_fails_commit_and_cleans_up_orphans(
     assert not any(k.endswith("b.csv") for k in fake_supabase_storage.objects)
 
 
+def test_key_outside_run_prefix_fails_commit_and_cleans_up(
+    fake_supabase_storage, monkeypatch
+):
+    """#598: commit()'s key-scoping guard must reject a key outside this run's
+    own freshly-computed prefix before signing it.
+
+    No real call path can produce a mismatched key (expected_prefix and every
+    output key both derive from the same adir.key(...) call inside commit()'s
+    key_for closure) — monkeypatching AnalysisDir.key would corrupt both sides
+    identically and never reproduce the mismatch this test needs. Instead,
+    monkeypatch the module-level build_output_links name imported into
+    supabase_store, delegating to the real function but substituting a wrong
+    expected_prefix — this leaves output_keys/upload fully self-consistent
+    (real bytes land at the real, correctly-scoped key) while still exercising
+    that commit() converts the guard's RuntimeError into the same
+    CommitFailedError fail-closed/cleanup path a signing failure already
+    takes."""
+    import bloom_mcp.result_store.supabase_store as sstore
+    from bloom_mcp.result_store._artifacts import (
+        build_output_links as real_build_output_links,
+    )
+
+    def _wrong_prefix(output_keys, output_sha256, output_size_bytes, url_for, **_):
+        return real_build_output_links(
+            output_keys,
+            output_sha256,
+            output_size_bytes,
+            url_for,
+            expected_prefix="bloommcp_output/qc_someone_else/v1/",
+        )
+
+    monkeypatch.setattr(sstore, "build_output_links", _wrong_prefix)
+
+    store = SupabaseResultStore()
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"a")
+
+    with pytest.raises(CommitFailedError) as excinfo:
+        store.commit(run, {"a": "a.csv"})
+
+    # Assert on the chained cause, not just "some exception happened" — before
+    # the guard exists, `expected_prefix` is an unexpected kwarg and the cause
+    # is a bare TypeError; only the guard itself raises RuntimeError naming the
+    # mismatched key. Without this, the test would pass identically whether or
+    # not the guard is implemented.
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert "qc_someone_else" in str(excinfo.value.__cause__)
+    assert store.list_runs("exp.csv", "qc") == []  # latest un-advanced
+    # The already-uploaded object is cleaned up, same as a signing failure.
+    assert not any(k.endswith("a.csv") for k in fake_supabase_storage.objects)
+
+
 def test_signing_call_returning_no_url_fails_commit_not_silently_none(
     fake_supabase_storage, monkeypatch
 ):

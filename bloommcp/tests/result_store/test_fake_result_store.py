@@ -91,6 +91,44 @@ def test_double_commit_rejected():
         store.commit(run, {"o": "o.csv"})
 
 
+def test_key_outside_run_prefix_fails_commit_and_cleans_up(monkeypatch):
+    """#598: FakeResultStore.commit() gets the same structural key-scoping
+    guarantee as SupabaseResultStore (fake/real parity) — a key outside this
+    run's own freshly-computed prefix fails the whole commit via the existing
+    CommitFailedError path, same as any other commit failure.
+
+    Injection mirrors test_supabase_result_store's approach: monkeypatch the
+    module-level build_output_links import (not the prefix-building logic
+    itself, which would corrupt both sides of the comparison identically and
+    never reproduce a mismatch)."""
+    import bloom_mcp.result_store.fake_store as fstore
+    from bloom_mcp.result_store._artifacts import (
+        build_output_links as real_build_output_links,
+    )
+
+    def _wrong_prefix(output_keys, output_sha256, output_size_bytes, url_for, **_):
+        return real_build_output_links(
+            output_keys,
+            output_sha256,
+            output_size_bytes,
+            url_for,
+            expected_prefix="bloommcp_output/qc_someone_else/v1/",
+        )
+
+    monkeypatch.setattr(fstore, "build_output_links", _wrong_prefix)
+
+    store = FakeResultStore()
+    run = store.create_run(experiment="e.csv", tool_class="qc", provenance=_prov())
+    _write(run.staging_dir, "o.csv", b"x")
+
+    with pytest.raises(CommitFailedError) as excinfo:
+        store.commit(run, {"o": "o.csv"})
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert "qc_someone_else" in str(excinfo.value.__cause__)
+    assert store.list_runs("e.csv", "qc") == []
+
+
 def test_commit_failure_is_retryable_and_does_not_leak():
     """#325: fake mirror of test_supabase_result_store's retry contract."""
     store = FakeResultStore()

@@ -212,6 +212,7 @@ class FakeResultStore:
                     url_for=lambda key: (
                         f"fake://signed/{key}?expires_in={SIGNED_URL_EXPIRES_SECONDS}"
                     ),
+                    expected_prefix=f"{state.prefix}{version_dir}/",
                 )
 
                 # Per-output recording loop, mirroring where

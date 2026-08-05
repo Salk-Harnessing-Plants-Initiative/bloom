@@ -259,6 +259,7 @@ class SupabaseResultStore:
                     url_for=lambda key: _sc.create_signed_url(
                         key, SIGNED_URL_EXPIRES_SECONDS
                     ),
+                    expected_prefix=adir.key(f"{version_dir}/"),
                 )
 
                 prov = state.provenance.model_copy(

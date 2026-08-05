@@ -1701,6 +1701,31 @@ def test_storage_backend_protocol_includes_create_signed_url(tmp_path):
     assert hasattr(sb.LocalStorageBackend, "create_signed_url")
 
 
+def test_create_signed_url_performs_no_ownership_check(monkeypatch):
+    """#598: create_signed_url itself is a generic signing primitive with no
+    concept of run/experiment ownership — it signs whatever syntactically
+    valid key it's given. The actual scoping guarantee lives one layer up, in
+    ResultStore.commit() (see test_supabase_result_store.py /
+    test_fake_result_store.py's key-scoping tests) — this test documents,
+    rather than changes, the primitive's existing unguarded behavior."""
+    client = _FakeSignClient({"signedURL": "http://kong:8000/sign/x?token=z"})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+    monkeypatch.delenv("BLOOM_PUBLIC_SUPABASE_URL", raising=False)
+
+    # A key with no relation to any run this backend knows about — not
+    # rejected on ownership/scope grounds.
+    url = sb.SupabaseStorageBackend().create_signed_url(
+        "bloommcp_output/qc_someone_elses_experiment/v99/secret.csv", 3600
+    )
+
+    assert url == "http://kong:8000/sign/x?token=z"
+    assert client.calls == [
+        ("bloommcp_output/qc_someone_elses_experiment/v99/secret.csv", 3600)
+    ]
+
+
 def test_supabase_client_reexports_create_signed_url(monkeypatch):
     import bloom_mcp.storage_backend as sb_module
     import bloom_mcp.supabase_client as sc
