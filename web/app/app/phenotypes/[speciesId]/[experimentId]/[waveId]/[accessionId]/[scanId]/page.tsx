@@ -5,7 +5,7 @@ import {
 } from "@/lib/supabase/server";
 
 import PlantImage from "@/components/plant-image";
-import PlantScan from "@/components/plant-scan";
+import ScanFrameViewer from "@/components/scan-frame-viewer";
 import ScanVideoButton from "@/components/scan-video-button";
 import { toPublicStorageUrl } from "@/lib/supabase/storage-url";
 
@@ -85,13 +85,13 @@ export default async function Image({
       <div className="mb-4">
         {experiment?.people && <ScientistBadge person={experiment.people} />}
       </div>
-      <div className="table-auto select-none pr-8 pb-8">
-        {scan && <PlantScan scan={scan} thumb={false} videoUrl={videoUrl} />}
+      <div className="table-auto pr-8 pb-8">
+        {scan && <ScanFrameViewer scan={scan} />}
         {scan && (
           <ScanVideoButton
             experimentId={Number(experimentId)}
             scanId={scan.id}
-            existingVideoUrl={videoUrl}
+            initialVideoUrl={videoUrl}
           />
         )}
       </div>

@@ -1,35 +1,34 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   videoErrorMessage,
   videoResultSummary,
   type ScanVideoResult,
 } from "./scan-video.helpers";
 
-type Status = "idle" | "generating" | "done" | "error";
+type Status = "idle" | "generating" | "done" | "pending" | "error";
 
 export default function ScanVideoButton({
   experimentId,
   scanId,
-  existingVideoUrl = null,
+  initialVideoUrl = null,
 }: {
   experimentId: number;
   scanId: number;
-  // The video already stored for this scan, so we don't offer to encode one
-  // that exists — a re-encode costs minutes and replaces the stored file.
-  existingVideoUrl?: string | null;
+  // The video already stored for this scan, resolved by the page. Kept in state
+  // so a generate updates it here rather than refetching the whole page.
+  initialVideoUrl?: string | null;
 }) {
   const [status, setStatus] = useState<Status>("idle");
+  const [videoUrl, setVideoUrl] = useState<string | null>(initialVideoUrl);
   const [result, setResult] = useState<ScanVideoResult | null>(null);
-  const [error, setError] = useState<string>("");
-  const router = useRouter();
+  const [message, setMessage] = useState<string>("");
 
   async function generate() {
     if (status === "generating") return;
     setStatus("generating");
-    setError("");
+    setMessage("");
 
     let response: Response;
     try {
@@ -38,27 +37,34 @@ export default function ScanVideoButton({
         { method: "POST" }
       );
     } catch {
-      setError("Could not reach the video service.");
+      setMessage("Could not reach the video service.");
       setStatus("error");
       return;
     }
 
     const body = await response.json().catch(() => null);
+
+    // 504 means the encode is still running, not that it failed — offering
+    // "Generate" again here is how you end up with two encodes on one scan.
+    if (response.status === 504) {
+      setMessage(videoErrorMessage(response.status, body?.detail));
+      setStatus("pending");
+      return;
+    }
+
     if (!response.ok) {
-      setError(videoErrorMessage(response.status, body?.detail));
+      setMessage(videoErrorMessage(response.status, body?.detail));
       setStatus("error");
       return;
     }
 
-    setResult(body as ScanVideoResult);
+    const generated = body as ScanVideoResult;
+    setResult(generated);
+    setVideoUrl(generated.download_url);
     setStatus("done");
-    // The viewer's video icon comes from a signed URL resolved when the scan
-    // loaded, so without this it keeps showing the pre-generation state.
-    router.refresh();
   }
 
-  // Whatever this run produced, otherwise whatever was already stored.
-  const videoUrl = result?.download_url ?? existingVideoUrl;
+  const busy = status === "generating" || status === "pending";
 
   return (
     <div className="mt-4">
@@ -66,14 +72,16 @@ export default function ScanVideoButton({
         <button
           type="button"
           onClick={generate}
-          disabled={status === "generating"}
+          disabled={busy}
           className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white"
         >
           {status === "generating"
             ? "Generating video…"
-            : videoUrl
-              ? "Regenerate video"
-              : "Generate video"}
+            : status === "pending"
+              ? "Still encoding…"
+              : videoUrl
+                ? "Regenerate video"
+                : "Generate video"}
         </button>
 
         {videoUrl && (
@@ -88,7 +96,7 @@ export default function ScanVideoButton({
         )}
       </div>
 
-      {videoUrl && status !== "generating" && (
+      {videoUrl && !busy && (
         <p className="mt-2 text-sm text-stone-500 italic">
           Regenerating replaces the stored video for this scan.
         </p>
@@ -114,6 +122,10 @@ export default function ScanVideoButton({
         </div>
       )}
 
+      {status === "pending" && (
+        <p className="mt-2 text-sm text-stone-600">{message}</p>
+      )}
+
       {status === "done" && result && (
         <p className="mt-2 text-sm text-stone-500">
           {videoResultSummary(result)}
@@ -122,7 +134,7 @@ export default function ScanVideoButton({
 
       {status === "error" && (
         <p role="alert" className="mt-2 text-sm text-red-700">
-          {error}
+          {message}
         </p>
       )}
     </div>
