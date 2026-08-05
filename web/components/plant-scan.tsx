@@ -72,6 +72,7 @@ export default function PlantScan({
   target,
   height,
   label,
+  videoUrl: providedVideoUrl,
 }: {
   scan: CylScanWithImages;
   thumb: boolean;
@@ -79,9 +80,11 @@ export default function PlantScan({
   target?: string;
   height?: number;
   label?: string;
+  // Resolved by the caller when it already knows; omitted means "go find out".
+  videoUrl?: string | null;
 }) {
   const [frameUrls, setFrameUrls] = useState<Map<string, string>>(new Map());
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [probedVideoUrl, setProbedVideoUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [imageIsLoaded, setImageIsLoaded] = useState<boolean>(false);
   const [requestedIndex, setRequestedIndex] = useState<number>(0);
@@ -98,6 +101,7 @@ export default function PlantScan({
   // Reset to the first frame when the scan (frame set) changes.
   useEffect(() => {
     setRequestedIndex(0);
+    setImageIsLoaded(false);
   }, [frames]);
 
   // Detail view: sign every frame in one request, so paging costs no further
@@ -153,18 +157,22 @@ export default function PlantScan({
 
   const objectUrl = currentPath ? frameUrls.get(currentPath) ?? null : null;
 
-  // This instance is reused across scans, so drop the previous scan's video.
+  // Only probe when the caller didn't already resolve it. This instance is
+  // reused across scans, so drop the previous scan's video either way.
+  const videoUrl =
+    providedVideoUrl !== undefined ? providedVideoUrl : probedVideoUrl;
+
   useEffect(() => {
+    if (providedVideoUrl !== undefined) return;
     let active = true;
-    setVideoUrl(null);
-    setImageIsLoaded(false);
+    setProbedVideoUrl(null);
     getVideoUrl(scan).then((url) => {
-      if (active) setVideoUrl(url);
+      if (active) setProbedVideoUrl(url);
     });
     return () => {
       active = false;
     };
-  }, [scan]);
+  }, [providedVideoUrl, scan]);
 
   // Nothing to show: no renderable frame, or signing failed for every frame.
   if (!loading && (total === 0 || frameUrls.size === 0)) {

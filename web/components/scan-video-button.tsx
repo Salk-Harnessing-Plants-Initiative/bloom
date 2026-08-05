@@ -13,9 +13,13 @@ type Status = "idle" | "generating" | "done" | "error";
 export default function ScanVideoButton({
   experimentId,
   scanId,
+  existingVideoUrl = null,
 }: {
   experimentId: number;
   scanId: number;
+  // The video already stored for this scan, so we don't offer to encode one
+  // that exists — a re-encode costs minutes and replaces the stored file.
+  existingVideoUrl?: string | null;
 }) {
   const [status, setStatus] = useState<Status>("idle");
   const [result, setResult] = useState<ScanVideoResult | null>(null);
@@ -53,6 +57,9 @@ export default function ScanVideoButton({
     router.refresh();
   }
 
+  // Whatever this run produced, otherwise whatever was already stored.
+  const videoUrl = result?.download_url ?? existingVideoUrl;
+
   return (
     <div className="mt-4">
       <div className="flex items-center gap-3">
@@ -64,14 +71,14 @@ export default function ScanVideoButton({
         >
           {status === "generating"
             ? "Generating video…"
-            : status === "done"
+            : videoUrl
               ? "Regenerate video"
               : "Generate video"}
         </button>
 
-        {status === "done" && result && (
+        {videoUrl && (
           <a
-            href={result.download_url}
+            href={videoUrl}
             target="_blank"
             rel="noreferrer"
             className="text-sm text-lime-700 underline hover:text-lime-800"
@@ -80,6 +87,12 @@ export default function ScanVideoButton({
           </a>
         )}
       </div>
+
+      {videoUrl && status !== "generating" && (
+        <p className="mt-2 text-sm text-stone-500 italic">
+          Regenerating replaces the stored video for this scan.
+        </p>
+      )}
 
       {/* Encoding a full rotation is slow and runs synchronously upstream — say
           so, rather than leaving a disabled button looking stuck. The bar is
