@@ -69,7 +69,11 @@ something that exists.
     `qc_clean.py` and the rest of the 8 tools). This change's delta targets that requirement's
     actual (shipped) text; whoever archives `add-bloommcp-signed-url-download` will need to fold
     both deltas together — the same situation that change's own docs already flag for
-    `bloommcp-tool-contract`.
+    `bloommcp-tool-contract`. **This change MUST NOT be archived independently of
+    `add-bloommcp-signed-url-download`** — `openspec validate --strict` passing here is not
+    evidence otherwise (verified: the validator never cross-checks a MODIFIED requirement's name
+    against the base spec or sibling changes, so it would say "valid" even if the requirement
+    existed nowhere).
   - `bloommcp-storage-backend` (**modified**) — the "Signed URL Generation" requirement gains a
     documentation-only trust-boundary clarification. Same unarchived-sibling caveat as above.
 - **Affected code:**
@@ -81,7 +85,11 @@ something that exists.
     `expected_prefix=f"{state.prefix}{version_dir}/"`, for fake/real parity);
   - `bloommcp/src/bloom_mcp/storage_backend.py` (docstring-only: `create_signed_url`'s contract
     documents that it performs no ownership check);
-  - new/extended tests: `bloommcp/tests/result_store/test_supabase_result_store.py`,
+  - `bloommcp/docs/storage-backends.md` (its existing "Downloading outputs: signed URLs" section
+    gains the same trust-boundary note);
+  - new `bloommcp/tests/result_store/test_artifacts.py` (direct unit coverage for
+    `build_output_links`/`hash_outputs`/`validate_outputs` — none exists today);
+  - extended: `bloommcp/tests/result_store/test_supabase_result_store.py`,
     `bloommcp/tests/result_store/test_fake_result_store.py`,
     `bloommcp/tests/result_store/test_store_parity.py`.
 - **Dependencies:** none new.

@@ -6,7 +6,7 @@ Traced every path that reaches `create_signed_url` (there is exactly one product
   (`storage_backend.py:69`), implemented by `SupabaseStorageBackend` (calls the real Supabase
   Storage client's signing method on whatever `key` it's given, no check) and
   `LocalStorageBackend` (string-concatenates `key` onto `BLOOM_STORAGE_URL`, no check — notably
-  the *one* method on that backend that skips the root-containment guard (`_resolve()`) its five
+  the *one* method on that backend that skips the root-containment guard (`_resolve()`) its six
   siblings all use).
 - The **only** production caller is `SupabaseResultStore.commit()`
   (`result_store/supabase_store.py:255-262`), inside `build_output_links(...,
@@ -116,17 +116,30 @@ Traced every path that reaches `create_signed_url` (there is exactly one product
   future refactor rather than fixing anything exploitable today. Worth stating plainly so this
   isn't mistaken for a security incident response.
 - **The guard can never be exercised by any real call path today** (by design — every real key is
-  correctly scoped). Tests must inject a deliberately-wrong key via a test-only seam (e.g.
-  monkeypatching `key_for` or calling `build_output_links` directly with a mismatched key) rather
-  than through an end-to-end `qc_clean(...)` call, since no such call can produce one. This mirrors
-  how `#581`'s own "signing failure" tests already work (monkeypatching
-  `supabase_client.create_signed_url` directly, since no real input makes a well-formed signing
-  call fail either).
+  correctly scoped). Tests must inject a deliberately-wrong key via a test-only seam rather than
+  through an end-to-end `qc_clean(...)` call, since no such call can produce one. **A first
+  instinct — monkeypatching `AnalysisDir.key` (or the `key_for` closure it backs) — does not
+  work**: `expected_prefix` and every real `output_keys` entry are both derived from that same
+  method on the same `adir` instance, so patching it corrupts both sides identically and the
+  mismatch the test needs never occurs (found during review). The seam that actually works is the
+  module-level `build_output_links` name each adapter module imports
+  (`from ._artifacts import build_output_links`) — monkeypatch *that* with a wrapper delegating to
+  the real function but substituting a wrong `expected_prefix`, leaving `output_keys`/`url_for`
+  untouched. This mirrors how `#581`'s own "signing failure" tests already work (monkeypatching
+  `supabase_client.create_signed_url` directly, one level further down the same call chain, since
+  no real input makes a well-formed signing call fail either).
 - **`LocalStorageBackend.create_signed_url` still has no containment check of its own** (unlike
-  its five siblings, which call `_resolve()`). Out of scope here — the guard added lives in
+  its six siblings, which call `_resolve()`). Out of scope here — the guard added lives in
   `ResultStore.commit()`, which both backends' `create_signed_url` sit behind identically, so the
   fix protects both regardless of backend. Flagged as a residual asymmetry at the primitive level,
   not a gap in the actual guarantee this change ships.
+- **This change's spec deltas MODIFY requirements that don't exist yet in `openspec/specs/`** —
+  they exist only in the still-unarchived `add-bloommcp-signed-url-download`. `openspec validate
+  --strict` passing is not evidence the delta targets a real requirement (verified: the validator
+  only checks each delta file's own internal shape, never cross-references the base spec or
+  sibling changes). This change MUST NOT be archived independently of
+  `add-bloommcp-signed-url-download` — see tasks.md's header note, the binding statement of this
+  constraint.
 
 ## Migration Plan
 
