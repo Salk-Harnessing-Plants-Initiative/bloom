@@ -15,13 +15,22 @@
       - A mocked response missing the resolved size field raises rather than returning a
         fabricated `0` (distinct test from: a response that is present but not parseable —
         cover both).
-      - `client.info(key)` itself raising (e.g. the object was deleted from storage) SHALL
-        propagate a clear, storage-layer error rather than being swallowed.
+      - `client.info(key)` itself raising for a genuinely missing object SHALL surface as
+        `StorageKeyNotFound` — the same type `download_file`/`read_json` already raise for a
+        missing key — not a bare/unlabeled exception, so the Supabase and Local backends
+        agree on the not-found type, not just "raises something." A *different* client
+        exception (e.g. a transient network error) SHALL propagate as itself, not be
+        relabeled as not-found.
       - `LocalStorageBackend.get_object_size(key)` returns the real `Path.stat().st_size` for
-        an existing file under the root, and raises the same redacted not-found error
+        an existing file under the root, and raises the same `StorageKeyNotFound`
         `download_file`/`read_json` already raise for a missing key (reuse `_resolve`).
       - `StorageBackend` Protocol: `get_object_size` is part of the `runtime_checkable`
         interface (both concrete backends satisfy `isinstance(..., StorageBackend)`).
+      - `get_object_size` performs no ownership check: called with a syntactically valid key
+        belonging to a different experiment/tool_class than the caller's own context, it
+        succeeds and returns that object's real size (no authorization error) — matches the
+        storage-backend spec's own "no ownership check" scenario, which had no task without
+        this bullet.
 - [ ] 1.3 Implement `get_object_size(key: str) -> int` on the `StorageBackend` Protocol,
       `SupabaseStorageBackend`, and `LocalStorageBackend` in `storage_backend.py`. While
       editing this file's module docstring and the `StorageBackend` Protocol docstring,
@@ -68,16 +77,25 @@
       - A retired-but-historical `tool_class` (e.g. `"stats"` — still queryable per
         `list_existing_analyses.TOOL_CLASSES`) resolves and re-signs normally; this is a
         realistic use case for this exact tool, not just a discovery-tool concern.
+      - An empty `experiment` string does not crash the lookup — it resolves through the same
+        path an unknown experiment would (either `RunNotFoundError` from the manifest lookup,
+        or the tool layer's own known-experiment check in section 3 — pick whichever call
+        site actually owns this, and assert it explicitly rather than leaving it implicit).
       - An unknown `(experiment, tool_class, run_ref)` raises `RunNotFoundError` (reuses
         `get_run`'s existing resolution and error).
       - A deliberately mismatched persisted key (outside the freshly recomputed expected
         prefix for this run) raises `CorruptRunLinksError` — for **both** the
         `create_signed_url` and `get_object_size` call paths — rather than looking it up, via
-        a thin test-only injection point, mirroring how #598's own guard test exercises an
-        otherwise-unreachable case.
-      - A single output's live `get_object_size`/`create_signed_url` call raising (e.g. the
-        object was deleted from storage since commit) aborts the whole call — asserted to
-        raise, never to return a partially-populated `output_links` (design.md Decision 4).
+        a thin test-only injection point. **Note:** #598/PR #609 is unmerged on this branch and
+        has no equivalent seeding method today (`FakeResultStore._stub_stored_run` only ever
+        takes `output_keys={}`) — this injection point (e.g. a small
+        `seed_mismatched_key`-style test helper on `FakeResultStore`, and a monkeypatch on the
+        real adapter) is built fresh here, not ported from an existing pattern.
+      - **Multi-output partial failure, not just single-output:** a run with two-or-more
+        outputs where the *first* output's `get_object_size`/`create_signed_url` call
+        succeeds and the *second* output's raises — assert the whole call still raises (no
+        partially-built `output_links` returned for the first, already-succeeded output).
+        A single-output failure test alone would pass trivially without proving this.
       - `FakeResultStore.get_download_links` never calls anything on `StorageBackend` for any
         run it recorded itself — assert this directly (e.g. via a spy/mock asserting zero
         calls), not just implied by the size value matching (design.md Decision 6).
@@ -101,10 +119,12 @@
         `version_dir`, `outputs`, `output_links`.
       - Unknown experiment: same `{"error": ..., "available_experiments": ...}` shape
         `list_existing_analyses` already returns.
-      - Unknown run/tool_class: `{"error": ...}` from the caught `RunNotFoundError` (no raw
-        traceback).
-      - A live-lookup failure (`StorageKeyNotFound`/`StorageBackendError`) surfaces as the same
-        clean `{"error": ...}` JSON shape, not a raw traceback (design.md Decision 4).
+      - **Every one of the six caught exception types surfaces as `{"error": ...}` with no raw
+        traceback, tested individually, not just the two most obvious ones:**
+        `RunNotFoundError`, `ManifestReadError`, `ManifestIncompatibleError`,
+        `CorruptRunLinksError`, `StorageKeyNotFound`, `StorageBackendError` (design.md
+        Decision 4 and `bloommcp-get-download-links-tool/spec.md`'s catch-list requirement).
+      - An empty `experiment` string produces a clean `{"error": ...}`, not a raw exception.
       - Dispatches correctly through FastMCP by keyword (mirrors
         `test_list_existing_analyses_dispatches_through_fastmcp_by_keyword`).
 - [ ] 3.2 Implement `sections/core/get_download_links.py`: `get_download_links(experiment,
@@ -115,7 +135,13 @@
       `CorruptRunLinksError`/`StorageKeyNotFound`/`StorageBackendError`. Confirm 3.1 is green.
 - [ ] 3.3 Register it in `sections/core/__init__.py` alongside the other three core tools.
       **Deliberately do not** add it to `ALWAYS_INCLUDE_MCP_TOOLS`
-      (`langchain/helpers/foundational_tools.py`) — see design.md Decision 5.
+      (`langchain/helpers/foundational_tools.py`) — see design.md Decision 5. Add a direct
+      test asserting `is_foundational_tool("core_get_download_links")` is `False` (and that
+      `"get_download_links"` is absent from `ALWAYS_INCLUDE_MCP_TOOLS` itself) — the existing
+      `test_tool_name_lists_match_live_registry` only hardcodes
+      `"inspect_data_quality" not in always_include` and would not catch this tool being
+      mistakenly added, so this needs its own explicit assertion, not reliance on an existing
+      test.
 - [ ] 3.4 Add a dedicated `bloommcp-get-download-links-tool` capability requirement
       ("Tool Registration and Discovery", mirroring `add-bloommcp-qc-inspect-tool`'s
       precedent) covering `tools/list` discoverability — this proposal's first draft omitted
@@ -133,16 +159,34 @@
 
 - [ ] 4.1 Update `bloommcp/docs/storage-backends.md`'s "Downloading outputs: signed URLs"
       section: replace "browsing and downloading historical runs is not yet supported (tracked
-      separately)" with a description of `get_download_links`, and disclose the
-      same-key-immutability assumption its live `size_bytes` lookup relies on (design.md Risks).
+      separately)" with a description of `get_download_links(experiment, tool_class,
+      run_ref="latest")` that states explicitly — not just "a description," these three facts
+      are caller-visible behavior a reader needs, not implementation detail:
+      (a) it must be called by name for one already-known run — it is not a browsing/discovery
+      feature, so it isn't confused with the still-deferred file-explorer scope in
+      `roadmap.md`'s `#388` Part 3;
+      (b) a single output's lookup failure aborts the whole call — no partially-populated
+      `output_links` is ever returned;
+      (c) a legacy v2-shaped run (no `output_keys` ever recorded) returns `output_links == {}`,
+      not an error.
+      Also disclose the same-key-immutability assumption its live `size_bytes` lookup relies
+      on (design.md Risks).
 
 ## 5. Validation
 
 - [ ] 5.1 `openspec validate add-bloommcp-get-download-links --strict`.
 - [ ] 5.2 Full `bloommcp` unit suite green (both `SupabaseResultStore`/`FakeResultStore` paths,
-      `test_store_parity.py`, `test_devendor_invariants.py`).
-- [ ] 5.3 Re-confirm sequencing: check whether `add-bloommcp-signed-url-key-scoping` (#598,
-      PR #609) has merged to `staging` by the time this change is implemented; if so, note in a
-      code comment near `CorruptRunLinksError` that consolidating it with `KeyScopeGuardError`
-      is available as a follow-up (per design.md's Decision 3 Non-Goal) rather than silently
-      duplicating logic without acknowledging it.
+      `test_store_parity.py`, `test_devendor_invariants.py`), plus `uv run black --check .` and
+      `uv run ruff check .` from `bloommcp/` (this repo's real pre-commit gates for Python,
+      per `.pre-commit-config.yaml` — not CI-blocking today but still the local convention).
+- [ ] 5.3 Immediately before opening the PR (not only once at the end of implementation —
+      `git fetch origin staging && git log origin/staging -1` periodically through
+      implementation, mirroring how #581/#598 each merged `staging` into their feature branch
+      repeatedly rather than once): re-confirm whether `add-bloommcp-signed-url-key-scoping`
+      (#598, PR #609) has merged. If so, note in a code comment near `CorruptRunLinksError`
+      that consolidating it with `KeyScopeGuardError` is available as a follow-up (per
+      design.md's Decision 3 Non-Goal) rather than silently duplicating logic without
+      acknowledging it. Also expect a small, purely-textual rebase conflict in
+      `storage_backend.py`'s module/Protocol docstrings if #609 has landed first (both changes
+      independently fix the same stale "six helpers" comment lines) — trivial to resolve, not
+      a logic conflict.

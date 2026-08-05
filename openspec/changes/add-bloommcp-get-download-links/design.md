@@ -176,6 +176,14 @@ on observable behaviour" requirement.
   silently. This is the same threat class `CorruptRunLinksError` already treats as
   "never caller input, always a bug/corruption elsewhere," and is disclosed in
   `storage-backends.md` rather than left implicit.
+- **A small, purely textual rebase-conflict surface with PR #609, distinct from the logic
+  independence above.** #609 (still unmerged as of this writing) separately fixes the same
+  stale "six helpers" comment lines in `storage_backend.py`'s module docstring and
+  `StorageBackend` Protocol docstring that task 1.3 also touches (bumping the count further,
+  to eight). If #609 merges before this change is implemented, expect a trivial same-line
+  textual conflict on rebase in that one file's docstrings — never in `_artifacts.py`,
+  `supabase_store.py`'s/`fake_store.py`'s `commit()` bodies, or any guard logic, which remain
+  genuinely independent per Decision 3.
 - **Two unarchived sibling changes touching the same specs.** Like #598 before it, this
   change's `bloommcp-result-store`/`bloommcp-storage-backend` deltas are written against the
   *currently archived* text (which has none of #581's `output_links` language yet either) —
