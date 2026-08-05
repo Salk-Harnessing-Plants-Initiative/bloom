@@ -48,6 +48,32 @@ export function clampFrameIndex(index: number, total: number): number {
   return Math.min(Math.max(Math.trunc(index), 0), total - 1);
 }
 
+// A frame's identity is its frame_number — on a rotation that fixes the angle.
+// Its position in the list is not the same thing: the two diverge as soon as a
+// frame is missing, so never show the position alone.
+export function frameLabel(
+  frame: ScanFrame | undefined,
+  index: number
+): string {
+  const number = frame?.frame_number;
+  if (number === null || number === undefined) {
+    return `Frame ${index + 1} (unnumbered)`;
+  }
+  return `Frame ${number}`;
+}
+
+// Says so when the scan records more frames than can be shown — otherwise a
+// part-uploaded scan looks identical to a complete one.
+export function missingFrameNote(
+  renderable: number,
+  recorded: number
+): string | null {
+  if (recorded <= renderable) return null;
+  return `Showing ${renderable} of ${recorded} frames — ${
+    recorded - renderable
+  } not available.`;
+}
+
 // A signed URL we can actually put in an href/src, or null. Signing helpers
 // report failure as an empty string, which passes a `!== null` guard and lands
 // in the DOM as `src=""` / `href=""` — the browser then resolves that against

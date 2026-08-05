@@ -5,6 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { CylScanWithImages } from "@/lib/custom.types";
 import {
   clampFrameIndex,
+  frameLabel,
+  missingFrameNote,
   orderedFrames,
   signedUrlsByPath,
   usableUrl,
@@ -174,6 +176,8 @@ export default function PlantScan({
   }
 
   const showNav = !thumb && total > 1;
+  // Frames the scan records vs frames we can render — disclosed, not hidden.
+  const shortfall = missingFrameNote(total, scan?.cyl_images?.length ?? 0);
 
   return (
     <div className="group">
@@ -231,7 +235,7 @@ export default function PlantScan({
         ) : !loading ? (
           // This one frame didn't sign — keep the pager so the rest stay reachable.
           <div className="px-4 py-6 text-sm text-stone-500 italic">
-            Frame {frameIndex + 1} could not be loaded.
+            {frameLabel(frames[frameIndex], frameIndex)} could not be loaded.
           </div>
         ) : null}
       </div>
@@ -250,7 +254,10 @@ export default function PlantScan({
             ‹
           </button>
           <span className="text-sm tabular-nums text-stone-500">
-            {frameIndex + 1} / {total}
+            {frameLabel(frames[frameIndex], frameIndex)}
+            <span className="ml-2 text-stone-400">
+              {frameIndex + 1} / {total}
+            </span>
           </span>
           <button
             type="button"
@@ -264,6 +271,12 @@ export default function PlantScan({
             ›
           </button>
         </div>
+      )}
+
+      {!thumb && shortfall && (
+        <p className="mt-2 text-center text-sm text-stone-500 italic">
+          {shortfall}
+        </p>
       )}
     </div>
   );

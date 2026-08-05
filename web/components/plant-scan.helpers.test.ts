@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   clampFrameIndex,
+  frameLabel,
+  missingFrameNote,
   orderedFrames,
   signedUrlsByPath,
   usableUrl,
@@ -162,6 +164,52 @@ describe("clampFrameIndex", () => {
   it("returns 0 for a non-finite index", () => {
     expect(clampFrameIndex(NaN, 72)).toBe(0);
     expect(clampFrameIndex(Infinity, 72)).toBe(0);
+  });
+});
+
+describe("frameLabel", () => {
+  it("shows the frame's own frame_number, not its position", () => {
+    // Frames 30 and 31 failed to upload, so list position 35 is frame 37.
+    // Showing "35" would misstate the rotation angle.
+    expect(frameLabel(frame({ id: 37, frame_number: 37 }), 34)).toBe("Frame 37");
+  });
+
+  it("does not renumber a frame to match its position", () => {
+    expect(frameLabel(frame({ id: 1, frame_number: 0 }), 0)).toBe("Frame 0");
+    expect(frameLabel(frame({ id: 9, frame_number: 71 }), 5)).toBe("Frame 71");
+  });
+
+  it("falls back to position, marked, when the row has no frame_number", () => {
+    expect(frameLabel(frame({ id: 1 }), 4)).toBe("Frame 5 (unnumbered)");
+  });
+
+  it("falls back when there is no frame at that index", () => {
+    expect(frameLabel(undefined, 0)).toBe("Frame 1 (unnumbered)");
+  });
+});
+
+describe("missingFrameNote", () => {
+  it("says nothing when every recorded frame is renderable", () => {
+    expect(missingFrameNote(72, 72)).toBeNull();
+    expect(missingFrameNote(0, 0)).toBeNull();
+  });
+
+  it("discloses frames that could not be shown", () => {
+    expect(missingFrameNote(70, 72)).toBe(
+      "Showing 70 of 72 frames — 2 not available."
+    );
+  });
+
+  it("discloses the severe case a bare counter would hide", () => {
+    // 1 of 72 renders with no pager at all — otherwise indistinguishable
+    // from a healthy single-frame scan.
+    expect(missingFrameNote(1, 72)).toBe(
+      "Showing 1 of 72 frames — 71 not available."
+    );
+  });
+
+  it("says nothing if the recorded count is somehow lower", () => {
+    expect(missingFrameNote(72, 70)).toBeNull();
   });
 });
 
