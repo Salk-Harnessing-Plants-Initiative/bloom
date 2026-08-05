@@ -139,8 +139,17 @@ export default function PlantScan({
 
   const objectUrl = currentPath ? frameUrls.get(currentPath) ?? null : null;
 
+  // This instance is reused across scans, so drop the previous scan's video.
   useEffect(() => {
-    getVideoUrl(scan).then(setVideoUrl);
+    let active = true;
+    setVideoUrl(null);
+    setImageIsLoaded(false);
+    getVideoUrl(scan).then((url) => {
+      if (active) setVideoUrl(url);
+    });
+    return () => {
+      active = false;
+    };
   }, [scan]);
 
   // No renderable frame — the image may exist upstream but we can't fetch it.
