@@ -80,6 +80,11 @@ class _InMemoryObjectStore:
         for key in keys:
             self.objects.pop(key, None)
 
+    def create_signed_url(self, key: str, expires_in: int) -> str:
+        # Synthesized, not a real signed URL — this store never talks to a
+        # real backend, so there is nothing to sign against (bloom#581).
+        return f"fake://signed/{key}?expires_in={expires_in}"
+
 
 @pytest.fixture
 def fake_supabase_storage(monkeypatch):
@@ -98,6 +103,7 @@ def fake_supabase_storage(monkeypatch):
         "upload_file",
         "download_file",
         "delete_files",
+        "create_signed_url",
     ):
         monkeypatch.setattr(_sc, name, getattr(store, name))
     for name in ("list_prefix", "read_json", "write_json"):

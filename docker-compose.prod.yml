@@ -249,6 +249,10 @@ services:
       - "8811"
     environment:
       SUPABASE_URL: ${SUPABASE_URL}
+      # Public base for rewriting signed URLs (bloom#581's output_links) off
+      # the internal kong host so they're usable by outside callers — mirrors
+      # the workflows service's identical WORKFLOWS_PUBLIC_SUPABASE_URL below.
+      BLOOM_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
       # bloommcp authenticates to PostgREST + Storage as bloom_agent (the same
       # JWT langchain-agent uses). SERVICE_ROLE_KEY is deliberately NOT passed
       # in — bloommcp's storage access is gated by the bloom_agent RLS policies, and granting service_role would let a future code path silently bypass them.

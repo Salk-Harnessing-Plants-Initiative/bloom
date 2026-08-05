@@ -270,3 +270,13 @@ def delete_files(keys: list[str], *, timeout_seconds: float | None = None) -> No
     from bloom_mcp.storage_backend import active_backend
 
     active_backend().delete_files(keys, timeout_seconds=timeout_seconds)
+
+
+def create_signed_url(key: str, expires_in: int) -> str:
+    """Return a downloadable URL for `key`, valid for approximately `expires_in`
+    seconds on the Supabase backend; a served URL (ignoring `expires_in`) on the
+    local backend.
+    """
+    from bloom_mcp.storage_backend import active_backend
+
+    return active_backend().create_signed_url(key, expires_in)

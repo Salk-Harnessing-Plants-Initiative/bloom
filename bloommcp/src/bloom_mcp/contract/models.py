@@ -19,18 +19,39 @@ from pydantic import BaseModel, Field
 from bloom_mcp.contract.provenance import SEED_MAX
 
 
+class OutputLink(BaseModel):
+    """A downloadable pointer to one persisted output artifact (bloom#581).
+
+    ``key`` is the same object key surfaced in ``RunLinks.outputs``; ``url`` is a
+    signed (Supabase backend) or served (local backend) download link; ``sha256``
+    matches the manifest's ``output_sha256`` for this artifact; ``size_bytes`` is
+    the artifact's byte size (non-negative — a zero-byte artifact is legal).
+    """
+
+    key: str
+    url: str
+    sha256: str
+    size_bytes: int = Field(ge=0)
+
+
 class RunLinks(BaseModel):
     """Base result model for consumer tools.
 
     Carries the four run-link fields returned by every consumer tool result
     (``pca_analysis``, ``remove_outliers``, and forthcoming consumers). Tool-
     specific result models inherit this class rather than redeclaring the fields.
+
+    ``output_links`` (bloom#581) is additive: one ``OutputLink`` per ``outputs``
+    entry, populated only when the result comes from a fresh ``ResultStore.commit()``
+    (never from ``get_run``/``list_runs``, which leave it empty) — see
+    ``bloommcp-result-store``'s "Per-Output Signed Links And Size At Commit".
     """
 
     run_ref: str
     version_dir: str
     manifest_path: str
     outputs: dict[str, str]
+    output_links: dict[str, OutputLink] = Field(default_factory=dict)
 
 
 class ToolParams(BaseModel):

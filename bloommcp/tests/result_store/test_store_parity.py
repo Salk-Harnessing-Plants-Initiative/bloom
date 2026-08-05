@@ -98,6 +98,49 @@ def test_create_commit_get_parity(kind, stores):
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_output_links_parity(kind, stores):
+    """bloom#581: commit() returns one OutputLink per output, keyed identically
+    to `outputs`, with the right sha256/size_bytes and a non-empty URL — same
+    shape on both backends (a real/served URL vs. the fake's synthesized one is
+    the only expected divergence)."""
+    store = stores[kind]
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"aaa")
+    (run.staging_dir / "b.csv").write_bytes(b"bb")
+    stored = store.commit(run, {"a": "a.csv", "b": "b.csv"})
+
+    assert set(stored.output_links) == {"a", "b"}
+    urls_seen = set()
+    for name, expected_bytes in (("a", b"aaa"), ("b", b"bb")):
+        link = stored.output_links[name]
+        assert link.key == stored.output_keys[name]
+        assert link.sha256 == stored.output_sha256[name]
+        assert link.size_bytes == len(expected_bytes)
+        assert link.url
+        # Bound to the correct key, not just truthy — both backends here
+        # synthesize a fake://signed/<key>?... URL (fake_supabase_storage
+        # backs the "supabase" kind too), so a bug that wired every output to
+        # the same URL (e.g. a closure-over-loop-variable mistake) would slip
+        # past a truthy-only check.
+        assert link.key in link.url
+        urls_seen.add(link.url)
+    assert len(urls_seen) == 2  # the two outputs never share a URL
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_output_links_empty_for_get_run_and_list_runs_parity(kind, stores):
+    """bloom#581 Decision 1: only commit()'s own return value carries signed
+    links — resolving/listing the same run afterward never does."""
+    store = stores[kind]
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"a")
+    store.commit(run, {"a": "a.csv"})
+
+    assert store.get_run("exp.csv", "qc", "latest").output_links == {}
+    assert all(r.output_links == {} for r in store.list_runs("exp.csv", "qc"))
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
 def test_not_found_and_lifecycle_parity(kind, stores):
     store = stores[kind]
 
@@ -312,6 +355,7 @@ def test_v2_backcompat_parity(kind, stores, fake_supabase_storage):
     runs_before = store.list_runs("v2.csv", "qc")
     assert [r.run_ref for r in runs_before] == ["v1"]
     assert runs_before[0].seed is None  # v2 predates the seed field
+    assert runs_before[0].output_links == {}  # bloom#581: legacy entry, never signed
 
     run = store.create_run(experiment="v2.csv", tool_class="qc", provenance=_prov())
     (run.staging_dir / "o.csv").write_bytes(b"x")

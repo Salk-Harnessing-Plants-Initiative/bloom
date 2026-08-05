@@ -67,6 +67,7 @@ def test_qc_clean_sources_provenance_from_experiment_local_root(
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(store))
     monkeypatch.setenv("BLOOM_EXPERIMENT_LOCAL_ROOT", str(exp_root))
+    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
     sb.reset_backend_for_tests()
     _ports.configure(reader=LocalReader(), store=SupabaseResultStore())
 
