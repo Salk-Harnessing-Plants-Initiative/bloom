@@ -31,6 +31,7 @@ from bloom_mcp.storage_backend import active_backend_name
 
 from ._artifacts import (
     SIGNED_URL_EXPIRES_SECONDS,
+    build_download_links,
     build_output_links,
     hash_outputs,
     validate_outputs,
@@ -411,3 +412,25 @@ class SupabaseResultStore:
             experiment=experiment,
             manifest_path=f"{adir.path}manifest.json",
         )
+
+    def get_download_links(
+        self,
+        experiment: str,
+        tool_class: str,
+        run_ref: str = "latest",
+    ) -> StoredRun:
+        stored = self.get_run(experiment, tool_class, run_ref)
+        if not stored.output_keys:
+            # A legacy entry (e.g. v2 manifest) with no per-artifact keys at
+            # all — nothing to sign or size (bloom#599).
+            return stored
+        adir = AnalysisDir(self._output_root, experiment, tool_class)
+        expected_prefix = adir.key(f"{stored.version_dir}/")
+        output_links = build_download_links(
+            stored.output_keys,
+            stored.output_sha256,
+            url_for=lambda key: _sc.create_signed_url(key, SIGNED_URL_EXPIRES_SECONDS),
+            size_for=_sc.get_object_size,
+            expected_prefix=expected_prefix,
+        )
+        return replace(stored, output_links=output_links)
