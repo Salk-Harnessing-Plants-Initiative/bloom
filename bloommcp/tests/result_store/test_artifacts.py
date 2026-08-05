@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from bloom_mcp.result_store._artifacts import build_output_links
+from bloom_mcp.result_store._artifacts import KeyScopeGuardError, build_output_links
 
 _PREFIX = "bloommcp_output/qc_experiment/v1/"
 
@@ -52,7 +52,7 @@ def test_multiple_in_scope_keys_all_build_links():
 
 def test_out_of_scope_key_raises_before_any_signing_call():
     url_for = MagicMock(side_effect=lambda key: f"fake://signed/{key}")
-    with pytest.raises(RuntimeError) as exc:
+    with pytest.raises(KeyScopeGuardError) as exc:
         _links(
             {"cleaned": "bloommcp_output/qc_someone_else/v1/_cleaned.csv"},
             url_for=url_for,
@@ -70,23 +70,39 @@ def test_first_out_of_scope_key_stops_before_signing_any_key():
         "in_scope": f"{_PREFIX}a.csv",
         "out_of_scope": "bloommcp_output/qc_someone_else/v1/b.csv",
     }
-    with pytest.raises(RuntimeError):
+    with pytest.raises(KeyScopeGuardError):
         _links(output_keys, url_for=url_for)
     url_for.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "confusable_key",
-    [
-        "bloommcp_output/qc_experiment2/v1/_cleaned.csv",  # sibling stem
-        "bloommcp_output/qc_experiment/v10/_cleaned.csv",  # sibling version
-    ],
-)
-def test_confusable_prefix_is_rejected_not_accepted(confusable_key):
-    """Pins that the trailing '/' in expected_prefix is load-bearing — without
-    it, a naive str.startswith would accept a sibling experiment/version."""
-    with pytest.raises(RuntimeError):
-        _links({"cleaned": confusable_key})
+def test_sibling_version_is_rejected_because_of_the_trailing_slash():
+    """`v10` vs `v1` is the one case that actually depends on the trailing
+    '/' in expected_prefix: str.startswith("bloommcp_output/qc_experiment/v1")
+    (no trailing slash) would be True for a `v10/...` key too, since "v10"
+    starts with "v1". Only appending '/' makes the comparison require the
+    version segment to end exactly where expected_prefix says it does."""
+    with pytest.raises(KeyScopeGuardError):
+        _links({"cleaned": "bloommcp_output/qc_experiment/v10/_cleaned.csv"})
+
+
+def test_sibling_stem_is_rejected_regardless_of_the_trailing_slash():
+    """`qc_experiment2` is rejected by the prefix diverging earlier in the
+    string (at "experiment" vs "experiment2", well before the "/v1" segment
+    even starts) — unlike the sibling-version case above, this one would be
+    rejected the same way even if expected_prefix had no trailing '/' at
+    all."""
+    with pytest.raises(KeyScopeGuardError):
+        _links({"cleaned": "bloommcp_output/qc_experiment2/v1/_cleaned.csv"})
+
+
+def test_empty_expected_prefix_is_rejected_not_treated_as_match_everything():
+    """str.startswith("") is always True, so an empty expected_prefix would
+    silently defeat the guard — every key would appear "in scope" and every
+    existing test above would stay green even if a future refactor
+    accidentally passed "" through. Guarded explicitly so that
+    misconfiguration raises instead of no-op'ing."""
+    with pytest.raises(KeyScopeGuardError):
+        _links({"cleaned": "anything/at/all.csv"}, expected_prefix="")
 
 
 def test_empty_output_keys_does_not_crash():

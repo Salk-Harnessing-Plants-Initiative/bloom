@@ -9,7 +9,7 @@ Traced every path that reaches `create_signed_url` (there is exactly one product
   the *one* method on that backend that skips the root-containment guard (`_resolve()`) its six
   siblings all use).
 - The **only** production caller is `SupabaseResultStore.commit()`
-  (`result_store/supabase_store.py:255-262`), inside `build_output_links(...,
+  (`result_store/supabase_store.py:256-268`), inside `build_output_links(...,
   url_for=lambda key: _sc.create_signed_url(key, SIGNED_URL_EXPIRES_SECONDS))`. `build_output_links`
   (`result_store/_artifacts.py:65-84`) is shared by `FakeResultStore.commit()` too, which never
   calls the real backend (`url_for` there just formats `f"fake://signed/{key}?..."`).
@@ -81,28 +81,43 @@ Traced every path that reaches `create_signed_url` (there is exactly one product
   call the same shared function), keeping fake/real parity — a repeatedly-reinforced convention in
   this codebase (`#325`, `#586`, `#596`).
 - **Decision: `build_output_links` takes a new required `expected_prefix: str` parameter; a
-  mismatched key raises `RuntimeError`, not a new exception class.** `RuntimeError` matches this
-  same file family's existing idiom for "a structural invariant was violated, this should never
-  happen" (`supabase_store.py` already raises bare `RuntimeError` for "could not allocate a free
-  version id" and "version was claimed by another writer during upload" — the same class of
-  defense-in-depth check). Introducing a new `ResultStoreError` subclass in `ports.py` would add
-  public API surface for a condition that (a) should never actually fire and (b) is immediately
-  caught and remapped anyway — see next decision.
+  mismatched key raises `KeyScopeGuardError`, a private `RuntimeError` subclass local to
+  `_artifacts.py` — not a new public `ResultStoreError`.** `RuntimeError` matches this same file
+  family's existing idiom for "a structural invariant was violated, this should never happen"
+  (`supabase_store.py` already raises bare `RuntimeError` for "could not allocate a free version
+  id" and "version was claimed by another writer during upload" — the same class of
+  defense-in-depth check), so every existing `except RuntimeError`/`except Exception` still catches
+  it unchanged. **Post-review refinement:** the dedicated subclass (rather than a bare
+  `RuntimeError`, as originally implemented) exists so `commit()`'s `except` block can tell this
+  structural, never-transient failure apart from an actual transient one and word the resulting
+  `CommitFailedError` message accordingly — reviewers flagged that the original blanket
+  "(transient — retry)" message would mislead a caller into retrying a failure that, by definition,
+  fails identically every time. Still not promoted to `ports.py`: introducing a new
+  `ResultStoreError` subclass there would add public API surface for a condition that (a) should
+  never actually fire and (b) is immediately caught and remapped to `CommitFailedError` anyway — see
+  next decision.
 - **Decision: no new contract-layer wiring — the existing `except Exception` in both `commit()`
   implementations already catches this and converts it to `CommitFailedError`.** Both
-  `SupabaseResultStore.commit()` (`supabase_store.py:337-350`) and `FakeResultStore.commit()`
-  (`fake_store.py:266-273`) wrap their entire commit body in a broad `except Exception as exc:
+  `SupabaseResultStore.commit()` (`supabase_store.py:344-366`) and `FakeResultStore.commit()`
+  (`fake_store.py:272-289`) wrap their entire commit body in a broad `except Exception as exc:
   raise CommitFailedError(...) from exc`, which already best-effort-cleans-up any uploaded objects
   and leaves the run retryable — the exact same path a real signing failure already takes
   (`bloom#581`'s own "signing failure fails the whole commit" requirement). A scoping violation is
-  simply one more way that block can fail; no special-casing needed, and the fail-closed,
-  no-partial-run, cleaned-up-orphans behavior is inherited automatically.
+  simply one more way that block can fail; no new exception-handling structure needed, only an
+  `isinstance(exc, KeyScopeGuardError)` branch inside the existing block to pick an accurate message
+  (see the decision above) — the fail-closed, no-partial-run, cleaned-up-orphans behavior is
+  inherited automatically either way.
 - **Decision: `expected_prefix` is computed from the same source data as the keys it checks, not
-  independently re-derived.** `SupabaseResultStore` passes `adir.key(f"{version_dir}/")` — the
-  identical `adir.key(...)` method `key_for` itself calls — so the expected prefix and the actual
-  keys can never independently drift out of sync from a future refactor of `AnalysisDir`'s path
-  format. `FakeResultStore` passes `f"{state.prefix}{version_dir}/"`, mirroring its own
-  `key_for`'s construction exactly.
+  independently re-derived.** Both adapters pass `key_for("")` — the *exact same closure* used to
+  build every real output key moments earlier — rather than a second, separately-written string
+  template. **Post-review refinement:** the original implementation passed
+  `adir.key(f"{version_dir}/")` (`SupabaseResultStore`) / `f"{state.prefix}{version_dir}/"`
+  (`FakeResultStore`) — structurally equivalent to `key_for("")` by construction today, but written
+  as an independent template rather than a literal reuse of `key_for`, so a reviewer's "can never
+  independently drift" claim was only incidentally true, not structurally guaranteed. Calling
+  `key_for("")` directly makes that guarantee actual: the expected prefix and the actual keys share
+  one code path, so they cannot drift apart from a future refactor of `key_for`/`AnalysisDir`'s path
+  format even in principle.
 - **Decision: `create_signed_url`'s own docstring/spec gains a documentation-only clarification of
   the trust boundary, not new runtime behavior.** Making explicit, at the primitive's own
   contract, that it performs no ownership check and callers are responsible for restricting keys
@@ -133,6 +148,30 @@ Traced every path that reaches `create_signed_url` (there is exactly one product
   `ResultStore.commit()`, which both backends' `create_signed_url` sit behind identically, so the
   fix protects both regardless of backend. Flagged as a residual asymmetry at the primitive level,
   not a gap in the actual guarantee this change ships.
+- **This guard is a new trigger funneling into the pre-existing #464/PR#464 racing-writer cleanup
+  hazard — not a new bug, but worth naming explicitly.** `commit()`'s `version_dir` is deterministic
+  (`version_id` + today's date, no nonce), so two commits that ever raced to the *same*
+  `(output_root, experiment, tool_class, version_id)` would upload to the exact same physical object
+  keys. The per-process `KeyedLock` (`_commit_lock`) makes that impossible for two calls *within one
+  process*, but the still-open multi-instance case (a second bloommcp server process, flagged inline
+  at `supabase_store.py`'s "claimed by another writer during upload" recheck) has no such lock. In
+  that cross-process race, if this guard were ever the thing that fails on one of the two racing
+  writers (it cannot today — see the point above — but a future refactor is exactly the scenario this
+  change defends against), that writer's `_cleanup_uploaded(uploaded_keys, adir)` deletes the literal
+  keys *this* writer uploaded — which, under the race, are the same keys the *other*, possibly-winning
+  writer also just uploaded to and whose manifest entry now depends on. This isn't a gap this change
+  introduces (any of `commit()`'s other failure branches — a real signing failure, the "claimed by
+  another writer" `RuntimeError` itself — already funnel into the identical cleanup-vs-race hazard);
+  it's one more path into a hazard #464/#324's own follow-up work should account for, not something
+  this narrower change can fix by itself without touching the multi-instance story it explicitly
+  scopes out (see Non-Goals).
+- **`services/workflows/video.py` has a structurally similar unscoped `create_signed_url` call
+  against the raw Supabase SDK bucket object**, outside bloommcp's `StorageBackend` abstraction
+  entirely. Same latent risk shape (a signing call with no caller-side scope check), but a different
+  service and a different code path — out of scope for this change, which only touches bloommcp's
+  `ResultStore.commit()`. Flagged here so it isn't lost; worth its own follow-up issue rather than
+  folding into this one, since fixing it means auditing `video.py`'s own call sites, not extending
+  this guard.
 - **This change's spec deltas MODIFY requirements that don't exist yet in `openspec/specs/`** —
   they exist only in the still-unarchived `add-bloommcp-signed-url-download`. `openspec validate
   --strict` passing is not evidence the delta targets a real requirement (verified: the validator
@@ -143,10 +182,14 @@ Traced every path that reaches `create_signed_url` (there is exactly one product
 
 ## Migration Plan
 
-Additive only — one new required parameter on an internal (non-tool-facing) helper function with
-exactly two call sites, both updated in the same change; no schema, manifest, or public-API
-change. Existing correctly-scoped calls are unaffected (every current key already satisfies the
-new check by construction). Rollback = revert the parameter and its two call sites.
+Not strictly additive at the signature level: `build_output_links` gains a new *required*
+keyword-only parameter, which is a breaking change to that helper's own call contract. It's
+harmless here only because it's an internal (non-tool-facing) helper with exactly two call sites,
+both updated atomically in this same commit — no caller ever observes an intermediate state where
+one call site is updated and the other isn't (see tasks.md's Commit plan note, which calls this out
+explicitly as a same-commit requirement). No schema, manifest, or public/tool-facing API change.
+Existing correctly-scoped calls are unaffected (every current key already satisfies the new check
+by construction). Rollback = revert the parameter and its two call sites.
 
 ## Open Questions
 

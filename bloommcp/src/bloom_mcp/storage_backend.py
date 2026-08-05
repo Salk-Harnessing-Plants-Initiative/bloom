@@ -1,9 +1,9 @@
 """Object-storage backend selection for bloommcp.
 
-The six object-storage helpers in :mod:`bloom_mcp.supabase_client`
+The seven object-storage helpers in :mod:`bloom_mcp.supabase_client`
 (``upload_file`` / ``download_file`` / ``write_json`` / ``read_json`` /
-``list_prefix`` / ``delete_files``) delegate to the *active* backend selected
-here. Two backends exist:
+``list_prefix`` / ``delete_files`` / ``create_signed_url``) delegate to the
+*active* backend selected here. Two backends exist:
 
 * :class:`SupabaseStorageBackend` — the deployed default (Supabase Storage in the
   ``bloommcp-data`` bucket). Its method bodies are the pre-backend
@@ -24,8 +24,8 @@ touches no filesystem at import, so ``import bloom_mcp`` stays side-effect-free.
 root fails fast at boot rather than mid-run.
 
 Out of scope: PostgREST/table access (``get_postgrest_client``) and
-``read_input_csv``, which rides that client — neither is one of the six swapped
-helpers, so both are unaffected by the selected backend.
+``read_input_csv``, which rides that client — neither is one of the seven
+swapped helpers, so both are unaffected by the selected backend.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ _TMP_PREFIX = ".tmp-"
 
 @runtime_checkable
 class StorageBackend(Protocol):
-    """The six object-storage operations bloommcp's write/read paths use."""
+    """The seven object-storage operations bloommcp's write/read paths use."""
 
     def upload_file(self, key: str, local_path: Path) -> None: ...
 

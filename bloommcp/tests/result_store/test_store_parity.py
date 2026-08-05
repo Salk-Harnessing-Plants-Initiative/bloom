@@ -19,6 +19,10 @@ from bloom_mcp.result_store import (
     SupabaseResultStore,
 )
 from bloom_mcp.manifest import AnalysisDir
+from bloom_mcp.result_store._artifacts import KeyScopeGuardError
+from bloom_mcp.result_store._artifacts import (
+    build_output_links as _real_build_output_links,
+)
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -71,6 +75,68 @@ def _inject_commit_failure(
             return real_upload(key, path)
 
         monkeypatch.setattr(sc, "upload_file", _flaky)
+
+
+def _inject_wrong_expected_prefix(kind, monkeypatch):
+    """Force the next commit()'s build_output_links call to check every real
+    output key against a deliberately wrong expected_prefix.
+
+    No real call path can produce a mismatched key (expected_prefix and every
+    output key both derive from the same key_for(...) closure inside
+    commit()) — monkeypatching AnalysisDir.key/the closure itself would
+    corrupt both sides identically and never reproduce the mismatch this
+    needs (see design.md's Risks section). The seam that works on both
+    backends: monkeypatch the module-level build_output_links name each
+    adapter module imports, delegating to the real function but substituting
+    a wrong expected_prefix — leaving output_keys/upload fully
+    self-consistent (real bytes land at the real, correctly-scoped key).
+    """
+    import bloom_mcp.result_store.fake_store as fstore
+    import bloom_mcp.result_store.supabase_store as sstore
+
+    module = sstore if kind == "supabase" else fstore
+
+    def _wrong_prefix(output_keys, output_sha256, output_size_bytes, url_for, **_):
+        return _real_build_output_links(
+            output_keys,
+            output_sha256,
+            output_size_bytes,
+            url_for,
+            expected_prefix="bloommcp_output/qc_someone_else/v1/",
+        )
+
+    monkeypatch.setattr(module, "build_output_links", _wrong_prefix)
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_key_outside_run_prefix_fails_commit_and_cleans_up_parity(
+    kind, stores, monkeypatch, fake_supabase_storage
+):
+    """#598: commit()'s key-scoping guard rejects a key outside this run's
+    own freshly-computed prefix identically on both backends, via the same
+    CommitFailedError fail-closed/cleanup path any other commit failure
+    already takes."""
+    store = stores[kind]
+    _inject_wrong_expected_prefix(kind, monkeypatch)
+
+    run = store.create_run(experiment="scope.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"a")
+
+    with pytest.raises(CommitFailedError) as excinfo:
+        store.commit(run, {"a": "a.csv"})
+
+    # Assert on the chained cause, not just "some exception happened" — before
+    # the guard existed, expected_prefix was an unexpected kwarg and the cause
+    # was a bare TypeError; only the guard itself raises KeyScopeGuardError
+    # naming the mismatched key. Without this, the test would pass identically
+    # whether or not the guard is implemented.
+    assert isinstance(excinfo.value.__cause__, KeyScopeGuardError)
+    assert "qc_someone_else" in str(excinfo.value.__cause__)
+    assert store.list_runs("scope.csv", "qc") == []  # latest un-advanced
+    if kind == "supabase":
+        # The already-uploaded object is cleaned up, same as a signing
+        # failure — the strongest assertion only the real backend can make.
+        assert not any(k.endswith("a.csv") for k in fake_supabase_storage.objects)
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])

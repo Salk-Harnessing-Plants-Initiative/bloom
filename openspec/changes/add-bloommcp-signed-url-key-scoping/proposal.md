@@ -30,8 +30,11 @@ something that exists.
   {version_dir}/`) — data `commit()` already holds, not anything new. A key outside that prefix
   raises (structural bug, not caller input), which the existing broad `except Exception` in both
   `commit()` implementations already catches and converts to the existing `CommitFailedError`
-  fail-closed/cleanup path — no new exception type, no new contract-layer wiring, no behavior
-  change for any of today's 8 correctly-scoped call sites.
+  fail-closed/cleanup path — no new *public* exception type (`ports.py`'s `ResultStoreError`
+  hierarchy is unchanged; the guard raises a private `RuntimeError` subclass local to
+  `_artifacts.py`, added post-review so the two `commit()`s' `except` blocks can give this
+  structural failure a non-transient message instead of the generic one — see design.md), no new
+  contract-layer wiring, no behavior change for any of today's 8 correctly-scoped call sites.
 - **DECISION RECORDED (per the issue's acceptance criteria):** a narrower structural scoping
   check, not extending `#406/#563`'s caller identity to carry Storage authority. See design.md for
   the full reasoning; in short, identity has no plumbing into this code path today (extending it
@@ -55,7 +58,14 @@ something that exists.
   positive against real usage); the resulting failure surfaces as the existing `CommitFailedError`
   fail-closed/cleanup path (mirroring the existing "signing failure fails the whole commit" test);
   and all 8 consumer tools' existing test suites remain green unmodified (no behavior change for
-  legitimate call sites, satisfying that acceptance criterion directly).
+  legitimate call sites, satisfying that acceptance criterion directly). The both-adapters
+  mismatched-key case lives as one parametrized test in
+  `tests/result_store/test_store_parity.py` (extended, per the repo's existing fake/real parity
+  convention) — **correction, post-review:** the first implementation instead hand-duplicated this
+  case as two near-identical tests in `test_supabase_result_store.py`/`test_fake_result_store.py`,
+  while this proposal already (incorrectly) claimed `test_store_parity.py` was extended; a reviewer
+  caught the mismatch between the claim and the actual diff, and the fix folded both duplicates
+  into one real parity test instead of just correcting the sentence.
 
 ## Impact
 
@@ -89,9 +99,14 @@ something that exists.
     gains the same trust-boundary note);
   - new `bloommcp/tests/result_store/test_artifacts.py` (direct unit coverage for
     `build_output_links`/`hash_outputs`/`validate_outputs` — none exists today);
-  - extended: `bloommcp/tests/result_store/test_supabase_result_store.py`,
-    `bloommcp/tests/result_store/test_fake_result_store.py`,
-    `bloommcp/tests/result_store/test_store_parity.py`.
+  - extended: `bloommcp/tests/result_store/test_store_parity.py` (the both-adapters
+    mismatched-key case, via the repo's existing parity-test convention). **Post-review
+    correction:** the first implementation instead extended
+    `bloommcp/tests/result_store/test_supabase_result_store.py` and
+    `bloommcp/tests/result_store/test_fake_result_store.py` with two hand-duplicated tests and left
+    `test_store_parity.py` untouched, contradicting this bullet as originally written; both
+    per-adapter tests were removed once folded into the one parity test, so neither file has any
+    net diff against `origin/staging` anymore.
 - **Dependencies:** none new.
 - **Sequencing:** independent of any other in-flight change; base is `origin/staging` directly.
   PR targets `staging`.

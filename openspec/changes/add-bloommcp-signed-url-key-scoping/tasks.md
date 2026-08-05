@@ -107,3 +107,58 @@
       `openspec validate add-bloommcp-signed-url-key-scoping --strict` valid.
 - [x] 4.3 Confirmed no behavior change end-to-end: baseline (1.7, 995 passed / 9 new failing) vs.
       post-implementation (1004 passed) — identical pass set plus exactly this change's own tests.
+
+## 5. Post-review fixes (Code Quality/Testing/Sci-Rigor/Security/Behavioural-Correctness pass)
+
+- [x] 5.1 **Misleading retry message (Important).** The guard's `RuntimeError` funneled into
+      `commit()`'s one generic `except Exception` block, which always said "(transient — retry)" —
+      wrong for a structural failure that fails identically on every retry. Added
+      `KeyScopeGuardError(RuntimeError)` (private, local to `_artifacts.py`, not a new
+      `ResultStoreError`) so both `commit()`s' `except` blocks can `isinstance()`-check and raise
+      `CommitFailedError(... "(structural bug — do not retry; see server logs)")` instead, while
+      every other failure keeps the original "(transient — retry)" wording.
+- [x] 5.2 **#464 racing-writer interaction (Important).** Added a Risks/Trade-offs bullet to
+      design.md naming that this guard is a new (if currently unreachable) trigger into the
+      pre-existing multi-instance racing-writer cleanup hazard `_cleanup_uploaded` already carries —
+      not a new bug, but a new path into an existing one, worth tracking alongside #464's own
+      follow-up work rather than fixed here.
+- [x] 5.3 **Test-coverage claim didn't match the diff (Important).** proposal.md claimed
+      `test_store_parity.py` was "extended"; the actual diff instead hand-duplicated the
+      mismatched-key case as two near-identical tests in `test_supabase_result_store.py` /
+      `test_fake_result_store.py`, bypassing the repo's own parity-test convention. Fixed by folding
+      both into one parametrized `test_key_outside_run_prefix_fails_commit_and_cleans_up_parity` in
+      `test_store_parity.py` (using the same `stores`/injection-helper pattern as
+      `_inject_commit_failure`) and deleting the two duplicates — `test_supabase_result_store.py`
+      and `test_fake_result_store.py` now have zero net diff against `origin/staging`. proposal.md's
+      Impact/test-coverage bullets corrected to match.
+- [x] 5.4 **Confusable-prefix test overstated its own proof (Important).** The parametrized
+      `test_confusable_prefix_is_rejected_not_accepted` claimed the trailing `/` was why *both* the
+      sibling-stem (`qc_experiment2`) and sibling-version (`v10`) cases were rejected; only the
+      sibling-version case actually depends on it — the sibling-stem case is rejected by the prefix
+      diverging earlier in the string regardless of the trailing slash. Split into two tests, each
+      with an accurate docstring naming its actual rejection mechanism.
+- [x] 5.5 **`expected_prefix` derivation (Suggestion).** Both adapters now pass `key_for("")` instead
+      of a separately-written string template (`adir.key(f"{version_dir}/")` /
+      `f"{state.prefix}{version_dir}/"`) — the "can't independently drift" claim is now structural
+      (same closure, not just the same result today).
+- [x] 5.6 **Stale docstring (Suggestion).** `storage_backend.py`'s module docstring and the
+      `StorageBackend` Protocol's own docstring both said "six object-storage operations"; the
+      Protocol has had seven since `create_signed_url` shipped in #581/#595. Fixed both, plus the
+      "six swapped helpers" phrase in the Out-of-scope paragraph.
+- [x] 5.7 **Empty `expected_prefix` silently defeats the guard (Suggestion).** `str.startswith("")`
+      is always `True`, so a future refactor that accidentally passed `""` would make every key look
+      in-scope with every existing test still green. `build_output_links` now raises
+      `KeyScopeGuardError` on a falsy `expected_prefix` before checking any key; added
+      `test_empty_expected_prefix_is_rejected_not_treated_as_match_everything` to pin it.
+- [x] 5.8 **`services/workflows/video.py`'s unscoped `create_signed_url` (Suggestion).** Same latent
+      risk shape (a signing call with no caller-side scope check) against the raw Supabase SDK
+      bucket object, but a different service/code path — out of scope for this change. Documented in
+      design.md's Risks section rather than silently dropped; a separate GitHub issue was not filed
+      as part of this fix (left for the user/maintainer to decide whether to open one).
+- [x] 5.9 **"Additive only" overstated (Suggestion).** `build_output_links` gaining a new *required*
+      keyword-only parameter is technically a breaking change to that private helper's own call
+      contract — harmless only because both call sites were updated atomically in the same commit.
+      design.md's Migration Plan and proposal.md's "What Changes" bullet reworded to say so
+      precisely instead of "additive only."
+- [x] 5.10 Full suite re-run after all of the above: green, no new failures, no change to the
+      pass/fail set beyond this section's own test edits (see the commit for the exact count).

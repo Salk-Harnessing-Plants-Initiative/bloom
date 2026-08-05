@@ -20,6 +20,7 @@ from bloom_mcp.manifest.versioning import next_version_id, version_dir_name
 
 from ._artifacts import (
     SIGNED_URL_EXPIRES_SECONDS,
+    KeyScopeGuardError,
     build_output_links,
     hash_outputs,
     validate_outputs,
@@ -212,7 +213,11 @@ class FakeResultStore:
                     url_for=lambda key: (
                         f"fake://signed/{key}?expires_in={SIGNED_URL_EXPIRES_SECONDS}"
                     ),
-                    expected_prefix=f"{state.prefix}{version_dir}/",
+                    # key_for("") is the same closure every real key above was
+                    # built from — mirrors SupabaseResultStore's identical
+                    # reuse (see supabase_store.py's own commit()) so the two
+                    # adapters stay structurally, not just observably, in sync.
+                    expected_prefix=key_for(""),
                 )
 
                 # Per-output recording loop, mirroring where
@@ -268,6 +273,16 @@ class FakeResultStore:
                 # Leave the handle open and the staging dir intact so the
                 # caller can retry — a retry re-enters commit() and
                 # re-derives `taken` against then-current state.
+                if isinstance(exc, KeyScopeGuardError):
+                    # #598: structural bug (a key outside this run's own
+                    # prefix), not transient — mirrors supabase_store.py's
+                    # identical distinction so fake/real parity holds for the
+                    # message too, not just the exception type.
+                    raise CommitFailedError(
+                        f"commit failed for {state.tool_class}/"
+                        f"{_stem(state.experiment)} "
+                        f"(structural bug — do not retry; see server logs)"
+                    ) from exc
                 raise CommitFailedError(
                     f"commit failed for {state.tool_class}/{_stem(state.experiment)} "
                     f"(transient — retry)"

@@ -31,6 +31,7 @@ from bloom_mcp.storage_backend import active_backend_name
 
 from ._artifacts import (
     SIGNED_URL_EXPIRES_SECONDS,
+    KeyScopeGuardError,
     build_output_links,
     hash_outputs,
     validate_outputs,
@@ -259,7 +260,12 @@ class SupabaseResultStore:
                     url_for=lambda key: _sc.create_signed_url(
                         key, SIGNED_URL_EXPIRES_SECONDS
                     ),
-                    expected_prefix=adir.key(f"{version_dir}/"),
+                    # key_for("") is the same closure every real key above was
+                    # built from — reusing it (rather than a second, separately
+                    # written `adir.key(f"{version_dir}/")` template) means the
+                    # expected prefix and the actual keys structurally cannot
+                    # drift apart from a future refactor of key_for/AnalysisDir.
+                    expected_prefix=key_for(""),
                 )
 
                 prov = state.provenance.model_copy(
@@ -345,6 +351,15 @@ class SupabaseResultStore:
                 logger.exception(
                     "ResultStore.commit failed for %s/%s", adir.tool_class, adir.stem
                 )
+                if isinstance(exc, KeyScopeGuardError):
+                    # #598: this is a structural bug (a key outside this run's
+                    # own prefix), not a transient condition — it will fail
+                    # identically on every retry, so the message must not
+                    # invite one.
+                    raise CommitFailedError(
+                        f"commit failed for {adir.tool_class}/{adir.stem} "
+                        f"(structural bug — do not retry; see server logs)"
+                    ) from exc
                 raise CommitFailedError(
                     f"commit failed for {adir.tool_class}/{adir.stem} "
                     f"(transient — retry)"
