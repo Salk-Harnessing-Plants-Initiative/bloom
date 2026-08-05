@@ -12,11 +12,17 @@ return that object's real byte size; the exact key/nesting the size is read from
 field vs. one nested under a `metadata`-shaped key) is an implementation detail confirmed
 empirically at implementation time, not assumed. A response missing or malformed for the
 resolved size field, or the underlying client call itself raising (e.g. because the object was
-deleted from storage), SHALL raise rather than return a fabricated value. `LocalStorageBackend`'s
-implementation SHALL
+deleted from storage), SHALL raise rather than return a fabricated value. **Implementation note
+(confirmed by reading the current code, not assumed):** `SupabaseStorageBackend`'s existing
+`download_file`/`read_json` do not themselves wrap a missing-key failure into any bloommcp-defined
+type — they let the storage client's own exception propagate unmodified. `get_object_size` SHALL
+match that same per-backend convention rather than invent a new, unified not-found type that
+doesn't otherwise exist on this class: on `SupabaseStorageBackend` a missing key SHALL propagate
+whatever the underlying client raises (matching its own sibling methods, not `LocalStorageBackend`'s
+convention); on `LocalStorageBackend` a missing key SHALL raise `StorageKeyNotFound`, exactly as
+`download_file`/`read_json` already do for that class. `LocalStorageBackend`'s implementation SHALL
 return the real size of the file on disk at the key's resolved path (via the existing
-`_resolve(key)` containment guard), and SHALL raise the same redacted not-found condition
-`download_file`/`read_json` already raise for a key with no backing file. This operation performs
+`_resolve(key)` containment guard). This operation performs
 NO ownership or scope check of its own, identically to `create_signed_url` — it is a generic
 object-storage primitive that will report the size of whatever syntactically valid key it is
 given; a caller is responsible for restricting `key` to its own authorized scope before calling
@@ -35,11 +41,13 @@ it.
   under the configured root
 - **THEN** it returns `Path.stat().st_size` for that file
 
-#### Scenario: A missing key raises the existing not-found condition
+#### Scenario: A missing key raises, matching each backend's own existing convention
 
-- **WHEN** `get_object_size(key)` is called for a key with no backing object, on either backend
-- **THEN** it raises the same not-found error `download_file`/`read_json` already raise for a
-  missing key, rather than returning `0` or `None`
+- **WHEN** `get_object_size(key)` is called for a key with no backing object
+- **THEN** on `LocalStorageBackend` it raises `StorageKeyNotFound`, exactly as `download_file`/
+  `read_json` already do for that class; on `SupabaseStorageBackend` it propagates whatever the
+  underlying storage client raises, exactly as `download_file`/`read_json` already do for that
+  class today (neither backend returns `0` or `None`)
 
 #### Scenario: A malformed size response is not silently treated as zero
 
