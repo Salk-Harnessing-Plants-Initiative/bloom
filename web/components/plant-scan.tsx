@@ -108,11 +108,17 @@ export default function PlantScan({
     }
     let active = true;
     setLoading(true);
-    getFrameUrls(frames.map((f) => f.object_path)).then((urls) => {
-      if (!active) return;
-      setFrameUrls(urls);
-      setLoading(false);
-    });
+    getFrameUrls(frames.map((f) => f.object_path))
+      .then((urls) => {
+        if (!active) return;
+        setFrameUrls(urls);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!active) return;
+        setFrameUrls(new Map());
+        setLoading(false);
+      });
     return () => {
       active = false;
     };
@@ -127,11 +133,17 @@ export default function PlantScan({
     }
     let active = true;
     setLoading(true);
-    getImageUrl(currentPath, true, height || defaultHeight).then((url) => {
-      if (!active) return;
-      setFrameUrls(url ? new Map([[currentPath, url]]) : new Map());
-      setLoading(false);
-    });
+    getImageUrl(currentPath, true, height || defaultHeight)
+      .then((url) => {
+        if (!active) return;
+        setFrameUrls(url ? new Map([[currentPath, url]]) : new Map());
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!active) return;
+        setFrameUrls(new Map());
+        setLoading(false);
+      });
     return () => {
       active = false;
     };
@@ -152,8 +164,8 @@ export default function PlantScan({
     };
   }, [scan]);
 
-  // No renderable frame — the image may exist upstream but we can't fetch it.
-  if (!loading && total === 0) {
+  // Nothing to show: no renderable frame, or signing failed for every frame.
+  if (!loading && (total === 0 || frameUrls.size === 0)) {
     return (
       <div className="rounded-lg border-2 border-dashed border-stone-300 bg-stone-50 px-4 py-6 text-sm text-stone-500 italic">
         Unable to retrieve scan image.
@@ -213,8 +225,14 @@ export default function PlantScan({
               src={objectUrl}
               className="rounded-md"
               onLoad={() => setImageIsLoaded(true)}
+              onError={() => setImageIsLoaded(false)}
             />
           )
+        ) : !loading ? (
+          // This one frame didn't sign — keep the pager so the rest stay reachable.
+          <div className="px-4 py-6 text-sm text-stone-500 italic">
+            Frame {frameIndex + 1} could not be loaded.
+          </div>
         ) : null}
       </div>
 
