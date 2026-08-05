@@ -155,6 +155,34 @@ def test_fail_is_terminal(pg_conn):
         pg_conn.rollback()
 
 
+def test_fail_does_not_clobber_completed_job(pg_conn):
+    # vt-expiry / deploy race: worker A completes a job, then a straggler second worker reports a
+    # failure for the same job. The 'processing'-guarded fail must NOT flip a settled job to
+    # 'failed' (which would show failure for a video that exists, with no way to re-enqueue).
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id = _new_scan(cur)
+            cur.execute("SELECT public.enqueue_cyl_video(%s, %s)", (scan_id, 1))
+            job_id = cur.fetchone()[0]
+            cur.execute("SELECT * FROM public.claim_cyl_video_job(120)")
+            _, _, _, msg_id = cur.fetchone()
+
+            path = f"cyl-videos/{scan_id}.mp4"
+            cur.execute(
+                "SELECT public.complete_cyl_video_job(%s, %s, %s)",
+                (job_id, msg_id, path),
+            )
+            cur.execute(
+                "SELECT public.fail_cyl_video_job(%s, %s, %s)",
+                (job_id, msg_id, "late boom"),
+            )
+            job = _job(cur, job_id)
+            assert job["status"] == "complete"  # not clobbered to 'failed'
+            assert job["path"] == path
+    finally:
+        pg_conn.rollback()
+
+
 def test_wrappers_denied_to_public(pg_conn):
     # The SECURITY DEFINER wrappers are PostgREST-exposed (public schema). EXECUTE
     # must be revoked from PUBLIC so a direct /rest/v1/rpc call as anon/authenticated
@@ -165,10 +193,19 @@ def test_wrappers_denied_to_public(pg_conn):
         "public.complete_cyl_video_job(uuid, bigint, text)",
         "public.fail_cyl_video_job(uuid, bigint, text, integer)",
     ]
+    # Also cover service_role and the JWT-hook session roles: none may call the wrappers directly.
+    denied = (
+        "anon",
+        "authenticated",
+        "service_role",
+        "bloom_user",
+        "bloom_writer",
+        "bloom_admin",
+    )
     try:
         with pg_conn.cursor() as cur:
             for sig in wrappers:
-                for role in ("anon", "authenticated"):
+                for role in denied:
                     cur.execute(
                         "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, sig)
                     )
@@ -182,23 +219,26 @@ def test_wrappers_denied_to_public(pg_conn):
         pg_conn.rollback()
 
 
-def test_cyl_video_jobs_readable_by_bloom_user(pg_conn):
-    # The read policy must target the roles a real session actually holds (bloom_user via the JWT
-    # hook), not the raw `authenticated` role — otherwise the frontend poll can never read the
-    # table. Runs as bloom_user (RLS applies, unlike the BYPASSRLS supabase_admin the suite uses).
+def test_cyl_video_jobs_readable_by_session_roles(pg_conn):
+    # Every role the read policy names — bloom_user/writer/admin, the roles a real session gets
+    # from the JWT hook — must actually be able to read job status (needs both the policy and the
+    # table GRANT). Runs as each role (RLS applies, unlike the BYPASSRLS supabase_admin the suite
+    # uses) rather than trusting default privileges.
     try:
         with pg_conn.cursor() as cur:
             scan_id = _new_scan(cur)
             cur.execute(
                 "SELECT public.enqueue_cyl_video(%s, %s)", (scan_id, 42)
             )  # seed one job
-            cur.execute("SET LOCAL ROLE bloom_user")
-            cur.execute(
-                "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s",
-                (scan_id,),
-            )
-            assert cur.fetchone()[0] == 1  # a real user session can read its job status
-            cur.execute("RESET ROLE")
+            for role in ("bloom_user", "bloom_writer", "bloom_admin"):
+                cur.execute("SAVEPOINT s")
+                cur.execute(f"SET LOCAL ROLE {role}")
+                cur.execute(
+                    "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s",
+                    (scan_id,),
+                )
+                assert cur.fetchone()[0] == 1, f"{role} must read its job status"
+                cur.execute("ROLLBACK TO SAVEPOINT s")  # restores role
     finally:
         pg_conn.rollback()
 
@@ -327,7 +367,9 @@ def test_concurrent_enqueue_dedupes_to_one_job(pg_conn, pg_conninfo):
             results[key] = cur.fetchone()[0]
 
     try:
-        threads = [threading.Thread(target=racer, args=(k,)) for k in ("a", "b")]
+        threads = [
+            threading.Thread(target=racer, args=(k,), daemon=True) for k in ("a", "b")
+        ]
         for t in threads:
             t.start()
         for t in threads:

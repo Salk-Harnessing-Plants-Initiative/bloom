@@ -65,6 +65,11 @@ worker (never reporting) is dead-lettered by pgmq's `read_ct` after a few
 deliveries, so a poison message can't redeliver forever. Scale throughput by running
 more `cyl-video-worker` replicas — pgmq's claim is concurrency-safe.
 
+Enqueue is idempotent per scan and skips a scan that already has a video, so the queue
+**will not regenerate** an existing video — a re-shot scan keeps its old video until its
+`cyl_scan_videos` row and stored file are removed. A `force` regenerate path is a planned
+follow-up.
+
 ### Video generation
 
 A video is **per scan** — one cylinder scan has many frames (~72 rotation

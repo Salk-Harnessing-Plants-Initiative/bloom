@@ -45,12 +45,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS cyl_video_jobs_one_active_per_scan
   ON public.cyl_video_jobs(scan_id) WHERE status IN ('queued', 'processing');
 ALTER TABLE public.cyl_video_jobs ENABLE ROW LEVEL SECURITY;
 
--- Frontend polls job status: real sessions get role bloom_user/writer/admin from the JWT hook
--- (never `authenticated`), so the read policy targets those. The service touches the table only via
--- the SECURITY DEFINER wrappers below (which bypass RLS), so it needs no direct grant.
+-- Let the frontend poll job status. Real sessions hold bloom_user/writer/admin (from the JWT
+-- hook), so the read policy targets those roles. Writes never come from clients — only the
+-- SECURITY DEFINER wrappers below touch the table — so there is no write policy.
 DROP POLICY IF EXISTS cyl_video_jobs_read ON public.cyl_video_jobs;
 CREATE POLICY cyl_video_jobs_read ON public.cyl_video_jobs
   FOR SELECT TO bloom_user, bloom_writer, bloom_admin USING (true);
+GRANT SELECT ON public.cyl_video_jobs TO bloom_user, bloom_writer, bloom_admin;
 
 -- 3. Wrapper functions -----------------------------------------------------
 -- SECURITY DEFINER so they run as the owner (which can use pgmq); bloom_workflows
@@ -123,10 +124,9 @@ BEGIN
 
   v_job_id := (r.message->>'job_id')::uuid;
 
-  -- Poison-message guard: this message has been delivered more than p_max_reads times
-  -- (a worker that keeps crashing before it can mark the job failed). read_ct is pgmq's
-  -- own per-delivery counter, so it catches crashes that never run fail_cyl_video_job.
-  -- Dead-letter it instead of handing it out again.
+  -- Poison-message guard: dead-letter a message delivered too many times. read_ct is pgmq's
+  -- per-delivery counter, so this catches a worker that keeps crashing before it can call
+  -- fail_cyl_video_job (which a normal caught error would).
   IF r.read_ct > p_max_reads THEN
     RAISE WARNING 'cyl_video_job % dead-lettered after % deliveries (poison message)',
       v_job_id, r.read_ct;
@@ -139,11 +139,16 @@ BEGIN
     RETURN;  -- poison message — do not hand it to the worker again
   END IF;
 
-  -- Guard on the non-terminal states: a terminal job never keeps a live message today, but
-  -- guarding here means no future stray-message path can revive a 'complete'/'failed' job.
+  -- Mark processing, but only from a non-terminal state. A terminal job never keeps a live
+  -- message today; if a stray message ever pointed at one, don't hand it to the worker —
+  -- archive it and return nothing (the complete/fail wrappers below also guard on 'processing').
   UPDATE public.cyl_video_jobs
   SET status = 'processing', started_at = now()
   WHERE id = v_job_id AND status IN ('queued', 'processing');
+  IF NOT FOUND THEN
+    PERFORM pgmq.archive('cyl_video_generation', r.msg_id);
+    RETURN;
+  END IF;
 
   RETURN QUERY SELECT
     v_job_id,
@@ -153,7 +158,8 @@ BEGIN
 END;
 $$;
 
--- complete: record the path, drop the message.
+-- complete: record the path, drop the message. Guard on 'processing' so a late second worker
+-- (vt-expiry redelivery / deploy race) can't clobber a job another worker already settled.
 CREATE OR REPLACE FUNCTION public.complete_cyl_video_job(p_job_id uuid, p_msg_id bigint, p_path text)
 RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pgmq
@@ -161,16 +167,13 @@ AS $$
 BEGIN
   UPDATE public.cyl_video_jobs
   SET status = 'complete', path = p_path, completed_at = now()
-  WHERE id = p_job_id;
+  WHERE id = p_job_id AND status = 'processing';
   PERFORM pgmq.delete('cyl_video_generation', p_msg_id);
 END;
 $$;
 
--- fail: terminal for now — record the error, mark the job 'failed', and dead-letter the
--- message. Attempt-based retry/requeue (row back to 'queued', redeliver via vt expiry) is
--- DEFERRED pending a polling-based requeue redesign (re-check if the job is actually done);
--- the original logic is kept commented below so it's easy to restore. p_max_attempts is
--- retained in the signature for that restore.
+-- fail: mark the job 'failed' and dead-letter its message. Terminal for now; retry/requeue is
+-- deferred to a later polling-based redesign. (p_max_attempts is unused, kept for that restore.)
 CREATE OR REPLACE FUNCTION public.fail_cyl_video_job(
   p_job_id uuid, p_msg_id bigint, p_error text, p_max_attempts integer DEFAULT 3
 )
@@ -178,20 +181,12 @@ RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pgmq
 AS $$
 BEGIN
+  -- Guard on 'processing' so a late/duplicate failure can't clobber a job another worker
+  -- already completed (vt-expiry redelivery / deploy race).
   UPDATE public.cyl_video_jobs
   SET attempts = attempts + 1, status = 'failed', error = p_error, completed_at = now()
-  WHERE id = p_job_id;
+  WHERE id = p_job_id AND status = 'processing';
   PERFORM pgmq.archive('cyl_video_generation', p_msg_id);  -- dead-letter immediately
-
-  -- -- DEFERRED requeue/retry (re-enable with the polling redesign):
-  -- --   v_attempts := (UPDATE ... SET attempts = attempts + 1, error = p_error
-  -- --                  WHERE id = p_job_id RETURNING attempts);
-  -- --   IF v_attempts >= p_max_attempts THEN
-  -- --     UPDATE ... SET status = 'failed', completed_at = now();
-  -- --     PERFORM pgmq.archive(...);            -- dead-letter at max attempts
-  -- --   ELSE
-  -- --     UPDATE ... SET status = 'queued';     -- requeue; redelivers after vt expiry
-  -- --   END IF;
 END;
 $$;
 
@@ -200,10 +195,10 @@ $$;
 -- authenticated call them via /rest/v1/rpc, bypassing the API's auth and scan
 -- validation. Supabase grants EXECUTE to PUBLIC *and* anon/authenticated by
 -- default, so revoke all three before granting the one sanctioned caller.
-REVOKE EXECUTE ON FUNCTION public.enqueue_cyl_video(bigint, bigint) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.claim_cyl_video_job(integer, integer) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.fail_cyl_video_job(uuid, bigint, text, integer) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.enqueue_cyl_video(bigint, bigint) FROM PUBLIC, anon, authenticated, service_role;
+REVOKE EXECUTE ON FUNCTION public.claim_cyl_video_job(integer, integer) FROM PUBLIC, anon, authenticated, service_role;
+REVOKE EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) FROM PUBLIC, anon, authenticated, service_role;
+REVOKE EXECUTE ON FUNCTION public.fail_cyl_video_job(uuid, bigint, text, integer) FROM PUBLIC, anon, authenticated, service_role;
 
 GRANT EXECUTE ON FUNCTION public.enqueue_cyl_video(bigint, bigint) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.claim_cyl_video_job(integer, integer) TO bloom_workflows;
