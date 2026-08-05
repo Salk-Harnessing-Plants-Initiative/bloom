@@ -20,17 +20,30 @@ a real plant/scan — enforced at the bloommcp level, so it holds even when
 ``sleap-roots-contracts`` is absent), and runs analyze's input contract in ``warn``
 mode via :func:`run_input_validation`. A missing required role returns a structured
 ``BloomMCPError`` listing the available columns and naming the override
-(``sample_id_column`` / ``genotype_column``); no run is persisted.
+(``sample_id_column`` / ``genotype_column``); no run is persisted. **This
+traceability guarantee is structural, not identity-backed, on the ``csv_content``
+path (#582):** the same genotype/sample-id role columns are still required and
+resolved, so every row is still traceable *within the supplied table*, but there is
+no registered experiment behind it — nothing to trace *back to* in Bloom's own
+database, since the content was never registered.
 
-On each call it reads the **raw** frame via the :class:`ExperimentReader` port
-(qc_clean is the *producer* of cleaned data, so it never sets ``require_clean``),
-calls the one upstream entry point with the resolved role columns, then persists a
-versioned run via the :class:`ResultStore` port — the cleaned CSV
-(``CLEANED_CSV_NAME``) + the cleanup log + provenance (including an additive
-``input_validation`` manifest block) — under tool class ``qc``. That filename is
-what the reader resolves as a *cleaned version*, so a later ``pca_analysis``
-(``require_clean=True``) consumes this run. The result returns a small in/out
-summary + the resolved roles + validation warnings + links — never the table inline.
+On each call it reads a frame via one of two mutually exclusive input paths: a
+registered ``experiment`` (the **raw** frame via the injected :class:`ExperimentReader`
+port — qc_clean is the *producer* of cleaned data, so it never sets ``require_clean``),
+or inline ``csv_content`` text for a one-off, unregistered analysis (parsed in memory by
+the shared ``bloom_mcp.tools._inline_input.parse_inline_csv_frame`` helper, bypassing the
+reader port entirely). Either way it calls the one upstream entry point with the resolved
+role columns. For a registered ``experiment`` it then persists a versioned run via the
+:class:`ResultStore` port — the cleaned CSV (``CLEANED_CSV_NAME``) + the cleanup log +
+provenance (including an additive ``input_validation`` manifest block) — under tool class
+``qc``. That filename is what the reader resolves as a *cleaned version*, so a later
+``pca_analysis`` (``require_clean=True``) consumes this run. The result returns a small
+in/out summary + the resolved roles + validation warnings + links — never the table inline.
+For ``csv_content``, **no run is ever persisted** — no ``ResultStore.create_run``/``commit``,
+no manifest entry, no ``list_existing_analyses`` visibility — and the result carries
+``experiment=None``, ``source="inline"``, and an ``input_sha256`` of the exact bytes supplied
+so the caller has their own record of what was analyzed. There is no versioned history and no
+``based_on_version`` chaining into a later tool for this path (#582).
 
 **No-NaN guarantee.** Before persisting, the tool asserts the cleaned table has
 no NaNs in its kept trait columns and at least one surviving sample/trait — the
@@ -63,6 +76,7 @@ from bloom_mcp.data_access.columns import resolve_columns, run_input_validation
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, QC_TOOL_CLASS
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._inline_input import compute_input_sha256, parse_inline_csv_frame
 from bloom_mcp.tools._qc_shared import (
     _CANONICAL_MAX_NANS_PER_SAMPLE,
     _CANONICAL_MAX_NANS_PER_TRAIT,
@@ -70,6 +84,14 @@ from bloom_mcp.tools._qc_shared import (
     _CANONICAL_MIN_SAMPLES_PER_TRAIT,
     _validate_trait_subset,
 )
+
+# Placeholder used in error messages on the csv_content path, where there is no
+# experiment name to interpolate (see QC Clean Enforces Mutually Exclusive Input
+# Selection / the next_step-suppression scenario in the #582 spec delta). Kept
+# short and free of embedded punctuation since it is always interpolated with
+# `!r` alongside a real experiment name in the same f-strings — "csv_content"
+# reads cleanly as 'csv_content'; a full sentence would read awkwardly quoted.
+_INLINE_EXPERIMENT_LABEL = "csv_content"
 
 _TOOL_CLASS = QC_TOOL_CLASS
 _LOG_NAME = "cleanup_log.json"
@@ -91,10 +113,24 @@ class QCCleanParams(BaseModel):
     via ``genotype_column`` / ``sample_id_column``) so every cleaned sample is
     traceable; if a required role can't be resolved the call fails with a structured
     error listing the available columns.
+
+    Exactly one of ``experiment`` / ``csv_content`` is required (#582): a registered
+    experiment persists a versioned cleaned run; inline ``csv_content`` never persists
+    anything (no run_ref, no lineage into a later based_on_version, no
+    list_existing_analyses entry) — a one-off check, not a registered experiment.
     """
 
-    experiment: str = Field(
-        ..., description="Experiment identifier from list_available_experiments."
+    experiment: Optional[str] = Field(
+        default=None,
+        description="Experiment identifier from list_available_experiments. "
+        "Mutually exclusive with csv_content; exactly one is required.",
+    )
+    csv_content: Optional[str] = Field(
+        default=None,
+        description="Raw CSV text for a one-off analysis with no persistence. "
+        "Mutually exclusive with experiment; exactly one is required. No run is "
+        "persisted — no run_ref, no lineage into a later based_on_version, and no "
+        "list_existing_analyses entry.",
     )
     trait_columns: Optional[list[str]] = Field(
         default=None,
@@ -151,11 +187,21 @@ class QCCleanParams(BaseModel):
         description="Optional slug appended to the version directory name.",
     )
 
+    # NOTE: the exactly-one-of-experiment/csv_content rule is enforced in the tool
+    # body (qc_clean's first lines), not here as a @model_validator. A validator's
+    # raised ValueError is remapped by the contract layer's from_input_validation
+    # into a generic "(<root>: value_error)" message — the author's own message
+    # text is discarded, not merely a value. Enforcing it in the body (the same
+    # pattern the B-4 genotype/sample_id-collision check below already uses) lets
+    # qc_clean raise BloomMCPError directly, so the specific, actionable message
+    # actually reaches the caller. Verified empirically: a model_validator here
+    # produces "Input did not match the tool's schema (<root>: value_error)."
+
 
 class QCCleanResult(BaseModel):
     """A small in/out summary + resolved roles + validation findings + links."""
 
-    experiment: str
+    experiment: Optional[str]
     source: str
     n_samples_in: int
     n_samples_out: int
@@ -180,17 +226,27 @@ class QCCleanResult(BaseModel):
     # cleaned frame. `cleaned_nan_cells_remaining` is guaranteed 0 (see guard).
     input_nan_summary: dict[str, int]
     cleaned_nan_cells_remaining: int
-    run_ref: str
-    version_dir: str
-    manifest_path: str
+    run_ref: Optional[str]
+    version_dir: Optional[str]
+    manifest_path: Optional[str]
     outputs: dict[str, str]
     output_links: dict[str, OutputLink] = Field(default_factory=dict)
+    input_sha256: Optional[str] = Field(
+        default=None,
+        description=(
+            "SHA-256 of the exact csv_content bytes supplied, for the caller's own "
+            "record-keeping. Only set on the csv_content path — nothing is stored "
+            "server-side to check it against later."
+        ),
+    )
     next_step: Optional[str] = Field(
         default=None,
         description=(
-            "Advisory populated only when cleaning dropped samples: nudges the "
-            "caller to run qc_inspect to see which traits drove the loss and get a "
-            "threshold recommendation. None when no samples were dropped."
+            "Advisory populated only when cleaning dropped samples on a registered "
+            "experiment: nudges the caller to run qc_inspect to see which traits "
+            "drove the loss and get a threshold recommendation. None when no "
+            "samples were dropped, or always None on the csv_content path (qc_inspect "
+            "has no csv_content support)."
         ),
     )
 
@@ -201,15 +257,44 @@ class QCCleanResult(BaseModel):
     errors=(ExperimentReadError,),
 )
 def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
-    """Clean ``experiment`` via analyze's ``clean_traits_for_analysis`` and persist it."""
-    reader = _ports.reader()
-    store = _ports.store()
+    """Clean ``experiment`` (or inline ``csv_content``) via analyze's
+    ``clean_traits_for_analysis``. A registered ``experiment`` persists the result as a
+    versioned run; inline ``csv_content`` never persists anything (#582) — a one-off
+    check, not a registered experiment.
+    """
+    # Exactly one of experiment / csv_content — checked first, before touching the
+    # reader or the parser, so a bad call fails immediately with a specific message
+    # (see the NOTE on QCCleanParams for why this lives here and not in a validator).
+    if (params.experiment is None) == (params.csv_content is None):
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                "Exactly one of experiment or csv_content must be provided "
+                "(both or neither is not a valid call)."
+            ),
+            remedy=(
+                "Supply exactly one of experiment (a registered experiment "
+                "identifier) or csv_content (raw CSV text for a one-off analysis)."
+            ),
+        )
 
-    # qc_clean is the producer of cleaned data, so it must always clean from the
-    # RAW input — never re-clean a prior cleaned artifact. Force version="raw" so a
-    # re-run (after a cleaned version already exists) still reads raw rather than
-    # the default "latest" resolution, which would resolve the newest _cleaned.csv.
-    frame = reader.load_experiment(params.experiment, version="raw")
+    is_inline = params.csv_content is not None
+    # Used in error messages where an experiment name would normally be interpolated —
+    # there is no experiment identity on the inline path.
+    experiment_label = _INLINE_EXPERIMENT_LABEL if is_inline else params.experiment
+
+    if is_inline:
+        # Inline content bypasses the ExperimentReader port entirely — parsed directly
+        # into an in-memory frame by the shared helper, never touching Storage/DB.
+        frame = parse_inline_csv_frame(params.csv_content)
+    else:
+        reader = _ports.reader()
+        store = _ports.store()
+        # qc_clean is the producer of cleaned data, so it must always clean from the
+        # RAW input — never re-clean a prior cleaned artifact. Force version="raw" so a
+        # re-run (after a cleaned version already exists) still reads raw rather than
+        # the default "latest" resolution, which would resolve the newest _cleaned.csv.
+        frame = reader.load_experiment(params.experiment, version="raw")
 
     # B-4: the same column cannot serve as both genotype label and sample identifier.
     if (
@@ -237,7 +322,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     if unknown:
         raise BloomMCPError(
             code="invalid_input",
-            message=f"Column override names columns not in {params.experiment!r}: "
+            message=f"Column override names columns not in {experiment_label!r}: "
             f"{sorted(set(unknown))}.",
             remedy="Use column names from list_available_experiments / "
             "load_experiment_data.",
@@ -314,7 +399,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         raise BloomMCPError(
             code="assumption_violated",
             message=(
-                f"No {roles_txt} column detected in {params.experiment!r}. "
+                f"No {roles_txt} column detected in {experiment_label!r}. "
                 f"Available columns: {list(frame.df.columns)}."
             ),
             remedy=(
@@ -334,7 +419,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         raise BloomMCPError(
             code="assumption_violated",
             message=(
-                f"Genotype column {resolved.genotype!r} in {params.experiment!r} is "
+                f"Genotype column {resolved.genotype!r} in {experiment_label!r} is "
                 f"entirely NaN or blank — no sample is traceable to a genotype."
             ),
             remedy=(
@@ -344,7 +429,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         )
 
     if params.trait_columns is not None:
-        _validate_trait_subset(frame, params.trait_columns, params.experiment)
+        _validate_trait_subset(frame, params.trait_columns, experiment_label)
         # A — reject any caller-supplied trait column that resolve_columns promoted to
         # a role. Use role_info so the error explains HOW each column became a role.
         as_role = [c for c in params.trait_columns if c in role_info]
@@ -477,59 +562,78 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         "input_nan_cells": int(nan_mask.sum().sum()),
     }
 
-    # Additive manifest block: the resolved roles, excluded metadata, and warn-mode
-    # findings, stamped onto the provenance so it lands in the version entry. The
-    # contract_version is the provenance-recorded sleap-roots-contracts version (not
-    # a live read) so the record is reproducible.
-    input_validation_block = {
-        "mode": _VALIDATION_MODE,
-        "contract_version": provenance.code_versions.sleap_roots_contracts,
-        "resolved_roles": {
-            "genotype": resolved.genotype,
-            "sample_id": resolved.sample_id,
-            "replicate": resolved.replicate,
-        },
-        "excluded_columns": effective_excluded,
-        "warnings": validation_warnings,
-    }
-    provenance = provenance.model_copy(
-        update={"input_validation": input_validation_block}
-    )
-
-    # Persist a versioned cleaned run via the ResultStore port; the contract-stamped
-    # provenance is carried into the manifest (no re-stamp). source_csv (when the raw
-    # is on the local FS) lets the manifest content-address the cleaned run to its
-    # input — sourced through the active reader so a custom BLOOM_EXPERIMENT_LOCAL_ROOT
-    # is honoured rather than a hard-coded TRAITS_DIR (mirrors _ports.start_run).
-    run = store.create_run(
-        experiment=params.experiment,
-        tool_class=_TOOL_CLASS,
-        provenance=provenance,
-        user_label=params.user_label,
-        source_csv=_ports.raw_source_for(params.experiment),
-        source=frame.resolved_source,
-    )
-    cleaned_df.to_csv(run.staging_dir / CLEANED_CSV_NAME, index=False)
-    (run.staging_dir / _LOG_NAME).write_text(
-        json.dumps(convert_to_json_serializable(log), indent=2)
-    )
-    stored = store.commit(
-        run,
-        {CLEANED_CSV_NAME: CLEANED_CSV_NAME, _LOG_NAME: _LOG_NAME},
-    )
-
-    # Message-only tie-in to qc_inspect (#360): when cleaning drops samples, nudge
-    # the caller to inspect the missingness that drove the loss. Kept out of the
-    # cleanup logic (no behavior change) — it is purely advisory on the summary.
     n_samples_dropped = n_samples_in - n_samples_out
-    sample_word = "sample" if n_samples_in == 1 else "samples"
-    next_step = (
-        f"Cleaning dropped {n_samples_dropped} of {n_samples_in} {sample_word}. Run "
-        f"qc_inspect on {params.experiment!r} to see which traits drove the loss "
-        f"and get a max_nans_per_trait recommendation that retains more samples."
-        if n_samples_dropped > 0
-        else None
-    )
+
+    if is_inline:
+        # Never persisted (#582): no ResultStore.create_run/commit, no manifest entry,
+        # no list_existing_analyses visibility — a one-off check, not a registered
+        # experiment. No qc_inspect nudge either: it has no csv_content support and
+        # there is no experiment identity to point it at.
+        run_ref = version_dir = manifest_path = None
+        outputs: dict[str, str] = {}
+        output_links: dict[str, OutputLink] = {}
+        input_sha256 = compute_input_sha256(params.csv_content)
+        next_step = None
+    else:
+        # Additive manifest block: the resolved roles, excluded metadata, and warn-mode
+        # findings, stamped onto the provenance so it lands in the version entry. The
+        # contract_version is the provenance-recorded sleap-roots-contracts version (not
+        # a live read) so the record is reproducible.
+        input_validation_block = {
+            "mode": _VALIDATION_MODE,
+            "contract_version": provenance.code_versions.sleap_roots_contracts,
+            "resolved_roles": {
+                "genotype": resolved.genotype,
+                "sample_id": resolved.sample_id,
+                "replicate": resolved.replicate,
+            },
+            "excluded_columns": effective_excluded,
+            "warnings": validation_warnings,
+        }
+        provenance = provenance.model_copy(
+            update={"input_validation": input_validation_block}
+        )
+
+        # Persist a versioned cleaned run via the ResultStore port; the contract-stamped
+        # provenance is carried into the manifest (no re-stamp). source_csv (when the raw
+        # is on the local FS) lets the manifest content-address the cleaned run to its
+        # input — sourced through the active reader so a custom BLOOM_EXPERIMENT_LOCAL_ROOT
+        # is honoured rather than a hard-coded TRAITS_DIR (mirrors _ports.start_run).
+        run = store.create_run(
+            experiment=params.experiment,
+            tool_class=_TOOL_CLASS,
+            provenance=provenance,
+            user_label=params.user_label,
+            source_csv=_ports.raw_source_for(params.experiment),
+            source=frame.resolved_source,
+        )
+        cleaned_df.to_csv(run.staging_dir / CLEANED_CSV_NAME, index=False)
+        (run.staging_dir / _LOG_NAME).write_text(
+            json.dumps(convert_to_json_serializable(log), indent=2)
+        )
+        stored = store.commit(
+            run,
+            {CLEANED_CSV_NAME: CLEANED_CSV_NAME, _LOG_NAME: _LOG_NAME},
+        )
+
+        run_ref = stored.run_ref
+        version_dir = stored.version_dir
+        manifest_path = stored.manifest_path
+        outputs = dict(stored.output_keys)
+        output_links = stored.output_links
+        input_sha256 = None
+
+        # Message-only tie-in to qc_inspect (#360): when cleaning drops samples, nudge
+        # the caller to inspect the missingness that drove the loss. Kept out of the
+        # cleanup logic (no behavior change) — it is purely advisory on the summary.
+        sample_word = "sample" if n_samples_in == 1 else "samples"
+        next_step = (
+            f"Cleaning dropped {n_samples_dropped} of {n_samples_in} {sample_word}. Run "
+            f"qc_inspect on {params.experiment!r} to see which traits drove the loss "
+            f"and get a max_nans_per_trait recommendation that retains more samples."
+            if n_samples_dropped > 0
+            else None
+        )
 
     return QCCleanResult(
         experiment=params.experiment,
@@ -553,10 +657,11 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         validation_warnings=validation_warnings,
         input_nan_summary=input_nan_summary,
         cleaned_nan_cells_remaining=cleaned_nan_cells,
-        run_ref=stored.run_ref,
-        version_dir=stored.version_dir,
-        manifest_path=stored.manifest_path,
-        outputs=dict(stored.output_keys),
-        output_links=stored.output_links,
+        run_ref=run_ref,
+        version_dir=version_dir,
+        manifest_path=manifest_path,
+        outputs=outputs,
+        output_links=output_links,
+        input_sha256=input_sha256,
         next_step=next_step,
     )
