@@ -66,7 +66,20 @@ class StorageBackend(Protocol):
         self, keys: list[str], *, timeout_seconds: Optional[float] = None
     ) -> None: ...
 
-    def create_signed_url(self, key: str, expires_in: int) -> str: ...
+    def create_signed_url(self, key: str, expires_in: int) -> str:
+        """Sign/serve a download URL for ``key``, valid for ``expires_in`` seconds.
+
+        Performs NO ownership or scope check of its own (bloom#598) — this is
+        a generic object-storage primitive with no concept of "run" or
+        "experiment" ownership, and it will sign whatever syntactically valid
+        key it's given. The one production caller, ``ResultStore.commit()``,
+        is responsible for restricting ``key`` to its own authorized scope
+        before calling this (see ``result_store/_artifacts.py``'s
+        ``build_output_links`` for that enforcement). A future caller outside
+        ``ResultStore.commit()`` SHOULD NOT assume this primitive itself
+        provides any ownership guarantee.
+        """
+        ...
 
 
 def _json_bytes(payload: dict) -> bytes:
