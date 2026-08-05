@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  isScanVideoResult,
   parseId,
   videoErrorMessage,
   videoResultSummary,
@@ -52,6 +53,36 @@ describe("parseId", () => {
 
   it("rejects an integer too large to represent exactly", () => {
     expect(parseId("9".repeat(30))).toBeNull();
+  });
+});
+
+describe("isScanVideoResult", () => {
+  it("accepts a full result", () => {
+    expect(isScanVideoResult(result())).toBe(true);
+  });
+
+  it("rejects the shapes that would render as undefined", () => {
+    // "Encoded undefined frames." reached the user before this guard existed.
+    expect(isScanVideoResult({ frames: 72 })).toBe(false);
+    expect(isScanVideoResult({ ...result(), frames: undefined })).toBe(false);
+    expect(isScanVideoResult({ ...result(), truncated: undefined })).toBe(false);
+  });
+
+  it("rejects a result with no usable download_url", () => {
+    expect(isScanVideoResult({ ...result(), download_url: "" })).toBe(false);
+    expect(isScanVideoResult({ ...result(), download_url: "  " })).toBe(false);
+    expect(isScanVideoResult({ ...result(), download_url: null })).toBe(false);
+  });
+
+  it("rejects non-objects", () => {
+    expect(isScanVideoResult(null)).toBe(false);
+    expect(isScanVideoResult(undefined)).toBe(false);
+    expect(isScanVideoResult("ok")).toBe(false);
+    expect(isScanVideoResult([])).toBe(false);
+  });
+
+  it("rejects numeric fields sent as strings", () => {
+    expect(isScanVideoResult({ ...result(), frames: "72" })).toBe(false);
   });
 });
 

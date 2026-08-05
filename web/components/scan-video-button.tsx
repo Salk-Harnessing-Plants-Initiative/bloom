@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   videoErrorMessage,
   videoResultSummary,
@@ -19,6 +20,7 @@ export default function ScanVideoButton({
   const [status, setStatus] = useState<Status>("idle");
   const [result, setResult] = useState<ScanVideoResult | null>(null);
   const [error, setError] = useState<string>("");
+  const router = useRouter();
 
   async function generate() {
     if (status === "generating") return;
@@ -46,6 +48,9 @@ export default function ScanVideoButton({
 
     setResult(body as ScanVideoResult);
     setStatus("done");
+    // The viewer's video icon comes from a signed URL resolved when the scan
+    // loaded, so without this it keeps showing the pre-generation state.
+    router.refresh();
   }
 
   return (

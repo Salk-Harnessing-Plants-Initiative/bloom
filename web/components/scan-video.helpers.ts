@@ -23,6 +23,22 @@ export function parseId(value: string | undefined | null): number | null {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
+// A 200 is not enough — the fields below get rendered straight to the user, so
+// a shape drift would surface as "Encoded undefined frames" or a link with no
+// href rather than an error.
+export function isScanVideoResult(value: unknown): value is ScanVideoResult {
+  if (typeof value !== "object" || value === null) return false;
+  const r = value as Record<string, unknown>;
+  return (
+    typeof r.frames === "number" &&
+    typeof r.frames_expected === "number" &&
+    typeof r.truncated === "boolean" &&
+    typeof r.regenerated === "boolean" &&
+    typeof r.download_url === "string" &&
+    r.download_url.trim() !== ""
+  );
+}
+
 // What to tell the user when generation fails. The upstream detail is specific
 // ("No images found for scan 5") and safe to surface, so prefer it; fall back to
 // the status when the failure came from the proxy itself and has no body.
