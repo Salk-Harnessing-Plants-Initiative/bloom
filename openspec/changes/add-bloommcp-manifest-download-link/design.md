@@ -81,6 +81,35 @@ Mirroring `output_links`' existing `url_for=lambda key: f"fake://signed/{key}?ex
 design.md — there is no size or hash in scope here, so no size-registry equivalent is needed
 for the manifest).
 
+### Decision 4 — `manifest_url` exposes the manifest's full content, including `ExperimentBlock.source_path`; no redaction
+
+**Found in PR #612 review, not anticipated at proposal time.** `manifest.json`'s
+`ExperimentBlock.source_path` (`manifest/schema.py`) is an absolute path to the source CSV on
+the machine that committed the run — before this change, nothing on any `StoredRun`/MCP tool
+response ever carried it, so reaching it required direct Supabase Storage/admin access (exactly
+the access gap this change's own Why section describes for the manifest as a whole).
+`manifest_url` is the first MCP-reachable path to it, since it's a direct signed link to the
+existing object's real bytes, not a filtered view.
+
+**Decision: ship as-is, no redaction, disclosed explicitly.** Three reasons:
+
+- `source_path` is a path string, not file content or a credential — it reveals a directory
+  layout (e.g. a `TRAITS_DIR` mount point), not experiment data or secrets. `openspec/project.md`
+  already classifies bloommcp's data-directory paths as non-secret in every environment
+  (see its "Important Constraints" section) — this is the same confidentiality class, not a new
+  one.
+- Redacting it would mean *rewriting* the manifest content this link serves, which both
+  contradicts this proposal's own "no manifest content/schema change" Non-Goal and would require
+  a structurally different mechanism (a filtering proxy in front of the object) than every other
+  link this feature family (`output_links`, `manifest_url`) returns — a direct signed pointer at
+  bytes already sitting in storage, unmodified.
+- The same field has already been reachable by anyone with direct Supabase Storage/Studio access
+  since the manifest was first introduced (pre-#581) — this change narrows *who* can reach it
+  (an MCP caller, not just a storage admin), not *what* is reachable in principle.
+
+Disclosed in `storage-backends.md` rather than left implicit, so a caller can make an informed
+call about whether to hand a `manifest_url` to a less-trusted downstream consumer.
+
 ## Risks / Trade-offs
 
 - **Depends on #599 (PR #611), not yet merged.** This change cannot land independently;
@@ -93,6 +122,18 @@ for the manifest).
   (not yet in `openspec/specs/`) — whoever archives any of `add-bloommcp-signed-url-download`,
   `add-bloommcp-signed-url-key-scoping`, `add-bloommcp-get-download-links`, and this change
   will need to fold all four deltas together, archiving this one last.
+- **`manifest_url` makes `ExperimentBlock.source_path` MCP-reachable for the first time.**
+  Accepted per Decision 4 — a non-secret path string, not new-in-kind exposure (already
+  reachable via direct storage access), disclosed explicitly in `storage-backends.md` rather
+  than silently shipped.
+- **A legacy (v2) manifest's `manifest_url` resolves to a schema-thin document.** This
+  proposal's own Why section frames manifest access as letting a caller verify "everything
+  recorded in the manifest" — for a v2-era run, most v3-only provenance fields (`seed`,
+  `agent`, `environment`, per-artifact `output_sha256`/`output_keys`) were never recorded in
+  the first place, so the fetched manifest itself will look sparse. `manifest_url` still
+  resolves (per Decision elsewhere in this doc — never gated on `output_keys`), and this is
+  disclosed in `storage-backends.md`'s legacy-run bullet so a caller isn't surprised by a
+  thin document after following a working link.
 
 ## Migration Plan
 
