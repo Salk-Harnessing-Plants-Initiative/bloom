@@ -87,6 +87,14 @@
 			}
 		}
 
+		# OAuth discovery for the MCP server. RFC 9728 places this at the origin
+		# root with the resource path appended, so it cannot sit under
+		# /bloommcp/*. `handle`, not `handle_path` — bloommcp serves this exact
+		# path and the prefix must survive.
+		handle /.well-known/oauth-protected-resource/bloommcp/* {
+			reverse_proxy bloommcp:8811
+		}
+
 		# Bloommcp MCP server — strip /bloommcp prefix, proxy to FastMCP on 8811.
 		# Auth is enforced by bloommcp itself (Bearer token via BLOOMMCP_API_KEY)
 		# so Caddy doesn't need to do auth here. Salk-network-internal only.
