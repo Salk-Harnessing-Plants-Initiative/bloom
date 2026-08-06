@@ -38,6 +38,13 @@ API_KEY = os.getenv("BLOOMMCP_API_KEY")
 PUBLIC_URL = os.getenv("BLOOMMCP_PUBLIC_URL")
 AUTHORIZATION_SERVER = os.getenv("BLOOMMCP_OAUTH_AUTHORIZATION_SERVER")
 
+# Where to fetch Supabase's public signing keys. Set this once Supabase signs
+# asymmetrically (ES256), which is required for it to issue ID tokens at all —
+# a client requesting the `openid` scope fails outright against a shared HS256
+# secret. Leave unset while Supabase still signs with the shared secret, and
+# tokens are verified with JWT_SECRET as before.
+OAUTH_JWKS_URI = os.getenv("BLOOMMCP_OAUTH_JWKS_URI")
+
 # The audience Supabase stamps on every token it issues for this project.
 _AUDIENCE = "authenticated"
 
@@ -69,25 +76,51 @@ class SupabaseOAuthVerifier(TokenVerifier):
     logged-in user's session token would authenticate to bloommcp, and the
     consent step would be decorative.
 
+    Signature checking is delegated: to FastMCP's ``JWTVerifier`` against
+    Supabase's JWKS when ``BLOOMMCP_OAUTH_JWKS_URI`` is set (it handles key
+    fetching, caching and rotation), otherwise to ``JWT_SECRET`` directly. The
+    claim rules below apply either way.
+
     Returns ``None`` for every failure rather than raising, so an unusable
     token falls through to the other verifier instead of failing the request.
     """
+
+    def __init__(self, jwks_uri: str | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._jwks_uri = jwks_uri
+        self._jwks_verifier = None
+        if jwks_uri:
+            from fastmcp.server.auth.providers.jwt import JWTVerifier
+
+            self._jwks_verifier = JWTVerifier(
+                jwks_uri=jwks_uri, audience=_AUDIENCE, algorithm="ES256"
+            )
+
+    async def _claims(self, token: str) -> dict | None:
+        """Verified claims, or None if the token doesn't check out."""
+        if self._jwks_verifier is not None:
+            result = await self._jwks_verifier.verify_token(token)
+            return dict(result.claims) if result and result.claims else None
+
+        secret = os.environ.get("JWT_SECRET")
+        if not secret:
+            logger.warning(
+                "Neither BLOOMMCP_OAUTH_JWKS_URI nor JWT_SECRET is set; cannot "
+                "verify OAuth access tokens. Only BLOOMMCP_API_KEY works."
+            )
+            return None
+        try:
+            return jwt_decode(token, secret)
+        except jwt_errors() as exc:
+            logger.debug("OAuth token rejected: %s", exc)
+            return None
 
     async def verify_token(self, token: str) -> AccessToken | None:
         if not token:
             return None
 
-        secret = os.environ.get("JWT_SECRET")
-        if not secret:
-            logger.warning(
-                "JWT_SECRET is unset; cannot verify OAuth access tokens. "
-                "Only BLOOMMCP_API_KEY authentication is available."
-            )
-            return None
-
-        try:
-            claims = jwt_decode(token, secret)
-        except Exception:
+        claims = await self._claims(token)
+        if not claims:
             return None
 
         client_id = claims.get("client_id")
@@ -109,6 +142,14 @@ class SupabaseOAuthVerifier(TokenVerifier):
             subject=sub.lower(),
             claims=claims,
         )
+
+
+def jwt_errors() -> tuple[type[Exception], ...]:
+    """The exceptions a bad token raises, so a genuine bug in verification
+    surfaces instead of being swallowed as `token rejected`."""
+    import jwt
+
+    return (jwt.InvalidTokenError,)
 
 
 def jwt_decode(token: str, secret: str) -> dict:
@@ -143,7 +184,7 @@ def build_auth_provider():
         from fastmcp.server.auth import MultiAuth, RemoteAuthProvider
 
         remote = RemoteAuthProvider(
-            token_verifier=SupabaseOAuthVerifier(),
+            token_verifier=SupabaseOAuthVerifier(jwks_uri=OAUTH_JWKS_URI),
             authorization_servers=[AUTHORIZATION_SERVER],
             base_url=PUBLIC_URL,
             resource_name="Bloom MCP",
