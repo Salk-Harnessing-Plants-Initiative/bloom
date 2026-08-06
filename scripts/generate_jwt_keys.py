@@ -23,12 +23,19 @@ alongside JWT_SECRET; never in the committed `.env.*.defaults` files.
 Generate a distinct pair per environment — dev, staging and prod must not
 share a signing key.
 
+The secret is read from the JWT_SECRET environment variable, or from stdin.
+It is deliberately not accepted as a command-line argument, which would leave
+it in shell history and visible in `ps` output while the script runs.
+
 Usage:
-    python scripts/generate_jwt_keys.py "$JWT_SECRET"
+    JWT_SECRET=... python scripts/generate_jwt_keys.py
+    # or, reading the secret straight off a deployed env file:
+    grep '^JWT_SECRET=' .env.prod | cut -d= -f2- | python scripts/generate_jwt_keys.py
 """
 
 import base64
 import json
+import os
 import sys
 import uuid
 
@@ -90,10 +97,24 @@ def build(secret: str) -> tuple[str, str]:
     return json.dumps(jwt_keys, **compact), json.dumps(jwt_jwks, **compact)
 
 
+def read_secret() -> str:
+    """The environment's existing JWT_SECRET, from the env var or stdin."""
+    secret = os.environ.get("JWT_SECRET", "").strip()
+    if secret:
+        return secret
+    if not sys.stdin.isatty():
+        secret = sys.stdin.read().strip()
+    if not secret:
+        raise SystemExit(
+            "No secret supplied. Set JWT_SECRET, or pipe it in:\n"
+            "  grep '^JWT_SECRET=' .env.prod | cut -d= -f2- | "
+            f"python {sys.argv[0]}"
+        )
+    return secret
+
+
 def main() -> None:
-    if len(sys.argv) != 2 or not sys.argv[1]:
-        raise SystemExit(f"usage: {sys.argv[0]} <JWT_SECRET>")
-    keys, jwks = build(sys.argv[1])
+    keys, jwks = build(read_secret())
     print(f"JWT_KEYS={keys}")
     print(f"JWT_JWKS={jwks}")
 
