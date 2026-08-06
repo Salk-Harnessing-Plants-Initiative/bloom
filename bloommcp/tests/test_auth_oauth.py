@@ -173,6 +173,73 @@ def test_missing_jwt_secret_rejects_rather_than_raising(monkeypatch):
     assert _verify(SupabaseOAuthVerifier(), _oauth_token()) is None
 
 
+# --- JWKS -> HS256 fallback (GoTrue's own ES256-cutover backward compat) ----
+
+
+def test_falls_back_to_hs256_when_jwks_verification_fails(monkeypatch):
+    """A token issued moments before an environment's ES256 cutover is
+    HS256-signed and still valid for up to JWT_EXPIRY afterward. GoTrue keeps
+    the legacy secret in its signing-key set for exactly this reason ("Old
+    HS256 tokens keep verifying") — bloommcp's own verifier must honor the
+    same guarantee instead of rejecting outright the instant
+    BLOOMMCP_OAUTH_JWKS_URI is configured."""
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    verifier = SupabaseOAuthVerifier(
+        jwks_uri="https://auth.example/.well-known/jwks.json"
+    )
+
+    async def _rejects(token):
+        return None  # simulates the ES256/JWKS verifier rejecting an HS256 token
+
+    monkeypatch.setattr(verifier._jwks_verifier, "verify_token", _rejects)
+
+    result = _verify(verifier, _oauth_token())
+    assert result is not None
+    assert result.client_id == A_CLIENT
+
+
+def test_jwks_failure_with_no_jwt_secret_rejects_rather_than_raising(monkeypatch):
+    """No fallback is possible without JWT_SECRET — must still reject
+    cleanly, not raise."""
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    verifier = SupabaseOAuthVerifier(
+        jwks_uri="https://auth.example/.well-known/jwks.json"
+    )
+
+    async def _rejects(token):
+        return None
+
+    monkeypatch.setattr(verifier._jwks_verifier, "verify_token", _rejects)
+
+    assert _verify(verifier, _oauth_token()) is None
+
+
+def test_jwks_success_is_used_without_consulting_hs256(monkeypatch):
+    """When the JWKS verifier accepts a token, that result is used directly
+    — JWT_SECRET is never consulted (and needn't even be set)."""
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    verifier = SupabaseOAuthVerifier(
+        jwks_uri="https://auth.example/.well-known/jwks.json"
+    )
+
+    class _FakeResult:
+        claims = {
+            "sub": A_UUID,
+            "client_id": A_CLIENT,
+            "aud": "authenticated",
+            "exp": int(time.time()) + 3600,
+        }
+
+    async def _accepts(token):
+        return _FakeResult()
+
+    monkeypatch.setattr(verifier._jwks_verifier, "verify_token", _accepts)
+
+    result = _verify(verifier, "irrelevant-token-shape")
+    assert result is not None
+    assert result.client_id == A_CLIENT
+
+
 # --- The API-key path is unchanged ------------------------------------------
 
 

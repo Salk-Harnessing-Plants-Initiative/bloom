@@ -35,15 +35,52 @@ export function describeScopes(scope: string): string[] {
 
 /**
  * A post-login return path, or null when it can't be trusted. Only same-site
- * absolute paths are allowed — anything protocol-relative (`//evil.com`) or
- * absolute-URL shaped would turn the login form into an open redirect.
+ * absolute paths are allowed — anything protocol-relative (`//evil.com`),
+ * absolute-URL shaped, or that a URL parser would normalize into either of
+ * those turns the login form into an open redirect.
+ *
+ * Validated by actually resolving `raw` with the same WHATWG URL parser every
+ * browser uses, against a fixed placeholder origin, and checking the result
+ * never left that origin — not a blocklist of individual characters. An
+ * earlier version rejected a literal `//` prefix and literal backslashes,
+ * but not a tab/CR/LF hidden between the two slashes (e.g. `/\t/evil.com`):
+ * invisible to that plain string comparison, but the URL Standard strips
+ * ASCII tab/CR/LF from a URL string as the very first parsing step, so every
+ * browser normalizes it to `//evil.com` before navigating. Returns the
+ * resolved path, not the raw input, so nothing downstream can reinterpret a
+ * character this parser already normalized away.
  */
 export function safeNextPath(raw: string | null | undefined): string | null {
   if (!raw) return null
   if (!raw.startsWith('/')) return null
-  if (raw.startsWith('//')) return null
-  if (raw.includes('\\')) return null
-  return raw
+
+  const PLACEHOLDER_ORIGIN = 'https://placeholder.invalid'
+  let resolved: URL
+  try {
+    resolved = new URL(raw, PLACEHOLDER_ORIGIN)
+  } catch {
+    return null
+  }
+  if (resolved.origin !== PLACEHOLDER_ORIGIN) return null
+
+  return `${resolved.pathname}${resolved.search}${resolved.hash}`
+}
+
+/**
+ * The host a consent decision will redirect back to, for display on the
+ * consent screen. Dynamic registration means `client.name` is self-asserted
+ * by the registrant — a malicious MCP client can register itself as
+ * "Claude Desktop" while pointing at an attacker-owned `redirect_uri`, and
+ * without this the approving human has no way to notice the mismatch.
+ * Returns the raw value when it isn't a parseable URL rather than throwing —
+ * a malformed `redirect_uri` is itself worth surfacing, not hiding.
+ */
+export function redirectHost(redirectUri: string): string {
+  try {
+    return new URL(redirectUri).host
+  } catch {
+    return redirectUri
+  }
 }
 
 function authBase(): string {
@@ -65,9 +102,16 @@ function headers(accessToken: string): Record<string, string> {
 /**
  * Is this a response we can actually render a consent screen from?
  *
- * The page needs a client name and a user email; without either it can only
- * mislead. Checked rather than cast, because a `200` carrying an unexpected
- * shape would otherwise crash the page at render.
+ * Checked field-by-field against every field `PendingAuthorization` declares
+ * — not just the ones the page happens to read today (`client.name`,
+ * `user.email`) — because `page.tsx` also passes `authorization.scope`
+ * unconditionally to `describeScopes()`, which throws on `undefined`. A
+ * previous version of this check validated only `authorization_id`,
+ * `client.name`, and `user.email`; a 200 response missing `scope`,
+ * `redirect_uri`, or either id field passed it and crashed the page for a
+ * real user mid-login instead of falling back to the "no longer valid"
+ * screen `fetchAuthorization`'s callers already handle for every other
+ * malformed-response shape.
  */
 function isRenderable(value: unknown): value is PendingAuthorization {
   if (typeof value !== 'object' || value === null) return false
@@ -76,8 +120,12 @@ function isRenderable(value: unknown): value is PendingAuthorization {
   const user = v.user as Record<string, unknown> | undefined
   return (
     typeof v.authorization_id === 'string' &&
+    typeof v.redirect_uri === 'string' &&
+    typeof client?.id === 'string' &&
     typeof client?.name === 'string' &&
-    typeof user?.email === 'string'
+    typeof user?.id === 'string' &&
+    typeof user?.email === 'string' &&
+    typeof v.scope === 'string'
   )
 }
 

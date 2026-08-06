@@ -9,7 +9,7 @@
 
 import { redirect } from 'next/navigation'
 import { getSession, getUser } from '@/lib/supabase/server'
-import { fetchAuthorization, describeScopes } from '@/lib/oauth-consent'
+import { fetchAuthorization, describeScopes, redirectHost } from '@/lib/oauth-consent'
 import ConsentForm from './ConsentForm'
 import styles from './consent.module.css'
 
@@ -66,6 +66,12 @@ export default async function ConsentPage({
           <strong>{authorization.client.name}</strong> wants to access Bloom as{' '}
           <strong>{authorization.user.email}</strong>.
         </p>
+        <p className={styles.note}>
+          After you approve, you&apos;ll be sent to{' '}
+          <strong>{redirectHost(authorization.redirect_uri)}</strong>. Anyone can register an
+          application with any name, so check that this is where you expect{' '}
+          {authorization.client.name} to send you before continuing.
+        </p>
 
         <h2 className={styles.sectionTitle}>It will be able to</h2>
         <ul className={styles.scopeList}>
@@ -78,8 +84,7 @@ export default async function ConsentPage({
         <p className={styles.note}>
           Approving lets this application reach every Bloom analysis tool — access cannot currently
           be limited to a subset. It reads and writes data through Bloom&apos;s shared service
-          account, so it does not gain your personal database access. You can revoke this at any
-          time.
+          account, so it does not gain your personal database access.
         </p>
 
         <ConsentForm

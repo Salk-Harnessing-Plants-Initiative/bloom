@@ -97,22 +97,42 @@ class SupabaseOAuthVerifier(TokenVerifier):
             )
 
     async def _claims(self, token: str) -> dict | None:
-        """Verified claims, or None if the token doesn't check out."""
+        """Verified claims, or None if the token doesn't check out.
+
+        Tries the JWKS/ES256 verifier first when configured, then falls back
+        to JWT_SECRET/HS256 rather than stopping at the first failure. GoTrue
+        keeps the legacy HS256 secret in its signing-key set for exactly this
+        reason across an environment's ES256 cutover ("Old HS256 tokens keep
+        verifying" — see this PR's description): a token issued moments
+        before the cutover is HS256-signed and still valid for up to
+        JWT_EXPIRY afterward. Rejecting it the instant
+        BLOOMMCP_OAUTH_JWKS_URI is set would sign that caller out mid-session
+        for a reason unrelated to their own token's validity — this mirrors
+        the same backward-compatibility guarantee the rest of the stack
+        already commits to, rather than a new, temporary allowance.
+        """
         if self._jwks_verifier is not None:
             result = await self._jwks_verifier.verify_token(token)
-            return dict(result.claims) if result and result.claims else None
+            if result and result.claims:
+                return dict(result.claims)
 
         secret = os.environ.get("JWT_SECRET")
         if not secret:
-            logger.warning(
-                "Neither BLOOMMCP_OAUTH_JWKS_URI nor JWT_SECRET is set; cannot "
-                "verify OAuth access tokens. Only BLOOMMCP_API_KEY works."
-            )
+            if self._jwks_verifier is None:
+                logger.warning(
+                    "Neither BLOOMMCP_OAUTH_JWKS_URI nor JWT_SECRET is set; cannot "
+                    "verify OAuth access tokens. Only BLOOMMCP_API_KEY works."
+                )
+            else:
+                logger.debug(
+                    "OAuth token rejected by JWKS verification and JWT_SECRET is "
+                    "unset, so no HS256 fallback is possible."
+                )
             return None
         try:
             return jwt_decode(token, secret)
         except jwt_errors() as exc:
-            logger.debug("OAuth token rejected: %s", exc)
+            logger.debug("OAuth token rejected by JWKS and HS256 verification: %s", exc)
             return None
 
     async def verify_token(self, token: str) -> AccessToken | None:

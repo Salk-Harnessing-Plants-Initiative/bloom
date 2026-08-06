@@ -5,7 +5,13 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { safeNextPath, describeScopes, fetchAuthorization, submitConsent } from './oauth-consent'
+import {
+  safeNextPath,
+  describeScopes,
+  fetchAuthorization,
+  submitConsent,
+  redirectHost,
+} from './oauth-consent'
 
 beforeEach(() => {
   process.env.SUPABASE_URL = 'http://kong:8000'
@@ -36,12 +42,37 @@ describe('safeNextPath', () => {
 
   it('rejects a backslash-obfuscated path', () => {
     expect(safeNextPath('/\\evil.example.com')).toBeNull()
+    expect(safeNextPath('/\\\\evil.example.com')).toBeNull()
+  })
+
+  it('rejects a tab hidden between the two slashes of a protocol-relative URL', () => {
+    // The bypass the //-prefix + backslash-only checks missed: a tab is
+    // invisible to a plain string comparison, but the WHATWG URL parser
+    // strips ASCII tab/CR/LF as its first step, so every browser normalizes
+    // this to //evil.example.com before navigating.
+    expect(safeNextPath('/\t/evil.example.com')).toBeNull()
+  })
+
+  it('rejects a newline or carriage return hidden the same way', () => {
+    expect(safeNextPath('/\n/evil.example.com')).toBeNull()
+    expect(safeNextPath('/\r/evil.example.com')).toBeNull()
+    expect(safeNextPath('/\r\n/evil.example.com')).toBeNull()
+  })
+
+  it('rejects a javascript: URI', () => {
+    expect(safeNextPath('javascript:alert(1)')).toBeNull()
   })
 
   it('rejects empty and missing values', () => {
     expect(safeNextPath('')).toBeNull()
     expect(safeNextPath(null)).toBeNull()
     expect(safeNextPath(undefined)).toBeNull()
+  })
+
+  it('returns the resolved path unchanged for an ordinary query string and hash', () => {
+    expect(safeNextPath('/oauth/consent?authorization_id=abc#section')).toBe(
+      '/oauth/consent?authorization_id=abc#section'
+    )
   })
 })
 
@@ -66,6 +97,19 @@ describe('describeScopes', () => {
       'See your basic profile',
     ])
     expect(describeScopes('')).toEqual([])
+  })
+})
+
+describe('redirectHost', () => {
+  it('extracts the host from a valid redirect_uri', () => {
+    expect(redirectHost('https://claude.ai/api/mcp/auth_callback')).toBe('claude.ai')
+    expect(redirectHost('http://localhost:3000/cb')).toBe('localhost:3000')
+  })
+
+  it('falls back to the raw value for a malformed redirect_uri', () => {
+    // A malformed redirect_uri is itself worth surfacing, not hiding behind
+    // a thrown exception.
+    expect(redirectHost('not-a-url')).toBe('not-a-url')
   })
 })
 
@@ -113,6 +157,48 @@ describe('fetchAuthorization', () => {
       scope: 'email',
     })
     await expect(fetchAuthorization('abc', 'tok', f)).resolves.toBeNull()
+  })
+
+  it('returns null when a 200 body is missing scope', async () => {
+    // page.tsx passes authorization.scope unconditionally to describeScopes(),
+    // which throws on undefined — this must not reach render.
+    const f = stub(200, {
+      authorization_id: 'abc',
+      redirect_uri: 'http://localhost:3000/cb',
+      client: { id: 'c1', name: 'Claude Desktop' },
+      user: { id: 'u1', email: 'someone@salk.edu' },
+    })
+    await expect(fetchAuthorization('abc', 'tok', f)).resolves.toBeNull()
+  })
+
+  it('returns null when a 200 body is missing redirect_uri', async () => {
+    const f = stub(200, {
+      authorization_id: 'abc',
+      client: { id: 'c1', name: 'Claude Desktop' },
+      user: { id: 'u1', email: 'someone@salk.edu' },
+      scope: 'email',
+    })
+    await expect(fetchAuthorization('abc', 'tok', f)).resolves.toBeNull()
+  })
+
+  it('returns null when a 200 body is missing client.id or user.id', async () => {
+    const missingClientId = stub(200, {
+      authorization_id: 'abc',
+      redirect_uri: 'http://localhost:3000/cb',
+      client: { name: 'Claude Desktop' },
+      user: { id: 'u1', email: 'someone@salk.edu' },
+      scope: 'email',
+    })
+    await expect(fetchAuthorization('abc', 'tok', missingClientId)).resolves.toBeNull()
+
+    const missingUserId = stub(200, {
+      authorization_id: 'abc',
+      redirect_uri: 'http://localhost:3000/cb',
+      client: { id: 'c1', name: 'Claude Desktop' },
+      user: { email: 'someone@salk.edu' },
+      scope: 'email',
+    })
+    await expect(fetchAuthorization('abc', 'tok', missingUserId)).resolves.toBeNull()
   })
 
   it('returns null for an error body served with a 200', async () => {
