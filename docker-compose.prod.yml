@@ -268,17 +268,14 @@ services:
       # actually carries the header), so this has no effect until a client
       # sends that header.
       JWT_SECRET: ${JWT_SECRET}
-      # OAuth login for external MCP clients is not wired here yet: bloommcp
-      # stays on API-key-only auth. Enabling it means adding
-      # BLOOMMCP_PUBLIC_URL and BLOOMMCP_OAUTH_AUTHORIZATION_SERVER both here
-      # and to the defaults file (see the note there for the values) — setting
-      # them while GOTRUE_OAUTH_SERVER_ENABLED is false would advertise a login
-      # no client can complete.
-      #
-      # Where bloommcp fetches Supabase's public signing keys. Only read when
-      # the two vars above are set, so it is inert until OAuth is enabled — but
-      # it must be correct before then: once an environment signs ES256,
-      # verifying against the old shared secret rejects every OAuth token.
+      # OAuth login for external MCP clients. The URLs are set per environment
+      # in the defaults files; whether a login can actually complete is
+      # governed by GOTRUE_OAUTH_SERVER_ENABLED on the auth service. Where that
+      # is false, bloommcp still serves its discovery document but no client
+      # can register, so the flow ends in a clean 404 rather than a broken
+      # login. The API-key path is unaffected either way.
+      BLOOMMCP_PUBLIC_URL: ${BLOOMMCP_PUBLIC_URL:-}
+      BLOOMMCP_OAUTH_AUTHORIZATION_SERVER: ${BLOOMMCP_OAUTH_AUTHORIZATION_SERVER:-}
       BLOOMMCP_OAUTH_JWKS_URI: ${BLOOMMCP_OAUTH_JWKS_URI:-}
       # numba AOT cache. bloommcp imports umap-learn, which uses
       # @numba.jit(cache=True); without this env var, numba tries to write
