@@ -129,3 +129,33 @@
       `egao28/bloommcp-get-download-links-599` — #599/PR #611 is **not** merged as of this
       writing. This change's own PR opens against `egao28/bloommcp-get-download-links-599`,
       not `staging` (see design.md's sequencing note); no rebase performed.
+
+## 5. Post-PR review fixes (PR #612, 5-lens review)
+
+- [x] 5.1 **Blocking (inherited from #611):** the tool's catch-all returned raw `str(exc)`
+      instead of `safe_error_text(exc)`. Resolved automatically — this branch was rebased onto
+      `egao28/bloommcp-get-download-links-599`'s post-#611-review tip (`fix(#599): address PR
+      #611 5-lens review`, which already fixed this at the shared call site), so no separate
+      change was needed here. Re-ran the full suite post-rebase to confirm: 1108 passed, 29
+      skipped (up from this change's own pre-rebase 1046, since #599's fix commit added tests
+      of its own too).
+- [x] 5.2 **Important:** `manifest_url` makes `ExperimentBlock.source_path` MCP-reachable for
+      the first time (previously required direct Supabase Storage/admin access) — not called
+      out anywhere in this change's original scope docs. Added design.md Decision 4 (ship
+      as-is, disclosed, no redaction — a path string, not a credential, already classified
+      non-secret per `openspec/project.md`; redacting would mean rewriting manifest content,
+      contradicting this change's own "no manifest content change" Non-Goal) plus a
+      corresponding Risk bullet, a new `storage-backends.md` bullet, and a docstring sentence
+      on the tool itself.
+- [x] 5.3 **Important:** a legacy (v2) manifest's `manifest_url` resolves to a schema-thin
+      document (missing `seed`/`agent`/`environment`/per-artifact `output_sha256`/
+      `output_keys` — all v3-only fields), but this change's own framing ("verify a run's
+      provenance... everything recorded in the manifest") didn't disclose that gap. Added a
+      clause to `storage-backends.md`'s existing legacy-run bullet and a design.md Risk entry.
+- [x] 5.4 **Important:** the "no `sha256`/`size_bytes` counterpart" caveat lived only in
+      `storage-backends.md`, not in the MCP tool's own docstring where a calling agent would
+      actually see it. Added to `get_download_links.py`'s docstring.
+- [x] 5.5 **Informational (not actioned):** CI never ran on PR #612 because it targets a
+      feature branch, not `main`/`staging` — already disclosed in the PR body's own stacking
+      note. Confirmed the suite/lint claims independently instead (5.1's re-run); CI will run
+      for real once this is retargeted to `staging` per task 4.3's plan.
