@@ -73,12 +73,21 @@ class IdentityConfigError(Exception):
     """``JWT_SECRET`` is required to verify the header but is unset."""
 
 
-def _is_valid_identity(sub: str) -> bool:
+def is_valid_identity(sub: str) -> bool:
     """A resolved sub must be UUID-shaped (the whole string, not a substring
     — `re.fullmatch`, not a `$`-anchored `.match()`, which would let a value
     ending in a trailing newline slip through) and not the reserved
-    sentinel."""
+    sentinel.
+
+    Public so `bloom_mcp.auth` applies the identical rule to an OAuth token's
+    `sub` — both paths write to `bloommcp_usage.identity`, so the guard that
+    protects that column must not be duplicated.
+    """
     return bool(_UUID_RE.fullmatch(sub)) and sub.lower() != ANONYMOUS
+
+
+# Retained so existing internal references keep working.
+_is_valid_identity = is_valid_identity
 
 
 def verify_identity_header(value: str | None) -> str | None:

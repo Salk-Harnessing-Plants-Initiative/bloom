@@ -80,6 +80,9 @@ export async function middleware(request: NextRequest) {
     path.startsWith('/verify') ||
     path.startsWith('/auth') ||
     path.startsWith('/error') ||
+    // the consent screen enforces auth itself so it can send the user back
+    // to the same authorization after login
+    path.startsWith('/oauth') ||
     path.startsWith('/api') // allow internal routes
 
   if (!user && !isPublic) {

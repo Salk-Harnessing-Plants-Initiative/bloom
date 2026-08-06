@@ -13,13 +13,16 @@ services:
       context: .
       dockerfile: ./web/Dockerfile.bloom-web.dev
       args:
-        NEXT_PUBLIC_SUPABASE_URL: http://localhost:8000
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-http://localhost:8000}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
     ports:
       - "${BLOOM_WEB_PORT}:3000"
     environment:
       NODE_ENV: development
-      NEXT_PUBLIC_SUPABASE_URL: http://localhost:8000
+      # Browser-facing: must be an address the *browser* can reach.
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-http://localhost:8000}
+      # Server-facing: stays on the Docker network.
+      SUPABASE_URL: http://kong:8000
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
       SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       JWT_SECRET: ${JWT_SECRET}
@@ -147,6 +150,12 @@ services:
       # actually carries the header), so leaving it set here has no effect
       # until a client sends that header.
       JWT_SECRET: ${JWT_SECRET}
+      # OAuth login for external MCP clients. Both URLs must be reachable by
+      # the *client* (which runs outside Docker), so they use host-facing
+      # addresses, not the internal kong hostname. Setting both turns on the
+      # /.well-known/oauth-protected-resource.
+      BLOOMMCP_PUBLIC_URL: ${BLOOMMCP_PUBLIC_URL:-http://localhost:8811}
+      BLOOMMCP_OAUTH_AUTHORIZATION_SERVER: ${BLOOMMCP_OAUTH_AUTHORIZATION_SERVER:-http://localhost:8000/auth/v1}
       # Storage backend (opt-in, default off — empty here behaves exactly like
       # unset). Set BLOOM_STORAGE_BACKEND=local in your own .env.dev, or run
       # `make dev-up-local`, to run FULLY LOCAL (offline) — reads inputs via
@@ -254,7 +263,7 @@ services:
     entrypoint: bash -c 'eval "echo \"$$(cat ~/temp.yml)\"" > ~/kong.yml && /docker-entrypoint.sh kong docker-start'
 
   auth:
-    image: supabase/gotrue:v2.177.0
+    image: supabase/gotrue:v2.188.1
     restart: unless-stopped
     networks:
       - supanet
@@ -299,6 +308,15 @@ services:
       # Custom access token hook — assigns bloom_user/bloom_admin role via JWT
       GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_ENABLED: "true"
       GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_URI: "pg-functions://postgres/public/custom_access_token_hook"
+      # OAuth discovery must advertise absolute URLs. Without an issuer GoTrue
+      # emits relative endpoints a conforming client cannot resolve — discovery
+      # returns 200 and the flow dead-ends before registration.
+      GOTRUE_API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+      GOTRUE_JWT_ISSUER: ${API_EXTERNAL_URL}/auth/v1
+      GOTRUE_OAUTH_SERVER_ENABLED: ${GOTRUE_OAUTH_SERVER_ENABLED:-true}
+      GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH:-/oauth/consent}
+      GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION: ${GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION:-true}
+      GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL:-600s}
 
   rest:
     image: postgrest/postgrest:v12.2.12
