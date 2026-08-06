@@ -219,7 +219,7 @@ def test_atomic_write_bytes_is_atomic_on_write_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "write_bytes", _boom)
 
     with pytest.raises(OSError):
-        dfp._atomic_write_bytes(dest, b"new-bytes")
+        dfp.atomic_write_bytes(dest, b"new-bytes")
 
     assert dest.read_bytes() == b"old-bytes"
 

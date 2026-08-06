@@ -14,6 +14,7 @@ from typing import Any
 import click
 
 from ..credentials import DEFAULT_PROFILE
+from ._storage import REFRESH_EVERY, StorageSession, already_downloaded, atomic_write_bytes
 
 # scans.csv schema: (output column, source key in a cyl_scans_extended row).
 # Order matches the legacy CLI's predict-container contract; `genotype` is
@@ -158,6 +159,7 @@ class FrameResult:
     object_path: str
     ok: bool
     error: str = ""
+    skipped: bool = False  # already on disk from an earlier run
 
 
 @dataclass
@@ -168,7 +170,16 @@ class DownloadResult:
 
     @property
     def ok(self) -> int:
+        """Frames present on disk after the run (downloaded now or already there)."""
         return sum(1 for f in self.frames if f.ok)
+
+    @property
+    def downloaded(self) -> int:
+        return sum(1 for f in self.frames if f.ok and not f.skipped)
+
+    @property
+    def skipped(self) -> int:
+        return sum(1 for f in self.frames if f.skipped)
 
     @property
     def failed(self) -> int:
@@ -179,28 +190,43 @@ class DownloadResult:
         return len(self.frames)
 
 
-def download_images(client: Any, scans: list[dict[str, Any]], out_dir: Path) -> DownloadResult:
+def download_images(
+    client: Any,
+    scans: list[dict[str, Any]],
+    out_dir: Path,
+    *,
+    creds: Any = None,
+    refresh_every: int = REFRESH_EVERY,
+    overwrite: bool = False,
+) -> DownloadResult:
     """Download every frame for every scan from Storage bucket `images`.
 
     Each frame is downloaded independently: a failure is recorded, not raised, so
     one bad frame (missing object, transient 5xx) can't abort the whole run.
     Signs server-side via Supabase Storage (no MinIO secrets, no legacy Lambda).
+
+    Resumable: a frame already written by an earlier run is skipped unless
+    `overwrite`. With `creds`, the session re-authenticates itself as it goes, so
+    a run longer than the JWT's lifetime doesn't fail every remaining frame
+    (bloom#525).
     """
-    bucket = client.storage.from_("images")
+    session = StorageSession(client, creds, refresh_every=refresh_every)
     frames: list[FrameResult] = []
     for scan in scans:
-        for image in fetch_images(client, scan["scan_id"]):
+        images = session.run(lambda c, scan=scan: fetch_images(c, scan["scan_id"]))
+        for image in images:
             object_path = image.get("object_path", "")
             result = FrameResult(
                 scan.get("scan_id"), image.get("frame_number"), object_path, ok=False
             )
+            dest = image_dest(out_dir, scan, image)
+            if not overwrite and already_downloaded(dest):
+                result.ok = True
+                result.skipped = True
+                frames.append(result)
+                continue
             try:
-                data = bucket.download(object_path)
-                if data is None:
-                    raise ValueError("empty response from storage")
-                dest = image_dest(out_dir, scan, image)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
+                atomic_write_bytes(dest, session.download(object_path))
                 result.ok = True
             except Exception as exc:  # per-frame: record and continue
                 result.error = str(exc)
@@ -213,13 +239,15 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for f in result.frames:
-        line = (
-            f"{'OK  ' if f.ok else 'FAIL'} scan={f.scan_id} frame={f.frame_number} {f.object_path}"
-        )
+        status = "SKIP" if f.skipped else "OK  " if f.ok else "FAIL"
+        line = f"{status} scan={f.scan_id} frame={f.frame_number} {f.object_path}"
         if not f.ok:
             line += f"  error={f.error}"
         lines.append(line)
-    lines.append(f"\nSummary: {result.ok} downloaded, {result.failed} failed, {result.total} total")
+    lines.append(
+        f"\nSummary: {result.downloaded} downloaded, {result.skipped} already present, "
+        f"{result.failed} failed, {result.total} total"
+    )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -304,6 +332,11 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     show_default=True,
     help="Maximum number of scans to fetch.",
 )
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Re-download frames that are already on disk (default: keep them and resume).",
+)
 def download(
     out_dir: Path,
     experiment_id: int | None,
@@ -316,6 +349,7 @@ def download(
     plant_age_min: int,
     plant_age_max: int,
     limit: int,
+    overwrite: bool,
 ) -> None:
     """Download a cylinder experiment (--experiment-id / --experiment-name) or a single scan
     (--scan-id): metadata (scans.csv) and per-frame images."""
@@ -390,15 +424,18 @@ def download(
     if meta_only:
         return
 
-    result = download_images(client, scans, out)
+    result = download_images(client, scans, out, creds=creds, overwrite=overwrite)
     log_path = out / "download_log.txt"
     write_download_log(result, log_path)
+    resumed = f", {result.skipped} already present" if result.skipped else ""
     click.echo(
-        f"Downloaded {result.ok}/{result.total} image frames -> {out / 'images'}  (log: {log_path})"
+        f"Downloaded {result.downloaded}/{result.total} image frames{resumed} "
+        f"-> {out / 'images'}  (log: {log_path})"
     )
     if result.failed:
         # Partial download: surface it and exit non-zero so a pipeline knows the
         # output is incomplete (the log lists every failed frame).
         raise click.ClickException(
-            f"{result.failed} of {result.total} frames failed to download — see {log_path}"
+            f"{result.failed} of {result.total} frames failed to download — see {log_path}. "
+            "Re-running the same command retries only the frames still missing."
         )

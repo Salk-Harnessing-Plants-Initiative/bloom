@@ -20,6 +20,7 @@ import click
 
 from ..credentials import DEFAULT_PROFILE
 from ._batch import BatchResult, ScanResult, format_json, format_summary
+from ._storage import StorageSession, atomic_write_bytes
 from .download import DownloadResult, FrameResult, fetch_images, fetch_scan
 
 # Matches sleap_roots_predict.batch._IMAGE_EXTENSIONS — the exact set discover_scans
@@ -104,14 +105,6 @@ def build_sidecar(
         "params": params,
         **input_ref.model_dump(),
     }
-
-
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    """Write bytes so a crash mid-write can never leave a truncated file at `path`."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
 
 
 def write_sidecar(sidecar: dict[str, Any], path: Path) -> None:
@@ -221,26 +214,31 @@ def scan_is_already_staged(scan_dir: Path, scan_key: str) -> bool:
 
 
 def download_frames_for_predict(
-    client: Any, scan: dict[str, Any], images: list[dict[str, Any]], scan_dir: Path
+    client: Any,
+    scan: dict[str, Any],
+    images: list[dict[str, Any]],
+    scan_dir: Path,
+    *,
+    session: StorageSession | None = None,
 ) -> tuple[DownloadResult, list[bytes]]:
     """Download every frame for one scan into the nested predict layout.
 
     Returns the aggregate result plus each successfully-downloaded frame's bytes
     in DB frame_number order (for the checksum) — a failed frame contributes no
     bytes entry, mirroring ``download.py``'s per-frame failure isolation.
+
+    A batch caller passes its own ``session`` so one self-renewing login spans
+    every scan; otherwise a non-renewing one wraps ``client`` for this scan.
     """
-    bucket = client.storage.from_("images")
+    session = session or StorageSession(client)
     frames: list[FrameResult] = []
     frame_bytes: list[bytes] = []
     for image in images:
         object_path = image.get("object_path", "")
         result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
         try:
-            data = bucket.download(object_path)
-            if data is None:
-                raise ValueError("empty response from storage")
-            dest = frame_dest_for_predict(scan_dir, image)
-            _atomic_write_bytes(dest, data)
+            data = session.download(object_path)
+            atomic_write_bytes(frame_dest_for_predict(scan_dir, image), data)
             result.ok = True
             frame_bytes.append(data)
         except Exception as exc:  # per-frame: record and continue
@@ -266,9 +264,10 @@ def download_for_predict(scan_id: int, out_dir: Path, profile: str) -> None:
     """Stage one cylinder scan (SCAN_ID) into OUT_DIR in the layout
     sleap_roots_predict.discover_scans expects — frames co-located with a
     scan_metadata.json sidecar. Distinct from `cyl download`'s scans.csv layout."""
-    from ..cli import _authed_client
+    from ..cli import _authed_storage_session
 
-    client = _authed_client(profile)
+    session = _authed_storage_session(profile)
+    client = session.client
 
     scan = fetch_scan(client, scan_id)
     if scan is None:
@@ -289,7 +288,9 @@ def download_for_predict(scan_id: int, out_dir: Path, profile: str) -> None:
     if removed:
         click.echo(f"Cleared {len(removed)} existing file(s) from a previous run: {scan_dir}")
 
-    result, frame_bytes = download_frames_for_predict(client, scan, images, scan_dir)
+    result, frame_bytes = download_frames_for_predict(
+        client, scan, images, scan_dir, session=session
+    )
 
     if result.failed:
         raise click.ClickException(
@@ -306,7 +307,9 @@ def download_for_predict(scan_id: int, out_dir: Path, profile: str) -> None:
 # --- batch: non-raising per-scan core ----------------------------------------
 
 
-def stage_one_scan(client: Any, scan_id: Any, out_dir: Path) -> ScanResult:
+def stage_one_scan(
+    client: Any, scan_id: Any, out_dir: Path, *, session: StorageSession | None = None
+) -> ScanResult:
     """Stage one scan, isolating any failure into a `ScanResult` instead of raising.
 
     Sequences the same pure helpers `download_for_predict` (the single-scan command) calls, but
@@ -314,6 +317,9 @@ def stage_one_scan(client: Any, scan_id: Any, out_dir: Path) -> ScanResult:
     (``status="skipped"``) a scan already staged with a valid sidecar (see
     `scan_is_already_staged`); this command does not touch `download_for_predict`'s own
     unconditional clear-and-redownload behavior.
+
+    ``session`` carries the batch's self-renewing login across scans, so a batch long enough
+    to outlive one JWT keeps working (bloom#525).
     """
     scan_key = scan_key_for(scan_id)
     scan_dir = Path(out_dir) / scan_key
@@ -321,12 +327,13 @@ def stage_one_scan(client: Any, scan_id: Any, out_dir: Path) -> ScanResult:
     if scan_is_already_staged(scan_dir, scan_key):
         return ScanResult(scan_key, "skipped")
 
+    session = session or StorageSession(client)
     try:
-        scan = fetch_scan(client, scan_id)
+        scan = session.run(lambda c: fetch_scan(c, scan_id))
         if scan is None:
             return ScanResult(scan_key, "failed", f"Scan {scan_id} not found.")
 
-        images = fetch_images(client, scan_id)
+        images = fetch_images(session.client, scan_id)
         if not images:
             return ScanResult(scan_key, "failed", f"No frames found for scan {scan_id}.")
 
@@ -337,7 +344,9 @@ def stage_one_scan(client: Any, scan_id: Any, out_dir: Path) -> ScanResult:
             return ScanResult(scan_key, "failed", f"Scan {scan_id}: {exc}")
 
         clear_scan_dir(scan_dir)
-        result, frame_bytes = download_frames_for_predict(client, scan, images, scan_dir)
+        result, frame_bytes = download_frames_for_predict(
+            session.client, scan, images, scan_dir, session=session
+        )
         if result.failed:
             return ScanResult(
                 scan_key,
@@ -421,11 +430,14 @@ def batch_download_for_predict(
         click.echo("No scan_ids given; nothing to stage.")
         return
 
-    from ..cli import _authed_client
+    from ..cli import _authed_storage_session
 
-    client = _authed_client(profile)
+    # One session for the whole batch: it renews the login as the run gets long.
+    session = _authed_storage_session(profile)
 
-    result = BatchResult([stage_one_scan(client, scan_id, out_dir) for scan_id in scan_ids])
+    result = BatchResult(
+        [stage_one_scan(session.client, scan_id, out_dir, session=session) for scan_id in scan_ids]
+    )
 
     if as_json:
         click.echo(format_json(result))

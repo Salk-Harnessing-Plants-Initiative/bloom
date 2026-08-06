@@ -157,7 +157,7 @@ image, into `<out_dir>`.
 bloomctl cyl download <out_dir>
   ( --experiment-id N | --scan-id N | --experiment-name "<text>" [--species <name>] )
   [--meta-only] [--plant-qr-code QR] [--plant-age-min D] [--plant-age-max D]
-  [--limit N] [-p/--profile PROFILE]
+  [--limit N] [--overwrite] [-p/--profile PROFILE]
 ```
 
 Pick **exactly one** target:
@@ -186,6 +186,23 @@ bloomctl cyl download ./out --experiment-name soy --species Soybean --meta-only
 # a single scan
 bloomctl cyl download ./out --scan-id 9001
 ```
+
+### Resuming an interrupted download
+
+A download is **resumable**: frames already in `<out_dir>` are kept and counted as
+`already present`, so re-running the same command fetches only what is still missing. That
+applies to any interruption — a failed run, `Ctrl-C`, a dropped network, a closed laptop:
+
+```bash
+bloomctl cyl download ./out --experiment-id 42   # interrupted at 117k of 414k frames
+bloomctl cyl download ./out --experiment-id 42   # picks up from 117k
+```
+
+Pass `--overwrite` to ignore what's on disk and re-fetch every frame.
+
+Long runs also re-authenticate as they go, so a download that takes longer than the login's
+lifetime keeps working. If you see a storage error mentioning an expired session, re-running
+the command resumes from wherever it stopped.
 
 > `--experiment-name` requires the `cyl_experiment_search` DB function (migration
 > `…_add_cyl_experiment_search.sql`) to be applied on the server you're pointed at.

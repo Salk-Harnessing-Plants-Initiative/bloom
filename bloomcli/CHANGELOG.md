@@ -8,6 +8,28 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Fixed
+
+- `cyl download` no longer fails the rest of a long run when its login lapses. A Supabase
+  session expires after about an hour; Storage answers an expired caller with a 404
+  `Bucket not found`, so a large experiment would download for a while and then fail every
+  remaining frame with a message that looked like missing data (one report: 36,481 frames
+  downloaded, then 23,855 consecutive failures). The download now re-authenticates as it
+  goes — proactively every 500 frames, and again on any single-frame failure, retrying it
+  once — so a run longer than the session's lifetime completes. When a storage request does
+  fail for good, the error says the session may have expired instead of claiming the bucket
+  is missing. `cyl download-for-predict` and `cyl batch-download-for-predict` share the same
+  self-renewing session; a batch keeps one across all its scans.
+
+### Added
+
+- `cyl download` is resumable: a frame already written to the output directory is kept and
+  reported as `already present` (and logged as `SKIP`), so re-running the same command after
+  any interruption — a failed run, a killed process, a network drop — fetches only what is
+  still missing instead of restarting from zero. Frames are written atomically, so a crash
+  mid-write can't leave a truncated file for a later run to mistake for complete. Pass
+  `--overwrite` to re-fetch everything regardless.
+
 ## [0.1.0a3] - 2026-08-04
 
 ### Changed
