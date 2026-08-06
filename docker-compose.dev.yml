@@ -308,7 +308,7 @@ services:
       # token exchange fails. This key set carries an ES256 private key for
       # new tokens plus JWT_SECRET as a symmetric JWK, so tokens already
       # signed with the secret keep verifying.
-      GOTRUE_JWT_KEYS: ${JWT_KEYS:-}
+      GOTRUE_JWT_KEYS: ${JWT_KEYS:-[]}
 
       GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP}
       GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS}
