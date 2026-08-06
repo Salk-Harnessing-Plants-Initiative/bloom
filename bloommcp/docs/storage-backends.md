@@ -59,8 +59,9 @@ artifacts other than the one just committed.
 A signed URL expires after an hour, and a chat session can end before it's used.
 The `get_download_links(experiment, tool_class, run_ref="latest")` MCP tool
 (bloom#599) re-signs fresh links for a run you already know about — from a prior
-`list_existing_analyses` call, or a tool response from a now-expired session.
-Three things worth knowing before you reach for it:
+`list_existing_analyses` call, or a tool response from a now-expired session —
+for both the run's per-output `output_links` and a `manifest_url` for the run's
+own `manifest.json` (bloom#600). Four things worth knowing before you reach for it:
 
 - **It must be called by name for one already-known run** — it is not a browsing
   or discovery feature. There is still no way to list or browse every historical
@@ -69,9 +70,17 @@ Three things worth knowing before you reach for it:
   `#388` file-explorer third mentioned at the bottom of this doc).
 - **A single output's lookup failure aborts the whole call** — you get either every
   output's link, or a clean error; never a partially-populated `output_links` that
-  silently omits one output.
+  silently omits one output. A failure signing the manifest itself aborts the call
+  identically.
 - **A legacy run recorded before per-artifact keys existed** (a v2 manifest entry)
-  has nothing to sign — `output_links` comes back empty for it, not an error.
+  has nothing to sign for its outputs — `output_links` comes back empty for it, not
+  an error — but `manifest_url` is still populated: a run's manifest always exists
+  once committed, regardless of whether per-artifact output keys were ever recorded
+  for it, so this is never gated on `output_links` being non-empty.
+- **`manifest_url` has no `sha256`/`size_bytes` counterpart** — unlike each
+  `output_links` entry, it is a bare signed link (the manifest has no persisted
+  self-hash to verify against); fetch and read the manifest itself if you need its
+  contents.
 
 Unlike the per-tool `output_links` above, `get_download_links`'s `size_bytes` is
 resolved via a live storage lookup on every call — nothing about a run's size is
