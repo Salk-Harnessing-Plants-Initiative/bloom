@@ -78,6 +78,30 @@ def test_happy_path_returns_resolved_run_and_output_links(injected_ports):
     assert link["url"]
     assert link["sha256"]
     assert link["size_bytes"] == len(b"cleaned-bytes")
+    # bloom#600: a signed link for the run's own manifest.json, alongside its
+    # per-output links. The response never carried a raw `manifest_path` key
+    # to begin with -- this is a wholly new key, not a signed sibling of an
+    # existing unsigned one.
+    assert "manifest_path" not in payload
+    assert payload["manifest_url"]
+
+
+def test_legacy_run_response_still_carries_a_manifest_link(injected_ports):
+    """bloom#600: a legacy run with no per-artifact output_keys returns
+    output_links == {} in the JSON (as it already did per #599), but
+    manifest_url is still populated -- it is never gated on the outputs'
+    own key-presence check, since the manifest always exists for a
+    committed run."""
+    _reader, store = injected_ports
+    store.seed_v2_run(
+        _EXPERIMENT, "qc", tool="qc_clean", outputs={"cleaned": "_cleaned.csv"}
+    )
+
+    result = get_download_links_mod.get_download_links(_EXPERIMENT, "qc", "latest")
+    payload = json.loads(result)
+
+    assert payload["output_links"] == {}
+    assert payload["manifest_url"]
 
 
 def test_unknown_experiment_reports_available_experiments(injected_ports):
