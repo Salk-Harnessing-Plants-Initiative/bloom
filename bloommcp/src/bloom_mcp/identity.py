@@ -148,6 +148,27 @@ def _action_from_path(path: str) -> str:
     return first_segment if first_segment in SECTIONS else "combined"
 
 
+def _oauth_subject_from_scope(scope: dict) -> str | None:
+    """The verified caller's OAuth subject, if FastMCP's own bearer-auth layer
+    authenticated one for this request — read from ``scope["user"]``, set by
+    Starlette's ``AuthenticationMiddleware`` deeper in the same ASGI call this
+    middleware wraps (see openspec add-bloommcp-oauth-usage-attribution
+    design.md Decision 1 for why this is safe to read here, including for a
+    reused streamable-http session).
+
+    Returns ``None`` for every "nothing to attribute" shape — no
+    ``scope["user"]`` at all (no ``auth`` configured), a non-authenticated
+    value, or an ``AccessToken`` with no ``subject`` (the shared
+    ``BLOOMMCP_API_KEY`` credential, via ``ApiKeyVerifier``, never sets one —
+    see ``bloom_mcp.auth``) — rather than raising, mirroring
+    ``verify_identity_header``'s own "absent means anonymous" contract.
+    """
+    user = scope.get("user")
+    access_token = getattr(user, "access_token", None)
+    subject = getattr(access_token, "subject", None)
+    return subject or None
+
+
 class IdentityMiddleware:
     """Raw-ASGI middleware: verifies ``X-Bloom-Identity`` and records usage.
 
@@ -227,7 +248,10 @@ class IdentityMiddleware:
         if should_record and response_status.get("status") != 401:
             from bloom_mcp.usage import record_usage_async
 
-            record_usage_async(identity or ANONYMOUS, _action_from_path(path))
+            record_usage_async(
+                identity or _oauth_subject_from_scope(scope) or ANONYMOUS,
+                _action_from_path(path),
+            )
 
 
 async def _json_response(scope, receive, send, *, status: int, error: str) -> None:
