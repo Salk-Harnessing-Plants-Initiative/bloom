@@ -42,17 +42,6 @@ def get_download_links(
     from the immutable manifest record, independent of the live-refreshed
     `url`/`size_bytes`.
 
-    Also returns `manifest_url` — a fresh signed/served link for the run's
-    own `manifest.json` (bloom#600), independent of whether `output_links`
-    is empty: a run's manifest always exists once committed, so this is
-    never skipped for a legacy run the way `output_links` is. Unlike each
-    `output_links` entry, `manifest_url` has no `sha256`/`size_bytes`
-    counterpart — it is a bare link; fetch and read the manifest itself if
-    you need its contents. That fetched content includes
-    `ExperimentBlock.source_path` (an absolute host path, not a credential —
-    see `docs/storage-backends.md`), returned exactly as stored, with no
-    redaction or filtering.
-
     Args:
         experiment: experiment identifier, e.g. "alfalfa_gwas_wave2.csv"
         tool_class: the tool's storage class, e.g. "qc", "pca", "clustering"
@@ -98,6 +87,5 @@ def get_download_links(
             name: link.model_dump(mode="json")
             for name, link in stored.output_links.items()
         },
-        "manifest_url": stored.manifest_url,
     }
     return json.dumps(response, indent=2)

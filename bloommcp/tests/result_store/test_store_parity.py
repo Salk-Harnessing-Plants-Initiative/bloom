@@ -208,22 +208,6 @@ def test_output_links_empty_for_get_run_and_list_runs_parity(kind, stores):
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
-def test_manifest_url_none_for_get_run_and_list_runs_parity(kind, stores):
-    """bloom#600, mirroring #581 Decision 1 for manifest_url: only
-    get_download_links's own return value carries a signed manifest_url --
-    get_run/list_runs leave it None, identically to how they leave
-    output_links empty."""
-    store = stores[kind]
-    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
-    (run.staging_dir / "a.csv").write_bytes(b"a")
-    committed = store.commit(run, {"a": "a.csv"})
-
-    assert committed.manifest_url is None
-    assert store.get_run("exp.csv", "qc", "latest").manifest_url is None
-    assert all(r.manifest_url is None for r in store.list_runs("exp.csv", "qc"))
-
-
-@pytest.mark.parametrize("kind", ["fake", "supabase"])
 def test_get_download_links_reruns_signing_for_a_prior_run_parity(kind, stores):
     """bloom#599: unlike get_run/list_runs, get_download_links always
     (re-)populates output_links -- resolving "latest" and an explicit
@@ -258,24 +242,6 @@ def test_get_download_links_no_persisted_size_field_parity(kind, stores):
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
-def test_manifest_url_signed_and_bound_to_key_parity(kind, stores):
-    """bloom#600: get_download_links also re-signs the run's own
-    manifest_path -- resolving "latest" and an explicit run_ref both return
-    a non-empty manifest_url, bound to the correct key (not just truthy --
-    mirrors test_output_links_parity's own `link.key in link.url` check, so
-    a bug that wired manifest_url to some other key's URL would be caught)."""
-    store = stores[kind]
-    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
-    (run.staging_dir / "a.csv").write_bytes(b"aaa")
-    committed = store.commit(run, {"a": "a.csv"})
-
-    for ref in ("latest", committed.run_ref):
-        resolved = store.get_download_links("exp.csv", "qc", ref)
-        assert resolved.manifest_url
-        assert resolved.manifest_path in resolved.manifest_url
-
-
-@pytest.mark.parametrize("kind", ["fake", "supabase"])
 def test_get_download_links_retired_tool_class_still_resolves_parity(kind, stores):
     """A retired-but-historical tool_class (still queryable per
     list_existing_analyses.TOOL_CLASSES) resolves and re-signs normally --
@@ -287,7 +253,6 @@ def test_get_download_links_retired_tool_class_still_resolves_parity(kind, store
 
     resolved = store.get_download_links("exp.csv", "stats", "latest")
     assert resolved.output_links["a"].url
-    assert resolved.manifest_url
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
@@ -327,10 +292,6 @@ def test_get_download_links_legacy_run_with_no_keys_yields_no_links_parity(
 
     resolved = store.get_download_links("exp.csv", "qc", "latest")
     assert resolved.output_links == {}
-    # bloom#600: unlike output_links, manifest_url is never gated on
-    # output_keys being non-empty -- this run's manifest.json exists
-    # regardless of whether per-artifact keys were ever recorded for it.
-    assert resolved.manifest_url
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
@@ -433,43 +394,12 @@ def test_get_download_links_multi_output_partial_failure_aborts_whole_call_parit
         store.get_download_links("exp.csv", "qc", "latest")
 
 
-def test_manifest_url_signing_failure_aborts_whole_call_supabase(stores, monkeypatch):
-    """bloom#600: a create_signed_url failure for the manifest key specifically
-    aborts the whole call, not just a missing manifest_url on an otherwise-
-    populated result. Supabase-only: FakeResultStore's manifest_url is plain
-    string synthesis from a field already present on `stored` (see design.md
-    Decision 3) with no external call to fail -- there is no equivalent
-    injection point on that adapter, mirroring why
-    test_fake_get_download_links_never_calls_storage_backend has no Supabase
-    counterpart either (the asymmetry runs the other way there)."""
-    store = stores["supabase"]
-    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
-    (run.staging_dir / "a.csv").write_bytes(b"aaa")
-    committed = store.commit(run, {"a": "a.csv"})
-
-    import bloom_mcp.supabase_client as sc
-
-    real_create_signed_url = sc.create_signed_url
-
-    def _flaky(key, expires_in):
-        if key == committed.manifest_path:
-            raise RuntimeError("simulated failure (manifest signing)")
-        return real_create_signed_url(key, expires_in)
-
-    monkeypatch.setattr(sc, "create_signed_url", _flaky)
-
-    with pytest.raises(Exception):
-        store.get_download_links("exp.csv", "qc", "latest")
-
-
 def test_fake_get_download_links_never_calls_storage_backend(monkeypatch):
-    """design.md Decision 6 (outputs) / Decision 3 (manifest_url, bloom#600):
-    FakeResultStore.get_download_links never calls anything on StorageBackend
-    for any run it recorded itself -- it has its own private size bookkeeping
-    for outputs, and synthesizes manifest_url as a plain fake:// string with
-    no external call at all. Specific to FakeResultStore (the real adapter's
-    equivalent guarantee is instead "makes exactly one live call per output
-    plus one for the manifest," covered by the parity tests above)."""
+    """design.md Decision 6: FakeResultStore.get_download_links never calls
+    anything on StorageBackend for any run it recorded itself -- it has its
+    own private size bookkeeping instead. Specific to FakeResultStore (the
+    real adapter's equivalent guarantee is instead "makes exactly one live
+    call per output," covered by the no-persisted-size-field test above)."""
     store = FakeResultStore()
     run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
     (run.staging_dir / "a.csv").write_bytes(b"aaa")
@@ -486,8 +416,6 @@ def test_fake_get_download_links_never_calls_storage_backend(monkeypatch):
 
     resolved = store.get_download_links("exp.csv", "qc", "latest")
     assert resolved.output_links["a"].size_bytes == 3
-    assert resolved.manifest_url
-    assert resolved.manifest_url.startswith("fake://")
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
