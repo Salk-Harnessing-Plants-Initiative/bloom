@@ -174,3 +174,45 @@
       mergedAt: null`, and `git log origin/staging -1` is still `47a94ba` — unchanged since
       this branch was cut. No rebase needed; the disclosed `storage_backend.py` textual
       overlap with PR #609 remains a future, not current, concern.
+
+## 6. PR #611 review response
+
+The disclosed `storage_backend.py` overlap in 5.3 materialized: PR #609 merged to `staging`
+while #611 was in review, producing real (but purely textual, per 5.3's own prediction)
+merge conflicts in `storage_backend.py`'s docstrings — resolved by merging `origin/staging`
+into this branch. A 5-lens PR review (code quality, testing, scientific rigor, security,
+behavioural correctness) then found:
+
+- [x] **BLOCKING:** `sections/core/get_download_links.py`'s catch-all returned `str(exc)`
+      unredacted — including a live storage failure's raw `storage3`/`httpx` text, and
+      `CorruptRunLinksError`'s own message (which embeds the offending, possibly
+      cross-experiment, storage key). Fixed at two layers: the tool now routes through
+      `experiment_utils.safe_error_text(exc)` (bounds length, strips credential-shaped
+      fragments — the same helper `list_existing_analyses.py`'s `trim_staleness` path
+      already uses for this exact class of untyped storage error); and both adapters'
+      `get_download_links` now catch `CorruptRunLinksError` specifically, log the full
+      detail server-side, and re-raise with a generic message naming only the caller's own
+      `tool_class`/experiment stem — mirroring `commit()`'s own existing
+      `KeyScopeGuardError` handling.
+- [x] **IMPORTANT:** a latent race in `FakeResultStore.commit()` — `self._runs` was appended
+      before `self._output_sizes` was populated, so a concurrent (unlocked) `get_download_links`
+      read landing in that window would raise a bare `KeyError` instead of a documented error.
+      Fixed by reordering: `_output_sizes` is now populated first.
+- [x] **IMPORTANT:** the "verify your download against `sha256`" guidance lived only in
+      `storage-backends.md`, never in the tool's own docstring (the only context surface an
+      LLM agent calling this tool actually sees). Added a sentence to the tool's docstring.
+- [x] **SUGGESTION:** the fake-adapter multi-output partial-failure test broke an arbitrary
+      key (`next(iter(sizes))`, always the *first* output in practice) rather than
+      specifically the *second* one its own docstring claimed to test — so it never actually
+      exercised "the first output already succeeded, then the second failed." Fixed to break
+      `committed.output_keys["b"]` specifically.
+- Noted, not code-fixed (matches the review's own framing — a disclosure/process item, not a
+  bug): no caller-level authorization boundary exists in bloommcp today (one shared static
+  API key, `RLS` as `USING (true)`); `get_download_links` is the first tool to turn that
+  already-exposed metadata into an actual working signed download URL. Worth an explicit
+  team sign-off on the trust model, not a silent merge — this proposal does not change or
+  attempt to fix that pre-existing, cross-cutting gap.
+- Noted, not independently verifiable in this environment: `get_object_size`'s response-shape
+  parsing has still never been exercised against a real Supabase Storage call (no live dev
+  stack available here, per task 1.1's own original note). Recommend a staging smoke test
+  immediately after this merges.

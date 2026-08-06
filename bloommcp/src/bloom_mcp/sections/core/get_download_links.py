@@ -16,6 +16,7 @@ on-demand retrieval tool, not a session-bootstrap discovery tool (see
 
 import json
 
+from bloom_mcp.experiment_utils import safe_error_text
 from bloom_mcp.tools import _ports
 
 
@@ -37,6 +38,9 @@ def get_download_links(
     partially-populated `output_links` is ever returned). A legacy run
     recorded before per-artifact keys existed (a v2 manifest entry) has
     nothing to sign — its `output_links` comes back empty, not an error.
+    Always verify what you download against the returned `sha256` — it comes
+    from the immutable manifest record, independent of the live-refreshed
+    `url`/`size_bytes`.
 
     Args:
         experiment: experiment identifier, e.g. "alfalfa_gwas_wave2.csv"
@@ -66,7 +70,12 @@ def get_download_links(
         # raise whatever the active StorageBackend's underlying client
         # raises (a closed list would be structurally incomplete for the
         # Supabase backend) — never a raw traceback to the caller either way.
-        return json.dumps({"error": str(exc)}, indent=2)
+        # safe_error_text bounds the length and strips anything that looks
+        # like a credential/token fragment before it reaches the caller,
+        # exactly as list_existing_analyses.py's trim_staleness path already
+        # does for its own storage-adjacent failure (PR #611 review finding —
+        # an earlier version of this handler returned str(exc) unredacted).
+        return json.dumps({"error": safe_error_text(exc)}, indent=2)
 
     response = {
         "experiment": stored.experiment,

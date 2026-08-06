@@ -362,14 +362,19 @@ def test_get_download_links_multi_output_partial_failure_aborts_whole_call_parit
     run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
     (run.staging_dir / "a.csv").write_bytes(b"aaa")
     (run.staging_dir / "b.csv").write_bytes(b"bb")
-    store.commit(run, {"a": "a.csv", "b": "b.csv"})
+    committed = store.commit(run, {"a": "a.csv", "b": "b.csv"})
 
     if kind == "fake":
-        # Force the second output's size lookup to raise by corrupting this
-        # run's own private size bookkeeping for exactly one key.
-        for key_tuple, sizes in list(store._output_sizes.items()):
-            if key_tuple[:2] == ("exp.csv", "qc"):
-                key_to_break = next(iter(sizes))
+        # Force specifically the *second* output's ("b") size lookup to
+        # raise, not an arbitrary one -- next(iter(...)) previously picked
+        # whichever key happened to be first in dict order (always "a" here,
+        # since dicts preserve insertion order), which never actually
+        # exercised "the first output already succeeded, then the second
+        # failed" -- it just made the *first* lookup fail immediately
+        # (review finding, PR #611).
+        key_to_break = committed.output_keys["b"]
+        for key_tuple, sizes in store._output_sizes.items():
+            if key_tuple[:2] == ("exp.csv", "qc") and key_to_break in sizes:
                 del sizes[key_to_break]
     else:
         import bloom_mcp.supabase_client as sc

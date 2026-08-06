@@ -8,6 +8,7 @@ can exercise both backends against one shared failure/collision scenario set.
 
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
 import threading
@@ -29,12 +30,15 @@ from ._artifacts import (
 from ._locks import KeyedLock
 from .ports import (
     CommitFailedError,
+    CorruptRunLinksError,
     ManifestReadError,
     RunHandle,
     RunNotFoundError,
     RunStateError,
     StoredRun,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from bloom_mcp.contract.provenance import Provenance
@@ -369,15 +373,32 @@ class FakeResultStore:
             # deliberately NOT masked with a fallback value.
             return sizes[key]
 
-        output_links = build_download_links(
-            stored.output_keys,
-            stored.output_sha256,
-            url_for=lambda key: (
-                f"fake://signed/{key}?expires_in={SIGNED_URL_EXPIRES_SECONDS}"
-            ),
-            size_for=size_for,
-            expected_prefix=expected_prefix,
-        )
+        try:
+            output_links = build_download_links(
+                stored.output_keys,
+                stored.output_sha256,
+                url_for=lambda key: (
+                    f"fake://signed/{key}?expires_in={SIGNED_URL_EXPIRES_SECONDS}"
+                ),
+                size_for=size_for,
+                expected_prefix=expected_prefix,
+            )
+        except CorruptRunLinksError as exc:
+            # Mirrors SupabaseResultStore's identical redaction so fake/real
+            # parity holds for the message too, not just the exception type
+            # (PR #611 review finding: the raw message embeds the offending,
+            # possibly cross-experiment, storage key).
+            logger.exception(
+                "get_download_links found a scope-mismatched key for %s/%s %s",
+                tool_class,
+                _stem(experiment),
+                stored.run_ref,
+            )
+            raise CorruptRunLinksError(
+                f"get_download_links found corrupt link data for "
+                f"{tool_class}/{_stem(experiment)} (structural bug — see "
+                f"server logs)"
+            ) from exc
         return replace(stored, output_links=output_links)
 
     # --- Test-only failure/collision injection ------------------------------

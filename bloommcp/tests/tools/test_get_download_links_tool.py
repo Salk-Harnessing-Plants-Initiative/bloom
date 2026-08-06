@@ -13,6 +13,7 @@ import pytest
 
 from bloom_mcp.contract import Provenance
 from bloom_mcp.data_access import FakeReader, SupabaseReader
+from bloom_mcp.experiment_utils import safe_error_text
 from bloom_mcp.result_store import (
     CorruptRunLinksError,
     FakeResultStore,
@@ -107,7 +108,9 @@ def test_every_caught_exception_type_surfaces_as_clean_error_json(
     """Every one of the ResultStore-level types, the local-backend storage
     types, and an arbitrary backend-specific exception (the Supabase
     backend's live lookups aren't type-safe the way the local backend's
-    are) all surface as {"error": ...} -- never a raw traceback."""
+    are) all surface as {"error": ...} -- never a raw traceback, and never
+    exc's raw, unredacted text (PR #611 review finding: an earlier version
+    returned str(exc) verbatim)."""
     _reader, store = injected_ports
 
     def _boom(*_a, **_k):
@@ -118,7 +121,25 @@ def test_every_caught_exception_type_surfaces_as_clean_error_json(
     result = get_download_links_mod.get_download_links(_EXPERIMENT, "qc", "latest")
     payload = json.loads(result)
 
-    assert payload == {"error": str(exc)}
+    assert payload == {"error": safe_error_text(exc)}
+
+
+def test_exception_text_is_redacted_not_returned_raw(injected_ports, monkeypatch):
+    """A credential-shaped fragment in a live storage failure's text (fully
+    plausible for a real storage3/httpx exception, unlike the local
+    backend's typed errors) must not reach the caller verbatim."""
+    _reader, store = injected_ports
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("upstream said: Authorization: Bearer sk-live-abc123")
+
+    monkeypatch.setattr(store, "get_download_links", _boom)
+
+    result = get_download_links_mod.get_download_links(_EXPERIMENT, "qc", "latest")
+    payload = json.loads(result)
+
+    assert "sk-live-abc123" not in payload["error"]
+    assert "<redacted>" in payload["error"]
 
 
 def test_empty_experiment_string_produces_clean_error_not_a_raw_exception(
