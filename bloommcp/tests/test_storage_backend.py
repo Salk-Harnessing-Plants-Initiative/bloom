@@ -1087,6 +1087,48 @@ def test_latest_outliers_entry_exists_but_download_fails_is_a_hard_error(
     assert "download from storage failed" in err
 
 
+def test_latest_outliers_manifest_read_fails_is_a_hard_error(
+    local_manifest_backend, monkeypatch
+):
+    """A storage/network failure during the manifest *lookup itself* (`get_version`'s
+    `read_manifest()` call, via its own unguarded `list_prefix`) must propagate as a
+    caller-safe hard error -- not an uncaught raw exception, and not a silent
+    fall-through to `qc`'s otherwise-valid entry. Before this fix, `_resolve_one_class`
+    only caught `ManifestSchemaError` around this call, so this exact failure escaped
+    uncaught; this is the #586 regression test."""
+    import bloom_mcp.manifest.manifest as manifest_mod
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    real_list_prefix = manifest_mod.list_prefix
+
+    def _boom(prefix: str):
+        if prefix.startswith("bloommcp_output/outliers_"):
+            raise RuntimeError("connection reset by peer at 10.0.0.5:5432")
+        return real_list_prefix(prefix)
+
+    monkeypatch.setattr(manifest_mod, "list_prefix", _boom)
+    # A schema-valid `outliers` manifest that would otherwise resolve cleanly --
+    # the failure is injected purely via the monkeypatched list_prefix above, not
+    # via a malformed manifest, so this isolates the manifest-*read* hazard from
+    # the already-covered manifest-*schema* hazard.
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:01Z",
+        b"trim\n1\n",
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "latest")
+    assert path is None
+    assert label is None
+    assert err is not None and "could not read manifest for 'exp'" in err
+
+
 def test_latest_logs_when_resolved_trim_is_stale(local_manifest_backend, caplog):
     """The resolved `outliers` trim's `based_on_version` ("v1_cleaned") no longer
     matches the current `qc` latest ("v2_cleaned") — a `qc_clean` has run since
@@ -1699,6 +1741,31 @@ def test_storage_backend_protocol_includes_create_signed_url(tmp_path):
     assert isinstance(sb.LocalStorageBackend(tmp_path), sb.StorageBackend)
     assert hasattr(sb.SupabaseStorageBackend, "create_signed_url")
     assert hasattr(sb.LocalStorageBackend, "create_signed_url")
+
+
+def test_create_signed_url_performs_no_ownership_check(monkeypatch):
+    """#598: create_signed_url itself is a generic signing primitive with no
+    concept of run/experiment ownership — it signs whatever syntactically
+    valid key it's given. The actual scoping guarantee lives one layer up, in
+    ResultStore.commit() (see test_supabase_result_store.py /
+    test_fake_result_store.py's key-scoping tests) — this test documents,
+    rather than changes, the primitive's existing unguarded behavior."""
+    client = _FakeSignClient({"signedURL": "http://kong:8000/sign/x?token=z"})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+    monkeypatch.delenv("BLOOM_PUBLIC_SUPABASE_URL", raising=False)
+
+    # A key with no relation to any run this backend knows about — not
+    # rejected on ownership/scope grounds.
+    url = sb.SupabaseStorageBackend().create_signed_url(
+        "bloommcp_output/qc_someone_elses_experiment/v99/secret.csv", 3600
+    )
+
+    assert url == "http://kong:8000/sign/x?token=z"
+    assert client.calls == [
+        ("bloommcp_output/qc_someone_elses_experiment/v99/secret.csv", 3600)
+    ]
 
 
 def test_supabase_client_reexports_create_signed_url(monkeypatch):
