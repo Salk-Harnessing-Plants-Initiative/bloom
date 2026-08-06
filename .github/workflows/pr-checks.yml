@@ -169,6 +169,10 @@ jobs:
         env:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
+          # build_app() refuses to compose an app nothing would authenticate. A key
+          # rather than BLOOMMCP_ALLOW_NO_AUTH=1, so this keeps proving the wheel builds
+          # an app with auth wired instead of proving it builds one without.
+          BLOOMMCP_API_KEY: wheel-import-smoke-placeholder
 
       - name: Verify uv lockfiles are synced
         run: python scripts/check-uv-locks.py
