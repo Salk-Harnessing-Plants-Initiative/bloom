@@ -67,10 +67,8 @@ services:
           - /auth/v1/authorize
     plugins:
       - name: cors
-  # OAuth 2.1 discovery. An MCP client reads these before it holds any
-  # credential — including the anon apikey — so they cannot sit behind
-  # key-auth. They expose only public metadata and signing public keys.
   - name: auth-v1-open-well-known
+    _comment: 'OIDC discovery: read before the client has any key, so not behind key-auth'
     url: http://auth:9999/.well-known
     routes:
       - name: auth-v1-open-well-known
@@ -79,13 +77,8 @@ services:
           - /auth/v1/.well-known
     plugins:
       - name: cors
-  # OAuth 2.1 endpoints: dynamic client registration, authorize, token, and
-  # the consent endpoints. Also reached without an apikey. Registration is
-  # deliberately open (GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION) — a
-  # registered client is inert until a real user completes a login and grants
-  # consent, and the consent endpoints still require that user's Bearer token,
-  # which GoTrue enforces itself.
   - name: auth-v1-open-oauth
+    _comment: 'OAuth 2.1: register, authorize, token, consent. GoTrue enforces the user Bearer on consent.'
     url: http://auth:9999/oauth
     routes:
       - name: auth-v1-open-oauth

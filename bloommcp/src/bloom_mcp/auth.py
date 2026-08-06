@@ -1,26 +1,20 @@
-"""Bearer auth for the combined server and every section.
+"""Decides whether a request may use bloommcp at all, and who is making it.
 
-Two unrelated credentials are accepted on the same surface:
+Every request arrives with an ``Authorization: Bearer <token>`` header. This
+module verifies that token and either rejects the request or reports the
+caller's identity. Two kinds of token are accepted:
 
-* ``BLOOMMCP_API_KEY`` — one shared static key, used service-to-service by
-  langchain-agent. It identifies no individual, so it resolves to no subject.
-* A Supabase-issued **OAuth access token** — obtained by a human who completed
-  a browser login and consent, and the only credential that names a real user.
+* ``BLOOMMCP_API_KEY`` — one shared static key, used service-to-service.
+Names no individual.
+* A Supabase OAuth access token — issued to an external MCP client after a
+  human completed a browser login and consent. Names the user, in ``sub``.
 
-The API key cannot simply be replaced by OAuth: Supabase's OAuth server
-advertises only the ``authorization_code`` and ``refresh_token`` grants (no
-``client_credentials``), so every OAuth path requires a browser and a person to
-approve. langchain-agent has neither.
+It decides **admission only, never data access**: every database and Storage
+call runs as ``bloom_agent`` regardless of who authenticated, and the caller's
+token is never forwarded (see ``bloom_mcp.supabase_client``).
 
-Verification is HS256 against ``JWT_SECRET`` rather than JWKS because this
-deployment signs symmetrically — GoTrue, PostgREST and langchain-agent all
-source the same ``JWT_SECRET``. This mirrors ``bloom_mcp.identity`` and
-``langchain/deps.py:get_current_user()``. Asymmetric signing keys would let
-bloommcp hold only public keys, and are the natural follow-up.
-
-Extracted into its own module so each section sub-server
-(``bloom_mcp.sections.*``) can be created with the same provider without
-importing ``server.py`` (which would be circular).
+Separate module so every section sub-server (``bloom_mcp.sections.*``) shares
+one provider without importing ``server.py``, which would be circular.
 """
 
 from __future__ import annotations
@@ -49,7 +43,12 @@ _AUDIENCE = "authenticated"
 
 
 class ApiKeyVerifier(TokenVerifier):
-    """Validates a bearer token against the shared ``BLOOMMCP_API_KEY``."""
+    """Validates a bearer token against the shared ``BLOOMMCP_API_KEY``.
+
+    OAuth cannot replace this key: Supabase advertises only the
+    ``authorization_code`` and ``refresh_token`` grants, so every OAuth path
+    needs a browser and a person to approve. langchain-agent has neither.
+    """
 
     def __init__(self, api_key: str, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -113,11 +112,14 @@ class SupabaseOAuthVerifier(TokenVerifier):
 
 
 def jwt_decode(token: str, secret: str) -> dict:
-    """Decode and verify, accepting `aud` as either a string or a list.
+    """Decode and verify a Supabase JWT.
 
-    Supabase emits a bare string on the OAuth path and a list on the session
-    path; PyJWT handles both, so this is a single call kept separate only to
-    keep the verifier readable.
+    HS256 against ``JWT_SECRET``, not JWKS, because this deployment signs
+    symmetrically — GoTrue, PostgREST and langchain-agent all source the same
+    secret. Mirrors ``bloom_mcp.identity`` and ``langchain/deps.py``.
+
+    ``aud`` arrives as a bare string on the OAuth path and a list on the
+    session path; PyJWT accepts either.
     """
     import jwt
 

@@ -74,14 +74,17 @@ class IdentityConfigError(Exception):
 
 
 def is_valid_identity(sub: str) -> bool:
-    """A resolved sub must be UUID-shaped (the whole string, not a substring
-    — `re.fullmatch`, not a `$`-anchored `.match()`, which would let a value
-    ending in a trailing newline slip through) and not the reserved
-    sentinel.
+    """Is this token's ``sub`` claim safe to record as a caller identity?
 
-    Public so `bloom_mcp.auth` applies the identical rule to an OAuth token's
-    `sub` — both paths write to `bloommcp_usage.identity`, so the guard that
-    protects that column must not be duplicated.
+    Call it with the ``sub`` of an already-verified token, before writing that
+    value to ``bloommcp_usage.identity``. Both credential paths use it —
+    ``verify_identity_header`` for ``X-Bloom-Identity``, ``bloom_mcp.auth`` for
+    OAuth access tokens — so one rule guards the column.
+
+    Rejects two things: a ``sub`` that is not a complete UUID, and the reserved
+    ``anonymous`` sentinel, which no real user may claim. ``fullmatch`` rather
+    than a ``$``-anchored match because ``$`` also matches before a trailing
+    newline, which would file one user under two identities.
     """
     return bool(_UUID_RE.fullmatch(sub)) and sub.lower() != ANONYMOUS
 
