@@ -48,6 +48,15 @@ OAUTH_JWKS_URI = os.getenv("BLOOMMCP_OAUTH_JWKS_URI")
 # The audience Supabase stamps on every token it issues for this project.
 _AUDIENCE = "authenticated"
 
+# Explicit opt-out for running with no authentication at all. Required because
+# an unset BLOOMMCP_API_KEY used to mean "no auth" silently, so a deploy that
+# lost the secret served every tool to anyone who could reach the port.
+ALLOW_NO_AUTH = os.getenv("BLOOMMCP_ALLOW_NO_AUTH", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 
 class ApiKeyVerifier(TokenVerifier):
     """Validates a bearer token against the shared ``BLOOMMCP_API_KEY``.
@@ -198,6 +207,31 @@ def build_auth_provider():
         return ApiKeyVerifier(API_KEY)
 
     return None
+
+
+def validate_auth() -> None:
+    """Refuse to serve with no authentication unless explicitly opted out.
+
+    Called from ``server.main()`` rather than at import, matching how the
+    Supabase and data-directory validators work: importing ``bloom_mcp`` stays
+    side-effect-free for the unit tests, while a misconfigured deploy still
+    fails at boot instead of quietly serving every tool unauthenticated.
+    """
+    if auth_provider is not None:
+        return
+    if not ALLOW_NO_AUTH:
+        raise RuntimeError(
+            "No authentication is configured: BLOOMMCP_API_KEY is unset and "
+            "OAuth is not configured (BLOOMMCP_PUBLIC_URL and "
+            "BLOOMMCP_OAUTH_AUTHORIZATION_SERVER). Refusing to start, because "
+            "this would serve every tool to any caller that can reach the "
+            "port. Set BLOOMMCP_API_KEY, configure OAuth, or — for local "
+            "development only — opt out with BLOOMMCP_ALLOW_NO_AUTH=1."
+        )
+    logger.warning(
+        "BLOOMMCP_ALLOW_NO_AUTH is set: serving with NO authentication. "
+        "Local development only — never staging or production."
+    )
 
 
 # One provider shared by the combined server and all section sub-servers.
