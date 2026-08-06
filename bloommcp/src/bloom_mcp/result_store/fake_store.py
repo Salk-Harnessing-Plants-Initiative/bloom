@@ -359,19 +359,10 @@ class FakeResultStore:
         run_ref: str = "latest",
     ) -> StoredRun:
         stored = self.get_run(experiment, tool_class, run_ref)
-        # manifest_url (bloom#600) is independent of the output_keys-empty
-        # short-circuit below — the manifest always exists for a committed
-        # run, regardless of whether per-artifact output keys were ever
-        # recorded for it. Plain string synthesis, no external call, no
-        # bookkeeping needed (design.md Decision 3).
-        manifest_url = (
-            f"fake://signed/{stored.manifest_path}"
-            f"?expires_in={SIGNED_URL_EXPIRES_SECONDS}"
-        )
         if not stored.output_keys:
             # A legacy entry (e.g. seed_v2_run) with no per-artifact keys at
             # all — nothing to sign or size (bloom#599).
-            return replace(stored, manifest_url=manifest_url)
+            return stored
         prefix = f"{self._output_root}/{tool_class}_{_stem(experiment)}/"
         expected_prefix = f"{prefix}{stored.version_dir}/"
         sizes = self._output_sizes.get((experiment, tool_class, stored.run_ref), {})
@@ -408,7 +399,7 @@ class FakeResultStore:
                 f"{tool_class}/{_stem(experiment)} (structural bug — see "
                 f"server logs)"
             ) from exc
-        return replace(stored, output_links=output_links, manifest_url=manifest_url)
+        return replace(stored, output_links=output_links)
 
     # --- Test-only failure/collision injection ------------------------------
 
