@@ -437,10 +437,17 @@ class SupabaseResultStore:
         run_ref: str = "latest",
     ) -> StoredRun:
         stored = self.get_run(experiment, tool_class, run_ref)
+        # manifest_url (bloom#600) is independent of the output_keys-empty
+        # short-circuit below — the manifest always exists for a committed
+        # run, regardless of whether per-artifact output keys were ever
+        # recorded for it.
+        manifest_url = _sc.create_signed_url(
+            stored.manifest_path, SIGNED_URL_EXPIRES_SECONDS
+        )
         if not stored.output_keys:
             # A legacy entry (e.g. v2 manifest) with no per-artifact keys at
             # all — nothing to sign or size (bloom#599).
-            return stored
+            return replace(stored, manifest_url=manifest_url)
         adir = AnalysisDir(self._output_root, experiment, tool_class)
         expected_prefix = adir.key(f"{stored.version_dir}/")
         try:
@@ -468,4 +475,4 @@ class SupabaseResultStore:
                 f"get_download_links found corrupt link data for "
                 f"{tool_class}/{adir.stem} (structural bug — see server logs)"
             ) from exc
-        return replace(stored, output_links=output_links)
+        return replace(stored, output_links=output_links, manifest_url=manifest_url)

@@ -119,6 +119,14 @@ class StoredRun:
     # those use) leave this `{}`, so listing/resolving a historical run never
     # eagerly signs a URL for it. Never persisted into the manifest.
     output_links: dict[str, "OutputLink"] = field(default_factory=dict)
+    # A signed/served download link for this run's own `manifest.json`
+    # (bloom#600). Populated only by `get_download_links` — never by
+    # `create_run`/`commit`/`get_run`/`list_runs`/`from_version_entry`, which
+    # all leave this `None`. Unlike `output_links`, this is never gated on
+    # `output_keys` being non-empty: a run's manifest always exists once
+    # committed, regardless of whether per-artifact output keys were ever
+    # recorded for it. Never persisted into the manifest.
+    manifest_url: Optional[str] = None
 
     @classmethod
     def from_version_entry(
@@ -203,8 +211,9 @@ class ResultStore(Protocol):
         run_ref: str = "latest",
     ) -> StoredRun:
         """Resolve a run exactly as ``get_run`` does, but with ``output_links``
-        freshly (re-)populated (bloom#599) — the deliberate, caller-opted-in
-        exception to ``get_run``/``list_runs`` always returning it empty.
+        and ``manifest_url`` freshly (re-)populated (bloom#599/#600) — the
+        deliberate, caller-opted-in exception to ``get_run``/``list_runs``
+        always returning them empty/``None``.
 
         Every ``size_bytes`` is resolved live via
         :meth:`StorageBackend.get_object_size` on every call — nothing is
@@ -217,5 +226,11 @@ class ResultStore(Protocol):
         ``(experiment, tool_class, version_dir)`` prefix, before signing or
         sizing it. A single output's lookup failure fails the whole call —
         never a partially-populated ``output_links``.
+
+        ``manifest_url`` (bloom#600) is a signed/served link for this run's
+        own ``manifest_path``, resolved independently of the ``output_keys``
+        -empty short-circuit above — the manifest always exists for a
+        committed run, so this is never skipped. A failure to sign it fails
+        the whole call, identically to a per-output failure.
         """
         ...
