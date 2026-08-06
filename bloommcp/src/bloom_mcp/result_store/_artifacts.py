@@ -27,6 +27,20 @@ from .ports import CorruptRunLinksError
 SIGNED_URL_EXPIRES_SECONDS = 3600
 
 
+class KeyScopeGuardError(RuntimeError):
+    """Raised by ``build_output_links``'s #598 key-scoping guard.
+
+    A subclass of ``RuntimeError`` (not a new ``ResultStoreError``, per
+    design.md's decision), so every existing ``except RuntimeError`` /
+    ``except Exception`` still catches it unchanged. The dedicated type
+    exists only so ``commit()``'s except block can tell this structural,
+    never-transient failure apart from an actual transient one (a real
+    network blip, a genuine writer race) and word the resulting
+    ``CommitFailedError`` message accordingly — see
+    ``supabase_store.py``/``fake_store.py``'s ``except`` blocks.
+    """
+
+
 def validate_outputs(outputs: dict[str, str]) -> None:
     """Reject an empty output set or a relative path that escapes the run dir.
 
@@ -71,12 +85,40 @@ def build_output_links(
     output_sha256: dict[str, str],
     output_size_bytes: dict[str, int],
     url_for: Callable[[str], str],
+    *,
+    expected_prefix: str,
 ) -> dict[str, OutputLink]:
     """Build the per-output ``OutputLink`` dict ``commit()`` attaches to its
     ``StoredRun`` (bloom#581). ``url_for(key)`` supplies the URL — a real
     signed call for ``SupabaseResultStore``, a synthesized string for
     ``FakeResultStore`` — so this one assembly step is shared by both.
+
+    ``expected_prefix`` is the prefix ``commit()`` itself just computed for
+    this run (bloom#598) — every key in ``output_keys`` MUST fall under it,
+    since a key outside it would mean signing something this run did not
+    itself just upload. Checked before any ``url_for`` call, so a violation
+    never reaches the signing primitive (which performs no ownership check of
+    its own). A mismatch is a structural bug, never a caller-input condition —
+    raises :class:`KeyScopeGuardError`, which both adapters' ``commit()``
+    already catch via their existing broad ``except Exception`` and convert
+    to ``CommitFailedError``, the same fail-closed/cleanup path a signing
+    failure already takes.
+
+    ``expected_prefix`` itself must be non-empty: ``str.startswith("")`` is
+    always ``True``, so an empty/falsy prefix would silently accept every key
+    and defeat the guard entirely rather than raising — checked explicitly so
+    that misconfiguration fails loudly instead of quietly no-op'ing.
     """
+    if not expected_prefix:
+        raise KeyScopeGuardError(
+            f"expected_prefix must be non-empty; got {expected_prefix!r}"
+        )
+    for name, key in output_keys.items():
+        if not key.startswith(expected_prefix):
+            raise KeyScopeGuardError(
+                f"output key {key!r} (output {name!r}) is outside the "
+                f"expected run prefix {expected_prefix!r}"
+            )
     return {
         name: OutputLink(
             key=output_keys[name],

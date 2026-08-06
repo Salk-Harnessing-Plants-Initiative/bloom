@@ -12,6 +12,7 @@ from .ports import (
     CleanedVersionRequiredError,
     ExperimentFrame,
     ExperimentNotFoundError,
+    ExperimentReadError,
     ExperimentSummary,
 )
 
@@ -22,7 +23,10 @@ class FakeReader:
     Mirrors :class:`SupabaseReader`'s observable behaviour — same resolution
     order, same not-found / clean-required signalling, same declared roles
     (via :func:`detect_columns`) — so a single scenario set can be run against
-    both as a parity check.
+    both as a parity check. Also exposes a test-only failure-injection hook
+    (`fail_next_load`), mirroring `FakeResultStore.fail_next_commit`, so a
+    mid-read storage failure -- the one hazard class a flat in-memory lookup
+    cannot otherwise represent -- is exercisable with no live Supabase adapter.
     """
 
     def __init__(self) -> None:
@@ -34,6 +38,9 @@ class FakeReader:
         self._latest: dict[str, str] = {}
         # name -> experiment_name label
         self._exp_name: dict[str, str] = {}
+        # One-shot: (name, version) -> raise ExperimentReadError on the next
+        # matching load_experiment() call, then clear itself.
+        self._fail_next: set[tuple[str, str]] = set()
 
     # --- seeding -----------------------------------------------------------
 
@@ -61,6 +68,18 @@ class FakeReader:
         if make_latest:
             self._latest[name] = version_id
 
+    # --- Test-only failure injection ----------------------------------------
+
+    def fail_next_load(self, name: str, *, version: str = "latest") -> None:
+        """The next `load_experiment(name, version=version)` call raises
+        `ExperimentReadError` once, then clears itself.
+
+        Mirrors `FakeResultStore.fail_next_commit`'s one-shot pattern —
+        simulates a mid-read storage failure (the hazard class this fake's
+        flat dict lookup otherwise cannot represent at all).
+        """
+        self._fail_next.add((name, version))
+
     # --- ExperimentReader --------------------------------------------------
 
     def load_experiment(
@@ -70,6 +89,13 @@ class FakeReader:
         version: str = "latest",
         require_clean: bool = False,
     ) -> ExperimentFrame:
+        key = (name, version)
+        if key in self._fail_next:
+            self._fail_next.discard(key)
+            raise ExperimentReadError(
+                f"Simulated read failure for {name!r} (version={version!r})."
+            )
+
         # FakeReader has no notion of tool classes and cannot model the
         # qc/outliers priority split (it has no manifests at all) — treat
         # "latest_qc" as an alias for "latest" so callers that switch to it

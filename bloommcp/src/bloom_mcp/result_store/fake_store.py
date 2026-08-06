@@ -20,6 +20,7 @@ from bloom_mcp.manifest.versioning import next_version_id, version_dir_name
 
 from ._artifacts import (
     SIGNED_URL_EXPIRES_SECONDS,
+    KeyScopeGuardError,
     build_download_links,
     build_output_links,
     hash_outputs,
@@ -220,6 +221,11 @@ class FakeResultStore:
                     url_for=lambda key: (
                         f"fake://signed/{key}?expires_in={SIGNED_URL_EXPIRES_SECONDS}"
                     ),
+                    # key_for("") is the same closure every real key above was
+                    # built from — mirrors SupabaseResultStore's identical
+                    # reuse (see supabase_store.py's own commit()) so the two
+                    # adapters stay structurally, not just observably, in sync.
+                    expected_prefix=key_for(""),
                 )
 
                 # Per-output recording loop, mirroring where
@@ -282,6 +288,16 @@ class FakeResultStore:
                 # Leave the handle open and the staging dir intact so the
                 # caller can retry — a retry re-enters commit() and
                 # re-derives `taken` against then-current state.
+                if isinstance(exc, KeyScopeGuardError):
+                    # #598: structural bug (a key outside this run's own
+                    # prefix), not transient — mirrors supabase_store.py's
+                    # identical distinction so fake/real parity holds for the
+                    # message too, not just the exception type.
+                    raise CommitFailedError(
+                        f"commit failed for {state.tool_class}/"
+                        f"{_stem(state.experiment)} "
+                        f"(structural bug — do not retry; see server logs)"
+                    ) from exc
                 raise CommitFailedError(
                     f"commit failed for {state.tool_class}/{_stem(state.experiment)} "
                     f"(transient — retry)"
@@ -294,10 +310,19 @@ class FakeResultStore:
             # mirrors what a real manifest-backed get_run/list_runs would
             # re-derive (never signed, bloom#581 Decision 1). Only commit()'s
             # own return value carries the freshly-built links.
-            self._runs.setdefault(key, []).append(stored)
+            #
+            # Ordering is deliberate: this store's own lock only serializes
+            # concurrent commit() calls against each other — a concurrent,
+            # unlocked get_download_links() read is not excluded by it (reads
+            # never take this lock at all). Populating `_output_sizes` before
+            # `_runs` closes the window where such a read could resolve the
+            # newly-committed run via `get_run` but find no matching size
+            # entry yet, which would otherwise surface as a bare KeyError
+            # instead of a documented error (review finding, PR #611).
             self._output_sizes[(state.experiment, state.tool_class, version_id)] = (
                 sizes_by_key
             )
+            self._runs.setdefault(key, []).append(stored)
             return replace(stored, output_links=output_links)
 
     def list_runs(self, experiment: str, tool_class: str) -> list[StoredRun]:

@@ -107,6 +107,16 @@ expiry (the `SIGNED_URL_EXPIRES_SECONDS` constant in
   already assumes an existing server for `PLOTS_DIR`). Without it configured,
   `create_signed_url` raises rather than fabricate a `file://` URI.
 
+**`create_signed_url` itself performs no ownership check.** It's a generic signing/
+serving primitive — given a key, it signs it, with no concept of which experiment
+or run that key belongs to. The guarantee that only a run's own freshly-uploaded
+keys ever get signed lives one layer up, in `ResultStore.commit()`: before
+building any `output_links` entry, `commit()` verifies every key falls within the
+prefix it itself just computed for that run, rejecting (and cleaning up, same as
+any other commit failure) anything outside it. Every current caller already only
+ever passes correctly-scoped keys by construction — this guard is defense-in-depth
+against a future bug, not a fix for a live gap.
+
 **Inline-vs-link size threshold: 100 KB, documentation-only.** No bloommcp tool
 inlines output content in its response regardless of size — every consumer
 tool's docstring documents a deliberate "links, not blobs" contract, and this

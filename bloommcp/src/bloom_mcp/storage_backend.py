@@ -74,10 +74,12 @@ class StorageBackend(Protocol):
         "experiment" ownership, and it will sign whatever syntactically valid
         key it's given. The one production caller, ``ResultStore.commit()``,
         is responsible for restricting ``key`` to its own authorized scope
-        before calling this. A future caller outside ``ResultStore.commit()``
-        (e.g. ``ResultStore.get_download_links``, bloom#599) SHOULD NOT assume
-        this primitive itself provides any ownership guarantee, and must apply
-        its own scope check first.
+        before calling this (see ``result_store/_artifacts.py``'s
+        ``build_output_links`` for that enforcement). A future caller outside
+        ``ResultStore.commit()`` (e.g. ``ResultStore.get_download_links``,
+        bloom#599, guarded by that module's ``build_download_links`` instead)
+        SHOULD NOT assume this primitive itself provides any ownership
+        guarantee, and must apply its own scope check first.
         """
         ...
 
