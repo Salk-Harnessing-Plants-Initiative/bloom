@@ -95,6 +95,42 @@ describe('fetchAuthorization', () => {
     expect(init.headers.apikey).toBe('anon-key')
   })
 
+  it('returns null when a 200 body is missing the client', async () => {
+    // A response the consent screen cannot render — previously this was cast
+    // to the expected type and crashed at `authorization.client.name`.
+    const f = stub(200, {
+      authorization_id: 'abc',
+      user: { id: 'u1', email: 'someone@salk.edu' },
+      scope: 'email',
+    })
+    await expect(fetchAuthorization('abc', 'tok', f)).resolves.toBeNull()
+  })
+
+  it('returns null when a 200 body is missing the user', async () => {
+    const f = stub(200, {
+      authorization_id: 'abc',
+      client: { id: 'c1', name: 'Claude Desktop' },
+      scope: 'email',
+    })
+    await expect(fetchAuthorization('abc', 'tok', f)).resolves.toBeNull()
+  })
+
+  it('returns null for an error body served with a 200', async () => {
+    const f = stub(200, { code: 404, error_code: 'oauth_authorization_not_found' })
+    await expect(fetchAuthorization('abc', 'tok', f)).resolves.toBeNull()
+  })
+
+  it('returns null when the body is not JSON', async () => {
+    const f = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token')
+      },
+    } as unknown as Response)
+    await expect(fetchAuthorization('abc', 'tok', f)).resolves.toBeNull()
+  })
+
   it('url-encodes the authorization id', async () => {
     const f = stub(200, {})
     await fetchAuthorization('a/b', 'tok', f)

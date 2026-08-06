@@ -62,7 +62,27 @@ function headers(accessToken: string): Record<string, string> {
   }
 }
 
-/** The pending authorization, or null when it is unknown or already expired. */
+/**
+ * Is this a response we can actually render a consent screen from?
+ *
+ * The page needs a client name and a user email; without either it can only
+ * mislead. Checked rather than cast, because a `200` carrying an unexpected
+ * shape would otherwise crash the page at render.
+ */
+function isRenderable(value: unknown): value is PendingAuthorization {
+  if (typeof value !== 'object' || value === null) return false
+  const v = value as Record<string, unknown>
+  const client = v.client as Record<string, unknown> | undefined
+  const user = v.user as Record<string, unknown> | undefined
+  return (
+    typeof v.authorization_id === 'string' &&
+    typeof client?.name === 'string' &&
+    typeof user?.email === 'string'
+  )
+}
+
+/** The pending authorization, or null when it is unknown, expired, or
+ * came back in a shape the consent screen cannot render. */
 export async function fetchAuthorization(
   authorizationId: string,
   accessToken: string,
@@ -73,7 +93,8 @@ export async function fetchAuthorization(
     { headers: headers(accessToken), cache: 'no-store' }
   )
   if (!res.ok) return null
-  return (await res.json()) as PendingAuthorization
+  const body = await res.json().catch(() => null)
+  return isRenderable(body) ? body : null
 }
 
 /**

@@ -73,6 +73,14 @@
 			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
 		}
 
+		# OAuth consent submission: a bloom-web route, not a Supabase one.
+		# EXACT path, ahead of /api/* for the same reason as /api/client-info —
+		# otherwise it is stripped and proxied to Kong, which has no such route,
+		# and the Authorize button 404s.
+		handle /api/oauth/consent {
+			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
+		}
+
 		# Supabase API — strip /api prefix, proxy to Kong
 		handle_path /api/* {
 			reverse_proxy kong:{$KONG_PORT}
