@@ -274,6 +274,12 @@ services:
       # and to the defaults file (see the note there for the values) — setting
       # them while GOTRUE_OAUTH_SERVER_ENABLED is false would advertise a login
       # no client can complete.
+      #
+      # Where bloommcp fetches Supabase's public signing keys. Only read when
+      # the two vars above are set, so it is inert until OAuth is enabled — but
+      # it must be correct before then: once an environment signs ES256,
+      # verifying against the old shared secret rejects every OAuth token.
+      BLOOMMCP_OAUTH_JWKS_URI: ${BLOOMMCP_OAUTH_JWKS_URI:-}
       # numba AOT cache. bloommcp imports umap-learn, which uses
       # @numba.jit(cache=True); without this env var, numba tries to write
       # to site-packages/__pycache__/ and fails under read_only: true.
