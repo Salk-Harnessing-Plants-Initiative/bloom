@@ -1,6 +1,6 @@
 ## 1. `ResultStore.get_download_links`: sign the manifest too
 
-- [ ] 1.1 Write `test_store_parity.py`-style tests first (red against today's code, which has
+- [x] 1.1 Write `test_store_parity.py`-style tests first (red against today's code, which has
       no `manifest_url` field at all — expect `AttributeError`):
       - `get_download_links` returns a non-empty `manifest_url` for a run with populated
         `output_keys`, on both `SupabaseResultStore` and `FakeResultStore`.
@@ -33,21 +33,34 @@
         `stored.manifest_path in resolved.manifest_url` (or the adapter-appropriate
         equivalent) on both backends, catching a "wired every link to the same URL" class of
         bug.
-- [ ] 1.2 Add `manifest_url: Optional[str] = None` to `StoredRun` (`result_store/ports.py`),
+      **Done:** 10 tests added/modified in `test_store_parity.py` (confirmed red via
+      `AttributeError`/"DID NOT RAISE" before implementation). **Correction found during
+      implementation:** the manifest-signing-failure test has **no meaningful Fake-adapter
+      equivalent** — `FakeResultStore.manifest_url` is plain string interpolation over a field
+      already present on `stored` (no external call, no lookup dict to corrupt the way the
+      existing per-output failure test corrupts `_output_sizes`), so it structurally cannot
+      fail the way a live `create_signed_url` call can. Written as a Supabase-only test
+      (`test_manifest_url_signing_failure_aborts_whole_call_supabase`, not parametrized),
+      documented as the mirror-image of `test_fake_get_download_links_never_calls_storage_backend`
+      having no Supabase counterpart either.
+- [x] 1.2 Add `manifest_url: Optional[str] = None` to `StoredRun` (`result_store/ports.py`),
       after `output_links`, with a docstring note mirroring `output_links`'s own: populated
       only by `get_download_links`, always `None` from `create_run`/`commit`/`get_run`/
       `list_runs`/`from_version_entry`. Confirm this is additive-only: the sole non-keyword
       `StoredRun` construction site (`fake_store.py`'s `_stub_stored_run`) uses all-keyword
       args, so a new defaulted field cannot break it — verify this directly (grep all
       `StoredRun(` call sites) rather than assuming.
-- [ ] 1.3 Implement in `SupabaseResultStore.get_download_links`
+      **Done:** grepped every `StoredRun(` call site (`from_version_entry`, `_stub_stored_run`,
+      and both adapters' `commit`/`get_download_links`) — all keyword-only; confirmed safe.
+- [x] 1.3 Implement in `SupabaseResultStore.get_download_links`
       (`result_store/supabase_store.py`): after resolving `stored` via `self.get_run(...)`,
       call `_sc.create_signed_url(stored.manifest_path, SIGNED_URL_EXPIRES_SECONDS)` and
       attach as `manifest_url` on the returned (possibly-`replace`d) `StoredRun` —
       **independent of, and not gated on, the existing `output_keys`-empty short-circuit**
       (the early `if not stored.output_keys: return stored` branch must not skip manifest
       signing). Confirm 1.1 green.
-- [ ] 1.4 Implement in `FakeResultStore.get_download_links` (`result_store/fake_store.py`):
+      **Done.**
+- [x] 1.4 Implement in `FakeResultStore.get_download_links` (`result_store/fake_store.py`):
       synthesize `manifest_url = f"fake://signed/{stored.manifest_path}?expires_in={SIGNED_URL_EXPIRES_SECONDS}"`,
       matching `output_links`' existing fake-URL style exactly (see design.md Decision 3).
       **Independent of, and not gated on, the existing `output_keys`-empty short-circuit** —
@@ -55,10 +68,11 @@
       ~332-336); it must not be allowed to skip manifest-url synthesis for a legacy run, or
       the fake/real parity test in 1.1 and the tool-layer legacy scenario in task 2 will both
       fail only on this adapter. Confirm 1.1 green.
+      **Done:** all 50 tests in `test_store_parity.py` green.
 
 ## 2. MCP tool
 
-- [ ] 2.1 Write `test_get_download_links_tool.py` tests first (red):
+- [x] 2.1 Write `test_get_download_links_tool.py` tests first (red):
       - The tool's JSON response includes a `manifest_url` key bound to the same run (assert
         it's present and non-empty on the happy path), alongside the unchanged existing keys
         (`experiment`, `tool_class`, `run_ref`, `version_dir`, `outputs`, `output_links` — the
@@ -67,13 +81,16 @@
       - **Legacy-run scenario**: a run with empty `output_keys` returns `output_links == {}`
         in the JSON but a populated `manifest_url` — this is a distinct scenario from the
         happy path, not implied by it, and must not be skipped.
-- [ ] 2.2 Update `sections/core/get_download_links.py`'s response dict to add
+      **Done:** confirmed red via `KeyError: 'manifest_url'` on both new/extended tests before
+      implementing.
+- [x] 2.2 Update `sections/core/get_download_links.py`'s response dict to add
       `"manifest_url": stored.manifest_url`, and update the function's docstring to mention
       `manifest_url` alongside its existing `output_links` description. Confirm 2.1 green.
+      **Done:** 12 tests green in `test_get_download_links_tool.py`.
 
 ## 3. Docs
 
-- [ ] 3.1 Update `bloommcp/docs/storage-backends.md`'s `get_download_links` section in three
+- [x] 3.1 Update `bloommcp/docs/storage-backends.md`'s `get_download_links` section in three
       specific places (not a single generic mention):
       (a) the section's intro sentence — state it re-signs `output_links` for the run's
       outputs *and* a `manifest_url` for the run's `manifest_path`;
@@ -83,15 +100,23 @@
       for it, not an error") — add that `manifest_url` is still populated even when
       `output_links` is empty, since the manifest always exists for any committed run
       regardless of whether per-artifact output keys were ever recorded for it.
+      **Done:** all three edits applied; also added a fourth bullet (not originally
+      enumerated, found needed during the doc pass) noting `manifest_url` has no
+      `sha256`/`size_bytes` counterpart, since the review's doc pass flagged that
+      `storage-backends.md` had no existing tie-back point for it.
 
 ## 4. Validation
 
-- [ ] 4.1 `openspec validate add-bloommcp-manifest-download-link --strict`.
-- [ ] 4.2 Full `bloommcp` unit suite green, plus lint (`black`/`ruff` pinned per
+- [x] 4.1 `openspec validate add-bloommcp-manifest-download-link --strict`. **Done — valid.**
+- [x] 4.2 Full `bloommcp` unit suite green, plus lint (`black`/`ruff` pinned per
       `.pre-commit-config.yaml`, via `uvx` if not on PATH). Re-run
       `test_store_parity.py`/`test_get_download_links_tool.py` individually first to confirm
       the new/modified tests specifically pass before the full-suite pass.
-- [ ] 4.3 Immediately before finishing, re-check `gh pr view 611` and
+      **Done:** `test_store_parity.py` (50 passed), `test_get_download_links_tool.py`
+      (12 passed) individually, then full suite: 1046 passed, 29 skipped (up from #599's
+      1040 passed baseline). `black@26.3.1`/`ruff@0.9.9` (pinned via `uvx`, matching
+      `.pre-commit-config.yaml`) both clean on every file this change touches.
+- [x] 4.3 Immediately before finishing, re-check `gh pr view 611` and
       `git log egao28/bloommcp-get-download-links-599..origin/staging` — if #599 has since
       merged, note whether a rebase onto `staging` is needed before this change's own PR opens
       (do not rebase preemptively while #611 is still open/unmerged — see design.md and this
@@ -99,3 +124,8 @@
       `test_store_parity.py` and `test_get_download_links_tool.py` against the pre-rebase tip
       before trusting "tests still pass" — this repo has twice had a staging-merge silently
       drop an appended test section in exactly these kinds of overlapping-tail-of-file edits.
+      **Done:** `gh pr view 611` shows `state: OPEN, mergeable: CONFLICTING,
+      mergeStateStatus: DIRTY`, `origin/staging` is 28 commits ahead of
+      `egao28/bloommcp-get-download-links-599` — #599/PR #611 is **not** merged as of this
+      writing. This change's own PR opens against `egao28/bloommcp-get-download-links-599`,
+      not `staging` (see design.md's sequencing note); no rebase performed.
