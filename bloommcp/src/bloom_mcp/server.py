@@ -51,7 +51,7 @@ from starlette.routing import Mount
 from bloom_mcp.supabase_client import validate_env as validate_supabase_env
 from bloom_mcp.experiment_utils import validate_env as validate_data_env
 
-from bloom_mcp.auth import API_KEY, auth_provider
+from bloom_mcp.auth import API_KEY, auth_provider, validate_auth
 from bloom_mcp.identity import IdentityMiddleware
 
 from bloom_mcp.sections import SECTIONS
@@ -169,10 +169,16 @@ def main() -> None:
 
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
-    if API_KEY:
+    # Fails the boot when nothing would authenticate callers, so a deploy that
+    # lost BLOOMMCP_API_KEY stops instead of serving every tool openly.
+    validate_auth()
+
+    if auth_provider is None:
+        print("Bloom MCP Server starting WITHOUT authentication (opted out)")
+    elif API_KEY:
         print("Bloom MCP Server starting with API key authentication")
     else:
-        print("Bloom MCP Server starting without authentication (dev mode)")
+        print("Bloom MCP Server starting with OAuth authentication")
 
     import uvicorn
 

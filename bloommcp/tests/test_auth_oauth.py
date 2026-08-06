@@ -14,6 +14,7 @@ session path.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 
@@ -195,3 +196,83 @@ def test_api_key_verifier_rejects_an_oauth_token():
 
 def test_oauth_verifier_rejects_the_api_key(oauth):
     assert _verify(oauth, "s3cret") is None
+
+
+# --- Refusing to serve unauthenticated (bloom#29 pt. 3) ----------------------
+#
+# `validate_auth` runs from `server.main()`, not at import, matching how the
+# Supabase and data-directory validators work — importing `bloom_mcp` stays
+# usable with no env, while a misconfigured deploy still fails at boot.
+
+
+_AUTH_ENV_KEYS = (
+    "BLOOMMCP_API_KEY",
+    "BLOOMMCP_PUBLIC_URL",
+    "BLOOMMCP_OAUTH_AUTHORIZATION_SERVER",
+    "BLOOMMCP_ALLOW_NO_AUTH",
+)
+
+
+@pytest.fixture
+def reload_auth(monkeypatch):
+    """Re-import ``bloom_mcp.auth`` under a chosen env, then put it back.
+
+    The module reads its env once at import, so these tests have to reload it.
+    Reloading mutates state every other test shares, so the fixture restores
+    the original environment and reloads again on teardown — without that, a
+    reload here leaves later tests seeing no auth configured.
+    """
+    import importlib
+
+    import bloom_mcp.auth as auth_module
+
+    saved = {k: os.environ.get(k) for k in _AUTH_ENV_KEYS}
+
+    def _load(**env):
+        for key in _AUTH_ENV_KEYS:
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        return importlib.reload(auth_module)
+
+    yield _load
+
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    importlib.reload(auth_module)
+
+
+def test_no_auth_configured_refuses_to_start(reload_auth):
+    mod = reload_auth()
+    assert mod.auth_provider is None
+    with pytest.raises(RuntimeError, match="No authentication is configured"):
+        mod.validate_auth()
+
+
+def test_explicit_opt_out_allows_no_auth(reload_auth):
+    mod = reload_auth(BLOOMMCP_ALLOW_NO_AUTH="1")
+    mod.validate_auth()  # must not raise
+
+
+def test_api_key_alone_satisfies_the_guard(reload_auth):
+    mod = reload_auth(BLOOMMCP_API_KEY="s3cret")
+    mod.validate_auth()
+
+
+def test_oauth_alone_satisfies_the_guard_without_an_api_key(reload_auth):
+    """OAuth-only is authenticated, so a missing API key must not fail the boot."""
+    mod = reload_auth(
+        BLOOMMCP_PUBLIC_URL="https://example.test/bloommcp",
+        BLOOMMCP_OAUTH_AUTHORIZATION_SERVER="https://example.test/api/auth/v1",
+    )
+    assert mod.auth_provider is not None
+    mod.validate_auth()
+
+
+def test_importing_auth_never_raises_without_env(reload_auth):
+    """Import stays side-effect-free; only validate_auth() enforces."""
+    mod = reload_auth()
+    assert mod.auth_provider is None
