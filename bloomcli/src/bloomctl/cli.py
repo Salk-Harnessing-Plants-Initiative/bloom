@@ -15,17 +15,22 @@ def cli() -> None:
     """Bloom command-line tool"""
 
 
-def _authed_client(profile: str):
-    """Load a profile's credentials and return a signed-in Supabase client."""
-    from . import auth
+def _load_creds(profile: str):
+    """Load a profile's stored credentials, or fail with a login hint."""
     from .credentials import load_credentials
 
     try:
-        creds = load_credentials(profile)
+        return load_credentials(profile)
     except (FileNotFoundError, ValueError) as exc:
         raise click.ClickException(f"{exc} — run `bloomctl login`.") from exc
+
+
+def _authed_client(profile: str):
+    """Load a profile's credentials and return a signed-in Supabase client."""
+    from . import auth
+
     try:
-        return auth.make_authed_client(creds)
+        return auth.make_authed_client(_load_creds(profile))
     except auth.AuthError as exc:
         raise click.ClickException(str(exc)) from exc
 
