@@ -72,11 +72,11 @@ def test_download_images_reports_both_phases(tmp_path, monkeypatch):
         _Client(), [SCAN], tmp_path, workers=1, on_progress=lambda *a: seen.append(a)
     )
 
-    assert ("listing", 1, 1) in seen
+    assert ("listing", 1, 1, 0) in seen
     assert [s for s in seen if s[0] == "downloading"] == [
-        ("downloading", 1, 3),
-        ("downloading", 2, 3),
-        ("downloading", 3, 3),
+        ("downloading", 1, 3, 0),
+        ("downloading", 2, 3, 0),
+        ("downloading", 3, 3, 0),
     ]
 
 
@@ -89,7 +89,7 @@ def test_every_frame_is_counted_once_when_concurrent(tmp_path, monkeypatch):
         [SCAN],
         tmp_path,
         workers=8,
-        on_progress=lambda phase, done, total: counted.append(done)
+        on_progress=lambda phase, done, total, failed: counted.append(done)
         if phase == "downloading"
         else None,
     )
@@ -103,3 +103,75 @@ def test_download_images_stays_quiet_without_a_callback(tmp_path, monkeypatch, c
     dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
 
     assert capsys.readouterr().err == "", "the library must not print on its own"
+
+
+# --- failures must not read as progress -------------------------------------
+
+
+class _DeadBucket:
+    """Every frame fails, as it would on a full disk or a dead connection."""
+
+    def download(self, object_path):
+        raise RuntimeError("[Errno 28] No space left on device")
+
+
+def test_a_run_where_everything_fails_does_not_report_success(tmp_path, monkeypatch):
+    """Counting completions alone showed 100% on a run that downloaded nothing at all."""
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(20))
+    client = _Client()
+    client.bucket = _DeadBucket()
+    lines: list[str] = []
+
+    result = dl.download_images(
+        client,
+        [SCAN],
+        tmp_path,
+        workers=4,
+        on_progress=lambda phase, done, total, failed: lines.append(
+            dl.format_progress(phase, done, total, failed)
+        )
+        if phase == "downloading"
+        else None,
+    )
+
+    assert result.ok == 0 and result.failed == 20
+    assert lines[-1] == "20/20 frames (100%), 20 failed"
+    assert all("failed" in line for line in lines), "every line must carry the bad news"
+
+
+def test_a_partly_failing_run_shows_the_failure_count_growing(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(10))
+
+    class _EveryOtherFails:
+        def download(self, object_path):
+            if int(object_path.split("/")[-1].split(".")[0]) % 2:
+                raise RuntimeError("boom")
+            return b"x"
+
+    client = _Client()
+    client.bucket = _EveryOtherFails()
+    seen: list[tuple[int, int]] = []
+
+    dl.download_images(
+        client,
+        [SCAN],
+        tmp_path,
+        workers=1,
+        on_progress=lambda phase, done, total, failed: seen.append((done, failed))
+        if phase == "downloading"
+        else None,
+    )
+
+    assert seen[-1] == (10, 5)
+    assert [f for _, f in seen] == [0, 1, 1, 2, 2, 3, 3, 4, 4, 5], "failures counted as they happen"
+
+
+def test_a_healthy_run_says_nothing_about_failures():
+    assert dl.format_progress("downloading", 500, 1000) == "500/1,000 frames (50%)"
+    assert dl.format_progress("downloading", 500, 1000, 0) == "500/1,000 frames (50%)"
+
+
+def test_the_reporter_passes_the_failure_count_through(capsys):
+    report = dl.ProgressReporter(interval=0.0)
+    report("downloading", 7, 10, 3)
+    assert "7/10 frames (70%), 3 failed" in capsys.readouterr().err

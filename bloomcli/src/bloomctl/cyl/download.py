@@ -369,7 +369,7 @@ def _run_bounded(
     workers: int,
     *,
     window_factor: int = 4,
-    on_done: Callable[[], None] | None = None,
+    on_done: Callable[[Any], None] | None = None,
 ) -> list[FrameResult]:
     """Run ``run_one`` over ``work`` across ``workers`` threads, a window at a time.
 
@@ -377,7 +377,7 @@ def _run_bounded(
     first byte arrives. Keeping a limited number in flight uses flat memory and still keeps
     every thread busy. Results are stored by position, so the order matches ``work``.
 
-    ``on_done`` is called once per finished item. Completed work is collected here, on the
+    ``on_done`` receives each finished item. Completed work is collected here, on the
     calling thread, so it needs no locking of its own.
     """
     results: list[Any] = [None] * len(work)
@@ -390,9 +390,10 @@ def _run_bounded(
         while pending:
             done, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
-                results[pending.pop(future)] = future.result()
+                outcome = future.result()
+                results[pending.pop(future)] = outcome
                 if on_done is not None:
-                    on_done()
+                    on_done(outcome)
             for index, item in itertools.islice(remaining, len(done)):
                 pending[pool.submit(run_one, item)] = index
     return results
@@ -497,7 +498,7 @@ def download_images(
     out_dir: Path,
     *,
     workers: int = DEFAULT_WORKERS,
-    on_progress: Callable[[str, int, int], None] | None = None,
+    on_progress: Callable[[str, int, int, int], None] | None = None,
 ) -> DownloadResult:
     """Download every frame for every scan from Storage bucket `images`.
 
@@ -510,8 +511,8 @@ def download_images(
     Frames already written by an earlier run are skipped, which is what makes an interrupted
     download cheap to resume. To fetch an experiment afresh, download into a new directory.
 
-    ``on_progress(phase, done, total)`` is called as work completes, with ``phase`` of
-    ``"listing"`` or ``"downloading"``. It is only ever called from this thread.
+    ``on_progress(phase, done, total, failed)`` is called as work completes, with ``phase``
+    of ``"listing"`` or ``"downloading"``. It is only ever called from this thread.
     """
     sweep_orphan_temps(Path(out_dir))
 
@@ -521,7 +522,7 @@ def download_images(
     slots: list[Any] = []
     for listed, scan in enumerate(scans, start=1):
         if on_progress is not None:
-            on_progress("listing", listed, len(scans))
+            on_progress("listing", listed, len(scans), 0)
         images, failure = _list_scan_frames(client, scan)
         if failure is not None:
             slots.append(failure)
@@ -547,19 +548,23 @@ def download_images(
 
     # Never start more threads than there are frames, than were asked for, or than the limit.
     n = min(workers, MAX_WORKERS, len(work)) if work else 0
-    done = 0
+    done = failed = 0
 
-    def _tick() -> None:
-        nonlocal done
+    def _tick(result: FrameResult) -> None:
+        # Counting completions alone would show 100% on a run where every frame failed.
+        nonlocal done, failed
         done += 1
+        if not result.ok:
+            failed += 1
         if on_progress is not None:
-            on_progress("downloading", done, len(work))
+            on_progress("downloading", done, len(work), failed)
 
     if n <= 1:
         fetched = []
         for pair in work:
-            fetched.append(_one(pair))
-            _tick()
+            outcome = _one(pair)
+            fetched.append(outcome)
+            _tick(outcome)
     else:
         fetched = _run_bounded(work, _one, n, on_done=_tick)
 
@@ -582,7 +587,7 @@ class ProgressReporter:
         self._last = 0.0
         self._phase = ""
 
-    def __call__(self, phase: str, done: int, total: int) -> None:
+    def __call__(self, phase: str, done: int, total: int, failed: int = 0) -> None:
         moment = self._now()
         # Always show the first and last of a phase, so short runs still say something and a
         # finished phase never sits at 97%.
@@ -591,15 +596,20 @@ class ProgressReporter:
             return
         self._last = moment
         self._phase = phase
-        click.echo(f"  {format_progress(phase, done, total)}", err=True)
+        click.echo(f"  {format_progress(phase, done, total, failed)}", err=True)
 
 
-def format_progress(phase: str, done: int, total: int) -> str:
-    """One progress line, e.g. ``12,480/413,926 frames (3%)``."""
+def format_progress(phase: str, done: int, total: int, failed: int = 0) -> str:
+    """One progress line, e.g. ``12,480/413,926 frames (3%), 12 failed``.
+
+    Failures are named as soon as there are any: the count on its own says how much work has
+    been attempted, which on a run where everything is failing would read as healthy.
+    """
     noun = "scans" if phase == "listing" else "frames"
     percent = f" ({done * 100 // total}%)" if total else ""
     prefix = "Listing frames: " if phase == "listing" else ""
-    return f"{prefix}{done:,}/{total:,} {noun}{percent}"
+    problem = f", {failed:,} failed" if failed else ""
+    return f"{prefix}{done:,}/{total:,} {noun}{percent}{problem}"
 
 
 def _one_line(text: Any) -> str:
