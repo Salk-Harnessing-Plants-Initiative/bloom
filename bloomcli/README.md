@@ -157,7 +157,7 @@ image, into `<out_dir>`.
 bloomctl cyl download <out_dir>
   ( --experiment-id N | --scan-id N | --experiment-name "<text>" [--species <name>] )
   [--meta-only] [--plant-qr-code QR] [--plant-age-min D] [--plant-age-max D]
-  [--limit N] [--overwrite] [-n/--workers N] [-p/--profile PROFILE]
+  [--limit N] [-n/--workers N] [-p/--profile PROFILE]
 ```
 
 Pick **exactly one** target:
@@ -211,8 +211,6 @@ bloomctl cyl download ./out --experiment-id 42   # interrupted at 117k of 414k f
 bloomctl cyl download ./out --experiment-id 42   # picks up from 117k
 ```
 
-Pass `--overwrite` to ignore what's on disk and re-fetch every frame.
-
 **One selection per directory.** A download records what it fetched, so re-running the same
 command resumes it. Downloading something *different* into the same directory is refused —
 otherwise you would end up with two sets of images in one tree and a `scans.csv` describing only
@@ -223,9 +221,9 @@ bloomctl cyl download ./check --experiment-id 42 --plant-qr-code QR-1   # one pl
 bloomctl cyl download ./full  --experiment-id 42                        # everything
 ```
 
-> **If the directory was written by bloomctl 0.1.0a3 or earlier**, re-fetch it once with
-> `--overwrite`. Those releases wrote frames non-atomically, so an interrupted run could leave a
-> truncated file behind, and resume treats any non-empty file as complete.
+> **If the directory was written by bloomctl 0.1.0a3 or earlier**, download the experiment again
+> into a new directory. Those releases wrote frames non-atomically, so an interrupted run could
+> leave a truncated file behind, and resume treats any non-empty file as complete.
 
 Long runs keep working past the point where the login's token is refreshed, so a download that
 takes several hours completes. If a storage error does mention an expired session, re-running the

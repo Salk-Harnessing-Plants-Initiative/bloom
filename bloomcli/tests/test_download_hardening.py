@@ -469,42 +469,6 @@ def test_a_different_age_window_is_a_different_selection(tmp_path, monkeypatch):
     assert "plant_age_max" in narrowed.output
 
 
-def test_overwrite_does_not_let_two_selections_share_a_directory(tmp_path, monkeypatch):
-    """--overwrite re-fetches this run's frames; it does not remove the earlier selection's."""
-    from click.testing import CliRunner
-
-    from bloomctl.cli import cli
-
-    out = tmp_path / "out"
-    _cli(monkeypatch, _Client(), [SCAN])
-    CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "100"])
-
-    _cli(monkeypatch, _Client(), [SCAN])
-    result = CliRunner().invoke(
-        cli, ["cyl", "download", str(out), "--experiment-id", "200", "--overwrite"]
-    )
-
-    assert result.exit_code != 0, "--overwrite must not be an escape hatch"
-    assert dl.read_manifest(out)["experiment_id"] == 100
-
-
-def test_overwrite_re_fetches_frames_that_are_already_on_disk(tmp_path, monkeypatch):
-    from click.testing import CliRunner
-
-    from bloomctl.cli import cli
-
-    out = tmp_path / "out"
-    _cli(monkeypatch, _Client(), [SCAN])
-    CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "42"])
-
-    fresh = _Client()
-    _cli(monkeypatch, fresh, [SCAN])
-    again = CliRunner().invoke(
-        cli, ["cyl", "download", str(out), "--experiment-id", "42", "--overwrite"]
-    )
-
-    assert again.exit_code == 0, again.output
-    assert fresh.bucket.calls == 2, "--overwrite must re-fetch, not resume"
 
 
 def test_a_run_that_matches_no_scans_fails(tmp_path, monkeypatch):

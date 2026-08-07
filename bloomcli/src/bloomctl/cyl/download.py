@@ -327,8 +327,6 @@ def download_frame(
     scan: dict[str, Any],
     image: dict[str, Any],
     out_dir: Path,
-    *,
-    overwrite: bool = False,
 ) -> FrameResult:
     """Download one frame to its destination, returning the outcome.
 
@@ -342,7 +340,7 @@ def download_frame(
     result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
     try:
         dest = image_dest(out_dir, scan, image)
-        if not overwrite and already_downloaded(dest):
+        if already_downloaded(dest):
             result.ok = True
             result.skipped = True
             return result
@@ -478,7 +476,6 @@ def download_images(
     scans: list[dict[str, Any]],
     out_dir: Path,
     *,
-    overwrite: bool = False,
     workers: int = DEFAULT_WORKERS,
 ) -> DownloadResult:
     """Download every frame for every scan from Storage bucket `images`.
@@ -489,8 +486,8 @@ def download_images(
 
     A failing frame is recorded rather than raised, so one bad frame can't abort the run.
 
-    Frames already written by an earlier run are skipped unless ``overwrite`` is set, which is
-    what makes an interrupted download cheap to resume.
+    Frames already written by an earlier run are skipped, which is what makes an interrupted
+    download cheap to resume. To fetch an experiment afresh, download into a new directory.
     """
     sweep_orphan_temps(Path(out_dir))
 
@@ -519,7 +516,7 @@ def download_images(
         raise CollidingFrames("; ".join(clashes))
 
     def _one(pair: tuple[dict[str, Any], dict[str, Any]]) -> FrameResult:
-        return download_frame(client, pair[0], pair[1], out_dir, overwrite=overwrite)
+        return download_frame(client, pair[0], pair[1], out_dir)
 
     # Never start more threads than there are frames, than were asked for, or than the limit.
     n = min(workers, MAX_WORKERS, len(work)) if work else 0
@@ -652,11 +649,6 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     help="Maximum number of scans to fetch.",
 )
 @click.option(
-    "--overwrite",
-    is_flag=True,
-    help="Re-download frames that are already on disk (default: keep them and resume).",
-)
-@click.option(
     "-n",
     "--workers",
     type=click.IntRange(min=1, max=MAX_WORKERS),
@@ -676,7 +668,6 @@ def download(
     plant_age_min: int,
     plant_age_max: int,
     limit: int,
-    overwrite: bool,
     workers: int,
 ) -> None:
     """Download a cylinder experiment (--experiment-id / --experiment-name) or a single scan
@@ -761,8 +752,6 @@ def download(
     )
     mismatch = describe_manifest_mismatch(read_manifest(out), selector)
     if mismatch:
-        # Not escapable with --overwrite: that re-fetches this run's frames but leaves the
-        # earlier selection's in place, which is the mix-up being prevented.
         raise click.ClickException(
             f"{out} already holds a different download ({mismatch}). Give each selection its "
             f"own directory. Re-running the same command here resumes where it left off."
@@ -777,7 +766,7 @@ def download(
         return
 
     try:
-        result = download_images(client, scans, out, overwrite=overwrite, workers=workers)
+        result = download_images(client, scans, out, workers=workers)
     except CollidingFrames as exc:
         raise click.ClickException(
             f"{exc}. Refusing to download, because one frame's image would overwrite or mask "

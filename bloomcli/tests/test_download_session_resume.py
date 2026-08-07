@@ -334,18 +334,6 @@ def test_download_images_re_downloads_a_truncated_zero_byte_frame(tmp_path, monk
     assert stub.read_bytes() == b"bytes::cyl-images/0.png"
 
 
-def test_download_images_overwrite_refetches_everything(tmp_path, monkeypatch):
-    client = _Client()
-    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(2))
-    stale_frame = _frame(tmp_path, 0)
-    stale_frame.parent.mkdir(parents=True, exist_ok=True)
-    stale_frame.write_bytes(b"stale")
-
-    result = dl.download_images(client, [SCAN], tmp_path, overwrite=True, workers=1)
-
-    assert result.skipped == 0 and client.bucket.calls == 2
-    assert stale_frame.read_bytes() == b"bytes::cyl-images/0.png"
-
 
 def test_download_log_marks_skipped_frames(tmp_path, monkeypatch):
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(2))

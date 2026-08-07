@@ -223,19 +223,6 @@ def test_resume_skips_existing_frames_under_concurrency(tmp_path, monkeypatch):
     assert _frame(tmp_path, 5).read_bytes() == b"from-an-earlier-run"
 
 
-def test_overwrite_refetches_everything_under_concurrency(tmp_path, monkeypatch):
-    client = _Client()
-    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(10))
-    for number in (1, 4):
-        existing = _frame(tmp_path, number)
-        existing.parent.mkdir(parents=True, exist_ok=True)
-        existing.write_bytes(b"stale")
-
-    result = dl.download_images(client, [SCAN], tmp_path, overwrite=True, workers=8)
-
-    assert result.skipped == 0 and result.downloaded == 10
-    assert client.bucket.calls == 10
-
 
 # --- CLI --------------------------------------------------------------------
 

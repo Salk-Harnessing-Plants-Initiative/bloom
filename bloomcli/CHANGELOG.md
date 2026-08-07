@@ -52,8 +52,8 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   reported as `already on disk` (logged as `SKIP`), so re-running the same command after any
   interruption — a failed run, a killed process, a network drop — fetches only what is still
   missing instead of restarting from zero. Frames are written atomically, so a crash
-  mid-write can't leave a truncated file for a later run to mistake for complete. Pass
-  `--overwrite` to re-fetch everything regardless.
+  mid-write can't leave a truncated file for a later run to mistake for complete. To fetch an
+  experiment afresh, download it into a new directory.
 
   A download records which selection it fetched, so re-running the same command resumes it and
   downloading a different selection into the same directory is refused — two selections in one
@@ -61,7 +61,7 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
   **Note for output directories written by 0.1.0a3 or earlier**: those releases wrote frames
   non-atomically, so an interrupted run could leave a truncated file behind. Resume treats any
-  non-empty file as complete, so re-fetch such a directory once with `--overwrite`.
+  non-empty file as complete, so download the experiment again into a new directory.
 
 ## [0.1.0a3] - 2026-08-04
 
