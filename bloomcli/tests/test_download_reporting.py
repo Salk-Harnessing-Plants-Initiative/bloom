@@ -259,6 +259,20 @@ def test_the_log_records_what_a_full_disk_did(tmp_path, monkeypatch):
     assert "7 failed" in text
     assert "No space left on device" in text
     assert result.incomplete
+    summary = text.strip().splitlines()[-1]
+    assert "the disk filled up" in summary, "the footer is what people read on a huge log"
+
+
+def test_the_summary_gives_no_cause_when_the_disk_was_never_the_problem(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(2))
+
+    result = dl.download_images(_Client(budget=1), [SCAN], tmp_path, workers=1)
+    log = tmp_path / "log.txt"
+    dl.write_download_log(result, log)
+
+    summary = log.read_text().strip().splitlines()[-1]
+    assert "1 failed" in summary
+    assert "filled up" not in summary
 
 
 def test_an_ordinary_write_error_does_not_stop_the_run(tmp_path, monkeypatch):

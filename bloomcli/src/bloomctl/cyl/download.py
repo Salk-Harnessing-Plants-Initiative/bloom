@@ -685,6 +685,10 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
         summary += f", {result.scans_unlisted} scan(s) could not be listed (frames unknown)"
     if result.scans_without_frames:
         summary += f", {result.scans_without_frames} scan(s) have no images"
+    # The footer is where people look on a log with tens of thousands of lines, so it has to
+    # carry the cause rather than leaving it to be pieced together from the FAIL lines.
+    if result.disk_full:
+        summary += " — the disk filled up, so the remaining frames were never attempted"
     lines.append(summary)
     atomic_write_bytes(path, ("\n".join(lines) + "\n").encode("utf-8"))
 
