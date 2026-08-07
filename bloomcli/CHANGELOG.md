@@ -8,6 +8,8 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a4] - 2026-08-06
+
 ### Fixed
 
 - `cyl download` no longer fails the rest of a long run once the login's token is refreshed.
