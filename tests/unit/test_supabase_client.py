@@ -150,6 +150,47 @@ def test_get_postgrest_client_timeout_override_builds_client_options(monkeypatch
     assert captured["options"].postgrest_client_timeout == 5.0
 
 
+def test_postgrest_client_timeout_is_enforced_end_to_end(monkeypatch):
+    """The two tests above only prove `ClientOptions` is built with the right number --
+    this proves supabase-py actually enforces it through httpx when a request genuinely
+    blocks, not just that the value is threaded through and ignored. Uses a local socket
+    that accepts a connection and never responds -- no external network or live Supabase
+    needed, so this is deterministic and fast, not flaky."""
+    import socket
+    import threading
+    import time
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def _accept_and_stall():
+        try:
+            conn, _ = server.accept()
+            time.sleep(5)  # long enough to outlast the short timeout below
+            conn.close()
+        except OSError:
+            pass  # server socket closed while accept() was blocking
+
+    thread = threading.Thread(target=_accept_and_stall, daemon=True)
+    thread.start()
+
+    monkeypatch.setenv("SUPABASE_URL", f"http://127.0.0.1:{port}")
+    monkeypatch.setenv("BLOOM_AGENT_KEY", "fake-agent-jwt")
+
+    client = supabase_client.get_postgrest_client(timeout_seconds=0.3)
+
+    start = time.monotonic()
+    with pytest.raises(Exception):
+        client.table("cyl_experiments").select("id").execute()
+    elapsed = time.monotonic() - start
+
+    server.close()
+    thread.join(timeout=1)
+    assert elapsed < 3.0, f"expected a ~0.3s timeout, took {elapsed:.2f}s instead"
+
+
 # ─────────────────────── env-validation at import ────────────────────
 
 

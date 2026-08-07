@@ -122,6 +122,15 @@ own `species` join removal (`add-bulk-trait-read-rpc/design.md`'s D1, a case whe
 the fix because the sibling function's join was dead weight that turned into a bug). Do not by-analogy drop
 this one; it is not the same situation. See Testing below for the regression test this requires.
 
+**Stated plainly, since "load-bearing" can read as ambiguous about which direction it cuts (flagged in PR
+review): keeping this join means a plant with no accession is silently excluded from `n_plants`/`n_traits`
+— it does not get counted.** This is not a gap this change fixes; it's `get_experiment_traits`'s own
+existing undercount, faithfully reproduced so the two functions agree (this change's stated goal is
+matching that function's semantics, not auditing whether they're the right semantics). Whether
+`get_experiment_traits` itself *should* exclude accession-less plants is a legitimate question, but it's
+about a function this change doesn't otherwise touch — worth a follow-up issue against
+`get_experiment_traits`, not a fix folded into this one.
+
 Leading `IF source_id_ IS NOT NULL AND run_id_ IS NOT NULL THEN RAISE EXCEPTION ...` guard, same as
 `get_experiment_traits`/`get_scan_traits` (requires `plpgsql`, matching D1's `LANGUAGE` choice). That
 guard's `RAISE EXCEPTION` carries no distinct `SQLSTATE`, and `bloommcp`'s `_safe_rpc` wrapper collapses
@@ -492,4 +501,15 @@ the Python rewrite lands.
   step), this change implements D1's `bigint` recommendation now and surfaces it explicitly in the PR
   description for Benfica's review, rather than blocking section 1's start on a separate confirmation
   round-trip. D5's benchmark (task 0.2) is different in kind — it's this change's own methodology, not an
-  external approval — and does gate before merge, since the shipped constant depends on its result.
+  external approval. **Revised per PR review:** the shipped default (120s) no longer depends on that
+  benchmark for *safety* — it deliberately matches supabase-py's own prior package default, so this
+  change introduces no new hard-failure risk on any existing call site. The benchmark still gates any
+  future *reduction* below 120s, which is the improvement this change originally intended but didn't ship
+  without real data to back it.
+- **`search_path` pinning** (PR review suggestion, not implemented here): neither `get_experiment_traits`
+  nor this change's `get_experiment_summary_counts` sets `search_path` explicitly, despite both being
+  `SECURITY INVOKER` functions with schema-qualified references throughout their bodies (so the risk is
+  low, not zero — an invoker with an unusual `search_path` could theoretically resolve an unqualified
+  identifier differently, though neither function body has one). Standard hardening practice, but it
+  would apply to an existing sibling function this change doesn't otherwise touch — worth one follow-up
+  ticket covering both functions together, not folded into this change.

@@ -59,9 +59,11 @@
 - [x] 2.8 `experiment_id_ = NULL` (bulk case): returns one row per experiment that has matching data
       (verified against a fixture with ≥2 such experiments plus ≥1 with none), each row's counts matching
       `_assert_matches_get_experiment_traits` independently.
-- [x] 2.9 A non-finite (`NULL`-valued) latest trait reading still counts toward `n_traits` (the trait name
-      is present even though its value is null) — matches `get_experiment_traits`'s "non-finite values
-      surfaced as NULL, not omitted" semantics.
+- [x] 2.9 A `NULL`-valued latest trait reading still counts toward `n_traits` (the trait name is present
+      even though its value is null) — `COUNT(DISTINCT trait_name)` never reads `value`, so this doesn't
+      distinguish `NULL` from a literal non-finite float actually stored in the `real` column (bypassing
+      the write-back RPC's own NaN/Infinity→NULL normalization); named/tested as a NULL-value case, not a
+      non-finite-value case, per PR review (renamed from an earlier, more sweeping claim).
 - [x] 2.10 Role reads: `SET LOCAL ROLE bloom_agent`/`bloom_user`/`bloom_admin` can call the function
       end-to-end through the full join chain; `authenticated` via
       `has_function_privilege('authenticated', 'get_experiment_summary_counts(bigint,bigint,text)',

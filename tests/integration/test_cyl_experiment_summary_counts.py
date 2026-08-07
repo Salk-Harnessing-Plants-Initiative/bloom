@@ -224,7 +224,15 @@ def test_bulk_unpinned_returns_one_row_per_experiment_with_data(pg_conn):
     pg_conn.rollback()
 
 
-def test_non_finite_value_still_counts_toward_n_traits(pg_conn):
+def test_null_trait_value_still_counts_toward_n_traits(pg_conn):
+    """A NULL trait_value (SQL NULL) still counts toward n_traits -- COUNT(DISTINCT
+    trait_name) never inspects `value` at all, so a measured-but-null trait is not
+    invisible to the count. This seeds `_trait("length", None)`, which the write-back
+    RPC stores as SQL NULL for a non-finite (NaN/Infinity) measurement -- it does not
+    exercise a literal IEEE-754 NaN/Infinity actually stored in the `real` column
+    (bypassing the RPC), which n_traits' COUNT(DISTINCT trait_name) can't distinguish
+    from any other non-NULL value anyway, since it never reads `value`.
+    """
     with pg_conn.cursor() as cur:
         exp, _, imgs = _seed_experiment_scan(cur)
         _deliver(cur, imgs, "k", traits=[_trait("length", None)])

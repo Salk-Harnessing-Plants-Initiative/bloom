@@ -53,7 +53,7 @@ call.
 - **THEN** it returns a row for every experiment that has matching trait data, across the whole
   `cyl_experiments` table, in a single call — no per-experiment round trip is required
 
-#### Scenario: Non-finite trait values still count toward n_traits
+#### Scenario: A NULL-valued trait still counts toward n_traits
 
 - **WHEN** the latest source for a scan stored a `NULL` value for a trait
 - **THEN** `get_experiment_summary_counts` still counts that trait name toward `n_traits` for the

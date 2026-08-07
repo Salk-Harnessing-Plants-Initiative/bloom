@@ -270,6 +270,17 @@ class SupabaseReader:
                 {"experiment_id_": None, "source_id_": None, "run_id_": None},
             )
         except Exception as exc:
+            # Unlike the old per-experiment loop's per-row logger.warning below,
+            # a failure here fails the whole listing (Decision D4) -- log it so
+            # a total-listing failure isn't LESS observable than the partial
+            # failures it replaces, even though the caller also gets the
+            # chained ExperimentReadError.
+            logger.warning(
+                "list_experiments: %s RPC failed; the whole listing is failing "
+                "(no per-experiment fallback for a bulk call).",
+                _RPC_GET_EXPERIMENT_SUMMARY_COUNTS,
+                exc_info=True,
+            )
             raise ExperimentReadError(
                 "Could not list experiments: the database read failed."
             ) from exc

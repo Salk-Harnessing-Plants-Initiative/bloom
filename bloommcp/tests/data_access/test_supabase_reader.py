@@ -316,6 +316,26 @@ def test_list_experiments_raises_when_summary_counts_rpc_fails(
     assert "10.0.0.5" not in str(exc_info.value)
 
 
+def test_get_experiment_summary_counts_rpc_honors_a_pinned_experiment_id(
+    fake_supabase_storage, fake_supabase_db
+):
+    """`list_experiments()` only ever calls this RPC unpinned, but its signature
+    exists so a future source-pinning caller can reuse it pinned to one
+    experiment_id_ -- prove the fake (and therefore the contract a real caller
+    would rely on) actually honors that pin, not just the all-NULL case."""
+    import bloom_mcp.supabase_client as _sc
+
+    _seed_two_plant_experiment(fake_supabase_db, experiment_id=42)
+    _seed_two_plant_experiment(fake_supabase_db, experiment_id=43)
+
+    rows = _sc.call_rpc(
+        "get_experiment_summary_counts",
+        {"experiment_id_": 42, "source_id_": None, "run_id_": None},
+    )
+
+    assert {r["experiment_id"] for r in rows} == {42}
+
+
 def test_supabase_reader_no_longer_satisfies_raw_sourced(
     fake_supabase_storage, fake_supabase_db
 ):
