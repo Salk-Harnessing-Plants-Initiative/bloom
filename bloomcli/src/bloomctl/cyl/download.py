@@ -10,6 +10,7 @@ import csv
 import itertools
 import json
 import os
+import time
 import unicodedata
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
@@ -29,6 +30,10 @@ from ._storage import (
 # Frames are fetched one HTTP request each, so downloading several at once mostly overlaps
 # waiting. 8 is a modest default that speeds up a large experiment without hammering the server.
 DEFAULT_WORKERS = 8
+
+# How often a long run reports what it has done. Frequent enough that the command never looks
+# hung, rare enough that a log file doesn't fill up with it.
+PROGRESS_INTERVAL_SECONDS = 5.0
 
 # Upper limit on concurrent downloads, applied both to the flag and inside download_images so
 # no caller can open an unbounded number of connections.
@@ -359,13 +364,21 @@ def download_frame(
 
 
 def _run_bounded(
-    work: list[Any], run_one: Callable[[Any], FrameResult], workers: int, *, window_factor: int = 4
+    work: list[Any],
+    run_one: Callable[[Any], FrameResult],
+    workers: int,
+    *,
+    window_factor: int = 4,
+    on_done: Callable[[], None] | None = None,
 ) -> list[FrameResult]:
     """Run ``run_one`` over ``work`` across ``workers`` threads, a window at a time.
 
     Queueing every frame up front would cost hundreds of MB on a large experiment before the
     first byte arrives. Keeping a limited number in flight uses flat memory and still keeps
     every thread busy. Results are stored by position, so the order matches ``work``.
+
+    ``on_done`` is called once per finished item. Completed work is collected here, on the
+    calling thread, so it needs no locking of its own.
     """
     results: list[Any] = [None] * len(work)
     window = max(workers * window_factor, workers)
@@ -378,6 +391,8 @@ def _run_bounded(
             done, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
                 results[pending.pop(future)] = future.result()
+                if on_done is not None:
+                    on_done()
             for index, item in itertools.islice(remaining, len(done)):
                 pending[pool.submit(run_one, item)] = index
     return results
@@ -482,6 +497,7 @@ def download_images(
     out_dir: Path,
     *,
     workers: int = DEFAULT_WORKERS,
+    on_progress: Callable[[str, int, int], None] | None = None,
 ) -> DownloadResult:
     """Download every frame for every scan from Storage bucket `images`.
 
@@ -493,6 +509,9 @@ def download_images(
 
     Frames already written by an earlier run are skipped, which is what makes an interrupted
     download cheap to resume. To fetch an experiment afresh, download into a new directory.
+
+    ``on_progress(phase, done, total)`` is called as work completes, with ``phase`` of
+    ``"listing"`` or ``"downloading"``. It is only ever called from this thread.
     """
     sweep_orphan_temps(Path(out_dir))
 
@@ -500,7 +519,9 @@ def download_images(
     # to fetch. Building the list this way keeps unlisted scans next to the scans around them
     # rather than collected at the end of the log.
     slots: list[Any] = []
-    for scan in scans:
+    for listed, scan in enumerate(scans, start=1):
+        if on_progress is not None:
+            on_progress("listing", listed, len(scans))
         images, failure = _list_scan_frames(client, scan)
         if failure is not None:
             slots.append(failure)
@@ -526,11 +547,59 @@ def download_images(
 
     # Never start more threads than there are frames, than were asked for, or than the limit.
     n = min(workers, MAX_WORKERS, len(work)) if work else 0
-    fetched = [_one(pair) for pair in work] if n <= 1 else _run_bounded(work, _one, n)
+    done = 0
+
+    def _tick() -> None:
+        nonlocal done
+        done += 1
+        if on_progress is not None:
+            on_progress("downloading", done, len(work))
+
+    if n <= 1:
+        fetched = []
+        for pair in work:
+            fetched.append(_one(pair))
+            _tick()
+    else:
+        fetched = _run_bounded(work, _one, n, on_done=_tick)
 
     outcomes = iter(fetched)
     frames = [slot if isinstance(slot, FrameResult) else next(outcomes) for slot in slots]
     return DownloadResult(frames)
+
+
+class ProgressReporter:
+    """Prints how far a run has got, at most every ``interval`` seconds.
+
+    A large download takes hours; without this it prints one line and then goes quiet, and
+    there is no way to tell a working run from a stuck one. Goes to stderr so the paths and
+    summary on stdout stay usable in a script.
+    """
+
+    def __init__(self, *, interval: float | None = None, now=time.monotonic):
+        self._interval = PROGRESS_INTERVAL_SECONDS if interval is None else interval
+        self._now = now
+        self._last = 0.0
+        self._phase = ""
+
+    def __call__(self, phase: str, done: int, total: int) -> None:
+        moment = self._now()
+        # Always show the first and last of a phase, so short runs still say something and a
+        # finished phase never sits at 97%.
+        edge = phase != self._phase or done == total
+        if not edge and moment - self._last < self._interval:
+            return
+        self._last = moment
+        self._phase = phase
+        click.echo(f"  {format_progress(phase, done, total)}", err=True)
+
+
+def format_progress(phase: str, done: int, total: int) -> str:
+    """One progress line, e.g. ``12,480/413,926 frames (3%)``."""
+    noun = "scans" if phase == "listing" else "frames"
+    percent = f" ({done * 100 // total}%)" if total else ""
+    prefix = "Listing frames: " if phase == "listing" else ""
+    return f"{prefix}{done:,}/{total:,} {noun}{percent}"
 
 
 def _one_line(text: Any) -> str:
@@ -772,7 +841,9 @@ def download(
         return
 
     try:
-        result = download_images(client, scans, out, workers=workers)
+        result = download_images(
+            client, scans, out, workers=workers, on_progress=ProgressReporter()
+        )
     except CollidingFrames as exc:
         raise click.ClickException(
             f"{exc}. Refusing to download, because one frame's image would overwrite or mask "

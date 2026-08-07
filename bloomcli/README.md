@@ -200,6 +200,21 @@ bloomctl cyl download ./out --experiment-id 42 --workers 1    # sequential
 Valid range is 1–64; the ceiling is a guard against pointing an unbounded number of
 connections at the server. If downloads start erroring on a flaky connection, lower it.
 
+### Watching a long download
+
+A large experiment takes hours, so the command reports how far it has got — roughly every five
+seconds, on stderr:
+
+```
+Wrote 5750 scans -> ./out/scans.csv
+  Listing frames: 5,750/5,750 scans (100%)
+  12,480/413,926 frames (3%)
+  25,910/413,926 frames (6%)
+```
+
+If the count stops moving, the download is stuck rather than slow. Progress goes to stderr, so
+piping stdout somewhere still gives you just the paths and the final summary.
+
 ### Resuming an interrupted download
 
 A download is **resumable**: frames already in `<out_dir>` are kept and counted as

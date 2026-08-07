@@ -48,6 +48,9 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   caller can spawn an unbounded pool, and work is submitted in a bounded window so a
   400k-frame experiment doesn't queue every task up front. Results keep scan/frame order, so
   `download_log.txt` stays deterministic regardless of how the pool interleaves the work.
+- `cyl download` reports progress while it runs (`12,480/413,926 frames (3%)`, about every five
+  seconds, on stderr). A large experiment takes hours, and it used to print one line and then go
+  quiet, so there was no way to tell a working run from a stuck one.
 - `cyl download` is resumable: a frame already written to the output directory is kept and
   reported as `already on disk` (logged as `SKIP`), so re-running the same command after any
   interruption — a failed run, a killed process, a network drop — fetches only what is still
