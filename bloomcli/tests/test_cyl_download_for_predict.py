@@ -208,20 +208,22 @@ def test_write_sidecar_is_atomic_on_write_failure(tmp_path, monkeypatch):
 
 
 def test_atomic_write_bytes_is_atomic_on_write_failure(tmp_path, monkeypatch):
-    from pathlib import Path
+    import os
 
     dest = tmp_path / "0.png"
     dest.write_bytes(b"old-bytes")
 
-    def _boom(self, data):
+    def _boom(fd, mode):
+        os.close(fd)
         raise OSError("simulated crash mid-write")
 
-    monkeypatch.setattr(Path, "write_bytes", _boom)
+    monkeypatch.setattr(os, "fdopen", _boom)
 
     with pytest.raises(OSError):
         dfp.atomic_write_bytes(dest, b"new-bytes")
 
     assert dest.read_bytes() == b"old-bytes"
+    assert list(tmp_path.glob(".dl-*")) == []  # and no temp file left behind
 
 
 def test_validate_frame_numbers_accepts_unique_non_null():

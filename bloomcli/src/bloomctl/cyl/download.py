@@ -7,6 +7,7 @@ so the contract is unit-testable without a live server.
 from __future__ import annotations
 
 import csv
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,15 @@ import click
 
 from ..credentials import DEFAULT_PROFILE
 from ._storage import REFRESH_EVERY, StorageSession, already_downloaded, atomic_write_bytes
+
+# Default concurrent image downloads. Image fetches are I/O-bound (one HTTP round-trip
+# to Storage each), so a thread pool overlaps request latency; 8 is a modest default
+# that cuts large-experiment download time without hammering the server (see #534).
+DEFAULT_WORKERS = 8
+
+# Hard ceiling on concurrent downloads, enforced at the CLI *and* in `download_images`,
+# so neither a flag nor a direct library call can point an unbounded pool at Storage.
+MAX_WORKERS = 64
 
 # scans.csv schema: (output column, source key in a cyl_scans_extended row).
 # Order matches the legacy CLI's predict-container contract; `genotype` is
@@ -190,6 +200,53 @@ class DownloadResult:
         return len(self.frames)
 
 
+def download_frame(
+    session: StorageSession,
+    scan: dict[str, Any],
+    image: dict[str, Any],
+    out_dir: Path,
+    *,
+    overwrite: bool = False,
+) -> FrameResult:
+    """Download one frame to its destination, returning the outcome.
+
+    Self-contained and exception-safe: any failure (missing object, transient 5xx,
+    write error) is captured on the result, never raised — so one bad frame can't
+    abort a concurrent run. Safe to call from a worker thread.
+
+    A frame already on disk is reported as skipped without a request, which is what
+    makes an interrupted run cheap to resume.
+    """
+    object_path = image.get("object_path", "")
+    result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
+    try:
+        dest = image_dest(out_dir, scan, image)
+        if not overwrite and already_downloaded(dest):
+            result.ok = True
+            result.skipped = True
+            return result
+        atomic_write_bytes(dest, session.download(object_path))
+        result.ok = True
+    except Exception as exc:  # per-frame: record and continue
+        result.error = str(exc)
+    return result
+
+
+def _list_scan_frames(
+    session: StorageSession, scan: dict[str, Any]
+) -> tuple[list[dict[str, Any]], FrameResult | None]:
+    """List a scan's frames; on a listing failure return a synthetic failed FrameResult.
+
+    A failed metadata query (transient 5xx, auth expiry) becomes one recorded failure for
+    that scan instead of crashing the whole run with a traceback — so the partial-download
+    exit + download_log still apply uniformly.
+    """
+    try:
+        return session.run(lambda c: fetch_images(c, scan.get("scan_id"))), None
+    except Exception as exc:
+        return [], FrameResult(scan.get("scan_id"), None, "", ok=False, error=f"list images: {exc}")
+
+
 def download_images(
     client: Any,
     scans: list[dict[str, Any]],
@@ -198,40 +255,44 @@ def download_images(
     creds: Any = None,
     refresh_every: int = REFRESH_EVERY,
     overwrite: bool = False,
+    workers: int = DEFAULT_WORKERS,
 ) -> DownloadResult:
     """Download every frame for every scan from Storage bucket `images`.
 
-    Each frame is downloaded independently: a failure is recorded, not raised, so
-    one bad frame (missing object, transient 5xx) can't abort the whole run.
-    Signs server-side via Supabase Storage (no MinIO secrets, no legacy Lambda).
+    Frames are listed per scan (ordered), then downloaded concurrently across a thread
+    pool of up to ``workers`` — the per-frame HTTP round-trips are the bottleneck on large
+    experiments, and being I/O-bound they overlap well (see #534). ``workers <= 1`` runs
+    sequentially. Results preserve scan/frame order, so the download log is deterministic.
 
-    Resumable: a frame already written by an earlier run is skipped unless
-    `overwrite`. With `creds`, the session re-authenticates itself as it goes, so
-    a run longer than the JWT's lifetime doesn't fail every remaining frame
-    (bloom#525).
+    Each frame is downloaded independently: a failure is recorded, not raised, so one bad
+    frame can't abort the whole run. Signs server-side via Supabase Storage (no MinIO
+    secrets, no legacy Lambda).
+
+    Resumable: a frame already written by an earlier run is skipped unless `overwrite`.
+    With `creds`, the shared session re-authenticates itself as it goes, so a run longer
+    than the JWT's lifetime doesn't fail every remaining frame (bloom#525).
     """
     session = StorageSession(client, creds, refresh_every=refresh_every)
-    frames: list[FrameResult] = []
+    work: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    listing_failures: list[FrameResult] = []
     for scan in scans:
-        images = session.run(lambda c, scan=scan: fetch_images(c, scan["scan_id"]))
-        for image in images:
-            object_path = image.get("object_path", "")
-            result = FrameResult(
-                scan.get("scan_id"), image.get("frame_number"), object_path, ok=False
-            )
-            dest = image_dest(out_dir, scan, image)
-            if not overwrite and already_downloaded(dest):
-                result.ok = True
-                result.skipped = True
-                frames.append(result)
-                continue
-            try:
-                atomic_write_bytes(dest, session.download(object_path))
-                result.ok = True
-            except Exception as exc:  # per-frame: record and continue
-                result.error = str(exc)
-            frames.append(result)
-    return DownloadResult(frames)
+        images, failure = _list_scan_frames(session, scan)
+        if failure is not None:
+            listing_failures.append(failure)
+        work.extend((scan, image) for image in images)
+
+    def _one(pair: tuple[dict[str, Any], dict[str, Any]]) -> FrameResult:
+        return download_frame(session, pair[0], pair[1], out_dir, overwrite=overwrite)
+
+    # Never spawn more threads than there's work for, than requested, or than the ceiling.
+    n = min(workers, MAX_WORKERS, len(work)) if work else 0
+    if n <= 1:
+        frames = [_one(pair) for pair in work]
+    else:
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            # map preserves input order → log stays in scan/frame order.
+            frames = list(pool.map(_one, work))
+    return DownloadResult(frames + listing_failures)
 
 
 def write_download_log(result: DownloadResult, path: Path) -> None:
@@ -337,6 +398,14 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     is_flag=True,
     help="Re-download frames that are already on disk (default: keep them and resume).",
 )
+@click.option(
+    "-n",
+    "--workers",
+    type=click.IntRange(min=1, max=MAX_WORKERS),
+    default=DEFAULT_WORKERS,
+    show_default=True,
+    help=f"Concurrent image downloads (I/O-bound, 1-{MAX_WORKERS}). 1 = sequential.",
+)
 def download(
     out_dir: Path,
     experiment_id: int | None,
@@ -350,6 +419,7 @@ def download(
     plant_age_max: int,
     limit: int,
     overwrite: bool,
+    workers: int,
 ) -> None:
     """Download a cylinder experiment (--experiment-id / --experiment-name) or a single scan
     (--scan-id): metadata (scans.csv) and per-frame images."""
@@ -424,7 +494,9 @@ def download(
     if meta_only:
         return
 
-    result = download_images(client, scans, out, creds=creds, overwrite=overwrite)
+    result = download_images(
+        client, scans, out, creds=creds, overwrite=overwrite, workers=workers
+    )
     log_path = out / "download_log.txt"
     write_download_log(result, log_path)
     resumed = f", {result.skipped} already present" if result.skipped else ""

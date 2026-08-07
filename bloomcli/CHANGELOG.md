@@ -23,6 +23,15 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
+- `cyl download` downloads frames **concurrently** instead of one at a time, which is the
+  difference between a large cylinder experiment taking hours and taking a fraction of that.
+  The per-frame Storage round-trips are I/O-bound, so they overlap well across a thread pool.
+  `-n`/`--workers` sets the width (default 8, range 1–64; `1` restores the old sequential
+  behaviour). The ceiling is enforced in `download_images()` as well as at the flag, so no
+  caller can spawn an unbounded pool. Results keep scan/frame order, so `download_log.txt`
+  stays deterministic regardless of how the pool interleaves the work, and a scan whose frame
+  list can't be fetched is recorded as one failure rather than crashing the run.
+
 - `cyl download` is resumable: a frame already written to the output directory is kept and
   reported as `already present` (and logged as `SKIP`), so re-running the same command after
   any interruption — a failed run, a killed process, a network drop — fetches only what is

@@ -150,7 +150,7 @@ def test_download_images_survives_a_session_expiring_mid_run(tmp_path, monkeypat
     monkeypatch.setattr(auth, "make_authed_client", lambda creds: fresh)
     monkeypatch.setattr(dl, "fetch_images", lambda client, scan_id: _images(6))
 
-    result = dl.download_images(stale, [SCAN], tmp_path, creds=CREDS, refresh_every=10_000)
+    result = dl.download_images(stale, [SCAN], tmp_path, creds=CREDS, refresh_every=10_000, workers=1)
 
     assert result.ok == 6 and result.failed == 0
     assert _frame(tmp_path, 5).read_bytes() == b"bytes::cyl-images/5.png"
@@ -160,7 +160,7 @@ def test_download_images_without_credentials_still_fails_the_frames(tmp_path, mo
     """Without creds there is nothing to refresh — the frames fail, but readably."""
     monkeypatch.setattr(dl, "fetch_images", lambda client, scan_id: _images(4))
 
-    result = dl.download_images(_Client(budget=2), [SCAN], tmp_path)
+    result = dl.download_images(_Client(budget=2), [SCAN], tmp_path, workers=1)
 
     assert result.ok == 2 and result.failed == 2
     assert "expired session" in result.frames[3].error
@@ -180,7 +180,7 @@ def test_download_images_refreshes_the_client_used_for_metadata_reads(tmp_path, 
 
     monkeypatch.setattr(dl, "fetch_images", _fetch_images)
 
-    result = dl.download_images(_Client(), [SCAN], tmp_path, creds=CREDS)
+    result = dl.download_images(_Client(), [SCAN], tmp_path, creds=CREDS, workers=1)
 
     assert result.ok == 1
     assert seen[1] is fresh
@@ -196,7 +196,7 @@ def test_download_images_skips_frames_already_on_disk(tmp_path, monkeypatch):
     existing.parent.mkdir(parents=True, exist_ok=True)
     existing.write_bytes(b"from-an-earlier-run")
 
-    result = dl.download_images(client, [SCAN], tmp_path)
+    result = dl.download_images(client, [SCAN], tmp_path, workers=1)
 
     assert result.total == 3 and result.downloaded == 2 and result.skipped == 1
     assert result.ok == 3 and result.failed == 0
@@ -210,7 +210,7 @@ def test_download_images_re_downloads_a_truncated_zero_byte_frame(tmp_path, monk
     stub.parent.mkdir(parents=True, exist_ok=True)
     stub.write_bytes(b"")
 
-    result = dl.download_images(_Client(), [SCAN], tmp_path)
+    result = dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
 
     assert result.skipped == 0 and result.downloaded == 1
     assert stub.read_bytes() == b"bytes::cyl-images/0.png"
@@ -223,7 +223,7 @@ def test_download_images_overwrite_refetches_everything(tmp_path, monkeypatch):
     stale_frame.parent.mkdir(parents=True, exist_ok=True)
     stale_frame.write_bytes(b"stale")
 
-    result = dl.download_images(client, [SCAN], tmp_path, overwrite=True)
+    result = dl.download_images(client, [SCAN], tmp_path, overwrite=True, workers=1)
 
     assert result.skipped == 0 and client.bucket.calls == 2
     assert stale_frame.read_bytes() == b"bytes::cyl-images/0.png"
@@ -235,7 +235,7 @@ def test_download_log_marks_skipped_frames(tmp_path, monkeypatch):
     existing.parent.mkdir(parents=True, exist_ok=True)
     existing.write_bytes(b"already-here")
 
-    result = dl.download_images(_Client(), [SCAN], tmp_path)
+    result = dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
     log = tmp_path / "download_log.txt"
     dl.write_download_log(result, log)
 
@@ -246,14 +246,17 @@ def test_download_log_marks_skipped_frames(tmp_path, monkeypatch):
 
 def test_frames_are_written_atomically(tmp_path, monkeypatch):
     """A crash mid-write must not leave a partial frame that resume would then skip."""
-    from pathlib import Path
+    import os
 
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(1))
-    monkeypatch.setattr(
-        Path, "write_bytes", lambda self, data: (_ for _ in ()).throw(OSError("crash"))
-    )
 
-    result = dl.download_images(_Client(), [SCAN], tmp_path)
+    def _boom(fd, mode):
+        os.close(fd)
+        raise OSError("crash")
+
+    monkeypatch.setattr(os, "fdopen", _boom)
+
+    result = dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
 
     assert result.failed == 1
     assert not _frame(tmp_path, 0).exists()
@@ -319,13 +322,13 @@ def test_cli_rerun_after_a_partial_download_resumes(tmp_path, monkeypatch):
     stale = _Client(budget=1)
     _patch_cli(monkeypatch, stale)
 
-    first = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "17957"])
+    first = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "17957", "--workers", "1"])
     assert first.exit_code != 0
     assert "Re-running the same command" in first.output
 
     fresh = _Client()
     _patch_cli(monkeypatch, fresh)
-    second = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "17957"])
+    second = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "17957", "--workers", "1"])
 
     assert second.exit_code == 0, second.output
     assert "1 already present" in second.output

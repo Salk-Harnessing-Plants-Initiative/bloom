@@ -8,11 +8,15 @@ downloaded, then 23,855 consecutive "Bucket not found" failures).
 
 ``StorageSession`` owns the client and re-authenticates itself: proactively
 every ``REFRESH_EVERY`` objects, and reactively on any failure, retrying once.
+It is safe to share across the download thread pool (bloom#534) — only one
+thread re-authenticates per lapse, the rest pick up the renewed handle.
 """
 
 from __future__ import annotations
 
 import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -39,16 +43,30 @@ def looks_like_expired_session(error: BaseException) -> bool:
     return any(marker in text for marker in _EXPIRED_MARKERS)
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
-    """Write bytes so a crash mid-write can never leave a truncated file at ``path``.
+def _unlink_quietly(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
-    Load-bearing for resume: a skip-if-already-downloaded check must never skip a
-    half-written frame.
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write bytes so no reader — or later run — can ever see a partial file at ``path``.
+
+    Load-bearing twice over: a resume must never skip a half-written frame, and two
+    workers handed the same destination path must never produce a torn file. The temp
+    file is unique per call (``mkstemp``) and lands via an atomic ``os.replace``, so
+    concurrent writers resolve to one complete file (last writer wins).
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
+    path.parent.mkdir(parents=True, exist_ok=True)  # mkdir(exist_ok) is race-safe
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".dl-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        _unlink_quietly(tmp)  # never leave a temp file behind
+        raise
 
 
 def already_downloaded(path: Path) -> bool:
@@ -62,6 +80,11 @@ class StorageSession:
     Owns the Supabase client, so table reads interleaved with downloads (e.g.
     ``fetch_images`` per scan) run on the renewed session too. Without ``creds``
     it can't re-authenticate and simply behaves like a plain bucket handle.
+
+    Thread-safe: the client and the refresh bookkeeping live behind a lock, while
+    the HTTP round-trip itself runs outside it so workers still overlap. Each
+    renewal bumps a generation counter, so several workers failing on the same
+    lapse trigger exactly one re-authentication between them.
     """
 
     def __init__(
@@ -77,14 +100,17 @@ class StorageSession:
         self._bucket_name = bucket
         self._refresh_every = refresh_every
         self._since_refresh = 0
+        self._generation = 0
         self.refreshes = 0
         self._bucket: Any = None  # resolved on first download, so constructing a
         # session never touches the client (callers build one before any I/O)
+        self._lock = threading.Lock()
 
     @property
     def client(self) -> Any:
-        """The currently signed-in client — read it fresh, refresh() replaces it."""
-        return self._client
+        """The currently signed-in client — read it fresh, a renewal replaces it."""
+        with self._lock:
+            return self._client
 
     @property
     def can_refresh(self) -> bool:
@@ -92,42 +118,81 @@ class StorageSession:
 
     def refresh(self) -> None:
         """Sign in again, replacing the client and the bucket handle."""
+        with self._lock:
+            self._reauthenticate()
+
+    def _reauthenticate(self) -> None:
+        """Re-sign-in. Caller holds the lock."""
         from .. import auth
 
         self._client = auth.make_authed_client(self._creds)
         self._bucket = None
         self._since_refresh = 0
+        self._generation += 1
         self.refreshes += 1
+
+    def _acquire(self) -> tuple[int, Any]:
+        """The (generation, bucket) to use now, re-authenticating first if one is due."""
+        with self._lock:
+            due = (
+                self.can_refresh
+                and self._refresh_every
+                and self._since_refresh >= self._refresh_every
+            )
+            if due:
+                self._reauthenticate()
+            if self._bucket is None:
+                self._bucket = self._client.storage.from_(self._bucket_name)
+            return self._generation, self._bucket
+
+    def _renew(self, seen_generation: int) -> bool:
+        """Re-authenticate unless another thread already did since ``seen_generation``.
+
+        Returns False only if this thread's own re-authentication attempt failed.
+        """
+        with self._lock:
+            if self._generation != seen_generation:
+                return True  # another worker already renewed; just retry on theirs
+            try:
+                self._reauthenticate()
+            except Exception:
+                return False
+            return True
 
     def run(self, call: Callable[[Any], Any]) -> Any:
         """Run ``call(client)``, re-authenticating and retrying it once on failure."""
+        with self._lock:
+            generation = self._generation
         try:
-            return call(self._client)
+            return call(self.client)
         except Exception as exc:
-            if not self.can_refresh:
+            if not self.can_refresh or not self._renew(generation):
                 raise self._describe(exc) from exc
             try:
-                self.refresh()
-            except Exception:  # re-auth itself failed: report the original error
-                raise self._describe(exc) from exc
-            try:
-                return call(self._client)
+                return call(self.client)
             except Exception as retry_exc:
                 raise self._describe(retry_exc) from retry_exc
 
     def download(self, object_path: str) -> bytes:
         """Download one object's bytes, refreshing before and (if needed) after failure."""
-        if self.can_refresh and self._refresh_every and self._since_refresh >= self._refresh_every:
-            self.refresh()
-        return self.run(lambda _client: self._download_once(object_path))
+        generation, bucket = self._acquire()
+        try:
+            return self._fetch(bucket, object_path)
+        except Exception as exc:
+            if not self.can_refresh or not self._renew(generation):
+                raise self._describe(exc) from exc
+            _, bucket = self._acquire()
+            try:
+                return self._fetch(bucket, object_path)
+            except Exception as retry_exc:
+                raise self._describe(retry_exc) from retry_exc
 
-    def _download_once(self, object_path: str) -> bytes:
-        if self._bucket is None:
-            self._bucket = self._client.storage.from_(self._bucket_name)
-        data = self._bucket.download(object_path)
+    def _fetch(self, bucket: Any, object_path: str) -> bytes:
+        data = bucket.download(object_path)
         if data is None:
             raise ValueError("empty response from storage")
-        self._since_refresh += 1
+        with self._lock:
+            self._since_refresh += 1
         return data
 
     @staticmethod
