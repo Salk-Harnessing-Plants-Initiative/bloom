@@ -274,3 +274,22 @@ def test_an_ordinary_write_error_does_not_stop_the_run(tmp_path, monkeypatch):
 
     assert result.failed == 1 and result.ok == 9
     assert client.bucket.calls == 10, "every frame was still attempted"
+
+
+def test_work_already_in_flight_finishes_after_the_disk_fills(tmp_path, monkeypatch):
+    """The stop is checked when a frame starts, so frames already running carry on. What
+    matters is that the overshoot is bounded by the worker count rather than unbounded."""
+    workers = 8
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(500))
+    client = _Client()
+    client.bucket = _DiskFillsAfter(20)
+    _fills_disk_after(monkeypatch, 20)
+
+    result = dl.download_images(client, [SCAN], tmp_path, workers=workers)
+
+    assert result.ok == 20
+    # 20 land, then the frames already running when the flag went up also make their request.
+    assert 20 < client.bucket.calls <= 20 + workers, (
+        f"{client.bucket.calls} requests — overshoot should be bounded by {workers} workers"
+    )
+    assert client.bucket.calls < 500, "the rest were never fetched"

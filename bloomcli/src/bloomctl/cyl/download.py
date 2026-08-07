@@ -362,9 +362,11 @@ def download_frame(
     A frame already on disk is reported as skipped without making a request, which is what
     makes an interrupted run cheap to pick back up.
 
-    ``stop`` is set when the disk fills. Every frame after that is recorded as failed without
-    being fetched — there is nowhere to put it, and a large experiment would otherwise pull
-    hundreds of gigabytes only to throw them away.
+    ``stop`` is set when the disk fills. Frames that have not started yet are recorded as
+    failed without being fetched — there is nowhere to put them, and a large experiment would
+    otherwise pull hundreds of gigabytes only to throw them away. The few already in flight
+    run to completion, so a little work carries on past the point the disk fills, bounded by
+    the number of workers.
     """
     object_path = image.get("object_path", "")
     result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
