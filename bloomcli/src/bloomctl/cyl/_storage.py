@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +26,14 @@ _UMASK = os.umask(0)
 os.umask(_UMASK)
 
 # Storage answers a caller whose token has expired with a 404 "Bucket not found" — it won't
-# confirm that a private bucket exists to someone who can't read it.
-_EXPIRED_MARKERS = ("bucket not found", "jwt expired", "invalid jwt")
+# confirm that a private bucket exists to someone who can't read it. A genuinely absent object
+# is also a 404, so the status alone can't tell them apart; the message is the only signal.
+_EXPIRED_MARKERS = ("bucket not found", "jwt expired", "invalid jwt", "bad_jwt")
 _EXPIRED_HINT = "expired session (storage reports an unauthenticated caller as a missing bucket)"
 
-_TRANSIENT_MARKERS = ("500", "502", "503", "504", "timeout", "timed out", "connection")
+# Wait this long before the retry, so a server that is rate-limiting or overloaded gets a
+# moment rather than an immediate second request from every worker.
+RETRY_DELAY_SECONDS = 0.5
 
 
 class StorageError(RuntimeError):
@@ -42,23 +46,53 @@ def looks_like_expired_session(error: BaseException) -> bool:
     return any(marker in text for marker in _EXPIRED_MARKERS)
 
 
+def status_of(error: BaseException) -> int | None:
+    """HTTP status carried by a storage API error, if it has one."""
+    try:
+        return int(getattr(error, "status", None))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_transport_error(error: BaseException) -> bool:
+    """True for a network-level httpx failure.
+
+    These have to be recognised by type: a timeout or a dropped connection carries no message
+    at all (`str(httpx.ReadTimeout())` is empty), so there is nothing to match text against.
+    """
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - httpx is a hard dependency of supabase
+        return False
+    return isinstance(error, httpx.TransportError)
+
+
 def is_retryable(error: BaseException) -> bool:
     """True for failures a second attempt could plausibly fix.
 
-    Deliberately narrow: an object that genuinely isn't there should fail on the first
-    attempt rather than doubling the number of requests across a whole experiment.
+    Deliberately narrow: an object that genuinely isn't there should fail on the first attempt
+    rather than doubling the number of requests across a whole experiment. Classification uses
+    the status code and the exception type rather than searching the formatted message, which
+    would both miss transport errors and match on digits appearing inside an object path.
     """
     if looks_like_expired_session(error):
         return True
-    text = str(error).lower()
-    return any(marker in text for marker in _TRANSIENT_MARKERS)
+    status = status_of(error)
+    if status is not None:
+        return status == 429 or 500 <= status <= 599
+    return _is_transport_error(error)
 
 
 def describe_storage_error(error: BaseException) -> StorageError:
-    """Wrap an error, naming an expired session rather than leaving it as 'bucket not found'."""
+    """Wrap an error, naming an expired session rather than leaving it as 'bucket not found'.
+
+    Falls back to the exception's type name when it has no message of its own — an httpx
+    timeout would otherwise be recorded in the log as an empty string.
+    """
+    detail = str(error) or type(error).__name__
     if looks_like_expired_session(error):
-        return StorageError(f"{_EXPIRED_HINT}: {error}")
-    return StorageError(str(error))
+        return StorageError(f"{_EXPIRED_HINT}: {detail}")
+    return StorageError(detail)
 
 
 def download_object(client: Any, object_path: str, *, bucket: str = IMAGES_BUCKET) -> bytes:
@@ -73,6 +107,7 @@ def download_object(client: Any, object_path: str, *, bucket: str = IMAGES_BUCKE
     except Exception as exc:
         if not is_retryable(exc):
             raise describe_storage_error(exc) from exc
+        time.sleep(RETRY_DELAY_SECONDS)
         try:
             return _fetch(client, bucket, object_path)
         except Exception as retry_exc:

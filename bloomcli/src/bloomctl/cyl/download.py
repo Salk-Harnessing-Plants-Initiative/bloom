@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import csv
 import itertools
+import json
+import os
+import unicodedata
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
@@ -69,8 +72,9 @@ def safe_component(value: Any) -> str:
     somewhere else on disk — note that joining an absolute path would otherwise discard the
     output directory entirely.
     """
-    text = str(value)
-    cleaned = text.replace("\\", "/").replace("/", "_").strip()
+    # Note: whitespace is deliberately preserved. `qr_code` is UNIQUE per wave, so "QR-1" and
+    # "QR-1 " are two different plants, and trimming would merge their frames into one directory.
+    cleaned = str(value).replace("\\", "_").replace("/", "_").replace("\0", "_")
     if cleaned in {"", ".", ".."} or set(cleaned) == {"."}:
         return "_"
     return cleaned
@@ -107,19 +111,62 @@ def write_scans_csv(rows: list[dict[str, Any]], path: Path) -> None:
         writer.writerows(rows)
 
 
+# Records which experiment an output directory holds, so a later run into the same directory
+# can tell whether the frames already there belong to what it is about to download.
+MANIFEST_NAME = ".bloomctl-download.json"
+
+
+def read_manifest(out_dir: Path) -> dict[str, Any] | None:
+    """The selector recorded in ``out_dir``, or None if there isn't a readable one."""
+    path = Path(out_dir) / MANIFEST_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_manifest(out_dir: Path, selector: dict[str, Any]) -> None:
+    """Record what this directory holds, so a later run can check before resuming into it."""
+    path = Path(out_dir) / MANIFEST_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(selector, indent=2, sort_keys=True, default=str), encoding="utf-8")
+
+
+def describe_manifest_mismatch(existing: dict[str, Any] | None, selector: dict[str, Any]) -> str:
+    """Explain why ``selector`` doesn't match what the directory already holds, or "" if it does.
+
+    Frame paths carry no experiment id, so two experiments downloaded into one directory can
+    share a path whenever a QR code is reused — and resume would then treat the first
+    experiment's images as though they belonged to the second.
+    """
+    if existing is None:
+        return ""
+    differing = [
+        f"{key} was {existing.get(key)!r}, now {selector.get(key)!r}"
+        for key in ("experiment_id", "scan_id", "plant_qr_code")
+        if existing.get(key) != selector.get(key)
+    ]
+    return "; ".join(differing)
+
+
 def image_dest(out_dir: Path, scan: dict[str, Any], image: dict[str, Any]) -> Path:
-    """Absolute destination for one frame, preserving its real extension.
+    """Destination for one frame, preserving its real extension.
 
     Raises ValueError if the path would land outside ``out_dir`` — a second check behind
     `safe_component`, so nothing can reach a write outside the output directory.
+
+    The check is on the path as written, without consulting the filesystem. Resolving it would
+    follow symlinks, which would reject the perfectly ordinary case of `images/` pointing at
+    another disk.
     """
-    ext = safe_component(Path(image["object_path"]).suffix or ".png").lstrip("_")
-    ext = ext if ext.startswith(".") else f".{ext}"
-    root = Path(out_dir).resolve()
-    dest = (root / scan_relative_dir(scan) / f"{safe_component(image['frame_number'])}{ext}").resolve()
-    if not dest.is_relative_to(root):
-        raise ValueError(f"refusing to write outside {out_dir}: {dest}")
-    return dest
+    ext = Path(image["object_path"]).suffix or ".png"
+    ext = "." + safe_component(ext.lstrip(".") or "png")
+    relative = f"{scan_relative_dir(scan)}/{safe_component(image['frame_number'])}{ext}"
+    normalized = os.path.normpath(relative)
+    if os.path.isabs(normalized) or normalized.split(os.sep)[0] == os.pardir:
+        raise ValueError(f"refusing to write outside {out_dir}: {relative}")
+    return Path(out_dir) / normalized
 
 
 # --- supabase / storage I/O -------------------------------------------------
@@ -203,6 +250,12 @@ class FrameResult:
     error: str = ""
     skipped: bool = False  # already on disk from an earlier run
     unlisted: bool = False  # set on a scan whose frame list could not be fetched at all
+    no_frames: bool = False  # set on a scan that listed cleanly but has no images
+
+    @property
+    def scan_level(self) -> bool:
+        """True when this records a problem with a whole scan rather than one frame."""
+        return self.unlisted or self.no_frames
 
 
 @dataclass
@@ -226,9 +279,9 @@ class DownloadResult:
 
     @property
     def failed(self) -> int:
-        """Frames known to be missing. Scans that couldn't be listed are counted separately,
-        since how many frames they hold is unknown."""
-        return sum(1 for f in self.frames if not f.ok and not f.unlisted)
+        """Frames known to be missing. Whole-scan problems are counted separately, since how
+        many frames they involve is unknown."""
+        return sum(1 for f in self.frames if not f.ok and not f.scan_level)
 
     @property
     def scans_unlisted(self) -> int:
@@ -236,14 +289,19 @@ class DownloadResult:
         return sum(1 for f in self.frames if f.unlisted)
 
     @property
+    def scans_without_frames(self) -> int:
+        """Scans that listed cleanly but hold no images at all."""
+        return sum(1 for f in self.frames if f.no_frames)
+
+    @property
     def total(self) -> int:
         """Frames that were actually listed."""
-        return sum(1 for f in self.frames if not f.unlisted)
+        return sum(1 for f in self.frames if not f.scan_level)
 
     @property
     def incomplete(self) -> bool:
         """True if anything is known to be missing from the output directory."""
-        return bool(self.failed or self.scans_unlisted)
+        return bool(self.failed or self.scans_unlisted or self.scans_without_frames)
 
 
 def download_frame(
@@ -327,26 +385,71 @@ def _list_scan_frames(
         )
 
 
-def check_frame_collisions(scans: list[dict[str, Any]], images_by_scan: dict[Any, list]) -> None:
-    """Raise if two frames would be written to the same file.
+class CollidingFrames(ValueError):
+    """Two or more frames would be written to the same file."""
+
+
+def filesystem_folds_case(out_dir: Path) -> bool:
+    """Whether this filesystem treats two names differing only by case as the same file.
+
+    Has to be measured rather than assumed: macOS is case-insensitive by default and Linux is
+    not, and `os.path.normcase` reports nothing useful on either (it only folds on Windows).
+    """
+    root = Path(out_dir)
+    probe = root / ".bloomctl-case-probe"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        probe.touch()
+        try:
+            return (root / ".BLOOMCTL-CASE-PROBE").exists()
+        finally:
+            probe.unlink(missing_ok=True)
+    except OSError:
+        return False  # can't tell — don't invent collisions
+
+
+def _path_key(path: Path, fold: bool) -> str:
+    """A comparison key for a destination, matching how the filesystem compares names."""
+    text = os.path.normcase(str(path))
+    if fold:
+        # macOS also normalises unicode, so compose before folding.
+        text = unicodedata.normalize("NFC", text).casefold()
+    return text
+
+
+def find_frame_collisions(
+    out_dir: Path, work: list[tuple[dict[str, Any], dict[str, Any]]]
+) -> list[str]:
+    """Describe every pair of frames that would land on the same file.
 
     The destination is built from wave/age/date/qr plus the frame number, all of which can be
     empty in the database — and two rows with an empty value are not caught by a uniqueness
-    constraint. Two rows can therefore land on one filename, and without this check the second
-    is quietly skipped as already-downloaded and its image never arrives.
-    `download-for-predict` makes the same check on the same data.
+    constraint. Two rows can therefore share a filename, and without this check the second is
+    quietly skipped as already-downloaded and its image never arrives.
+
+    The comparison is on the real destination path, compared the way this filesystem compares
+    names: on macOS `st0-001` and `ST0-001` are two database values but one file, so matching
+    the raw strings would miss exactly the collisions that matter. On a case-sensitive
+    filesystem they are genuinely different files and are left alone.
     """
-    seen: dict[str, Any] = {}
-    for scan in scans:
-        for image in images_by_scan.get(scan.get("scan_id"), []):
-            key = f"{scan_relative_dir(scan)}/{safe_component(image.get('frame_number'))}"
-            if key in seen:
-                raise ValueError(
-                    f"scans {seen[key]!r} and {scan.get('scan_id')!r} both map frame "
-                    f"{image.get('frame_number')!r} to {key} — refusing to download, as one "
-                    f"frame's images would silently overwrite or mask the other's"
-                )
-            seen[key] = scan.get("scan_id")
+    fold = filesystem_folds_case(Path(out_dir))
+    seen: dict[str, tuple[Any, Any]] = {}
+    clashes: list[str] = []
+    for scan, image in work:
+        try:
+            key = _path_key(image_dest(out_dir, scan, image), fold)
+        except (KeyError, ValueError):
+            continue  # malformed row; reported per-frame during the download
+        owner = (scan.get("scan_id"), image.get("frame_number"))
+        if key in seen:
+            first_scan, first_frame = seen[key]
+            clashes.append(
+                f"scan {first_scan!r} frame {first_frame!r} and scan {owner[0]!r} "
+                f"frame {owner[1]!r} both map to {key}"
+            )
+        else:
+            seen[key] = owner
+    return clashes
 
 
 def download_images(
@@ -374,17 +477,25 @@ def download_images(
     # to fetch. Building the list this way keeps unlisted scans next to the scans around them
     # rather than collected at the end of the log.
     slots: list[Any] = []
-    images_by_scan: dict[Any, list[dict[str, Any]]] = {}
     for scan in scans:
         images, failure = _list_scan_frames(client, scan)
-        images_by_scan[scan.get("scan_id")] = images
         if failure is not None:
             slots.append(failure)
+        elif not images:
+            # A scan with no rows in cyl_images is missing data, not a finished scan. Left
+            # uncounted it would be invisible: no log line, and a clean exit.
+            slots.append(
+                FrameResult(
+                    scan.get("scan_id"), None, "", ok=False, error="no frames", no_frames=True
+                )
+            )
         slots.extend((scan, image) for image in images)
 
-    check_frame_collisions(scans, images_by_scan)
-
     work = [slot for slot in slots if not isinstance(slot, FrameResult)]
+
+    clashes = find_frame_collisions(Path(out_dir), work)
+    if clashes:
+        raise CollidingFrames("; ".join(clashes))
 
     def _one(pair: tuple[dict[str, Any], dict[str, Any]]) -> FrameResult:
         return download_frame(client, pair[0], pair[1], out_dir, overwrite=overwrite)
@@ -398,18 +509,32 @@ def download_images(
     return DownloadResult(frames)
 
 
+def _one_line(text: Any) -> str:
+    """Collapse whitespace so one record can never span more than one line.
+
+    `object_path` and the error text both come from the server, and a multi-line error (an
+    httpx message, say) would otherwise emit continuation lines that read like frame records.
+    """
+    return " ".join(str(text).split())
+
+
 def write_download_log(result: DownloadResult, path: Path) -> None:
     """Write a per-frame download log (one line per frame) with a summary footer."""
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for f in result.frames:
         if f.unlisted:
-            lines.append(f"UNLISTED scan={f.scan_id} (frame count unknown)  error={f.error}")
+            lines.append(
+                f"UNLISTED scan={f.scan_id} (frame count unknown)  error={_one_line(f.error)}"
+            )
+            continue
+        if f.no_frames:
+            lines.append(f"NOFRAMES scan={f.scan_id} (no images recorded for this scan)")
             continue
         status = "SKIP" if f.skipped else "OK  " if f.ok else "FAIL"
-        line = f"{status} scan={f.scan_id} frame={f.frame_number} {f.object_path}"
+        line = f"{status} scan={f.scan_id} frame={f.frame_number} {_one_line(f.object_path)}"
         if not f.ok:
-            line += f"  error={f.error}"
+            line += f"  error={_one_line(f.error)}"
         lines.append(line)
     summary = (
         f"\nSummary: {result.ok}/{result.total} frames present "
@@ -418,6 +543,8 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     )
     if result.scans_unlisted:
         summary += f", {result.scans_unlisted} scan(s) could not be listed (frames unknown)"
+    if result.scans_without_frames:
+        summary += f", {result.scans_without_frames} scan(s) have no images"
     lines.append(summary)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -597,8 +724,22 @@ def download(
     rows = [build_scan_row(s, genotypes.get(s.get("accession_id"))) for s in scans]
 
     out = Path(out_dir)
+    selector = {
+        "experiment_id": experiment_id,
+        "scan_id": scan_id,
+        "plant_qr_code": plant_qr_code,
+    }
+    mismatch = describe_manifest_mismatch(read_manifest(out), selector)
+    if mismatch and not overwrite:
+        raise click.ClickException(
+            f"{out} already holds a different download ({mismatch}). Frame paths carry no "
+            f"experiment id, so resuming here could keep images from the earlier download and "
+            f"report them as this one's. Use a different directory, or --overwrite to replace it."
+        )
+
     csv_path = out / "scans.csv"
     write_scans_csv(rows, csv_path)
+    write_manifest(out, selector)
     click.echo(f"Wrote {len(rows)} scans -> {csv_path}")
 
     if meta_only:
@@ -606,8 +747,11 @@ def download(
 
     try:
         result = download_images(client, scans, out, overwrite=overwrite, workers=workers)
-    except ValueError as exc:  # two frames want the same file; stop rather than lose one
-        raise click.ClickException(str(exc)) from exc
+    except CollidingFrames as exc:
+        raise click.ClickException(
+            f"{exc}. Refusing to download, because one frame's image would overwrite or mask "
+            f"another's. Narrow the download (--scan-id / --plant-qr-code) or fix the rows."
+        ) from exc
 
     log_path = out / "download_log.txt"
     write_download_log(result, log_path)
@@ -619,13 +763,17 @@ def download(
     if result.incomplete:
         # Partial download: surface it and exit non-zero so a pipeline knows the
         # output is incomplete (the log lists every failed frame).
-        missing = f"{result.failed} of {result.total} frames failed to download"
+        problems = []
+        if result.failed:
+            problems.append(f"{result.failed} of {result.total} frames failed to download")
         if result.scans_unlisted:
-            missing += (
-                f", and {result.scans_unlisted} scan(s) could not be listed at all "
+            problems.append(
+                f"{result.scans_unlisted} scan(s) could not be listed at all "
                 f"(an unknown number of further frames is missing)"
             )
+        if result.scans_without_frames:
+            problems.append(f"{result.scans_without_frames} scan(s) have no images recorded")
         raise click.ClickException(
-            f"{missing} — see {log_path}. "
+            f"{'; '.join(problems)} — see {log_path}. "
             "Re-running the same command retries only the frames still missing."
         )

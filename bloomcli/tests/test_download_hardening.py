@@ -52,6 +52,7 @@ def test_a_traversal_never_reaches_disk(tmp_path, monkeypatch):
     out = tmp_path / "out"
     dl.download_images(_Client(), [scan], out, workers=1)
 
+    assert not (tmp_path / "pwned").exists()  # this is where an escape would actually land
     assert not (tmp_path.parent / "pwned").exists()
     assert list(out.rglob("*.png"))  # the frame still landed, just safely
 
@@ -87,7 +88,7 @@ def test_two_null_frame_numbers_are_refused_rather_than_silently_merged(tmp_path
     ]
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: images)
 
-    with pytest.raises(ValueError, match="refusing to download"):
+    with pytest.raises(dl.CollidingFrames, match="both map to"):
         dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
 
 
@@ -96,7 +97,7 @@ def test_two_scans_mapping_to_one_directory_are_refused(tmp_path, monkeypatch):
     twin = {**SCAN, "scan_id": 99}  # identical path components, different scan_id
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(2))
 
-    with pytest.raises(ValueError, match="refusing to download"):
+    with pytest.raises(dl.CollidingFrames, match="both map to"):
         dl.download_images(_Client(), [SCAN, twin], tmp_path, workers=1)
 
 
@@ -124,7 +125,8 @@ def test_the_cli_reports_a_collision_as_a_clean_error(tmp_path, monkeypatch):
     )
 
     assert result.exit_code != 0
-    assert "refusing to download" in result.output
+    assert "Refusing to download" in result.output
+    assert "both map to" in result.output
     assert "Traceback" not in result.output  # a clean message, not a crash
 
 
@@ -240,3 +242,213 @@ def test_a_row_missing_object_path_gets_a_readable_error(tmp_path, monkeypatch):
     assert result.failed == 1
     assert "malformed cyl_images row" in result.frames[0].error
     assert "object_path" in result.frames[0].error
+
+
+# --- symlinked output directories -------------------------------------------
+
+
+def test_a_symlinked_images_directory_still_works(tmp_path, monkeypatch):
+    """Pointing images/ at another disk is an ordinary way to stage a big experiment."""
+    out = tmp_path / "out"
+    out.mkdir()
+    bigdisk = tmp_path / "bigdisk"
+    bigdisk.mkdir()
+    (out / "images").symlink_to(bigdisk, target_is_directory=True)
+
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(3))
+    result = dl.download_images(_Client(), [SCAN], out, workers=1)
+
+    assert result.ok == 3 and result.failed == 0
+    assert (bigdisk / "Wave2/Day14_2026-05-11/QR-1/0.png").exists()
+
+
+def test_containment_still_refuses_if_the_sanitiser_ever_regresses(tmp_path, monkeypatch):
+    """`safe_component` is what makes traversal impossible; this is the backstop behind it."""
+    monkeypatch.setattr(dl, "safe_component", lambda value: str(value))
+
+    with pytest.raises(ValueError, match="refusing to write outside"):
+        dl.image_dest(tmp_path, {**SCAN, "qr_code": "../../.."}, {"frame_number": "../../escape",
+                                                                  "object_path": "a.png"})
+
+
+# --- collisions the filesystem creates --------------------------------------
+
+
+def test_two_qr_codes_differing_only_by_case_are_caught(tmp_path):
+    """Postgres treats these as two plants; macOS treats their directories as one."""
+    lower = {**SCAN, "scan_id": 1, "qr_code": "st0-001"}
+    upper = {**SCAN, "scan_id": 2, "qr_code": "ST0-001"}
+    work = [(lower, i) for i in _images(2)] + [(upper, i) for i in _images(2)]
+
+    clashes = dl.find_frame_collisions(tmp_path, work)
+
+    if dl.filesystem_folds_case(tmp_path):
+        assert clashes, "these land on one file here, so they must be reported"
+    else:
+        assert not clashes, "these are genuinely different files here, so must not be"
+
+
+def test_frames_differing_only_by_extension_do_not_collide(tmp_path):
+    """0.png and 0.tif are different files; refusing them would be a false alarm."""
+    pair = [
+        (SCAN, {"frame_number": 0, "object_path": "a.png"}),
+        (SCAN, {"frame_number": 0, "object_path": "a.tif"}),
+    ]
+    assert dl.find_frame_collisions(tmp_path, pair) == []
+
+
+def test_a_trailing_space_makes_a_distinct_plant_not_a_collision(tmp_path):
+    """qr_code is UNIQUE per wave, so "QR-1" and "QR-1 " are two plants, not one."""
+    plain = {**SCAN, "scan_id": 1, "qr_code": "QR-1"}
+    spaced = {**SCAN, "scan_id": 2, "qr_code": "QR-1 "}
+
+    assert dl.scan_relative_dir(plain) != dl.scan_relative_dir(spaced)
+    assert dl.find_frame_collisions(
+        tmp_path, [(plain, {"frame_number": 0, "object_path": "a.png"}),
+                   (spaced, {"frame_number": 0, "object_path": "a.png"})]
+    ) == []
+
+
+def test_all_collisions_are_reported_not_just_the_first(tmp_path):
+    a = {**SCAN, "scan_id": 1}
+    b = {**SCAN, "scan_id": 2}
+    pairs = [(a, {"frame_number": n, "object_path": "x.png"}) for n in (0, 1)]
+    pairs += [(b, {"frame_number": n, "object_path": "x.png"}) for n in (0, 1)]
+
+    assert len(dl.find_frame_collisions(tmp_path, pairs)) == 2
+
+
+# --- scans with no images ---------------------------------------------------
+
+
+def test_a_scan_with_no_images_is_not_silently_successful(tmp_path, monkeypatch):
+    """An interrupted upload leaves a scan row with no cyl_images — that is missing data."""
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: [] if scan_id == 2 else _images(2))
+
+    result = dl.download_images(_Client(), [SCAN, SCAN_B], tmp_path, workers=1)
+
+    assert result.scans_without_frames == 1
+    assert result.incomplete, "a scan with no images must not exit 0"
+    assert result.total == 2  # the empty scan is not counted as a frame
+
+
+def test_a_scan_with_no_images_gets_a_log_line(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: [] if scan_id == 2 else _images(1))
+
+    result = dl.download_images(_Client(), [SCAN, SCAN_B], tmp_path, workers=1)
+    log = tmp_path / "log.txt"
+    dl.write_download_log(result, log)
+
+    text = log.read_text()
+    assert "NOFRAMES scan=2" in text
+    assert "1 scan(s) have no images" in text
+
+
+def test_an_experiment_with_no_images_at_all_exits_non_zero(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: [])
+    result = dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
+    assert result.total == 0 and result.incomplete
+
+
+# --- log integrity ----------------------------------------------------------
+
+
+def test_a_multi_line_error_stays_on_one_log_line(tmp_path):
+    """A 502 from httpx has a multi-line message; it must not look like extra frames."""
+    frames = [
+        dl.FrameResult(3, 0, "a.png", ok=True),
+        dl.FrameResult(3, 1, "b.png", ok=False, error="502 Bad Gateway\nFor more information: x"),
+        dl.FrameResult(3, 2, "c.png", ok=True),
+    ]
+    log = tmp_path / "log.txt"
+    dl.write_download_log(dl.DownloadResult(frames), log)
+
+    records = [ln for ln in log.read_text().splitlines() if ln.strip()]
+    assert len(records) == 4  # 3 frames + summary, not 5
+    assert "For more information: x" in records[1]
+
+
+def test_a_newline_in_an_object_path_cannot_forge_a_log_record(tmp_path):
+    frames = [dl.FrameResult(3, 0, "a.png\nOK   scan=999 frame=1 forged.png", ok=True)]
+    log = tmp_path / "log.txt"
+    dl.write_download_log(dl.DownloadResult(frames), log)
+
+    records = [ln for ln in log.read_text().splitlines() if ln.strip()]
+    assert len(records) == 2  # 1 frame + summary
+    assert "scan=999" in records[0]  # present, but folded into the real record
+
+
+# --- one output directory, one download -------------------------------------
+
+
+def _cli(monkeypatch, client, scans, images=2):
+    from test_download_session_resume import CREDS
+
+    import bloomctl.auth as auth
+
+    monkeypatch.setattr("bloomctl.credentials.load_credentials", lambda *a, **k: CREDS)
+    monkeypatch.setattr(auth, "make_authed_client", lambda creds: client)
+    monkeypatch.setattr(dl, "fetch_scans", lambda *a, **k: scans)
+    monkeypatch.setattr(dl, "fetch_genotypes", lambda c, ids: {})
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(images))
+
+
+def test_a_second_experiment_into_the_same_directory_is_refused(tmp_path, monkeypatch):
+    """Paths carry no experiment id, so resume could serve the first one's images as the second's."""
+    from click.testing import CliRunner
+
+    from bloomctl.cli import cli
+
+    out = tmp_path / "out"
+    _cli(monkeypatch, _Client(), [SCAN])
+    first = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "100"])
+    assert first.exit_code == 0, first.output
+
+    _cli(monkeypatch, _Client(), [SCAN])
+    second = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "200"])
+
+    assert second.exit_code != 0
+    assert "already holds a different download" in second.output
+    assert "experiment_id" in second.output
+
+
+def test_resuming_the_same_experiment_is_allowed(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from bloomctl.cli import cli
+
+    out = tmp_path / "out"
+    _cli(monkeypatch, _Client(), [SCAN])
+    CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "100"])
+
+    fresh = _Client()
+    _cli(monkeypatch, fresh, [SCAN])
+    again = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "100"])
+
+    assert again.exit_code == 0, again.output
+    assert fresh.bucket.calls == 0  # everything resumed
+
+
+def test_overwrite_lets_you_reuse_the_directory_deliberately(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from bloomctl.cli import cli
+
+    out = tmp_path / "out"
+    _cli(monkeypatch, _Client(), [SCAN])
+    CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "100"])
+
+    _cli(monkeypatch, _Client(), [SCAN])
+    result = CliRunner().invoke(
+        cli, ["cyl", "download", str(out), "--experiment-id", "200", "--overwrite"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert dl.read_manifest(out)["experiment_id"] == 200
+
+
+def test_a_missing_or_corrupt_manifest_does_not_block_a_download(tmp_path):
+    assert dl.read_manifest(tmp_path) is None
+    (tmp_path / dl.MANIFEST_NAME).write_text("not json", encoding="utf-8")
+    assert dl.read_manifest(tmp_path) is None
+    assert dl.describe_manifest_mismatch(None, {"experiment_id": 1}) == ""

@@ -413,3 +413,93 @@ def test_a_fully_resumed_run_reports_frames_present_not_zero_downloaded(tmp_path
     assert again.exit_code == 0, again.output
     assert "2/2 frames present" in again.output
     assert "0 downloaded this run, 2 already on disk" in again.output
+
+
+# --- what counts as worth retrying ------------------------------------------
+
+
+class _ApiError(RuntimeError):
+    """Shaped like storage3's StorageApiError: carries a status alongside the message."""
+
+    def __init__(self, message, status):
+        super().__init__(f"{{'statusCode': {status}, 'error': e, 'message': {message}}}")
+        self.status = status
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_delay(monkeypatch):
+    """Keep the backoff from slowing the suite; the delay itself is asserted separately."""
+    monkeypatch.setattr(storage.time, "sleep", lambda seconds: None)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected", "why"),
+    [
+        (_ApiError("Too Many Requests", 429), True, "rate limiting is the whole reason to wait"),
+        (_ApiError("Internal Server Error", 500), True, "server-side, may pass on a retry"),
+        (_ApiError("Bad Gateway", 502), True, "server-side"),
+        (_ApiError("Service Unavailable", 503), True, "server-side"),
+        (_ApiError("Object not found", 404), False, "genuinely absent; do not double requests"),
+        (_ApiError("Invalid key", 400), False, "client-side, a retry changes nothing"),
+        (
+            _ApiError("Object not found: cyl-images/scan_500/frame_3.png", 404),
+            False,
+            "a path containing 500 must not look like a server error",
+        ),
+    ],
+)
+def test_retry_decision_uses_the_status_not_the_message(error, expected, why):
+    assert storage.is_retryable(error) is expected, why
+
+
+@pytest.mark.parametrize(
+    "name", ["ReadTimeout", "ConnectTimeout", "PoolTimeout", "WriteTimeout", "ConnectError"]
+)
+def test_network_failures_are_retryable_despite_having_no_message(name):
+    """These stringify to '' — there is no text to match, so the type has to decide."""
+    import httpx
+
+    error = getattr(httpx, name)("")
+    assert str(error) == ""
+    assert storage.is_retryable(error) is True
+
+
+def test_a_dropped_connection_is_retryable():
+    import httpx
+
+    error = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+    assert storage.is_retryable(error) is True
+
+
+def test_an_expired_session_is_retryable_even_though_its_status_is_404():
+    """Storage reports an expired caller as a missing bucket, so only the message tells them apart."""
+    assert storage.is_retryable(_ApiError("Bucket not found", 404)) is True
+
+
+def test_a_timeout_is_logged_with_its_type_not_an_empty_string(tmp_path, monkeypatch):
+    import httpx
+
+    class _TimingOutBucket:
+        def download(self, object_path):
+            raise httpx.ReadTimeout("")
+
+    client = _Client()
+    client.bucket = _TimingOutBucket()
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(1))
+
+    result = dl.download_images(client, [SCAN], tmp_path, workers=1)
+
+    assert result.failed == 1
+    assert result.frames[0].error == "ReadTimeout", "an empty error= line is unactionable"
+
+
+def test_the_retry_waits_before_trying_again(monkeypatch):
+    """An immediate second request from every worker is what overwhelms a struggling server."""
+    slept: list[float] = []
+    monkeypatch.setattr(storage.time, "sleep", lambda seconds: slept.append(seconds))
+
+    client = _Client(budget=0)
+    with pytest.raises(storage.StorageError):
+        storage.download_object(client, "cyl-images/0.png")
+
+    assert slept == [storage.RETRY_DELAY_SECONDS]
