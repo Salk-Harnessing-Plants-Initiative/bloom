@@ -7,9 +7,11 @@ so the contract is unit-testable without a live server.
 from __future__ import annotations
 
 import csv
+import errno
 import itertools
 import json
 import os
+import threading
 import time
 import unicodedata
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -337,6 +339,8 @@ def download_frame(
     scan: dict[str, Any],
     image: dict[str, Any],
     out_dir: Path,
+    *,
+    stop: threading.Event | None = None,
 ) -> FrameResult:
     """Download one frame to its destination, returning the outcome.
 
@@ -345,9 +349,16 @@ def download_frame(
 
     A frame already on disk is reported as skipped without making a request, which is what
     makes an interrupted run cheap to pick back up.
+
+    ``stop`` is set when the disk fills. Every frame after that is recorded as failed without
+    being fetched — there is nowhere to put it, and a large experiment would otherwise pull
+    hundreds of gigabytes only to throw them away.
     """
     object_path = image.get("object_path", "")
     result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
+    if stop is not None and stop.is_set():
+        result.error = "no space left on device — nothing further was downloaded"
+        return result
     try:
         dest = image_dest(out_dir, scan, image)
         if already_downloaded(dest):
@@ -358,6 +369,11 @@ def download_frame(
         result.ok = True
     except (KeyError, TypeError) as exc:  # a bare key or pathlib error explains nothing
         result.error = f"malformed cyl_images row: {exc}"
+    except OSError as exc:
+        # A full disk isn't this frame's problem, it's every remaining frame's.
+        if exc.errno == errno.ENOSPC and stop is not None:
+            stop.set()
+        result.error = str(exc)
     except Exception as exc:  # per-frame: record and continue
         result.error = str(exc)
     return result
@@ -543,8 +559,10 @@ def download_images(
     if clashes:
         raise CollidingFrames("; ".join(clashes))
 
+    stop = threading.Event()
+
     def _one(pair: tuple[dict[str, Any], dict[str, Any]]) -> FrameResult:
-        return download_frame(client, pair[0], pair[1], out_dir)
+        return download_frame(client, pair[0], pair[1], out_dir, stop=stop)
 
     # Never start more threads than there are frames, than were asked for, or than the limit.
     n = min(workers, MAX_WORKERS, len(work)) if work else 0

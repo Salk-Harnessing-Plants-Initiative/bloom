@@ -175,3 +175,102 @@ def test_the_reporter_passes_the_failure_count_through(capsys):
     report = dl.ProgressReporter(interval=0.0)
     report("downloading", 7, 10, 3)
     assert "7/10 frames (70%), 3 failed" in capsys.readouterr().err
+
+
+# --- a full disk stops the run rather than downloading into nowhere ----------
+
+
+class _DiskFillsAfter:
+    """Serves frames until the disk fills, as a real one would."""
+
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.calls = 0
+
+    def download(self, object_path):
+        self.calls += 1
+        return b"x"
+
+
+def _fills_disk_after(monkeypatch, capacity: int):
+    """Make the write fail with ENOSPC once `capacity` frames have landed."""
+    import errno
+    from pathlib import Path
+
+    written = {"n": 0}
+    real = Path.write_bytes
+
+    def _write(self, data):
+        written["n"] += 1
+        if written["n"] > capacity:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", _write)
+
+
+def test_a_full_disk_stops_further_downloads(tmp_path, monkeypatch):
+    """Continuing would pull hundreds of GB off the server only to discard them."""
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(400))
+    client = _Client()
+    client.bucket = _DiskFillsAfter(50)
+    _fills_disk_after(monkeypatch, 50)
+
+    result = dl.download_images(client, [SCAN], tmp_path, workers=1)
+
+    assert result.ok == 50
+    assert result.failed == 350
+    assert client.bucket.calls == 51, "one frame discovers the full disk; none after it are fetched"
+
+
+def test_the_frames_after_a_full_disk_say_why(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(10))
+    client = _Client()
+    client.bucket = _DiskFillsAfter(2)
+    _fills_disk_after(monkeypatch, 2)
+
+    result = dl.download_images(client, [SCAN], tmp_path, workers=1)
+
+    assert "No space left on device" in result.frames[2].error
+    assert "nothing further was downloaded" in result.frames[-1].error
+
+
+def test_the_log_and_summary_are_still_written_when_the_disk_fills(tmp_path, monkeypatch):
+    """Aborting outright would lose the log, which is the artefact a user sends us."""
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(10))
+    client = _Client()
+    client.bucket = _DiskFillsAfter(3)
+    _fills_disk_after(monkeypatch, 3)
+
+    result = dl.download_images(client, [SCAN], tmp_path, workers=1)
+    log = tmp_path / "log.txt"
+    dl.write_download_log(result, log)
+
+    text = log.read_text()
+    assert "3/10 frames present" in text
+    assert "7 failed" in text
+    assert result.incomplete
+
+
+def test_an_ordinary_write_error_does_not_stop_the_run(tmp_path, monkeypatch):
+    """Only a full disk is everyone's problem; a one-off write failure is just one frame."""
+    import errno
+    from pathlib import Path
+
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(10))
+    seen = {"n": 0}
+    real = Path.write_bytes
+
+    def _write(self, data):
+        seen["n"] += 1
+        if seen["n"] == 3:
+            raise OSError(errno.EIO, "I/O error")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", _write)
+    client = _Client()
+
+    result = dl.download_images(client, [SCAN], tmp_path, workers=1)
+
+    assert result.failed == 1 and result.ok == 9
+    assert client.bucket.calls == 10, "every frame was still attempted"
