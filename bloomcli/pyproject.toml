@@ -17,7 +17,10 @@ dependencies = [
     "click>=8.2",  # CliRunner separates stdout/stderr (tests assert on .stderr)
     "rich>=13.0",
     # /client-info bootstrap fetch (login).
-    "httpx>=0.27",
+    # The upper bound is load-bearing: httpx 1.0 removed `Timeout` and `HTTPError`, which
+    # postgrest imports at module load. Without it, installing with --pre or
+    # --prerelease=allow resolves a 1.0 dev build and no command runs at all (#629).
+    "httpx>=0.27,<1.0",
     # Supabase PostgREST + Storage client (auth, metadata query, image signing).
     "supabase>=2.0.0",
     "python-dotenv>=1.0.0",
