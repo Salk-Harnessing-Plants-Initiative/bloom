@@ -134,6 +134,58 @@ def test_client_accessors_accept_no_caller_credential_parameter():
     }
 
 
+_SUSPICIOUS_PARAM_NAMES = {
+    "token",
+    "access_token",
+    "caller_token",
+    "identity",
+    "credential",
+    "credentials",
+    "jwt",
+    "auth_token",
+    "bearer",
+    "subject",
+    "sub",
+    "user_token",
+    "session_token",
+}
+
+
+def _top_level_function_defs(
+    tree: ast.AST,
+) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    return [
+        node
+        for node in ast.iter_child_nodes(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+
+
+def test_no_function_in_supabase_client_accepts_a_caller_credential_parameter():
+    """Structural backstop for a *new* accessor, not just the two named ones.
+
+    `test_client_accessors_accept_no_caller_credential_parameter` pins
+    `get_postgrest_client`/`get_storage_client`'s exact signatures by name;
+    `test_create_client_is_called_only_from_supabase_client_module` counts
+    `create_client` call sites, deliberately skipping this file's own
+    content. Neither would catch a *new* function added to this module later
+    (e.g. `get_admin_client(token)`) that accepts a caller-credential-shaped
+    parameter — this scans every function this module defines, by AST, not
+    by name."""
+    tree = ast.parse((_SRC / "supabase_client.py").read_text(encoding="utf-8"))
+    offenders = {}
+    for fn in _top_level_function_defs(tree):
+        params = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+        suspicious = params & _SUSPICIOUS_PARAM_NAMES
+        if suspicious:
+            offenders[fn.name] = suspicious
+    assert not offenders, (
+        f"supabase_client.py has a function accepting a caller-credential-"
+        f"shaped parameter: {offenders} — every DB/Storage call must "
+        f"authenticate as bloom_agent only, never a caller's own token"
+    )
+
+
 def test_postgrest_client_ignores_an_authenticated_callers_oauth_token(monkeypatch):
     """Verifying a caller's OAuth token (admission) must have zero effect on
     which credentials the resulting DB client carries (authority).

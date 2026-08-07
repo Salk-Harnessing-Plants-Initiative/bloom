@@ -321,7 +321,16 @@ services:
       # emits relative endpoints a conforming client cannot resolve — discovery
       # returns 200 and the flow dead-ends before registration.
       GOTRUE_API_EXTERNAL_URL: ${API_EXTERNAL_URL}
-      GOTRUE_JWT_ISSUER: ${API_EXTERNAL_URL}/auth/v1
+      # Deliberately NOT ${API_EXTERNAL_URL}/auth/v1 (http://localhost:9999/auth/v1
+      # by default): that's GoTrue's own direct port, which this compose file
+      # never publishes to the host (no `ports:` on the `auth` service, only
+      # reachable container-to-container via `supanet`). An MCP client
+      # validating `iss` per RFC 9207 would reject every dev-issued token
+      # against an issuer it cannot even resolve. Routed through Kong's
+      # published port instead, matching BLOOMMCP_OAUTH_AUTHORIZATION_SERVER's
+      # own default (http://localhost:8000/auth/v1) below — both must name the
+      # same externally-reachable authorization server.
+      GOTRUE_JWT_ISSUER: http://localhost:${KONG_HTTP_PORT}/auth/v1
       GOTRUE_OAUTH_SERVER_ENABLED: ${GOTRUE_OAUTH_SERVER_ENABLED:-true}
       GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH:-/oauth/consent}
       GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION: ${GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION:-true}

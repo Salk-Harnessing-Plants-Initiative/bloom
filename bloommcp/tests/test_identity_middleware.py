@@ -39,6 +39,7 @@ Two layers of test:
 
 from __future__ import annotations
 
+import time
 import uuid
 
 import jwt
@@ -52,7 +53,10 @@ A_UUID = str(uuid.uuid4())
 
 
 def _token(sub=A_UUID, secret=SECRET):
-    return jwt.encode({"sub": sub, "aud": "authenticated"}, secret, algorithm="HS256")
+    # verify_identity_header now requires an exp claim to exist
+    # (options={"require": ["exp"]}) — every token here must carry one.
+    payload = {"sub": sub, "aud": "authenticated", "exp": int(time.time()) + 3600}
+    return jwt.encode(payload, secret, algorithm="HS256")
 
 
 class _DummyApp:
@@ -356,12 +360,17 @@ os.environ["JWT_SECRET"] = "test-jwt-secret"
 os.environ["BLOOMMCP_API_KEY"] = "test-api-key"
 
 import json
+import time
 import jwt
 from starlette.testclient import TestClient
 from bloom_mcp import server
 
 valid_identity = jwt.encode(
-    {"sub": "11111111-1111-1111-1111-111111111111", "aud": "authenticated"},
+    {
+        "sub": "11111111-1111-1111-1111-111111111111",
+        "aud": "authenticated",
+        "exp": int(time.time()) + 3600,
+    },
     "test-jwt-secret",
     algorithm="HS256",
 )

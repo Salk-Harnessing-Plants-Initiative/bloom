@@ -14,6 +14,8 @@ from __future__ import annotations
 import threading
 import time
 
+import pytest
+
 from bloom_mcp.usage import _redact_identity, record_usage_async
 
 
@@ -149,6 +151,22 @@ def test_redact_identity_is_deterministic_and_excludes_the_raw_value():
     assert redacted == _redact_identity(real_id)  # deterministic, for correlation
     assert real_id not in redacted
     assert _redact_identity("22222222-2222-2222-2222-222222222222") != redacted
+
+
+def test_redact_identity_handles_the_anonymous_sentinel():
+    """The most common real-world call: no caller identity resolved at all
+    — every unauthenticated request collapses to this exact string."""
+    redacted = _redact_identity("anonymous")
+    assert redacted != "anonymous"
+    assert _redact_identity("anonymous") == redacted  # deterministic
+
+
+def test_redact_identity_raises_on_non_str_input():
+    """`identity` is typed as `str` throughout this module; a caller passing
+    something else (e.g. `None`) must fail loudly here, not silently produce
+    a misleading redacted value."""
+    with pytest.raises(AttributeError):
+        _redact_identity(None)
 
 
 class _RecordingLogger:

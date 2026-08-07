@@ -181,10 +181,22 @@ def jwt_decode(token: str, secret: str) -> dict:
 
     ``aud`` arrives as a bare string on the OAuth path and a list on the
     session path; PyJWT accepts either.
+
+    ``require: ["exp"]`` — PyJWT only validates an ``exp`` claim's *value* if
+    present; it does not require the claim to exist at all. Without this, a
+    token with no ``exp`` claim would verify as never-expiring. Low severity
+    today (only GoTrue holds ``JWT_SECRET`` and always stamps ``exp``), but
+    cheap to close rather than rely on that holding forever.
     """
     import jwt
 
-    return jwt.decode(token, secret, algorithms=["HS256"], audience=_AUDIENCE)
+    return jwt.decode(
+        token,
+        secret,
+        algorithms=["HS256"],
+        audience=_AUDIENCE,
+        options={"require": ["exp"]},
+    )
 
 
 def build_auth_provider():

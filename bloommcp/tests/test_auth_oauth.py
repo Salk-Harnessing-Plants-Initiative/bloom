@@ -20,6 +20,7 @@ import uuid
 import jwt
 import pytest
 
+import bloom_mcp.auth as auth
 from bloom_mcp.auth import ApiKeyVerifier, SupabaseOAuthVerifier
 
 SECRET = "test-jwt-secret"
@@ -133,6 +134,18 @@ def test_empty_client_id_is_rejected(oauth):
 
 def test_expired_token_is_rejected(oauth):
     assert _verify(oauth, _oauth_token(expires_in=-10)) is None
+
+
+def test_token_with_no_exp_claim_is_rejected(oauth):
+    """PyJWT only validates `exp`'s *value* if present — it does not require
+    the claim to exist. Without `options={"require": ["exp"]}`, an otherwise
+    valid token with no `exp` claim at all would verify as never-expiring."""
+    no_exp = jwt.encode(
+        {"sub": A_UUID, "aud": "authenticated", "client_id": A_CLIENT},
+        SECRET,
+        algorithm="HS256",
+    )
+    assert _verify(oauth, no_exp) is None
 
 
 def test_wrong_signature_is_rejected(oauth):
@@ -262,3 +275,42 @@ def test_api_key_verifier_rejects_an_oauth_token():
 
 def test_oauth_verifier_rejects_the_api_key(oauth):
     assert _verify(oauth, "s3cret") is None
+
+
+# --- build_auth_provider(): partial config must not silently misconfigure ---
+# `if PUBLIC_URL and AUTHORIZATION_SERVER:` requires both by design — an
+# admin who sets only one (a plausible copy-paste-partial-env mistake) must
+# land on a *known* fallback shape, not a half-built OAuth provider, a
+# raise, or a silent drop to no-auth when a key was actually configured.
+
+
+def test_public_url_without_authorization_server_falls_back_to_api_key(monkeypatch):
+    monkeypatch.setattr(auth, "PUBLIC_URL", "https://bloom.salk.edu/bloommcp")
+    monkeypatch.setattr(auth, "AUTHORIZATION_SERVER", None)
+    monkeypatch.setattr(auth, "API_KEY", "s3cret")
+
+    provider = auth.build_auth_provider()
+
+    assert isinstance(provider, ApiKeyVerifier)
+
+
+def test_authorization_server_without_public_url_falls_back_to_api_key(monkeypatch):
+    monkeypatch.setattr(auth, "PUBLIC_URL", None)
+    monkeypatch.setattr(
+        auth, "AUTHORIZATION_SERVER", "https://bloom.salk.edu/api/auth/v1"
+    )
+    monkeypatch.setattr(auth, "API_KEY", "s3cret")
+
+    provider = auth.build_auth_provider()
+
+    assert isinstance(provider, ApiKeyVerifier)
+
+
+def test_partial_oauth_config_with_no_api_key_is_dev_mode_not_a_crash(monkeypatch):
+    """Same partial config, but no BLOOMMCP_API_KEY either — must fall
+    through to `None` (dev mode), not raise or build a broken provider."""
+    monkeypatch.setattr(auth, "PUBLIC_URL", "https://bloom.salk.edu/bloommcp")
+    monkeypatch.setattr(auth, "AUTHORIZATION_SERVER", None)
+    monkeypatch.setattr(auth, "API_KEY", None)
+
+    assert auth.build_auth_provider() is None

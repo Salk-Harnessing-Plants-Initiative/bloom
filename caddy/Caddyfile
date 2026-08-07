@@ -104,8 +104,9 @@
 		}
 
 		# Bloommcp MCP server — strip /bloommcp prefix, proxy to FastMCP on 8811.
-		# Auth is enforced by bloommcp itself (Bearer token via BLOOMMCP_API_KEY)
-		# so Caddy doesn't need to do auth here. Salk-network-internal only.
+		# Auth is enforced by bloommcp itself (Bearer token — BLOOMMCP_API_KEY or,
+		# where configured, a Supabase OAuth access token) so Caddy doesn't need
+		# to do auth here. Salk-network-internal only.
 		handle_path /bloommcp/* {
 			reverse_proxy bloommcp:8811 {
 				flush_interval -1

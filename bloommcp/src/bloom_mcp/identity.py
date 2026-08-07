@@ -89,10 +89,6 @@ def is_valid_identity(sub: str) -> bool:
     return bool(_UUID_RE.fullmatch(sub)) and sub.lower() != ANONYMOUS
 
 
-# Retained so existing internal references keep working.
-_is_valid_identity = is_valid_identity
-
-
 def verify_identity_header(value: str | None) -> str | None:
     """Verify an ``X-Bloom-Identity`` header value.
 
@@ -119,7 +115,14 @@ def verify_identity_header(value: str | None) -> str | None:
 
     try:
         payload = jwt.decode(
-            value, secret, algorithms=["HS256"], audience="authenticated"
+            value,
+            secret,
+            algorithms=["HS256"],
+            audience="authenticated",
+            # PyJWT only validates exp's *value* if present; it does not
+            # require the claim to exist. Without this, a token with no exp
+            # claim would verify as never-expiring.
+            options={"require": ["exp"]},
         )
     except jwt.InvalidTokenError as exc:
         raise IdentityVerificationError(
@@ -127,7 +130,7 @@ def verify_identity_header(value: str | None) -> str | None:
         ) from None
 
     sub = payload.get("sub")
-    if not sub or not isinstance(sub, str) or not _is_valid_identity(sub):
+    if not sub or not isinstance(sub, str) or not is_valid_identity(sub):
         raise IdentityVerificationError("X-Bloom-Identity token has no valid sub claim")
     return sub.lower()
 

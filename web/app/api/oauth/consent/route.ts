@@ -40,7 +40,16 @@ export async function POST(request: Request) {
     const redirectUrl = await submitConsent(authorizationId, action, session.access_token)
     return NextResponse.json({ redirect_url: redirectUrl })
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Consent failed'
-    return NextResponse.json({ error: message }, { status: 400 })
+    // Logged, not shown: `err.message` here is GoTrue's own raw response text
+    // (submitConsent throws `body.msg` verbatim) — inconsistent with the
+    // friendly, translated messages ConsentPage already shows for every
+    // page-load failure (expired/invalid authorization, expired session).
+    // The client sees a stable, generic message; whoever's debugging a
+    // real failure has the real one in the server log.
+    console.error('oauth consent submission failed:', err)
+    return NextResponse.json(
+      { error: 'Could not complete the request. Please try again.' },
+      { status: 400 }
+    )
   }
 }
