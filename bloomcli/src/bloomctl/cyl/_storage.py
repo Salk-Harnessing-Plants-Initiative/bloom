@@ -9,21 +9,12 @@ small object over the client's shared connection pool.
 from __future__ import annotations
 
 import os
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 IMAGES_BUCKET = "images"
-
-# Downloaded frames should be as readable as the scans.csv beside them. mkstemp makes files
-# owner-only, so the mode is set explicitly before the file is moved into place.
-FRAME_MODE = 0o644
-
-# Read once at import. os.umask is process-wide and briefly clears the mask, so calling it
-# from a download thread would affect every other thread creating a file at that moment.
-_UMASK = os.umask(0)
-os.umask(_UMASK)
 
 # Storage answers a caller whose token has expired with a 404 "Bucket not found" — it won't
 # confirm that a private bucket exists to someone who can't read it. A genuinely absent object
@@ -128,27 +119,22 @@ def _unlink_quietly(path: str) -> None:
         pass
 
 
-def atomic_write_bytes(path: Path, data: bytes, *, mode: int = FRAME_MODE) -> None:
+def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write bytes to ``path`` so nothing can ever read a half-written file.
 
-    Content goes to a temp file first and is then moved into place in one step. This matters
-    twice over: a resumed run must not mistake a partial file for a finished one, and two
-    workers handed the same destination must not interleave their writes.
+    Content goes to a temp file first and is then renamed into place, which happens in one
+    step. This matters twice over: a resumed run must not mistake a partial file for a
+    finished one, and two workers handed the same destination must not interleave their
+    writes. The temp file is written with an ordinary open, so it ends up with the same
+    permissions any other file in the directory would get.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".dl-", suffix=".tmp")
+    tmp = path.with_name(f".dl-{uuid4().hex}.tmp")
     try:
-        try:
-            handle = os.fdopen(fd, "wb")
-        except BaseException:
-            os.close(fd)  # fdopen didn't take the descriptor, so it's still ours to close
-            raise
-        with handle:
-            handle.write(data)
-        os.chmod(tmp, mode & ~_UMASK)
+        tmp.write_bytes(data)
         os.replace(tmp, path)
     except BaseException:
-        _unlink_quietly(tmp)
+        _unlink_quietly(str(tmp))
         raise
 
 

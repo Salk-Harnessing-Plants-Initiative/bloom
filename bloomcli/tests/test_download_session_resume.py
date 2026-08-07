@@ -8,8 +8,8 @@ held for the whole run stops working the moment that token is replaced.
 
 from __future__ import annotations
 
-import os
 import stat
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -219,24 +219,23 @@ def test_an_unrelated_error_message_is_left_alone():
 # --- file writing -----------------------------------------------------------
 
 
-def test_downloaded_frames_are_group_and_world_readable(tmp_path):
-    """Frames need to be as readable as the scans.csv sitting beside them."""
-    dest = tmp_path / "frame.png"
-    storage.atomic_write_bytes(dest, b"x")
+def test_a_frame_gets_the_same_permissions_as_any_other_file(tmp_path):
+    """Frames must be as readable as the scans.csv sitting beside them, at any umask."""
+    frame = tmp_path / "frame.png"
+    storage.atomic_write_bytes(frame, b"x")
+    ordinary = tmp_path / "scans.csv"
+    ordinary.write_text("x")
 
-    mode = stat.S_IMODE(dest.stat().st_mode)
-    assert mode == 0o644 & ~storage._UMASK
+    assert stat.S_IMODE(frame.stat().st_mode) == stat.S_IMODE(ordinary.stat().st_mode)
 
 
 def test_a_crash_mid_write_leaves_the_previous_file_intact(tmp_path, monkeypatch):
     dest = tmp_path / "frame.png"
     dest.write_bytes(b"old-bytes")
 
-    def _boom(fd, mode):
-        os.close(fd)
-        raise OSError("simulated crash mid-write")
-
-    monkeypatch.setattr(os, "fdopen", _boom)
+    monkeypatch.setattr(
+        Path, "write_bytes", lambda self, data: (_ for _ in ()).throw(OSError("crash mid-write"))
+    )
 
     with pytest.raises(OSError):
         storage.atomic_write_bytes(dest, b"new-bytes")
@@ -245,36 +244,12 @@ def test_a_crash_mid_write_leaves_the_previous_file_intact(tmp_path, monkeypatch
     assert list(tmp_path.glob(".dl-*")) == []
 
 
-def test_a_failed_write_does_not_leak_a_file_descriptor(tmp_path, monkeypatch):
-    """If opening the temp file fails, the descriptor is still ours to close."""
-    closed: list[int] = []
-    real_close = os.close
-
-    def _track_close(fd):
-        closed.append(fd)
-        real_close(fd)
-
-    def _boom(fd, mode):
-        raise OSError("fdopen failed")
-
-    monkeypatch.setattr(os, "fdopen", _boom)
-    monkeypatch.setattr(os, "close", _track_close)
-
-    with pytest.raises(OSError):
-        storage.atomic_write_bytes(tmp_path / "frame.png", b"x")
-
-    assert len(closed) == 1  # the mkstemp fd was closed exactly once
-
-
 def test_frames_are_written_atomically(tmp_path, monkeypatch):
     """A crash mid-write must not leave a partial frame that resume would then skip."""
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(1))
-
-    def _boom(fd, mode):
-        os.close(fd)
-        raise OSError("crash")
-
-    monkeypatch.setattr(os, "fdopen", _boom)
+    monkeypatch.setattr(
+        Path, "write_bytes", lambda self, data: (_ for _ in ()).throw(OSError("crash"))
+    )
 
     result = dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
 
