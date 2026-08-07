@@ -300,6 +300,7 @@ class DownloadResult:
     """Aggregate outcome of a `download_images` run."""
 
     frames: list[FrameResult]
+    disk_full: bool = False  # the run stopped early: nowhere left to write
 
     @property
     def ok(self) -> int:
@@ -602,7 +603,7 @@ def download_images(
 
     outcomes = iter(fetched)
     frames = [slot if isinstance(slot, FrameResult) else next(outcomes) for slot in slots]
-    return DownloadResult(frames)
+    return DownloadResult(frames, disk_full=stop.is_set())
 
 
 class ProgressReporter:
@@ -654,7 +655,11 @@ def _one_line(text: Any) -> str:
 
 
 def write_download_log(result: DownloadResult, path: Path) -> None:
-    """Write a per-frame download log (one line per frame) with a summary footer."""
+    """Write a per-frame download log (one line per frame) with a summary footer.
+
+    Written atomically, so a run that fails part-way through the write leaves the previous
+    log intact rather than truncating it to nothing.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for f in result.frames:
@@ -681,7 +686,7 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     if result.scans_without_frames:
         summary += f", {result.scans_without_frames} scan(s) have no images"
     lines.append(summary)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_bytes(path, ("\n".join(lines) + "\n").encode("utf-8"))
 
 
 # --- command ----------------------------------------------------------------
@@ -900,12 +905,20 @@ def download(
         ) from exc
 
     log_path = out / "download_log.txt"
-    write_download_log(result, log_path)
+    # Counts first: if the disk is full the log write is what fails, and the numbers are
+    # worth more than the log.
     click.echo(
-        f"{result.ok}/{result.total} frames present in {out / 'images'} "
-        f"({result.downloaded} downloaded this run, {result.skipped} already on disk)  "
-        f"(log: {log_path})"
+        f"{result.ok:,}/{result.total:,} frames present in {out / 'images'} "
+        f"({result.downloaded:,} downloaded this run, {result.skipped:,} already on disk)"
     )
+    logged = True
+    try:
+        write_download_log(result, log_path)
+    except OSError as exc:
+        logged = False
+        click.echo(f"Could not write {log_path.name}: {exc.strerror or exc}", err=True)
+    else:
+        click.echo(f"Log: {log_path}")
     if result.scans_without_frames:
         click.echo(
             f"Note: {result.scans_without_frames} scan(s) have no images recorded in Bloom, "
@@ -917,13 +930,15 @@ def download(
         # output is incomplete (the log lists every failed frame).
         problems = []
         if result.failed:
-            problems.append(f"{result.failed} of {result.total} frames failed to download")
+            problems.append(f"{result.failed:,} of {result.total:,} frames failed to download")
         if result.scans_unlisted:
             problems.append(
                 f"{result.scans_unlisted} scan(s) could not be listed at all "
                 f"(an unknown number of further frames is missing)"
             )
+        cause = "the disk filled up; " if result.disk_full else ""
+        where = f" — see {log_path}" if logged else ""
         raise click.ClickException(
-            f"{'; '.join(problems)} — see {log_path}. "
+            f"{cause}{'; '.join(problems)}{where}. "
             "Re-running the same command retries only the frames still missing."
         )

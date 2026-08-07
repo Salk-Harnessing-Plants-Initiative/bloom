@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+from click.testing import CliRunner
 from test_download_metadata import SCAN
-from test_download_session_resume import _Client, _images
+from test_download_session_resume import _Client, _images, _patch_cli
 
 import bloomctl.cyl.download as dl
+from bloomctl.cli import cli
 
 
 def test_progress_line_reads_as_frames_and_a_percentage():
@@ -235,20 +238,26 @@ def test_the_frames_after_a_full_disk_say_why(tmp_path, monkeypatch):
     assert "nothing further was downloaded" in result.frames[-1].error
 
 
-def test_the_log_and_summary_are_still_written_when_the_disk_fills(tmp_path, monkeypatch):
-    """Aborting outright would lose the log, which is the artefact a user sends us."""
+def test_the_log_records_what_a_full_disk_did(tmp_path, monkeypatch):
+    """The log is the artefact a user sends us, so it has to name the cause and the counts.
+
+    The write itself is undone first: on a genuinely full disk it fails too, which is the
+    CLI's problem rather than the log's — covered separately below.
+    """
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(10))
     client = _Client()
     client.bucket = _DiskFillsAfter(3)
     _fills_disk_after(monkeypatch, 3)
 
     result = dl.download_images(client, [SCAN], tmp_path, workers=1)
+    monkeypatch.undo()
     log = tmp_path / "log.txt"
     dl.write_download_log(result, log)
 
     text = log.read_text()
     assert "3/10 frames present" in text
     assert "7 failed" in text
+    assert "No space left on device" in text
     assert result.incomplete
 
 
@@ -293,3 +302,64 @@ def test_work_already_in_flight_finishes_after_the_disk_fills(tmp_path, monkeypa
         f"{client.bucket.calls} requests — overshoot should be bounded by {workers} workers"
     )
     assert client.bucket.calls < 500, "the rest were never fetched"
+
+
+# --- a full disk must not take the reporting down with it --------------------
+
+
+def test_the_result_records_that_the_disk_filled(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(10))
+    client = _Client()
+    client.bucket = _DiskFillsAfter(3)
+    _fills_disk_after(monkeypatch, 3)
+
+    result = dl.download_images(client, [SCAN], tmp_path, workers=1)
+
+    assert result.disk_full, "the run knows why it stopped, so the error can say so"
+
+
+def test_a_run_that_ends_normally_does_not_claim_the_disk_filled(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(2))
+
+    result = dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
+
+    assert not result.disk_full
+
+
+def test_a_failed_log_write_leaves_the_previous_log_intact(tmp_path, monkeypatch):
+    """write_text() truncates before writing, so a full disk would leave an empty file."""
+    import errno
+    from pathlib import Path
+
+    log = tmp_path / "download_log.txt"
+    log.write_text("the log from the run before\n")
+
+    def _no_space(self, data):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", _no_space)
+
+    with pytest.raises(OSError):
+        dl.write_download_log(dl.DownloadResult([]), log)
+
+    assert log.read_text() == "the log from the run before\n"
+    assert not list(tmp_path.glob(".dl-*.tmp")), "no temp file left behind"
+
+
+def test_a_full_disk_reports_counts_and_cause_instead_of_a_traceback(tmp_path, monkeypatch):
+    """The real #629 failure: the log write is what fails, and it took the summary with it."""
+    out = tmp_path / "out"
+    _patch_cli(monkeypatch, _Client())
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(10))
+    _fills_disk_after(monkeypatch, 4)
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "download", str(out), "--experiment-id", "17957", "--workers", "1"]
+    )
+
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, OSError), "a full disk is a message, not a traceback"
+    assert "frames present" in result.output, "the counts survive the log write failing"
+    assert "Could not write download_log.txt: No space left on device" in result.output
+    assert "the disk filled up" in result.output
+    assert "Re-running the same command" in result.output
