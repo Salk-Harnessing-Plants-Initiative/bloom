@@ -8,6 +8,64 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a4] - 2026-08-06
+
+### Fixed
+
+- `cyl download` no longer fails the rest of a long run once the login's token is refreshed.
+  A large experiment would download for about an hour and then fail every remaining frame with
+  a 404 `Bucket not found` — a message that reads like missing data (one report: 36,481 frames
+  downloaded, then 23,855 consecutive failures). The cause was not the session expiring:
+  `supabase-py` refreshes the token on its own timer. The cause was resolving the storage
+  bucket handle **once** and reusing it for the whole run — a bucket handle captures the
+  auth header when it is created, so the cached one kept presenting the token it was born
+  with while the client refreshed around it. The handle is now resolved per download, which
+  costs nothing and picks the new token up. A request that still fails for an expired or
+  transient reason is retried once; a genuinely missing object fails immediately rather than
+  doubling the request count across an experiment. When a request does fail for good, the
+  error names a possible expired session instead of claiming the bucket is missing.
+- `cyl download` refuses to start when two frames would be written to the same file. Frame
+  paths are built from `wave_number`/`plant_age_days`/`date_scanned`/`qr_code`/`frame_number`,
+  all of which are nullable — and Postgres unique constraints do not collide NULLs — so two
+  rows could map to one filename. The second frame was silently never fetched and reported as
+  already present. `cyl download-for-predict` already guarded this on the same data.
+- Frame paths built from database fields can no longer escape the output directory (a value
+  containing `../`, or an absolute `frame_number`, previously steered the write elsewhere).
+- Downloaded frames are written `0644` again rather than `0600`, so they stay readable to
+  collaborators on a shared directory alongside `scans.csv`.
+- `download_log.txt` now reports a scan whose frame list could not be fetched as `UNLISTED`,
+  in its proper scan position, and counts it separately — it used to appear as a single
+  failed frame at the bottom of the log, understating how much data was actually missing.
+- A run sweeps `.dl-*.tmp` files left behind by a previously killed run.
+
+### Added
+
+- `cyl download` downloads frames **concurrently** instead of one at a time, which is the
+  difference between a large cylinder experiment taking hours and taking a fraction of that.
+  The per-frame Storage round-trips are I/O-bound, so they overlap well across a thread pool.
+  `-n`/`--workers` sets the width (default 8, range 1-64; `1` restores the old sequential
+  behaviour). The ceiling is enforced in `download_images()` as well as at the flag, so no
+  caller can spawn an unbounded pool, and work is submitted in a bounded window so a
+  400k-frame experiment doesn't queue every task up front. Results keep scan/frame order, so
+  `download_log.txt` stays deterministic regardless of how the pool interleaves the work.
+- `cyl download` reports progress while it runs (`12,480/413,926 frames (3%)`, about every five
+  seconds, on stderr). A large experiment takes hours, and it used to print one line and then go
+  quiet, so there was no way to tell a working run from a stuck one.
+- `cyl download` is resumable: a frame already written to the output directory is kept and
+  reported as `already on disk` (logged as `SKIP`), so re-running the same command after any
+  interruption — a failed run, a killed process, a network drop — fetches only what is still
+  missing instead of restarting from zero. Frames are written atomically, so a crash
+  mid-write can't leave a truncated file for a later run to mistake for complete. To fetch an
+  experiment afresh, download it into a new directory.
+
+  A download records which selection it fetched, so re-running the same command resumes it and
+  downloading a different selection into the same directory is refused — two selections in one
+  tree would leave `scans.csv` describing only the newer one. Use a directory per selection.
+
+  **Note for output directories written by 0.1.0a3 or earlier**: those releases wrote frames
+  non-atomically, so an interrupted run could leave a truncated file behind. Resume treats any
+  non-empty file as complete, so download the experiment again into a new directory.
+
 ## [0.1.0a3] - 2026-08-04
 
 ### Changed

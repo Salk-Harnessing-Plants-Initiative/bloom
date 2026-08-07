@@ -11,14 +11,20 @@ from __future__ import annotations
 import shutil
 import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Optional
 
 from bloom_mcp.manifest.versioning import next_version_id, version_dir_name
 
-from ._artifacts import hash_outputs, validate_outputs
+from ._artifacts import (
+    SIGNED_URL_EXPIRES_SECONDS,
+    KeyScopeGuardError,
+    build_output_links,
+    hash_outputs,
+    validate_outputs,
+)
 from ._locks import KeyedLock
 from .ports import (
     CommitFailedError,
@@ -194,8 +200,24 @@ class FakeResultStore:
                 def key_for(rel: str) -> str:
                     return f"{state.prefix}{version_dir}/{rel}"
 
-                output_keys, output_sha256 = hash_outputs(
+                output_keys, output_sha256, output_size_bytes = hash_outputs(
                     run.staging_dir, outputs, key_for
+                )
+                # Synthesized, not a real signed URL (bloom#581 Decision 7) —
+                # this store never uploads real bytes to any backend, so it
+                # never calls storage_backend.active_backend().
+                output_links = build_output_links(
+                    output_keys,
+                    output_sha256,
+                    output_size_bytes,
+                    url_for=lambda key: (
+                        f"fake://signed/{key}?expires_in={SIGNED_URL_EXPIRES_SECONDS}"
+                    ),
+                    # key_for("") is the same closure every real key above was
+                    # built from — mirrors SupabaseResultStore's identical
+                    # reuse (see supabase_store.py's own commit()) so the two
+                    # adapters stay structurally, not just observably, in sync.
+                    expected_prefix=key_for(""),
                 )
 
                 # Per-output recording loop, mirroring where
@@ -251,6 +273,16 @@ class FakeResultStore:
                 # Leave the handle open and the staging dir intact so the
                 # caller can retry — a retry re-enters commit() and
                 # re-derives `taken` against then-current state.
+                if isinstance(exc, KeyScopeGuardError):
+                    # #598: structural bug (a key outside this run's own
+                    # prefix), not transient — mirrors supabase_store.py's
+                    # identical distinction so fake/real parity holds for the
+                    # message too, not just the exception type.
+                    raise CommitFailedError(
+                        f"commit failed for {state.tool_class}/"
+                        f"{_stem(state.experiment)} "
+                        f"(structural bug — do not retry; see server logs)"
+                    ) from exc
                 raise CommitFailedError(
                     f"commit failed for {state.tool_class}/{_stem(state.experiment)} "
                     f"(transient — retry)"
@@ -259,8 +291,12 @@ class FakeResultStore:
             # Success only: tear down staging and seal the handle.
             shutil.rmtree(run.staging_dir, ignore_errors=True)
             self._open.discard(id(run))
+            # `stored` (no output_links) is what persists in `self._runs` — it
+            # mirrors what a real manifest-backed get_run/list_runs would
+            # re-derive (never signed, bloom#581 Decision 1). Only commit()'s
+            # own return value carries the freshly-built links.
             self._runs.setdefault(key, []).append(stored)
-            return stored
+            return replace(stored, output_links=output_links)
 
     def list_runs(self, experiment: str, tool_class: str) -> list[StoredRun]:
         self._maybe_fail_read(experiment, tool_class)

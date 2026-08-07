@@ -37,6 +37,7 @@ def local_env(monkeypatch, tmp_path):
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(store))
     monkeypatch.setenv("BLOOM_EXPERIMENT_LOCAL_ROOT", str(inp))
+    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
     sb.reset_backend_for_tests()
     try:
         yield inp, store
@@ -111,6 +112,29 @@ def test_versioned_cleaned_resolves_from_local_store(local_env):
     frame = LocalReader().load_experiment("exp.csv", require_clean=True)
     assert frame.source.startswith("v1")
     assert set(frame.trait_cols) == {"trait_a", "trait_b"}
+
+
+def test_manifest_read_failure_is_caller_safe_not_raw(local_env, monkeypatch):
+    """A storage failure during the manifest lookup itself (not a missing file --
+    an actual read error) must surface as ExperimentReadError, not propagate as a
+    raw, unhandled exception. LocalReader reaches the same shared
+    `_resolve_versioned_cleaned`/`_resolve_one_class` code SupabaseReader does, via
+    `experiment_utils.load_experiment_data` -- this proves the #586 fix covers this
+    adapter too, not just SupabaseReader."""
+    import bloom_mcp.manifest.manifest as manifest_mod
+
+    inp, _ = local_env
+    (inp / "exp.csv").write_text(_RAW)
+    _seed_cleaned("exp.csv", pd.read_csv(io.StringIO(_RAW)))
+
+    def _boom(prefix: str):
+        raise RuntimeError("connection reset by peer at 10.0.0.5:5432")
+
+    monkeypatch.setattr(manifest_mod, "list_prefix", _boom)
+
+    with pytest.raises(ExperimentReadError) as exc:
+        LocalReader().load_experiment("exp.csv")
+    assert "10.0.0.5" not in str(exc.value)
 
 
 def test_require_clean_does_not_honor_stale_legacy(local_env, monkeypatch, tmp_path):

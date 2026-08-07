@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # avoid an import cycle; only used for typing
+    from bloom_mcp.contract.models import OutputLink
     from bloom_mcp.contract.provenance import Provenance
     from bloom_mcp.data_access import SourceInfo
     from bloom_mcp.manifest.schema import VersionEntry
@@ -95,6 +96,11 @@ class StoredRun:
     input_validation: Optional[dict] = None
     source_id: Optional[int] = None
     source_name: Optional[str] = None
+    # Per-output signed/served download links (bloom#581). Populated only by
+    # `commit` — `get_run`/`list_runs` (and `from_version_entry`, which both of
+    # those use) leave this `{}`, so listing/resolving a historical run never
+    # eagerly signs a URL for it. Never persisted into the manifest.
+    output_links: dict[str, "OutputLink"] = field(default_factory=dict)
 
     @classmethod
     def from_version_entry(

@@ -19,6 +19,10 @@ from bloom_mcp.result_store import (
     SupabaseResultStore,
 )
 from bloom_mcp.manifest import AnalysisDir
+from bloom_mcp.result_store._artifacts import KeyScopeGuardError
+from bloom_mcp.result_store._artifacts import (
+    build_output_links as _real_build_output_links,
+)
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -73,6 +77,68 @@ def _inject_commit_failure(
         monkeypatch.setattr(sc, "upload_file", _flaky)
 
 
+def _inject_wrong_expected_prefix(kind, monkeypatch):
+    """Force the next commit()'s build_output_links call to check every real
+    output key against a deliberately wrong expected_prefix.
+
+    No real call path can produce a mismatched key (expected_prefix and every
+    output key both derive from the same key_for(...) closure inside
+    commit()) — monkeypatching AnalysisDir.key/the closure itself would
+    corrupt both sides identically and never reproduce the mismatch this
+    needs (see design.md's Risks section). The seam that works on both
+    backends: monkeypatch the module-level build_output_links name each
+    adapter module imports, delegating to the real function but substituting
+    a wrong expected_prefix — leaving output_keys/upload fully
+    self-consistent (real bytes land at the real, correctly-scoped key).
+    """
+    import bloom_mcp.result_store.fake_store as fstore
+    import bloom_mcp.result_store.supabase_store as sstore
+
+    module = sstore if kind == "supabase" else fstore
+
+    def _wrong_prefix(output_keys, output_sha256, output_size_bytes, url_for, **_):
+        return _real_build_output_links(
+            output_keys,
+            output_sha256,
+            output_size_bytes,
+            url_for,
+            expected_prefix="bloommcp_output/qc_someone_else/v1/",
+        )
+
+    monkeypatch.setattr(module, "build_output_links", _wrong_prefix)
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_key_outside_run_prefix_fails_commit_and_cleans_up_parity(
+    kind, stores, monkeypatch, fake_supabase_storage
+):
+    """#598: commit()'s key-scoping guard rejects a key outside this run's
+    own freshly-computed prefix identically on both backends, via the same
+    CommitFailedError fail-closed/cleanup path any other commit failure
+    already takes."""
+    store = stores[kind]
+    _inject_wrong_expected_prefix(kind, monkeypatch)
+
+    run = store.create_run(experiment="scope.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"a")
+
+    with pytest.raises(CommitFailedError) as excinfo:
+        store.commit(run, {"a": "a.csv"})
+
+    # Assert on the chained cause, not just "some exception happened" — before
+    # the guard existed, expected_prefix was an unexpected kwarg and the cause
+    # was a bare TypeError; only the guard itself raises KeyScopeGuardError
+    # naming the mismatched key. Without this, the test would pass identically
+    # whether or not the guard is implemented.
+    assert isinstance(excinfo.value.__cause__, KeyScopeGuardError)
+    assert "qc_someone_else" in str(excinfo.value.__cause__)
+    assert store.list_runs("scope.csv", "qc") == []  # latest un-advanced
+    if kind == "supabase":
+        # The already-uploaded object is cleaned up, same as a signing
+        # failure — the strongest assertion only the real backend can make.
+        assert not any(k.endswith("a.csv") for k in fake_supabase_storage.objects)
+
+
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
 def test_create_commit_get_parity(kind, stores):
     store = stores[kind]
@@ -95,6 +161,49 @@ def test_create_commit_get_parity(kind, stores):
     assert "\\" not in stored.output_keys["cleaned"]
     assert stored.output_keys["cleaned"].startswith("bloommcp_output/qc_exp/")
     assert store.get_run("exp.csv", "qc", "latest").run_ref == "v1"
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_output_links_parity(kind, stores):
+    """bloom#581: commit() returns one OutputLink per output, keyed identically
+    to `outputs`, with the right sha256/size_bytes and a non-empty URL — same
+    shape on both backends (a real/served URL vs. the fake's synthesized one is
+    the only expected divergence)."""
+    store = stores[kind]
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"aaa")
+    (run.staging_dir / "b.csv").write_bytes(b"bb")
+    stored = store.commit(run, {"a": "a.csv", "b": "b.csv"})
+
+    assert set(stored.output_links) == {"a", "b"}
+    urls_seen = set()
+    for name, expected_bytes in (("a", b"aaa"), ("b", b"bb")):
+        link = stored.output_links[name]
+        assert link.key == stored.output_keys[name]
+        assert link.sha256 == stored.output_sha256[name]
+        assert link.size_bytes == len(expected_bytes)
+        assert link.url
+        # Bound to the correct key, not just truthy — both backends here
+        # synthesize a fake://signed/<key>?... URL (fake_supabase_storage
+        # backs the "supabase" kind too), so a bug that wired every output to
+        # the same URL (e.g. a closure-over-loop-variable mistake) would slip
+        # past a truthy-only check.
+        assert link.key in link.url
+        urls_seen.add(link.url)
+    assert len(urls_seen) == 2  # the two outputs never share a URL
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_output_links_empty_for_get_run_and_list_runs_parity(kind, stores):
+    """bloom#581 Decision 1: only commit()'s own return value carries signed
+    links — resolving/listing the same run afterward never does."""
+    store = stores[kind]
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"a")
+    store.commit(run, {"a": "a.csv"})
+
+    assert store.get_run("exp.csv", "qc", "latest").output_links == {}
+    assert all(r.output_links == {} for r in store.list_runs("exp.csv", "qc"))
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
@@ -312,6 +421,7 @@ def test_v2_backcompat_parity(kind, stores, fake_supabase_storage):
     runs_before = store.list_runs("v2.csv", "qc")
     assert [r.run_ref for r in runs_before] == ["v1"]
     assert runs_before[0].seed is None  # v2 predates the seed field
+    assert runs_before[0].output_links == {}  # bloom#581: legacy entry, never signed
 
     run = store.create_run(experiment="v2.csv", tool_class="qc", provenance=_prov())
     (run.staging_dir / "o.csv").write_bytes(b"x")

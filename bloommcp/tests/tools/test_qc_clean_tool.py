@@ -10,8 +10,11 @@ the ``ResultStore`` port — no QC logic in the MCP.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -20,6 +23,7 @@ from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._inline_input import compute_input_sha256
 from bloom_mcp.sections.sleap_roots.analysis import qc_clean as qc_clean_tool
 from bloom_mcp.sections.sleap_roots.analysis.qc_clean import (
     QCCleanParams,
@@ -162,6 +166,17 @@ def test_provenance_stamped_seed_none_and_links_returned(injected_ports):
     assert result.run_ref == stored.run_ref
     assert result.manifest_path == stored.manifest_path
     assert set(result.outputs) == {"_cleaned.csv", "cleanup_log.json"}
+
+    # bloom#581: a signed link + hash + size per output.
+    assert set(result.output_links) == set(result.outputs)
+    for name, key in result.outputs.items():
+        link = result.output_links[name]
+        assert link.key == key
+        assert link.url
+        assert link.sha256 == stored.output_sha256[name]
+        assert link.size_bytes >= 0
+    assert stored.output_links == {}
+
     assert not hasattr(result, "df")
     # No field on the result holds the full cleaned table (links, not blobs).
     dumped = result.model_dump()
@@ -1068,13 +1083,249 @@ def test_cylinder_cleaned_table_matches_golden_shape_and_roles(injected_ports_cy
     assert result.removed_traits == _GOLDEN_CYL["removed_traits"] == []
     assert result.cleaned_nan_cells_remaining == _GOLDEN_CYL["cleaned_trait_nans"] == 0
 
-    assert result.sample_id_column == _GOLDEN_CYL["role_columns"]["barcode_col"] == (
-        "plant_qr_code"
+    assert (
+        result.sample_id_column
+        == _GOLDEN_CYL["role_columns"]["barcode_col"]
+        == ("plant_qr_code")
     )
-    assert result.genotype_column == _GOLDEN_CYL["role_columns"]["genotype_col"] == "Geno"
+    assert (
+        result.genotype_column == _GOLDEN_CYL["role_columns"]["genotype_col"] == "Geno"
+    )
     assert (
         result.replicate_column == _GOLDEN_CYL["role_columns"]["replicate_col"] == "Rep"
     )
     assert sorted(result.excluded_columns) == sorted(
         _GOLDEN_CYL["excluded_from_traits"]
     )
+
+
+# ── inline csv_content input (#582 — ephemeral, no persistence) ─────────────
+
+
+def test_mutual_exclusivity_both_given_is_invalid_input(injected_ports):
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(
+        side_effect=AssertionError("load_experiment must not be called")
+    )
+    csv_text = _RAW.read_text(encoding="utf-8")
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean({"experiment": _EXPERIMENT, "csv_content": csv_text})
+    assert exc.value.code == "invalid_input"
+    # The specific, actionable message must reach the caller — not the contract
+    # layer's generic "(<root>: value_error)" fallback (see qc_clean.py's NOTE on
+    # QCCleanParams for why this is enforced in the body, not a model_validator).
+    assert "exactly one" in exc.value.message.lower()
+    reader.load_experiment.assert_not_called()
+
+
+def test_mutual_exclusivity_neither_given_is_invalid_input(injected_ports):
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean({"max_nans_per_trait": _MNT})
+    assert exc.value.code == "invalid_input"
+    assert "exactly one" in exc.value.message.lower()
+
+
+def test_inline_empty_csv_content_fails_through_the_full_tool_path(injected_ports):
+    """csv_content="" passes the mutual-exclusivity check (it is not None) and must
+    fail two layers deeper, inside parse_inline_csv_frame — exercised here through
+    qc_clean itself, not just the raw helper (test_inline_input.py only covers the
+    latter)."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean({"csv_content": ""})
+    assert exc.value.code == "invalid_input"
+
+
+def test_inline_cleaning_matches_the_file_based_oracle(injected_ports):
+    """Equivalence oracle: the same turface_19 raw text fed as csv_content produces
+    the identical cleaned-table shape and role resolution as the file-based path —
+    checking every resolved-roles/shape field the result exposes, not just a subset."""
+    file_based = _run()
+    csv_text = _RAW.read_text(encoding="utf-8")
+    inline = qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
+
+    assert inline.n_samples_in == file_based.n_samples_in
+    assert inline.n_samples_out == file_based.n_samples_out
+    assert inline.n_traits_in == file_based.n_traits_in
+    assert inline.n_traits_out == file_based.n_traits_out
+    assert inline.kept_trait_columns == file_based.kept_trait_columns
+    assert inline.removed_traits == file_based.removed_traits
+    assert inline.genotype_column == file_based.genotype_column
+    assert inline.sample_id_column == file_based.sample_id_column
+    assert inline.replicate_column == file_based.replicate_column
+    assert inline.excluded_columns == file_based.excluded_columns
+    assert inline.cleaned_nan_cells_remaining == file_based.cleaned_nan_cells_remaining
+    assert inline.validation_warnings == file_based.validation_warnings
+    assert inline.input_nan_summary == file_based.input_nan_summary
+
+
+def test_inline_call_never_persists_a_run(injected_ports):
+    _reader, store = injected_ports
+    store.create_run = MagicMock(
+        side_effect=AssertionError("create_run must not be called for csv_content")
+    )
+    store.commit = MagicMock(
+        side_effect=AssertionError("commit must not be called for csv_content")
+    )
+    csv_text = _RAW.read_text(encoding="utf-8")
+
+    result = qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
+
+    store.create_run.assert_not_called()
+    store.commit.assert_not_called()
+    assert result.run_ref is None
+    assert result.version_dir is None
+    assert result.manifest_path is None
+    assert result.outputs == {}
+
+
+def test_inline_result_reports_summary_hash_and_no_experiment_identity(injected_ports):
+    csv_text = _RAW.read_text(encoding="utf-8")
+    result = qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
+
+    assert result.experiment is None
+    assert result.source == "inline"
+    assert result.input_sha256 == compute_input_sha256(csv_text)
+
+
+def test_inline_call_never_touches_the_reader_port(injected_ports):
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(
+        side_effect=AssertionError("load_experiment must not be called for csv_content")
+    )
+    csv_text = _RAW.read_text(encoding="utf-8")
+
+    qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
+
+    reader.load_experiment.assert_not_called()
+
+
+def test_inline_result_never_nudges_toward_qc_inspect(injected_ports):
+    """Canonical defaults drop 29 turface_19 samples on the experiment path (see
+    test_dropped_samples_nudge_points_to_qc_inspect) — the inline path must not
+    recommend qc_inspect (it has no csv_content support) nor interpolate the
+    caller's absent experiment identity into any advisory message."""
+    csv_text = _RAW.read_text(encoding="utf-8")
+    result = qc_clean(QCCleanParams(csv_content=csv_text))  # canonical defaults
+    assert result.n_samples_dropped == 29  # sanity: this run really drops samples
+    assert result.next_step is None
+
+
+def test_inline_call_honors_sample_id_column_override(injected_ports):
+    csv_text = (
+        "my_id,geno,tA,tB\n"
+        + "\n".join(
+            f"s{i},{'g1' if i % 2 == 0 else 'g2'},{float(i)},{float(2 * i)}"
+            for i in range(16)
+        )
+        + "\n"
+    )
+    result = qc_clean(QCCleanParams(csv_content=csv_text, sample_id_column="my_id"))
+    assert result.sample_id_column == "my_id"
+    assert result.source == "inline"
+
+
+def test_inline_call_honors_exclude_columns(injected_ports):
+    csv_text = _RAW.read_text(encoding="utf-8")
+    result = qc_clean(
+        QCCleanParams(
+            csv_content=csv_text,
+            max_nans_per_trait=_MNT,
+            exclude_columns=["Total.Root.Length.mm"],
+        )
+    )
+    assert "Total.Root.Length.mm" not in result.kept_trait_columns
+    assert "Total.Root.Length.mm" in result.excluded_columns
+
+
+def test_inline_roleless_error_message_names_csv_content_not_none(injected_ports):
+    """The inline branch's error messages must not interpolate the literal string
+    'None' where an experiment name is normally shown."""
+    roleless_csv = "colA,colB\n1.0,2.0\n3.0,4.0\n"
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(csv_content=roleless_csv))
+    assert exc.value.code == "assumption_violated"
+    assert "None" not in exc.value.message
+    assert "csv_content" in exc.value.message
+
+
+# ── csv_content never appears in logs (design.md's disclosed risk) ──────────
+
+
+@contextlib.contextmanager
+def _capture_all_logs():
+    """Manually attach a handler directly to every logger in qc_clean's inline
+    call graph, bypassing pytest's `caplog`.
+
+    `bloom_mcp.data_access.columns.run_input_validation` sets
+    `logger.propagate = False` on `bloom_mcp.input_validation` for the
+    duration of validation (restoring it in `finally`) so its advisory
+    `_WarningCapture` messages don't leak into the real logging pipeline on a
+    normal call. This makes `caplog` structurally blind to that logger:
+    verified empirically that even `caplog.at_level(level, logger=name)`
+    captures nothing from a `propagate=False` logger, regardless of level —
+    `caplog`'s capture relies on propagation to the root logger, which this
+    logger deliberately suppresses. A handler attached directly to the logger
+    object fires regardless of `propagate`, since `propagate` only controls
+    whether a record additionally bubbles up to ancestor loggers' handlers.
+    """
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    loggers = [
+        logging.getLogger(),  # root — catch-all for anything else in the path
+        logging.getLogger("bloom_mcp.input_validation"),
+        logging.getLogger("bloom_mcp.contract.errors"),
+    ]
+    old_levels = {lg: lg.level for lg in loggers}
+    for lg in loggers:
+        lg.addHandler(handler)
+        lg.setLevel(logging.DEBUG)
+    try:
+        yield records
+    finally:
+        for lg in loggers:
+            lg.removeHandler(handler)
+            lg.setLevel(old_levels[lg])
+
+
+def test_csv_content_never_appears_in_logs_on_success(injected_ports):
+    """The one load-bearing safety property of the whole feature: csv_content is
+    never persisted (proven elsewhere) AND never logged. Provenance.stamp's
+    params=data.model_dump() carries the raw text in memory for the call's
+    duration (disclosed in design.md) — this pins that it never reaches a log
+    record on the successful path.
+
+    Does NOT use `caplog` (see `_capture_all_logs`'s docstring for why a
+    `propagate=False` logger makes that structurally vacuous here)."""
+    marker = "MARKER_" + "Q" * 64
+    csv_text = f"Barcode,geno,traitA,traitB\nS1,{marker},1.0,2.0\nS2,g2,3.0,4.0\n"
+    with _capture_all_logs() as records:
+        qc_clean(QCCleanParams(csv_content=csv_text, min_samples_per_trait=1))
+    logged_text = "\n".join(r.getMessage() for r in records)
+    assert marker not in logged_text
+
+
+def test_csv_content_never_appears_in_logs_on_internal_error(
+    injected_ports, monkeypatch
+):
+    """Same invariant on the internal_error path, where the contract layer logs
+    the exception server-side (contract/errors.py's from_exception) — the log
+    call must not carry csv_content, and neither may the message returned to
+    the caller."""
+    marker = "MARKER_" + "Q" * 64
+    csv_text = f"Barcode,geno,traitA,traitB\nS1,{marker},1.0,2.0\nS2,g2,3.0,4.0\n"
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("undeclared internal failure")
+
+    monkeypatch.setattr(qc_clean_tool, "clean_traits_for_analysis", _boom)
+
+    with _capture_all_logs() as records:
+        with pytest.raises(BloomMCPError) as exc:
+            qc_clean(QCCleanParams(csv_content=csv_text))
+
+    assert exc.value.code == "internal_error"
+    assert marker not in exc.value.message
+    assert marker not in exc.value.remedy
+    logged_text = "\n".join(r.getMessage() for r in records)
+    assert marker not in logged_text

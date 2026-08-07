@@ -1,9 +1,9 @@
 """Object-storage backend selection for bloommcp.
 
-The six object-storage helpers in :mod:`bloom_mcp.supabase_client`
+The seven object-storage helpers in :mod:`bloom_mcp.supabase_client`
 (``upload_file`` / ``download_file`` / ``write_json`` / ``read_json`` /
-``list_prefix`` / ``delete_files``) delegate to the *active* backend selected
-here. Two backends exist:
+``list_prefix`` / ``delete_files`` / ``create_signed_url``) delegate to the
+*active* backend selected here. Two backends exist:
 
 * :class:`SupabaseStorageBackend` — the deployed default (Supabase Storage in the
   ``bloommcp-data`` bucket). Its method bodies are the pre-backend
@@ -24,8 +24,8 @@ touches no filesystem at import, so ``import bloom_mcp`` stays side-effect-free.
 root fails fast at boot rather than mid-run.
 
 Out of scope: PostgREST/table access (``get_postgrest_client``) and
-``read_input_csv``, which rides that client — neither is one of the six swapped
-helpers, so both are unaffected by the selected backend.
+``read_input_csv``, which rides that client — neither is one of the seven
+swapped helpers, so both are unaffected by the selected backend.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ _TMP_PREFIX = ".tmp-"
 
 @runtime_checkable
 class StorageBackend(Protocol):
-    """The six object-storage operations bloommcp's write/read paths use."""
+    """The seven object-storage operations bloommcp's write/read paths use."""
 
     def upload_file(self, key: str, local_path: Path) -> None: ...
 
@@ -65,6 +65,21 @@ class StorageBackend(Protocol):
     def delete_files(
         self, keys: list[str], *, timeout_seconds: Optional[float] = None
     ) -> None: ...
+
+    def create_signed_url(self, key: str, expires_in: int) -> str:
+        """Sign/serve a download URL for ``key``, valid for ``expires_in`` seconds.
+
+        Performs NO ownership or scope check of its own (bloom#598) — this is
+        a generic object-storage primitive with no concept of "run" or
+        "experiment" ownership, and it will sign whatever syntactically valid
+        key it's given. The one production caller, ``ResultStore.commit()``,
+        is responsible for restricting ``key`` to its own authorized scope
+        before calling this (see ``result_store/_artifacts.py``'s
+        ``build_output_links`` for that enforcement). A future caller outside
+        ``ResultStore.commit()`` SHOULD NOT assume this primitive itself
+        provides any ownership guarantee.
+        """
+        ...
 
 
 def _json_bytes(payload: dict) -> bytes:
@@ -183,6 +198,70 @@ class SupabaseStorageBackend:
             return
         client = get_storage_client(timeout_seconds=timeout_seconds)
         client.remove(list(keys))
+
+    def create_signed_url(self, key: str, expires_in: int) -> str:
+        from bloom_mcp.supabase_client import get_storage_client
+
+        client = get_storage_client()
+        response = client.create_signed_url(key, expires_in)
+        url = _extract_signed_url(response)
+        if not url:
+            raise StorageBackendError(f"could not extract a signed URL for key: {key}")
+        return _to_public_url(url)
+
+
+def _extract_signed_url(response: object) -> Optional[str]:
+    """Best-effort extraction across storage3/supabase-py versions.
+
+    ``create_signed_url`` returns a dict whose URL key casing
+    (``signedURL``/``signed_url``/``signedUrl``) has drifted across client
+    versions — mirrors the identical extraction ``services/workflows/video.py``'s
+    ``_signed_url`` already does for this exact client call. Returns ``None``
+    for anything falsy (including an empty string, whether returned bare or as
+    a dict value) so the caller's single ``if not url`` check is sufficient —
+    an empty string must never be mistaken for a real, usable URL.
+    """
+    if isinstance(response, str):
+        return response or None
+    if isinstance(response, dict):
+        return (
+            response.get("signedURL")
+            or response.get("signed_url")
+            or response.get("signedUrl")
+            or None
+        )
+    return None
+
+
+def _to_public_url(url: str) -> str:
+    """Rewrite a signed URL off the internal ``SUPABASE_URL`` host (e.g.
+    ``http://kong:8000``, unreachable outside the Docker network in prod/staging)
+    onto ``BLOOM_PUBLIC_SUPABASE_URL``. A no-op if ``SUPABASE_URL`` is unset or
+    ``url`` isn't on the internal host — both harmless, since there's nothing to
+    rewrite. When ``SUPABASE_URL`` is set, ``url`` genuinely is on that internal
+    host, and ``BLOOM_PUBLIC_SUPABASE_URL`` is unset, that combination means a
+    real, unreachable-outside-Docker URL is about to be returned unmodified —
+    logged as a warning so a misconfigured deploy is observable, not silent.
+    Mirrors ``services/workflows/video.py``'s ``_to_public_url`` and
+    ``web/lib/supabase/storage-url.ts``'s ``toPublicStorageUrl`` — the same
+    pattern, a third independent instance.
+    """
+    internal = os.environ.get("SUPABASE_URL")
+    if not internal:
+        return url
+    internal = internal.rstrip("/")
+    if not url.startswith(internal):
+        return url
+    public = os.environ.get("BLOOM_PUBLIC_SUPABASE_URL")
+    if not public:
+        logger.warning(
+            "create_signed_url returned a URL on the internal SUPABASE_URL host "
+            "(%s) but BLOOM_PUBLIC_SUPABASE_URL is not set — returning it "
+            "unmodified; it will be unreachable from outside the Docker network.",
+            internal,
+        )
+        return url
+    return public.rstrip("/") + url[len(internal) :]
 
 
 # ─── Local filesystem backend (opt-in) ────────────────────────────────────────
@@ -325,6 +404,20 @@ class LocalStorageBackend:
                 first_error = first_error or _redacted_io_error(key, exc)
         if first_error is not None:
             raise first_error
+
+    def create_signed_url(self, key: str, expires_in: int) -> str:
+        # expires_in is accepted for Protocol parity with the Supabase adapter
+        # and ignored — this is an opt-in dev feature with no real credential/
+        # expiry enforcement (see the class docstring's Windows-atomicity caveat
+        # for the same rhetorical shape).
+        del expires_in
+        base = os.environ.get("BLOOM_STORAGE_URL")
+        if not base:
+            raise StorageBackendError(
+                "BLOOM_STORAGE_URL is not set; cannot construct a served URL "
+                "for the local storage backend"
+            )
+        return f"{base.rstrip('/')}/{key}"
 
 
 # ─── Selection ────────────────────────────────────────────────────────────────
