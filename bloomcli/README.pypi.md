@@ -70,6 +70,37 @@ commands take `--output csv|json` for machine-readable output.
 
 Run `bloomctl <command> --help` for the full options of any command.
 
+## The download log
+
+Every `cyl download` writes `download_log.txt` next to `scans.csv`, with one line per frame and
+a summary at the bottom. It is the file to send us if something looks wrong.
+
+```
+OK   scan=1 frame=0 cyl-images/0.png
+SKIP scan=1 frame=1 cyl-images/1.png
+FAIL scan=1 frame=3 cyl-images/3.png  error=[Errno 28] No space left on device
+UNLISTED scan=5 (frame count unknown)  error=...
+NOFRAMES scan=7 (no images recorded for this scan)
+
+Summary: 3/8 frames present (3 downloaded this run, 0 already on disk), 5 failed
+```
+
+| Status     | What it means                                                                     |
+| ---------- | --------------------------------------------------------------------------------- |
+| `OK`       | Downloaded during this run                                                        |
+| `SKIP`     | Already on disk, so it was not fetched again — this is a resumed run working       |
+| `FAIL`     | This frame is missing; `error=` says why                                          |
+| `UNLISTED` | The scan's frame list could not be fetched, so an **unknown** number is missing    |
+| `NOFRAMES` | The scan has no images recorded in Bloom — nothing to download, not a failure      |
+
+A log full of `SKIP` is normal: it means everything was already downloaded.
+
+`UNLISTED` is the one to look out for. A `FAIL` is a single missing frame, but an `UNLISTED`
+scan means we do not know how many of its frames are missing — which is why a run can report
+all its frames present and still be incomplete. Re-running picks up both.
+
+The summary line ends with the reason when the run stopped for one, such as the disk filling up.
+
 ## Run as a container
 
 Prefer a container (e.g. a pipeline step) over a `pip install`? The same CLI is published to GHCR:
