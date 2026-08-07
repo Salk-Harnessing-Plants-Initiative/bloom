@@ -18,6 +18,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
 import click
 
@@ -109,6 +110,31 @@ def build_scan_row(scan: dict[str, Any], genotype: str | None) -> dict[str, Any]
         else:
             row[name] = scan.get(key, "")
     return row
+
+
+def ensure_writable(out_dir: Path) -> None:
+    """Fail now if nothing can be written to ``out_dir``.
+
+    Nothing is written until after every metadata query has run, so an unmounted drive, a
+    read-only directory or a typo in the path would otherwise only surface at the end. Probing
+    with a real file rather than `os.access`, which reports the wrong answer often enough to
+    be worth avoiding.
+    """
+    path = Path(out_dir)
+    probe = path / f".bloomctl-probe-{uuid4().hex}"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe.touch()
+    except OSError as exc:
+        raise click.ClickException(
+            f"cannot write to {path}: {exc.strerror or exc}. Check the path is spelled "
+            f"correctly, exists, and that you have permission to write there."
+        ) from exc
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
 
 
 def write_scans_csv(rows: list[dict[str, Any]], path: Path) -> None:
@@ -811,6 +837,10 @@ def download(
         )
     if species and experiment_name is None:
         raise click.UsageError("--species only applies with --experiment-name.")
+
+    # Before signing in or querying anything: a bad path is the user's own typo, and finding
+    # out at the end means waiting through the whole metadata phase to hear about it.
+    ensure_writable(Path(out_dir))
 
     try:
         creds = load_credentials(profile)

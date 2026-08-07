@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import click
 import pytest
 from click.testing import CliRunner
 from test_download_metadata import SCAN
@@ -377,3 +378,48 @@ def test_a_full_disk_reports_counts_and_cause_instead_of_a_traceback(tmp_path, m
     assert "Could not write download_log.txt: No space left on device" in result.output
     assert "the disk filled up" in result.output
     assert "Re-running the same command" in result.output
+
+
+# --- a bad output path should fail before any of the work ---------------------
+
+
+def test_an_unwritable_output_directory_fails_before_signing_in(tmp_path, monkeypatch):
+    """Nothing is written until after every metadata query, so without this check a typo in
+    the path costs the whole metadata phase before it is reported."""
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    reached = []
+    monkeypatch.setattr(
+        "bloomctl.credentials.load_credentials", lambda *a, **k: reached.append("signed in")
+    )
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "download", str(locked / "out"), "--experiment-id", "17957"]
+    )
+
+    locked.chmod(0o700)
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, OSError), "a bad path is a message, not a traceback"
+    assert "cannot write to" in result.output
+    assert "permission" in result.output
+    assert reached == [], "it gave up before signing in or querying anything"
+
+
+def test_a_writable_directory_is_created_and_left_clean(tmp_path):
+    out = tmp_path / "new" / "nested"
+
+    dl.ensure_writable(out)
+
+    assert out.is_dir()
+    assert list(out.iterdir()) == [], "the probe file is cleaned up"
+
+
+def test_a_path_blocked_by_a_file_says_so_rather_than_raising(tmp_path):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("this is a file")
+
+    with pytest.raises(click.ClickException) as failure:
+        dl.ensure_writable(blocker / "out")
+
+    assert "cannot write to" in str(failure.value)
