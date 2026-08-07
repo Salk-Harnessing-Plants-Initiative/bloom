@@ -58,6 +58,9 @@ dependencies = [
     "numpy>=2.3.2",
     # Visualization
     "matplotlib>=3.7.0",
+    # Security floor for h2, transitive via httpx[http2]: CVE-2026-71554
+    # (fixed in 4.4.1), disclosed 2026-08-06. Open floor per repo convention.
+    "h2>=4.4.1",
 ]
 
 [project.scripts]
