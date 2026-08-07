@@ -12,11 +12,29 @@ flight, since submission happens fire-and-forget, never awaited inline.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
+
+
+def _redact_identity(identity: str) -> str:
+    """A short, non-reversible token for correlating log lines, not the raw
+    identity.
+
+    `identity` can now be a real Supabase user id — sourced from a verified
+    OAuth caller via `bloom_mcp.identity._oauth_subject_from_scope`
+    (add-bloommcp-oauth-usage-attribution) — rather than only ever the
+    `X-Bloom-Identity` header's `sub` or the literal `anonymous`. CodeQL
+    flags the raw value reaching the log calls below as clear-text logging
+    of a credential-shaped source once that path exists. Hashing breaks the
+    direct flow while still letting repeated failures for the same identity
+    be correlated across log lines.
+    """
+    return hashlib.sha256(identity.encode()).hexdigest()[:12]
+
 
 # A small, dedicated pool: usage recording is an observability side effect,
 # not on any request's critical path, so it shouldn't compete with or block
@@ -54,8 +72,8 @@ def _do_record(identity: str, action: str) -> None:
         )
     except Exception:
         logger.exception(
-            "failed to record bloommcp_usage (identity=%r, action=%r)",
-            identity,
+            "failed to record bloommcp_usage (identity=%s, action=%r)",
+            _redact_identity(identity),
             action,
         )
     finally:
@@ -74,9 +92,9 @@ def record_usage_async(identity: str, action: str) -> None:
     if not _inflight.acquire(blocking=False):
         logger.warning(
             "bloommcp_usage recording dropped (>= %d already in flight): "
-            "identity=%r action=%r",
+            "identity=%s action=%r",
             _MAX_INFLIGHT,
-            identity,
+            _redact_identity(identity),
             action,
         )
         return
@@ -85,7 +103,7 @@ def record_usage_async(identity: str, action: str) -> None:
     except Exception:
         _inflight.release()
         logger.exception(
-            "failed to submit bloommcp_usage recording (identity=%r, action=%r)",
-            identity,
+            "failed to submit bloommcp_usage recording (identity=%s, action=%r)",
+            _redact_identity(identity),
             action,
         )
