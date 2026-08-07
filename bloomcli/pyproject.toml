@@ -31,7 +31,8 @@ Repository = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom"
 Changelog = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/main/bloomcli/CHANGELOG.md"
 
 [project.scripts]
-bloomctl = "bloomctl.cli:cli"
+# errors:main wraps cli so an unhandled failure is a message, not a stack trace.
+bloomctl = "bloomctl.errors:main"
 
 # An extra, not a dependency-group, so CI runs `uv run --extra test pytest`.
 [project.optional-dependencies]

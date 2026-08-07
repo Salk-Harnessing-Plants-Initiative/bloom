@@ -1,0 +1,211 @@
+"""The last-resort handler at the entry point.
+
+Commands are expected to raise `click.ClickException` with a message that says what to do.
+This covers what happens when something raises that nobody planned for — which used to reach
+the user as a stack trace (#629).
+
+Worth knowing: the rest of the suite invokes `cli` through `CliRunner`, which bypasses
+`main()` entirely. Nothing else here exercises the real entry point.
+"""
+
+from __future__ import annotations
+
+import errno
+from pathlib import Path
+
+import click
+import pytest
+
+from bloomctl import errors
+
+# --- turning an exception into a sentence ------------------------------------
+
+
+def test_a_write_error_reads_as_the_reason_and_the_file():
+    exc = OSError(errno.ENOSPC, "No space left on device", "/out/download_log.txt")
+
+    assert errors.explain(exc) == "No space left on device: /out/download_log.txt"
+
+
+def test_a_write_error_without_a_filename_is_just_the_reason():
+    assert errors.explain(OSError(errno.EACCES, "Permission denied")) == "Permission denied"
+
+
+def test_an_api_error_keeps_the_server_wording():
+    class _ApiError(Exception):
+        message = "permission denied for table cyl_scans"
+
+    assert errors.explain(_ApiError()) == "permission denied for table cyl_scans"
+
+
+def test_a_dropped_connection_says_so_even_though_it_carries_no_message():
+    httpx = pytest.importorskip("httpx")
+
+    explained = errors.explain(httpx.ReadTimeout(""))
+
+    assert "could not reach Bloom" in explained
+    assert "ReadTimeout" in explained
+
+
+def test_an_unrecognised_error_still_gives_one_line_not_a_stack():
+    assert errors.explain(ValueError("something odd")) == "something odd"
+
+
+def test_an_error_with_no_message_at_all_falls_back_to_its_type():
+    assert errors.explain(ValueError()) == "ValueError"
+
+
+# --- recording the traceback -------------------------------------------------
+
+
+def _raise(exc: BaseException) -> BaseException:
+    """Give ``exc`` a real traceback, the way it would have one in flight."""
+    try:
+        raise exc
+    except BaseException as caught:  # noqa: B036 - re-raised immediately by the caller
+        return caught
+
+
+def test_the_traceback_goes_to_the_log_with_the_command_that_caused_it(tmp_path):
+    log = tmp_path / "errors.log"
+
+    errors.record(_raise(ValueError("boom")), ["bloomctl", "cyl", "download"], path=log)
+
+    text = log.read_text()
+    assert "ValueError: boom" in text
+    assert "Traceback (most recent call last)" in text
+    assert "bloomctl cyl download" in text
+
+
+def test_a_second_failure_is_appended_rather_than_replacing_the_first(tmp_path):
+    log = tmp_path / "errors.log"
+
+    errors.record(_raise(ValueError("first")), ["bloomctl", "a"], path=log)
+    errors.record(_raise(ValueError("second")), ["bloomctl", "b"], path=log)
+
+    text = log.read_text()
+    assert "first" in text and "second" in text
+
+
+def test_recording_never_raises_when_the_log_cannot_be_written(tmp_path, monkeypatch):
+    """This runs while already handling a failure; a full disk is one of the failures it
+    has to survive. Raising here would replace one traceback with a worse one."""
+
+    def _no_space(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(Path, "open", _no_space)
+    monkeypatch.setattr(Path, "mkdir", _no_space)
+    log = tmp_path / "errors.log"
+
+    returned = errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log)
+
+    assert returned == log
+    assert not log.exists()
+
+
+def test_the_log_is_capped_so_it_cannot_grow_forever(tmp_path):
+    log = tmp_path / "errors.log"
+    log.write_bytes(b"x" * (errors.MAX_LOG_BYTES + 1))
+
+    errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log)
+
+    assert log.stat().st_size < errors.MAX_LOG_BYTES
+    assert "boom" in log.read_text()
+    assert "earlier entries dropped" in log.read_text()
+
+
+def test_the_log_sits_beside_the_credentials(tmp_path):
+    assert errors.error_log_path(tmp_path) == tmp_path / "errors.log"
+
+
+# --- the entry point ---------------------------------------------------------
+
+
+@pytest.fixture
+def _log_in_tmp(tmp_path, monkeypatch):
+    """Keep the tests off the real ~/.bloom/errors.log."""
+    log = tmp_path / "errors.log"
+    monkeypatch.setattr(errors, "error_log_path", lambda *a, **k: log)
+    return log
+
+
+def test_an_unhandled_failure_becomes_a_message_and_a_log_entry(_log_in_tmp, monkeypatch, capsys):
+    @click.command()
+    def boom():
+        raise RuntimeError("nobody planned for this")
+
+    monkeypatch.setattr("bloomctl.cli.cli", boom)
+
+    code = errors.main(args=[])
+
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "Error: nobody planned for this" in err
+    assert str(_log_in_tmp) in err
+    assert "Traceback" not in err, "the stack belongs in the log, not on screen"
+    assert "RuntimeError: nobody planned for this" in _log_in_tmp.read_text()
+
+
+def test_a_clean_message_from_a_command_is_left_alone(_log_in_tmp, monkeypatch, capsys):
+    """The specific message is the useful one; the net must not reword or intercept it."""
+
+    @click.command()
+    def known():
+        raise click.ClickException("Scan 42 not found.")
+
+    monkeypatch.setattr("bloomctl.cli.cli", known)
+
+    with pytest.raises(SystemExit) as exit_info:
+        errors.main(args=[])
+
+    assert exit_info.value.code == 1
+    assert "Error: Scan 42 not found." in capsys.readouterr().err
+    assert not _log_in_tmp.exists(), "an expected failure is not worth a traceback"
+
+
+def test_a_successful_command_is_untouched(_log_in_tmp, monkeypatch, capsys):
+    @click.command()
+    def fine():
+        click.echo("done")
+
+    monkeypatch.setattr("bloomctl.cli.cli", fine)
+
+    with pytest.raises(SystemExit) as exit_info:
+        errors.main(args=[])
+
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.strip() == "done"
+    assert not _log_in_tmp.exists()
+
+
+def test_ctrl_c_still_aborts_rather_than_being_caught(_log_in_tmp, monkeypatch, capsys):
+    @click.command()
+    def interrupted():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("bloomctl.cli.cli", interrupted)
+
+    with pytest.raises(SystemExit):
+        errors.main(args=[])
+
+    assert "Aborted" in capsys.readouterr().err
+    assert not _log_in_tmp.exists(), "an interrupt is the user's decision, not a failure"
+
+
+def test_a_failure_is_still_reported_when_the_log_cannot_be_written(
+    _log_in_tmp, monkeypatch, capsys
+):
+    @click.command()
+    def boom():
+        raise RuntimeError("nobody planned for this")
+
+    monkeypatch.setattr("bloomctl.cli.cli", boom)
+    monkeypatch.setattr(errors, "record", lambda *a, **k: _log_in_tmp)
+
+    code = errors.main(args=[])
+
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "Error: nobody planned for this" in err
+    assert "Details written to" not in err, "do not point at a log that isn't there"
