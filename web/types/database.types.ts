@@ -1606,6 +1606,18 @@ export interface Database {
           pipeline_run_id: string | null
         }[]
       }
+      get_experiment_summary_counts: {
+        Args: {
+          experiment_id_?: number
+          source_id_?: number
+          run_id_?: string
+        }
+        Returns: {
+          experiment_id: number
+          n_plants: number
+          n_traits: number
+        }[]
+      }
       get_scans_without_videos: {
         Args: Record<PropertyKey, never>
         Returns: {
