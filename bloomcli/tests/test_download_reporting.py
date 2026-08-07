@@ -13,8 +13,8 @@ from bloomctl.cli import cli
 
 
 def test_progress_line_reads_as_frames_and_a_percentage():
-    assert dl.format_progress("downloading", 12480, 413926) == "12,480/413,926 frames (3%)"
-    assert dl.format_progress("listing", 5750, 5750) == "Listing frames: 5,750/5,750 scans (100%)"
+    assert dl.format_progress("downloading", 12480, 413926) == "12,480/413,926 frames (3.0%)"
+    assert dl.format_progress("listing", 5750, 5750) == "Listing frames: 5,750/5,750 scans (100.0%)"
 
 
 def test_progress_line_has_no_percentage_when_there_is_nothing_to_do():
@@ -39,7 +39,7 @@ def test_progress_is_throttled_so_a_fast_run_does_not_spam(capsys):
     lines = capsys.readouterr().err.strip().splitlines()
     assert len(lines) == 2, "first frame and last frame only, with the clock frozen"
     assert "1/100" in lines[0]
-    assert "100/100 frames (100%)" in lines[1]
+    assert "100/100 frames (100.0%)" in lines[1]
 
 
 def test_progress_reports_again_once_the_interval_has_passed(capsys):
@@ -139,7 +139,7 @@ def test_a_run_where_everything_fails_does_not_report_success(tmp_path, monkeypa
     )
 
     assert result.ok == 0 and result.failed == 20
-    assert lines[-1] == "20/20 frames (100%), 20 failed"
+    assert lines[-1] == "20/20 frames (100.0%), 20 failed"
     assert all("failed" in line for line in lines), "every line must carry the bad news"
 
 
@@ -171,14 +171,14 @@ def test_a_partly_failing_run_shows_the_failure_count_growing(tmp_path, monkeypa
 
 
 def test_a_healthy_run_says_nothing_about_failures():
-    assert dl.format_progress("downloading", 500, 1000) == "500/1,000 frames (50%)"
-    assert dl.format_progress("downloading", 500, 1000, 0) == "500/1,000 frames (50%)"
+    assert dl.format_progress("downloading", 500, 1000) == "500/1,000 frames (50.0%)"
+    assert dl.format_progress("downloading", 500, 1000, 0) == "500/1,000 frames (50.0%)"
 
 
 def test_the_reporter_passes_the_failure_count_through(capsys):
     report = dl.ProgressReporter(interval=0.0)
     report("downloading", 7, 10, 3)
-    assert "7/10 frames (70%), 3 failed" in capsys.readouterr().err
+    assert "7/10 frames (70.0%), 3 failed" in capsys.readouterr().err
 
 
 # --- a full disk stops the run rather than downloading into nowhere ----------
@@ -423,3 +423,117 @@ def test_a_path_blocked_by_a_file_says_so_rather_than_raising(tmp_path):
         dl.ensure_writable(blocker / "out")
 
     assert "cannot write to" in str(failure.value)
+
+
+# --- pace: how fast, and how much longer -------------------------------------
+
+
+def test_a_percentage_below_one_still_moves():
+    """Integer division sat at 0% for the first ~600 frames of a 60,000-frame run."""
+    assert dl.format_progress("downloading", 349, 60336) == "349/60,336 frames (0.6%)"
+    assert dl.format_progress("downloading", 1, 60336) == "1/60,336 frames (0.0%)"
+
+
+def test_the_rate_carries_a_decimal_only_where_it_matters():
+    assert dl.format_rate(6.34) == "6.3/s"
+    assert dl.format_rate(0.4) == "0.4/s"
+    assert dl.format_rate(44.2) == "44/s"
+    assert dl.format_rate(1500.0) == "1,500/s"
+
+
+def test_time_remaining_is_coarse_on_purpose():
+    assert dl.format_duration(9540) == "2h39m"
+    assert dl.format_duration(3600) == "1h00m"
+    assert dl.format_duration(1020) == "17m"
+    assert dl.format_duration(45) == "45s"
+    assert dl.format_duration(0) == "0s"
+
+
+def test_the_line_reads_as_pace_then_problems():
+    line = dl.format_progress(
+        "downloading", 349, 60336, 33, rate=6.34, seconds_left=9540, new_failures=12
+    )
+
+    assert line == "349/60,336 frames (0.6%)  6.3/s  ~2h39m left, 33 failed (+12)"
+
+
+def test_a_finished_phase_does_not_claim_time_remaining():
+    line = dl.format_progress("downloading", 60336, 60336, rate=44.0, seconds_left=None)
+
+    assert "left" not in line
+    assert "44/s" in line
+
+
+def test_the_reporter_works_out_the_rate_from_its_own_clock(capsys):
+    clock = _Clock()
+    report = dl.ProgressReporter(interval=5.0, now=clock)
+
+    report("downloading", 0, 1000)
+    clock.t = 10.0
+    report("downloading", 100, 1000)  # 100 frames in 10s -> 10/s, 900 left -> 90s
+
+    line = capsys.readouterr().err.strip().splitlines()[-1]
+    assert "10/s" in line
+    assert "~1m left" in line
+
+
+def test_the_rate_follows_a_connection_that_slows_down(capsys):
+    """A whole-run average would still be boasting about the first minute an hour later."""
+    clock = _Clock()
+    report = dl.ProgressReporter(interval=1.0, now=clock)
+
+    for step in range(1, dl.RATE_WINDOW_SAMPLES + 2):  # fast: 100 frames/s
+        clock.t = step * 1.0
+        report("downloading", step * 100, 100000)
+    fast = capsys.readouterr().err.strip().splitlines()[-1]
+
+    done = (dl.RATE_WINDOW_SAMPLES + 1) * 100
+    for step in range(1, dl.RATE_WINDOW_SAMPLES + 2):  # then a crawl: 1 frame/s
+        clock.t += 1.0
+        report("downloading", done + step, 100000)
+    slow = capsys.readouterr().err.strip().splitlines()[-1]
+
+    assert "100/s" in fast
+    assert "1.0/s" in slow, f"the window should have caught up, got {slow!r}"
+
+
+# --- failures: recoverable, and whether they are still arriving ---------------
+
+
+def test_the_retry_hint_is_said_once_when_failures_first_appear(capsys):
+    report = dl.ProgressReporter(interval=0.0)
+
+    report("downloading", 1, 10)
+    report("downloading", 2, 10, 1)
+    report("downloading", 3, 10, 2)
+
+    err = capsys.readouterr().err
+    assert err.count(dl.RETRY_HINT) == 1, "said once, not on every line"
+    assert dl.RETRY_HINT not in err.splitlines()[0], "not before anything has failed"
+
+
+def test_no_retry_hint_on_a_run_where_nothing_fails(capsys):
+    report = dl.ProgressReporter(interval=0.0)
+
+    for done in range(1, 4):
+        report("downloading", done, 3)
+
+    assert dl.RETRY_HINT not in capsys.readouterr().err
+
+
+def test_growing_failures_are_marked_and_a_plateau_is_not(capsys):
+    """The real run climbed to 987 and stopped; nothing on screen said it had stopped."""
+    clock = _Clock()
+    report = dl.ProgressReporter(interval=0.0, now=clock)
+
+    report("downloading", 100, 1000, 33)
+    report("downloading", 200, 1000, 193)  # still failing
+    report("downloading", 300, 1000, 193)  # stopped
+    report("downloading", 400, 1000, 193)
+
+    lines = [ln for ln in capsys.readouterr().err.splitlines() if "/1,000" in ln]
+    assert "(+33)" in lines[0]
+    assert "(+160)" in lines[1]
+    assert "(+" not in lines[2], "no marker once they stop arriving"
+    assert "193 failed" in lines[2], "the total still stands"
+    assert "(+" not in lines[3]
