@@ -8,13 +8,16 @@
       **Implemented as `bigint` throughout; flagged in the roadmap doc's "Questions for Benfica" Q4 and
       the PR description — Benfica's actual review is still pending, not resolved by this task.**
 - [ ] 0.2 **Not completed in this implementation pass — this sandboxed dev environment has no access to
-      staging and no 13.8M-row local fixture.** Shipped with a considered interim default (30s, see
-      design.md D5) instead. Before treating that default as final: benchmark `get_experiment_traits(1)`
-      (staging's largest experiment, 13.8M `cyl_scan_traits` rows, or an equivalent local-Postgres seed at
-      that scale — write a seeding-loop script if no such fixture exists yet) via `psql`'s `\timing` or a
-      `time.perf_counter()`-wrapped call, over 10 runs. Record the p99 duration. Set
-      `_DEFAULT_POSTGREST_TIMEOUT_SECONDS = ceil(3 * p99, nearest 5s)` in both design.md D5 and
-      `supabase_client.py`, replacing 30s.
+      staging and no 13.8M-row local fixture.** Shipped with the default unchanged at 120s (matching
+      `supabase-py`'s own prior package default exactly — see design.md D5; an earlier revision of this
+      task shipped a lower, unbenchmarked 30s value, reverted after PR review flagged it as a real risk
+      to the large-experiment `get_experiment_traits` call path). Before *lowering* the default below
+      120s: benchmark `get_experiment_traits(1)` (staging's largest experiment, 13.8M `cyl_scan_traits`
+      rows, or an equivalent local-Postgres seed at that scale — write a seeding-loop script if no such
+      fixture exists yet) via `psql`'s `\timing` or a `time.perf_counter()`-wrapped call, over 10 runs.
+      Record the p99 duration. Set `_DEFAULT_POSTGREST_TIMEOUT_SECONDS = ceil(3 * p99, nearest 5s)` in
+      both design.md D5 and `supabase_client.py` — only if that value is actually lower than 120s;
+      otherwise leave the default as-is.
 
 ## 1. SQL integration test scaffolding (RED first)
 
@@ -165,9 +168,12 @@ behavior if the fake gains the branch first with no caller). Do not split this p
       merge loop** so a malformed `cyl_experiments` row is still skipped (task 5.5 depends on this).
 - [x] 6.3 Add `get_postgrest_client(*, timeout_seconds: float | None = None)` per design.md D5, via
       `supabase.ClientOptions(postgrest_client_timeout=...)`, always passed (unlike `get_storage_client`,
-      since the un-overridden default itself is changing — see design.md D5). `call_rpc()` stays
-      unchanged (calls `get_postgrest_client()` with no override). **Uses the 30s interim default, not a
-      benchmarked value — task 0.2 was not completed in this pass; see its note.**
+      since the un-overridden default itself is now explicit — see design.md D5). `call_rpc()` stays
+      unchanged (calls `get_postgrest_client()` with no override). **Default is 120s, unchanged from
+      `supabase-py`'s own prior package default — not a benchmarked, lower value. An earlier revision
+      shipped 30s; reverted after PR review (task 0.2 was not completed in this pass, and shipping an
+      unbenchmarked reduction on the exact large-experiment call path this issue investigated was the
+      wrong trade-off — see design.md D5's Risks note).**
 - [x] 6.4 Run all of section 5's tests; confirm every one now passes.
 
 ## 7. Validate (GREEN)

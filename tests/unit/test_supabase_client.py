@@ -155,10 +155,20 @@ def test_postgrest_client_timeout_is_enforced_end_to_end(monkeypatch):
     this proves supabase-py actually enforces it through httpx when a request genuinely
     blocks, not just that the value is threaded through and ignored. Uses a local socket
     that accepts a connection and never responds -- no external network or live Supabase
-    needed, so this is deterministic and fast, not flaky."""
+    needed, so this is deterministic and fast, not flaky.
+
+    Bounded via a `ThreadPoolExecutor(...).result(timeout=...)` wrapper rather than
+    `pytest.mark.timeout` (the `pytest-timeout` plugin isn't a dependency here): if the exact
+    regression this test guards against ever recurs (the timeout silently not enforced), the
+    call would otherwise block on the stalled socket for the full 5s `_accept_and_stall` sleep
+    with no per-test bound of its own -- this fails fast with a clear message well before that.
+    """
+    import concurrent.futures
     import socket
     import threading
     import time
+
+    import httpx
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(("127.0.0.1", 0))
@@ -181,14 +191,25 @@ def test_postgrest_client_timeout_is_enforced_end_to_end(monkeypatch):
 
     client = supabase_client.get_postgrest_client(timeout_seconds=0.3)
 
+    def _call():
+        return client.table("cyl_experiments").select("id").execute()
+
     start = time.monotonic()
-    with pytest.raises(Exception):
-        client.table("cyl_experiments").select("id").execute()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_call)
+        with pytest.raises(httpx.TimeoutException):
+            # 5s hard bound: if the timeout regressed and the call actually blocks
+            # on the stalled socket, this raises TimeoutError with a clear message
+            # instead of hanging until an external CI/workflow timeout kills it.
+            future.result(timeout=5)
     elapsed = time.monotonic() - start
 
     server.close()
     thread.join(timeout=1)
-    assert elapsed < 3.0, f"expected a ~0.3s timeout, took {elapsed:.2f}s instead"
+    # Lower bound proves the timeout itself fired, not some unrelated fast failure
+    # (e.g. a URL-parse error) that would satisfy a bare `elapsed < N` assertion
+    # without ever exercising the configured 0.3s bound.
+    assert 0.2 < elapsed < 3.0, f"expected a ~0.3s timeout, took {elapsed:.2f}s instead"
 
 
 # ─────────────────────── env-validation at import ────────────────────

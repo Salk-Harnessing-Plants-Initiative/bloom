@@ -390,7 +390,17 @@ result is never `NULL`, unlike Tier 1's `trait_value`/`source_id`).
   outcome for a *data-integrity* failure isolated to one experiment. No such case is known to exist today
   (`test_list_experiments_excludes_a_failing_experiment`'s scenario was synthetic, not observed on
   staging) — flagged here so a future report of "the whole list is broken because of one experiment" is
-  recognized as this trade-off, not a new regression to chase blindly.
+  recognized as this trade-off, not a new regression to chase blindly. Now logged (a `logger.warning`
+  before the raise) so a total-listing failure is at least as observable as the partial failures it
+  replaces, per PR review.
+- **Follow-up worth filing, not implemented here (PR review suggestion):** either a degraded
+  per-experiment fallback specifically on a bulk-call failure (re-attempt per-experiment, at real cost,
+  only in the already-failing case), or returning partial results with an explicit warning field, would
+  narrow this trade-off's blast radius versus today's all-or-nothing shape. Deliberately not built into
+  this change — it would reintroduce per-experiment round trips into the failure path of the exact
+  N+1 pattern this issue exists to remove, and no real-world case of the bulk call failing (as opposed to
+  the guard clause, which `list_experiments()` never triggers) is known yet to justify the added
+  complexity. Worth reconsidering if it actually happens in production.
 - **The 120s pre-existing default was already a bound, just not a chosen one** — see D5's own framing of
   this; not re-derived here.
 - **`get_experiment_summary_counts`'s reuse by the future source-discovery effort is speculative.** Its
