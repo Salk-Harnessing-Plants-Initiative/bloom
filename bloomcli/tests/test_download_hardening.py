@@ -508,8 +508,42 @@ def test_selecting_by_name_then_by_id_is_the_same_download():
     assert dl.describe_manifest_mismatch(by_name, by_id) == ""
 
 
-def test_a_missing_or_corrupt_manifest_does_not_block_a_download(tmp_path):
-    assert dl.read_manifest(tmp_path) is None
-    (tmp_path / dl.MANIFEST_NAME).write_text("not json", encoding="utf-8")
+def test_an_empty_directory_needs_no_manifest(tmp_path):
+    """Every first download starts here, so this must not be treated as suspicious."""
+    assert not dl.holds_an_unidentified_download(tmp_path)
     assert dl.read_manifest(tmp_path) is None
     assert dl.describe_manifest_mismatch(None, {"experiment_id": 1}) == ""
+
+
+def test_a_directory_with_images_but_no_manifest_is_refused(tmp_path):
+    """The record is a dotfile — backups and sync filters drop it. Losing it must not mean
+    losing the protection."""
+    (tmp_path / "images").mkdir()
+    assert dl.holds_an_unidentified_download(tmp_path)
+
+
+def test_a_corrupt_manifest_is_treated_as_missing(tmp_path):
+    (tmp_path / "images").mkdir()
+    (tmp_path / dl.MANIFEST_NAME).write_text("not json", encoding="utf-8")
+    assert dl.holds_an_unidentified_download(tmp_path)
+
+
+def test_the_cli_refuses_a_directory_whose_manifest_went_missing(tmp_path, monkeypatch):
+    """Deleting one dotfile used to let two experiments silently share a tree."""
+    from click.testing import CliRunner
+
+    from bloomctl.cli import cli
+
+    out = tmp_path / "out"
+    _cli(monkeypatch, _Client(), [SCAN])
+    first = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "100"])
+    assert first.exit_code == 0, first.output
+
+    (out / dl.MANIFEST_NAME).unlink()
+
+    _cli(monkeypatch, _Client(), [SCAN])
+    second = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "200"])
+
+    assert second.exit_code != 0
+    assert "no way to tell which download they belong to" in second.output
+    assert "new directory" in second.output

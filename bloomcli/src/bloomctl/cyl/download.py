@@ -159,6 +159,16 @@ def download_selector(**options: Any) -> dict[str, Any]:
     }
 
 
+def holds_an_unidentified_download(out_dir: Path) -> bool:
+    """True if the directory already has frames but no record of which download they are.
+
+    Without the record there is no way to tell whether an incoming download belongs here, and
+    guessing wrong mixes two experiments' images into one tree — resume then skips frames that
+    look present but belong to the other one.
+    """
+    return (Path(out_dir) / "images").exists() and read_manifest(out_dir) is None
+
+
 def describe_manifest_mismatch(existing: dict[str, Any] | None, selector: dict[str, Any]) -> str:
     """List how this run's selection differs from the one the directory holds, or "" if it matches.
 
@@ -853,6 +863,13 @@ def download(
         plant_age_max=plant_age_max,
         limit=limit,
     )
+    if holds_an_unidentified_download(out):
+        raise click.ClickException(
+            f"{out} already holds images but no {MANIFEST_NAME}, so there is no way to tell "
+            f"which download they belong to. Downloading here risks mixing two experiments "
+            f"in one directory. Download into a new directory instead."
+        )
+
     mismatch = describe_manifest_mismatch(read_manifest(out), selector)
     if mismatch:
         raise click.ClickException(
