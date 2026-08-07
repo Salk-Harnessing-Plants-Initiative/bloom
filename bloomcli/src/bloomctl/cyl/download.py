@@ -7,15 +7,21 @@ so the contract is unit-testable without a live server.
 from __future__ import annotations
 
 import csv
-from concurrent.futures import ThreadPoolExecutor
+import itertools
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import click
 
 from ..credentials import DEFAULT_PROFILE
-from ._storage import REFRESH_EVERY, StorageSession, already_downloaded, atomic_write_bytes
+from ._storage import (
+    already_downloaded,
+    atomic_write_bytes,
+    download_object,
+    sweep_orphan_temps,
+)
 
 # Default concurrent image downloads. Image fetches are I/O-bound (one HTTP round-trip
 # to Storage each), so a thread pool overlaps request latency; 8 is a modest default
@@ -56,10 +62,28 @@ _COLUMNS: list[tuple[str, str | None]] = [
 CSV_COLUMNS: list[str] = [name for name, _ in _COLUMNS]
 
 
+def safe_component(value: Any) -> str:
+    """One path segment built from a DB field, with any traversal stripped.
+
+    Every part of a frame's destination comes from the database (`qr_code`, `date_scanned`,
+    `frame_number`, ...). A row containing `../` — or an absolute path, which `Path.__truediv__`
+    would treat as a fresh root and escape the output dir entirely — must not be able to steer
+    a write outside `out_dir`.
+    """
+    text = str(value)
+    cleaned = text.replace("\\", "/").replace("/", "_").strip()
+    if cleaned in {"", ".", ".."} or set(cleaned) == {"."}:
+        return "_"
+    return cleaned
+
+
 def scan_relative_dir(scan: dict[str, Any]) -> str:
     """Per-scan image dir, relative to the output dir (where scans.csv lives)."""
     wave = scan.get("wave_number") or 0
-    return f"images/Wave{wave}/Day{scan.get('plant_age_days')}_{scan.get('date_scanned')}/{scan.get('qr_code')}"
+    day = safe_component(scan.get("plant_age_days"))
+    date = safe_component(scan.get("date_scanned"))
+    qr = safe_component(scan.get("qr_code"))
+    return f"images/Wave{safe_component(wave)}/Day{day}_{date}/{qr}"
 
 
 def build_scan_row(scan: dict[str, Any], genotype: str | None) -> dict[str, Any]:
@@ -85,9 +109,18 @@ def write_scans_csv(rows: list[dict[str, Any]], path: Path) -> None:
 
 
 def image_dest(out_dir: Path, scan: dict[str, Any], image: dict[str, Any]) -> Path:
-    """Absolute destination for one frame, preserving its real extension."""
-    ext = Path(image["object_path"]).suffix or ".png"
-    return Path(out_dir) / scan_relative_dir(scan) / f"{image['frame_number']}{ext}"
+    """Absolute destination for one frame, preserving its real extension.
+
+    Raises ValueError if the derived path would land outside ``out_dir`` — a belt-and-braces
+    check behind `safe_component`, so a traversal can never reach a write.
+    """
+    ext = safe_component(Path(image["object_path"]).suffix or ".png").lstrip("_")
+    ext = ext if ext.startswith(".") else f".{ext}"
+    root = Path(out_dir).resolve()
+    dest = (root / scan_relative_dir(scan) / f"{safe_component(image['frame_number'])}{ext}").resolve()
+    if not dest.is_relative_to(root):
+        raise ValueError(f"refusing to write outside {out_dir}: {dest}")
+    return dest
 
 
 # --- supabase / storage I/O -------------------------------------------------
@@ -170,6 +203,7 @@ class FrameResult:
     ok: bool
     error: str = ""
     skipped: bool = False  # already on disk from an earlier run
+    unlisted: bool = False  # a whole scan whose frame list couldn't be fetched
 
 
 @dataclass
@@ -193,15 +227,27 @@ class DownloadResult:
 
     @property
     def failed(self) -> int:
-        return sum(1 for f in self.frames if not f.ok)
+        """Frames known to be missing. Excludes unlisted scans — their frame count is unknown."""
+        return sum(1 for f in self.frames if not f.ok and not f.unlisted)
+
+    @property
+    def scans_unlisted(self) -> int:
+        """Scans whose frame list couldn't be fetched, so an unknown number of frames is missing."""
+        return sum(1 for f in self.frames if f.unlisted)
 
     @property
     def total(self) -> int:
-        return len(self.frames)
+        """Frames actually enumerated. An unlisted scan contributes none — it isn't one frame."""
+        return sum(1 for f in self.frames if not f.unlisted)
+
+    @property
+    def incomplete(self) -> bool:
+        """True if anything is known to be missing from the output directory."""
+        return bool(self.failed or self.scans_unlisted)
 
 
 def download_frame(
-    session: StorageSession,
+    client: Any,
     scan: dict[str, Any],
     image: dict[str, Any],
     out_dir: Path,
@@ -225,26 +271,85 @@ def download_frame(
             result.ok = True
             result.skipped = True
             return result
-        atomic_write_bytes(dest, session.download(object_path))
+        atomic_write_bytes(dest, download_object(client, object_path))
         result.ok = True
+    except KeyError as exc:  # a bare KeyError repr in the log says nothing useful
+        result.error = f"malformed cyl_images row: missing key {exc}"
     except Exception as exc:  # per-frame: record and continue
         result.error = str(exc)
     return result
 
 
+def _run_bounded(
+    work: list[Any], run_one: Callable[[Any], FrameResult], workers: int, *, window_factor: int = 4
+) -> list[FrameResult]:
+    """Run ``run_one`` over ``work`` across ``workers`` threads, bounding futures in flight.
+
+    ``ThreadPoolExecutor.map`` submits every item up front: for a 414k-frame experiment that
+    is hundreds of MB of queued Future bookkeeping before the first byte lands (measured at
+    780MB vs 176MB sequential). A sliding window keeps memory flat and still saturates the
+    pool. Results are placed by index, so the output order matches ``work``.
+    """
+    results: list[Any] = [None] * len(work)
+    window = max(workers * window_factor, workers)
+    pending: dict[Future, int] = {}
+    remaining = enumerate(work)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for index, item in itertools.islice(remaining, window):
+            pending[pool.submit(run_one, item)] = index
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                results[pending.pop(future)] = future.result()
+            for index, item in itertools.islice(remaining, len(done)):
+                pending[pool.submit(run_one, item)] = index
+    return results
+
+
 def _list_scan_frames(
-    session: StorageSession, scan: dict[str, Any]
+    client: Any, scan: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], FrameResult | None]:
     """List a scan's frames; on a listing failure return a synthetic failed FrameResult.
 
     A failed metadata query (transient 5xx, auth expiry) becomes one recorded failure for
     that scan instead of crashing the whole run with a traceback — so the partial-download
-    exit + download_log still apply uniformly.
+    exit + download_log still apply uniformly. The failure carries no frame count because
+    there isn't one: `DownloadResult.scans_unlisted` reports these separately rather than
+    letting them read as a single missing frame.
     """
     try:
-        return session.run(lambda c: fetch_images(c, scan.get("scan_id"))), None
+        return fetch_images(client, scan.get("scan_id")), None
     except Exception as exc:
-        return [], FrameResult(scan.get("scan_id"), None, "", ok=False, error=f"list images: {exc}")
+        return [], FrameResult(
+            scan.get("scan_id"),
+            None,
+            "",
+            ok=False,
+            error=f"list images: {exc}",
+            unlisted=True,
+        )
+
+
+def check_frame_collisions(scans: list[dict[str, Any]], images_by_scan: dict[Any, list]) -> None:
+    """Raise if two frames would be written to the same destination.
+
+    `scan_relative_dir` keys on wave/age/date/qr and the filename on `frame_number`, all of
+    which are nullable — and Postgres UNIQUE constraints don't collide NULLs, so two rows can
+    legitimately map to one path. Left unchecked, the second frame is silently skipped as
+    "already present" and its pixels never land anywhere (bloom#623 review). Mirrors the guard
+    `download_for_predict.validate_frame_numbers` already applies on the same data.
+    """
+    seen: dict[str, Any] = {}
+    for scan in scans:
+        for image in images_by_scan.get(scan.get("scan_id"), []):
+            key = f"{scan_relative_dir(scan)}/{safe_component(image.get('frame_number'))}"
+            if key in seen:
+                raise ValueError(
+                    f"scans {seen[key]!r} and {scan.get('scan_id')!r} both map frame "
+                    f"{image.get('frame_number')!r} to {key} — refusing to download, as one "
+                    f"frame's images would silently overwrite or mask the other's"
+                )
+            seen[key] = scan.get("scan_id")
 
 
 def download_images(
@@ -252,8 +357,6 @@ def download_images(
     scans: list[dict[str, Any]],
     out_dir: Path,
     *,
-    creds: Any = None,
-    refresh_every: int = REFRESH_EVERY,
     overwrite: bool = False,
     workers: int = DEFAULT_WORKERS,
 ) -> DownloadResult:
@@ -265,34 +368,40 @@ def download_images(
     sequentially. Results preserve scan/frame order, so the download log is deterministic.
 
     Each frame is downloaded independently: a failure is recorded, not raised, so one bad
-    frame can't abort the whole run. Signs server-side via Supabase Storage (no MinIO
-    secrets, no legacy Lambda).
+    frame can't abort the whole run.
 
     Resumable: a frame already written by an earlier run is skipped unless `overwrite`.
-    With `creds`, the shared session re-authenticates itself as it goes, so a run longer
-    than the JWT's lifetime doesn't fail every remaining frame (bloom#525).
+    A run longer than the JWT's lifetime keeps working because the bucket handle is
+    resolved per download rather than cached (see `_storage`; bloom#525).
     """
-    session = StorageSession(client, creds, refresh_every=refresh_every)
-    work: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    listing_failures: list[FrameResult] = []
+    sweep_orphan_temps(Path(out_dir))
+
+    # One slot per log line, in scan order: either a ready-made failure (an unlisted scan) or
+    # a frame to fetch. Keeping unlisted scans in position stops them being orphaned at the
+    # bottom of a 414k-line log with frame=None.
+    slots: list[Any] = []
+    images_by_scan: dict[Any, list[dict[str, Any]]] = {}
     for scan in scans:
-        images, failure = _list_scan_frames(session, scan)
+        images, failure = _list_scan_frames(client, scan)
+        images_by_scan[scan.get("scan_id")] = images
         if failure is not None:
-            listing_failures.append(failure)
-        work.extend((scan, image) for image in images)
+            slots.append(failure)
+        slots.extend((scan, image) for image in images)
+
+    check_frame_collisions(scans, images_by_scan)
+
+    work = [slot for slot in slots if not isinstance(slot, FrameResult)]
 
     def _one(pair: tuple[dict[str, Any], dict[str, Any]]) -> FrameResult:
-        return download_frame(session, pair[0], pair[1], out_dir, overwrite=overwrite)
+        return download_frame(client, pair[0], pair[1], out_dir, overwrite=overwrite)
 
     # Never spawn more threads than there's work for, than requested, or than the ceiling.
     n = min(workers, MAX_WORKERS, len(work)) if work else 0
-    if n <= 1:
-        frames = [_one(pair) for pair in work]
-    else:
-        with ThreadPoolExecutor(max_workers=n) as pool:
-            # map preserves input order → log stays in scan/frame order.
-            frames = list(pool.map(_one, work))
-    return DownloadResult(frames + listing_failures)
+    fetched = [_one(pair) for pair in work] if n <= 1 else _run_bounded(work, _one, n)
+
+    outcomes = iter(fetched)
+    frames = [slot if isinstance(slot, FrameResult) else next(outcomes) for slot in slots]
+    return DownloadResult(frames)
 
 
 def write_download_log(result: DownloadResult, path: Path) -> None:
@@ -300,15 +409,22 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for f in result.frames:
+        if f.unlisted:
+            lines.append(f"UNLISTED scan={f.scan_id} (frame count unknown)  error={f.error}")
+            continue
         status = "SKIP" if f.skipped else "OK  " if f.ok else "FAIL"
         line = f"{status} scan={f.scan_id} frame={f.frame_number} {f.object_path}"
         if not f.ok:
             line += f"  error={f.error}"
         lines.append(line)
-    lines.append(
-        f"\nSummary: {result.downloaded} downloaded, {result.skipped} already present, "
-        f"{result.failed} failed, {result.total} total"
+    summary = (
+        f"\nSummary: {result.ok}/{result.total} frames present "
+        f"({result.downloaded} downloaded this run, {result.skipped} already on disk), "
+        f"{result.failed} failed"
     )
+    if result.scans_unlisted:
+        summary += f", {result.scans_unlisted} scan(s) could not be listed (frames unknown)"
+    lines.append(summary)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -494,20 +610,28 @@ def download(
     if meta_only:
         return
 
-    result = download_images(
-        client, scans, out, creds=creds, overwrite=overwrite, workers=workers
-    )
+    try:
+        result = download_images(client, scans, out, overwrite=overwrite, workers=workers)
+    except ValueError as exc:  # colliding destinations — refuse rather than lose a frame
+        raise click.ClickException(str(exc)) from exc
+
     log_path = out / "download_log.txt"
     write_download_log(result, log_path)
-    resumed = f", {result.skipped} already present" if result.skipped else ""
     click.echo(
-        f"Downloaded {result.downloaded}/{result.total} image frames{resumed} "
-        f"-> {out / 'images'}  (log: {log_path})"
+        f"{result.ok}/{result.total} frames present in {out / 'images'} "
+        f"({result.downloaded} downloaded this run, {result.skipped} already on disk)  "
+        f"(log: {log_path})"
     )
-    if result.failed:
+    if result.incomplete:
         # Partial download: surface it and exit non-zero so a pipeline knows the
         # output is incomplete (the log lists every failed frame).
+        missing = f"{result.failed} of {result.total} frames failed to download"
+        if result.scans_unlisted:
+            missing += (
+                f", and {result.scans_unlisted} scan(s) could not be listed at all "
+                f"(an unknown number of further frames is missing)"
+            )
         raise click.ClickException(
-            f"{result.failed} of {result.total} frames failed to download — see {log_path}. "
+            f"{missing} — see {log_path}. "
             "Re-running the same command retries only the frames still missing."
         )

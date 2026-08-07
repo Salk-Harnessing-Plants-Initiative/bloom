@@ -1,7 +1,7 @@
 """bloom#534 — `cyl download` fetches frames concurrently, with a user-set worker count.
 
 Covers the thread pool itself (ordering, `--workers` plumbing, real overlap) and its
-interaction with the bloom#525 session: one shared, self-renewing login across workers.
+interaction with the bloom#525 work: resume and per-call bucket resolution under load.
 """
 
 from __future__ import annotations
@@ -11,10 +11,9 @@ import time
 
 from click.testing import CliRunner
 from test_download_metadata import SCAN
-from test_download_session_resume import CREDS, EXPIRED, _Client, _frame, _images
+from test_download_session_resume import CREDS, _Client, _frame, _images
 
 import bloomctl.auth as auth
-import bloomctl.cyl._storage as storage
 import bloomctl.cyl.download as dl
 from bloomctl.cli import cli
 
@@ -145,8 +144,11 @@ def test_a_scan_whose_frame_list_fails_is_recorded_not_raised(tmp_path, monkeypa
 
     result = dl.download_images(_Client(), [SCAN, SCAN_B], tmp_path, workers=4)
 
-    assert result.ok == 2 and result.failed == 1
-    failure = next(f for f in result.frames if not f.ok)
+    # An unlisted scan is NOT one failed frame — its frame count is unknown.
+    assert result.ok == 2 and result.total == 2
+    assert result.failed == 0 and result.scans_unlisted == 1
+    assert result.incomplete
+    failure = next(f for f in result.frames if f.unlisted)
     assert failure.scan_id == 2 and "list images" in failure.error
 
 
@@ -183,78 +185,25 @@ def test_a_failed_frame_leaves_no_temp_file_behind(tmp_path, monkeypatch):
     assert list(tmp_path.rglob(".dl-*")) == []
 
 
-# --- the shared session under concurrency -----------------------------------
+# --- concurrency + resume ---------------------------------------------------
 
 
-def test_workers_hitting_one_lapse_re_authenticate_only_once(monkeypatch):
-    """The core race: N threads failing on the same expiry must yield one sign-in."""
-    fresh = _Client()
-    sign_ins = []
-    ready = threading.Barrier(8, timeout=5)
+def test_a_concurrent_run_survives_a_token_refresh(tmp_path, monkeypatch):
+    """bloom#525 under load: every worker must resolve its own bucket handle."""
+    from test_download_session_resume import _RotatingClient
 
-    def _make_client(creds):
-        sign_ins.append(creds)
-        return fresh
-
-    monkeypatch.setattr(auth, "make_authed_client", _make_client)
-
-    class _ExpiredBucket:
-        def download(self, object_path):
-            ready.wait()  # line every worker up on the stale handle first
-            raise RuntimeError(EXPIRED)
-
-    stale = _Client()
-    stale.bucket = _ExpiredBucket()
-    session = storage.StorageSession(stale, CREDS, refresh_every=10_000)
-
-    results: list[bytes] = []
-
-    def _worker(index):
-        results.append(session.download(f"cyl-images/{index}.png"))
-
-    threads = [threading.Thread(target=_worker, args=(i,)) for i in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=10)
-
-    assert len(results) == 8  # every worker recovered on the renewed session
-    assert len(sign_ins) == 1  # ...from a single re-authentication
-    assert session.refreshes == 1
-
-
-def test_the_proactive_cadence_counts_frames_across_all_workers(tmp_path, monkeypatch):
-    """The frame counter is shared state; concurrent increments must not be lost."""
-    clients = []
-
-    def _make_client(creds):
-        clients.append(_Client())
-        return clients[-1]
-
-    monkeypatch.setattr(auth, "make_authed_client", _make_client)
-    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(40))
-
-    first = _Client()
-    result = dl.download_images(
-        first, [SCAN], tmp_path, creds=CREDS, refresh_every=10, workers=8
-    )
-
-    assert result.ok == 40
-    # A 10-frame cadence over 40 frames renews a handful of times. The exact count races
-    # (workers check the counter before incrementing it), so this asserts the shape, not a
-    # number: renewals happened, and no frame was dropped or double-counted along the way.
-    assert len(clients) >= 2
-    assert first.bucket.calls + sum(c.bucket.calls for c in clients) == 40
-
-
-def test_a_concurrent_run_survives_a_session_expiring_mid_run(tmp_path, monkeypatch):
-    stale, fresh = _Client(budget=5), _Client()
-    monkeypatch.setattr(auth, "make_authed_client", lambda creds: fresh)
+    client = _RotatingClient()
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(20))
+    original = client.storage.from_
 
-    result = dl.download_images(
-        stale, [SCAN], tmp_path, creds=CREDS, refresh_every=10_000, workers=4
-    )
+    def _refresh_partway(name):
+        if client.handles_issued == 5:
+            client.auto_refresh()
+        return original(name)
+
+    client.storage.from_ = _refresh_partway
+
+    result = dl.download_images(client, [SCAN], tmp_path, workers=4)
 
     assert result.ok == 20 and result.failed == 0
 
@@ -272,6 +221,20 @@ def test_resume_skips_existing_frames_under_concurrency(tmp_path, monkeypatch):
     assert result.skipped == 3 and result.downloaded == 7
     assert client.bucket.calls == 7
     assert _frame(tmp_path, 5).read_bytes() == b"from-an-earlier-run"
+
+
+def test_overwrite_refetches_everything_under_concurrency(tmp_path, monkeypatch):
+    client = _Client()
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(10))
+    for number in (1, 4):
+        existing = _frame(tmp_path, number)
+        existing.parent.mkdir(parents=True, exist_ok=True)
+        existing.write_bytes(b"stale")
+
+    result = dl.download_images(client, [SCAN], tmp_path, overwrite=True, workers=8)
+
+    assert result.skipped == 0 and result.downloaded == 10
+    assert client.bucket.calls == 10
 
 
 # --- CLI --------------------------------------------------------------------

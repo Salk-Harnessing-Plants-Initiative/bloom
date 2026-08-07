@@ -213,9 +213,13 @@ bloomctl cyl download ./out --experiment-id 42   # picks up from 117k
 
 Pass `--overwrite` to ignore what's on disk and re-fetch every frame.
 
-Long runs also re-authenticate as they go, so a download that takes longer than the login's
-lifetime keeps working. If you see a storage error mentioning an expired session, re-running
-the command resumes from wherever it stopped.
+> **If the directory was written by bloomctl 0.1.0a3 or earlier**, re-fetch it once with
+> `--overwrite`. Those releases wrote frames non-atomically, so an interrupted run could leave a
+> truncated file behind, and resume treats any non-empty file as complete.
+
+Long runs keep working past the point where the login's token is refreshed, so a download that
+takes several hours completes. If a storage error does mention an expired session, re-running the
+command resumes from wherever it stopped.
 
 > `--experiment-name` requires the `cyl_experiment_search` DB function (migration
 > `…_add_cyl_experiment_search.sql`) to be applied on the server you're pointed at.
