@@ -7,13 +7,39 @@ so the contract is unit-testable without a live server.
 from __future__ import annotations
 
 import csv
+import errno
+import itertools
+import json
+import os
+import threading
+import time
+import unicodedata
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import click
 
 from ..credentials import DEFAULT_PROFILE
+from ._storage import (
+    already_downloaded,
+    atomic_write_bytes,
+    download_object,
+    sweep_orphan_temps,
+)
+
+# Frames are fetched one HTTP request each, so downloading several at once mostly overlaps
+# waiting. 8 is a modest default that speeds up a large experiment without hammering the server.
+DEFAULT_WORKERS = 8
+
+# How often a long run reports what it has done. Frequent enough that the command never looks
+# hung, rare enough that a log file doesn't fill up with it.
+PROGRESS_INTERVAL_SECONDS = 5.0
+
+# Upper limit on concurrent downloads, applied both to the flag and inside download_images so
+# no caller can open an unbounded number of connections.
+MAX_WORKERS = 64
 
 # scans.csv schema: (output column, source key in a cyl_scans_extended row).
 # Order matches the legacy CLI's predict-container contract; `genotype` is
@@ -45,10 +71,31 @@ _COLUMNS: list[tuple[str, str | None]] = [
 CSV_COLUMNS: list[str] = [name for name, _ in _COLUMNS]
 
 
+def safe_component(value: Any) -> str:
+    """Turn a database value into a single safe path segment.
+
+    Every part of a frame's destination comes from the database (`qr_code`, `date_scanned`,
+    `frame_number`, ...). Stripping separators keeps an odd value from steering the write
+    somewhere else on disk — note that joining an absolute path would otherwise discard the
+    output directory entirely.
+    """
+    # A colon matters on Windows: "C:name" is drive-relative, so joining it throws away the
+    # output directory, and "name:stream" writes into a hidden stream instead of the file.
+    # Note: whitespace is deliberately preserved. `qr_code` is UNIQUE per wave, so "QR-1" and
+    # "QR-1 " are two different plants, and trimming would merge their frames into one directory.
+    cleaned = str(value).replace("\\", "_").replace("/", "_").replace(":", "_").replace("\0", "_")
+    if cleaned in {"", ".", ".."} or set(cleaned) == {"."}:
+        return "_"
+    return cleaned
+
+
 def scan_relative_dir(scan: dict[str, Any]) -> str:
     """Per-scan image dir, relative to the output dir (where scans.csv lives)."""
     wave = scan.get("wave_number") or 0
-    return f"images/Wave{wave}/Day{scan.get('plant_age_days')}_{scan.get('date_scanned')}/{scan.get('qr_code')}"
+    day = safe_component(scan.get("plant_age_days"))
+    date = safe_component(scan.get("date_scanned"))
+    qr = safe_component(scan.get("qr_code"))
+    return f"images/Wave{safe_component(wave)}/Day{day}_{date}/{qr}"
 
 
 def build_scan_row(scan: dict[str, Any], genotype: str | None) -> dict[str, Any]:
@@ -73,10 +120,90 @@ def write_scans_csv(rows: list[dict[str, Any]], path: Path) -> None:
         writer.writerows(rows)
 
 
+# Records which experiment an output directory holds, so a later run into the same directory
+# can tell whether the frames already there belong to what it is about to download.
+MANIFEST_NAME = ".bloomctl-download.json"
+
+
+def read_manifest(out_dir: Path) -> dict[str, Any] | None:
+    """The selector recorded in ``out_dir``, or None if there isn't a readable one."""
+    path = Path(out_dir) / MANIFEST_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_manifest(out_dir: Path, identity: dict[str, Any]) -> None:
+    """Record what this directory holds, so a later run can check before resuming into it."""
+    path = Path(out_dir) / MANIFEST_NAME
+    body = json.dumps(identity, indent=2, sort_keys=True, default=str) + "\n"
+    atomic_write_bytes(path, body.encode("utf-8"))
+
+
+def download_selector(**options: Any) -> dict[str, Any]:
+    """The options that decide which scans a run downloads.
+
+    `experiment_id` is the resolved id, so selecting the same experiment by name on one run
+    and by id on the next still counts as the same download.
+    """
+    return {
+        key: options.get(key)
+        for key in (
+            "experiment_id",
+            "scan_id",
+            "plant_qr_code",
+            "plant_age_min",
+            "plant_age_max",
+            "limit",
+        )
+    }
+
+
+def holds_an_unidentified_download(out_dir: Path) -> bool:
+    """True if the directory already has frames but no record of which download they are.
+
+    Without the record there is no way to tell whether an incoming download belongs here, and
+    guessing wrong mixes two experiments' images into one tree — resume then skips frames that
+    look present but belong to the other one.
+    """
+    return (Path(out_dir) / "images").exists() and read_manifest(out_dir) is None
+
+
+def describe_manifest_mismatch(existing: dict[str, Any] | None, selector: dict[str, Any]) -> str:
+    """List how this run's selection differs from the one the directory holds, or "" if it matches.
+
+    One selection per directory. Re-running the same command resumes; downloading a different
+    selection here would leave two sets of images in one tree with a `scans.csv` describing
+    only the newer one.
+    """
+    if existing is None:
+        return ""
+    return "; ".join(
+        f"{key} was {existing.get(key)!r}, now {value!r}"
+        for key, value in selector.items()
+        if existing.get(key) != value
+    )
+
+
 def image_dest(out_dir: Path, scan: dict[str, Any], image: dict[str, Any]) -> Path:
-    """Absolute destination for one frame, preserving its real extension."""
+    """Destination for one frame, preserving its real extension.
+
+    Raises ValueError if the path would land outside ``out_dir`` — a second check behind
+    `safe_component`, so nothing can reach a write outside the output directory.
+
+    The check is on the path as written, without consulting the filesystem. Resolving it would
+    follow symlinks, which would reject the perfectly ordinary case of `images/` pointing at
+    another disk.
+    """
     ext = Path(image["object_path"]).suffix or ".png"
-    return Path(out_dir) / scan_relative_dir(scan) / f"{image['frame_number']}{ext}"
+    ext = "." + safe_component(ext.lstrip(".") or "png")
+    relative = f"{scan_relative_dir(scan)}/{safe_component(image['frame_number'])}{ext}"
+    normalized = os.path.normpath(relative)
+    if os.path.isabs(normalized) or normalized.split(os.sep)[0] == os.pardir:
+        raise ValueError(f"refusing to write outside {out_dir}: {relative}")
+    return Path(out_dir) / normalized
 
 
 # --- supabase / storage I/O -------------------------------------------------
@@ -158,6 +285,14 @@ class FrameResult:
     object_path: str
     ok: bool
     error: str = ""
+    skipped: bool = False  # already on disk from an earlier run
+    unlisted: bool = False  # set on a scan whose frame list could not be fetched at all
+    no_frames: bool = False  # set on a scan that listed cleanly but has no images
+
+    @property
+    def scan_level(self) -> bool:
+        """True when this records a problem with a whole scan rather than one frame."""
+        return self.unlisted or self.no_frames
 
 
 @dataclass
@@ -168,44 +303,354 @@ class DownloadResult:
 
     @property
     def ok(self) -> int:
+        """Frames present on disk after the run (downloaded now or already there)."""
         return sum(1 for f in self.frames if f.ok)
 
     @property
+    def downloaded(self) -> int:
+        return sum(1 for f in self.frames if f.ok and not f.skipped)
+
+    @property
+    def skipped(self) -> int:
+        return sum(1 for f in self.frames if f.skipped)
+
+    @property
     def failed(self) -> int:
-        return sum(1 for f in self.frames if not f.ok)
+        """Frames known to be missing. Whole-scan problems are counted separately, since how
+        many frames they involve is unknown."""
+        return sum(1 for f in self.frames if not f.ok and not f.scan_level)
+
+    @property
+    def scans_unlisted(self) -> int:
+        """Scans whose frame list couldn't be fetched, so an unknown number of frames is missing."""
+        return sum(1 for f in self.frames if f.unlisted)
+
+    @property
+    def scans_without_frames(self) -> int:
+        """Scans that listed cleanly but hold no images at all."""
+        return sum(1 for f in self.frames if f.no_frames)
 
     @property
     def total(self) -> int:
-        return len(self.frames)
+        """Frames that were actually listed."""
+        return sum(1 for f in self.frames if not f.scan_level)
+
+    @property
+    def incomplete(self) -> bool:
+        """True if this run failed to fetch something it should have fetched.
+
+        A scan with no images recorded is noted in the log but is not a failure: there is
+        nothing to download, so every re-run would report it again and the command could
+        never succeed.
+        """
+        return bool(self.failed or self.scans_unlisted)
 
 
-def download_images(client: Any, scans: list[dict[str, Any]], out_dir: Path) -> DownloadResult:
+def download_frame(
+    client: Any,
+    scan: dict[str, Any],
+    image: dict[str, Any],
+    out_dir: Path,
+    *,
+    stop: threading.Event | None = None,
+) -> FrameResult:
+    """Download one frame to its destination, returning the outcome.
+
+    Never raises: any failure (missing object, server error, write error) is recorded on
+    the result instead, so one bad frame can't abort the run. Safe to call from a worker thread.
+
+    A frame already on disk is reported as skipped without making a request, which is what
+    makes an interrupted run cheap to pick back up.
+
+    ``stop`` is set when the disk fills. Frames that have not started yet are recorded as
+    failed without being fetched — there is nowhere to put them, and a large experiment would
+    otherwise pull hundreds of gigabytes only to throw them away. The few already in flight
+    run to completion, so a little work carries on past the point the disk fills, bounded by
+    the number of workers.
+    """
+    object_path = image.get("object_path", "")
+    result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
+    if stop is not None and stop.is_set():
+        result.error = "no space left on device — nothing further was downloaded"
+        return result
+    try:
+        dest = image_dest(out_dir, scan, image)
+        if already_downloaded(dest):
+            result.ok = True
+            result.skipped = True
+            return result
+        atomic_write_bytes(dest, download_object(client, object_path))
+        result.ok = True
+    except (KeyError, TypeError) as exc:  # a bare key or pathlib error explains nothing
+        result.error = f"malformed cyl_images row: {exc}"
+    except OSError as exc:
+        # A full disk isn't this frame's problem, it's every remaining frame's.
+        if exc.errno == errno.ENOSPC and stop is not None:
+            stop.set()
+        result.error = str(exc)
+    except Exception as exc:  # per-frame: record and continue
+        result.error = str(exc)
+    return result
+
+
+def _run_bounded(
+    work: list[Any],
+    run_one: Callable[[Any], FrameResult],
+    workers: int,
+    *,
+    window_factor: int = 4,
+    on_done: Callable[[Any], None] | None = None,
+) -> list[FrameResult]:
+    """Run ``run_one`` over ``work`` across ``workers`` threads, a window at a time.
+
+    Queueing every frame up front would cost hundreds of MB on a large experiment before the
+    first byte arrives. Keeping a limited number in flight uses flat memory and still keeps
+    every thread busy. Results are stored by position, so the order matches ``work``.
+
+    ``on_done`` receives each finished item. Completed work is collected here, on the
+    calling thread, so it needs no locking of its own.
+    """
+    results: list[Any] = [None] * len(work)
+    window = max(workers * window_factor, workers)
+    pending: dict[Future, int] = {}
+    remaining = enumerate(work)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for index, item in itertools.islice(remaining, window):
+            pending[pool.submit(run_one, item)] = index
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                outcome = future.result()
+                results[pending.pop(future)] = outcome
+                if on_done is not None:
+                    on_done(outcome)
+            for index, item in itertools.islice(remaining, len(done)):
+                pending[pool.submit(run_one, item)] = index
+    return results
+
+
+def _list_scan_frames(
+    client: Any, scan: dict[str, Any]
+) -> tuple[list[dict[str, Any]], FrameResult | None]:
+    """List a scan's frames; on a listing failure return a synthetic failed FrameResult.
+
+    A failed query becomes one recorded failure for that scan rather than crashing the whole
+    run, so the log and the non-zero exit still cover it. It carries no frame count, because
+    there isn't one — `DownloadResult.scans_unlisted` keeps these apart from missing frames so
+    a whole unlisted scan doesn't read as a single lost frame.
+    """
+    try:
+        return fetch_images(client, scan.get("scan_id")), None
+    except Exception as exc:
+        return [], FrameResult(
+            scan.get("scan_id"),
+            None,
+            "",
+            ok=False,
+            error=f"list images: {exc}",
+            unlisted=True,
+        )
+
+
+class CollidingFrames(ValueError):
+    """Two or more frames would be written to the same file."""
+
+
+def filesystem_folds_case(out_dir: Path) -> bool:
+    """Whether this filesystem treats two names differing only by case as the same file.
+
+    Has to be measured rather than assumed: macOS is case-insensitive by default and Linux is
+    not, and `os.path.normcase` reports nothing useful on either (it only folds on Windows).
+    """
+    root = Path(out_dir)
+    probe = root / ".bloomctl-case-probe"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        if probe.exists():
+            return False  # someone else's file; leave it alone rather than delete it
+        probe.touch()
+        try:
+            return (root / ".BLOOMCTL-CASE-PROBE").exists()
+        finally:
+            probe.unlink(missing_ok=True)
+    except OSError:
+        return False  # can't tell — don't invent collisions
+
+
+def _path_key(path: Path, fold: bool) -> str:
+    """A comparison key for a destination, matching how the filesystem compares names."""
+    text = os.path.normcase(str(path))
+    if fold:
+        # macOS also normalises unicode, so compose before folding.
+        text = unicodedata.normalize("NFC", text).casefold()
+    return text
+
+
+def find_frame_collisions(
+    out_dir: Path, work: list[tuple[dict[str, Any], dict[str, Any]]]
+) -> list[str]:
+    """Describe every pair of frames that would land on the same file.
+
+    The destination is built from wave/age/date/qr plus the frame number, all of which can be
+    empty in the database — and two rows with an empty value are not caught by a uniqueness
+    constraint. Two rows can therefore share a filename, and without this check the second is
+    quietly skipped as already-downloaded and its image never arrives.
+
+    The comparison is on the real destination path, compared the way this filesystem compares
+    names: on macOS `st0-001` and `ST0-001` are two database values but one file, so matching
+    the raw strings would miss exactly the collisions that matter. On a case-sensitive
+    filesystem they are genuinely different files and are left alone.
+    """
+    fold = filesystem_folds_case(Path(out_dir))
+    seen: dict[str, tuple[Any, Any, Path]] = {}
+    clashes: list[str] = []
+    for scan, image in work:
+        try:
+            dest = image_dest(out_dir, scan, image)
+        except (KeyError, TypeError, ValueError):
+            continue  # malformed row; reported per-frame during the download
+        key = _path_key(dest, fold)
+        owner = (scan.get("scan_id"), image.get("frame_number"))
+        if key in seen:
+            first_scan, first_frame, first_dest = seen[key]
+            clashes.append(
+                f"scan {first_scan!r} frame {first_frame!r} ({first_dest}) and scan {owner[0]!r} "
+                f"frame {owner[1]!r} ({dest}) are the same file"
+            )
+        else:
+            seen[key] = (*owner, dest)
+    return clashes
+
+
+def download_images(
+    client: Any,
+    scans: list[dict[str, Any]],
+    out_dir: Path,
+    *,
+    workers: int = DEFAULT_WORKERS,
+    on_progress: Callable[[str, int, int, int], None] | None = None,
+) -> DownloadResult:
     """Download every frame for every scan from Storage bucket `images`.
 
-    Each frame is downloaded independently: a failure is recorded, not raised, so
-    one bad frame (missing object, transient 5xx) can't abort the whole run.
-    Signs server-side via Supabase Storage (no MinIO secrets, no legacy Lambda).
+    Frames are listed per scan, then fetched by up to ``workers`` threads at once, since the
+    per-frame requests are what make a large experiment slow. ``workers <= 1`` runs one at a
+    time. Results stay in scan and frame order, so the log reads the same way every run.
+
+    A failing frame is recorded rather than raised, so one bad frame can't abort the run.
+
+    Frames already written by an earlier run are skipped, which is what makes an interrupted
+    download cheap to resume. To fetch an experiment afresh, download into a new directory.
+
+    ``on_progress(phase, done, total, failed)`` is called as work completes, with ``phase``
+    of ``"listing"`` or ``"downloading"``. It is only ever called from this thread.
     """
-    bucket = client.storage.from_("images")
-    frames: list[FrameResult] = []
-    for scan in scans:
-        for image in fetch_images(client, scan["scan_id"]):
-            object_path = image.get("object_path", "")
-            result = FrameResult(
-                scan.get("scan_id"), image.get("frame_number"), object_path, ok=False
+    sweep_orphan_temps(Path(out_dir))
+
+    # One entry per log line, in scan order: either a scan that couldn't be listed or a frame
+    # to fetch. Building the list this way keeps unlisted scans next to the scans around them
+    # rather than collected at the end of the log.
+    slots: list[Any] = []
+    for listed, scan in enumerate(scans, start=1):
+        if on_progress is not None:
+            on_progress("listing", listed, len(scans), 0)
+        images, failure = _list_scan_frames(client, scan)
+        if failure is not None:
+            slots.append(failure)
+        elif not images:
+            # A scan can have no rows in cyl_images if its upload was interrupted. Note it in
+            # the log so it is visible, but don't fail the run: there is nothing to fetch, so
+            # failing would make every future run of this experiment fail too.
+            slots.append(
+                FrameResult(
+                    scan.get("scan_id"), None, "", ok=False, error="no frames", no_frames=True
+                )
             )
-            try:
-                data = bucket.download(object_path)
-                if data is None:
-                    raise ValueError("empty response from storage")
-                dest = image_dest(out_dir, scan, image)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
-                result.ok = True
-            except Exception as exc:  # per-frame: record and continue
-                result.error = str(exc)
-            frames.append(result)
+        slots.extend((scan, image) for image in images)
+
+    work = [slot for slot in slots if not isinstance(slot, FrameResult)]
+
+    clashes = find_frame_collisions(Path(out_dir), work)
+    if clashes:
+        raise CollidingFrames("; ".join(clashes))
+
+    stop = threading.Event()
+
+    def _one(pair: tuple[dict[str, Any], dict[str, Any]]) -> FrameResult:
+        return download_frame(client, pair[0], pair[1], out_dir, stop=stop)
+
+    # Never start more threads than there are frames, than were asked for, or than the limit.
+    n = min(workers, MAX_WORKERS, len(work)) if work else 0
+    done = failed = 0
+
+    def _tick(result: FrameResult) -> None:
+        # Counting completions alone would show 100% on a run where every frame failed.
+        nonlocal done, failed
+        done += 1
+        if not result.ok:
+            failed += 1
+        if on_progress is not None:
+            on_progress("downloading", done, len(work), failed)
+
+    if n <= 1:
+        fetched = []
+        for pair in work:
+            outcome = _one(pair)
+            fetched.append(outcome)
+            _tick(outcome)
+    else:
+        fetched = _run_bounded(work, _one, n, on_done=_tick)
+
+    outcomes = iter(fetched)
+    frames = [slot if isinstance(slot, FrameResult) else next(outcomes) for slot in slots]
     return DownloadResult(frames)
+
+
+class ProgressReporter:
+    """Prints how far a run has got, at most every ``interval`` seconds.
+
+    A large download takes hours; without this it prints one line and then goes quiet, and
+    there is no way to tell a working run from a stuck one. Goes to stderr so the paths and
+    summary on stdout stay usable in a script.
+    """
+
+    def __init__(self, *, interval: float | None = None, now=time.monotonic):
+        self._interval = PROGRESS_INTERVAL_SECONDS if interval is None else interval
+        self._now = now
+        self._last = 0.0
+        self._phase = ""
+
+    def __call__(self, phase: str, done: int, total: int, failed: int = 0) -> None:
+        moment = self._now()
+        # Always show the first and last of a phase, so short runs still say something and a
+        # finished phase never sits at 97%.
+        edge = phase != self._phase or done == total
+        if not edge and moment - self._last < self._interval:
+            return
+        self._last = moment
+        self._phase = phase
+        click.echo(f"  {format_progress(phase, done, total, failed)}", err=True)
+
+
+def format_progress(phase: str, done: int, total: int, failed: int = 0) -> str:
+    """One progress line, e.g. ``12,480/413,926 frames (3%), 12 failed``.
+
+    Failures are named as soon as there are any: the count on its own says how much work has
+    been attempted, which on a run where everything is failing would read as healthy.
+    """
+    noun = "scans" if phase == "listing" else "frames"
+    percent = f" ({done * 100 // total}%)" if total else ""
+    prefix = "Listing frames: " if phase == "listing" else ""
+    problem = f", {failed:,} failed" if failed else ""
+    return f"{prefix}{done:,}/{total:,} {noun}{percent}{problem}"
+
+
+def _one_line(text: Any) -> str:
+    """Collapse whitespace so one record can never span more than one line.
+
+    `object_path` and the error text both come from the server, and a multi-line error (an
+    httpx message, say) would otherwise emit continuation lines that read like frame records.
+    """
+    return " ".join(str(text).split())
 
 
 def write_download_log(result: DownloadResult, path: Path) -> None:
@@ -213,13 +658,29 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for f in result.frames:
-        line = (
-            f"{'OK  ' if f.ok else 'FAIL'} scan={f.scan_id} frame={f.frame_number} {f.object_path}"
-        )
+        if f.unlisted:
+            lines.append(
+                f"UNLISTED scan={f.scan_id} (frame count unknown)  error={_one_line(f.error)}"
+            )
+            continue
+        if f.no_frames:
+            lines.append(f"NOFRAMES scan={f.scan_id} (no images recorded for this scan)")
+            continue
+        status = "SKIP" if f.skipped else "OK  " if f.ok else "FAIL"
+        line = f"{status} scan={f.scan_id} frame={f.frame_number} {_one_line(f.object_path)}"
         if not f.ok:
-            line += f"  error={f.error}"
+            line += f"  error={_one_line(f.error)}"
         lines.append(line)
-    lines.append(f"\nSummary: {result.ok} downloaded, {result.failed} failed, {result.total} total")
+    summary = (
+        f"\nSummary: {result.ok}/{result.total} frames present "
+        f"({result.downloaded} downloaded this run, {result.skipped} already on disk), "
+        f"{result.failed} failed"
+    )
+    if result.scans_unlisted:
+        summary += f", {result.scans_unlisted} scan(s) could not be listed (frames unknown)"
+    if result.scans_without_frames:
+        summary += f", {result.scans_without_frames} scan(s) have no images"
+    lines.append(summary)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -304,6 +765,14 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     show_default=True,
     help="Maximum number of scans to fetch.",
 )
+@click.option(
+    "-n",
+    "--workers",
+    type=click.IntRange(min=1, max=MAX_WORKERS),
+    default=DEFAULT_WORKERS,
+    show_default=True,
+    help=f"Concurrent image downloads (I/O-bound, 1-{MAX_WORKERS}). 1 = sequential.",
+)
 def download(
     out_dir: Path,
     experiment_id: int | None,
@@ -316,6 +785,7 @@ def download(
     plant_age_min: int,
     plant_age_max: int,
     limit: int,
+    workers: int,
 ) -> None:
     """Download a cylinder experiment (--experiment-id / --experiment-name) or a single scan
     (--scan-id): metadata (scans.csv) and per-frame images."""
@@ -382,23 +852,78 @@ def download(
     genotypes = fetch_genotypes(client, [s.get("accession_id") for s in scans])
     rows = [build_scan_row(s, genotypes.get(s.get("accession_id"))) for s in scans]
 
+    if not scans:
+        raise click.ClickException(
+            "No scans matched, so there is nothing to download. Check the experiment and any "
+            "--plant-qr-code / --plant-age-min / --plant-age-max filters."
+        )
+
     out = Path(out_dir)
+    selector = download_selector(
+        experiment_id=experiment_id,
+        scan_id=scan_id,
+        plant_qr_code=plant_qr_code,
+        plant_age_min=plant_age_min,
+        plant_age_max=plant_age_max,
+        limit=limit,
+    )
+    if holds_an_unidentified_download(out):
+        raise click.ClickException(
+            f"{out} already holds images but no {MANIFEST_NAME}, so there is no way to tell "
+            f"which download they belong to. Downloading here risks mixing two experiments "
+            f"in one directory. Download into a new directory instead."
+        )
+
+    mismatch = describe_manifest_mismatch(read_manifest(out), selector)
+    if mismatch:
+        raise click.ClickException(
+            f"{out} already holds a different download ({mismatch}). Give each selection its "
+            f"own directory. Re-running the same command here resumes where it left off."
+        )
+
     csv_path = out / "scans.csv"
     write_scans_csv(rows, csv_path)
+    write_manifest(out, selector)
     click.echo(f"Wrote {len(rows)} scans -> {csv_path}")
 
     if meta_only:
         return
 
-    result = download_images(client, scans, out)
+    try:
+        result = download_images(
+            client, scans, out, workers=workers, on_progress=ProgressReporter()
+        )
+    except CollidingFrames as exc:
+        raise click.ClickException(
+            f"{exc}. Refusing to download, because one frame's image would overwrite or mask "
+            f"another's. Narrow the download (--scan-id / --plant-qr-code) or fix the rows."
+        ) from exc
+
     log_path = out / "download_log.txt"
     write_download_log(result, log_path)
     click.echo(
-        f"Downloaded {result.ok}/{result.total} image frames -> {out / 'images'}  (log: {log_path})"
+        f"{result.ok}/{result.total} frames present in {out / 'images'} "
+        f"({result.downloaded} downloaded this run, {result.skipped} already on disk)  "
+        f"(log: {log_path})"
     )
-    if result.failed:
+    if result.scans_without_frames:
+        click.echo(
+            f"Note: {result.scans_without_frames} scan(s) have no images recorded in Bloom, "
+            f"so there was nothing to download for them (listed in the log).",
+            err=True,
+        )
+    if result.incomplete:
         # Partial download: surface it and exit non-zero so a pipeline knows the
         # output is incomplete (the log lists every failed frame).
+        problems = []
+        if result.failed:
+            problems.append(f"{result.failed} of {result.total} frames failed to download")
+        if result.scans_unlisted:
+            problems.append(
+                f"{result.scans_unlisted} scan(s) could not be listed at all "
+                f"(an unknown number of further frames is missing)"
+            )
         raise click.ClickException(
-            f"{result.failed} of {result.total} frames failed to download — see {log_path}"
+            f"{'; '.join(problems)} — see {log_path}. "
+            "Re-running the same command retries only the frames still missing."
         )

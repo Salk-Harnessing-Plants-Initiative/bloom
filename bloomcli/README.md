@@ -157,7 +157,7 @@ image, into `<out_dir>`.
 bloomctl cyl download <out_dir>
   ( --experiment-id N | --scan-id N | --experiment-name "<text>" [--species <name>] )
   [--meta-only] [--plant-qr-code QR] [--plant-age-min D] [--plant-age-max D]
-  [--limit N] [-p/--profile PROFILE]
+  [--limit N] [-n/--workers N] [-p/--profile PROFILE]
 ```
 
 Pick **exactly one** target:
@@ -186,6 +186,63 @@ bloomctl cyl download ./out --experiment-name soy --species Soybean --meta-only
 # a single scan
 bloomctl cyl download ./out --scan-id 9001
 ```
+
+### Download speed (`--workers`)
+
+Frames download concurrently — 8 at a time by default, which is what makes a large
+experiment finish in a sensible amount of time. Tune it with `-n`/`--workers`:
+
+```bash
+bloomctl cyl download ./out --experiment-id 42 --workers 16   # faster on a good connection
+bloomctl cyl download ./out --experiment-id 42 --workers 1    # sequential
+```
+
+Valid range is 1–64; the ceiling is a guard against pointing an unbounded number of
+connections at the server. If downloads start erroring on a flaky connection, lower it.
+
+### Watching a long download
+
+A large experiment takes hours, so the command reports how far it has got — roughly every five
+seconds, on stderr:
+
+```
+Wrote 5750 scans -> ./out/scans.csv
+  Listing frames: 5,750/5,750 scans (100%)
+  12,480/413,926 frames (3%)
+  25,910/413,926 frames (6%)
+```
+
+If the count stops moving, the download is stuck rather than slow. Progress goes to stderr, so
+piping stdout somewhere still gives you just the paths and the final summary.
+
+### Resuming an interrupted download
+
+A download is **resumable**: frames already in `<out_dir>` are kept and counted as
+`already on disk`, so re-running the same command fetches only what is still missing. That
+applies to any interruption — a failed run, `Ctrl-C`, a dropped network, a closed laptop:
+
+```bash
+bloomctl cyl download ./out --experiment-id 42   # interrupted at 117k of 414k frames
+bloomctl cyl download ./out --experiment-id 42   # picks up from 117k
+```
+
+**One selection per directory.** A download records what it fetched, so re-running the same
+command resumes it. Downloading something *different* into the same directory is refused —
+otherwise you would end up with two sets of images in one tree and a `scans.csv` describing only
+the newer one. So a spot-check and a full pull want separate directories:
+
+```bash
+bloomctl cyl download ./check --experiment-id 42 --plant-qr-code QR-1   # one plant
+bloomctl cyl download ./full  --experiment-id 42                        # everything
+```
+
+> **If the directory was written by bloomctl 0.1.0a3 or earlier**, download the experiment again
+> into a new directory. Those releases wrote frames non-atomically, so an interrupted run could
+> leave a truncated file behind, and resume treats any non-empty file as complete.
+
+Long runs keep working past the point where the login's token is refreshed, so a download that
+takes several hours completes. If a storage error does mention an expired session, re-running the
+command resumes from wherever it stopped.
 
 > `--experiment-name` requires the `cyl_experiment_search` DB function (migration
 > `…_add_cyl_experiment_search.sql`) to be applied on the server you're pointed at.
