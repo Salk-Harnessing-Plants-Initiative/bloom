@@ -76,9 +76,9 @@ bloom#625's own text says the unpinned case must "`GROUP BY` over the same lates
 `plant_id`, no `experiment_id`** (confirmed by reading the view's definition in
 `20260701000000_cyl_trait_read_source_aware.sql`). Reaching `plant_id`/`experiment_id` requires the same
 join chain `get_experiment_traits`/`get_scan_traits` already use:
-`cyl_experiments -> cyl_waves -> cyl_plants -> cyl_scans -> cyl_scan_traits_source`. So this function
-reuses `get_experiment_traits`'s **exact** `FROM`/`JOIN` chain and three-way disjunction against
-`cyl_scan_traits_source` (default-latest via `src.is_latest` / pin `source_id_` / pin `run_id_`,
+`cyl_experiments -> cyl_waves -> cyl_plants -> accessions -> cyl_scans -> cyl_scan_traits_source`. So
+this function reuses `get_experiment_traits`'s **exact** `FROM`/`JOIN` chain and three-way disjunction
+against `cyl_scan_traits_source` (default-latest via `src.is_latest` / pin `source_id_` / pin `run_id_`,
 mutually exclusive) rather than joining the `_latest` view — this is the concrete mechanism that
 satisfies bloom#625's "must match `load_experiment`'s latest-selection semantics" requirement, since it's
 the same predicate `get_experiment_traits` itself evaluates, not a re-derivation:
@@ -92,6 +92,7 @@ SELECT
 FROM public.cyl_experiments
 JOIN public.cyl_waves ON cyl_waves.experiment_id = cyl_experiments.id
 JOIN public.cyl_plants ON cyl_plants.wave_id = cyl_waves.id
+JOIN public.accessions ON cyl_plants.accession_id = accessions.id
 JOIN public.cyl_scans ON cyl_scans.plant_id = cyl_plants.id
 JOIN public.cyl_scan_traits_source src ON src.scan_id = cyl_scans.id
 WHERE (experiment_id_ IS NULL OR cyl_experiments.id = experiment_id_)
@@ -106,12 +107,39 @@ WHERE (experiment_id_ IS NULL OR cyl_experiments.id = experiment_id_)
 GROUP BY cyl_experiments.id;
 ```
 
+**The `JOIN public.accessions ON cyl_plants.accession_id = accessions.id` line is load-bearing, not
+copy-paste noise — caught in review, not present in an earlier draft of this design.** `get_experiment_traits`'s
+real `FROM` clause (`supabase/migrations/20260728000000_get_experiment_traits.sql:74-79`) includes this
+same inner join even though it never selects an `accessions` column, because `cyl_plants.accession_id`
+is **nullable** (`20230822223310_add_accession_id_to_cyl_plants.sql`, no `NOT NULL`) and a documented,
+live condition elsewhere in the schema (`20260722000100_add_cyl_accession_views.sql`: *"plants with no
+accession belong to no accession and are therefore excluded"*). An earlier draft of this function's `FROM`
+clause omitted this join — which would have made the new function **more inclusive** than
+`get_experiment_traits` (counting plants `get_experiment_traits` itself would silently drop), the exact
+opposite of this change's "match `load_experiment`'s semantics" goal. Dropping the join here would be a
+*new* divergence this change introduces, not a pre-existing one it inherits — unlike the Tier 1 precedent's
+own `species` join removal (`add-bulk-trait-read-rpc/design.md`'s D1, a case where *dropping* a join was
+the fix because the sibling function's join was dead weight that turned into a bug). Do not by-analogy drop
+this one; it is not the same situation. See Testing below for the regression test this requires.
+
 Leading `IF source_id_ IS NOT NULL AND run_id_ IS NOT NULL THEN RAISE EXCEPTION ...` guard, same as
-`get_experiment_traits`/`get_scan_traits` (requires `plpgsql`, matching D1's `LANGUAGE` choice).
+`get_experiment_traits`/`get_scan_traits` (requires `plpgsql`, matching D1's `LANGUAGE` choice). That
+guard's `RAISE EXCEPTION` carries no distinct `SQLSTATE`, and `bloommcp`'s `_safe_rpc` wrapper collapses
+any exception (a genuine timeout, a connection failure, or this validation error) into the same generic
+`ExperimentReadError` message — inherited, undiscussed behavior shared with `get_experiment_traits`/
+`get_scan_traits`, not a new gap this change introduces. `list_experiments()` always calls with all-`NULL`
+arguments, so the guard can never fire on that path; a future source-pinning caller reusing this function
+could not distinguish "you passed both filters" from "the database is unreachable" without a change to
+`_safe_rpc` itself — out of scope here, flagged for whoever builds that caller.
 
 **`COUNT(DISTINCT trait_name)`, not `trait_id`** — matches the Python code being replaced exactly
 (`{r["trait_name"] for r in rows}`), and matches what a caller would see as "distinct trait columns" in
-the pivoted wide frame.
+the pivoted wide frame. **Caveat for the test oracle (see Testing):** Postgres's `COUNT(DISTINCT ...)`
+ignores `NULL`s, while Python's `len({... for r in rows})` counts a `None` member once — these disagree
+for a legacy row whose `trait_id` (and therefore `trait_name`, via `cyl_scan_traits_source`'s join to
+`cyl_traits`) never resolved (`20260722000000_add_cyl_dataset_trait_names_view.sql` documents this
+backfill-artifact case exists). Low-likelihood at current data scale, but the test oracle helper must
+account for it explicitly rather than silently disagree with the SQL it's supposed to be checking.
 
 **Only experiments with at least one matching row get a result row.** Since 215/224 experiments have no
 `cyl_scan_traits` data reachable at all, an unpinned call returns rows for only ~9 experiments. This is
@@ -125,46 +153,71 @@ own `cyl_experiments` `SELECT`).
 
 ### D3 — `list_experiments()` merges by `experiment_id`, defaulting missing entries to zero
 
+**Corrected in review** — an earlier draft of this decision's code sample called `_sc.call_rpc` directly
+and had no `try`/`except` around the per-row merge loop, which silently contradicted D4 (below) and would
+have broken `test_list_experiments_excludes_a_malformed_row` (a missing `"id"` key would raise an
+uncaught `KeyError` instead of being skipped). The corrected shape keeps two *separate* concerns separate:
+the one bulk RPC call is wrapped for D4's failure semantics; the per-row merge keeps today's existing
+per-row `try`/`except` so a malformed `cyl_experiments` row is still skipped, not fatal:
+
 ```python
-counts_by_id = {
-    row["experiment_id"]: row
-    for row in _sc.call_rpc(_RPC_GET_EXPERIMENT_SUMMARY_COUNTS, {
-        "experiment_id_": None, "source_id_": None, "run_id_": None,
-    })
-}
-for row in response.data:  # the existing cheap cyl_experiments SELECT, unchanged
-    experiment_id = row["id"]
-    counts = counts_by_id.get(experiment_id, {"n_plants": 0, "n_traits": 0})
-    summary = ExperimentSummary(
-        filename=str(experiment_id),
-        stem=str(experiment_id),
-        rows=counts["n_plants"],
-        total_columns=counts["n_traits"] + _FIXED_COLUMN_COUNT,
-        trait_columns=counts["n_traits"],
-        experiment_name=str(row.get("name") or experiment_id),
-        genotype_col=_GENOTYPE_COL,
-        sample_id_col=_SAMPLE_ID_COL,
+try:
+    counts_rows = _sc.call_rpc(
+        _RPC_GET_EXPERIMENT_SUMMARY_COUNTS,
+        {"experiment_id_": None, "source_id_": None, "run_id_": None},
     )
+except Exception as exc:
+    raise ExperimentReadError(
+        "Could not list experiments: the database read failed."
+    ) from exc
+counts_by_id = {row["experiment_id"]: row for row in counts_rows}
+
+summaries: list[ExperimentSummary] = []
+for row in response.data:  # the existing cheap cyl_experiments SELECT, unchanged
+    try:
+        experiment_id = row["id"]
+        counts = counts_by_id.get(experiment_id, {"n_plants": 0, "n_traits": 0})
+        summary = ExperimentSummary(
+            filename=str(experiment_id),
+            stem=str(experiment_id),
+            rows=counts["n_plants"],
+            total_columns=counts["n_traits"] + _FIXED_COLUMN_COUNT,
+            trait_columns=counts["n_traits"],
+            experiment_name=str(row.get("name") or experiment_id),
+            genotype_col=_GENOTYPE_COL,
+            sample_id_col=_SAMPLE_ID_COL,
+        )
+    except Exception:
+        logger.warning("Skipping malformed cyl_experiments row: %r", row)
+        continue
     summaries.append(summary)
+return summaries
 ```
 
 One RPC call total (not one per row), replacing lines 261-298's per-row `try/_sc.call_rpc/except` loop.
-The `cyl_experiments` listing SELECT itself, and its per-row malformed-row handling (missing `"id"` key —
-see `test_list_experiments_excludes_a_malformed_row`), stay exactly as they are; only the trait-count
-lookup changes.
+The bulk-call failure path deliberately does **not** go through `_safe_rpc` — that helper's signature is
+`_safe_rpc(function_name, params, *, name: str)`, built for a single experiment's error message ("Could
+not read {function_name} data for experiment {name!r}"), and there is no single experiment name for an
+all-`NULL` bulk call. Raising `ExperimentReadError` directly here (mirroring the message style of the
+existing top-of-function `cyl_experiments` SELECT's own `try`/`except`, two lines above this loop in the
+real function) is the correct fit, not a workaround — `_safe_rpc` is for `load_experiment`'s
+single-experiment call sites, and forcing a placeholder `name` through it here would produce a
+confusing/wrong error message for no benefit. The `cyl_experiments` listing SELECT itself is unchanged;
+only the trait-count lookup changes.
 
 ### D4 — Bulk-call failure now fails `list_experiments()` outright, not silently drops one experiment
 
 Today, a `get_experiment_traits` failure for one experiment is caught per-row and that experiment is
 excluded from the list (`logger.warning(...); continue`) — the other 223 still succeed independently.
 With one bulk call, there is no "this experiment's fetch failed" granularity left: a
-`get_experiment_summary_counts` failure means *no* experiment's counts. Wrap the call through the file's
-existing `_safe_rpc` helper (used by `load_experiment`, not by today's `list_experiments()`) so a failure
-raises `ExperimentReadError` rather than being swallowed — matching bloom#625's own acceptance criterion
-that a blocked/slow query "fails with a clear, structured error instead of hanging" or, transitively,
-instead of silently returning an empty or wrong list. This is a deliberate behavior change, not an
-oversight: `list_experiments()` can no longer partially succeed the way it could when failure was
-scoped per experiment.
+`get_experiment_summary_counts` failure means *no* experiment's counts. D3's code raises
+`ExperimentReadError` directly around that one call (**not** through `_safe_rpc` — see D3's note on why
+that helper's single-experiment `name` parameter doesn't fit a bulk call) so a failure surfaces as a
+structured error rather than being swallowed — matching bloom#625's own acceptance criterion that a
+blocked/slow query "fails with a clear, structured error instead of hanging" or, transitively, instead of
+silently returning an empty or wrong list. This is a deliberate behavior change, not an oversight:
+`list_experiments()` can no longer partially succeed the way it could when failure was scoped per
+experiment.
 
 ### D5 — Bounded, overridable PostgREST/RPC timeout
 
@@ -186,7 +239,7 @@ The fix is choosing a deliberate, bounded value and making it overridable, mirro
 same file):
 
 ```python
-_DEFAULT_POSTGREST_TIMEOUT_SECONDS = 30  # placeholder — see Testing/benchmark task before merge
+_DEFAULT_POSTGREST_TIMEOUT_SECONDS = 30  # placeholder — see task 0.2's benchmark before merge
 
 def get_postgrest_client(*, timeout_seconds: float | None = None) -> supabase.Client:
     options = supabase.ClientOptions(
@@ -197,30 +250,89 @@ def get_postgrest_client(*, timeout_seconds: float | None = None) -> supabase.Cl
     return supabase.create_client(url, key, options=options)
 ```
 
-**This changes `get_postgrest_client()`'s signature**, which `test_supabase_client.py:128-134`
-(`test_client_accessors_accept_no_caller_credential_parameter`) currently pins to zero parameters:
+**Correction from review — the original draft of this decision cited a test that does not exist.** An
+earlier version of this section claimed `bloommcp/tests/test_supabase_client.py:128-134` has a test
+named `test_client_accessors_accept_no_caller_credential_parameter` asserting
+`set(inspect.signature(sc.get_postgrest_client).parameters) == set()`. **That test does not exist
+anywhere in this repo's tracked tree.** It exists only inside `pr613.diff`, an unrelated, untracked
+scratch file that happened to be sitting in the repo root when this design was drafted (leftover from
+separate, unmerged OAuth-caller-identity work, PR #613) — the draft was written against that stray file
+instead of the real one. Confirmed by reading `bloommcp/tests/test_supabase_client.py` directly: it is 66
+lines and contains exactly two tests, both for `call_rpc`, neither touching `get_postgrest_client`'s
+signature.
+
+**The real, relevant test is `test_get_postgrest_client_returns_a_fresh_client`
+(`tests/unit/test_supabase_client.py:93-107`)** — a different file from the one the earlier draft named.
+It does not assert on `get_postgrest_client`'s parameter set, but it **does** monkeypatch
+`supabase.create_client` with a strict two-positional-argument stub:
 
 ```python
-assert set(inspect.signature(sc.get_postgrest_client).parameters) == set()
+def fake_create_client(url, key):
+    c = MagicMock(name=f"client-{len(calls)}")
+    calls.append(c)
+    return c
 ```
 
-That assertion's own docstring frames it as guarding against a *caller-credential* parameter specifically
-(no per-call API key/session injection) — `timeout_seconds` is orthogonal to that concern, so the test is
-updated to `== {"timeout_seconds"}`, matching `get_storage_client`'s already-asserted set on the same
-line. **Rejected alternative:** hardcode the timeout in the function body with no new parameter, leaving
-the test untouched. Rejected because it forecloses tests (and any future caller) from exercising a tight
-timeout deliberately — `get_storage_client`'s own precedent already established the overridable-kwarg
-shape for exactly this reason, and diverging from it for the sibling accessor would be the inconsistency,
-not the fix.
+D5's `get_postgrest_client` always builds and passes `options=` — including on the no-override path,
+since the whole point is changing the *default*, not just adding an override — so this stub would raise
+`TypeError: fake_create_client() got an unexpected keyword argument 'options'` the moment this change
+lands, unless updated. This is a real, unavoidable divergence from `get_storage_client`'s own precedent:
+`get_storage_client` (`supabase_client.py:179-198`) explicitly skips passing `options=` at all when
+`timeout_seconds is None`, specifically so 2-arg `create_client` stubs elsewhere keep working — that
+dodge isn't available here, because the whole feature is changing the un-overridden default, not merely
+adding an opt-in override. `get_postgrest_client` is not really "mirroring" `get_storage_client`'s shape;
+it's a necessary variant of it that always passes `options=`. Task 4.3 must update this existing stub to
+accept and ignore `options=None` (mirroring the pattern the storage-client tests already use, see below),
+and task 4.4 must add new tests — not "update" a nonexistent one — asserting the actual override
+behavior, following the exact pattern `test_get_storage_client_default_passes_no_options_override`/
+`test_get_storage_client_timeout_override_builds_client_options`
+(`bloommcp/tests/test_storage_backend.py:400-431`) already establish for the sibling accessor:
+
+```python
+def test_get_postgrest_client_default_uses_the_bounded_module_default(monkeypatch):
+    captured = {}
+    def _fake_create_client(url, key, options=None):
+        captured["options"] = options
+        return _FakeSbClient()
+    monkeypatch.setenv("SUPABASE_URL", "http://x")
+    monkeypatch.setenv("BLOOM_AGENT_KEY", "k")
+    monkeypatch.setattr(sc.supabase, "create_client", _fake_create_client)
+
+    sc.get_postgrest_client()
+    assert captured["options"].postgrest_client_timeout == sc._DEFAULT_POSTGREST_TIMEOUT_SECONDS
+
+def test_get_postgrest_client_timeout_override_builds_client_options(monkeypatch):
+    # same fixture setup as above
+    sc.get_postgrest_client(timeout_seconds=5.0)
+    assert captured["options"].postgrest_client_timeout == 5.0
+```
+
+Note the first test's assertion is deliberately **not** `captured["options"] is None` — unlike
+`get_storage_client`'s equivalent default-path test, since here the un-overridden default itself is the
+thing changing (from the library's un-chosen 120s to this module's deliberately-chosen value), not merely
+"no override was requested."
+
+**Rejected alternative:** hardcode the timeout in the function body with no new parameter, leaving
+`create_client` called exactly as before. Rejected because it forecloses tests (and any future caller)
+from exercising a tight timeout deliberately — `get_storage_client`'s own precedent already established
+the overridable-kwarg shape for exactly this reason, and diverging from it for the sibling accessor would
+be the inconsistency, not the fix.
 
 `call_rpc()` itself is unchanged — it calls `get_postgrest_client()` with no arguments, so it picks up
 the new bounded default automatically; no caller of `call_rpc` needs to change to benefit.
 
-**30s is a placeholder, not a final value.** Task 3.x (tasks.md) benchmarks a realistic `load_experiment`
-call (the largest current experiment's raw fetch) against local/staging Postgres and adjusts this
-constant before merge, per bloom#625's own proposed methodology. It must be generous enough that a
-legitimate large-experiment `get_experiment_traits` call (Tier 2's `load_experiment` raw-tier fetch) does
-not spuriously fail, but tight enough that a genuinely blocked query surfaces in seconds, not minutes.
+**30s is a placeholder, not a final value.** Task 0.2 (tasks.md) benchmarks a realistic `load_experiment`
+call and adjusts this constant before merge, per bloom#625's own proposed methodology, with a concrete
+protocol (not just "benchmark it"): seed or reuse a local-Postgres fixture at `experiment_id=1`'s
+real scale (13.8M `cyl_scan_traits` rows — `tests/integration/`'s existing seed helpers accept bulk
+inserts, so this is a seeding-loop script, not a new mechanism), call `get_experiment_traits(1)` (the
+single most expensive call `load_experiment`'s raw tier makes) directly via `psql`'s `\timing` or a
+`time.perf_counter()`-wrapped `_safe_rpc` call, over **10 runs**, and record the **p99** duration. Set
+`_DEFAULT_POSTGREST_TIMEOUT_SECONDS` to **3× the measured p99**, rounded up to the nearest 5 seconds —
+generous enough that this real workload never spuriously times out, bounded enough that a genuinely
+blocked query surfaces in tens of seconds, not minutes. Record the measured p99 and the resulting
+constant directly in this section once task 0.2 runs, replacing this paragraph — do not leave 30s in the
+merged code without that measurement.
 
 ## Migration / Rollback
 
@@ -260,26 +372,56 @@ result is never `NULL`, unlike Tier 1's `trait_value`/`source_id`).
   (`test_list_experiments_excludes_a_failing_experiment`'s scenario was synthetic, not observed on
   staging) — flagged here so a future report of "the whole list is broken because of one experiment" is
   recognized as this trade-off, not a new regression to chase blindly.
-- **The 120s pre-existing default was already a bound, just not a chosen one.** Framing this change as
-  "adding a timeout where none existed" (bloom#625's literal words) slightly overstates the gap — the
-  real fix is *choosing* a smaller, deliberate value backed by benchmark data, not introducing bounded
-  behavior from scratch.
+- **The 120s pre-existing default was already a bound, just not a chosen one** — see D5's own framing of
+  this; not re-derived here.
 - **`get_experiment_summary_counts`'s reuse by the future source-discovery effort is speculative.** Its
   three-parameter shape is designed to be reusable, but that effort's actual proposal may still want a
   different shape once written — this change does not commit that future work to using this function
   unchanged, only avoids foreclosing it.
+- **Two footguns this function inherits unmodified from `get_experiment_traits`'s disjunction (D2), not
+  introduced here:** (1) `run_id_ = ''` is a real, non-matching filter value, not a `NULL` synonym —
+  `pipeline_run_id` has no `CHECK` against an empty string, so a caller defaulting a missing argument to
+  `""` instead of `None` silently gets zero rows rather than the latest-per-scan default
+  (`add-bulk-trait-read-rpc/design.md`'s Risks documents this for the sibling function; unchanged here
+  since it's the same underlying predicate). (2) `cyl_scan_traits_source.is_latest` partitions **per
+  `scan_id`**, not per `(scan_id, trait_id)` — if the newest pipeline run for a scan only re-delivered a
+  handful of traits, every older trait for that scan loses `is_latest` with no error, indistinguishable
+  from "never measured." Both are pre-existing substrate behavior this change's join chain necessarily
+  inherits by reusing the same predicate D2 requires for semantic parity with `get_experiment_traits` —
+  fixing either would be a `cyl_scan_traits_source` substrate change affecting every function built on
+  it, out of scope here.
+- **The `accessions` join (D2) is easy to accidentally drop by analogy with Tier 1's `species`-join
+  removal — it is not the same situation.** Tier 1 correctly *removed* a dead `species` join from
+  `get_experiment_traits` because that join was copy-paste dead weight that silently zeroed out any
+  experiment with `species_id IS NULL`. This function's `accessions` join is not dead weight — dropping
+  it would make this function **more inclusive** than `get_experiment_traits` (the opposite failure
+  direction), silently counting plants `get_experiment_traits` itself excludes. Called out explicitly so
+  a future edit doesn't "clean up" this join under the wrong analogy.
 
 ## Testing (TDD)
 
 - **Integration tests** (`tests/integration/test_cyl_experiment_summary_counts.py`), following
-  `test_cyl_read_path.py`'s/`test_cyl_experiment_traits.py`'s fixtures (`pg_conn`, `_seed_experiment_scan`,
-  `_trait`, `_deliver`):
+  `test_cyl_experiment_traits.py`'s actual fixtures/helpers — `pg_conn`, `_seed_experiment` (returns
+  `experiment_id, wave_id`; `_seed_experiment_scan` only creates *one* experiment with *one* scan per
+  call, not the multi-scan fixture these tests need), repeated `_seed_scan_in(cur, wave_id, ...)` calls
+  for a multi-scan experiment, `_trait`, `_deliver`:
   - Unpinned call (`{}`) returns `(n_plants, n_traits)` for a multi-scan, multi-trait experiment matching
     a hand-computed count from seeded data.
   - Unpinned call's counts match `get_experiment_traits(experiment_id_)`'s own
     `len(distinct plant_id)`/`len(distinct trait_name)` byte-for-byte (the direct oracle bloom#625's
     acceptance criteria names — "counts in the listing match exactly what `load_experiment` would
-    derive").
+    derive"). **The comparison helper must filter out `None` trait names on the Python side before taking
+    `len(set(...))`** — `COUNT(DISTINCT trait_name)` ignores `NULL`s in SQL, but a naive
+    `len({r["trait_name"] for r in rows})` counts a `None` member once; without this filter, a fixture
+    that happens to include a legacy row with an unresolved `trait_id` would make the oracle disagree
+    with the SQL it's supposed to be checking, not because the SQL is wrong.
+  - **Regression test for the `accessions` join (D2):** an experiment where one plant has
+    `accession_id = NULL` (direct-insert seed, mirroring Tier 1's own
+    `test_null_species_id_experiment_still_returns_traits`-style direct-insert pattern) — assert that
+    plant's scans/traits are **excluded** from both `n_plants` and `n_traits`, matching
+    `get_experiment_traits`'s own inner-join exclusion of the same plant. This is the test that would have
+    caught the join omission found in review; without it, dropping the `accessions` join is silently
+    unnoticed.
   - `source_id_`/`run_id_` pin each match `get_experiment_traits` with the same pin, same as the unpinned
     case above.
   - Both `source_id_` and `run_id_` set raises, same as `get_experiment_traits`/`get_scan_traits`.
@@ -293,35 +435,51 @@ result is never `NULL`, unlike Tier 1's `trait_value`/`source_id`).
   - Migration idempotency + rollback round-trip (mirrors Tier 1's 2.15/2.16).
   - PostgREST/HTTP-layer reachability smoke test (mirrors Tier 1's 7.7), skipped locally, run in CI's
     `compose-health-check`.
-- **`bloommcp`-side unit tests** (`bloommcp/tests/data_access/test_supabase_reader.py`, fakes only, no
-  live DB):
-  - `test_list_experiments_enumerates_database_experiments` updated: seed via
-    `fake_supabase_db.seed_traits(...)`, assert one `get_experiment_summary_counts` RPC call total (not
-    per-experiment), correct `rows`/`trait_columns` mapping.
-  - New: an experiment with no seeded traits gets `rows=0, trait_columns=0` (not excluded from the list),
-    exercising D3's default-to-zero merge.
-  - `test_list_experiments_excludes_a_failing_experiment` **deleted, not updated** — its premise (a
-    per-experiment RPC failure excludes only that experiment) no longer holds; replaced by a new test
-    asserting a `get_experiment_summary_counts` failure raises `ExperimentReadError` from
-    `list_experiments()` (D4).
-  - `test_list_experiments_excludes_a_malformed_row` stays as-is — unaffected by this change, since the
-    malformed-row handling is in the unchanged `cyl_experiments` listing loop, not the trait-count fetch.
+  - All of the above written and confirmed failing (`UndefinedFunction`) against a database with no
+    migration applied, before task 3 implements the function.
+- **`bloommcp`-side unit tests** (`bloommcp/tests/data_access/test_supabase_reader.py` and
+  `bloommcp/tests/conftest.py`, fakes only, no live DB) — **written and confirmed failing against
+  today's per-experiment implementation before task 4 rewrites it** (this layer's own RED step; see
+  tasks.md for why sections 4 and 5 must land as one atomic unit despite the RED-then-GREEN ordering):
   - `bloommcp/tests/conftest.py`'s `FakeSupabaseDB.call_rpc` dispatcher gets a new
     `"get_experiment_summary_counts"` branch, deriving `{experiment_id, n_plants, n_traits}` rows from the
     same `self._traits` seed dict the existing `"get_experiment_traits"` branch already reads, applying
-    the same `source_id_`/`run_id_` filtering logic — so a fake-backed test can't pass while the real SQL
-    function's semantics disagree.
-  - `bloommcp/tests/test_supabase_client.py`: `test_client_accessors_accept_no_caller_credential_parameter`
-    updated to `{"timeout_seconds"}` for `get_postgrest_client` (D5); new test asserting a very small
-    `timeout_seconds` override actually raises a timeout-shaped error against a slow fake/mock, proving
-    the parameter is threaded through, not merely accepted and ignored.
+    the same `source_id_`/`run_id_` filtering logic.
+  - `test_list_experiments_enumerates_database_experiments` updated: seed via
+    `fake_supabase_db.seed_traits(...)`, assert exactly one call to `get_experiment_summary_counts` (not
+    one per experiment), correct `rows`/`trait_columns` mapping.
+  - An experiment with no seeded traits gets `rows=0, trait_columns=0` (not excluded from the list),
+    exercising D3's default-to-zero merge. (This already holds for the *old* implementation's
+    zero-rows-returned case too — kept as a regression/characterization test that must also pass after
+    the rewrite, not a case that was previously broken.)
+  - `test_list_experiments_excludes_a_failing_experiment` **deleted, not updated** — its premise (a
+    per-experiment RPC failure excludes only that experiment) no longer holds; replaced by a new test
+    asserting a `get_experiment_summary_counts` failure raises `ExperimentReadError` from
+    `list_experiments()` (D4) — this one is genuinely new, RED-then-GREEN behavior, since today a bulk
+    failure has no equivalent code path at all.
+  - `test_list_experiments_excludes_a_malformed_row` — re-run, not assumed, against the corrected D3 code
+    (which explicitly keeps the per-row `try`/`except` around the merge loop) to confirm it still passes
+    unmodified.
+  - `tests/unit/test_supabase_client.py`'s `test_get_postgrest_client_returns_a_fresh_client`
+    (lines 93-107) has its `fake_create_client(url, key)` stub updated to `fake_create_client(url, key,
+    options=None)` — required the moment `get_postgrest_client()` always passes `options=`, per D5.
+  - Two new tests in the same file, `test_get_postgrest_client_default_uses_the_bounded_module_default`
+    and `test_get_postgrest_client_timeout_override_builds_client_options`, per D5's exact code above —
+    **not** a modified version of `test_client_accessors_accept_no_caller_credential_parameter`, which
+    does not exist in this tree (see D5's correction).
 
-Written RED first, confirmed failing (`UndefinedFunction` for the SQL tests; the updated
-`bloommcp`-side tests fail against the current per-experiment implementation) before implementation.
+Both layers written RED first: the SQL/integration layer fails with `UndefinedFunction` before the
+migration exists; the `bloommcp`/fakes layer fails against today's per-experiment implementation before
+the Python rewrite lands.
 
 ## Open Questions
 
 - **D1 (bigint vs. issue's literal int) and D5 (timeout default value)** are the two items this design
   explicitly leaves for Benfica's review / benchmark data before merge, per bloom#625's own "Decisions
   needed" section. Everything else (D2-D4) is this proposal's own resolved design, not gated on external
-  input.
+  input. Per this repo's own precedent (Tier 1/#546→PR #548: implementation shipped with its recommended
+  option, gate resolution recorded via the PR review itself rather than as a blocking pre-implementation
+  step), this change implements D1's `bigint` recommendation now and surfaces it explicitly in the PR
+  description for Benfica's review, rather than blocking section 1's start on a separate confirmation
+  round-trip. D5's benchmark (task 0.2) is different in kind — it's this change's own methodology, not an
+  external approval — and does gate before merge, since the shipped constant depends on its result.

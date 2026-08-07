@@ -77,13 +77,17 @@ needed" section, same gate as Tier 1's RPC-shape review):
     `database.types.ts` copies (same five as `add-bulk-trait-read-rpc`).
   - `bloommcp/src/bloom_mcp/data_access/supabase_reader.py` (`list_experiments()` rewritten).
   - `bloommcp/src/bloom_mcp/supabase_client.py` (`get_postgrest_client()` gains a `timeout_seconds`
-    keyword-only override with a bounded, chosen default; `test_supabase_client.py`'s
-    `test_client_accessors_accept_no_caller_credential_parameter` updated to match, since it asserts on
-    the accessor's full parameter set, not just caller-credential params specifically).
+    keyword-only override with a bounded, chosen default; see design.md D5 for the real existing test
+    this touches — an earlier draft of this proposal cited a test that turned out not to exist in the
+    tracked tree, corrected during review).
   - `tests/integration/test_cyl_experiment_summary_counts.py` (new); `bloommcp/tests/data_access/
 test_supabase_reader.py` (`list_experiments()` tests rewritten — the per-experiment-failure test no
     longer has meaning once there's one bulk call, not 224); `bloommcp/tests/conftest.py`'s
-    `FakeSupabaseDB.call_rpc` dispatcher (new branch for `get_experiment_summary_counts`).
+    `FakeSupabaseDB.call_rpc` dispatcher (new branch for `get_experiment_summary_counts`);
+    `tests/unit/test_supabase_client.py` (one existing `create_client` stub updated, two new timeout
+    tests added).
+  - `bloommcp/docs/data-access-roadmap.md` and `_WIKI/BLOOMMCP/README.md`'s "Supabase data access"
+    section (docs only).
 - Backward compatible: purely additive at the SQL layer (new function only; `get_experiment_traits`,
   `get_scan_traits`, and every existing view/function are untouched). `list_experiments()`'s Python-level
   behavior changes (see above) but its `ExperimentSummary` return shape does not.

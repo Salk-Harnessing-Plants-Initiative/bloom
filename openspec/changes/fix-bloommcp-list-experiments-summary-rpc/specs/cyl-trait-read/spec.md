@@ -63,3 +63,59 @@ call.
 
 - **WHEN** `get_experiment_summary_counts` is called for experiment A (pinned or unpinned)
 - **THEN** the returned counts never include plants or traits belonging to any other experiment's scans
+
+#### Scenario: A plant with no accession is excluded, matching get_experiment_traits
+
+- **WHEN** an experiment has a plant whose `accession_id` is `NULL`, alongside other plants that do have
+  an accession
+- **THEN** `get_experiment_summary_counts` excludes that plant's scans and traits from `n_plants`/
+  `n_traits`, matching `get_experiment_traits`'s own exclusion of the same plant
+
+### Requirement: Bulk read grants match the existing per-trait read surface
+
+`get_experiment_summary_counts` SHALL have its `EXECUTE` privilege explicitly `REVOKE`d from `PUBLIC`
+and `GRANT`ed to exactly the four existing read roles (`bloom_agent`, `bloom_user`, `bloom_admin`,
+`authenticated`), matching `get_experiment_traits`'s round-1-review-tightened posture rather than
+`get_scan_traits`'s older implicit-`PUBLIC` default. This change SHALL NOT add, drop, or alter any
+row-level-security policy or any write grant on `cyl_experiments`, `cyl_waves`, `cyl_plants`,
+`accessions`, `cyl_scans`, `cyl_scan_traits`, or `cyl_trait_sources`.
+
+#### Scenario: The four read roles can call the new function
+
+- **WHEN** a session assumes each of `bloom_agent`, `bloom_user`, `bloom_admin`, and `authenticated` and
+  calls `get_experiment_summary_counts`
+- **THEN** each call is permitted, through the same join chain `get_experiment_traits` already reads
+
+#### Scenario: No write capability is added
+
+- **WHEN** the migration is applied
+- **THEN** no new policy or grant permits any role to write any table in the join chain that could not
+  already do so before the change
+
+### Requirement: Additive, non-destructive migration with a companion rollback
+
+The migration adding `get_experiment_summary_counts` SHALL be additive only — it MUST NOT drop or rewrite
+any existing table, view, function, column, or data. `CREATE OR REPLACE FUNCTION` SHALL be used so the
+migration body is safely re-runnable. A companion manual rollback script SHALL be provided under
+`supabase/rollbacks/` that drops exactly the new function, by its full argument signature, leaving every
+pre-existing read object (`get_experiment_traits`, `get_scan_traits`, `list_experiment_trait_sources`,
+`cyl_scan_traits_source`, `cyl_scan_traits_latest`) unchanged.
+
+#### Scenario: Forward migration adds the function without touching existing objects
+
+- **WHEN** the migration is applied to a database that already has `get_experiment_traits`
+- **THEN** `get_experiment_summary_counts` is created and no pre-existing table, view, or function is
+  altered
+
+#### Scenario: Migration is idempotent on re-apply
+
+- **WHEN** the migration body is re-applied to a database where it was already applied
+- **THEN** `get_experiment_summary_counts` still exists with the same signature, and
+  `get_experiment_traits`/`get_scan_traits`/the existing views are unchanged
+
+#### Scenario: Rollback removes exactly the new function
+
+- **WHEN** the companion rollback script is applied to a database where the migration had been applied
+- **THEN** `get_experiment_summary_counts` no longer exists, and every pre-existing read object
+  (`get_experiment_traits`, `get_scan_traits`, `list_experiment_trait_sources`, `cyl_scan_traits_source`,
+  `cyl_scan_traits_latest`) is unchanged; re-applying the forward migration restores the function
