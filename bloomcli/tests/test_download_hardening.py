@@ -321,14 +321,14 @@ def test_all_collisions_are_reported_not_just_the_first(tmp_path):
 # --- scans with no images ---------------------------------------------------
 
 
-def test_a_scan_with_no_images_is_not_silently_successful(tmp_path, monkeypatch):
-    """An interrupted upload leaves a scan row with no cyl_images — that is missing data."""
+def test_a_scan_with_no_images_is_noted_but_does_not_fail_the_run(tmp_path, monkeypatch):
+    """There is nothing to fetch for such a scan, so failing would make every re-run fail too."""
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: [] if scan_id == 2 else _images(2))
 
     result = dl.download_images(_Client(), [SCAN, SCAN_B], tmp_path, workers=1)
 
-    assert result.scans_without_frames == 1
-    assert result.incomplete, "a scan with no images must not exit 0"
+    assert result.scans_without_frames == 1  # visible
+    assert not result.incomplete, "everything that exists was downloaded"
     assert result.total == 2  # the empty scan is not counted as a frame
 
 
@@ -344,10 +344,23 @@ def test_a_scan_with_no_images_gets_a_log_line(tmp_path, monkeypatch):
     assert "1 scan(s) have no images" in text
 
 
-def test_an_experiment_with_no_images_at_all_exits_non_zero(tmp_path, monkeypatch):
-    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: [])
-    result = dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
-    assert result.total == 0 and result.incomplete
+def test_a_scan_with_no_images_can_be_re_run_to_a_clean_exit(tmp_path, monkeypatch):
+    """Regression guard: this used to exit 1 forever on a download that had fetched everything."""
+    from click.testing import CliRunner
+
+    from bloomctl.cli import cli
+
+    out = tmp_path / "out"
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: [] if scan_id == 2 else _images(2))
+    _cli(monkeypatch, _Client(), [SCAN, SCAN_B])
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: [] if scan_id == 2 else _images(2))
+
+    first = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "42"])
+    assert first.exit_code == 0, first.output
+    assert "have no images recorded" in first.output
+
+    second = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "42"])
+    assert second.exit_code == 0, second.output
 
 
 # --- log integrity ----------------------------------------------------------

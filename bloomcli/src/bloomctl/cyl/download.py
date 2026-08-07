@@ -318,8 +318,13 @@ class DownloadResult:
 
     @property
     def incomplete(self) -> bool:
-        """True if anything is known to be missing from the output directory."""
-        return bool(self.failed or self.scans_unlisted or self.scans_without_frames)
+        """True if this run failed to fetch something it should have fetched.
+
+        A scan with no images recorded is noted in the log but is not a failure: there is
+        nothing to download, so every re-run would report it again and the command could
+        never succeed.
+        """
+        return bool(self.failed or self.scans_unlisted)
 
 
 def download_frame(
@@ -500,8 +505,9 @@ def download_images(
         if failure is not None:
             slots.append(failure)
         elif not images:
-            # A scan with no rows in cyl_images is missing data, not a finished scan. Left
-            # uncounted it would be invisible: no log line, and a clean exit.
+            # A scan can have no rows in cyl_images if its upload was interrupted. Note it in
+            # the log so it is visible, but don't fail the run: there is nothing to fetch, so
+            # failing would make every future run of this experiment fail too.
             slots.append(
                 FrameResult(
                     scan.get("scan_id"), None, "", ok=False, error="no frames", no_frames=True
@@ -780,6 +786,12 @@ def download(
         f"({result.downloaded} downloaded this run, {result.skipped} already on disk)  "
         f"(log: {log_path})"
     )
+    if result.scans_without_frames:
+        click.echo(
+            f"Note: {result.scans_without_frames} scan(s) have no images recorded in Bloom, "
+            f"so there was nothing to download for them (listed in the log).",
+            err=True,
+        )
     if result.incomplete:
         # Partial download: surface it and exit non-zero so a pipeline knows the
         # output is incomplete (the log lists every failed frame).
@@ -791,8 +803,6 @@ def download(
                 f"{result.scans_unlisted} scan(s) could not be listed at all "
                 f"(an unknown number of further frames is missing)"
             )
-        if result.scans_without_frames:
-            problems.append(f"{result.scans_without_frames} scan(s) have no images recorded")
         raise click.ClickException(
             f"{'; '.join(problems)} — see {log_path}. "
             "Re-running the same command retries only the frames still missing."
