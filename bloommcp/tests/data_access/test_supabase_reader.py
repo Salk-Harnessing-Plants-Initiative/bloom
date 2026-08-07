@@ -277,20 +277,43 @@ def test_list_experiments_enumerates_database_experiments(
     assert summary.trait_columns == 2
     assert summary.genotype_col == "genotype"
     assert summary.sample_id_col == "sample_id"
+    # The whole point of this change: one bulk RPC call, not one per experiment.
+    assert fake_supabase_db.rpc_calls.count("get_experiment_summary_counts") == 1
+    assert "get_experiment_traits" not in fake_supabase_db.rpc_calls
     # The discovery -> read round trip: the printed filename must itself load.
     SupabaseReader().load_experiment(summary.filename)
 
 
-def test_list_experiments_excludes_a_failing_experiment(
+def test_list_experiments_reports_zero_counts_for_experiment_with_no_traits(
     fake_supabase_storage, fake_supabase_db
 ):
+    """An experiment that exists in cyl_experiments but has no matching trait
+    rows is listed with rows=0/trait_columns=0, not excluded -- the bulk
+    RPC's result set has no row for it at all, so list_experiments() must
+    default the missing entry to zero rather than dropping the experiment."""
     _seed_two_plant_experiment(fake_supabase_db, experiment_id=42)
-    fake_supabase_db.seed_experiment(43, "broken experiment")
+    fake_supabase_db.seed_experiment(43, "no traits yet")
+    summaries = {s.filename: s for s in SupabaseReader().list_experiments()}
+    assert set(summaries) == {"42", "43"}
+    assert summaries["43"].rows == 0
+    assert summaries["43"].trait_columns == 0
+
+
+def test_list_experiments_raises_when_summary_counts_rpc_fails(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A bulk get_experiment_summary_counts failure has no per-experiment
+    granularity to fail-open into (unlike the old per-experiment loop) --
+    it must surface as a structured ExperimentReadError, not an empty or
+    partial list."""
+    _seed_two_plant_experiment(fake_supabase_db, experiment_id=42)
     fake_supabase_db.fail_rpc(
-        "get_experiment_traits", RuntimeError("boom"), experiment_id=43
+        "get_experiment_summary_counts",
+        RuntimeError("connection reset by peer at 10.0.0.5:5432"),
     )
-    summaries = SupabaseReader().list_experiments()
-    assert {s.filename for s in summaries} == {"42"}
+    with pytest.raises(ExperimentReadError) as exc_info:
+        SupabaseReader().list_experiments()
+    assert "10.0.0.5" not in str(exc_info.value)
 
 
 def test_supabase_reader_no_longer_satisfies_raw_sourced(

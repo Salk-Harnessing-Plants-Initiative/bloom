@@ -47,6 +47,15 @@ import supabase
 BUCKET = "bloommcp-data"
 INPUT_PREFIX = "bloommcp_input/"
 
+# supabase-py 2.31.0 defaults ClientOptions.postgrest_client_timeout to 120s even with no
+# override (postgrest/constants.py's DEFAULT_POSTGREST_CLIENT_TIMEOUT) -- a generous, un-chosen
+# bound nobody set deliberately. This module picks a smaller, deliberate default instead, so a
+# blocked/slow RPC or table read fails loudly in tens of seconds rather than up to two minutes.
+# 30s is a considered interim value, not yet benchmarked against a realistic large-experiment
+# get_experiment_traits call (see openspec fix-bloommcp-list-experiments-summary-rpc design.md D5
+# -- that benchmark needs staging-scale data this dev environment doesn't have).
+_DEFAULT_POSTGREST_TIMEOUT_SECONDS = 30
+
 
 def _require_env() -> tuple[str, str]:
     """Read and validate the Supabase env, returning ``(url, key)``.
@@ -96,7 +105,7 @@ def _validate_name(name: str) -> None:
         )
 
 
-def get_postgrest_client() -> supabase.Client:
+def get_postgrest_client(*, timeout_seconds: float | None = None) -> supabase.Client:
     """Return a fresh Supabase client authenticated as bloom_agent.
 
     PostgREST and Storage access flow through the same client. The
@@ -107,9 +116,24 @@ def get_postgrest_client() -> supabase.Client:
 
     A new client is constructed per call so the JWT does not live as
     module-level state and rotation requires no in-process reload.
+
+    `timeout_seconds`, when given, overrides `_DEFAULT_POSTGREST_TIMEOUT_SECONDS`
+    for every request made through the returned client. Unlike
+    `get_storage_client` (whose un-overridden default is storage3's own,
+    unchanged, default), the un-overridden case here still builds
+    `ClientOptions` -- this module's own bounded default is what replaces
+    supabase-py's un-chosen 120s package default (see the module-level
+    constant's docstring), not merely an opt-in override.
     """
     url, key = _require_env()
-    return supabase.create_client(url, key)
+    options = supabase.ClientOptions(
+        postgrest_client_timeout=(
+            timeout_seconds
+            if timeout_seconds is not None
+            else _DEFAULT_POSTGREST_TIMEOUT_SECONDS
+        )
+    )
+    return supabase.create_client(url, key, options=options)
 
 
 def read_input_csv(name: str) -> pd.DataFrame:
