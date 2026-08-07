@@ -321,18 +321,28 @@ be the inconsistency, not the fix.
 `call_rpc()` itself is unchanged — it calls `get_postgrest_client()` with no arguments, so it picks up
 the new bounded default automatically; no caller of `call_rpc` needs to change to benefit.
 
-**30s is a placeholder, not a final value.** Task 0.2 (tasks.md) benchmarks a realistic `load_experiment`
-call and adjusts this constant before merge, per bloom#625's own proposed methodology, with a concrete
-protocol (not just "benchmark it"): seed or reuse a local-Postgres fixture at `experiment_id=1`'s
-real scale (13.8M `cyl_scan_traits` rows — `tests/integration/`'s existing seed helpers accept bulk
-inserts, so this is a seeding-loop script, not a new mechanism), call `get_experiment_traits(1)` (the
-single most expensive call `load_experiment`'s raw tier makes) directly via `psql`'s `\timing` or a
-`time.perf_counter()`-wrapped `_safe_rpc` call, over **10 runs**, and record the **p99** duration. Set
-`_DEFAULT_POSTGREST_TIMEOUT_SECONDS` to **3× the measured p99**, rounded up to the nearest 5 seconds —
-generous enough that this real workload never spuriously times out, bounded enough that a genuinely
-blocked query surfaces in tens of seconds, not minutes. Record the measured p99 and the resulting
-constant directly in this section once task 0.2 runs, replacing this paragraph — do not leave 30s in the
-merged code without that measurement.
+**30s shipped as a considered interim default, not a benchmarked final value — the staging-scale
+benchmark this decision calls for could not be run from this implementation's sandboxed dev environment,
+which has no access to staging and no 13.8M-row local fixture.** The methodology below is specified so
+whoever has staging access can run it before treating 30s as final:
+
+Seed or reuse a local-Postgres fixture at `experiment_id=1`'s real scale (13.8M `cyl_scan_traits` rows —
+`tests/integration/`'s existing seed helpers accept bulk inserts, so this is a seeding-loop script, not a
+new mechanism), call `get_experiment_traits(1)` (the single most expensive call `load_experiment`'s raw
+tier makes) directly via `psql`'s `\timing` or a `time.perf_counter()`-wrapped `_safe_rpc` call, over
+**10 runs**, and record the **p99** duration. Set `_DEFAULT_POSTGREST_TIMEOUT_SECONDS` to **3× the
+measured p99**, rounded up to the nearest 5 seconds — generous enough that this real workload never
+spuriously times out, bounded enough that a genuinely blocked query surfaces in tens of seconds, not
+minutes.
+
+**Why 30s in the meantime, not some other placeholder:** it is well below `supabase-py`'s un-chosen 120s
+default (the whole point of D5) while still generous for any experiment far smaller than
+`experiment_id=1` — this local dev environment's own (much smaller) fixtures resolve in well under 100ms,
+so 30s is not obviously too tight for ordinary use even though it has not been validated against the one
+experiment that actually motivates a careful choice. Sanity-checked, not rigorously benchmarked: this is
+a real gap to close (task 0.2 is left open, not marked done) before this value is treated as final,
+mirroring the same "cannot verify staging-scale behavior from this environment" caveat task 7.1 already
+states for the "well under a second" acceptance criterion.
 
 ## Migration / Rollback
 
