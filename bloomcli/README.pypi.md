@@ -35,9 +35,17 @@ bloomctl cyl download ./out --experiment-name "drought 2024"
 
 That writes `./out/scans.csv` (metadata) and the per-frame images.
 
-Every command takes `-p/--profile` to target a different login (default `prod`), and
+**Downloads run 8 frames at a time.** On a fast connection you can raise that:
 
-the `list` commands take `--output csv|json` for machine-readable output.
+```bash
+bloomctl cyl download ./out --experiment-id 42 --workers 16    # up to 64
+```
+
+**If a download stops part-way, run the same command again.** It keeps whatever is already on
+disk and fetches only what is missing, so nothing is downloaded twice.
+
+Every command takes `-p/--profile` to target a different login (default `prod`), and the `list`
+commands take `--output csv|json` for machine-readable output.
 
 ## Commands
 
@@ -87,6 +95,13 @@ Tags: `:staging` (latest staging build) · `:<version>` (matches the PyPI releas
   rather than guess. For scripting, pass the typed value/id and use `--output json`.
 - **Read vs write** — browsing/downloading works for any account; the write commands
   (`ingest-result`, `datasets create`) need an account with write access.
+- **`-n/--workers`** — how many frames `cyl download` fetches at once. Default `8`, maximum `64`,
+  `1` for one at a time. Large experiments run tens of thousands of frames, and this is what
+  makes them quick. More is not always better: if the server starts refusing requests you will
+  see frames fail, and the fix is a lower number, not a higher one.
+- **Resuming** — a download that stops for any reason (interrupted, connection dropped, failed
+  frames) picks up where it left off when you re-run the same command in the same directory.
+  Frames already on disk are skipped. One experiment per output directory.
 
 ## Documentation
 
