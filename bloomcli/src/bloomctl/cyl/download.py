@@ -23,13 +23,12 @@ from ._storage import (
     sweep_orphan_temps,
 )
 
-# Default concurrent image downloads. Image fetches are I/O-bound (one HTTP round-trip
-# to Storage each), so a thread pool overlaps request latency; 8 is a modest default
-# that cuts large-experiment download time without hammering the server (see #534).
+# Frames are fetched one HTTP request each, so downloading several at once mostly overlaps
+# waiting. 8 is a modest default that speeds up a large experiment without hammering the server.
 DEFAULT_WORKERS = 8
 
-# Hard ceiling on concurrent downloads, enforced at the CLI *and* in `download_images`,
-# so neither a flag nor a direct library call can point an unbounded pool at Storage.
+# Upper limit on concurrent downloads, applied both to the flag and inside download_images so
+# no caller can open an unbounded number of connections.
 MAX_WORKERS = 64
 
 # scans.csv schema: (output column, source key in a cyl_scans_extended row).
@@ -63,12 +62,12 @@ CSV_COLUMNS: list[str] = [name for name, _ in _COLUMNS]
 
 
 def safe_component(value: Any) -> str:
-    """One path segment built from a DB field, with any traversal stripped.
+    """Turn a database value into a single safe path segment.
 
     Every part of a frame's destination comes from the database (`qr_code`, `date_scanned`,
-    `frame_number`, ...). A row containing `../` — or an absolute path, which `Path.__truediv__`
-    would treat as a fresh root and escape the output dir entirely — must not be able to steer
-    a write outside `out_dir`.
+    `frame_number`, ...). Stripping separators keeps an odd value from steering the write
+    somewhere else on disk — note that joining an absolute path would otherwise discard the
+    output directory entirely.
     """
     text = str(value)
     cleaned = text.replace("\\", "/").replace("/", "_").strip()
@@ -111,8 +110,8 @@ def write_scans_csv(rows: list[dict[str, Any]], path: Path) -> None:
 def image_dest(out_dir: Path, scan: dict[str, Any], image: dict[str, Any]) -> Path:
     """Absolute destination for one frame, preserving its real extension.
 
-    Raises ValueError if the derived path would land outside ``out_dir`` — a belt-and-braces
-    check behind `safe_component`, so a traversal can never reach a write.
+    Raises ValueError if the path would land outside ``out_dir`` — a second check behind
+    `safe_component`, so nothing can reach a write outside the output directory.
     """
     ext = safe_component(Path(image["object_path"]).suffix or ".png").lstrip("_")
     ext = ext if ext.startswith(".") else f".{ext}"
@@ -203,7 +202,7 @@ class FrameResult:
     ok: bool
     error: str = ""
     skipped: bool = False  # already on disk from an earlier run
-    unlisted: bool = False  # a whole scan whose frame list couldn't be fetched
+    unlisted: bool = False  # set on a scan whose frame list could not be fetched at all
 
 
 @dataclass
@@ -227,7 +226,8 @@ class DownloadResult:
 
     @property
     def failed(self) -> int:
-        """Frames known to be missing. Excludes unlisted scans — their frame count is unknown."""
+        """Frames known to be missing. Scans that couldn't be listed are counted separately,
+        since how many frames they hold is unknown."""
         return sum(1 for f in self.frames if not f.ok and not f.unlisted)
 
     @property
@@ -237,7 +237,7 @@ class DownloadResult:
 
     @property
     def total(self) -> int:
-        """Frames actually enumerated. An unlisted scan contributes none — it isn't one frame."""
+        """Frames that were actually listed."""
         return sum(1 for f in self.frames if not f.unlisted)
 
     @property
@@ -256,12 +256,11 @@ def download_frame(
 ) -> FrameResult:
     """Download one frame to its destination, returning the outcome.
 
-    Self-contained and exception-safe: any failure (missing object, transient 5xx,
-    write error) is captured on the result, never raised — so one bad frame can't
-    abort a concurrent run. Safe to call from a worker thread.
+    Never raises: any failure (missing object, server error, write error) is recorded on
+    the result instead, so one bad frame can't abort the run. Safe to call from a worker thread.
 
-    A frame already on disk is reported as skipped without a request, which is what
-    makes an interrupted run cheap to resume.
+    A frame already on disk is reported as skipped without making a request, which is what
+    makes an interrupted run cheap to pick back up.
     """
     object_path = image.get("object_path", "")
     result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
@@ -273,7 +272,7 @@ def download_frame(
             return result
         atomic_write_bytes(dest, download_object(client, object_path))
         result.ok = True
-    except KeyError as exc:  # a bare KeyError repr in the log says nothing useful
+    except KeyError as exc:  # a bare KeyError in the log wouldn't say what was wrong
         result.error = f"malformed cyl_images row: missing key {exc}"
     except Exception as exc:  # per-frame: record and continue
         result.error = str(exc)
@@ -283,12 +282,11 @@ def download_frame(
 def _run_bounded(
     work: list[Any], run_one: Callable[[Any], FrameResult], workers: int, *, window_factor: int = 4
 ) -> list[FrameResult]:
-    """Run ``run_one`` over ``work`` across ``workers`` threads, bounding futures in flight.
+    """Run ``run_one`` over ``work`` across ``workers`` threads, a window at a time.
 
-    ``ThreadPoolExecutor.map`` submits every item up front: for a 414k-frame experiment that
-    is hundreds of MB of queued Future bookkeeping before the first byte lands (measured at
-    780MB vs 176MB sequential). A sliding window keeps memory flat and still saturates the
-    pool. Results are placed by index, so the output order matches ``work``.
+    Queueing every frame up front would cost hundreds of MB on a large experiment before the
+    first byte arrives. Keeping a limited number in flight uses flat memory and still keeps
+    every thread busy. Results are stored by position, so the order matches ``work``.
     """
     results: list[Any] = [None] * len(work)
     window = max(workers * window_factor, workers)
@@ -311,11 +309,10 @@ def _list_scan_frames(
 ) -> tuple[list[dict[str, Any]], FrameResult | None]:
     """List a scan's frames; on a listing failure return a synthetic failed FrameResult.
 
-    A failed metadata query (transient 5xx, auth expiry) becomes one recorded failure for
-    that scan instead of crashing the whole run with a traceback — so the partial-download
-    exit + download_log still apply uniformly. The failure carries no frame count because
-    there isn't one: `DownloadResult.scans_unlisted` reports these separately rather than
-    letting them read as a single missing frame.
+    A failed query becomes one recorded failure for that scan rather than crashing the whole
+    run, so the log and the non-zero exit still cover it. It carries no frame count, because
+    there isn't one — `DownloadResult.scans_unlisted` keeps these apart from missing frames so
+    a whole unlisted scan doesn't read as a single lost frame.
     """
     try:
         return fetch_images(client, scan.get("scan_id")), None
@@ -331,13 +328,13 @@ def _list_scan_frames(
 
 
 def check_frame_collisions(scans: list[dict[str, Any]], images_by_scan: dict[Any, list]) -> None:
-    """Raise if two frames would be written to the same destination.
+    """Raise if two frames would be written to the same file.
 
-    `scan_relative_dir` keys on wave/age/date/qr and the filename on `frame_number`, all of
-    which are nullable — and Postgres UNIQUE constraints don't collide NULLs, so two rows can
-    legitimately map to one path. Left unchecked, the second frame is silently skipped as
-    "already present" and its pixels never land anywhere (bloom#623 review). Mirrors the guard
-    `download_for_predict.validate_frame_numbers` already applies on the same data.
+    The destination is built from wave/age/date/qr plus the frame number, all of which can be
+    empty in the database — and two rows with an empty value are not caught by a uniqueness
+    constraint. Two rows can therefore land on one filename, and without this check the second
+    is quietly skipped as already-downloaded and its image never arrives.
+    `download-for-predict` makes the same check on the same data.
     """
     seen: dict[str, Any] = {}
     for scan in scans:
@@ -362,23 +359,20 @@ def download_images(
 ) -> DownloadResult:
     """Download every frame for every scan from Storage bucket `images`.
 
-    Frames are listed per scan (ordered), then downloaded concurrently across a thread
-    pool of up to ``workers`` — the per-frame HTTP round-trips are the bottleneck on large
-    experiments, and being I/O-bound they overlap well (see #534). ``workers <= 1`` runs
-    sequentially. Results preserve scan/frame order, so the download log is deterministic.
+    Frames are listed per scan, then fetched by up to ``workers`` threads at once, since the
+    per-frame requests are what make a large experiment slow. ``workers <= 1`` runs one at a
+    time. Results stay in scan and frame order, so the log reads the same way every run.
 
-    Each frame is downloaded independently: a failure is recorded, not raised, so one bad
-    frame can't abort the whole run.
+    A failing frame is recorded rather than raised, so one bad frame can't abort the run.
 
-    Resumable: a frame already written by an earlier run is skipped unless `overwrite`.
-    A run longer than the JWT's lifetime keeps working because the bucket handle is
-    resolved per download rather than cached (see `_storage`; bloom#525).
+    Frames already written by an earlier run are skipped unless ``overwrite`` is set, which is
+    what makes an interrupted download cheap to resume.
     """
     sweep_orphan_temps(Path(out_dir))
 
-    # One slot per log line, in scan order: either a ready-made failure (an unlisted scan) or
-    # a frame to fetch. Keeping unlisted scans in position stops them being orphaned at the
-    # bottom of a 414k-line log with frame=None.
+    # One entry per log line, in scan order: either a scan that couldn't be listed or a frame
+    # to fetch. Building the list this way keeps unlisted scans next to the scans around them
+    # rather than collected at the end of the log.
     slots: list[Any] = []
     images_by_scan: dict[Any, list[dict[str, Any]]] = {}
     for scan in scans:
@@ -395,7 +389,7 @@ def download_images(
     def _one(pair: tuple[dict[str, Any], dict[str, Any]]) -> FrameResult:
         return download_frame(client, pair[0], pair[1], out_dir, overwrite=overwrite)
 
-    # Never spawn more threads than there's work for, than requested, or than the ceiling.
+    # Never start more threads than there are frames, than were asked for, or than the limit.
     n = min(workers, MAX_WORKERS, len(work)) if work else 0
     fetched = [_one(pair) for pair in work] if n <= 1 else _run_bounded(work, _one, n)
 
@@ -612,7 +606,7 @@ def download(
 
     try:
         result = download_images(client, scans, out, overwrite=overwrite, workers=workers)
-    except ValueError as exc:  # colliding destinations — refuse rather than lose a frame
+    except ValueError as exc:  # two frames want the same file; stop rather than lose one
         raise click.ClickException(str(exc)) from exc
 
     log_path = out / "download_log.txt"

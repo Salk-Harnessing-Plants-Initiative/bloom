@@ -1,10 +1,9 @@
-"""bloom#525 — long `cyl download` runs must survive a token refresh, and must resume.
+"""A long `cyl download` has to keep working after the client renews its token, and has to
+pick up where it left off if it stops early.
 
-The reported failure: a run downloads fine for ~1hr, then every remaining object 404s with
-"Bucket not found". The cause was NOT the session expiring — supabase-py refreshes the JWT on
-its own timer. The cause was caching `client.storage.from_("images")` above the download loop:
-a bucket proxy captures the Authorization header at construction, so the cached handle kept
-presenting the token it was born with. These tests pin that behaviour down.
+The failure these cover: a download runs fine for about an hour, then every remaining frame
+comes back "bucket not found". A bucket handle keeps the token it was created with, so one
+held for the whole run stops working the moment that token is replaced.
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ MISSING = "{'statusCode': 404, 'error': not_found, 'message': Object not found}"
 
 
 class _Bucket:
-    """Storage bucket that serves `budget` objects, then behaves like an expired session."""
+    """Serves `budget` objects, then fails the way an expired token does."""
 
     def __init__(self, budget: int | None = None):
         self.budget = budget
@@ -42,7 +41,7 @@ class _Bucket:
 
 
 class _Client:
-    """Minimal supabase-client double. `storage.from_()` hands back the same bucket each time."""
+    """Stand-in client whose bucket records how many downloads it was asked for."""
 
     def __init__(self, budget=None):
         self.bucket = _Bucket(budget)
@@ -58,11 +57,10 @@ class _Client:
 
 
 class _RotatingClient:
-    """Models supabase-py's real behaviour around an auto-refresh.
+    """A client that renews its token, like the real one does.
 
-    `storage.from_()` returns a proxy that captures the *current* token, exactly as
-    `SyncBucketProxy` snapshots the Authorization header. The server only accepts the token
-    that is current now, so a proxy captured before a refresh is dead.
+    Asking for a bucket handle gives you one tied to whatever the token is at that moment,
+    and only the current token is accepted — so a handle taken before a renewal is dead.
     """
 
     def __init__(self):
@@ -76,7 +74,7 @@ class _RotatingClient:
 
             def download(self, object_path):
                 if self.captured != client.token:
-                    raise RuntimeError(EXPIRED)  # what Storage tells a stale caller
+                    raise RuntimeError(EXPIRED)
                 return f"bytes::{object_path}".encode()
 
         class _Storage:
@@ -87,7 +85,7 @@ class _RotatingClient:
         self.storage = _Storage()
 
     def auto_refresh(self):
-        """What supabase-py's background timer does: rotate to a new valid token."""
+        """Renew the token, as the client does on its own in the background."""
         self.token = "token-1"
 
 
@@ -99,23 +97,23 @@ def _frame(tmp_path, number: int):
     return tmp_path / f"images/Wave2/Day14_2026-05-11/QR-1/{number}.png"
 
 
-# --- the actual root cause --------------------------------------------------
+# --- token renewal --------------------------------------------------
 
 
 def test_a_cached_bucket_handle_dies_when_the_client_refreshes():
-    """Characterises the bug: this is exactly what the pre-fix code did."""
+    """Holding one handle for the whole run — what the old code did — stops working."""
     client = _RotatingClient()
-    cached = client.storage.from_("images")  # hoisted above the loop, as the old code did
+    cached = client.storage.from_("images")  # taken once, up front
     assert cached.download("cyl-images/0.png") == b"bytes::cyl-images/0.png"
 
-    client.auto_refresh()  # the library rotates the token underneath us
+    client.auto_refresh()
 
     with pytest.raises(RuntimeError, match="Bucket not found"):
         cached.download("cyl-images/1.png")
 
 
 def test_download_object_resolves_a_fresh_handle_so_it_survives_the_refresh():
-    """The fix: resolve the bucket per call, and the refreshed token is picked up."""
+    """Asking for a handle each time picks up the renewed token."""
     client = _RotatingClient()
     assert storage.download_object(client, "cyl-images/0.png") == b"bytes::cyl-images/0.png"
 
@@ -125,7 +123,7 @@ def test_download_object_resolves_a_fresh_handle_so_it_survives_the_refresh():
 
 
 def test_a_whole_download_survives_a_refresh_mid_run(tmp_path, monkeypatch):
-    """End to end: the reported 'downloads for a while then fails everything' shape."""
+    """The whole command keeps going across a renewal, not just the helper."""
     client = _RotatingClient()
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(6))
 
@@ -145,7 +143,7 @@ def test_a_whole_download_survives_a_refresh_mid_run(tmp_path, monkeypatch):
 
 
 def test_each_frame_gets_its_own_bucket_handle(tmp_path, monkeypatch):
-    """Regression guard: any future caching of the handle reintroduces bloom#525."""
+    """If a handle is ever cached again, this is what catches it."""
     client = _Client()
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(5))
 
@@ -165,7 +163,7 @@ def test_an_expired_looking_failure_is_retried_once():
 
 
 def test_a_missing_object_is_not_retried():
-    """A genuinely absent object must not double the request count across an experiment."""
+    """An object that isn't there should fail once, not be asked for twice."""
 
     class _MissingBucket:
         def __init__(self):
@@ -184,7 +182,7 @@ def test_a_missing_object_is_not_retried():
 
 
 def test_no_credentials_are_needed_to_recover(monkeypatch):
-    """The fix must never re-authenticate — that was the re-auth-storm defect."""
+    """Recovering from a renewal must not require signing in again."""
 
     def _must_not_authenticate(creds):
         raise AssertionError("download must not re-authenticate")
@@ -222,7 +220,7 @@ def test_an_unrelated_error_message_is_left_alone():
 
 
 def test_downloaded_frames_are_group_and_world_readable(tmp_path):
-    """mkstemp creates 0600; frames must not be owner-only next to a 0644 scans.csv."""
+    """Frames need to be as readable as the scans.csv sitting beside them."""
     dest = tmp_path / "frame.png"
     storage.atomic_write_bytes(dest, b"x")
 
@@ -248,7 +246,7 @@ def test_a_crash_mid_write_leaves_the_previous_file_intact(tmp_path, monkeypatch
 
 
 def test_a_failed_write_does_not_leak_a_file_descriptor(tmp_path, monkeypatch):
-    """If os.fdopen raises it never took ownership of the fd — we must close it ourselves."""
+    """If opening the temp file fails, the descriptor is still ours to close."""
     closed: list[int] = []
     real_close = os.close
 
@@ -300,7 +298,7 @@ def test_already_downloaded_ignores_empty_and_missing_files(tmp_path):
 
 
 def test_already_downloaded_checks_the_expected_size_when_one_is_known(tmp_path):
-    """A truncated frame from a pre-atomic-write release must not pass as complete."""
+    """A half-written frame from an older version must not count as finished."""
     truncated = tmp_path / "frame.png"
     truncated.write_bytes(b"partial")
 
@@ -401,7 +399,7 @@ def test_cli_rerun_after_a_partial_download_resumes(tmp_path, monkeypatch):
 
 
 def test_a_fully_resumed_run_reports_frames_present_not_zero_downloaded(tmp_path, monkeypatch):
-    """'Downloaded 0/414000' read as total failure; the count that matters is what's present."""
+    """On a fully-resumed run the useful number is how many frames are there, not how many were fetched."""
     out = tmp_path / "out"
     _patch_cli(monkeypatch, _Client())
     CliRunner().invoke(

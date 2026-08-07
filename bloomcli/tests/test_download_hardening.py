@@ -1,8 +1,8 @@
-"""bloom#623 review — guards added after the 5-agent review of the #525/#534 work.
+"""Guards on `cyl download`: where a frame is allowed to be written, and what happens
+when two frames want the same file.
 
-Path traversal, colliding destinations, unlisted-scan accounting, bounded submission,
-and temp-file hygiene. Each test corresponds to a finding that was reproduced against
-the pre-hardening code.
+Also covers how a scan that can't be listed is counted, how many downloads are kept in
+flight at once, and cleanup of temp files.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ def test_a_traversing_qr_code_cannot_escape_the_output_dir(tmp_path):
 
 
 def test_an_absolute_frame_number_cannot_reset_the_path_root(tmp_path):
-    """`Path / "/abs"` discards the left side entirely — that must not reach a write."""
+    """Joining an absolute path discards the output directory, so it must be neutralised."""
     dest = dl.image_dest(
         tmp_path / "out", SCAN, {"frame_number": "/tmp/ABSOLUTE", "object_path": "a.png"}
     )
@@ -80,7 +80,7 @@ def test_safe_component_neutralises_separators_and_dots(raw, expected):
 
 
 def test_two_null_frame_numbers_are_refused_rather_than_silently_merged(tmp_path, monkeypatch):
-    """The review's reproduction: both rows mapped to None.png and one was never fetched."""
+    """Both rows map to the same filename, so one image would never be fetched."""
     images = [
         {"frame_number": None, "object_path": "cyl-images/a.png"},
         {"frame_number": None, "object_path": "cyl-images/b.png"},
@@ -92,7 +92,7 @@ def test_two_null_frame_numbers_are_refused_rather_than_silently_merged(tmp_path
 
 
 def test_two_scans_mapping_to_one_directory_are_refused(tmp_path, monkeypatch):
-    """Same wave/day/date/qr on two scans would interleave their frames."""
+    """Two scans sharing wave/day/date/QR would write into the same directory."""
     twin = {**SCAN, "scan_id": 99}  # identical path components, different scan_id
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(2))
 
@@ -132,7 +132,7 @@ def test_the_cli_reports_a_collision_as_a_clean_error(tmp_path, monkeypatch):
 
 
 def test_an_unlisted_scan_stays_in_scan_order_in_the_log(tmp_path, monkeypatch):
-    """It used to be appended after every other scan's frames, orphaned at the bottom."""
+    """It belongs where the scan is, not collected at the end of the log."""
 
     def _fetch_images(client, scan_id):
         if scan_id == 1:
@@ -169,7 +169,7 @@ def test_an_unlisted_scan_is_not_counted_as_one_failed_frame(tmp_path, monkeypat
 
 
 def test_futures_in_flight_stay_bounded(tmp_path, monkeypatch):
-    """`pool.map` submitted all 414k items up front (780MB vs 176MB measured)."""
+    """Queueing every frame at once would cost hundreds of MB before the first one arrives."""
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(500))
     in_flight = []
     real_submit = dl.ThreadPoolExecutor.submit
@@ -203,7 +203,7 @@ def test_bounded_submission_preserves_order(tmp_path, monkeypatch):
 
 
 def test_a_stray_temp_from_a_killed_run_is_swept(tmp_path, monkeypatch):
-    """SIGKILL skips atomic_write_bytes' cleanup handler, so a run sweeps on start."""
+    """A hard kill skips the normal cleanup, so each run tidies up before it starts."""
     frame_dir = tmp_path / "images/Wave2/Day14_2026-05-11/QR-1"
     frame_dir.mkdir(parents=True)
     orphan = frame_dir / ".dl-abc123.tmp"

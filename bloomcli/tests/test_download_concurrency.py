@@ -1,7 +1,7 @@
-"""bloom#534 — `cyl download` fetches frames concurrently, with a user-set worker count.
+"""`cyl download` fetches several frames at once, with the count under the user's control.
 
-Covers the thread pool itself (ordering, `--workers` plumbing, real overlap) and its
-interaction with the bloom#525 work: resume and per-call bucket resolution under load.
+Covers ordering, the `--workers` flag, that the downloads really do overlap, and that resume
+still behaves when many are in flight.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def _frame_b(tmp_path, number: int):
 
 
 def test_concurrent_download_preserves_frame_order(tmp_path, monkeypatch):
-    """The log must stay deterministic however the pool interleaves the work."""
+    """The log should read the same every run, whatever order the threads finish in."""
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(12))
 
     result = dl.download_images(_Client(), [SCAN], tmp_path, workers=8)
@@ -49,7 +49,7 @@ def test_concurrent_download_preserves_order_across_scans(tmp_path, monkeypatch)
 
 
 def test_workers_one_runs_sequentially(tmp_path, monkeypatch):
-    """`--workers 1` must take the no-pool path, not a one-thread pool."""
+    """`--workers 1` should download in order on one thread, with no pool at all."""
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(3))
     used: list[str] = []
     real_pool = dl.ThreadPoolExecutor
@@ -68,7 +68,7 @@ def test_workers_one_runs_sequentially(tmp_path, monkeypatch):
 
 
 def test_the_pool_never_exceeds_the_ceiling_even_via_a_direct_call(tmp_path, monkeypatch):
-    """The CLI caps `--workers`, but a library caller must not be able to slip past it."""
+    """The limit has to hold when the function is called directly, not just via the flag."""
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(200))
     seen: dict = {}
     real_pool = dl.ThreadPoolExecutor
@@ -112,7 +112,7 @@ def test_no_pool_is_spawned_for_an_empty_experiment(tmp_path, monkeypatch):
 
 
 def test_frames_really_are_downloaded_in_parallel(tmp_path, monkeypatch):
-    """Guard against the pool silently degrading to serial execution."""
+    """Catches the downloads quietly going back to one at a time."""
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(8))
     barrier = threading.Barrier(4, timeout=5)
 
@@ -189,7 +189,7 @@ def test_a_failed_frame_leaves_no_temp_file_behind(tmp_path, monkeypatch):
 
 
 def test_a_concurrent_run_survives_a_token_refresh(tmp_path, monkeypatch):
-    """bloom#525 under load: every worker must resolve its own bucket handle."""
+    """Each thread needs its own bucket handle, so a renewal mid-run is harmless."""
     from test_download_session_resume import _RotatingClient
 
     client = _RotatingClient()
