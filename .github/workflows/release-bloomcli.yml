@@ -100,13 +100,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
 
-      # Freeze repo links to the release tag so both PyPI's sidebar links
-      # ([project.urls]) and the rendered long-description link (README.pypi.md)
-      # resolve to the exact immutable commit this version shipped, not a moving
-      # branch. Rewrites the build checkout only — committed files stay on `main`.
-      # No-op if no matching link exists; skipped on workflow_dispatch dry runs.
+      # Point the published page at this exact release: repo links to the tag's commit
+      # rather than a moving branch, and the install commands at the version being
+      # published, so the README on each PyPI page installs the release it belongs to.
+      # Rewrites the build checkout only — committed files stay on `main`.
+      # No-op if nothing matches; skipped on workflow_dispatch dry runs.
       # Untrusted release tag goes through env, never inlined into script text.
-      - name: Pin repo links to the release tag
+      - name: Pin repo links and install commands to the release
         if: github.event_name == 'release'
         env:
           TAG: ${{ github.event.release.tag_name }}
@@ -114,9 +114,12 @@ jobs:
           python - <<'PY'
           import os, re, pathlib
           tag = os.environ["TAG"]
+          version = tag.removeprefix("bloomctl-v").removeprefix("v")
           subs = [
               (r'/tree/[^/]+/bloomcli', f'/tree/{tag}/bloomcli'),
               (r'/blob/[^/]+/bloomcli/CHANGELOG\.md', f'/blob/{tag}/bloomcli/CHANGELOG.md'),
+              (r'bloomctl==[^"\s]+', f'bloomctl=={version}'),
+              (r'bloomctl@[^\s]+', f'bloomctl@{version}'),
           ]
           for name in ("pyproject.toml", "README.pypi.md"):
               p = pathlib.Path(name)
