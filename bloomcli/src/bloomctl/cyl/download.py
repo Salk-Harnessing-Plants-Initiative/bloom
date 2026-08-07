@@ -133,37 +133,39 @@ def write_manifest(out_dir: Path, identity: dict[str, Any]) -> None:
     atomic_write_bytes(path, body.encode("utf-8"))
 
 
-def download_identity(scans: list[dict[str, Any]]) -> dict[str, Any]:
-    """Which experiments the frames being downloaded belong to.
+def download_selector(**options: Any) -> dict[str, Any]:
+    """The options that decide which scans a run downloads.
 
-    Taken from the rows actually fetched rather than from the flags. `--plant-qr-code` and
-    `--scan-id` pick a subset of one experiment and write into their own subdirectories, so
-    narrowing on one run and widening on the next is a normal way to work and must resume.
+    `experiment_id` is the resolved id, so selecting the same experiment by name on one run
+    and by id on the next still counts as the same download.
     """
     return {
-        "experiment_ids": sorted(
-            {s.get("experiment_id") for s in scans if s.get("experiment_id") is not None}
+        key: options.get(key)
+        for key in (
+            "experiment_id",
+            "scan_id",
+            "plant_qr_code",
+            "plant_age_min",
+            "plant_age_max",
+            "limit",
         )
     }
 
 
-def describe_manifest_mismatch(existing: dict[str, Any] | None, identity: dict[str, Any]) -> str:
-    """Explain why this download doesn't belong in the directory, or "" if it does.
+def describe_manifest_mismatch(existing: dict[str, Any] | None, selector: dict[str, Any]) -> str:
+    """List how this run's selection differs from the one the directory holds, or "" if it matches.
 
-    Frame paths carry no experiment id, so images from two experiments in one directory can
-    share a path whenever a QR code is reused — and resume would then hand the first
-    experiment's images over as though they were the second's. Frames from the same experiment
-    are always safe to add to, however the run was narrowed.
+    One selection per directory. Re-running the same command resumes; downloading a different
+    selection here would leave two sets of images in one tree with a `scans.csv` describing
+    only the newer one.
     """
     if existing is None:
         return ""
-    held = existing.get("experiment_ids")
-    incoming = identity.get("experiment_ids") or []
-    if not isinstance(held, list) or not held or not incoming:
-        return ""
-    if set(incoming) <= set(held):
-        return ""
-    return f"holds experiment {held}, but this download is for experiment {incoming}"
+    return "; ".join(
+        f"{key} was {existing.get(key)!r}, now {value!r}"
+        for key, value in selector.items()
+        if existing.get(key) != value
+    )
 
 
 def image_dest(out_dir: Path, scan: dict[str, Any], image: dict[str, Any]) -> Path:
@@ -749,20 +751,26 @@ def download(
         )
 
     out = Path(out_dir)
-    identity = download_identity(scans)
-    mismatch = describe_manifest_mismatch(read_manifest(out), identity)
+    selector = download_selector(
+        experiment_id=experiment_id,
+        scan_id=scan_id,
+        plant_qr_code=plant_qr_code,
+        plant_age_min=plant_age_min,
+        plant_age_max=plant_age_max,
+        limit=limit,
+    )
+    mismatch = describe_manifest_mismatch(read_manifest(out), selector)
     if mismatch:
-        # Deliberately not escapable with --overwrite: that re-fetches this download's frames
-        # but leaves the other experiment's in place, which is the mix-up being prevented.
+        # Not escapable with --overwrite: that re-fetches this run's frames but leaves the
+        # earlier selection's in place, which is the mix-up being prevented.
         raise click.ClickException(
-            f"{out} {mismatch}. Frame paths carry no experiment id, so images from both would "
-            f"sit in one tree and scans.csv would describe only the newer one. Download into a "
-            f"new directory, or empty this one first."
+            f"{out} already holds a different download ({mismatch}). Give each selection its "
+            f"own directory. Re-running the same command here resumes where it left off."
         )
 
     csv_path = out / "scans.csv"
     write_scans_csv(rows, csv_path)
-    write_manifest(out, identity)
+    write_manifest(out, selector)
     click.echo(f"Wrote {len(rows)} scans -> {csv_path}")
 
     if meta_only:

@@ -213,6 +213,16 @@ bloomctl cyl download ./out --experiment-id 42   # picks up from 117k
 
 Pass `--overwrite` to ignore what's on disk and re-fetch every frame.
 
+**One selection per directory.** A download records what it fetched, so re-running the same
+command resumes it. Downloading something *different* into the same directory is refused —
+otherwise you would end up with two sets of images in one tree and a `scans.csv` describing only
+the newer one. So a spot-check and a full pull want separate directories:
+
+```bash
+bloomctl cyl download ./check --experiment-id 42 --plant-qr-code QR-1   # one plant
+bloomctl cyl download ./full  --experiment-id 42                        # everything
+```
+
 > **If the directory was written by bloomctl 0.1.0a3 or earlier**, re-fetch it once with
 > `--overwrite`. Those releases wrote frames non-atomically, so an interrupted run could leave a
 > truncated file behind, and resume treats any non-empty file as complete.

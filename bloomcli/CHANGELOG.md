@@ -55,6 +55,10 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   mid-write can't leave a truncated file for a later run to mistake for complete. Pass
   `--overwrite` to re-fetch everything regardless.
 
+  A download records which selection it fetched, so re-running the same command resumes it and
+  downloading a different selection into the same directory is refused — two selections in one
+  tree would leave `scans.csv` describing only the newer one. Use a directory per selection.
+
   **Note for output directories written by 0.1.0a3 or earlier**: those releases wrote frames
   non-atomically, so an interrupted run could leave a truncated file behind. Resume treats any
   non-empty file as complete, so re-fetch such a directory once with `--overwrite`.

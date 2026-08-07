@@ -393,42 +393,99 @@ def _cli(monkeypatch, client, scans, images=2):
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(images))
 
 
-def test_a_second_experiment_into_the_same_directory_is_refused(tmp_path, monkeypatch):
-    """Paths carry no experiment id, so resume could serve the first one's images as the second's."""
+def test_a_different_selection_in_the_same_directory_is_refused(tmp_path, monkeypatch):
+    """One selection per directory: two downloads in one tree would leave scans.csv describing
+    only the newer one."""
     from click.testing import CliRunner
 
     from bloomctl.cli import cli
 
     out = tmp_path / "out"
-    _cli(monkeypatch, _Client(), [{**SCAN, "experiment_id": 100}])
+    _cli(monkeypatch, _Client(), [SCAN])
     first = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "100"])
     assert first.exit_code == 0, first.output
 
-    _cli(monkeypatch, _Client(), [{**SCAN, "experiment_id": 200}])
+    _cli(monkeypatch, _Client(), [SCAN])
     second = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "200"])
 
     assert second.exit_code != 0
-    assert "holds experiment [100]" in second.output
-    assert "this download is for experiment [200]" in second.output
+    assert "already holds a different download" in second.output
+    assert "experiment_id was 100, now 200" in second.output
+    assert "own directory" in second.output
 
 
-def test_overwrite_does_not_let_two_experiments_share_a_directory(tmp_path, monkeypatch):
-    """--overwrite re-fetches this download's frames; it does not remove the other's."""
+def test_a_spot_check_and_a_full_download_do_not_share_a_directory(tmp_path, monkeypatch):
+    """Checking one plant then pulling the whole experiment is two selections, so two folders."""
     from click.testing import CliRunner
 
     from bloomctl.cli import cli
 
     out = tmp_path / "out"
-    _cli(monkeypatch, _Client(), [{**SCAN, "experiment_id": 100}])
+    _cli(monkeypatch, _Client(), [SCAN])
+    spot = CliRunner().invoke(
+        cli, ["cyl", "download", str(out), "--experiment-id", "42", "--plant-qr-code", "QR-1"]
+    )
+    assert spot.exit_code == 0, spot.output
+
+    full = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "42"])
+
+    assert full.exit_code != 0
+    assert "plant_qr_code was 'QR-1', now None" in full.output
+
+
+def test_an_interrupted_download_resumes_on_the_same_command(tmp_path, monkeypatch):
+    """The case that must keep working: same selection, picked up where it stopped."""
+    from click.testing import CliRunner
+
+    from bloomctl.cli import cli
+
+    out = tmp_path / "out"
+    _cli(monkeypatch, _Client(budget=1), [SCAN])
+    first = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "42"])
+    assert first.exit_code != 0, "partial download should report failure"
+
+    fresh = _Client()
+    _cli(monkeypatch, fresh, [SCAN])
+    second = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "42"])
+
+    assert second.exit_code == 0, second.output
+    assert fresh.bucket.calls == 1, "only the frame that had failed should be fetched"
+
+
+def test_a_different_age_window_is_a_different_selection(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from bloomctl.cli import cli
+
+    out = tmp_path / "out"
+    _cli(monkeypatch, _Client(), [SCAN])
+    CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "42"])
+
+    narrowed = CliRunner().invoke(
+        cli, ["cyl", "download", str(out), "--experiment-id", "42", "--plant-age-max", "20"]
+    )
+
+    assert narrowed.exit_code != 0
+    assert "plant_age_max" in narrowed.output
+
+
+def test_overwrite_does_not_let_two_selections_share_a_directory(tmp_path, monkeypatch):
+    """--overwrite re-fetches this run's frames; it does not remove the earlier selection's."""
+    from click.testing import CliRunner
+
+    from bloomctl.cli import cli
+
+    out = tmp_path / "out"
+    _cli(monkeypatch, _Client(), [SCAN])
     CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "100"])
 
-    _cli(monkeypatch, _Client(), [{**SCAN, "experiment_id": 200}])
+    _cli(monkeypatch, _Client(), [SCAN])
     result = CliRunner().invoke(
         cli, ["cyl", "download", str(out), "--experiment-id", "200", "--overwrite"]
     )
 
-    assert result.exit_code != 0, "--overwrite must not be an escape hatch for mixing experiments"
-    assert dl.read_manifest(out)["experiment_ids"] == [100]
+    assert result.exit_code != 0, "--overwrite must not be an escape hatch"
+    assert dl.read_manifest(out)["experiment_id"] == 100
 
 
 def test_overwrite_re_fetches_frames_that_are_already_on_disk(tmp_path, monkeypatch):
@@ -437,40 +494,17 @@ def test_overwrite_re_fetches_frames_that_are_already_on_disk(tmp_path, monkeypa
     from bloomctl.cli import cli
 
     out = tmp_path / "out"
-    scans = [{**SCAN, "experiment_id": 42}]
-    _cli(monkeypatch, _Client(), scans)
+    _cli(monkeypatch, _Client(), [SCAN])
     CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "42"])
 
     fresh = _Client()
-    _cli(monkeypatch, fresh, scans)
+    _cli(monkeypatch, fresh, [SCAN])
     again = CliRunner().invoke(
         cli, ["cyl", "download", str(out), "--experiment-id", "42", "--overwrite"]
     )
 
     assert again.exit_code == 0, again.output
     assert fresh.bucket.calls == 2, "--overwrite must re-fetch, not resume"
-
-
-def test_narrowing_then_widening_the_same_experiment_resumes(tmp_path, monkeypatch):
-    """Checking one plant and then pulling the whole experiment is a normal way to work."""
-    from click.testing import CliRunner
-
-    from bloomctl.cli import cli
-
-    out = tmp_path / "out"
-    one = {**SCAN, "experiment_id": 42}
-    _cli(monkeypatch, _Client(), [one])
-    first = CliRunner().invoke(
-        cli, ["cyl", "download", str(out), "--experiment-id", "42", "--plant-qr-code", "QR-1"]
-    )
-    assert first.exit_code == 0, first.output
-
-    fresh = _Client()
-    _cli(monkeypatch, fresh, [one, {**SCAN, "scan_id": 2, "qr_code": "QR-2", "experiment_id": 42}])
-    wider = CliRunner().invoke(cli, ["cyl", "download", str(out), "--experiment-id", "42"])
-
-    assert wider.exit_code == 0, wider.output
-    assert fresh.bucket.calls == 2, "only the newly-included plant should be fetched"
 
 
 def test_a_run_that_matches_no_scans_fails(tmp_path, monkeypatch):
@@ -488,15 +522,17 @@ def test_a_run_that_matches_no_scans_fails(tmp_path, monkeypatch):
     assert "No scans matched" in result.output
 
 
-def test_identity_comes_from_the_rows_not_the_flags():
-    scans = [{"experiment_id": 7}, {"experiment_id": 7}, {"experiment_id": None}]
-    assert dl.download_identity(scans) == {"experiment_ids": [7]}
-    assert dl.describe_manifest_mismatch({"experiment_ids": [7]}, {"experiment_ids": [7]}) == ""
-    assert dl.describe_manifest_mismatch({"experiment_ids": [7]}, {"experiment_ids": [8]})
+def test_selecting_by_name_then_by_id_is_the_same_download():
+    """--experiment-name resolves to an id before the manifest is written."""
+    by_name = dl.download_selector(experiment_id=42, scan_id=None, plant_qr_code=None,
+                                   plant_age_min=0, plant_age_max=1000, limit=100000)
+    by_id = dl.download_selector(experiment_id=42, scan_id=None, plant_qr_code=None,
+                                 plant_age_min=0, plant_age_max=1000, limit=100000)
+    assert dl.describe_manifest_mismatch(by_name, by_id) == ""
 
 
 def test_a_missing_or_corrupt_manifest_does_not_block_a_download(tmp_path):
     assert dl.read_manifest(tmp_path) is None
     (tmp_path / dl.MANIFEST_NAME).write_text("not json", encoding="utf-8")
     assert dl.read_manifest(tmp_path) is None
-    assert dl.describe_manifest_mismatch(None, {"experiment_ids": [1]}) == ""
+    assert dl.describe_manifest_mismatch(None, {"experiment_id": 1}) == ""
