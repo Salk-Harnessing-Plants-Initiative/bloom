@@ -79,9 +79,11 @@ def safe_component(value: Any) -> str:
     somewhere else on disk — note that joining an absolute path would otherwise discard the
     output directory entirely.
     """
+    # A colon matters on Windows: "C:name" is drive-relative, so joining it throws away the
+    # output directory, and "name:stream" writes into a hidden stream instead of the file.
     # Note: whitespace is deliberately preserved. `qr_code` is UNIQUE per wave, so "QR-1" and
     # "QR-1 " are two different plants, and trimming would merge their frames into one directory.
-    cleaned = str(value).replace("\\", "_").replace("/", "_").replace("\0", "_")
+    cleaned = str(value).replace("\\", "_").replace("/", "_").replace(":", "_").replace("\0", "_")
     if cleaned in {"", ".", ".."} or set(cleaned) == {"."}:
         return "_"
     return cleaned

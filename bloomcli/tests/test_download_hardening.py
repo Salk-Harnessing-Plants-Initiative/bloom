@@ -66,6 +66,8 @@ def test_a_traversal_never_reaches_disk(tmp_path, monkeypatch):
         ("", "_"),
         (".", "_"),
         ("..", "_"),
+        ("C:evil", "C_evil"),  # drive-relative on Windows; joining it drops the output dir
+        ("0.png:hidden", "0.png_hidden"),  # an NTFS stream, not the file itself
         ("QR-1", "QR-1"),  # ordinary values pass through untouched
         (14, "14"),
     ],
@@ -73,8 +75,25 @@ def test_a_traversal_never_reaches_disk(tmp_path, monkeypatch):
 def test_safe_component_neutralises_separators_and_dots(raw, expected):
     result = dl.safe_component(raw)
     assert result == expected
-    assert "/" not in result and "\\" not in result
+    assert "/" not in result and "\\" not in result and ":" not in result
     assert result not in {"", ".", ".."}
+
+
+def test_a_windows_drive_letter_cannot_discard_the_output_directory(tmp_path):
+    """On Windows "C:name" is drive-relative: joining it drops everything before it, and
+    os.path.isabs() does not flag it, so the containment check alone would not catch it."""
+    import ntpath
+
+    scan = {**SCAN, "qr_code": "C:evil"}
+    relative = dl.scan_relative_dir(scan)
+
+    assert ntpath.join(r"D:\lin\out", relative).startswith(r"D:\lin\out")
+
+
+def test_a_colon_cannot_open_an_alternate_data_stream(tmp_path):
+    """"0.png:hidden" would write into a hidden stream and leave the real file empty."""
+    dest = dl.image_dest(tmp_path, SCAN, {"frame_number": "0.png:hidden", "object_path": "a.png"})
+    assert ":" not in dest.name
 
 
 # --- colliding destinations -------------------------------------------------
