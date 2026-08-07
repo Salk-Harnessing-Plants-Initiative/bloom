@@ -83,7 +83,7 @@ def test_download_images_records_failures_and_keeps_going(tmp_path, monkeypatch)
     text = log.read_text()
     assert "FAIL scan=1 frame=1" in text
     assert "500 storage error" in text
-    assert "Summary: 2 downloaded, 1 failed, 3 total" in text
+    assert "Summary: 2/3 frames present (2 downloaded this run, 0 already on disk), 1 failed" in text
 
 
 def test_partial_download_exits_nonzero(tmp_path, monkeypatch):
