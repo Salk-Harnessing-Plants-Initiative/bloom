@@ -119,6 +119,40 @@ services:
       - kong
     restart: unless-stopped
 
+  # Consumes the cyl_video_generation pgmq queue and generates videos with the
+  # same code as the on-demand route. Same image as workflows; scale by replicas.
+  cyl-video-worker:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      # Visibility timeout must stay >= stop_grace_period below, so a render finishing during a
+      # graceful shutdown hasn't already had its message redelivered to another worker.
+      WORKFLOWS_WORKER_VT_SECONDS: "180"
+    volumes:
+      - ./services/workflows:/app
+    command: ["python", "worker.py"]
+    # On SIGTERM, let an in-flight render finish before SIGKILL so a deploy doesn't strand a job
+    # in 'processing' mid-encode. Kept below the visibility timeout above.
+    stop_grace_period: 150s
+    networks:
+      - supanet
+    depends_on:
+      - db-dev
+      - kong
+    restart: unless-stopped
+
   bloommcp:
     build:
       context: ./bloommcp

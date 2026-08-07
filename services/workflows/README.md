@@ -46,8 +46,29 @@ internal-only and not exposed through the public proxy.
 | Method | Path                                          | Auth | Purpose                                   |
 | ------ | --------------------------------------------- | ---- | ----------------------------------------- |
 | GET    | `/health`                                   | none (internal-only) | Liveness — kept for the in-container probe; **not** exposed via the public proxy |
-| POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT | Generate a scan's video, upload to Storage |
+| POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT | On-demand: generate a scan's video, upload to Storage |
+| POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video/queue` | Supabase user JWT | Queued: enqueue the job, return a `job_id`; a worker generates it |
 | POST   | `/pipeline` (external: `/workflows/pipeline`) | Supabase user JWT | Trigger an A4 sleap-roots pipeline run for a scan/wave/experiment/explicit scan list |
+
+### Queued generation (worker)
+
+`…/video/queue` enqueues a job on the `cyl_video_generation` pgmq queue (via
+`SECURITY DEFINER` wrappers — the service holds no pgmq grants) and returns a
+`job_id` immediately. The `cyl-video-worker` container polls the queue, runs the
+**same** `video.generate_experiment_scan_video` as the on-demand route (so
+`cyl_scan_videos` is recorded), and updates the `cyl_video_jobs` status table
+(`queued → processing → complete`/`failed`). Poll that table for status (readable by
+real `bloom_user`/`bloom_writer`/`bloom_admin` sessions). A reported failure is
+terminal for now — the job is marked `failed` and the message dead-lettered
+immediately (retry/requeue is a planned follow-up). A job that hard-crashes the
+worker (never reporting) is dead-lettered by pgmq's `read_ct` after a few
+deliveries, so a poison message can't redeliver forever. Scale throughput by running
+more `cyl-video-worker` replicas — pgmq's claim is concurrency-safe.
+
+Enqueue is idempotent per scan and skips a scan that already has a video, so the queue
+**will not regenerate** an existing video — a re-shot scan keeps its old video until its
+`cyl_scan_videos` row and stored file are removed. A `force` regenerate path is a planned
+follow-up.
 
 ### Video generation
 
@@ -150,6 +171,8 @@ rest by `…_create_cyl_pipeline_runs.sql` (bloom #11/#404, Phase 1).
 | `WORKFLOWS_VIDEO_TABLE`        | `cyl_scan_videos`       | Record table (`scan_id -> path`)                     |
 | `WORKFLOWS_RATE_LIMIT`         | `5`                     | Max requests per user per window, per process, shared across all application routes (429 over) |
 | `WORKFLOWS_RATE_WINDOW_SECONDS`| `60`                    | Rate-limit window                                    |
+| `WORKFLOWS_WORKER_POLL_SECONDS`| `5`                     | Worker idle sleep between empty queue polls          |
+| `WORKFLOWS_WORKER_VT_SECONDS`  | `120`                   | Per-message visibility timeout (retry window)        |
 | `WORKFLOWS_PUBLIC_SUPABASE_URL`| –                        | Public base that replaces the internal `SUPABASE_URL` host in signed URLs, so `download_url` works for outside callers (set to `NEXT_PUBLIC_SUPABASE_URL`). Unset → the internal URL is returned unchanged. |
 
 > `ffmpeg` must be present in the runtime image — the Dockerfile copies a digest-pinned static `ffmpeg` binary (avoids apt's ffmpeg pulling in vulnerable GPU/TLS libraries).

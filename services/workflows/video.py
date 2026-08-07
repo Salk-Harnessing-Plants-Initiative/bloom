@@ -56,7 +56,7 @@ def _to_public_url(url: str) -> str:
         return url
     internal = SUPABASE_URL.rstrip("/")
     if url.startswith(internal):
-        return PUBLIC_SUPABASE_URL.rstrip("/") + url[len(internal):]
+        return PUBLIC_SUPABASE_URL.rstrip("/") + url[len(internal) :]
     return url
 
 
@@ -135,7 +135,9 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
         logger.warning(
             "scan %s: has more than %s images; encoding the first %s "
             "(higher frame_numbers dropped)",
-            scan_id, MAX_IMAGES, MAX_IMAGES,
+            scan_id,
+            MAX_IMAGES,
+            MAX_IMAGES,
         )
     frames_expected = len(images)
 
@@ -196,7 +198,10 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
     if frames_written < frames_expected:
         logger.warning(
             "scan %s: encoded %s of %s frames (%s skipped)",
-            scan_id, frames_written, frames_expected, frames_expected - frames_written,
+            scan_id,
+            frames_written,
+            frames_expected,
+            frames_expected - frames_written,
         )
 
     key = f"{VIDEO_PATH_PREFIX}/{scan_id}.mp4"
@@ -208,10 +213,18 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
     if prior_frames is not None and frames_written < prior_frames:
         logger.warning(
             "scan %s: new encode has %s frames < recorded %s; keeping the existing video",
-            scan_id, frames_written, prior_frames,
+            scan_id,
+            frames_written,
+            prior_frames,
         )
         return _result(
-            scan_id, vids, key, prior_frames, frames_expected, truncated, regenerated=False
+            scan_id,
+            vids,
+            key,
+            prior_frames,
+            frames_expected,
+            truncated,
+            regenerated=False,
         )
 
     vids.upload(key, video_bytes, {"content-type": "video/mp4", "upsert": "true"})
@@ -220,13 +233,16 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
     )
 
 
-def _result(scan_id, vids, key, frames, frames_expected, truncated, regenerated) -> dict:
+def _result(
+    scan_id, vids, key, frames, frames_expected, truncated, regenerated
+) -> dict:
     """Build the response, failing (not returning null) if no URL can be signed."""
     download_url = _signed_url(vids, key)
     if not download_url:
         # A response without a usable URL is a failure, not a success.
         raise HTTPException(
-            status_code=500, detail=f"Could not create a download URL for scan {scan_id}"
+            status_code=500,
+            detail=f"Could not create a download URL for scan {scan_id}",
         )
     return {
         "frames": frames,
@@ -244,7 +260,11 @@ def _record_video(client, scan_id: int, result: dict):
         return
     try:
         client.table(VIDEO_TABLE).upsert(
-            {"scan_id": scan_id, "path": result["path"], "frames": result.get("frames")},
+            {
+                "scan_id": scan_id,
+                "path": result["path"],
+                "frames": result.get("frames"),
+            },
             on_conflict="scan_id",
         ).execute()
     except Exception as exc:
@@ -258,9 +278,16 @@ def _record_video(client, scan_id: int, result: dict):
         )
 
 
-def generate_experiment_scan_video(experiment_id: int, scan_id: int) -> dict:
-    """Validate the scan belongs to the experiment, then generate its video."""
-    client = app_client()
+def generate_experiment_scan_video(
+    experiment_id: int, scan_id: int, client=None
+) -> dict:
+    """Validate the scan belongs to the experiment, then generate its video.
+
+    ``client`` lets a caller (the queue worker) reuse its already-authenticated client; the
+    on-demand route omits it and a fresh ``app_client()`` is created per request.
+    """
+    if client is None:
+        client = app_client()
     if not scan_in_experiment(client, experiment_id, scan_id):
         raise HTTPException(
             status_code=404,
