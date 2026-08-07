@@ -136,10 +136,32 @@ jobs:
       - name: Check package metadata
         run: uvx twine check dist/*
 
-      # Immutable-upload insurance: prove the built wheel imports and the CLI
-      # entry point runs from an isolated install BEFORE publishing.
+      # Prove the wheel works before the upload, which can't be undone.
+      #
+      # Commands import supabase lazily, so `import bloomctl` alone stays green while
+      # every real command dies — this imports the whole chain instead. It runs twice
+      # because --pre applies to every dependency, not just bloomctl; a failure on the
+      # second pass means some dependency needs an upper bound (#629).
       - name: Verify wheel imports
-        run: uv run --isolated --no-project --with dist/*.whl python -c "import bloomctl; print('bloomctl', bloomctl.__version__)"
+        run: |
+          cat > /tmp/import_smoke.py <<'PY'
+          import importlib
+          import pkgutil
+
+          import bloomctl
+
+          for module in pkgutil.walk_packages(bloomctl.__path__, "bloomctl."):
+              importlib.import_module(module.name)
+
+          from postgrest import APIError  # noqa: F401
+          from supabase import create_client  # noqa: F401
+
+          print("import smoke OK", bloomctl.__version__)
+          PY
+          echo "== default resolution =="
+          uv run --isolated --no-project --with dist/*.whl python /tmp/import_smoke.py
+          echo "== pre-release resolution =="
+          uv run --isolated --no-project --prerelease=allow --with dist/*.whl python /tmp/import_smoke.py
 
       - name: Verify CLI entry point
         run: uv run --isolated --no-project --with dist/*.whl bloomctl --version
