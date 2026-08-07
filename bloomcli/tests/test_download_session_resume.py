@@ -503,3 +503,33 @@ def test_the_retry_waits_before_trying_again(monkeypatch):
         storage.download_object(client, "cyl-images/0.png")
 
     assert slept == [storage.RETRY_DELAY_SECONDS]
+
+
+def test_the_retry_asks_for_a_new_bucket_handle():
+    """Reusing the first handle for the retry would defeat the point of retrying at all.
+
+    A handle that was issued before the token changed stays broken however many times it is
+    used, so recovering means asking for another one.
+    """
+
+    class _StaleFirstHandle:
+        def __init__(self):
+            self.handles = 0
+
+        def from_(self, name):
+            self.handles += 1
+            issued = self.handles
+
+            class _Proxy:
+                def download(self, object_path):
+                    if issued == 1:
+                        raise RuntimeError(EXPIRED)
+                    return b"fetched with a fresh handle"
+
+            return _Proxy()
+
+    client = _Client()
+    client.storage = _StaleFirstHandle()
+
+    assert storage.download_object(client, "cyl-images/0.png") == b"fetched with a fresh handle"
+    assert client.storage.handles == 2, "the retry must resolve its own handle"

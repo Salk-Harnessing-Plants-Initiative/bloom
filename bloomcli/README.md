@@ -203,7 +203,7 @@ connections at the server. If downloads start erroring on a flaky connection, lo
 ### Resuming an interrupted download
 
 A download is **resumable**: frames already in `<out_dir>` are kept and counted as
-`already present`, so re-running the same command fetches only what is still missing. That
+`already on disk`, so re-running the same command fetches only what is still missing. That
 applies to any interruption — a failed run, `Ctrl-C`, a dropped network, a closed laptop:
 
 ```bash

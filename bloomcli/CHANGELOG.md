@@ -49,7 +49,7 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   400k-frame experiment doesn't queue every task up front. Results keep scan/frame order, so
   `download_log.txt` stays deterministic regardless of how the pool interleaves the work.
 - `cyl download` is resumable: a frame already written to the output directory is kept and
-  reported as `already present` (logged as `SKIP`), so re-running the same command after any
+  reported as `already on disk` (logged as `SKIP`), so re-running the same command after any
   interruption — a failed run, a killed process, a network drop — fetches only what is still
   missing instead of restarting from zero. Frames are written atomically, so a crash
   mid-write can't leave a truncated file for a later run to mistake for complete. Pass

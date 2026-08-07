@@ -50,7 +50,7 @@ def status_of(error: BaseException) -> int | None:
     """HTTP status carried by a storage API error, if it has one."""
     try:
         return int(getattr(error, "status", None))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

@@ -126,28 +126,44 @@ def read_manifest(out_dir: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def write_manifest(out_dir: Path, selector: dict[str, Any]) -> None:
+def write_manifest(out_dir: Path, identity: dict[str, Any]) -> None:
     """Record what this directory holds, so a later run can check before resuming into it."""
     path = Path(out_dir) / MANIFEST_NAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(selector, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    body = json.dumps(identity, indent=2, sort_keys=True, default=str) + "\n"
+    atomic_write_bytes(path, body.encode("utf-8"))
 
 
-def describe_manifest_mismatch(existing: dict[str, Any] | None, selector: dict[str, Any]) -> str:
-    """Explain why ``selector`` doesn't match what the directory already holds, or "" if it does.
+def download_identity(scans: list[dict[str, Any]]) -> dict[str, Any]:
+    """Which experiments the frames being downloaded belong to.
 
-    Frame paths carry no experiment id, so two experiments downloaded into one directory can
-    share a path whenever a QR code is reused — and resume would then treat the first
-    experiment's images as though they belonged to the second.
+    Taken from the rows actually fetched rather than from the flags. `--plant-qr-code` and
+    `--scan-id` pick a subset of one experiment and write into their own subdirectories, so
+    narrowing on one run and widening on the next is a normal way to work and must resume.
+    """
+    return {
+        "experiment_ids": sorted(
+            {s.get("experiment_id") for s in scans if s.get("experiment_id") is not None}
+        )
+    }
+
+
+def describe_manifest_mismatch(existing: dict[str, Any] | None, identity: dict[str, Any]) -> str:
+    """Explain why this download doesn't belong in the directory, or "" if it does.
+
+    Frame paths carry no experiment id, so images from two experiments in one directory can
+    share a path whenever a QR code is reused — and resume would then hand the first
+    experiment's images over as though they were the second's. Frames from the same experiment
+    are always safe to add to, however the run was narrowed.
     """
     if existing is None:
         return ""
-    differing = [
-        f"{key} was {existing.get(key)!r}, now {selector.get(key)!r}"
-        for key in ("experiment_id", "scan_id", "plant_qr_code")
-        if existing.get(key) != selector.get(key)
-    ]
-    return "; ".join(differing)
+    held = existing.get("experiment_ids")
+    incoming = identity.get("experiment_ids") or []
+    if not isinstance(held, list) or not held or not incoming:
+        return ""
+    if set(incoming) <= set(held):
+        return ""
+    return f"holds experiment {held}, but this download is for experiment {incoming}"
 
 
 def image_dest(out_dir: Path, scan: dict[str, Any], image: dict[str, Any]) -> Path:
@@ -330,8 +346,8 @@ def download_frame(
             return result
         atomic_write_bytes(dest, download_object(client, object_path))
         result.ok = True
-    except KeyError as exc:  # a bare KeyError in the log wouldn't say what was wrong
-        result.error = f"malformed cyl_images row: missing key {exc}"
+    except (KeyError, TypeError) as exc:  # a bare key or pathlib error explains nothing
+        result.error = f"malformed cyl_images row: {exc}"
     except Exception as exc:  # per-frame: record and continue
         result.error = str(exc)
     return result
@@ -399,6 +415,8 @@ def filesystem_folds_case(out_dir: Path) -> bool:
     probe = root / ".bloomctl-case-probe"
     try:
         root.mkdir(parents=True, exist_ok=True)
+        if probe.exists():
+            return False  # someone else's file; leave it alone rather than delete it
         probe.touch()
         try:
             return (root / ".BLOOMCTL-CASE-PROBE").exists()
@@ -433,22 +451,23 @@ def find_frame_collisions(
     filesystem they are genuinely different files and are left alone.
     """
     fold = filesystem_folds_case(Path(out_dir))
-    seen: dict[str, tuple[Any, Any]] = {}
+    seen: dict[str, tuple[Any, Any, Path]] = {}
     clashes: list[str] = []
     for scan, image in work:
         try:
-            key = _path_key(image_dest(out_dir, scan, image), fold)
-        except (KeyError, ValueError):
+            dest = image_dest(out_dir, scan, image)
+        except (KeyError, TypeError, ValueError):
             continue  # malformed row; reported per-frame during the download
+        key = _path_key(dest, fold)
         owner = (scan.get("scan_id"), image.get("frame_number"))
         if key in seen:
-            first_scan, first_frame = seen[key]
+            first_scan, first_frame, first_dest = seen[key]
             clashes.append(
-                f"scan {first_scan!r} frame {first_frame!r} and scan {owner[0]!r} "
-                f"frame {owner[1]!r} both map to {key}"
+                f"scan {first_scan!r} frame {first_frame!r} ({first_dest}) and scan {owner[0]!r} "
+                f"frame {owner[1]!r} ({dest}) are the same file"
             )
         else:
-            seen[key] = owner
+            seen[key] = (*owner, dest)
     return clashes
 
 
@@ -723,23 +742,27 @@ def download(
     genotypes = fetch_genotypes(client, [s.get("accession_id") for s in scans])
     rows = [build_scan_row(s, genotypes.get(s.get("accession_id"))) for s in scans]
 
-    out = Path(out_dir)
-    selector = {
-        "experiment_id": experiment_id,
-        "scan_id": scan_id,
-        "plant_qr_code": plant_qr_code,
-    }
-    mismatch = describe_manifest_mismatch(read_manifest(out), selector)
-    if mismatch and not overwrite:
+    if not scans:
         raise click.ClickException(
-            f"{out} already holds a different download ({mismatch}). Frame paths carry no "
-            f"experiment id, so resuming here could keep images from the earlier download and "
-            f"report them as this one's. Use a different directory, or --overwrite to replace it."
+            "No scans matched, so there is nothing to download. Check the experiment and any "
+            "--plant-qr-code / --plant-age-min / --plant-age-max filters."
+        )
+
+    out = Path(out_dir)
+    identity = download_identity(scans)
+    mismatch = describe_manifest_mismatch(read_manifest(out), identity)
+    if mismatch:
+        # Deliberately not escapable with --overwrite: that re-fetches this download's frames
+        # but leaves the other experiment's in place, which is the mix-up being prevented.
+        raise click.ClickException(
+            f"{out} {mismatch}. Frame paths carry no experiment id, so images from both would "
+            f"sit in one tree and scans.csv would describe only the newer one. Download into a "
+            f"new directory, or empty this one first."
         )
 
     csv_path = out / "scans.csv"
     write_scans_csv(rows, csv_path)
-    write_manifest(out, selector)
+    write_manifest(out, identity)
     click.echo(f"Wrote {len(rows)} scans -> {csv_path}")
 
     if meta_only:
