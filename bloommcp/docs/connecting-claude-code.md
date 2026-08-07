@@ -80,6 +80,23 @@ shared server at all: your own input files in, your own output files out, nothin
 anyone else. See [storage-backends.md](storage-backends.md) for how to set
 `BLOOM_STORAGE_BACKEND=local` and run bloommcp this way from Claude Code or Claude Desktop.
 
+## One-off analysis without registering data
+
+If you just want to QC a local CSV you have open in Claude Code — not data that lives in, or
+should be added to, Bloom's database — `qc_clean` accepts the file's text directly via
+`csv_content` instead of a registered `experiment` name:
+
+```
+qc_clean(csv_content="<the CSV file's text>")
+```
+
+This never touches the shared Storage/DB described above: nothing is uploaded, nothing is
+registered, and none of the read/write access-scope tradeoffs on this page apply — the content
+is parsed in memory for the one call and then discarded. See `csv_content`'s own parameter
+description (surfaced in the tool's schema) for exactly what is and isn't preserved — in short,
+there's no run to look up afterward, so treat this as a one-off check, not a registered
+experiment.
+
 ## Claude Desktop / Claude Enterprise
 
 **Not yet written.** Claude Desktop and Claude Enterprise custom connectors work differently from
