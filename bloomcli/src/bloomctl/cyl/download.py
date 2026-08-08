@@ -14,10 +14,12 @@ import os
 import threading
 import time
 import unicodedata
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
 import click
 
@@ -36,6 +38,11 @@ DEFAULT_WORKERS = 8
 # How often a long run reports what it has done. Frequent enough that the command never looks
 # hung, rare enough that a log file doesn't fill up with it.
 PROGRESS_INTERVAL_SECONDS = 5.0
+
+# Progress lines the rate and time-remaining estimate are averaged over (about a minute).
+RATE_WINDOW_SAMPLES = 12
+
+RETRY_HINT = "Some frames are failing — re-run this command afterwards and it will retry them."
 
 # Upper limit on concurrent downloads, applied both to the flag and inside download_images so
 # no caller can open an unbounded number of connections.
@@ -109,6 +116,29 @@ def build_scan_row(scan: dict[str, Any], genotype: str | None) -> dict[str, Any]
         else:
             row[name] = scan.get(key, "")
     return row
+
+
+def ensure_writable(out_dir: Path) -> None:
+    """Create ``out_dir`` and fail now if nothing can be written to it.
+
+    Probes with a real file: `os.access` answers from the permission bits, which is the wrong
+    answer on network mounts and as root.
+    """
+    path = Path(out_dir)
+    probe = path / f".bloomctl-probe-{uuid4().hex}"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe.write_bytes(b"bloomctl write test")  # bytes, so a full disk fails here too
+    except OSError as exc:
+        raise click.ClickException(
+            f"cannot write to {path}: {exc.strerror or exc}. Check the path is spelled "
+            f"correctly, exists, and that you have permission to write there."
+        ) from exc
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
 
 
 def write_scans_csv(rows: list[dict[str, Any]], path: Path) -> None:
@@ -300,6 +330,7 @@ class DownloadResult:
     """Aggregate outcome of a `download_images` run."""
 
     frames: list[FrameResult]
+    disk_full: bool = False  # the run stopped early: nowhere left to write
 
     @property
     def ok(self) -> int:
@@ -602,7 +633,7 @@ def download_images(
 
     outcomes = iter(fetched)
     frames = [slot if isinstance(slot, FrameResult) else next(outcomes) for slot in slots]
-    return DownloadResult(frames)
+    return DownloadResult(frames, disk_full=stop.is_set())
 
 
 class ProgressReporter:
@@ -618,6 +649,9 @@ class ProgressReporter:
         self._now = now
         self._last = 0.0
         self._phase = ""
+        self._samples: deque[tuple[float, int]] = deque(maxlen=RATE_WINDOW_SAMPLES)
+        self._failures_seen = 0
+        self._mentioned_retry = False
 
     def __call__(self, phase: str, done: int, total: int, failed: int = 0) -> None:
         moment = self._now()
@@ -626,22 +660,92 @@ class ProgressReporter:
         edge = phase != self._phase or done == total
         if not edge and moment - self._last < self._interval:
             return
+        if phase != self._phase:
+            self._samples.clear()  # each phase moves at its own pace
         self._last = moment
         self._phase = phase
-        click.echo(f"  {format_progress(phase, done, total, failed)}", err=True)
+        rate, seconds_left = self._pace(moment, done, total)
+        arrived = failed - self._failures_seen
+        self._failures_seen = failed
+        line = format_progress(
+            phase, done, total, failed, rate=rate, seconds_left=seconds_left, new_failures=arrived
+        )
+        click.echo(f"  {line}", err=True)
+        if failed and not self._mentioned_retry:  # once, when failures first appear
+            self._mentioned_retry = True
+            click.echo(f"  {RETRY_HINT}", err=True)
+
+    def _pace(self, moment: float, done: int, total: int) -> tuple[float | None, float | None]:
+        """Frames per second and seconds remaining, over a recent window.
+
+        A window rather than the whole run, so a connection that changes speed shows up within
+        a minute instead of being averaged away over hours.
+        """
+        latest = (moment, done)
+        # A resumed run skips thousands of frames in seconds. Once it reaches frames that have
+        # to be fetched, the window is still quoting that burst, so start the window again.
+        if len(self._samples) >= 2:
+            just_now = _rate_between(self._samples[-1], latest)
+            window = _rate_between(self._samples[0], latest)
+            if just_now is not None and window is not None and just_now * 10 < window:
+                self._samples.clear()
+        self._samples.append(latest)
+        rate = _rate_between(self._samples[0], latest)
+        if rate is None:
+            return None, None
+        remaining = max(total - done, 0)
+        return rate, (remaining / rate if remaining else None)
 
 
-def format_progress(phase: str, done: int, total: int, failed: int = 0) -> str:
-    """One progress line, e.g. ``12,480/413,926 frames (3%), 12 failed``.
+def _rate_between(first: tuple[float, int], second: tuple[float, int]) -> float | None:
+    """Frames per second between two progress samples, or None if it can't be measured."""
+    elapsed = second[0] - first[0]
+    progressed = second[1] - first[1]
+    if elapsed <= 0 or progressed <= 0:
+        return None
+    return progressed / elapsed
 
-    Failures are named as soon as there are any: the count on its own says how much work has
-    been attempted, which on a run where everything is failing would read as healthy.
+
+def format_rate(rate: float) -> str:
+    """Frames per second, e.g. ``6.3/s`` or ``44/s``."""
+    return f"{rate:.1f}/s" if rate < 10 else f"{rate:,.0f}/s"
+
+
+def format_duration(seconds: float) -> str:
+    """A rough duration, e.g. ``2h39m``, ``17m``, ``45s``."""
+    whole = max(int(seconds), 0)
+    if whole >= 3600:
+        return f"{whole // 3600}h{(whole % 3600) // 60:02d}m"
+    if whole >= 60:
+        return f"{whole // 60}m"
+    return f"{whole}s"
+
+
+def format_progress(
+    phase: str,
+    done: int,
+    total: int,
+    failed: int = 0,
+    *,
+    rate: float | None = None,
+    seconds_left: float | None = None,
+    new_failures: int = 0,
+) -> str:
+    """One progress line, e.g. ``349/60,336 frames (0.6%)  6.3/s  ~2h39m left, 33 failed (+12)``.
+
+    ``(+N)`` counts failures since the last line, so its absence means they have stopped.
     """
     noun = "scans" if phase == "listing" else "frames"
-    percent = f" ({done * 100 // total}%)" if total else ""
     prefix = "Listing frames: " if phase == "listing" else ""
+    # Held below 100 until the last frame lands: rounding alone reads 100.0% with frames
+    # still outstanding on any run of a few thousand.
+    share = min(done * 100 / total, 99.9) if total and done < total else (100.0 if total else 0)
+    percent = f" ({share:.1f}%)" if total else ""
+    pace = f"  {format_rate(rate)}" if rate else ""
+    left = f"  ~{format_duration(seconds_left)} left" if seconds_left else ""
     problem = f", {failed:,} failed" if failed else ""
-    return f"{prefix}{done:,}/{total:,} {noun}{percent}{problem}"
+    arrived = f" (+{new_failures:,})" if failed and new_failures > 0 else ""
+    return f"{prefix}{done:,}/{total:,} {noun}{percent}{pace}{left}{problem}{arrived}"
 
 
 def _one_line(text: Any) -> str:
@@ -654,7 +758,10 @@ def _one_line(text: Any) -> str:
 
 
 def write_download_log(result: DownloadResult, path: Path) -> None:
-    """Write a per-frame download log (one line per frame) with a summary footer."""
+    """Write a per-frame download log (one line per frame) with a summary footer.
+
+    Written atomically, so a failed write leaves the previous log intact.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for f in result.frames:
@@ -680,8 +787,10 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
         summary += f", {result.scans_unlisted} scan(s) could not be listed (frames unknown)"
     if result.scans_without_frames:
         summary += f", {result.scans_without_frames} scan(s) have no images"
+    if result.disk_full:
+        summary += " — the disk filled up, so the remaining frames were never attempted"
     lines.append(summary)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_bytes(path, ("\n".join(lines) + "\n").encode("utf-8"))
 
 
 # --- command ----------------------------------------------------------------
@@ -803,6 +912,9 @@ def download(
     if species and experiment_name is None:
         raise click.UsageError("--species only applies with --experiment-name.")
 
+    # Before signing in, so a bad path costs a second rather than the whole metadata phase.
+    ensure_writable(Path(out_dir))
+
     try:
         creds = load_credentials(profile)
     except (FileNotFoundError, ValueError) as exc:
@@ -900,12 +1012,19 @@ def download(
         ) from exc
 
     log_path = out / "download_log.txt"
-    write_download_log(result, log_path)
+    # Counts first: on a full disk the log write is what fails, and the numbers matter more.
     click.echo(
-        f"{result.ok}/{result.total} frames present in {out / 'images'} "
-        f"({result.downloaded} downloaded this run, {result.skipped} already on disk)  "
-        f"(log: {log_path})"
+        f"{result.ok:,}/{result.total:,} frames present in {out / 'images'} "
+        f"({result.downloaded:,} downloaded this run, {result.skipped:,} already on disk)"
     )
+    logged = True
+    try:
+        write_download_log(result, log_path)
+    except OSError as exc:
+        logged = False
+        click.echo(f"Could not write {log_path.name}: {exc.strerror or exc}", err=True)
+    else:
+        click.echo(f"Log: {log_path}")
     if result.scans_without_frames:
         click.echo(
             f"Note: {result.scans_without_frames} scan(s) have no images recorded in Bloom, "
@@ -917,13 +1036,15 @@ def download(
         # output is incomplete (the log lists every failed frame).
         problems = []
         if result.failed:
-            problems.append(f"{result.failed} of {result.total} frames failed to download")
+            problems.append(f"{result.failed:,} of {result.total:,} frames failed to download")
         if result.scans_unlisted:
             problems.append(
                 f"{result.scans_unlisted} scan(s) could not be listed at all "
                 f"(an unknown number of further frames is missing)"
             )
+        cause = "the disk filled up; " if result.disk_full else ""
+        where = f" — see {log_path}" if logged else ""
         raise click.ClickException(
-            f"{'; '.join(problems)} — see {log_path}. "
+            f"{cause}{'; '.join(problems)}{where}. "
             "Re-running the same command retries only the frames still missing."
         )

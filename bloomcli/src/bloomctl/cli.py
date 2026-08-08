@@ -1,4 +1,4 @@
-"""bloomctl command group (entry point ``bloomctl = bloomctl.cli:cli``)."""
+"""bloomctl command group. The console script is `bloomctl.errors:main`, which wraps this."""
 
 from __future__ import annotations
 
