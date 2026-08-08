@@ -222,7 +222,6 @@ export default function ScanTraitBoxplot({
             scan ? (
               <PlantScan
                 scan={scan}
-                thumb={true}
                 height={250}
                 href={`/app/phenotypes/${scan.cyl_plants?.cyl_waves?.cyl_experiments?.species?.id}/${scan.cyl_plants?.cyl_waves?.cyl_experiments?.id}/${scan.cyl_plants?.cyl_waves?.id}/${scan.cyl_plants?.accessions?.id}#scan-${scan.id}`}
                 label={`Plant: ${scan.cyl_plants?.qr_code}`}
