@@ -185,9 +185,13 @@ jobs:
             AFTER=\$(git rev-parse HEAD)
             git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- caddy/Caddyfile \
               && echo 'CADDYFILE_CHANGED=false' || echo 'CADDYFILE_CHANGED=true'
+            git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- volumes/api/kong.yml \
+              && echo 'KONGFILE_CHANGED=false' || echo 'KONGFILE_CHANGED=true'
           " | tee /tmp/pull_prod.out
           changed=$(grep '^CADDYFILE_CHANGED=' /tmp/pull_prod.out | tail -1 | cut -d= -f2)
           echo "caddyfile_changed=${changed:-true}" >> "$GITHUB_OUTPUT"
+          kong_changed=$(grep '^KONGFILE_CHANGED=' /tmp/pull_prod.out | tail -1 | cut -d= -f2)
+          echo "kongfile_changed=${kong_changed:-true}" >> "$GITHUB_OUTPUT"
 
       - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
         run: |
@@ -338,6 +342,75 @@ jobs:
               exit 1
             fi
             echo \"caddy restart count: \$restarts\"
+          "
+
+      # Restart Kong so bind-mounted kong.yml changes take effect — `up -d`
+      # won't recreate kong when its image/env is unchanged, so route/plugin
+      # edits are otherwise ignored. Unlike Caddy, a full restart (not
+      # `kong reload`) is required: Kong's declarative config is only
+      # regenerated from the bind-mounted temp.yml by this container's
+      # custom entrypoint at container START, and DB-less `kong reload` has
+      # a documented history of not reliably applying config changes anyway.
+      # See openspec/changes/fix-kong-reload-on-deploy/design.md Decision 1.
+      - name: Restart Kong config (production)
+        id: restart_kong_prod
+        if: steps.pull_prod.outputs.kongfile_changed == 'true'
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            cid=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps -q kong)
+            if [ -z \"\$cid\" ]; then
+              echo \"::error::kong container is not running before restart\"
+              exit 1
+            fi
+            before=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\")
+            echo \"BEFORE_RESTART_COUNT=\$before\"
+            docker compose -f docker-compose.prod.yml --env-file .env.prod restart kong --timeout 10
+            # Poll for healthy instead of a flat sleep — Kong's healthcheck
+            # start_period/interval/retries mean a merely-slow (not crashed)
+            # boot can legitimately still be starting well past a short
+            # fixed sleep. A timeout here doesn't fail the step; the
+            # crash-loop check that follows decides pass/fail via
+            # RestartCount. See design.md Decision 5.
+            elapsed=0
+            while [ \"\$elapsed\" -lt 120 ]; do
+              status=\$(docker inspect --format='{{.State.Health.Status}}' \"\$cid\" 2>/dev/null || echo unknown)
+              if [ \"\$status\" = \"healthy\" ]; then
+                break
+              fi
+              sleep 3
+              elapsed=\$((elapsed + 3))
+            done
+            echo \"kong health status after restart: \$status (waited \${elapsed}s)\"
+          " | tee /tmp/restart_kong_prod.out
+          before=$(grep '^BEFORE_RESTART_COUNT=' /tmp/restart_kong_prod.out | tail -1 | cut -d= -f2)
+          echo "before_restart_count=${before:-0}" >> "$GITHUB_OUTPUT"
+
+      # Delta-based crash-loop check: unlike Caddy's absolute threshold, the
+      # restart step above deliberately restarts Kong as its normal,
+      # successful-path action, so RestartCount is expected to move by
+      # exactly 1 even when kong.yml is valid. Only additional, unplanned
+      # restarts beyond that indicate a bad config. See design.md Decision 2.
+      - name: Kong crash-loop check (production)
+        if: steps.pull_prod.outputs.kongfile_changed == 'true'
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            ANON_KEY=\$(grep '^ANON_KEY=' .env.prod | cut -d= -f2-)
+            SERVICE_ROLE_KEY=\$(grep '^SERVICE_ROLE_KEY=' .env.prod | cut -d= -f2-)
+            BLOOM_AGENT_KEY=\$(grep '^BLOOM_AGENT_KEY=' .env.prod | cut -d= -f2-)
+            DASHBOARD_USERNAME=\$(grep '^DASHBOARD_USERNAME=' .env.prod | cut -d= -f2-)
+            DASHBOARD_PASSWORD=\$(grep '^DASHBOARD_PASSWORD=' .env.prod | cut -d= -f2-)
+            echo \"::add-mask::\$ANON_KEY\"
+            echo \"::add-mask::\$SERVICE_ROLE_KEY\"
+            echo \"::add-mask::\$BLOOM_AGENT_KEY\"
+            echo \"::add-mask::\$DASHBOARD_USERNAME\"
+            echo \"::add-mask::\$DASHBOARD_PASSWORD\"
+            bash scripts/check_kong_restart_delta.sh \
+              \"${{ steps.restart_kong_prod.outputs.before_restart_count }}\" 2 -- \
+              docker compose -f docker-compose.prod.yml --env-file .env.prod
           "
 
       # Layer 2 — Verify Caddy obtained a real Let's Encrypt cert. First
@@ -785,9 +858,13 @@ jobs:
             AFTER=\$(git rev-parse HEAD)
             git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- caddy/Caddyfile \
               && echo 'CADDYFILE_CHANGED=false' || echo 'CADDYFILE_CHANGED=true'
+            git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- volumes/api/kong.yml \
+              && echo 'KONGFILE_CHANGED=false' || echo 'KONGFILE_CHANGED=true'
           " | tee /tmp/pull_staging.out
           changed=$(grep '^CADDYFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2)
           echo "caddyfile_changed=${changed:-true}" >> "$GITHUB_OUTPUT"
+          kong_changed=$(grep '^KONGFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2)
+          echo "kongfile_changed=${kong_changed:-true}" >> "$GITHUB_OUTPUT"
 
       - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
         run: |
@@ -914,6 +991,59 @@ jobs:
               exit 1
             fi
             echo \"caddy restart count: \$restarts\"
+          "
+
+      # Restart Kong so bind-mounted kong.yml changes take effect. See
+      # deploy-production's equivalent step for rationale.
+      - name: Restart Kong config (staging)
+        id: restart_kong_staging
+        if: steps.pull_staging.outputs.kongfile_changed == 'true'
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            cid=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps -q kong)
+            if [ -z \"\$cid\" ]; then
+              echo \"::error::kong container is not running before restart\"
+              exit 1
+            fi
+            before=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\")
+            echo \"BEFORE_RESTART_COUNT=\$before\"
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging restart kong --timeout 10
+            elapsed=0
+            while [ \"\$elapsed\" -lt 120 ]; do
+              status=\$(docker inspect --format='{{.State.Health.Status}}' \"\$cid\" 2>/dev/null || echo unknown)
+              if [ \"\$status\" = \"healthy\" ]; then
+                break
+              fi
+              sleep 3
+              elapsed=\$((elapsed + 3))
+            done
+            echo \"kong health status after restart: \$status (waited \${elapsed}s)\"
+          " | tee /tmp/restart_kong_staging.out
+          before=$(grep '^BEFORE_RESTART_COUNT=' /tmp/restart_kong_staging.out | tail -1 | cut -d= -f2)
+          echo "before_restart_count=${before:-0}" >> "$GITHUB_OUTPUT"
+
+      # See deploy-production's equivalent step for rationale.
+      - name: Kong crash-loop check (staging)
+        if: steps.pull_staging.outputs.kongfile_changed == 'true'
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            ANON_KEY=\$(grep '^ANON_KEY=' .env.staging | cut -d= -f2-)
+            SERVICE_ROLE_KEY=\$(grep '^SERVICE_ROLE_KEY=' .env.staging | cut -d= -f2-)
+            BLOOM_AGENT_KEY=\$(grep '^BLOOM_AGENT_KEY=' .env.staging | cut -d= -f2-)
+            DASHBOARD_USERNAME=\$(grep '^DASHBOARD_USERNAME=' .env.staging | cut -d= -f2-)
+            DASHBOARD_PASSWORD=\$(grep '^DASHBOARD_PASSWORD=' .env.staging | cut -d= -f2-)
+            echo \"::add-mask::\$ANON_KEY\"
+            echo \"::add-mask::\$SERVICE_ROLE_KEY\"
+            echo \"::add-mask::\$BLOOM_AGENT_KEY\"
+            echo \"::add-mask::\$DASHBOARD_USERNAME\"
+            echo \"::add-mask::\$DASHBOARD_PASSWORD\"
+            bash scripts/check_kong_restart_delta.sh \
+              \"${{ steps.restart_kong_staging.outputs.before_restart_count }}\" 2 -- \
+              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging
           "
 
       # Layer 2 — Verify Caddy obtained a real Let's Encrypt cert. See
