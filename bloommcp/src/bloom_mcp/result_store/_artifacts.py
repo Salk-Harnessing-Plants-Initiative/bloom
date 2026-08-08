@@ -3,7 +3,9 @@
 Both the Supabase adapter and the fake compute per-artifact hashes, logical
 keys, and byte sizes the same way, so a single parity test covers both. The
 SHA-256 is computed over the exact staged bytes — the same bytes the adapter
-uploads — never an S3/MinIO ETag.
+uploads — never an S3/MinIO ETag. Also shared: rebuilding that same
+``OutputLink`` shape later, at read time, for an already-committed run
+(bloom#599's ``get_download_links``).
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ from pathlib import Path
 from typing import Callable
 
 from bloom_mcp.contract.models import OutputLink
+
+from .ports import CorruptRunLinksError
 
 # Signed-URL expiry (bloom#581) — a fixed constant, not a per-call parameter or
 # env var: the issue's own framing is "a real short-lived signed URL," and an
@@ -123,4 +127,57 @@ def build_output_links(
             size_bytes=output_size_bytes[name],
         )
         for name in output_keys
+    }
+
+
+def build_download_links(
+    output_keys: dict[str, str],
+    output_sha256: dict[str, str],
+    url_for: Callable[[str], str],
+    size_for: Callable[[str], int],
+    *,
+    expected_prefix: str,
+) -> dict[str, OutputLink]:
+    """Build the per-output ``OutputLink`` dict ``get_download_links`` attaches
+    when re-signing an already-committed run (bloom#599).
+
+    ``url_for(key)``/``size_for(key)`` supply the URL/size — a real signed
+    call and a live ``StorageBackend.get_object_size`` call for
+    ``SupabaseResultStore``, an already-recorded value for ``FakeResultStore``
+    (which never uploads real bytes for a live lookup to meaningfully
+    target) — so this one assembly step is shared by both adapters.
+
+    ``expected_prefix`` is recomputed *fresh at read time* from
+    ``(experiment, tool_class, the resolved run's version_dir)`` — this is
+    deliberately **not** the same ``expected_prefix`` parameter
+    ``build_output_links`` takes (that one is the *write*-path guard on
+    ``commit()``, from ``add-bloommcp-signed-url-key-scoping``); this
+    function's caller derives its own prefix independently, so this read
+    path carries no ordering dependency on that change's merge status. A key
+    outside it is never a caller-input condition (every ``output_keys`` value
+    here came from a manifest this same lookup already resolved) — it
+    signals corrupt manifest data or a resolution bug, and raises
+    :class:`CorruptRunLinksError` before either ``url_for`` or ``size_for`` is
+    called for that key, so neither the signing nor the sizing primitive
+    (both of which perform no ownership check of their own) is ever reached
+    for an out-of-scope key.
+    """
+    if not expected_prefix:
+        raise CorruptRunLinksError(
+            f"expected_prefix must be non-empty; got {expected_prefix!r}"
+        )
+    for name, key in output_keys.items():
+        if not key.startswith(expected_prefix):
+            raise CorruptRunLinksError(
+                f"output key {key!r} (output {name!r}) is outside the "
+                f"expected run prefix {expected_prefix!r}"
+            )
+    return {
+        name: OutputLink(
+            key=key,
+            url=url_for(key),
+            sha256=output_sha256[name],
+            size_bytes=size_for(key),
+        )
+        for name, key in output_keys.items()
     }
