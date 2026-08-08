@@ -2,27 +2,30 @@
 
 ### Requirement: Explicit Cleaned-Version Selection on require_clean Tools
 
-Each of the 6 `require_clean=True` tools (`clustering`, `descriptive_stats`, `pca_analysis`,
-`umap_analysis`, `remove_outliers`, `cross_experiment_correlations`) SHALL accept an optional
-cleaned-version selector, threaded to `load_experiment(..., require_clean=True, version=...)`.
-Omitting the selector SHALL reproduce that tool's **current** default exactly — most tools default
-to the Protocol's `"latest"` by omitting the `version` kwarg entirely, but `remove_outliers`
-already hardcodes `"latest_qc"` today and MUST continue to resolve `"latest_qc"` when its selector
-is omitted, not silently switch to `"latest"`. `cross_experiment_correlations` reads two
-independent experiments and SHALL expose two independent selectors (`version_1`/`version_2`),
-each threaded only to its own experiment's read.
+Each of 5 `require_clean=True` tools without their own archived capability spec (`clustering`,
+`descriptive_stats`, `umap_analysis`, `remove_outliers`, `cross_experiment_correlations`) SHALL
+accept an optional cleaned-version selector, threaded to
+`load_experiment(..., require_clean=True, version=...)`. (The sixth `require_clean=True` tool,
+`pca_analysis`, already has an archived capability spec — `bloommcp-pca-analysis-tool` — and gets
+the identical selector via a MODIFIED delta there instead of here, so its behavior is not
+duplicated across two capabilities.) Omitting the selector SHALL reproduce that tool's **current**
+default exactly — most tools default to the Protocol's `"latest"` by omitting the `version` kwarg
+entirely, but `remove_outliers` already hardcodes `"latest_qc"` today and MUST continue to resolve
+`"latest_qc"` when its selector is omitted, not silently switch to `"latest"`.
+`cross_experiment_correlations` reads two independent experiments and SHALL expose two independent
+selectors (`version_1`/`version_2`), each threaded only to its own experiment's read.
 
-#### Scenario: Omitting the selector preserves today's default on the four uniform tools
+#### Scenario: Omitting the selector preserves today's default on the three uniform tools
 
-- **WHEN** `clustering`, `descriptive_stats`, `pca_analysis`, or `umap_analysis` is invoked with no
-  version selector given
+- **WHEN** `clustering`, `descriptive_stats`, or `umap_analysis` is invoked with no version
+  selector given
 - **THEN** the tool calls `load_experiment(params.experiment, require_clean=True)` with no
   `version` kwarg, exactly as before this change (Protocol default `"latest"` applies)
 
-#### Scenario: An explicit version is honored on the four uniform tools
+#### Scenario: An explicit version is honored on the three uniform tools
 
-- **WHEN** `clustering`, `descriptive_stats`, `pca_analysis`, or `umap_analysis` is invoked with an
-  explicit version selector (e.g. `"v2"`)
+- **WHEN** `clustering`, `descriptive_stats`, or `umap_analysis` is invoked with an explicit
+  version selector (e.g. `"v2"`)
 - **THEN** the tool calls `load_experiment(params.experiment, require_clean=True, version="v2")`
 
 #### Scenario: remove_outliers omitting the selector still defaults to latest_qc

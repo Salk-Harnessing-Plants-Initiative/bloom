@@ -69,3 +69,11 @@ ignoring the pin or raising an unrelated `TypeError`.
   arguments non-`None`
 - **THEN** the call raises `AmbiguousSourceSelectionError` — verified generically through the
   `ExperimentReader` Protocol type, not only against `SupabaseReader`'s concrete implementation
+
+#### Scenario: An explicit source pin that matches nothing is reported distinctly from ambiguity
+
+- **WHEN** `load_experiment(name, source_id=999)` is called with a `source_id` that does not match
+  any known source for `name`, on an adapter backed by a source-versioned substrate
+- **THEN** the call raises `SourcePinNotFoundError` — distinct from `AmbiguousSourceSelectionError`
+  (wrong pin, not conflicting pins) and from `ExperimentNotFoundError` (the experiment itself
+  exists; only the pin is wrong)

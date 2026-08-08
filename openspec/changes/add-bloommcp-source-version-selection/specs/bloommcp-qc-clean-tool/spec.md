@@ -48,3 +48,11 @@ given.
 - **WHEN** `qc_clean` is invoked with `csv_content` instead of a registered `experiment`
 - **THEN** the result's advisory note is `None` regardless of source count, since inline content
   has no experiment identity to enumerate sources for
+
+#### Scenario: A pinned source is traceable from the committed run's provenance
+
+- **WHEN** `qc_clean` is invoked with an explicit `source_id` pin and commits a run
+- **THEN** the committed `StoredRun`'s recorded source metadata (via the existing
+  `store.create_run(source=frame.resolved_source)` path) identifies the pinned source, so a later
+  reader of the manifest can trace the cleaned run back to the exact raw source used — not only
+  the fact that cleaning occurred

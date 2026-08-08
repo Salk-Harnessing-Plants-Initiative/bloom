@@ -32,8 +32,8 @@ backend" message rather than raising an error.
 ### Requirement: qc_inspect Accepts an Explicit Source Pin
 
 The `qc_inspect` tool SHALL accept optional `source_id`/`run_id` params, threaded into its
-existing raw-tier `load_experiment` call, with the same default-preserving and
-ambiguous-pin-rejection guarantees as `qc_clean`'s equivalent params.
+existing raw-tier `load_experiment` call, with the same default-preserving,
+ambiguous-pin-rejection, and pin-not-found guarantees as `qc_clean`'s equivalent params.
 
 #### Scenario: Omitting both source params preserves today's behavior
 
@@ -53,21 +53,28 @@ ambiguous-pin-rejection guarantees as `qc_clean`'s equivalent params.
 ### Requirement: load_experiment_data Accepts an Explicit Source Pin
 
 The `load_experiment_data` tool SHALL accept optional `source_id`/`run_id` kwargs, threaded
-through `_ports.load_frame` into `load_experiment`, with the same default-preserving and
-ambiguous-pin-rejection guarantees as `qc_clean`'s equivalent params. Any resulting
-`ExperimentReadError` (ambiguous pin, unsupported pin, not-found) SHALL surface through the tool's
-existing string-error return contract, not an unhandled exception.
+through `_ports.load_frame` into `load_experiment`. A source pin only ever applies to the raw tier
+(a pin cannot select a cleaned read — see the `ExperimentReader Port` requirement), and this tool
+has no separate way to request the raw tier, so **when either `source_id` or `run_id` is
+non-`None`, the underlying `load_experiment` call SHALL be forced to `version="raw"`** — otherwise
+a pin on any experiment that already has a cleaned version would spuriously raise
+`AmbiguousSourceSelectionError` even though the caller gave only one selector. Omitting both
+kwargs SHALL be behavior-identical to today (no forcing, default `version="latest"` resolution).
+Any resulting `ExperimentReadError` (ambiguous pin, unsupported pin, pin-not-found) SHALL surface
+through the tool's existing string-error return contract, not an unhandled exception.
 
 #### Scenario: Omitting both source params preserves today's behavior
 
 - **WHEN** `load_experiment_data` is invoked with no `source_id`/`run_id` given
-- **THEN** the tool summarizes the experiment exactly as before this change
+- **THEN** the tool summarizes the experiment exactly as before this change, including its
+  existing `version="latest"` resolution order
 
-#### Scenario: An explicit source pin is honored
+#### Scenario: An explicit source pin is honored, even on an already-cleaned experiment
 
 - **WHEN** `load_experiment_data` is invoked with `source_id` set to one of the experiment's known
-  sources
-- **THEN** the summary reflects the frame backed by that specific source
+  sources, for an experiment that already has a committed cleaned version
+- **THEN** the tool forces `version="raw"` on the underlying read, so the summary reflects the raw
+  frame backed by that specific source rather than raising `AmbiguousSourceSelectionError`
 
 #### Scenario: Both source_id and run_id given returns the existing error string, not a crash
 

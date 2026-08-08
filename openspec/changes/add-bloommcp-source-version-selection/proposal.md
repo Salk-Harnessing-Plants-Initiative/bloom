@@ -35,7 +35,10 @@ one. This was surfaced while investigating #625 and is tracked as issue #626.
   `"latest_qc"` today (not the Protocol's `"latest"`), so its new field must preserve that, not
   silently switch defaults. `cross_experiment_correlations` reads two independent experiments, so
   it gets two independent fields (`version_1`/`version_2`), matching its existing `_1`/`_2`
-  per-experiment field convention.
+  per-experiment field convention. `pca_analysis` already has an archived capability spec
+  (`bloommcp-pca-analysis-tool`) — its selector lands there as a **MODIFIED** delta, not lumped in
+  with the other 5 tools' brand-new capability (an earlier draft of this proposal mistakenly
+  treated all 6 as baseline-less; caught in review).
 - Passing both `source_id` and `run_id` anywhere raises the already-implemented
   `AmbiguousSourceSelectionError` — this change adds tool-layer test coverage for that, not new
   logic.
@@ -49,8 +52,13 @@ migration. No shared code or migration dependency with sibling issue #625 (alrea
 
 - **Affected specs**:
   - `bloommcp-experiment-read` (MODIFIED) — `ExperimentReader` Protocol signature + adapter
-    rejection contract.
-  - `bloommcp-qc-clean-tool` (MODIFIED) — `qc_clean`'s new params + response text.
+    rejection contract + the `SourcePinNotFoundError` scenario Tier 2 (PR #557) shipped without
+    ever getting spec coverage.
+  - `bloommcp-qc-clean-tool` (ADDED — new requirement inside the existing capability) —
+    `qc_clean`'s new params + response text + a provenance-traceability scenario.
+  - `bloommcp-pca-analysis-tool` (MODIFIED) — `pca_analysis` already has an archived baseline
+    spec; its version selector modifies the existing "Requires a Cleaned Input" requirement
+    rather than joining the new cross-cutting capability below.
   - `bloommcp-source-selection` (ADDED, new capability) — the new discovery tool, plus
     `qc_inspect`/`load_experiment_data` source pinning. (Both tools currently have no archived
     baseline spec of their own in `openspec/specs/` — their own change proposals,
@@ -58,12 +66,23 @@ migration. No shared code or migration dependency with sibling issue #625 (alrea
     archive backlog unrelated to this change. Grouping their source-pinning behavior here avoids
     inventing a `MODIFIED` delta against a nonexistent baseline.)
   - `bloommcp-clean-version-selection` (ADDED, new capability) — the version-selector wiring
-    across the 6 `require_clean=True` tools, which likewise have no archived baseline specs of
-    their own yet.
-- **Affected code**: `bloommcp/src/bloom_mcp/data_access/ports.py`,
+    across the **5** `require_clean=True` tools without an archived baseline
+    (`clustering`, `descriptive_stats`, `umap_analysis`, `remove_outliers`,
+    `cross_experiment_correlations` — `pca_analysis` is excluded, see above).
+- **Affected code**: `bloommcp/src/bloom_mcp/data_access/ports.py` (including its `__init__.py`
+  re-exports — the new `SourcePinningUnsupportedError` needs adding there too),
   `data_access/local_reader.py`, `data_access/fake_reader.py`, `sections/core/` (new module +
   `__init__.py` registration), `sections/sleap_roots/analysis/{qc_clean,qc_inspect,clustering,
   descriptive_stats,pca_analysis,umap_analysis,remove_outliers,cross_experiment_correlations}.py`,
-  `tools/_ports.py`.
-- **Test fixtures**: `FakeReader`'s test double has zero multi-source fixtures today — this
-  change adds multi-source seeding support to it, a prerequisite for the tool-layer tests above.
+  `tools/_ports.py`. `sections/phenotyping_segmentation/summarize_trait.py` also calls
+  `_ports.load_frame` and is therefore a third consumer of the widened seam — it needs no code
+  change (the new kwargs are additive and default to `None`) but is noted here so "affected code"
+  is complete. `bloommcp/tests/test_devendor_invariants.py::test_expected_tool_surface` hardcodes
+  the `core_*` tool enumeration and needs updating to include `core_list_experiment_sources`, or it
+  silently stops verifying the live tool surface.
+- **Test fixtures**: `FakeReader`'s test double has zero multi-source fixtures today, but it also
+  deliberately does **not** implement `SourceSelectable` (locked in by
+  `test_supabase_reader.py::test_fake_reader_is_not_source_selectable`) — this change does not
+  change that. Multi-source tool-layer tests instead extend the existing
+  monkeypatched-`SupabaseReader`-boundary fixture pattern `test_supabase_reader.py` already uses
+  for Tier-2 multi-source coverage (see design.md Decision 5).
