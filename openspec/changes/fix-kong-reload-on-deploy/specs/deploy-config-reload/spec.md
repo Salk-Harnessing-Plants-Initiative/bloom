@@ -2,7 +2,7 @@
 
 ### Requirement: Deploy MUST detect content-only changes to bind-mounted config files separately from service-definition changes
 
-`docker compose up -d --wait` only recreates a container when its *service definition* changes (image, environment, command, volume list) — it does not detect that the *contents* of a file behind an unchanged bind mount changed. Any service whose runtime config is delivered via a read-only bind mount into a container that only re-reads/re-derives that config at process start (not on a filesystem-change signal) MUST have its own explicit change-detection step in the deploy workflow, computed from the same pre-pull/post-pull commit range already used to reset the deploy host's checkout.
+`docker compose up -d --wait` only recreates a container when its _service definition_ changes (image, environment, command, volume list) — it does not detect that the _contents_ of a file behind an unchanged bind mount changed. Any service whose runtime config is delivered via a read-only bind mount into a container that only re-reads/re-derives that config at process start (not on a filesystem-change signal) MUST have its own explicit change-detection step in the deploy workflow, computed from the same pre-pull/post-pull commit range already used to reset the deploy host's checkout.
 
 #### Scenario: Change detection reuses the pull step's before/after commits
 
@@ -75,7 +75,7 @@ A bad config change (parse error, invalid reference) can put a service into a re
 - **THEN** it MUST delegate the decision to `scripts/check_kong_restart_delta.sh <before-count> <threshold> -- <docker compose command...>`, passing the `RestartCount` captured immediately before the restart and the compose invocation prefix appropriate to the current job (prod or staging)
 - **AND** the script MUST compute `delta = <RestartCount after> - <before-count>` and fail (dumping the last 100 log lines via `<compose command> logs --tail=100 kong` and stopping Kong via `<compose command> stop kong`) only if `delta > threshold`, so the deliberate restart itself is never mistaken for a crash loop
 - **AND** the workflow MUST pass `2` as `<threshold>`, keeping Kong's tolerance for one incidental extra restart consistent with Caddy's own `> 2` threshold
-- **AND** this check only detects the service *exiting* (a crash loop) — it does not, by itself, verify that a `kong.yml` change that starts successfully is serving the intended routes correctly; see `design.md`'s Decision 2 "Known limitation" note
+- **AND** this check only detects the service _exiting_ (a crash loop) — it does not, by itself, verify that a `kong.yml` change that starts successfully is serving the intended routes correctly; see `design.md`'s Decision 2 "Known limitation" note
 
 #### Scenario: check_kong_restart_delta.sh fails cleanly when the kong container does not exist
 
