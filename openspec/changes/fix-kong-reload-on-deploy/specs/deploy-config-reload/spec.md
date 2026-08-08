@@ -54,7 +54,7 @@ When a change-detection output from the requirement above is `true`, the deploy 
 
 - **GIVEN** the `Restart Kong config` step has just issued `docker compose ... restart kong`
 - **WHEN** the step decides when to hand off to the next step
-- **THEN** it MUST poll `docker inspect --format='{{.State.Health.Status}}'` on the same container until it reports `healthy` or a 90-second timeout elapses, rather than a fixed sleep — see `design.md`'s Decision 5 for why a flat sleep is insufficient, and why the bound is 90s specifically (`start_period` (30s) + `interval` × `retries` (10s × 5) is the full window Kong's own healthcheck treats as still-legitimately-starting; anything shorter risks classifying a merely-slow-but-fine boot as a timeout and relocating the original race to the smoke-test step instead of closing it)
+- **THEN** it MUST poll `docker inspect --format='{{.State.Health.Status}}'` on the same container until it reports `healthy` or a 120-second timeout elapses, rather than a fixed sleep — see `design.md`'s Decision 5 for why a flat sleep is insufficient and for the full reasoning behind this specific bound
 - **AND** a timeout MUST NOT itself fail the step — the following crash-loop check step is what decides pass/fail, using `RestartCount`, which correctly reflects either a crash loop or a stuck-starting container either way
 
 ### Requirement: Deploy MUST detect a config reload that put a service into a crash loop and stop it before it retries indefinitely
