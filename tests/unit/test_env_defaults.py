@@ -27,6 +27,11 @@ COMPOSE_FILE = REPO_ROOT / "docker-compose.prod.yml"
 SENSITIVE_INVENTORY = {
     "POSTGRES_PASSWORD",
     "JWT_SECRET",
+    # Both hold key material. JWT_JWKS looks like public keys but embeds
+    # JWT_SECRET as a symmetric JWK so pre-migration tokens keep
+    # verifying, so it is every bit as sensitive as the private half.
+    "JWT_KEYS",
+    "JWT_JWKS",
     "ANON_KEY",
     "SERVICE_ROLE_KEY",
     "DB_ENC_KEY",
@@ -314,7 +319,11 @@ def test_validator_accepts_real_defaults_plus_fake_secrets(
     accepts it.
     """
     compose_text = COMPOSE_FILE.read_text()
-    referenced = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*)\}", compose_text))
+    # Matches `${VAR}` and `${VAR:-default}` alike, as validate_env.sh does
+    # (scripts/validate_env.sh:69). A narrower pattern here would skip
+    # defaulted vars the validator still requires, so the fixture would
+    # omit them and this test would fail for the wrong reason.
+    referenced = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*)", compose_text))
     FILTERED = {"COMPOSE_PROJECT_NAME", "NEXT_PUBLIC_SUPABASE_COOKIE_NAME"}
     required = referenced - FILTERED
 
