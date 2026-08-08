@@ -26,7 +26,6 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_YML = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
-CHECK_SCRIPT = REPO_ROOT / "scripts" / "check_kong_restart_delta.sh"
 
 # See test_check_kong_restart_delta_script.py's identical helper for why
 # this is needed: `bash` can resolve to the WSL launcher shim rather than a
@@ -375,21 +374,43 @@ class TestKongfileChangedFailSafeDefault:
         assert "kongfile_changed=true" in output_content
 
 
-class TestCheckKongRestartDeltaScriptShapeReady:
-    """Sanity check that the script referenced by deploy.yml's crash-loop
-    check step doesn't exist yet at this point in the RED phase (task 4/5
-    create it) — guards against accidentally implementing task 3 and task 5
-    out of TDD order."""
+class TestRollbackRestoresKongConfig:
+    """The whole reason this feature exists is that `up -d` can't detect a
+    bind-mounted config's CONTENT changing back — which is exactly what
+    `Rollback on failure`'s own `git reset --hard` + `up -d` does to
+    kong.yml. If the forward path already restarted Kong onto the new
+    config before a later step failed, rollback must explicitly restart
+    Kong again onto the reverted config, or it silently reintroduces the
+    bug this PR fixes."""
 
-    def test_script_path_referenced_consistently(self):
+    @pytest.mark.parametrize("job_name,pull_id,_restart_id,compose,_prefix", JOB_CASES)
+    def test_rollback_restarts_kong_when_kongfile_changed(
+        self, job_name, pull_id, _restart_id, compose, _prefix
+    ):
         workflow = _load(DEPLOY_YML)
-        for job_name, _pull_id, _restart_id, _compose, prefix in JOB_CASES:
-            steps = _steps_for(workflow, job_name)
-            env_label = "production" if prefix == "PROD" else "staging"
-            crash_step = next(
-                (s for s in steps if s.get("name") == f"Kong crash-loop check ({env_label})"),
-                None,
-            )
-            if crash_step is None:
-                pytest.skip("Kong crash-loop check step not implemented yet")
-            assert "scripts/check_kong_restart_delta.sh" in _run_text(crash_step)
+        steps = _steps_for(workflow, job_name)
+        rollback_step = next(s for s in steps if s.get("name") == "Rollback on failure")
+        run = _run_text(rollback_step)
+        assert f"steps.{pull_id}.outputs.kongfile_changed" in run, (
+            f"{job_name}'s Rollback on failure step must check kongfile_changed "
+            "before restoring kong, or a rollback after a successful Kong "
+            "restart leaves Kong serving the failed deploy's config forever"
+        )
+        assert f"{compose} restart kong" in run
+        assert "State.Health.Status" in run
+
+    @pytest.mark.parametrize("job_name,pull_id,_restart_id,compose,_prefix", JOB_CASES)
+    def test_rollback_kong_restart_is_positioned_after_up_d(
+        self, job_name, pull_id, _restart_id, compose, _prefix
+    ):
+        workflow = _load(DEPLOY_YML)
+        steps = _steps_for(workflow, job_name)
+        rollback_step = next(s for s in steps if s.get("name") == "Rollback on failure")
+        run = _run_text(rollback_step)
+        up_d_idx = run.index("up -d --build --remove-orphans --wait")
+        kong_restart_idx = run.index("restarting kong so the reverted config takes effect")
+        assert up_d_idx < kong_restart_idx, (
+            "the rollback Kong restart must happen after the rollback's own "
+            "up -d, not before — restarting Kong before the code/env are "
+            "even reverted would restart it onto the still-broken config"
+        )

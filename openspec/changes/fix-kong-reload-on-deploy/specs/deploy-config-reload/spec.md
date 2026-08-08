@@ -50,6 +50,13 @@ When a change-detection output from the requirement above is `true`, the deploy 
 - **AND** it MUST then run a full `docker compose ... restart kong --timeout 10` (not `kong reload` or an Admin API `/config` call) so the entrypoint's substitution step re-runs against the current `~/temp.yml` content
 - **AND** the step MUST NOT attempt `kong reload` as a means of applying `kong.yml` content changes — see `design.md`'s Decision 1 for the full rationale (Kong's DB-less declarative-config reload has a documented history of not reliably applying config changes, independent of the entrypoint-substitution problem above)
 
+#### Scenario: A missing or malformed before-restart-count fails toward inaction, not a false crash-loop stop
+
+- **GIVEN** the `Restart Kong config` step's `RestartCount` capture is ever missing or malformed in its own output (e.g. an SSH buffering glitch), unlike `kongfile_changed`'s deliberate fail-toward-`true` default
+- **WHEN** the step writes its `before_restart_count` output
+- **THEN** it MUST NOT default the missing value to `0` — doing so would inflate the crash-loop check's computed delta and could stop a perfectly healthy Kong based on absent data, a self-inflicted full-outage action
+- **AND** it MUST instead pass the value through as-is (empty), relying on `scripts/check_kong_restart_delta.sh`'s own argument validation to reject it with a usage error (exit 2) — the deploy still correctly fails, but without taking the destructive stop-kong action
+
 #### Scenario: Restart step waits for Kong to report healthy before the deploy continues
 
 - **GIVEN** the `Restart Kong config` step has just issued `docker compose ... restart kong`
@@ -92,7 +99,7 @@ A bad config change (parse error, invalid reference) can put a service into a re
 
 #### Scenario: Crash-loop check masks Kong's secret env vars before dumping logs
 
-- **GIVEN** Kong's compose service injects `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`, `BLOOM_AGENT_KEY`, `DASHBOARD_USERNAME`, and `DASHBOARD_PASSWORD` as environment variables substituted into the generated `~/kong.yml`
+- **GIVEN** Kong's compose service injects `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`, `BLOOM_AGENT_KEY`, `DASHBOARD_USERNAME`, and `DASHBOARD_PASSWORD` as environment variables substituted into the generated `~/kong.yml` — sourced, respectively, from the deployed `.env.<env>` file's `ANON_KEY`, `SERVICE_ROLE_KEY`, `BLOOM_AGENT_KEY`, `DASHBOARD_USERNAME`, and `DASHBOARD_PASSWORD` keys (the compose-level names are what Kong's container receives; the `.env.<env>` names are what the workflow reads them as, matching how every other `.env.<env>`-sourced value in this workflow is named)
 - **WHEN** the `Kong crash-loop check` step is about to run `<compose command> logs --tail=100 kong` (i.e. `delta > threshold`)
 - **THEN** it MUST emit `::add-mask::` annotations for all five secret values before the log dump runs, as defense-in-depth beyond GitHub's automatic literal-secret redaction — see `design.md`'s Decision 6 (this step runs before this workflow's existing smoke-test step, which already masks `ANON_KEY` but too late to protect this earlier log dump)
 
@@ -103,3 +110,22 @@ A bad config change (parse error, invalid reference) can put a service into a re
 - **THEN** a `delta <= threshold` case (including `delta == threshold` exactly) MUST exit 0 without calling `logs` or `stop`
 - **AND** a `delta > threshold` case MUST exit 1 and MUST have invoked both `logs --tail=100 kong` and `stop kong` through the passed-through compose command
 - **AND** a malformed usage invocation (wrong argument count, or a missing `--` separator) MUST exit 2, distinct from a `delta > threshold` failure's exit 1 — matching `scripts/validate_env.sh`'s existing usage-error-vs-check-failure exit code convention
+
+### Requirement: Rollback MUST restore a config-delivering service's content too, not just recreate it
+
+`Rollback on failure`'s `git reset --hard <previous-sha>` followed by `docker compose ... up -d --wait` is the same mechanism this whole capability exists to work around — it cannot detect that a bind-mounted config's _content_ reverted, any more than a forward deploy's `up -d` can detect it changed. If a config-delivering service was already reloaded onto new content earlier in the same job (via the requirements above) before a later step failed, rollback MUST NOT leave that service running the failed deploy's config while believing the rollback succeeded.
+
+#### Scenario: Rollback restarts Kong when kong.yml changed during this job
+
+- **GIVEN** the `Restart Kong config` step already restarted Kong onto `kongfile_changed`'s new content earlier in this job
+- **AND** a later step (cert verification, smoke test, migrations, schema grants) fails, triggering `Rollback on failure`
+- **WHEN** the rollback step's own `git reset --hard $PREV` and `up -d --wait` complete successfully
+- **THEN** it MUST check the same `kongfile_changed` output used by the forward path, and if `true`, restart Kong again (same restart + health-poll mechanism as the forward path) so Kong picks up the just-reverted `kong.yml`
+- **AND** this restart MUST happen after the rollback's own `up -d`, not before — restarting Kong before the code/env files are reverted would restart it onto the still-broken config
+- **AND** if the kong container cannot be found at this point, the step MUST emit a `::warning::` and continue rather than failing the already-in-progress rollback over a secondary concern
+
+#### Scenario: Restart commands are bounded by an external timeout, not just Docker's internal grace period
+
+- **GIVEN** `docker compose restart kong --timeout 10`'s `--timeout` flag only bounds Docker's own SIGTERM-then-SIGKILL grace period for the stop phase, not the whole command's wall-clock time
+- **WHEN** the Docker daemon itself becomes unresponsive (e.g. host resource exhaustion)
+- **THEN** both the forward-path and rollback-path Kong restart invocations MUST be wrapped in an external `timeout 60`, so a hung Docker daemon cannot block the step indefinitely on top of Docker's own internal timeout

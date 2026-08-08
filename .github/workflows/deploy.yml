@@ -366,7 +366,10 @@ jobs:
             fi
             before=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\")
             echo \"BEFORE_RESTART_COUNT=\$before\"
-            docker compose -f docker-compose.prod.yml --env-file .env.prod restart kong --timeout 10
+            # Wrap in an external timeout — --timeout 10 only bounds Docker's
+            # own graceful-stop grace period, not the whole command's wall
+            # time if the Docker daemon itself is unresponsive.
+            timeout 60 docker compose -f docker-compose.prod.yml --env-file .env.prod restart kong --timeout 10
             # Poll for healthy instead of a flat sleep — Kong's healthcheck
             # start_period/interval/retries mean a merely-slow (not crashed)
             # boot can legitimately still be starting well past a short
@@ -385,7 +388,13 @@ jobs:
             echo \"kong health status after restart: \$status (waited \${elapsed}s)\"
           " | tee /tmp/restart_kong_prod.out
           before=$(grep '^BEFORE_RESTART_COUNT=' /tmp/restart_kong_prod.out | tail -1 | cut -d= -f2)
-          echo "before_restart_count=${before:-0}" >> "$GITHUB_OUTPUT"
+          # Deliberately no ':-0' fallback here, unlike caddyfile_changed's
+          # fail-toward-action default: defaulting a missing/malformed count
+          # to 0 would inflate the crash-loop check's delta and could stop a
+          # perfectly healthy kong. An empty value instead fails the next
+          # step's own usage-error validation (exit 2) — the deploy still
+          # correctly fails, but without a false-positive "stop kong" action.
+          echo "before_restart_count=${before}" >> "$GITHUB_OUTPUT"
 
       # Delta-based crash-loop check: unlike Caddy's absolute threshold, the
       # restart step above deliberately restarts Kong as its normal,
@@ -403,6 +412,11 @@ jobs:
             BLOOM_AGENT_KEY=\$(grep '^BLOOM_AGENT_KEY=' .env.prod | cut -d= -f2-)
             DASHBOARD_USERNAME=\$(grep '^DASHBOARD_USERNAME=' .env.prod | cut -d= -f2-)
             DASHBOARD_PASSWORD=\$(grep '^DASHBOARD_PASSWORD=' .env.prod | cut -d= -f2-)
+            : \"\${ANON_KEY:?missing ANON_KEY in .env.prod}\"
+            : \"\${SERVICE_ROLE_KEY:?missing SERVICE_ROLE_KEY in .env.prod}\"
+            : \"\${BLOOM_AGENT_KEY:?missing BLOOM_AGENT_KEY in .env.prod}\"
+            : \"\${DASHBOARD_USERNAME:?missing DASHBOARD_USERNAME in .env.prod}\"
+            : \"\${DASHBOARD_PASSWORD:?missing DASHBOARD_PASSWORD in .env.prod}\"
             echo \"::add-mask::\$ANON_KEY\"
             echo \"::add-mask::\$SERVICE_ROLE_KEY\"
             echo \"::add-mask::\$BLOOM_AGENT_KEY\"
@@ -714,6 +728,30 @@ jobs:
               docker compose -f docker-compose.prod.yml --env-file .env.prod \
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
                 || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
+              # Same root cause as the reason this whole feature exists: up -d
+              # cannot detect that kong.yml's bind-mounted CONTENT changed back
+              # (only file-list/env/image changes trigger a recreate). If this
+              # job's forward path already restarted Kong onto the now-reverted
+              # kong.yml before a later step failed, Kong is still serving that
+              # config after the reset above — explicitly restart it too so
+              # rollback doesn't reintroduce the exact bug #634 fixed.
+              if [ \"${{ steps.pull_prod.outputs.kongfile_changed }}\" = \"true\" ]; then
+                echo 'kong.yml changed during this deploy — restarting kong so the reverted config takes effect'
+                kong_cid=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps -q kong)
+                if [ -n \"\$kong_cid\" ]; then
+                  timeout 60 docker compose -f docker-compose.prod.yml --env-file .env.prod restart kong --timeout 10
+                  kong_elapsed=0
+                  while [ \"\$kong_elapsed\" -lt 120 ]; do
+                    kong_status=\$(docker inspect --format='{{.State.Health.Status}}' \"\$kong_cid\" 2>/dev/null || echo unknown)
+                    [ \"\$kong_status\" = \"healthy\" ] && break
+                    sleep 3
+                    kong_elapsed=\$((kong_elapsed + 3))
+                  done
+                  echo \"kong health status after rollback restart: \$kong_status\"
+                else
+                  echo '::warning::kong container not found during rollback restart — skipping'
+                fi
+              fi
               echo 'Rollback complete — previous version restored and healthy'
             else
               echo '::error::No previous SHA saved — manual recovery required'
@@ -1009,7 +1047,7 @@ jobs:
             fi
             before=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\")
             echo \"BEFORE_RESTART_COUNT=\$before\"
-            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging restart kong --timeout 10
+            timeout 60 docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging restart kong --timeout 10
             elapsed=0
             while [ \"\$elapsed\" -lt 120 ]; do
               status=\$(docker inspect --format='{{.State.Health.Status}}' \"\$cid\" 2>/dev/null || echo unknown)
@@ -1022,7 +1060,13 @@ jobs:
             echo \"kong health status after restart: \$status (waited \${elapsed}s)\"
           " | tee /tmp/restart_kong_staging.out
           before=$(grep '^BEFORE_RESTART_COUNT=' /tmp/restart_kong_staging.out | tail -1 | cut -d= -f2)
-          echo "before_restart_count=${before:-0}" >> "$GITHUB_OUTPUT"
+          # Deliberately no ':-0' fallback here, unlike caddyfile_changed's
+          # fail-toward-action default: defaulting a missing/malformed count
+          # to 0 would inflate the crash-loop check's delta and could stop a
+          # perfectly healthy kong. An empty value instead fails the next
+          # step's own usage-error validation (exit 2) — the deploy still
+          # correctly fails, but without a false-positive "stop kong" action.
+          echo "before_restart_count=${before}" >> "$GITHUB_OUTPUT"
 
       # See deploy-production's equivalent step for rationale.
       - name: Kong crash-loop check (staging)
@@ -1036,6 +1080,11 @@ jobs:
             BLOOM_AGENT_KEY=\$(grep '^BLOOM_AGENT_KEY=' .env.staging | cut -d= -f2-)
             DASHBOARD_USERNAME=\$(grep '^DASHBOARD_USERNAME=' .env.staging | cut -d= -f2-)
             DASHBOARD_PASSWORD=\$(grep '^DASHBOARD_PASSWORD=' .env.staging | cut -d= -f2-)
+            : \"\${ANON_KEY:?missing ANON_KEY in .env.staging}\"
+            : \"\${SERVICE_ROLE_KEY:?missing SERVICE_ROLE_KEY in .env.staging}\"
+            : \"\${BLOOM_AGENT_KEY:?missing BLOOM_AGENT_KEY in .env.staging}\"
+            : \"\${DASHBOARD_USERNAME:?missing DASHBOARD_USERNAME in .env.staging}\"
+            : \"\${DASHBOARD_PASSWORD:?missing DASHBOARD_PASSWORD in .env.staging}\"
             echo \"::add-mask::\$ANON_KEY\"
             echo \"::add-mask::\$SERVICE_ROLE_KEY\"
             echo \"::add-mask::\$BLOOM_AGENT_KEY\"
@@ -1307,6 +1356,24 @@ jobs:
               docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
                 || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
+              # See the matching comment on the production rollback step above.
+              if [ \"${{ steps.pull_staging.outputs.kongfile_changed }}\" = \"true\" ]; then
+                echo 'kong.yml changed during this deploy — restarting kong so the reverted config takes effect'
+                kong_cid=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps -q kong)
+                if [ -n \"\$kong_cid\" ]; then
+                  timeout 60 docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging restart kong --timeout 10
+                  kong_elapsed=0
+                  while [ \"\$kong_elapsed\" -lt 120 ]; do
+                    kong_status=\$(docker inspect --format='{{.State.Health.Status}}' \"\$kong_cid\" 2>/dev/null || echo unknown)
+                    [ \"\$kong_status\" = \"healthy\" ] && break
+                    sleep 3
+                    kong_elapsed=\$((kong_elapsed + 3))
+                  done
+                  echo \"kong health status after rollback restart: \$kong_status\"
+                else
+                  echo '::warning::kong container not found during rollback restart — skipping'
+                fi
+              fi
               echo 'Rollback complete — previous version restored and healthy'
             else
               echo '::error::No previous SHA saved — manual recovery required'

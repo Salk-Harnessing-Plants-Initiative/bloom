@@ -66,7 +66,10 @@ if [ -z "$cid" ]; then
   exit 1
 fi
 
-after=$(docker inspect --format='{{.RestartCount}}' "$cid")
+after=$(docker inspect --format='{{.RestartCount}}' "$cid") || {
+  echo "::error::docker inspect failed for kong container '$cid' — it may have disappeared between resolving its id and inspecting it" >&2
+  exit 1
+}
 
 # Do not silently coerce a malformed reading to 0 — that could compute a
 # negative delta and mask a real problem as "within threshold".

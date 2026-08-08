@@ -56,6 +56,19 @@ set -euo pipefail
 log="$FAKE_DOCKER_CALL_LOG"
 if [ "$1" = "inspect" ]; then
   echo "inspect $*" >> "$log"
+  # Validate the script actually asks for RestartCount on the right
+  # container, not just that *some* inspect call happened — a regression
+  # that drops --format or inspects a stale/wrong id would otherwise still
+  # return this canned value and pass every test.
+  expected_cid="${FAKE_CONTAINER_ID-fake-cid}"
+  if [ "${2-}" != "--format={{.RestartCount}}" ]; then
+    echo "fake docker: unexpected inspect format arg: ${2-<missing>}" >&2
+    exit 97
+  fi
+  if [ "${3-}" != "$expected_cid" ]; then
+    echo "fake docker: unexpected inspect container id: ${3-<missing>} (expected $expected_cid)" >&2
+    exit 97
+  fi
   printf '%s' "${FAKE_RESTART_COUNT-}"
   exit 0
 fi
@@ -150,6 +163,24 @@ def test_delta_over_threshold_stops_kong_and_fails(tmp_path, before, restart_cou
     assert "LOGS_CALLED" in result.call_log, delta_label
     assert "STOP_CALLED" in result.call_log, delta_label
     assert "::error::" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["not-a-number", "2", "--", *COMPOSE_ARGS],
+        ["5", "not-a-number", "--", *COMPOSE_ARGS],
+        ["-1", "2", "--", *COMPOSE_ARGS],
+    ],
+)
+def test_non_numeric_before_or_threshold_exits_2_without_inspecting(tmp_path, args):
+    result = _run_script(tmp_path, args, restart_count="5")
+    assert result.returncode == 2, f"args={args}: expected exit 2, got {result.returncode}"
+    assert "::error::" in result.stderr
+    assert "inspect" not in result.call_log, (
+        "a bad before/threshold argument is a usage error — must not even "
+        "attempt to resolve the container or inspect it"
+    )
 
 
 def test_missing_container_fails_cleanly_without_inspecting(tmp_path):
