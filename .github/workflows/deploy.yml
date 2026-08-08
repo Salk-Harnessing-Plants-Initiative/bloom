@@ -738,8 +738,15 @@ jobs:
               if [ \"${{ steps.pull_prod.outputs.kongfile_changed }}\" = \"true\" ]; then
                 echo 'kong.yml changed during this deploy — restarting kong so the reverted config takes effect'
                 kong_cid=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps -q kong)
-                if [ -n \"\$kong_cid\" ]; then
-                  timeout 60 docker compose -f docker-compose.prod.yml --env-file .env.prod restart kong --timeout 10
+                if [ -z \"\$kong_cid\" ]; then
+                  echo '::warning::kong container not found during rollback restart — skipping'
+                elif ! timeout 60 docker compose -f docker-compose.prod.yml --env-file .env.prod restart kong --timeout 10; then
+                  # A hiccup here is best-effort-recovery failing, not the
+                  # rollback itself — the critical code/env revert above
+                  # already succeeded. Warn instead of exit 1 so this
+                  # secondary problem cannot mask that success under set -e.
+                  echo '::warning::kong restart during rollback failed — kong may still be serving the prior unreverted config, verify manually on the deploy host'
+                else
                   kong_elapsed=0
                   while [ \"\$kong_elapsed\" -lt 120 ]; do
                     kong_status=\$(docker inspect --format='{{.State.Health.Status}}' \"\$kong_cid\" 2>/dev/null || echo unknown)
@@ -748,8 +755,6 @@ jobs:
                     kong_elapsed=\$((kong_elapsed + 3))
                   done
                   echo \"kong health status after rollback restart: \$kong_status\"
-                else
-                  echo '::warning::kong container not found during rollback restart — skipping'
                 fi
               fi
               echo 'Rollback complete — previous version restored and healthy'
@@ -1360,8 +1365,11 @@ jobs:
               if [ \"${{ steps.pull_staging.outputs.kongfile_changed }}\" = \"true\" ]; then
                 echo 'kong.yml changed during this deploy — restarting kong so the reverted config takes effect'
                 kong_cid=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps -q kong)
-                if [ -n \"\$kong_cid\" ]; then
-                  timeout 60 docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging restart kong --timeout 10
+                if [ -z \"\$kong_cid\" ]; then
+                  echo '::warning::kong container not found during rollback restart — skipping'
+                elif ! timeout 60 docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging restart kong --timeout 10; then
+                  echo '::warning::kong restart during rollback failed — kong may still be serving the prior unreverted config, verify manually on the deploy host'
+                else
                   kong_elapsed=0
                   while [ \"\$kong_elapsed\" -lt 120 ]; do
                     kong_status=\$(docker inspect --format='{{.State.Health.Status}}' \"\$kong_cid\" 2>/dev/null || echo unknown)
@@ -1370,8 +1378,6 @@ jobs:
                     kong_elapsed=\$((kong_elapsed + 3))
                   done
                   echo \"kong health status after rollback restart: \$kong_status\"
-                else
-                  echo '::warning::kong container not found during rollback restart — skipping'
                 fi
               fi
               echo 'Rollback complete — previous version restored and healthy'

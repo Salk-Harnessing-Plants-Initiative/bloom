@@ -123,6 +123,7 @@ A bad config change (parse error, invalid reference) can put a service into a re
 - **THEN** it MUST check the same `kongfile_changed` output used by the forward path, and if `true`, restart Kong again (same restart + health-poll mechanism as the forward path) so Kong picks up the just-reverted `kong.yml`
 - **AND** this restart MUST happen after the rollback's own `up -d`, not before — restarting Kong before the code/env files are reverted would restart it onto the still-broken config
 - **AND** if the kong container cannot be found at this point, the step MUST emit a `::warning::` and continue rather than failing the already-in-progress rollback over a secondary concern
+- **AND** if the restart command itself fails, the step MUST emit a `::warning::` and continue (not `exit 1`) — the rollback SSH block runs under `set -e`, and by this point the critical work (`git reset --hard` and `up -d --wait`) has already succeeded; a bare, unguarded restart command would let a secondary Kong-restart hiccup abort the whole step and falsely report that the rollback itself failed
 
 #### Scenario: Restart commands are bounded by an external timeout, not just Docker's internal grace period
 

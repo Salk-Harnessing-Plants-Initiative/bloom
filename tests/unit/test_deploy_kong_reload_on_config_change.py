@@ -414,3 +414,30 @@ class TestRollbackRestoresKongConfig:
             "up -d, not before — restarting Kong before the code/env are "
             "even reverted would restart it onto the still-broken config"
         )
+
+    @pytest.mark.parametrize("job_name,pull_id,_restart_id,compose,_prefix", JOB_CASES)
+    def test_rollback_kong_restart_failure_does_not_abort_rollback(
+        self, job_name, pull_id, _restart_id, compose, _prefix
+    ):
+        """The rollback SSH block runs under `set -e`. The critical work
+        (git reset + up -d) has already succeeded by the time this Kong
+        restart runs — a hiccup restarting Kong is a secondary, best-effort
+        concern, not a reason to make the whole rollback step report
+        failure and mislead on-call into thinking the actual revert failed.
+        The restart command must therefore be guarded (e.g. `elif !
+        timeout 60 ... restart kong ...; then <warning>`), not a bare
+        command that aborts the script under set -e on failure."""
+        workflow = _load(DEPLOY_YML)
+        steps = _steps_for(workflow, job_name)
+        rollback_step = next(s for s in steps if s.get("name") == "Rollback on failure")
+        run = _run_text(rollback_step)
+        restart_line = next(
+            line for line in run.splitlines() if f"{compose} restart kong" in line
+        )
+        assert restart_line.strip().startswith(("elif ", "if ")) or " || " in restart_line, (
+            f"the rollback Kong restart command must be guarded against its own "
+            f"failure aborting the script under set -e, found unguarded: {restart_line!r}"
+        )
+        assert "kong restart during rollback failed" in run, (
+            "a failed rollback restart must warn, not silently abort the step"
+        )
