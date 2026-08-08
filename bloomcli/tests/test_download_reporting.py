@@ -349,7 +349,12 @@ def test_a_failed_log_write_leaves_the_previous_log_intact(tmp_path, monkeypatch
     log = tmp_path / "download_log.txt"
     log.write_text("the log from the run before\n")
 
+    real = Path.write_bytes
+
     def _no_space(self, data):
+        # Create the file first, then fail — a real ENOSPC leaves a temp file behind, and
+        # failing before creating it would make the cleanup assertion below unfalsifiable.
+        real(self, b"")
         raise OSError(errno.ENOSPC, "No space left on device")
 
     monkeypatch.setattr(Path, "write_bytes", _no_space)
@@ -537,3 +542,59 @@ def test_growing_failures_are_marked_and_a_plateau_is_not(capsys):
     assert "(+" not in lines[2], "no marker once they stop arriving"
     assert "193 failed" in lines[2], "the total still stands"
     assert "(+" not in lines[3]
+
+
+def test_the_percentage_never_reads_complete_while_frames_are_outstanding():
+    """`.1f` rounds up, so 60,335/60,336 displayed as 100.0% — the same kind of lie as 0%."""
+    assert dl.format_progress("downloading", 60335, 60336) == "60,335/60,336 frames (99.9%)"
+    assert dl.format_progress("downloading", 1999, 2000) == "1,999/2,000 frames (99.9%)"
+    # the low end stays accurate rather than being floored
+    assert dl.format_progress("downloading", 349, 60336) == "349/60,336 frames (0.6%)"
+    assert dl.format_progress("downloading", 60336, 60336) == "60,336/60,336 frames (100.0%)"
+
+
+def test_a_resumed_run_stops_quoting_the_skipped_frames(capsys):
+    """Frames already on disk complete in an instant. Carrying that rate into the estimate
+    said "~0s left" with ten minutes of downloading to go."""
+    clock = _Clock()
+    report = dl.ProgressReporter(interval=5.0, now=clock)
+
+    clock.t = 1.0
+    report("downloading", 55000, 60336)  # the skip burst
+    clock.t = 6.0
+    report("downloading", 55040, 60336)  # real downloads begin
+    clock.t = 11.0
+    report("downloading", 55080, 60336)
+
+    last = capsys.readouterr().err.strip().splitlines()[-1]
+    assert "8.0/s" in last, f"should have forgotten the burst, got {last!r}"
+    assert "~0s left" not in last
+    assert "~10m left" in last
+
+
+def test_the_rate_from_the_listing_phase_does_not_leak_into_the_download_estimate(capsys):
+    """Listing runs at a completely different pace; carrying it over misreports the download."""
+    clock = _Clock()
+    report = dl.ProgressReporter(interval=0.0, now=clock)
+
+    clock.t = 1.0
+    report("listing", 500, 500)  # 500 scans listed fast
+    clock.t = 2.0
+    report("downloading", 10, 1000)
+    clock.t = 12.0
+    report("downloading", 20, 1000)
+
+    last = capsys.readouterr().err.strip().splitlines()[-1]
+    assert "1.0/s" in last, f"download pace, not the listing pace, got {last!r}"
+
+
+def test_a_full_disk_is_caught_by_the_writability_check(tmp_path, monkeypatch):
+    """`touch()` creates a 0-byte file, which needs no data blocks and so succeeds on a full
+    volume — the check has to write something to mean anything."""
+    _fills_disk_after(monkeypatch, 0)
+
+    with pytest.raises(click.ClickException) as failure:
+        dl.ensure_writable(tmp_path / "out")
+
+    assert "cannot write to" in str(failure.value)
+    assert "No space left on device" in str(failure.value)

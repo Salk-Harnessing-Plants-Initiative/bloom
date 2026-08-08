@@ -17,6 +17,11 @@ from .credentials import default_config_dir
 
 LOG_NAME = "errors.log"
 
+# Options whose value must never reach the log. The log sits beside the credentials and users
+# are told where it is so they can send it on, so a password in it would travel with it.
+# `--password` has no short form (`-p` is `--profile`), so matching the long name is enough.
+SECRET_OPTIONS = ("--password",)
+
 # Keep the file from growing without bound on a machine that hits errors often. Big enough to
 # hold the last several failures, small enough to paste into a message.
 MAX_LOG_BYTES = 256 * 1024
@@ -63,22 +68,46 @@ def _is_network_error(exc: BaseException) -> bool:
     return isinstance(exc, httpx.TransportError)
 
 
+def redact(argv: list[str]) -> list[str]:
+    """Blank out the value of any secret option, so the log is safe to pass on."""
+    safe: list[str] = []
+    hide_next = False
+    for arg in argv:
+        if hide_next:
+            safe.append("***")
+            hide_next = False
+        elif arg in SECRET_OPTIONS:
+            safe.append(arg)
+            hide_next = True
+        elif arg.split("=", 1)[0] in SECRET_OPTIONS:
+            safe.append(f"{arg.split('=', 1)[0]}=***")
+        else:
+            safe.append(arg)
+    return safe
+
+
 def record(exc: BaseException, argv: list[str] | None = None, *, path: Path | None = None) -> Path:
     """Append ``exc``'s traceback to the error log and return where it went.
+
+    Written 0600 in a 0700 directory, matching the credentials stored alongside it.
 
     Raises nothing of its own: this runs while already handling a failure, and the disk being
     full is one of the failures it has to survive. The caller checks whether the file appeared.
     """
     log = path or error_log_path()
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
-    command = " ".join(argv or [])
+    command = " ".join(redact(argv or []))
     body = (
         f"\n{'=' * 70}\n{stamp}  {command}\n{'=' * 70}\n"
         + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     )
     try:
-        log.parent.mkdir(parents=True, exist_ok=True)
+        # 0700 because this may be what creates ~/.bloom, and mkdir(exist_ok=True) later
+        # cannot tighten a directory that already exists.
+        log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         _trim(log)
+        log.touch(mode=0o600)
+        log.chmod(0o600)  # tighten a log left readable by an earlier version
         with log.open("a", encoding="utf-8") as fh:
             fh.write(body)
     except OSError:

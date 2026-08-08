@@ -11,6 +11,7 @@ Worth knowing: the rest of the suite invokes `cli` through `CliRunner`, which by
 from __future__ import annotations
 
 import errno
+import stat
 from pathlib import Path
 
 import click
@@ -209,3 +210,58 @@ def test_a_failure_is_still_reported_when_the_log_cannot_be_written(
     assert code == 1
     assert "Error: nobody planned for this" in err
     assert "Details written to" not in err, "do not point at a log that isn't there"
+
+
+# --- the log must be safe to send us ------------------------------------------
+
+
+def test_a_password_never_reaches_the_log(tmp_path):
+    """The CLI tells people where this file is so they can send it on. A password in it
+    would travel with it."""
+    log = tmp_path / "errors.log"
+    argv = ["bloomctl", "login", "--email", "me@salk.edu", "--password", "SuperSecret123!"]
+
+    errors.record(_raise(ValueError("boom")), argv, path=log)
+
+    text = log.read_text()
+    assert "SuperSecret123!" not in text
+    assert "--password ***" in text
+    assert "me@salk.edu" in text, "the rest of the command is still useful"
+
+
+def test_the_equals_form_of_a_password_is_redacted_too(tmp_path):
+    log = tmp_path / "errors.log"
+
+    errors.record(_raise(ValueError("boom")), ["bloomctl", "login", "--password=Secret!"], path=log)
+
+    text = log.read_text()
+    assert "Secret!" not in text
+    assert "--password=***" in text
+
+
+def test_redact_leaves_an_ordinary_command_alone():
+    argv = ["bloomctl", "cyl", "download", "./out", "--experiment-id", "42", "--workers", "16"]
+
+    assert errors.redact(argv) == argv
+
+
+def test_the_log_is_not_readable_by_others(tmp_path):
+    """It sits beside the credentials, which the same package deliberately writes 0600."""
+    log = tmp_path / "bloom" / "errors.log"
+
+    errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log)
+
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert stat.S_IMODE(log.parent.stat().st_mode) == 0o700, (
+        "this may be what creates ~/.bloom, and a later mkdir cannot tighten it"
+    )
+
+
+def test_a_log_left_readable_by_an_earlier_version_is_tightened(tmp_path):
+    log = tmp_path / "errors.log"
+    log.write_text("from a version that wrote this 0644\n")
+    log.chmod(0o644)
+
+    errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log)
+
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600

@@ -144,7 +144,8 @@ jobs:
       # Commands import supabase lazily, so `import bloomctl` alone stays green while
       # every real command dies — this imports the whole chain instead. It runs twice
       # because --pre applies to every dependency, not just bloomctl; a failure on the
-      # second pass means some dependency needs an upper bound (#629).
+      # second pass means a dependency needs an upper bound — or, if it is someone else's
+      # broken beta, that the release waits rather than being capped against it (#629).
       - name: Verify wheel imports
         run: |
           cat > /tmp/import_smoke.py <<'PY'

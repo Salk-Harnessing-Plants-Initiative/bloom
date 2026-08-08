@@ -128,7 +128,7 @@ def ensure_writable(out_dir: Path) -> None:
     probe = path / f".bloomctl-probe-{uuid4().hex}"
     try:
         path.mkdir(parents=True, exist_ok=True)
-        probe.touch()
+        probe.write_bytes(b"bloomctl write test")  # bytes, so a full disk fails here too
     except OSError as exc:
         raise click.ClickException(
             f"cannot write to {path}: {exc.strerror or exc}. Check the path is spelled "
@@ -667,10 +667,10 @@ class ProgressReporter:
         rate, seconds_left = self._pace(moment, done, total)
         arrived = failed - self._failures_seen
         self._failures_seen = failed
-        click.echo(
-            f"  {format_progress(phase, done, total, failed, rate=rate, seconds_left=seconds_left, new_failures=arrived)}",
-            err=True,
+        line = format_progress(
+            phase, done, total, failed, rate=rate, seconds_left=seconds_left, new_failures=arrived
         )
+        click.echo(f"  {line}", err=True)
         if failed and not self._mentioned_retry:  # once, when failures first appear
             self._mentioned_retry = True
             click.echo(f"  {RETRY_HINT}", err=True)
@@ -681,15 +681,29 @@ class ProgressReporter:
         A window rather than the whole run, so a connection that changes speed shows up within
         a minute instead of being averaged away over hours.
         """
-        self._samples.append((moment, done))
-        started_at, started_from = self._samples[0]
-        elapsed = moment - started_at
-        progressed = done - started_from
-        if elapsed <= 0 or progressed <= 0:
+        latest = (moment, done)
+        # A resumed run skips thousands of frames in seconds. Once it reaches frames that have
+        # to be fetched, the window is still quoting that burst, so start the window again.
+        if len(self._samples) >= 2:
+            just_now = _rate_between(self._samples[-1], latest)
+            window = _rate_between(self._samples[0], latest)
+            if just_now is not None and window is not None and just_now * 10 < window:
+                self._samples.clear()
+        self._samples.append(latest)
+        rate = _rate_between(self._samples[0], latest)
+        if rate is None:
             return None, None
-        rate = progressed / elapsed
         remaining = max(total - done, 0)
         return rate, (remaining / rate if remaining else None)
+
+
+def _rate_between(first: tuple[float, int], second: tuple[float, int]) -> float | None:
+    """Frames per second between two progress samples, or None if it can't be measured."""
+    elapsed = second[0] - first[0]
+    progressed = second[1] - first[1]
+    if elapsed <= 0 or progressed <= 0:
+        return None
+    return progressed / elapsed
 
 
 def format_rate(rate: float) -> str:
@@ -723,7 +737,10 @@ def format_progress(
     """
     noun = "scans" if phase == "listing" else "frames"
     prefix = "Listing frames: " if phase == "listing" else ""
-    percent = f" ({done * 100 / total:.1f}%)" if total else ""
+    # Held below 100 until the last frame lands: rounding alone reads 100.0% with frames
+    # still outstanding on any run of a few thousand.
+    share = min(done * 100 / total, 99.9) if total and done < total else (100.0 if total else 0)
+    percent = f" ({share:.1f}%)" if total else ""
     pace = f"  {format_rate(rate)}" if rate else ""
     left = f"  ~{format_duration(seconds_left)} left" if seconds_left else ""
     problem = f", {failed:,} failed" if failed else ""

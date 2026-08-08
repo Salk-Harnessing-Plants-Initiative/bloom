@@ -8,6 +8,29 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Fixed
+
+- Installing with `--pre` / `--prerelease=allow` produced a build where no command ran. Those
+  flags are not specific to `bloomctl` — they let every dependency install an unfinished
+  version too, which pulled `httpx 1.0.dev3` (no `Timeout`/`HTTPError`, which postgrest
+  imports) and `supabase 3.0.0a1` (no `create_client`). Install by exact version instead —
+  `uv tool install "bloomctl==0.1.0a4"` — which needs no flag; `httpx` and `supabase` are
+  also capped so the same versions cannot be selected once they ship as stable releases.
+- A full disk ended in a traceback with no summary. The counts are now printed before the log
+  is written, the log is written atomically so a failed write leaves the previous one intact,
+  and the error names the disk as the cause.
+- `cyl download` checks the output directory is writable before signing in, rather than
+  failing after every metadata query has run.
+- Failures that no command anticipated are reported as one line rather than a stack trace.
+
+### Added
+
+- Progress shows the percentage to one decimal, the download rate, and an estimate of the time
+  remaining. Failures that arrived since the last line are marked `(+N)`, so the marker
+  disappearing means they have stopped, and the first failure says that re-running resumes.
+- `~/.bloom/errors.log` records the traceback behind an unexpected failure. Written `0600`
+  alongside the credentials, with the value of `--password` redacted.
+
 ## [0.1.0a4] - 2026-08-06
 
 ### Fixed
