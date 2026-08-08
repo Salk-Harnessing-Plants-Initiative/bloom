@@ -35,21 +35,26 @@ When a change-detection output from the requirement above is `true`, the deploy 
 - **THEN** it MUST run `docker compose ... exec -T caddy caddy reload --config /etc/caddy/Caddyfile`
 - **AND** this MUST NOT restart or recreate the `caddy` container — `caddy reload` re-reads the Caddyfile directly with no intermediate generation step, so an in-place, zero-downtime reload is correct here
 
+#### Scenario: Restart step requires the kong container to already exist
+
+- **GIVEN** the `Restart Kong config` step is about to capture a `RestartCount` baseline
+- **WHEN** it resolves Kong's container via `docker compose ... ps -q kong`
+- **THEN** if that resolves to an empty string, the step MUST fail with a clear `::error::` and MUST NOT attempt a restart — a missing container at this point is a pre-existing problem `--wait` should already have caught, not something this step should paper over by treating a missing container as `before=0`
+
 #### Scenario: Kong restarts fully, because its config requires an entrypoint-only regeneration step
 
 - **GIVEN** `kongfile_changed == 'true'` for the current deploy
 - **AND** Kong's declarative config (`~/kong.yml`, referenced by `KONG_DECLARATIVE_CONFIG`) is generated from the bind-mounted `~/temp.yml` by an env-substitution step that only runs inside the container's custom `entrypoint:`, never on a live-reload signal
 - **WHEN** the `Restart Kong config` step runs
-- **THEN** it MUST resolve Kong's container via `docker compose ... ps -q kong`, failing with a clear `::error::` (and no restart attempted) if the container does not exist
-- **AND** it MUST capture Kong's `RestartCount` (via `docker inspect --format='{{.RestartCount}}'`) immediately before issuing the restart, for use by the crash-loop check
-- **AND** it MUST then run a full `docker compose ... restart kong` (not `kong reload` or an Admin API `/config` call) so the entrypoint's substitution step re-runs against the current `~/temp.yml` content
+- **THEN** it MUST capture Kong's `RestartCount` (via `docker inspect --format='{{.RestartCount}}'`) immediately before issuing the restart, for use by the crash-loop check
+- **AND** it MUST then run a full `docker compose ... restart kong --timeout 10` (not `kong reload` or an Admin API `/config` call) so the entrypoint's substitution step re-runs against the current `~/temp.yml` content
 - **AND** the step MUST NOT attempt `kong reload` as a means of applying `kong.yml` content changes — see `design.md`'s Decision 1 for the full rationale (Kong's DB-less declarative-config reload has a documented history of not reliably applying config changes, independent of the entrypoint-substitution problem above)
 
 #### Scenario: Restart step waits for Kong to report healthy before the deploy continues
 
 - **GIVEN** the `Restart Kong config` step has just issued `docker compose ... restart kong`
 - **WHEN** the step decides when to hand off to the next step
-- **THEN** it MUST poll `docker inspect --format='{{.State.Health.Status}}'` on the same container until it reports `healthy` or a 45-second timeout elapses, rather than a fixed sleep — see `design.md`'s Decision 5 for why a flat sleep is insufficient (the downstream smoke test does not retry on HTTP 5xx, only on connection failure, so hitting a not-yet-ready Kong would false-fail the deploy)
+- **THEN** it MUST poll `docker inspect --format='{{.State.Health.Status}}'` on the same container until it reports `healthy` or a 90-second timeout elapses, rather than a fixed sleep — see `design.md`'s Decision 5 for why a flat sleep is insufficient, and why the bound is 90s specifically (`start_period` (30s) + `interval` × `retries` (10s × 5) is the full window Kong's own healthcheck treats as still-legitimately-starting; anything shorter risks classifying a merely-slow-but-fine boot as a timeout and relocating the original race to the smoke-test step instead of closing it)
 - **AND** a timeout MUST NOT itself fail the step — the following crash-loop check step is what decides pass/fail, using `RestartCount`, which correctly reflects either a crash loop or a stuck-starting container either way
 
 ### Requirement: Deploy MUST detect a config reload that put a service into a crash loop and stop it before it retries indefinitely
@@ -78,11 +83,18 @@ A bad config change (parse error, invalid reference) can put a service into a re
 - **WHEN** `scripts/check_kong_restart_delta.sh` runs
 - **THEN** it MUST print a clear `::error::` and exit 1 without attempting `docker inspect`
 
+#### Scenario: check_kong_restart_delta.sh fails cleanly on a malformed RestartCount reading
+
+- **GIVEN** `docker inspect --format='{{.RestartCount}}'` returns an empty string or non-numeric output (an unexpected/malformed result, not a real restart count)
+- **WHEN** `scripts/check_kong_restart_delta.sh` computes the delta
+- **THEN** it MUST treat this as a hard failure — printing a clear `::error::` and exiting 1
+- **AND** it MUST NOT silently coerce the malformed value to `0`, which could mask a real problem by making an actual crash loop compute as `delta <= threshold`
+
 #### Scenario: Crash-loop check masks Kong's secret env vars before dumping logs
 
-- **GIVEN** Kong's compose service injects `SUPABASE_SERVICE_KEY`, `BLOOM_AGENT_KEY`, `DASHBOARD_USERNAME`, and `DASHBOARD_PASSWORD` as environment variables substituted into the generated `~/kong.yml`
+- **GIVEN** Kong's compose service injects `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`, `BLOOM_AGENT_KEY`, `DASHBOARD_USERNAME`, and `DASHBOARD_PASSWORD` as environment variables substituted into the generated `~/kong.yml`
 - **WHEN** the `Kong crash-loop check` step is about to run `<compose command> logs --tail=100 kong` (i.e. `delta > threshold`)
-- **THEN** it MUST emit `::add-mask::` annotations for those secret values before the log dump runs, as defense-in-depth beyond GitHub's automatic literal-secret redaction — see `design.md`'s Decision 6
+- **THEN** it MUST emit `::add-mask::` annotations for all five secret values before the log dump runs, as defense-in-depth beyond GitHub's automatic literal-secret redaction — see `design.md`'s Decision 6 (this step runs before this workflow's existing smoke-test step, which already masks `ANON_KEY` but too late to protect this earlier log dump)
 
 #### Scenario: check_kong_restart_delta.sh is independently testable without a live deploy
 
