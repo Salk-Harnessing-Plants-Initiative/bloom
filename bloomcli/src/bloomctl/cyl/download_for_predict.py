@@ -20,6 +20,7 @@ import click
 
 from ..credentials import DEFAULT_PROFILE
 from ._batch import BatchResult, ScanResult, format_json, format_summary
+from ._storage import atomic_write_bytes, download_object
 from .download import DownloadResult, FrameResult, fetch_images, fetch_scan
 
 # Matches sleap_roots_predict.batch._IMAGE_EXTENSIONS — the exact set discover_scans
@@ -104,14 +105,6 @@ def build_sidecar(
         "params": params,
         **input_ref.model_dump(),
     }
-
-
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    """Write bytes so a crash mid-write can never leave a truncated file at `path`."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
 
 
 def write_sidecar(sidecar: dict[str, Any], path: Path) -> None:
@@ -229,18 +222,14 @@ def download_frames_for_predict(
     in DB frame_number order (for the checksum) — a failed frame contributes no
     bytes entry, mirroring ``download.py``'s per-frame failure isolation.
     """
-    bucket = client.storage.from_("images")
     frames: list[FrameResult] = []
     frame_bytes: list[bytes] = []
     for image in images:
         object_path = image.get("object_path", "")
         result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
         try:
-            data = bucket.download(object_path)
-            if data is None:
-                raise ValueError("empty response from storage")
-            dest = frame_dest_for_predict(scan_dir, image)
-            _atomic_write_bytes(dest, data)
+            data = download_object(client, object_path)
+            atomic_write_bytes(frame_dest_for_predict(scan_dir, image), data)
             result.ok = True
             frame_bytes.append(data)
         except Exception as exc:  # per-frame: record and continue
