@@ -127,8 +127,16 @@ def test_create_client_is_called_only_from_supabase_client_module():
 
 def test_client_accessors_accept_no_caller_credential_parameter():
     """Neither client accessor can be handed a per-caller token even by
-    accident — their signatures admit no such parameter."""
-    assert set(inspect.signature(sc.get_postgrest_client).parameters) == set()
+    accident — every parameter either admits is a timeout override, never
+    anything credential-shaped.
+
+    `get_postgrest_client` gained its own `timeout_seconds` keyword
+    (fix-bloommcp-list-experiments-summary-rpc, #625) after this test was
+    first written with an empty-signature expectation — updated to match,
+    since a timeout override is not the thing this test guards against."""
+    assert set(inspect.signature(sc.get_postgrest_client).parameters) == {
+        "timeout_seconds"
+    }
     assert set(inspect.signature(sc.get_storage_client).parameters) == {
         "timeout_seconds"
     }
@@ -217,7 +225,7 @@ def test_postgrest_client_ignores_an_authenticated_callers_oauth_token(monkeypat
 
     captured = {}
 
-    def _fake_create_client(url, key):
+    def _fake_create_client(url, key, options=None):
         captured["url"] = url
         captured["key"] = key
         return object()
