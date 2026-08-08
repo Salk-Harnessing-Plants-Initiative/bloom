@@ -8,13 +8,15 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a5] - 2026-08-08 — cylinder download reliability
+
 ### Fixed
 
 - Installing with `--pre` / `--prerelease=allow` produced a build where no command ran. Those
   flags are not specific to `bloomctl` — they let every dependency install an unfinished
   version too, which pulled `httpx 1.0.dev3` (no `Timeout`/`HTTPError`, which postgrest
   imports) and `supabase 3.0.0a1` (no `create_client`). Install by exact version instead —
-  `uv tool install "bloomctl==0.1.0a4"` — which needs no flag; `httpx` and `supabase` are
+  `uv tool install "bloomctl==0.1.0a5"` — which needs no flag; `httpx` and `supabase` are
   also capped so the same versions cannot be selected once they ship as stable releases.
 - A full disk ended in a traceback with no summary. The counts are now printed before the log
   is written, the log is written atomically so a failed write leaves the previous one intact,

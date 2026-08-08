@@ -1,6 +1,6 @@
 [project]
 name = "bloomctl"
-version = "0.1.0a4"
+version = "0.1.0a5"
 description = "Bloom command-line tool for Bloom Database"
 # The PyPI landing page. README.md is the fuller in-repo doc.
 readme = "README.pypi.md"
