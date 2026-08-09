@@ -109,7 +109,7 @@ Merge a PR to `main`. The `deploy` workflow will:
    (`docker compose ... restart kong`) so its declarative config regenerates from the
    change — a full restart, not `kong reload`, since Kong's config requires the
    container's entrypoint to re-run the env-substitution step (see
-   `openspec/changes/fix-kong-reload-on-deploy/design.md`); then check it hasn't crash-looped
+   `openspec/changes/archive/2026-08-08-fix-kong-reload-on-deploy/design.md`); then check it hasn't crash-looped
    (`scripts/check_kong_restart_delta.sh`)
 9. Wait for Caddy to obtain / renew its TLS cert
 10. Run `supabase db push` for any new migrations

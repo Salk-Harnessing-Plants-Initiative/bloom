@@ -47,8 +47,9 @@
 - [x] 6.1 Full `uv run --extra test pytest tests/unit/` run — no regressions.
 - [x] 6.2 `openspec validate fix-kong-reload-on-deploy --strict` passes.
 - [x] 6.3 Update `PROD_SETUP.md`'s "Deploying" numbered list to include the new `Restart Kong config` / `Kong crash-loop check` steps (it's already missing the existing Caddy reload/crash-loop steps — fold that correction in too while touching this list, matching the precedent in `add-bloommcp-prod-staging-data-dir-preflight`'s tasks.md, which did the same for a single added step).
-- [ ] 6.4 Update this file with a **manual, post-merge-only** verification step (do NOT attempt from this environment — no SSH/deploy-host access): once this change reaches `staging` and staging redeploys, confirm `GET https://<staging-domain>/api/auth/v1/.well-known/openid-configuration` returns `200` (not the stale `401 No API key found in request`), proving both this fix and PR #613's routes are live together.
+- [x] 6.4 Update this file with a **manual, post-merge-only** verification step (do NOT attempt from this environment — no SSH/deploy-host access): once this change reaches `staging` and staging redeploys, confirm `GET https://<staging-domain>/api/auth/v1/.well-known/openid-configuration` returns `200` (not the stale `401 No API key found in request`), proving both this fix and PR #613's routes are live together.
   - If it still 401s, check the `Kong crash-loop check (staging)` step's output in the deploy run first — it would indicate a bad `kong.yml` stopped Kong outright rather than this change simply not having deployed yet. If so, follow `design.md`'s "Rollback / verification limits" recovery guidance; the concrete staging command is `docker compose -f docker-compose.prod.yml --env-file .env.staging -p bloom_v2_staging start kong`.
+  - **Result (2026-08-08, during archive prep): NOT PERFORMED.** The actual staging hostname is env-var driven (`DOMAIN_MAIN`/`DOMAIN_STUDIO`/`DOMAIN_MINIO` in `docker-compose.prod.yml`, populated from GitHub Secrets), not a literal committed anywhere in this repo, and this environment has no access to the deployed secrets or a known staging URL to probe — guessing a production hostname isn't safe. This check still needs to be run manually by someone with access to the actual staging domain before treating issue #634 as fully confirmed fixed; #634 should stay open until then per round 3's recommendation (task 11 notes above).
 
 ## 7. PR
 
@@ -58,7 +59,7 @@
 ## 8. Archive (after merge)
 
 - [ ] 8.1 Run `/openspec:archive fix-kong-reload-on-deploy` once merged, folding `deploy-config-reload` into `openspec/specs/`.
-- [ ] 8.2 Update `PROD_SETUP.md`'s reference to `openspec/changes/fix-kong-reload-on-deploy/design.md` (added in task 6.3) to point at its post-archive location instead, so the doc doesn't link to a path that no longer exists.
+- [x] 8.2 Update `PROD_SETUP.md`'s reference to `openspec/changes/fix-kong-reload-on-deploy/design.md` (added in task 6.3) to point at its post-archive location instead, so the doc doesn't link to a path that no longer exists.
 
 ## Implementation notes (deviations from the plan above, recorded honestly)
 
