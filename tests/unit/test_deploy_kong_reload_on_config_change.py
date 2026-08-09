@@ -4,7 +4,7 @@ Mirrors the existing `caddyfile_changed` / `Reload Caddy config` / `Caddy
 crash-loop check` pattern in `.github/workflows/deploy.yml`, but for Kong:
 a `kongfile_changed` diff output, a `Restart Kong config` step (a full
 `docker compose restart kong`, not `kong reload` — see
-`openspec/changes/fix-kong-reload-on-deploy/design.md` Decision 1), and a
+`openspec/changes/archive/2026-08-09-fix-kong-reload-on-deploy/design.md` Decision 1), and a
 delta-based `Kong crash-loop check` step delegating to
 `scripts/check_kong_restart_delta.sh` (Decision 2/3).
 

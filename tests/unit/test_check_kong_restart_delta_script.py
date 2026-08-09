@@ -2,7 +2,7 @@
 
 Single source of truth for the Kong crash-loop delta/threshold decision,
 called identically by both deploy.yml jobs (see
-openspec/changes/fix-kong-reload-on-deploy/design.md Decision 3). Mirrors
+openspec/changes/archive/2026-08-09-fix-kong-reload-on-deploy/design.md Decision 3). Mirrors
 tests/unit/test_env_defaults.py's technique of invoking the real script via
 subprocess against controlled fixtures, rather than reimplementing its
 logic in Python — the workflow and the tests can never drift.
