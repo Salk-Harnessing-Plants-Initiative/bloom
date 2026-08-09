@@ -1,5 +1,8 @@
-## ADDED Requirements
+# bloommcp-smoke-testing Specification
 
+## Purpose
+TBD - created by archiving change add-bloommcp-cylinder-smoke-coverage. Update Purpose after archive.
+## Requirements
 ### Requirement: Cylinder Fixture Availability
 
 `bloommcp/tests/fixtures/` SHALL include a cylinder-shaped fixture bundle — raw and
@@ -58,13 +61,12 @@ continue to pass without modification.
 
 ### Requirement: Granular Tool Smoke Coverage
 
-For each of `qc_clean`, `qc_inspect`, `remove_outliers`, `pca_analysis`, `clustering`
-(kmeans, gmm, hierarchical), and the 5 plotting tools (`plot_trait_histograms`,
-`plot_trait_boxplots`, `plot_correlation_matrix`, `plot_heritability_bar`,
-`plot_variance_decomposition`), `bloommcp/tests/smoke/` SHALL contain a smoke test that
-exercises the tool against both the `turface_19` and `cylinder` fixtures through a real
-call into the running dev stack (network/MCP-transport call, not an in-process or
-mocked call).
+`bloommcp/tests/smoke/` SHALL contain a smoke test for each of `qc_clean`, `qc_inspect`,
+`remove_outliers`, `pca_analysis`, `clustering` (kmeans, gmm, hierarchical), and the 5
+plotting tools (`plot_trait_histograms`, `plot_trait_boxplots`, `plot_correlation_matrix`,
+`plot_heritability_bar`, `plot_variance_decomposition`) that exercises the tool against
+both the `turface_19` and `cylinder` fixtures through a real call into the running dev
+stack (network/MCP-transport call, not an in-process or mocked call).
 
 #### Scenario: Every tool has smoke coverage on both fixtures
 
@@ -123,3 +125,4 @@ live_smoke"`). The `dev-stack-smoke` CI job MUST run the `live_smoke`-but-not-
   carrying `live_smoke` — otherwise such a test would evade `python-audit`'s
   `not live_smoke` exclusion and run, unmarked and infra-free, in a job with no dev
   stack up
+
