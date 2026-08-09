@@ -375,17 +375,12 @@ jobs:
             # boot can legitimately still be starting well past a short
             # fixed sleep. A timeout here doesn't fail the step; the
             # crash-loop check that follows decides pass/fail via
-            # RestartCount. See design.md Decision 5.
-            elapsed=0
-            while [ \"\$elapsed\" -lt 120 ]; do
-              status=\$(docker inspect --format='{{.State.Health.Status}}' \"\$cid\" 2>/dev/null || echo unknown)
-              if [ \"\$status\" = \"healthy\" ]; then
-                break
-              fi
-              sleep 3
-              elapsed=\$((elapsed + 3))
-            done
-            echo \"kong health status after restart: \$status (waited \${elapsed}s)\"
+            # RestartCount. See design.md Decision 5. Extracted into a
+            # script (Decision 3) so this loop has real execution-level test
+            # coverage instead of only ever running for the first time on a
+            # live deploy.
+            status=\$(bash scripts/wait_for_kong_healthy.sh \"\$cid\" 120) || true
+            echo \"kong health status after restart: \$status\"
           " | tee /tmp/restart_kong_prod.out
           before=$(grep '^BEFORE_RESTART_COUNT=' /tmp/restart_kong_prod.out | tail -1 | cut -d= -f2)
           # Deliberately no ':-0' fallback here, unlike caddyfile_changed's
@@ -397,9 +392,11 @@ jobs:
           echo "before_restart_count=${before}" >> "$GITHUB_OUTPUT"
 
       # Delta-based crash-loop check: unlike Caddy's absolute threshold, the
-      # restart step above deliberately restarts Kong as its normal,
-      # successful-path action, so RestartCount is expected to move by
-      # exactly 1 even when kong.yml is valid. Only additional, unplanned
+      # restart step above deliberately restarts Kong via `docker compose
+      # restart` as its normal, successful-path action. That kind of restart
+      # does not itself move RestartCount (it only moves when Docker's
+      # `restart: unless-stopped` policy retries the container after an
+      # unexpected exit), so the happy-path delta is 0. Only unplanned
       # restarts beyond that indicate a bad config. See design.md Decision 2.
       - name: Kong crash-loop check (production)
         if: steps.pull_prod.outputs.kongfile_changed == 'true'
@@ -735,29 +732,40 @@ jobs:
               # kong.yml before a later step failed, Kong is still serving that
               # config after the reset above — explicitly restart it too so
               # rollback doesn't reintroduce the exact bug #634 fixed.
+              kong_rollback_ok=true
               if [ \"${{ steps.pull_prod.outputs.kongfile_changed }}\" = \"true\" ]; then
                 echo 'kong.yml changed during this deploy — restarting kong so the reverted config takes effect'
                 kong_cid=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps -q kong)
                 if [ -z \"\$kong_cid\" ]; then
                   echo '::warning::kong container not found during rollback restart — skipping'
+                  kong_rollback_ok=false
                 elif ! timeout 60 docker compose -f docker-compose.prod.yml --env-file .env.prod restart kong --timeout 10; then
                   # A hiccup here is best-effort-recovery failing, not the
                   # rollback itself — the critical code/env revert above
                   # already succeeded. Warn instead of exit 1 so this
                   # secondary problem cannot mask that success under set -e.
                   echo '::warning::kong restart during rollback failed — kong may still be serving the prior unreverted config, verify manually on the deploy host'
+                  kong_rollback_ok=false
                 else
-                  kong_elapsed=0
-                  while [ \"\$kong_elapsed\" -lt 120 ]; do
-                    kong_status=\$(docker inspect --format='{{.State.Health.Status}}' \"\$kong_cid\" 2>/dev/null || echo unknown)
-                    [ \"\$kong_status\" = \"healthy\" ] && break
-                    sleep 3
-                    kong_elapsed=\$((kong_elapsed + 3))
-                  done
+                  kong_status=\$(bash scripts/wait_for_kong_healthy.sh \"\$kong_cid\" 120) || true
                   echo \"kong health status after rollback restart: \$kong_status\"
+                  if [ \"\$kong_status\" != \"healthy\" ]; then
+                    # A rollback that got this far already succeeded at the
+                    # critical revert, but reporting an unqualified 'healthy'
+                    # here would be false — Kong may still be down or stuck
+                    # starting on the reverted config. Flag it instead of
+                    # letting the unconditional success message below paper
+                    # over it.
+                    echo \"::warning::kong did not report healthy within 120s after rollback restart (status: \$kong_status) — the API gateway may still be down or serving the wrong config; verify manually on the deploy host\"
+                    kong_rollback_ok=false
+                  fi
                 fi
               fi
-              echo 'Rollback complete — previous version restored and healthy'
+              if [ \"\$kong_rollback_ok\" = \"true\" ]; then
+                echo 'Rollback complete — previous version restored and healthy'
+              else
+                echo '::warning::Rollback complete — previous version code/env restored, but kong health could not be confirmed (see warning above) — verify manually on the deploy host'
+              fi
             else
               echo '::error::No previous SHA saved — manual recovery required'
               exit 1
@@ -1053,16 +1061,8 @@ jobs:
             before=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\")
             echo \"BEFORE_RESTART_COUNT=\$before\"
             timeout 60 docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging restart kong --timeout 10
-            elapsed=0
-            while [ \"\$elapsed\" -lt 120 ]; do
-              status=\$(docker inspect --format='{{.State.Health.Status}}' \"\$cid\" 2>/dev/null || echo unknown)
-              if [ \"\$status\" = \"healthy\" ]; then
-                break
-              fi
-              sleep 3
-              elapsed=\$((elapsed + 3))
-            done
-            echo \"kong health status after restart: \$status (waited \${elapsed}s)\"
+            status=\$(bash scripts/wait_for_kong_healthy.sh \"\$cid\" 120) || true
+            echo \"kong health status after restart: \$status\"
           " | tee /tmp/restart_kong_staging.out
           before=$(grep '^BEFORE_RESTART_COUNT=' /tmp/restart_kong_staging.out | tail -1 | cut -d= -f2)
           # Deliberately no ':-0' fallback here, unlike caddyfile_changed's
@@ -1362,25 +1362,30 @@ jobs:
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
                 || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
               # See the matching comment on the production rollback step above.
+              kong_rollback_ok=true
               if [ \"${{ steps.pull_staging.outputs.kongfile_changed }}\" = \"true\" ]; then
                 echo 'kong.yml changed during this deploy — restarting kong so the reverted config takes effect'
                 kong_cid=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps -q kong)
                 if [ -z \"\$kong_cid\" ]; then
                   echo '::warning::kong container not found during rollback restart — skipping'
+                  kong_rollback_ok=false
                 elif ! timeout 60 docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging restart kong --timeout 10; then
                   echo '::warning::kong restart during rollback failed — kong may still be serving the prior unreverted config, verify manually on the deploy host'
+                  kong_rollback_ok=false
                 else
-                  kong_elapsed=0
-                  while [ \"\$kong_elapsed\" -lt 120 ]; do
-                    kong_status=\$(docker inspect --format='{{.State.Health.Status}}' \"\$kong_cid\" 2>/dev/null || echo unknown)
-                    [ \"\$kong_status\" = \"healthy\" ] && break
-                    sleep 3
-                    kong_elapsed=\$((kong_elapsed + 3))
-                  done
+                  kong_status=\$(bash scripts/wait_for_kong_healthy.sh \"\$kong_cid\" 120) || true
                   echo \"kong health status after rollback restart: \$kong_status\"
+                  if [ \"\$kong_status\" != \"healthy\" ]; then
+                    echo \"::warning::kong did not report healthy within 120s after rollback restart (status: \$kong_status) — the API gateway may still be down or serving the wrong config; verify manually on the deploy host\"
+                    kong_rollback_ok=false
+                  fi
                 fi
               fi
-              echo 'Rollback complete — previous version restored and healthy'
+              if [ \"\$kong_rollback_ok\" = \"true\" ]; then
+                echo 'Rollback complete — previous version restored and healthy'
+              else
+                echo '::warning::Rollback complete — previous version code/env restored, but kong health could not be confirmed (see warning above) — verify manually on the deploy host'
+              fi
             else
               echo '::error::No previous SHA saved — manual recovery required'
               exit 1

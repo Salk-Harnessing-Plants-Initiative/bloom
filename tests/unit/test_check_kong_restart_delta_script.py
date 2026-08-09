@@ -77,6 +77,10 @@ if [ "$1" = "compose" ]; then
   echo "compose $*" >> "$log"
   case " $* " in
     *" ps "*"-q"*"kong"*)
+      if [ -n "${FAKE_PS_FAILS-}" ]; then
+        echo "fake docker: simulated 'compose ps -q kong' failure" >&2
+        exit 1
+      fi
       printf '%s' "${FAKE_CONTAINER_ID-fake-cid}"
       ;;
     *" logs "*)
@@ -109,6 +113,7 @@ def _run_script(
     args: list[str],
     restart_count: str | None = "",
     container_id: str | None = "fake-cid",
+    ps_fails: bool = False,
 ) -> subprocess.CompletedProcess:
     fake_bin = _install_fake_docker(tmp_path)
     call_log = tmp_path / "calls.log"
@@ -122,6 +127,8 @@ def _run_script(
         env["FAKE_RESTART_COUNT"] = restart_count
     if container_id is not None:
         env["FAKE_CONTAINER_ID"] = container_id
+    if ps_fails:
+        env["FAKE_PS_FAILS"] = "1"
     result = subprocess.run(
         [BASH, str(SCRIPT), *args],
         cwd=tmp_path,
@@ -171,6 +178,11 @@ def test_delta_over_threshold_stops_kong_and_fails(tmp_path, before, restart_cou
         ["not-a-number", "2", "--", *COMPOSE_ARGS],
         ["5", "not-a-number", "--", *COMPOSE_ARGS],
         ["-1", "2", "--", *COMPOSE_ARGS],
+        # Empty before-restart-count: the actual failure mode a regression
+        # reintroducing the ':-0' fallback (deploy.yml's before_restart_count
+        # output going missing/blank) would produce — must be rejected the
+        # same way as a malformed one, not silently treated as "0".
+        ["", "2", "--", *COMPOSE_ARGS],
     ],
 )
 def test_non_numeric_before_or_threshold_exits_2_without_inspecting(tmp_path, args):
@@ -189,6 +201,21 @@ def test_missing_container_fails_cleanly_without_inspecting(tmp_path):
     assert "::error::" in result.stderr
     assert "inspect" not in result.call_log, (
         "must not attempt docker inspect when the container doesn't exist"
+    )
+
+
+def test_ps_command_failure_fails_cleanly_without_raw_set_e_abort(tmp_path):
+    """Round-1 review guarded the `after=$(docker inspect ...)` line against
+    an unhandled failure aborting under `set -e` with a raw bash error
+    instead of the script's own `::error::` message — but left the line
+    right above it (`cid=$("${compose_cmd[@]}" ps -q kong)`) unguarded,
+    the same issue class only half-applied. Round-3 review caught this;
+    this pins the fix."""
+    result = _run_script(tmp_path, ["5", "2", "--", *COMPOSE_ARGS], ps_fails=True)
+    assert result.returncode == 1
+    assert "::error::" in result.stderr
+    assert "inspect" not in result.call_log, (
+        "must not attempt docker inspect when resolving the container id itself failed"
     )
 
 

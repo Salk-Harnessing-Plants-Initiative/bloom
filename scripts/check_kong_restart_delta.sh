@@ -14,12 +14,18 @@
 # Usage:
 #   check_kong_restart_delta.sh <before-restart-count> <threshold> -- <docker compose command...>
 #
-# The caller (deploy.yml) restarts kong itself as the normal, successful
-# path of applying a kong.yml change — so RestartCount is expected to move
-# by exactly 1 even when nothing is wrong. Only a delta beyond <threshold>
-# additional (unplanned) restarts indicates Docker's `restart: unless-stopped`
-# policy is retrying a crashing container, i.e. a bad kong.yml. See
-# openspec/changes/fix-kong-reload-on-deploy/design.md Decision 2/3.
+# The caller (deploy.yml) restarts kong itself via `docker compose restart`
+# as the normal, successful path of applying a kong.yml change. That kind of
+# restart does NOT itself move Docker's RestartCount — verified empirically,
+# RestartCount only increments when the container's own restart policy
+# (`restart: unless-stopped`) retries it after an unexpected exit, not on an
+# explicit `restart` command — so the happy-path delta is 0, not 1 (an
+# earlier draft of this design assumed the deliberate restart itself added
+# 1; corrected here — this script's arithmetic never actually relied on that
+# assumption, so it was a documentation-only error, not a behavioral one).
+# Only a delta beyond <threshold> additional (unplanned) restarts indicates
+# the restart policy is retrying a crashing container, i.e. a bad kong.yml.
+# See openspec/changes/fix-kong-reload-on-deploy/design.md Decision 2/3.
 #
 # Everything after `--` is the exact `docker compose -f ... --env-file ...
 # [-p ...]` prefix the calling job already uses for every other compose
@@ -60,7 +66,10 @@ if ! [[ "$threshold" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
-cid=$("${compose_cmd[@]}" ps -q kong)
+cid=$("${compose_cmd[@]}" ps -q kong) || {
+  echo "::error::failed to query kong's container id via '${compose_cmd[*]} ps -q kong'" >&2
+  exit 1
+}
 if [ -z "$cid" ]; then
   echo "::error::kong container is not running — cannot check its restart count" >&2
   exit 1

@@ -61,8 +61,15 @@ When a change-detection output from the requirement above is `true`, the deploy 
 
 - **GIVEN** the `Restart Kong config` step has just issued `docker compose ... restart kong`
 - **WHEN** the step decides when to hand off to the next step
-- **THEN** it MUST poll `docker inspect --format='{{.State.Health.Status}}'` on the same container until it reports `healthy` or a 120-second timeout elapses, rather than a fixed sleep — see `design.md`'s Decision 5 for why a flat sleep is insufficient and for the full reasoning behind this specific bound
+- **THEN** it MUST delegate to `scripts/wait_for_kong_healthy.sh <container-id> 120`, which polls `docker inspect --format='{{.State.Health.Status}}'` on the same container until it reports `healthy` or the given timeout elapses, rather than a fixed sleep — see `design.md`'s Decision 5 for why a flat sleep is insufficient and for the full reasoning behind the 120s bound
 - **AND** a timeout MUST NOT itself fail the step — the following crash-loop check step is what decides pass/fail, using `RestartCount`, which correctly reflects either a crash loop or a stuck-starting container either way
+
+#### Scenario: wait_for_kong_healthy.sh is independently testable without a live deploy
+
+- **GIVEN** `scripts/wait_for_kong_healthy.sh` is the single source of truth for the health-poll loop, invoked identically by both the forward-path restart step and the rollback step, for both `deploy-production` and `deploy-staging`
+- **WHEN** a test invokes it directly via `subprocess` with `docker` stubbed on `PATH` to return a controlled healthcheck status sequence
+- **THEN** it MUST print the final observed status to stdout and exit 0 once that status is `healthy`
+- **AND** if the given timeout elapses without ever observing `healthy`, it MUST still print the last-observed status to stdout and exit 1, without treating the timeout itself as a usage error
 
 ### Requirement: Deploy MUST detect a config reload that put a service into a crash loop and stop it before it retries indefinitely
 
@@ -75,9 +82,10 @@ A bad config change (parse error, invalid reference) can put a service into a re
 - **THEN** it MUST read the container's `RestartCount` and fail (dumping the last 100 log lines and stopping the container) if it is `> 2`
 - **AND** since ACME/Let's Encrypt attempts happen on every Caddy start, this threshold exists specifically to stop repeated rate-limited ACME attempts from a bad Caddyfile
 
-#### Scenario: Kong crash-loop check uses a before/after delta, because the reload step itself causes one expected restart
+#### Scenario: Kong crash-loop check uses a before/after delta, because Kong's container persists restart history across its whole lifetime
 
-- **GIVEN** the `Restart Kong config` step (previous requirement) deliberately restarts Kong as its normal, successful-path action — so `RestartCount` is expected to increase by exactly 1 even when `kong.yml` is valid
+- **GIVEN** the `Restart Kong config` step (previous requirement) deliberately restarts Kong via `docker compose restart` as its normal, successful-path action — a compose-issued restart does NOT itself increment `RestartCount` (only Docker's `restart: unless-stopped` policy retrying the container after an unexpected exit does), so the happy-path delta from this restart is `0`, not `1`
+- **AND** Kong's container is never recreated by this restart, so restarts accumulated over its entire lifetime (including ones unrelated to and predating the current deploy) persist in `RestartCount` forever — an absolute threshold would eventually and permanently fail every future kong.yml-changing deploy once that lifetime count organically climbs past the threshold, regardless of whether the current config is fine
 - **WHEN** the `Kong crash-loop check` step runs, gated on the same `kongfile_changed == 'true'` condition as the restart step
 - **THEN** it MUST delegate the decision to `scripts/check_kong_restart_delta.sh <before-count> <threshold> -- <docker compose command...>`, passing the `RestartCount` captured immediately before the restart and the compose invocation prefix appropriate to the current job (prod or staging)
 - **AND** the script MUST compute `delta = <RestartCount after> - <before-count>` and fail (dumping the last 100 log lines via `<compose command> logs --tail=100 kong` and stopping Kong via `<compose command> stop kong`) only if `delta > threshold`, so the deliberate restart itself is never mistaken for a crash loop
@@ -124,6 +132,14 @@ A bad config change (parse error, invalid reference) can put a service into a re
 - **AND** this restart MUST happen after the rollback's own `up -d`, not before — restarting Kong before the code/env files are reverted would restart it onto the still-broken config
 - **AND** if the kong container cannot be found at this point, the step MUST emit a `::warning::` and continue rather than failing the already-in-progress rollback over a secondary concern
 - **AND** if the restart command itself fails, the step MUST emit a `::warning::` and continue (not `exit 1`) — the rollback SSH block runs under `set -e`, and by this point the critical work (`git reset --hard` and `up -d --wait`) has already succeeded; a bare, unguarded restart command would let a secondary Kong-restart hiccup abort the whole step and falsely report that the rollback itself failed
+
+#### Scenario: Rollback's final success message MUST NOT claim Kong is healthy when it isn't
+
+- **GIVEN** `kongfile_changed` was `true` for this job and the rollback's Kong-restart command itself succeeded
+- **WHEN** the subsequent health-poll (`scripts/wait_for_kong_healthy.sh`) does not observe `healthy` within its timeout — Kong stuck `starting`/`unhealthy`
+- **THEN** the rollback step MUST emit a `::warning::` for the non-healthy status
+- **AND** the rollback step's final message MUST NOT be the unqualified `Rollback complete — previous version restored and healthy` — it MUST instead be a `::warning::`-prefixed message that does not claim Kong is healthy
+- **AND** this same gating applies to the other two branches that already warn in this requirement (kong container not found; restart command failed) — any branch that emits a warning about Kong's state MUST also suppress the unqualified success message, not just log a warning alongside it
 
 #### Scenario: Restart commands are bounded by an external timeout, not just Docker's internal grace period
 
