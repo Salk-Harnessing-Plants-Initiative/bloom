@@ -472,6 +472,10 @@ class TestRollbackRestoresKongConfig:
         )
         assert f"{compose} restart kong" in run
         assert "scripts/wait_for_kong_healthy.sh" in run
+        assert re.search(r'wait_for_kong_healthy\.sh \\"\\\$kong_cid\\" 120', run), (
+            "rollback must pass the resolved kong_cid and the 120s bound "
+            "explicitly, mirroring the forward-path invocation"
+        )
 
     @pytest.mark.parametrize("job_name,pull_id,_restart_id,compose,_prefix", JOB_CASES)
     def test_rollback_kong_restart_is_positioned_after_up_d(
@@ -622,9 +626,23 @@ exit 0
         scripts_dir.mkdir()
         wait_stub = scripts_dir / "wait_for_kong_healthy.sh"
         wait_stub.write_text(
-            """#!/usr/bin/env bash
+            f"""#!/usr/bin/env bash
+set -euo pipefail
+# Validate the rollback actually passes the container id it just resolved
+# and the 120s bound — not just that *some* call happened. Without this, a
+# mutation shrinking the rollback path's timeout (e.g. 120 -> 5) or passing
+# the wrong variable would go undetected, since a test double that ignores
+# its arguments returns the same canned status regardless of input.
+if [ "${{1-}}" != "{kong_cid}" ]; then
+  echo "fake wait_for_kong_healthy.sh: unexpected container id: ${{1-<missing>}} (expected {kong_cid})" >&2
+  exit 98
+fi
+if [ "${{2-}}" != "120" ]; then
+  echo "fake wait_for_kong_healthy.sh: unexpected timeout arg: ${{2-<missing>}} (expected 120)" >&2
+  exit 98
+fi
 printf '%s\\n' "$FAKE_KONG_HEALTH_STATUS"
-exit "${FAKE_KONG_HEALTH_EXIT:-0}"
+exit "${{FAKE_KONG_HEALTH_EXIT:-0}}"
 """
         )
         wait_stub.chmod(wait_stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
@@ -661,35 +679,47 @@ exit "${FAKE_KONG_HEALTH_EXIT:-0}"
             env=env,
             timeout=10,
         )
-        assert result.returncode == 0, f"snippet itself must not abort: {result.stderr}"
-        return result.stdout
+        assert result.returncode in (0, 1), (
+            f"snippet must exit 0 (kong healthy) or 1 (kong_rollback_ok=false), "
+            f"not abort some other way: rc={result.returncode} stderr={result.stderr}"
+        )
+        return result
 
     @pytest.mark.parametrize("job_name,pull_id,_restart_id,_compose,_prefix", JOB_CASES)
     def test_final_message_is_warning_when_health_poll_times_out(
         self, tmp_path, job_name, pull_id, _restart_id, _compose, _prefix
     ):
-        stdout = self._run(tmp_path, job_name, pull_id, health_status="unhealthy", health_exit="1")
+        result = self._run(
+            tmp_path, job_name, pull_id, health_status="unhealthy", health_exit="1"
+        )
+        stdout = result.stdout
         assert "::warning::kong did not report healthy" in stdout
         assert "::warning::Rollback complete" in stdout
         assert "Rollback complete — previous version restored and healthy" not in stdout, (
             "must not print the unqualified success message when kong never "
             "reported healthy — this is the exact BLOCKING gap round-3 review found"
         )
+        assert result.returncode == 1, (
+            "the step itself must fail (not just warn) so on-call scanning "
+            "step colors in the Actions UI doesn't miss that kong may still be down"
+        )
 
     @pytest.mark.parametrize("job_name,pull_id,_restart_id,_compose,_prefix", JOB_CASES)
     def test_final_message_is_clean_when_kong_reports_healthy(
         self, tmp_path, job_name, pull_id, _restart_id, _compose, _prefix
     ):
-        stdout = self._run(tmp_path, job_name, pull_id, health_status="healthy", health_exit="0")
+        result = self._run(tmp_path, job_name, pull_id, health_status="healthy", health_exit="0")
+        stdout = result.stdout
         assert "Rollback complete — previous version restored and healthy" in stdout
         assert "::warning::kong did not report healthy" not in stdout
         assert "::warning::Rollback complete" not in stdout
+        assert result.returncode == 0
 
     @pytest.mark.parametrize("job_name,pull_id,_restart_id,_compose,_prefix", JOB_CASES)
     def test_final_message_is_warning_when_kong_container_not_found(
         self, tmp_path, job_name, pull_id, _restart_id, _compose, _prefix
     ):
-        stdout = self._run(
+        result = self._run(
             tmp_path,
             job_name,
             pull_id,
@@ -697,15 +727,17 @@ exit "${FAKE_KONG_HEALTH_EXIT:-0}"
             health_exit="0",
             kong_cid="",
         )
+        stdout = result.stdout
         assert "::warning::kong container not found during rollback restart — skipping" in stdout
         assert "::warning::Rollback complete" in stdout
         assert "Rollback complete — previous version restored and healthy" not in stdout
+        assert result.returncode == 1
 
     @pytest.mark.parametrize("job_name,pull_id,_restart_id,_compose,_prefix", JOB_CASES)
     def test_final_message_is_warning_when_restart_command_fails(
         self, tmp_path, job_name, pull_id, _restart_id, _compose, _prefix
     ):
-        stdout = self._run(
+        result = self._run(
             tmp_path,
             job_name,
             pull_id,
@@ -713,6 +745,26 @@ exit "${FAKE_KONG_HEALTH_EXIT:-0}"
             health_exit="0",
             restart_fails=True,
         )
+        stdout = result.stdout
         assert "::warning::kong restart during rollback failed" in stdout
         assert "::warning::Rollback complete" in stdout
         assert "Rollback complete — previous version restored and healthy" not in stdout
+        assert result.returncode == 1
+
+    @pytest.mark.parametrize("job_name,pull_id,_restart_id,_compose,_prefix", JOB_CASES)
+    def test_health_poll_invoked_with_resolved_container_id_and_120s_bound(
+        self, tmp_path, job_name, pull_id, _restart_id, _compose, _prefix
+    ):
+        """Mutation-testing gap closed: previously the stub ignored its
+        arguments entirely, so shrinking the rollback path's timeout (e.g.
+        120 -> 5) or passing the wrong container-id variable would go
+        undetected by every existing test. The stub now validates both
+        arguments and exits non-zero (a distinct code, 98) if either is
+        wrong — a passing run here means the real 'fake-kong-cid' and '120'
+        were actually passed through."""
+        result = self._run(
+            tmp_path, job_name, pull_id, health_status="healthy", health_exit="0"
+        )
+        assert result.returncode == 0, (
+            f"stub rejected the health-poll invocation's arguments: {result.stderr}"
+        )

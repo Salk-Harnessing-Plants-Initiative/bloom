@@ -70,6 +70,8 @@ When a change-detection output from the requirement above is `true`, the deploy 
 - **WHEN** a test invokes it directly via `subprocess` with `docker` stubbed on `PATH` to return a controlled healthcheck status sequence
 - **THEN** it MUST print the final observed status to stdout and exit 0 once that status is `healthy`
 - **AND** if the given timeout elapses without ever observing `healthy`, it MUST still print the last-observed status to stdout and exit 1, without treating the timeout itself as a usage error
+- **AND** if `docker inspect` itself fails mid-poll (e.g. the container disappears), the script MUST fall back to treating that poll as `unknown` rather than aborting — mirroring `check_kong_restart_delta.sh`'s general resilience to transient Docker errors
+- **AND** a non-numeric or non-positive `timeout-seconds` or `poll-interval-seconds` argument MUST be rejected as a usage error (exit 2), matching `check_kong_restart_delta.sh`'s validation convention for its own numeric arguments — a `poll-interval-seconds` of `0` in particular must be rejected, since it would spin the poll loop forever without `elapsed` ever advancing
 
 ### Requirement: Deploy MUST detect a config reload that put a service into a crash loop and stop it before it retries indefinitely
 
@@ -140,6 +142,7 @@ A bad config change (parse error, invalid reference) can put a service into a re
 - **THEN** the rollback step MUST emit a `::warning::` for the non-healthy status
 - **AND** the rollback step's final message MUST NOT be the unqualified `Rollback complete — previous version restored and healthy` — it MUST instead be a `::warning::`-prefixed message that does not claim Kong is healthy
 - **AND** this same gating applies to the other two branches that already warn in this requirement (kong container not found; restart command failed) — any branch that emits a warning about Kong's state MUST also suppress the unqualified success message, not just log a warning alongside it
+- **AND** the rollback step itself MUST exit non-zero in this case (not just print a warning and exit 0) — a step that reports green in the GitHub Actions UI while Kong's health is unconfirmed would mislead on-call scanning step colors rather than reading annotations; this does not retroactively mark the already-succeeded code/env revert as failed, it specifically reflects that Kong's own state is unconfirmed
 
 #### Scenario: Restart commands are bounded by an external timeout, not just Docker's internal grace period
 

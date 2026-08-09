@@ -66,6 +66,13 @@ if [ "$1" = "inspect" ]; then
     echo "fake docker: unexpected inspect container id: ${3-<missing>}" >&2
     exit 97
   fi
+  # Simulates the container disappearing mid-poll (e.g. removed/recreated
+  # between calls) — the real docker inspect would exit non-zero with
+  # nothing useful on stdout in that case.
+  if [ -n "${FAKE_INSPECT_FAILS-}" ]; then
+    echo "fake docker: simulated inspect failure" >&2
+    exit 1
+  fi
   queue="$FAKE_STATUS_QUEUE"
   next="$(head -n 1 "$queue")"
   # Pop the consumed line, unless it's the last one — repeat the last
@@ -96,6 +103,7 @@ def _run_script(
     tmp_path: Path,
     args: list[str],
     statuses: list[str],
+    inspect_fails: bool = False,
 ) -> subprocess.CompletedProcess:
     fake_bin = _install_fake_docker(tmp_path, statuses)
     env = {
@@ -104,6 +112,8 @@ def _run_script(
         "FAKE_STATUS_QUEUE": str(tmp_path / "status_queue.txt"),
         "FAKE_CONTAINER_ID": args[0] if args else "fake-cid",
     }
+    if inspect_fails:
+        env["FAKE_INSPECT_FAILS"] = "1"
     return subprocess.run(
         [BASH, str(SCRIPT), *args],
         cwd=tmp_path,
@@ -153,6 +163,37 @@ def test_missing_container_id_is_a_usage_error(tmp_path):
     result = _run_script(tmp_path, [], statuses=["healthy"])
     assert result.returncode == 2
     assert "Usage:" in result.stderr
+
+
+@pytest.mark.parametrize("bad_timeout", ["not-a-number", "-1"])
+def test_non_numeric_timeout_is_a_usage_error(tmp_path, bad_timeout):
+    # Note: an empty string ("") is deliberately not tested as a failure
+    # case here — bash's `${2:-120}` treats an empty positional argument the
+    # same as an unset one, so it falls back to the 120s default rather than
+    # reaching validation. That's an accepted, harmless quirk of `:-`, not a
+    # gap this script needs to close.
+    result = _run_script(tmp_path, ["fake-cid", bad_timeout, "1"], statuses=["healthy"])
+    assert result.returncode == 2
+    assert "::error::" in result.stderr
+
+
+@pytest.mark.parametrize("bad_interval", ["not-a-number", "-1", "0"])
+def test_non_positive_poll_interval_is_a_usage_error(tmp_path, bad_interval):
+    """poll_interval=0 would spin the while loop forever without ever
+    advancing `elapsed` — must be rejected, not just non-numeric values."""
+    result = _run_script(tmp_path, ["fake-cid", "30", bad_interval], statuses=["healthy"])
+    assert result.returncode == 2
+    assert "::error::" in result.stderr
+
+
+def test_container_disappearing_mid_poll_falls_back_to_unknown(tmp_path):
+    """Documented behavior (docker inspect failing -> `unknown`, via the
+    script's `2>/dev/null || echo unknown` fallback) had zero test coverage
+    before this — every existing test only varied the *printed* status,
+    never made `docker inspect` itself fail."""
+    result = _run_script(tmp_path, ["fake-cid", "2", "1"], statuses=["healthy"], inspect_fails=True)
+    assert result.returncode == 1
+    assert result.stdout.strip() == "unknown"
 
 
 @pytest.mark.parametrize("perm_bit", [stat.S_IXUSR])

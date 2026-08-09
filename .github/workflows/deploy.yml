@@ -765,6 +765,12 @@ jobs:
                 echo 'Rollback complete — previous version restored and healthy'
               else
                 echo '::warning::Rollback complete — previous version code/env restored, but kong health could not be confirmed (see warning above) — verify manually on the deploy host'
+                # Fail this step, not just warn — the critical code/env revert
+                # above already succeeded, so this doesn't retroactively mark
+                # that work as failed, but on-call scanning step colors in the
+                # Actions UI (rather than reading annotations) would otherwise
+                # miss that Kong may still be down after a 'successful' rollback.
+                exit 1
               fi
             else
               echo '::error::No previous SHA saved — manual recovery required'
@@ -1385,6 +1391,12 @@ jobs:
                 echo 'Rollback complete — previous version restored and healthy'
               else
                 echo '::warning::Rollback complete — previous version code/env restored, but kong health could not be confirmed (see warning above) — verify manually on the deploy host'
+                # Fail this step, not just warn — the critical code/env revert
+                # above already succeeded, so this doesn't retroactively mark
+                # that work as failed, but on-call scanning step colors in the
+                # Actions UI (rather than reading annotations) would otherwise
+                # miss that Kong may still be down after a 'successful' rollback.
+                exit 1
               fi
             else
               echo '::error::No previous SHA saved — manual recovery required'

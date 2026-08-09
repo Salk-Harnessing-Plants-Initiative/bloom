@@ -30,7 +30,8 @@
 # Exit codes:
 #   0 — reported healthy within the timeout
 #   1 — timeout elapsed without reporting healthy
-#   2 — usage error (missing container id)
+#   2 — usage error (missing container id, or a non-numeric/invalid
+#       timeout-seconds or poll-interval-seconds)
 # =============================================================================
 
 set -euo pipefail
@@ -43,6 +44,16 @@ fi
 cid="$1"
 timeout_seconds="${2:-120}"
 poll_interval="${3:-3}"
+
+if ! [[ "$timeout_seconds" =~ ^[0-9]+$ ]]; then
+  echo "::error::timeout-seconds must be a non-negative integer (got '$timeout_seconds')" >&2
+  exit 2
+fi
+
+if ! [[ "$poll_interval" =~ ^[0-9]+$ ]] || [ "$poll_interval" -eq 0 ]; then
+  echo "::error::poll-interval-seconds must be a positive integer (got '$poll_interval')" >&2
+  exit 2
+fi
 
 elapsed=0
 status=unknown
