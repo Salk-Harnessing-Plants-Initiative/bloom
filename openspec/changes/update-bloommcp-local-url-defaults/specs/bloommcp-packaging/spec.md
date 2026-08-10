@@ -13,8 +13,10 @@ has not opted into `BLOOM_LOCAL_ROOT`. `bloom_mcp.server.build_app()` SHALL moun
 `starlette.staticfiles.StaticFiles` at `/plots`, serving `experiment_utils.PLOTS_DIR`, whenever
 `BLOOM_STORAGE_BACKEND=local` (regardless of which tier resolved `PLOTS_DIR`), so a plot URL built
 from either the default or an explicit `BLOOM_PLOTS_URL` pointing at this same address actually
-resolves standalone. The `/plots` mount is unauthenticated, matching `/output`'s and `/health`'s
-precedent. Outside the `BLOOM_LOCAL_ROOT`-derived tier (an explicitly-set `BLOOM_PLOTS_DIR` with
+resolves standalone. The `/plots` mount is unauthenticated, matching `/health`'s precedent —
+there is no analogous `/output` mount; output artifacts surface a direct filesystem path instead
+(see `bloommcp-result-store`'s "Per-Output Signed Links And Size At Commit"). Outside the
+`BLOOM_LOCAL_ROOT`-derived tier (an explicitly-set `BLOOM_PLOTS_DIR` with
 no `BLOOM_LOCAL_ROOT`, or the default Supabase backend), `BLOOM_PLOTS_URL` remains exactly as
 required as before this change.
 

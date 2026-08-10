@@ -36,8 +36,9 @@ API_KEY = os.getenv("BLOOMMCP_API_KEY")
 # Docker cannot resolve internal service names — so they are configured
 # explicitly rather than derived from SUPABASE_URL. BLOOMMCP_PUBLIC_URL is also
 # reused (bloom#642, storage_backend.self_serve_base_url()) as the self-serve
-# base for local-backend /output and /plots URLs — see
-# bloommcp/docs/storage-backends.md.
+# base for local-backend /plots URLs — see bloommcp/docs/storage-backends.md.
+# (Output artifacts don't use this at all — they surface a direct filesystem
+# path for the local backend instead of a URL.)
 PUBLIC_URL = os.getenv("BLOOMMCP_PUBLIC_URL")
 AUTHORIZATION_SERVER = os.getenv("BLOOMMCP_OAUTH_AUTHORIZATION_SERVER")
 

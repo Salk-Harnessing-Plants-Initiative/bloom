@@ -42,16 +42,17 @@ Two env vars look like they'd control this and don't:
   Storage → bucket `bloommcp-data`.
 - **The bloommcp MCP read tools** (`list_existing_analyses`, `load_experiment_data`, …).
 
-## Downloading outputs: signed URLs (`output_links`)
+## Reaching outputs: signed URLs and direct paths (`output_links`)
 
 Every consumer tool (`qc_clean`, `qc_inspect`, `pca_analysis`, `remove_outliers`,
 `descriptive_stats`, `cross_experiment_correlations`, `umap_analysis`, `clustering`)
 returns an `output_links` field alongside its existing `outputs` (object-key) field:
-one entry per output, each carrying a downloadable `url`, the artifact's `sha256`
-(matching the manifest's `output_sha256` — verify what you downloaded against it),
-and its `size_bytes`. This is populated only on the result a tool call itself
-returns — resolving or listing a prior run (`list_existing_analyses`, or reading
-`get_run`/`list_runs` through the `ResultStore` port) never carries signed links for
+one entry per output, each carrying exactly one of a downloadable `url` (Supabase
+backend) or a direct filesystem `path` (local backend — see below), the artifact's
+`sha256` (matching the manifest's `output_sha256` — verify what you downloaded/read
+against it), and its `size_bytes`. This is populated only on the result a tool call
+itself returns — resolving or listing a prior run (`list_existing_analyses`, or
+reading `get_run`/`list_runs` through the `ResultStore` port) never carries links for
 artifacts other than the one just committed; browsing and downloading _historical_
 runs is not yet supported (tracked separately).
 
@@ -60,25 +61,30 @@ expiry (the `SIGNED_URL_EXPIRES_SECONDS` constant in
 `bloom_mcp/result_store/_artifacts.py`), not configurable per call.
 
 - **Supabase backend (default):** a real, time-limited signed URL from Supabase
-  Storage's own signing call. Because `SUPABASE_URL` points at the internal Docker
-  network host (`http://kong:8000` in staging/production — unreachable from
-  outside it), the signed URL's host is rewritten onto `BLOOM_PUBLIC_SUPABASE_URL`
-  (set to `${NEXT_PUBLIC_SUPABASE_URL}` in both compose files) before it's
-  returned — the same internal-host-rewrite pattern `services/workflows/video.py`
-  and `web/lib/supabase/storage-url.ts` already use for their own signed URLs. A
+  Storage's own signing call, in `output_links[...].url`; `output_links[...].path`
+  is `None`. Because `SUPABASE_URL` points at the internal Docker network host
+  (`http://kong:8000` in staging/production — unreachable from outside it), the
+  signed URL's host is rewritten onto `BLOOM_PUBLIC_SUPABASE_URL` (set to
+  `${NEXT_PUBLIC_SUPABASE_URL}` in both compose files) before it's returned — the
+  same internal-host-rewrite pattern `services/workflows/video.py` and
+  `web/lib/supabase/storage-url.ts` already use for their own signed URLs. A
   missing `BLOOM_PUBLIC_SUPABASE_URL` is a silent no-op (the raw internal-host URL
   is returned unchanged) — harmless in local dev (nothing outside the Docker
   network needs to resolve it there), a real gap in a deployed environment.
-- **Local backend (opt-in):** a served URL built from `BLOOM_STORAGE_URL`
-  (`f"{BLOOM_STORAGE_URL}/{key}"`), ignoring the expiry — this is a dev-only
-  convenience with no real credential enforcement, matching this backend's other
-  documented caveats. **bloommcp self-serves this over HTTP itself** — when
-  `BLOOM_STORAGE_BACKEND=local`, `build_app()` mounts `/output` (serving the
-  resolved local storage root) and, when `BLOOM_STORAGE_URL` is unset, defaults
-  its base to bloommcp's own address (`BLOOMMCP_PUBLIC_URL` when set, else
-  `http://localhost:8811`) plus `/output` — so a generated link resolves with
-  no separately-stood-up server, standalone (`uv run bloom-mcp`) included.
-  `BLOOM_PLOTS_URL` gets the analogous `/plots` mount + default.
+- **Local backend (opt-in): no URL at all — a direct filesystem path instead.**
+  `output_links[...].path` carries the resolved absolute path
+  (`<local output root>/<key>`); `output_links[...].url` is `None`.
+  `ResultStore.commit()` never calls `create_signed_url` for the local backend —
+  the caller already has direct filesystem access to a file bloommcp just wrote
+  on the same machine, so there is nothing to sign or serve. This applies in
+  every local-backend configuration (`BLOOM_LOCAL_ROOT` or the granular
+  explicit-override tier), with no `BLOOM_STORAGE_URL` needed at all.
+  `LocalStorageBackend.create_signed_url` itself still exists and still requires
+  `BLOOM_STORAGE_URL` (raising if unset) — it is simply not part of this call
+  path anymore. It remains available only for an operator who has deliberately
+  stood up their own external server and wants a real served URL instead of a
+  path (a niche, unsupported-by-docs use case; most callers should just read
+  `path`).
 
 **`create_signed_url` itself performs no ownership check.** It's a generic signing/
 serving primitive — given a key, it signs it, with no concept of which experiment
@@ -94,9 +100,9 @@ against a future bug, not a fix for a live gap.
 inlines output content in its response regardless of size — every consumer
 tool's docstring documents a deliberate "links, not blobs" contract, and this
 threshold does not change that. It exists so a caller deciding whether to fetch
-`output_links[...].url` and show its contents inline (versus just linking to it)
-has both a concrete number and the `size_bytes` data needed to apply it
-themselves.
+`output_links[...].url` (or read `...path` directly, on the local backend) and
+show its contents inline (versus just linking to it) has both a concrete number
+and the `size_bytes` data needed to apply it themselves.
 
 ## Opt-in: the `local` backend (real files on disk)
 
@@ -138,12 +144,14 @@ Drop input CSVs in `bloommcp-data/input/`; outputs and plots appear under
 hand, nothing else to pre-create (see auto-create below).
 
 Both snippets above boot on just the two variables shown — no
-`BLOOM_STORAGE_URL`/`BLOOM_PLOTS_URL` needed (see "Downloading outputs"
-above). Running `bloommcp` directly is where this matters most: neither URL
-var had anything to point at before self-serving landed. In the
+`BLOOM_STORAGE_URL`/`BLOOM_PLOTS_URL` needed. `output_links` resolves via a
+direct filesystem path regardless (no URL var needed, ever, for outputs — see
+"Reaching outputs" above); `BLOOM_PLOTS_URL` defaults to a self-served `/plots`
+URL under this tier. Running `bloommcp` directly is where the plots half of
+this matters most — nothing served `/plots` before self-serving landed. In the
 docker-compose snippet, `BLOOM_PLOTS_URL` was already served by
-langchain-agent's own mount regardless; only its `BLOOM_STORAGE_URL`/`/output`
-side is new.
+langchain-agent's own mount regardless, so only the standalone case gains
+anything new there.
 
 Resulting on-disk output layout (the storage key becomes the path under the
 output root):
@@ -165,9 +173,9 @@ output root):
 - **Same output semantics as Supabase:** manifest/versioning are unchanged; the
   backend overwrites in place, copies bytes verbatim (so the recorded
   `output_sha256` matches the file on disk), and reads resolve back through the
-  same manifest/versioned-cleaned path. `output_links[...].url` resolves the
-  same way on both backends now — see "Downloading outputs" above for the
-  local backend's self-served default.
+  same manifest/versioned-cleaned path. One difference: `output_links[...]`
+  carries a direct `path` instead of a signed `url` for this backend — see
+  "Reaching outputs" above.
 - **Atomic writes (POSIX):** on POSIX filesystems the backend writes a temp file,
   `fsync`s it, then `os.replace`s it into place, so a crash mid-write never leaves
   a truncated `manifest.json`. **On Windows/NTFS** `os.replace` over an existing
