@@ -1727,18 +1727,43 @@ def test_local_create_signed_url_ignores_expires_in(monkeypatch, tmp_path):
     assert b.create_signed_url("k", 60) == b.create_signed_url("k", 999999)
 
 
-def test_local_create_signed_url_raises_when_unset_no_path_leak(monkeypatch, tmp_path):
+def test_local_create_signed_url_defaults_to_self_serve_base(monkeypatch, tmp_path):
     monkeypatch.delenv("BLOOM_STORAGE_URL", raising=False)
-    with pytest.raises(Exception) as exc:
-        sb.LocalStorageBackend(tmp_path).create_signed_url("k", 3600)
-    msg = str(exc.value)
-    assert str(tmp_path) not in msg
-    assert "file://" not in msg
+    monkeypatch.delenv("BLOOMMCP_PUBLIC_URL", raising=False)
+    url = sb.LocalStorageBackend(tmp_path).create_signed_url(
+        "bloommcp_output/qc_x/v1/_cleaned.csv", 3600
+    )
+    assert url == "http://localhost:8811/output/bloommcp_output/qc_x/v1/_cleaned.csv"
+
+
+def test_local_create_signed_url_default_honors_public_url(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_URL", raising=False)
+    monkeypatch.setenv("BLOOMMCP_PUBLIC_URL", "https://example.internal")
+    url = sb.LocalStorageBackend(tmp_path).create_signed_url("k", 3600)
+    assert url == "https://example.internal/output/k"
 
 
 def test_storage_backend_protocol_includes_create_signed_url(tmp_path):
     assert isinstance(sb.SupabaseStorageBackend(), sb.StorageBackend)
     assert isinstance(sb.LocalStorageBackend(tmp_path), sb.StorageBackend)
+
+
+# ─── 9. Local-mode self-serve base URL (#642) ──────────────────────────────────
+
+
+def test_self_serve_base_url_defaults_to_localhost_8811(monkeypatch):
+    monkeypatch.delenv("BLOOMMCP_PUBLIC_URL", raising=False)
+    assert sb.self_serve_base_url() == "http://localhost:8811"
+
+
+def test_self_serve_base_url_prefers_public_url(monkeypatch):
+    monkeypatch.setenv("BLOOMMCP_PUBLIC_URL", "https://example.internal/")
+    assert sb.self_serve_base_url() == "https://example.internal"
+
+
+def test_local_output_root_matches_resolve_local_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+    assert sb.local_output_root() == sb._resolve_local_root()
     assert hasattr(sb.SupabaseStorageBackend, "create_signed_url")
     assert hasattr(sb.LocalStorageBackend, "create_signed_url")
 

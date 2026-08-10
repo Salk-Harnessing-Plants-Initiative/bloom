@@ -411,12 +411,7 @@ class LocalStorageBackend:
         # expiry enforcement (see the class docstring's Windows-atomicity caveat
         # for the same rhetorical shape).
         del expires_in
-        base = os.environ.get("BLOOM_STORAGE_URL")
-        if not base:
-            raise StorageBackendError(
-                "BLOOM_STORAGE_URL is not set; cannot construct a served URL "
-                "for the local storage backend"
-            )
+        base = os.environ.get("BLOOM_STORAGE_URL") or f"{self_serve_base_url()}/output"
         return f"{base.rstrip('/')}/{key}"
 
 
@@ -451,6 +446,28 @@ def is_local_backend() -> bool:
     stay coupled (no local-raw / Supabase-cleaned split lineage).
     """
     return _selected_backend_name() == "local"
+
+
+def self_serve_base_url() -> str:
+    """bloommcp's own address, for defaulting local-mode served URLs (#642).
+
+    ``BLOOMMCP_PUBLIC_URL`` when set (the same var already used for OAuth
+    discovery in ``bloom_mcp.auth`` — reused here rather than adding a second
+    "how do I reach myself" var); otherwise the hardcoded ``http://localhost:8811``,
+    since the server's bind port is itself hardcoded (``server.main()``) and no
+    env var configures it.
+    """
+    return (os.environ.get("BLOOMMCP_PUBLIC_URL") or "http://localhost:8811").rstrip("/")
+
+
+def local_output_root() -> Path:
+    """Public accessor for the local backend's resolved output root (#642).
+
+    Thin wrapper over :func:`_resolve_local_root` so ``server.build_app()`` can
+    mount exactly the directory :class:`LocalStorageBackend` itself writes to
+    and reads from, without reaching into a private name.
+    """
+    return _resolve_local_root()
 
 
 def _resolve_local_root() -> Path:
