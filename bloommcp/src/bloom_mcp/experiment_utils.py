@@ -64,10 +64,30 @@ def _resolve_plots_dir() -> str:
     return ""
 
 
+def _resolve_plots_url() -> str:
+    """``BLOOM_PLOTS_URL`` if set, else a self-served URL under ``BLOOM_LOCAL_ROOT``
+    fully-local mode (#642), else empty.
+
+    Mirrors ``_resolve_plots_dir()`` exactly, including its ``_fully_local_root()``
+    gate — reads ``is_local_backend()`` (and therefore ``BLOOM_STORAGE_BACKEND``)
+    only when ``BLOOM_LOCAL_ROOT`` is itself set, preserving the side-effect-free
+    import contract in every deployment that hasn't opted in.
+    """
+    explicit = os.getenv("BLOOM_PLOTS_URL")
+    if explicit:
+        return explicit
+    local_root = _fully_local_root()
+    if local_root is not None:
+        from bloom_mcp.storage_backend import self_serve_base_url
+
+        return f"{self_serve_base_url()}/plots"
+    return ""
+
+
 TRAITS_DIR = Path(os.getenv("BLOOM_TRAITS_DIR", ""))
 OUTPUT_DIR = Path(os.getenv("BLOOM_OUTPUT_DIR", ""))
 PLOTS_DIR = Path(_resolve_plots_dir())
-PLOTS_URL = os.getenv("BLOOM_PLOTS_URL", "")
+PLOTS_URL = _resolve_plots_url()
 
 
 def _ensure_subfolder(path: Path, label: str) -> None:
