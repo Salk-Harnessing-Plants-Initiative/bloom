@@ -31,6 +31,7 @@ from .ports import (
     ExperimentNotFoundError,
     ExperimentReadError,
     ExperimentSummary,
+    SourcePinningUnsupportedError,
 )
 
 
@@ -61,7 +62,16 @@ class LocalReader:
         *,
         version: str = "latest",
         require_clean: bool = False,
+        source_id: Optional[int] = None,
+        run_id: Optional[str] = None,
     ) -> ExperimentFrame:
+        if source_id is not None or run_id is not None:
+            # LocalReader has no source-versioned substrate — reject outright
+            # rather than silently ignoring the pin (#626).
+            raise SourcePinningUnsupportedError(
+                "LocalReader has no source concept; source_id/run_id pinning "
+                "is not supported for this backend."
+            )
         safe = self._safe_name(name)
         # Same resolution + same pandas config as the deployed raw path (via the
         # shared loader), rooted at the local input dir, with the un-versioned

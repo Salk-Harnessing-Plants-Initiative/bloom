@@ -14,6 +14,7 @@ from .ports import (
     ExperimentNotFoundError,
     ExperimentReadError,
     ExperimentSummary,
+    SourcePinningUnsupportedError,
 )
 
 
@@ -88,7 +89,16 @@ class FakeReader:
         *,
         version: str = "latest",
         require_clean: bool = False,
+        source_id: Optional[int] = None,
+        run_id: Optional[str] = None,
     ) -> ExperimentFrame:
+        if source_id is not None or run_id is not None:
+            # FakeReader has no source-versioned substrate — reject outright
+            # rather than silently ignoring the pin (#626).
+            raise SourcePinningUnsupportedError(
+                "FakeReader has no source concept; source_id/run_id pinning "
+                "is not supported for this backend."
+            )
         key = (name, version)
         if key in self._fail_next:
             self._fail_next.discard(key)

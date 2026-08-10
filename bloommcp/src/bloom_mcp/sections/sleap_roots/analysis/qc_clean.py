@@ -71,7 +71,7 @@ from pydantic import BaseModel, Field
 from sleap_roots_analyze import clean_traits_for_analysis
 
 from bloom_mcp.contract import BloomMCPError, OutputLink, Provenance, as_mcp_tool
-from bloom_mcp.data_access import ExperimentReadError
+from bloom_mcp.data_access import ExperimentReadError, SourceSelectable
 from bloom_mcp.data_access.columns import resolve_columns, run_input_validation
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, QC_TOOL_CLASS
@@ -186,6 +186,19 @@ class QCCleanParams(BaseModel):
         default=None,
         description="Optional slug appended to the version directory name.",
     )
+    source_id: Optional[int] = Field(
+        default=None,
+        description="Pin cleaning to a specific raw DB source (see "
+        "core_list_experiment_sources). Omit to use the latest source, same as "
+        "today. Mutually exclusive with run_id. Not applicable to csv_content.",
+    )
+    run_id: Optional[str] = Field(
+        default=None,
+        description="Pin cleaning to a specific raw DB source by its pipeline "
+        "run id (see core_list_experiment_sources). Omit to use the latest "
+        "source, same as today. Mutually exclusive with source_id. Not "
+        "applicable to csv_content.",
+    )
 
     # NOTE: the exactly-one-of-experiment/csv_content rule is enforced in the tool
     # body (qc_clean's first lines), not here as a @model_validator. A validator's
@@ -249,6 +262,16 @@ class QCCleanResult(BaseModel):
             "has no csv_content support)."
         ),
     )
+    source_note: Optional[str] = Field(
+        default=None,
+        description=(
+            "Advisory populated only when the experiment has more than one known "
+            "raw source and neither source_id nor run_id was given: names the "
+            "source actually used and points to core_list_experiment_sources to "
+            "choose a different one. None when a pin was given, when the "
+            "experiment has zero or one source, or on the csv_content path."
+        ),
+    )
 
 
 @as_mcp_tool(
@@ -283,6 +306,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     # there is no experiment identity on the inline path.
     experiment_label = _INLINE_EXPERIMENT_LABEL if is_inline else params.experiment
 
+    source_note: Optional[str] = None
     if is_inline:
         # Inline content bypasses the ExperimentReader port entirely — parsed directly
         # into an in-memory frame by the shared helper, never touching Storage/DB.
@@ -294,7 +318,28 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         # RAW input — never re-clean a prior cleaned artifact. Force version="raw" so a
         # re-run (after a cleaned version already exists) still reads raw rather than
         # the default "latest" resolution, which would resolve the newest _cleaned.csv.
-        frame = reader.load_experiment(params.experiment, version="raw")
+        frame = reader.load_experiment(
+            params.experiment,
+            version="raw",
+            source_id=params.source_id,
+            run_id=params.run_id,
+        )
+        # #626: when neither source_id nor run_id was given and the experiment has
+        # more than one known source, say so explicitly rather than silently
+        # resolving "latest" — an agent that hasn't already discovered the sources
+        # should still learn there was a choice to make.
+        if (
+            params.source_id is None
+            and params.run_id is None
+            and isinstance(reader, SourceSelectable)
+        ):
+            sources = reader.list_sources(params.experiment)
+            if len(sources) > 1 and frame.resolved_source is not None:
+                source_note = (
+                    f"{len(sources)} sources available for {params.experiment!r}; "
+                    f"used latest (source_id={frame.resolved_source.source_id}). "
+                    "Call core_list_experiment_sources to choose a different one."
+                )
 
     # B-4: the same column cannot serve as both genotype label and sample identifier.
     if (
@@ -664,4 +709,5 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         output_links=output_links,
         input_sha256=input_sha256,
         next_step=next_step,
+        source_note=source_note,
     )

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 from pathlib import Path
@@ -20,7 +21,13 @@ import pandas as pd
 import pytest
 
 from bloom_mcp.contract import BloomMCPError
-from bloom_mcp.data_access import FakeReader, SupabaseReader
+from bloom_mcp.data_access import (
+    AmbiguousSourceSelectionError,
+    FakeReader,
+    SourceInfo,
+    SourcePinNotFoundError,
+    SupabaseReader,
+)
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._inline_input import compute_input_sha256
@@ -1329,3 +1336,148 @@ def test_csv_content_never_appears_in_logs_on_internal_error(
     assert marker not in exc.value.remedy
     logged_text = "\n".join(r.getMessage() for r in records)
     assert marker not in logged_text
+
+
+# ── explicit source pin (#626) ──────────────────────────────────────────────
+
+
+class _MultiSourceFakeReader(FakeReader):
+    """Test-local double: FakeReader + a bolted-on SourceSelectable surface.
+
+    Local to this test file only — the *shared* FakeReader class must stay
+    non-SourceSelectable (test_fake_reader_is_not_source_selectable in
+    test_supabase_reader.py locks that in). This subclass exists purely to
+    exercise qc_clean's own source-pin/source_note logic without needing a
+    full DB-shaped SupabaseReader fixture.
+    """
+
+    def __init__(self, source_ids):
+        super().__init__()
+        self._sources = [
+            SourceInfo(source_id=sid, source_name=f"run-{sid}", pipeline_run_id=f"p{sid}")
+            for sid in source_ids
+        ]
+
+    def list_sources(self, name):
+        return list(self._sources)
+
+    def resolve_source(self, name, *, source_id=None, run_id=None):
+        if source_id is not None and run_id is not None:
+            raise AmbiguousSourceSelectionError(
+                "both source_id and run_id given"
+            )
+        if source_id is not None:
+            for s in self._sources:
+                if s.source_id == source_id:
+                    return s
+            raise SourcePinNotFoundError(f"no source_id={source_id}")
+        if run_id is not None:
+            for s in self._sources:
+                if s.pipeline_run_id == run_id:
+                    return s
+            raise SourcePinNotFoundError(f"no run_id={run_id}")
+        return self._sources[-1] if self._sources else None
+
+    def load_experiment(
+        self, name, *, version="latest", require_clean=False, source_id=None, run_id=None
+    ):
+        resolved = self.resolve_source(name, source_id=source_id, run_id=run_id)
+        frame = super().load_experiment(name, version=version, require_clean=require_clean)
+        if resolved is not None:
+            frame = dataclasses.replace(frame, resolved_source=resolved)
+        return frame
+
+
+@pytest.fixture
+def multi_source_ports():
+    """Like injected_ports, but the reader is _MultiSourceFakeReader(sources=[9, 10, 11])."""
+    reader = _MultiSourceFakeReader([9, 10, 11])
+    store = FakeResultStore()
+    reader.add_experiment(_EXPERIMENT, _raw_df())
+    _ports.configure(reader=reader, store=store)
+    try:
+        yield reader, store
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def test_source_id_and_run_id_fields_exist():
+    assert "source_id" in QCCleanParams.model_fields
+    assert "run_id" in QCCleanParams.model_fields
+
+
+def test_omitting_both_source_params_preserves_todays_behavior(injected_ports):
+    """Default-preserving guarantee: the new fields don't change the result
+    beyond the new source_note field, which must be None on a single-source
+    (FakeReader) experiment."""
+    result = _run()
+    assert result.source_note is None
+
+
+def test_explicit_source_pin_is_honored(multi_source_ports):
+    _reader, _store = multi_source_ports
+    result = _run(source_id=10, min_samples_per_trait=1, max_nans_per_trait=1.0)
+    # A pin was given, so there is nothing to advise.
+    assert result.source_note is None
+
+
+def test_both_source_id_and_run_id_given_is_rejected(multi_source_ports):
+    """Ambiguous pin -> BloomMCPError through the existing
+    errors=(ExperimentReadError,) mapping — no new mapping code needed."""
+    with pytest.raises(BloomMCPError) as exc:
+        _run(source_id=9, run_id="p10", min_samples_per_trait=1, max_nans_per_trait=1.0)
+    assert "source_id" in exc.value.message.lower() or "run_id" in exc.value.message.lower()
+
+
+def test_source_pin_matching_nothing_is_rejected(multi_source_ports):
+    with pytest.raises(BloomMCPError):
+        _run(source_id=404, min_samples_per_trait=1, max_nans_per_trait=1.0)
+
+
+def test_source_pinning_unsupported_on_fakereader_surfaces_as_bloommcperror(
+    injected_ports,
+):
+    """FakeReader (not multi_source_ports) has no source concept at all —
+    SourcePinningUnsupportedError must flow through the same
+    errors=(ExperimentReadError,) mapping as every other ExperimentReadError
+    subclass, with no new mapping code."""
+    with pytest.raises(BloomMCPError):
+        _run(source_id=7)
+
+
+def test_multi_source_experiment_with_no_pin_gets_an_advisory_note(multi_source_ports):
+    result = _run(min_samples_per_trait=1, max_nans_per_trait=1.0)
+    assert result.source_note is not None
+    assert "3 sources" in result.source_note
+    assert "core_list_experiment_sources" in result.source_note
+    assert "11" in result.source_note  # the resolved (max) source_id
+
+
+def test_single_source_experiment_gets_no_advisory_note(injected_ports):
+    """injected_ports' plain FakeReader has no SourceSelectable surface at
+    all, so the note-population branch never fires — the single-source case
+    from the spec (not the zero-source case, which is the same code path
+    here since FakeReader isn't SourceSelectable either way)."""
+    result = _run()
+    assert result.source_note is None
+
+
+def test_csv_content_path_never_surfaces_a_source_note(injected_ports):
+    csv_text = _RAW.read_text(encoding="utf-8")
+    result = qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
+    assert result.source_note is None
+
+
+def test_pinned_source_is_traceable_from_the_committed_runs_provenance(
+    multi_source_ports,
+):
+    """design.md Decision 7: frame.resolved_source already flows into
+    store.create_run(source=...) — this locks in that a pinned run's
+    committed source metadata matches the pin given, not whatever "latest"
+    would have resolved to."""
+    _reader, store = multi_source_ports
+    _run(source_id=9, min_samples_per_trait=1, max_nans_per_trait=1.0)
+
+    stored = store.get_run(_EXPERIMENT, "qc", "latest")
+    assert stored.source_id == 9
+    assert stored.source_name == "run-9"

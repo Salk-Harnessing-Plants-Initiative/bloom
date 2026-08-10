@@ -264,6 +264,67 @@ def fake_supabase_db(monkeypatch):
     return fake
 
 
+def _seed_multi_source_experiment(
+    fake_supabase_db,
+    experiment_id: int,
+    source_ids: list,
+    *,
+    name: str = "multi-source exp",
+) -> int:
+    """Seed one experiment with a distinct plant+trait row per ``source_id``,
+    plus a matching ``seed_sources`` entry for each (#626).
+
+    Most existing fixtures (e.g. ``_seed_two_plant_experiment`` in
+    ``test_supabase_reader.py``) seed a single source; tool-layer tests for
+    source discovery/pinning (``core_list_experiment_sources``, ``qc_clean``'s
+    advisory note) need >1 *real* source against the monkeypatched
+    ``SupabaseReader`` boundary — ``FakeReader`` deliberately has no source
+    concept at all (see ``test_fake_reader_is_not_source_selectable``), so it
+    cannot stand in for this.
+    """
+    fake_supabase_db.seed_experiment(experiment_id, name)
+    rows = []
+    sources = []
+    for i, source_id in enumerate(source_ids, start=1):
+        rows.append(
+            {
+                "scan_id": 1000 + i,
+                "date_scanned": "2026-07-01",
+                "plant_age_days": 10,
+                "wave_number": 1,
+                "plant_id": i,
+                "germ_day": 0,
+                "plant_qr_code": f"QR{i}",
+                "accession_name": f"acc-{i}",
+                "trait_name": "root_length",
+                "source_id": source_id,
+                "trait_value": float(i),
+            }
+        )
+        sources.append(
+            {
+                "source_id": source_id,
+                "source_name": f"run-{source_id}",
+                "pipeline_run_id": f"p{source_id}",
+            }
+        )
+    fake_supabase_db.seed_traits(experiment_id, rows)
+    fake_supabase_db.seed_sources(experiment_id, sources)
+    return experiment_id
+
+
+@pytest.fixture
+def seed_multi_source_experiment():
+    """Factory fixture: ``seed_multi_source_experiment(fake_supabase_db, 42, [9, 10])``.
+
+    A fixture (rather than a plain importable helper) so every test module
+    under ``tests/`` can use it with no cross-module import — this package
+    has no top-level ``tests/__init__.py``, so ``from tests.conftest import
+    ...`` does not resolve.
+    """
+    return _seed_multi_source_experiment
+
+
 # --- In-memory RPC boundary (bloommcp_usage / call_rpc) -----------------------
 #
 # `call_rpc` is bloommcp's one seam for calling a Postgres RPC (e.g.

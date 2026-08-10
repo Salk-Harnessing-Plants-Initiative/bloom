@@ -19,7 +19,12 @@ from fastmcp import FastMCP
 from bloom_mcp.auth import auth_provider
 from bloom_mcp.contract import register
 
-from . import list_available_experiments, list_existing_analyses, load_experiment_data
+from . import (
+    list_available_experiments,
+    list_existing_analyses,
+    list_experiment_sources,
+    load_experiment_data,
+)
 
 section = FastMCP("core", auth=auth_provider)
 
@@ -29,4 +34,5 @@ register(
     list_available_experiments.list_available_experiments,
     load_experiment_data.load_experiment_data,
     list_existing_analyses.list_existing_analyses,
+    list_experiment_sources.list_experiment_sources,
 )

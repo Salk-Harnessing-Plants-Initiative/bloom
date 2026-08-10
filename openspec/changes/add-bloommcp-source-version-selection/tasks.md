@@ -1,6 +1,6 @@
 ## 1. Foundation: Protocol, error class, adapter rejection
 
-- [ ] 1.1 Write failing tests in a **new** `bloommcp/tests/data_access/test_ports.py` (this file
+- [x] 1.1 Write failing tests in a **new** `bloommcp/tests/data_access/test_ports.py` (this file
       does not exist yet — do not confuse it with the unrelated
       `bloommcp/tests/result_store/test_ports.py`), plus additions to `test_local_reader.py`/
       `test_fake_reader.py`: assert `"source_id" not in ExperimentReader.load_experiment`'s current
@@ -10,22 +10,22 @@
       `SourcePinningUnsupportedError` once 1.2/1.3 land. Also assert both kwargs non-`None`
       simultaneously raises `SourcePinningUnsupportedError` (not `AmbiguousSourceSelectionError`) on
       these two adapters, since they never reach the ambiguity check `SupabaseReader` has.
-- [ ] 1.2 Add `SourcePinningUnsupportedError(ExperimentReadError)` to `ports.py`; add
+- [x] 1.2 Add `SourcePinningUnsupportedError(ExperimentReadError)` to `ports.py`; add
       `source_id: Optional[int] = None, run_id: Optional[str] = None` to `ExperimentReader.load_experiment`'s
       Protocol declaration (signature + docstring only — no behavior on the Protocol itself).
       Re-export the new error from `data_access/__init__.py` alongside the other `ExperimentReadError`
       subclasses.
-- [ ] 1.3 Add the same two kwargs to `LocalReader.load_experiment` and `FakeReader.load_experiment`;
+- [x] 1.3 Add the same two kwargs to `LocalReader.load_experiment` and `FakeReader.load_experiment`;
       each raises `SourcePinningUnsupportedError` immediately when either is non-`None`. Run 1.1's
       tests — all now pass against the new error type.
-- [ ] 1.4 Write a test asserting `SupabaseReader.load_experiment(name, source_id=7, run_id="r1")`
+- [x] 1.4 Write a test asserting `SupabaseReader.load_experiment(name, source_id=7, run_id="r1")`
       (both given) raises `AmbiguousSourceSelectionError` through the `ExperimentReader` Protocol
       type (not just the concrete class) — this already works today (PR #557); the test is new
       coverage confirming the Protocol-typed call path, not new logic. Also write a test for an
       explicit `source_id` that matches no known source, asserting `SourcePinNotFoundError` (already
       implemented in `SupabaseReader`; this is new spec/test coverage for a gap Tier 2 shipped
       without archiving).
-- [ ] 1.5 Extend the existing monkeypatched-`SupabaseReader`-boundary fixture helpers in
+- [x] 1.5 Extend the existing monkeypatched-`SupabaseReader`-boundary fixture helpers in
       `test_supabase_reader.py` (the same `fake_supabase_db`/`fake_supabase_storage` pattern already
       used for Tier-2 multi-source tests) with a small reusable seeding helper for "N sources on one
       experiment," for use by the tool-layer tests in sections 2-3 below. **Do not** make `FakeReader`
@@ -34,61 +34,61 @@
 
 ## 2. Discovery tool: core_list_experiment_sources
 
-- [ ] 2.1 Write a failing test: `core_list_experiment_sources` does not exist yet / is not
+- [x] 2.1 Write a failing test: `core_list_experiment_sources` does not exist yet / is not
       registered on the `core` FastMCP section.
-- [ ] 2.2 Implement `sections/core/list_experiment_sources.py`: isinstance-gate on
+- [x] 2.2 Implement `sections/core/list_experiment_sources.py`: isinstance-gate on
       `SourceSelectable`; call `reader.list_sources(experiment)`; format as text matching
       `list_available_experiments`'s style (Decision 3 in design.md). Register it in
       `sections/core/__init__.py` alongside the other core tools.
-- [ ] 2.3 Write tests: a multi-source experiment (seeded via 1.5's monkeypatched-`SupabaseReader`
+- [x] 2.3 Write tests: a multi-source experiment (seeded via 1.5's monkeypatched-`SupabaseReader`
       boundary) lists each source's fields; a single-/zero-source experiment gets the distinct "no
       meaningful choice" message; an unknown experiment name gets a not-found message, not a crash;
       a plain `FakeReader`/`LocalReader` (neither implements `SourceSelectable`) gets the "not
       applicable for this backend" message, not an exception.
-- [ ] 2.4 Decide (judgment call, not test-driven — `test_tool_name_lists_match_live_registry` in
+- [x] 2.4 Decide (judgment call, not test-driven — `test_tool_name_lists_match_live_registry` in
       `test_devendor_invariants.py` only checks names already in `ALWAYS_INCLUDE_MCP_TOOLS` resolve
       to live tools, so it cannot confirm or refute this either way): default to **not** adding
       `core_list_experiment_sources` to `ALWAYS_INCLUDE_MCP_TOOLS` (`langchain/helpers/foundational_tools.py`)
       — it is an occasional discovery aid, not a foundational read path (design.md Decision 8).
-- [ ] 2.5 Update `bloommcp/tests/test_devendor_invariants.py::test_expected_tool_surface`'s
+- [x] 2.5 Update `bloommcp/tests/test_devendor_invariants.py::test_expected_tool_surface`'s
       hardcoded `core_*` tool enumeration to include `core_list_experiment_sources`, so the
       live-tool-surface guard stays meaningful instead of silently going stale.
 
 ## 3. qc_clean: source pin + advisory note + provenance
 
-- [ ] 3.1 Write a failing test: `"source_id" not in QCCleanParams.model_fields` today (checking the
+- [x] 3.1 Write a failing test: `"source_id" not in QCCleanParams.model_fields` today (checking the
       field set directly, not assuming a raised validation error — `QCCleanParams` does not set
       `extra="forbid"`, so an unrecognized kwarg may be silently ignored rather than rejected).
-- [ ] 3.2 Add `source_id`/`run_id` fields to `QCCleanParams`; thread into the existing
+- [x] 3.2 Add `source_id`/`run_id` fields to `QCCleanParams`; thread into the existing
       `reader.load_experiment(params.experiment, version="raw")` call at qc_clean.py:297. Write a
       test (using 1.5's multi-source fixture) proving an explicit pin actually changes which
       source's data is cleaned (assert on `frame.resolved_source.source_id` or an equivalent
       observable difference in the result) — not just that the call is schema-valid.
-- [ ] 3.3 Write a test: both `source_id` and `run_id` given raises a `BloomMCPError` derived from
+- [x] 3.3 Write a test: both `source_id` and `run_id` given raises a `BloomMCPError` derived from
       `AmbiguousSourceSelectionError` (through the existing `errors=(ExperimentReadError,)` mapping
       — no new mapping code expected to be needed; the test proves it). Add a second test for an
       explicit pin that matches no known source (`SourcePinNotFoundError` -> `BloomMCPError`).
-- [ ] 3.4 Add `source_note: Optional[str] = None` to `QCCleanResult`. Write tests (using 1.5's
+- [x] 3.4 Add `source_note: Optional[str] = None` to `QCCleanResult`. Write tests (using 1.5's
       monkeypatched-`SupabaseReader` multi-source fixture) for: multi-source + no pin -> note names
       the resolved source and mentions `core_list_experiment_sources`; multi-source + explicit pin
       -> note is `None`; single-/zero-source -> note is `None`; `csv_content` (inline) path -> note
       is `None` regardless. Implement the note-population logic to make all four pass.
-- [ ] 3.5 Write a regression test: `qc_clean` invoked with neither `source_id` nor `run_id`, on a
+- [x] 3.5 Write a regression test: `qc_clean` invoked with neither `source_id` nor `run_id`, on a
       single-source experiment, produces byte-identical `QCCleanResult` fields (other than the new
       `source_note`, which must be `None`) to a pre-change golden fixture — proves the
       default-preserving guarantee, not just "it still works."
-- [ ] 3.6 Write a regression test locking in design.md Decision 7: after `qc_clean` commits with an
+- [x] 3.6 Write a regression test locking in design.md Decision 7: after `qc_clean` commits with an
       explicit `source_id` pin, the persisted `StoredRun`/manifest's recorded source metadata
       (`source_id`/`source_name`, via `store.create_run(source=frame.resolved_source)`) equals the
       pin given — proves the pin is traceable from the committed run, not just used-and-forgotten.
 
 ## 4. qc_inspect: source pin
 
-- [ ] 4.1 Write a failing test: `"run_id" not in QCInspectParams.model_fields` today.
-- [ ] 4.2 Add `source_id`/`run_id` fields to `QCInspectParams`; thread into the raw-tier
+- [x] 4.1 Write a failing test: `"run_id" not in QCInspectParams.model_fields` today.
+- [x] 4.2 Add `source_id`/`run_id` fields to `QCInspectParams`; thread into the raw-tier
       `load_experiment` call at qc_inspect.py:433. Write a test (mirroring 3.2) proving an explicit
       pin actually changes which source's data is inspected.
-- [ ] 4.3 Write tests mirroring 3.3 (ambiguous pin and pin-not-found -> `BloomMCPError`) and an
+- [x] 4.3 Write tests mirroring 3.3 (ambiguous pin and pin-not-found -> `BloomMCPError`) and an
       omit-both regression test mirroring 3.5.
 
 ## 5. load_experiment_data: source pin (forces raw tier)

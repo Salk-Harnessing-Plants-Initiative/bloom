@@ -121,6 +121,18 @@ class QCInspectParams(BaseModel):
         default=None,
         description="Optional slug appended to the version directory name.",
     )
+    source_id: Optional[int] = Field(
+        default=None,
+        description="Pin inspection to a specific raw DB source (see "
+        "core_list_experiment_sources). Omit to use the latest source, same "
+        "as today. Mutually exclusive with run_id.",
+    )
+    run_id: Optional[str] = Field(
+        default=None,
+        description="Pin inspection to a specific raw DB source by its "
+        "pipeline run id (see core_list_experiment_sources). Omit to use the "
+        "latest source, same as today. Mutually exclusive with source_id.",
+    )
 
 
 class QCInspectRecommendation(BaseModel):
@@ -430,7 +442,12 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
     # dependent on whether qc_clean had ever run); #420's own outliers-preferring
     # resolution makes it worse (deterministic once any trim exists, not merely
     # order-dependent), which is what surfaced it during that PR's review.
-    frame = reader.load_experiment(params.experiment, version="raw")
+    frame = reader.load_experiment(
+        params.experiment,
+        version="raw",
+        source_id=params.source_id,
+        run_id=params.run_id,
+    )
     if params.trait_columns is not None:
         # An empty list is a caller mistake, not "inspect everything" — reject it
         # explicitly rather than silently falling through to all traits.

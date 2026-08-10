@@ -438,10 +438,11 @@ def test_expected_tool_surface():
         "sleap_roots_plot_correlation_matrix",
         "sleap_roots_plot_heritability_bar",
         "sleap_roots_plot_variance_decomposition",
-        # core: the 3 discovery tools
+        # core: the 4 discovery tools (core_list_experiment_sources added #626)
         "core_list_available_experiments",
         "core_load_experiment_data",
         "core_list_existing_analyses",
+        "core_list_experiment_sources",
     }
     not_expected = {
         # Un-namespaced Phase-1 names must NOT survive the P2.2/P2.3 move —

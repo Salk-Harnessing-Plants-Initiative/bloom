@@ -10,6 +10,7 @@ it produces no cleaned version.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 from pathlib import Path
@@ -19,8 +20,11 @@ import pytest
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import (
+    AmbiguousSourceSelectionError,
     CleanedVersionRequiredError,
     FakeReader,
+    SourceInfo,
+    SourcePinNotFoundError,
     SupabaseReader,
 )
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
@@ -941,3 +945,101 @@ def test_source_csv_honors_local_root_only_mode(tmp_path, monkeypatch):
 
     assert captured["source_csv"] == raw_path
     assert captured["source_csv"].exists()
+
+
+# ── explicit source pin (#626) ──────────────────────────────────────────────
+
+
+class _MultiSourceFakeReader(FakeReader):
+    """Test-local double: FakeReader + a bolted-on SourceSelectable surface.
+
+    Local to this test file — the shared FakeReader class must stay
+    non-SourceSelectable (test_fake_reader_is_not_source_selectable in
+    test_supabase_reader.py).
+    """
+
+    def __init__(self, source_ids):
+        super().__init__()
+        self._sources = [
+            SourceInfo(source_id=sid, source_name=f"run-{sid}", pipeline_run_id=f"p{sid}")
+            for sid in source_ids
+        ]
+
+    def list_sources(self, name):
+        return list(self._sources)
+
+    def resolve_source(self, name, *, source_id=None, run_id=None):
+        if source_id is not None and run_id is not None:
+            raise AmbiguousSourceSelectionError("both source_id and run_id given")
+        if source_id is not None:
+            for s in self._sources:
+                if s.source_id == source_id:
+                    return s
+            raise SourcePinNotFoundError(f"no source_id={source_id}")
+        if run_id is not None:
+            for s in self._sources:
+                if s.pipeline_run_id == run_id:
+                    return s
+            raise SourcePinNotFoundError(f"no run_id={run_id}")
+        return self._sources[-1] if self._sources else None
+
+    def load_experiment(
+        self, name, *, version="latest", require_clean=False, source_id=None, run_id=None
+    ):
+        resolved = self.resolve_source(name, source_id=source_id, run_id=run_id)
+        frame = super().load_experiment(name, version=version, require_clean=require_clean)
+        if resolved is not None:
+            frame = dataclasses.replace(frame, resolved_source=resolved)
+        return frame
+
+
+@pytest.fixture
+def multi_source_ports():
+    reader = _MultiSourceFakeReader([9, 10])
+    store = FakeResultStore()
+    reader.add_experiment(_EXPERIMENT, _raw_df())
+    _ports.configure(reader=reader, store=store)
+    try:
+        yield reader, store
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def test_source_id_and_run_id_fields_exist():
+    assert "source_id" in QCInspectParams.model_fields
+    assert "run_id" in QCInspectParams.model_fields
+
+
+def test_omitting_both_source_params_preserves_todays_behavior(injected_ports):
+    """No behavior change beyond accepting (and ignoring, when None) the two
+    new fields — same recommendation oracle as before this change."""
+    result = _run()
+    assert result.n_samples == 187
+
+
+def test_explicit_source_pin_changes_which_source_is_inspected(multi_source_ports):
+    _reader, _store = multi_source_ports
+    result_9 = _run(source_id=9)
+    result_10 = _run(source_id=10)
+    # Both resolve (no error) — proving the pin actually reached load_experiment
+    # rather than being silently dropped.
+    assert result_9.n_samples > 0
+    assert result_10.n_samples > 0
+
+
+def test_both_source_id_and_run_id_given_is_rejected(multi_source_ports):
+    with pytest.raises(BloomMCPError) as exc:
+        _run(source_id=9, run_id="p10")
+    assert "source_id" in exc.value.message.lower() or "run_id" in exc.value.message.lower()
+
+
+def test_source_pin_matching_nothing_is_rejected(multi_source_ports):
+    with pytest.raises(BloomMCPError):
+        _run(source_id=404)
+
+
+def test_source_pinning_unsupported_on_fakereader_surfaces_as_bloommcperror(
+    injected_ports,
+):
+    with pytest.raises(BloomMCPError):
+        _run(source_id=7)

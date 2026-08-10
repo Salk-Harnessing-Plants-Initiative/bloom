@@ -48,6 +48,17 @@ class AmbiguousSourceSelectionError(ExperimentReadError):
     """Both ``source_id`` and ``run_id`` were given; the DB read surface rejects that."""
 
 
+class SourcePinningUnsupportedError(ExperimentReadError):
+    """A non-``None`` ``source_id``/``run_id`` was given to an adapter with no source concept.
+
+    Distinct from :class:`AmbiguousSourceSelectionError` (a pin that could apply
+    but conflicts with another pin) and :class:`SourcePinNotFoundError` (a pin
+    that could apply but matches nothing) — this adapter (:class:`LocalReader`,
+    :class:`FakeReader`) has no source-versioned substrate at all, so any
+    non-``None`` pin is rejected outright rather than silently ignored.
+    """
+
+
 class AmbiguousSampleIdentityError(ExperimentReadError):
     """A pivoted frame would carry a ``sample_id`` shared by more than one plant."""
 
@@ -129,6 +140,8 @@ class ExperimentReader(Protocol):
         *,
         version: str = "latest",
         require_clean: bool = False,
+        source_id: Optional[int] = None,
+        run_id: Optional[str] = None,
     ) -> ExperimentFrame:
         """Resolve ``name`` to an :class:`ExperimentFrame`.
 
@@ -141,6 +154,16 @@ class ExperimentReader(Protocol):
         falls through the resolution order to the raw input.
         ``require_clean=True`` raises :class:`CleanedVersionRequiredError` when
         no cleaned version exists.
+
+        ``source_id``/``run_id`` optionally pin which raw DB source/pipeline-run
+        backs the read — meaningful only against the raw tier. Every adapter
+        MUST accept both kwargs: an adapter backed by a source-versioned
+        substrate (see :class:`SourceSelectable`) honors a non-``None`` pin, or
+        raises :class:`AmbiguousSourceSelectionError` when both are given, or
+        :class:`SourcePinNotFoundError` when a pin matches nothing. An adapter
+        with no source concept MUST raise :class:`SourcePinningUnsupportedError`
+        immediately when either is non-``None``, rather than silently ignoring
+        the pin.
         """
         ...
 
