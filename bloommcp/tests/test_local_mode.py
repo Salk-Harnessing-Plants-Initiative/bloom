@@ -648,7 +648,9 @@ def test_is_local_backend_not_consulted_when_local_root_unset(monkeypatch):
     assert eu._fully_local_root() is None
 
 
-def test_is_local_backend_not_consulted_when_local_root_unset_for_plots_url(monkeypatch):
+def test_is_local_backend_not_consulted_when_local_root_unset_for_plots_url(
+    monkeypatch,
+):
     """Same pin as test_is_local_backend_not_consulted_when_local_root_unset,
     for _resolve_plots_url()'s reuse of the same _fully_local_root() gate."""
     monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)

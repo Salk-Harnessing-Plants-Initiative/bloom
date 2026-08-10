@@ -221,7 +221,7 @@ different lineage. A later read sees only the store the current backend points a
 and is blind to the other's versions. **Pick one backend per experiment and keep
 it stable** for the life of that experiment's analysis history.
 
-This can't be *prevented* from purely local information — the `local` backend
+This can't be _prevented_ from purely local information — the `local` backend
 runs fully offline and has no way to check whether `supabase` already has
 history for an experiment (and vice versa) without contacting it, which would
 defeat the point. It is made **observable** instead (#395):
@@ -242,7 +242,7 @@ first flip (`local` starts fresh) but **not** on the return trip (`supabase`'s
 manifest already exists), even though a `local`-backed run happened in
 between and `supabase`'s catalog is now silently stale relative to it. Neither
 the sentinel nor the log line can join the two catalogs — they only make the
-*moment* of a potential split observable, not the mixing itself.
+_moment_ of a potential split observable, not the mixing itself.
 
 **This is a dev / power-user path, not a normal-user packaged distribution.**
 Bench scientists use the deployed web product; fully-local mode is for driving

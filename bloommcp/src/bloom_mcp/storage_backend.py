@@ -457,7 +457,9 @@ def self_serve_base_url() -> str:
     since the server's bind port is itself hardcoded (``server.main()``) and no
     env var configures it.
     """
-    return (os.environ.get("BLOOMMCP_PUBLIC_URL") or "http://localhost:8811").rstrip("/")
+    return (os.environ.get("BLOOMMCP_PUBLIC_URL") or "http://localhost:8811").rstrip(
+        "/"
+    )
 
 
 def local_output_root() -> Path:
