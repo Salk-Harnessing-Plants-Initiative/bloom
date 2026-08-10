@@ -12,11 +12,50 @@ flight, since submission happens fire-and-forget, never awaited inline.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
+
+
+# A fixed, public context string, not a per-value random salt — correlating
+# log lines requires the same `identity` to always redact to the same
+# output, and (see _redact_identity's docstring) there is no actual secret
+# here a random salt would protect. Only exists to make the KDF call below
+# depend on more than just `identity` itself.
+_REDACTION_CONTEXT = b"bloommcp-usage-log-redaction"
+
+
+def _redact_identity(identity: str) -> str:
+    """A short, non-reversible token for correlating log lines, not the raw
+    identity.
+
+    `identity` can now be a real Supabase user id — sourced from a verified
+    OAuth caller via `bloom_mcp.identity._oauth_subject_from_scope`
+    (add-bloommcp-oauth-usage-attribution) — rather than only ever the
+    `X-Bloom-Identity` header's `sub` or the literal `anonymous`. CodeQL
+    flags the raw value reaching the log calls below as clear-text logging
+    of a credential-shaped source once that path exists.
+
+    Uses PBKDF2-HMAC-SHA256 — a real key-derivation function — rather than a
+    bare `hashlib.sha256(...)` call, which trips a *second*, different
+    CodeQL rule ("weak password hashing") once the first is fixed: CodeQL
+    treats `identity` as password-shaped and flags a fast, general-purpose
+    hash used on it. Neither rule is actually about a real weakness here —
+    `identity` is a high-entropy UUID or the literal `anonymous`, never
+    checked against a stored value for authentication, so it has none of
+    the properties (attacker-guessable, low-entropy, used as a credential)
+    that make either finding a real risk. A low iteration count is
+    deliberate: this line can run synchronously on the request path (the
+    in-flight-cap drop in `record_usage_async`), and there is no password
+    strength to buy with a higher one.
+    """
+    return hashlib.pbkdf2_hmac("sha256", identity.encode(), _REDACTION_CONTEXT, 10_000)[
+        :6
+    ].hex()
+
 
 # A small, dedicated pool: usage recording is an observability side effect,
 # not on any request's critical path, so it shouldn't compete with or block
@@ -54,8 +93,8 @@ def _do_record(identity: str, action: str) -> None:
         )
     except Exception:
         logger.exception(
-            "failed to record bloommcp_usage (identity=%r, action=%r)",
-            identity,
+            "failed to record bloommcp_usage (identity=%s, action=%r)",
+            _redact_identity(identity),
             action,
         )
     finally:
@@ -74,9 +113,9 @@ def record_usage_async(identity: str, action: str) -> None:
     if not _inflight.acquire(blocking=False):
         logger.warning(
             "bloommcp_usage recording dropped (>= %d already in flight): "
-            "identity=%r action=%r",
+            "identity=%s action=%r",
             _MAX_INFLIGHT,
-            identity,
+            _redact_identity(identity),
             action,
         )
         return
@@ -85,7 +124,7 @@ def record_usage_async(identity: str, action: str) -> None:
     except Exception:
         _inflight.release()
         logger.exception(
-            "failed to submit bloommcp_usage recording (identity=%r, action=%r)",
-            identity,
+            "failed to submit bloommcp_usage recording (identity=%s, action=%r)",
+            _redact_identity(identity),
             action,
         )

@@ -102,9 +102,18 @@ Merge a PR to `main`. The `deploy` workflow will:
    predate issue #477; a no-op on an already-migrated or fresh host
 5. Provision writable bloommcp data directories (`scripts/ensure_bloommcp_data_dirs.sh`)
 6. Run `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d`
-7. Wait for Caddy to obtain / renew its TLS cert
-8. Run `supabase db push` for any new migrations
-9. Print `docker compose ps` to the workflow log
+7. If `caddy/Caddyfile` changed in this deploy, reload Caddy in place
+   (`caddy reload --config /etc/caddy/Caddyfile`) — `up -d` doesn't recreate Caddy for a
+   bind-mounted config change alone, then check it hasn't crash-looped
+8. If `volumes/api/kong.yml` changed in this deploy, restart Kong
+   (`docker compose ... restart kong`) so its declarative config regenerates from the
+   change — a full restart, not `kong reload`, since Kong's config requires the
+   container's entrypoint to re-run the env-substitution step (see
+   `openspec/changes/fix-kong-reload-on-deploy/design.md`); then check it hasn't crash-looped
+   (`scripts/check_kong_restart_delta.sh`)
+9. Wait for Caddy to obtain / renew its TLS cert
+10. Run `supabase db push` for any new migrations
+11. Print `docker compose ps` to the workflow log
 
 If any step fails, the workflow surfaces logs and stops — the stack is
 left in whatever state the failed step produced. Investigate from the

@@ -39,6 +39,7 @@ Two layers of test:
 
 from __future__ import annotations
 
+import time
 import uuid
 
 import jwt
@@ -52,23 +53,44 @@ A_UUID = str(uuid.uuid4())
 
 
 def _token(sub=A_UUID, secret=SECRET):
-    return jwt.encode({"sub": sub, "aud": "authenticated"}, secret, algorithm="HS256")
+    # verify_identity_header now requires an exp claim to exist
+    # (options={"require": ["exp"]}) — every token here must carry one.
+    payload = {"sub": sub, "aud": "authenticated", "exp": int(time.time()) + 3600}
+    return jwt.encode(payload, secret, algorithm="HS256")
 
 
 class _DummyApp:
     """A minimal ASGI app that responds with a configurable status and
-    records that it was called."""
+    records that it was called.
 
-    def __init__(self, status: int = 200):
+    `user`, when given, is written to `scope["user"]` before responding —
+    simulating what Starlette's real `AuthenticationMiddleware` would already
+    have done, deeper in the real stack, by the time `IdentityMiddleware`'s
+    own `await self.app(...)` returns (see identity.py's
+    `_oauth_subject_from_scope` and openspec
+    add-bloommcp-oauth-usage-attribution design.md Decision 1)."""
+
+    def __init__(self, status: int = 200, user=None):
         self.called = 0
         self._status = status
+        self._user = user
 
     async def __call__(self, scope, receive, send):
         self.called += 1
+        if self._user is not None:
+            scope["user"] = self._user
         await send(
             {"type": "http.response.start", "status": self._status, "headers": []}
         )
         await send({"type": "http.response.body", "body": b"ok"})
+
+
+def _authenticated_user(subject=None):
+    from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+    from mcp.server.auth.provider import AccessToken
+
+    token = AccessToken(token="t", client_id="c", scopes=[], subject=subject)
+    return AuthenticatedUser(token)
 
 
 @pytest.fixture
@@ -187,6 +209,66 @@ def test_health_path_is_not_recorded(monkeypatch, recorded_usage):
     assert recorded_usage == []
 
 
+# ── OAuth AccessToken fallback (add-bloommcp-oauth-usage-attribution) ───────
+# A second identity source, consulted only when no X-Bloom-Identity header
+# resolved one. `_DummyApp(user=...)` simulates what Starlette's real
+# `AuthenticationMiddleware` writes into `scope["user"]`, deeper in the real
+# stack, without needing FastMCP/OAuth actually wired up (see
+# test_identity_middleware_records_a_real_oauth_callers_subject_live below for
+# the real end-to-end version).
+
+
+def test_oauth_authenticated_caller_with_no_header_is_recorded_under_their_subject(
+    monkeypatch, recorded_usage
+):
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    downstream = _DummyApp(user=_authenticated_user(subject=A_UUID))
+    client = TestClient(IdentityMiddleware(downstream))
+    resp = client.get("/anything")
+    assert resp.status_code == 200
+    assert recorded_usage == [(A_UUID, "combined")]
+
+
+def test_api_key_authenticated_caller_with_no_header_is_still_anonymous(
+    monkeypatch, recorded_usage
+):
+    """`ApiKeyVerifier`'s shared-key credential never sets `subject` — it
+    names no individual, so this must still collapse into `anonymous`."""
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    downstream = _DummyApp(user=_authenticated_user(subject=None))
+    client = TestClient(IdentityMiddleware(downstream))
+    resp = client.get("/anything")
+    assert resp.status_code == 200
+    assert recorded_usage == [("anonymous", "combined")]
+
+
+def test_no_auth_configured_with_no_header_is_still_anonymous(
+    monkeypatch, recorded_usage
+):
+    """Dev mode — no `auth` provider at all, so `scope` never gains a `user`
+    key. Must not raise, must fall through to anonymous exactly as today."""
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    downstream = _DummyApp()  # no user= — no scope["user"] set at all
+    client = TestClient(IdentityMiddleware(downstream))
+    resp = client.get("/anything")
+    assert resp.status_code == 200
+    assert recorded_usage == [("anonymous", "combined")]
+
+
+def test_identity_header_takes_precedence_over_a_simultaneous_oauth_subject(
+    monkeypatch, recorded_usage
+):
+    """If both somehow resolve on one request, the header wins — see
+    design.md Decision 2."""
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    other_uuid = "22222222-2222-2222-2222-222222222222"
+    downstream = _DummyApp(user=_authenticated_user(subject=other_uuid))
+    client = TestClient(IdentityMiddleware(downstream))
+    resp = client.get("/anything", headers={"X-Bloom-Identity": _token()})
+    assert resp.status_code == 200
+    assert recorded_usage == [(A_UUID, "combined")]
+
+
 @pytest.mark.parametrize(
     "path,expected",
     [
@@ -278,12 +360,17 @@ os.environ["JWT_SECRET"] = "test-jwt-secret"
 os.environ["BLOOMMCP_API_KEY"] = "test-api-key"
 
 import json
+import time
 import jwt
 from starlette.testclient import TestClient
 from bloom_mcp import server
 
 valid_identity = jwt.encode(
-    {"sub": "11111111-1111-1111-1111-111111111111", "aud": "authenticated"},
+    {
+        "sub": "11111111-1111-1111-1111-111111111111",
+        "aud": "authenticated",
+        "exp": int(time.time()) + 3600,
+    },
     "test-jwt-secret",
     algorithm="HS256",
 )
@@ -328,3 +415,71 @@ def test_identity_middleware_and_bearer_auth_are_independent_live():
     assert not (200 <= out["r1"] < 300), out
     # Rejected by our middleware, before FastMCP's bearer check is reached.
     assert out["r2"] == 401, out
+
+
+# ── Live subprocess: a real OAuth-authenticated caller is recorded ──────────
+
+_OAUTH_USAGE_SCRIPT = """
+import os
+os.environ["JWT_SECRET"] = "test-jwt-secret"
+os.environ["BLOOMMCP_PUBLIC_URL"] = "http://bloommcp.test"
+os.environ["BLOOMMCP_OAUTH_AUTHORIZATION_SERVER"] = "http://auth.test"
+
+import json
+import time
+import uuid
+
+import jwt
+from starlette.testclient import TestClient
+
+import bloom_mcp.usage as usage
+
+recorded = []
+usage.record_usage_async = lambda identity, action: recorded.append((identity, action))
+
+from bloom_mcp import server
+
+sub = "33333333-3333-3333-3333-333333333333"
+oauth_token = jwt.encode(
+    {
+        "sub": sub,
+        "aud": "authenticated",
+        "client_id": str(uuid.uuid4()),
+        "exp": int(time.time()) + 3600,
+    },
+    "test-jwt-secret",
+    algorithm="HS256",
+)
+
+with TestClient(server.build_app()) as client:
+    client.get("/mcp", headers={"Authorization": f"Bearer {oauth_token}"})
+
+print(json.dumps({"recorded": recorded, "sub": sub}))
+"""
+
+
+def test_identity_middleware_records_a_real_oauth_callers_subject_live():
+    """End-to-end proof, not a simulation: `bloom_mcp.auth.auth_provider`
+    (and its module-level `PUBLIC_URL`/`AUTHORIZATION_SERVER`) are built once
+    at import time from whatever OAuth env is set then — every other test in
+    this session already imported `bloom_mcp.server` with OAuth unconfigured,
+    so this needs a fresh interpreter, mirroring
+    `test_identity_middleware_and_bearer_auth_are_independent_live` above. No
+    `X-Bloom-Identity` header is sent — only a real Supabase-shaped OAuth
+    bearer token — and the request drives the actual
+    `AuthenticationMiddleware` -> `BearerAuthBackend` -> `SupabaseOAuthVerifier`
+    -> `scope["user"]` -> `IdentityMiddleware` chain for real, through
+    `server.build_app()`."""
+    import json
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-c", _OAUTH_USAGE_SCRIPT],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    out = json.loads(result.stdout.strip().splitlines()[-1])
+    assert out["recorded"] == [[out["sub"], "combined"]], out

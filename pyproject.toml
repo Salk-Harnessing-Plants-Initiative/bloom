@@ -32,6 +32,12 @@ test = [
     # JWTs signed with JWT_SECRET.
     "pyjwt>=2.8",
     "python-dotenv>=1.0",
+    # required by scripts/generate_jwt_keys.py (the ES256 signing-key
+    # generator for JWT_KEYS/JWT_JWKS) and tests/unit/test_generate_jwt_keys.py.
+    # Previously resolved only transitively (via another dependency); declared
+    # directly so a change elsewhere in the graph can't silently drop it with
+    # nothing in CI to notice.
+    "cryptography>=41",
 ]
 
 [tool.pytest.ini_options]
