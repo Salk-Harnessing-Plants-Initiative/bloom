@@ -73,6 +73,14 @@
 			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
 		}
 
+		# OAuth consent submission: a bloom-web route, not a Supabase one.
+		# EXACT path, ahead of /api/* for the same reason as /api/client-info —
+		# otherwise it is stripped and proxied to Kong, which has no such route,
+		# and the Authorize button 404s.
+		handle /api/oauth/consent {
+			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
+		}
+
 		# Cylinder scan actions served by bloom-web's Next.js routes (currently the
 		# on-demand video proxy). `handle`, not `handle_path`: the /api prefix is
 		# part of the Next.js route, so stripping it would 404. Kong owns no /cyl/*
@@ -95,9 +103,18 @@
 			}
 		}
 
+		# OAuth discovery for the MCP server. RFC 9728 places this at the origin
+		# root with the resource path appended, so it cannot sit under
+		# /bloommcp/*. `handle`, not `handle_path` — bloommcp serves this exact
+		# path and the prefix must survive.
+		handle /.well-known/oauth-protected-resource/bloommcp/* {
+			reverse_proxy bloommcp:8811
+		}
+
 		# Bloommcp MCP server — strip /bloommcp prefix, proxy to FastMCP on 8811.
-		# Auth is enforced by bloommcp itself (Bearer token via BLOOMMCP_API_KEY)
-		# so Caddy doesn't need to do auth here. Salk-network-internal only.
+		# Auth is enforced by bloommcp itself (Bearer token — BLOOMMCP_API_KEY or,
+		# where configured, a Supabase OAuth access token) so Caddy doesn't need
+		# to do auth here. Salk-network-internal only.
 		handle_path /bloommcp/* {
 			reverse_proxy bloommcp:8811 {
 				flush_interval -1

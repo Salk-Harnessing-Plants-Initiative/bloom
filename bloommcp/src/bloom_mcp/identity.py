@@ -73,11 +73,19 @@ class IdentityConfigError(Exception):
     """``JWT_SECRET`` is required to verify the header but is unset."""
 
 
-def _is_valid_identity(sub: str) -> bool:
-    """A resolved sub must be UUID-shaped (the whole string, not a substring
-    — `re.fullmatch`, not a `$`-anchored `.match()`, which would let a value
-    ending in a trailing newline slip through) and not the reserved
-    sentinel."""
+def is_valid_identity(sub: str) -> bool:
+    """Is this token's ``sub`` claim safe to record as a caller identity?
+
+    Call it with the ``sub`` of an already-verified token, before writing that
+    value to ``bloommcp_usage.identity``. Both credential paths use it —
+    ``verify_identity_header`` for ``X-Bloom-Identity``, ``bloom_mcp.auth`` for
+    OAuth access tokens — so one rule guards the column.
+
+    Rejects two things: a ``sub`` that is not a complete UUID, and the reserved
+    ``anonymous`` sentinel, which no real user may claim. ``fullmatch`` rather
+    than a ``$``-anchored match because ``$`` also matches before a trailing
+    newline, which would file one user under two identities.
+    """
     return bool(_UUID_RE.fullmatch(sub)) and sub.lower() != ANONYMOUS
 
 
@@ -107,7 +115,14 @@ def verify_identity_header(value: str | None) -> str | None:
 
     try:
         payload = jwt.decode(
-            value, secret, algorithms=["HS256"], audience="authenticated"
+            value,
+            secret,
+            algorithms=["HS256"],
+            audience="authenticated",
+            # PyJWT only validates exp's *value* if present; it does not
+            # require the claim to exist. Without this, a token with no exp
+            # claim would verify as never-expiring.
+            options={"require": ["exp"]},
         )
     except jwt.InvalidTokenError as exc:
         raise IdentityVerificationError(
@@ -115,7 +130,7 @@ def verify_identity_header(value: str | None) -> str | None:
         ) from None
 
     sub = payload.get("sub")
-    if not sub or not isinstance(sub, str) or not _is_valid_identity(sub):
+    if not sub or not isinstance(sub, str) or not is_valid_identity(sub):
         raise IdentityVerificationError("X-Bloom-Identity token has no valid sub claim")
     return sub.lower()
 
@@ -134,6 +149,27 @@ def _action_from_path(path: str) -> str:
 
     first_segment = path.strip("/").split("/", 1)[0]
     return first_segment if first_segment in SECTIONS else "combined"
+
+
+def _oauth_subject_from_scope(scope: dict) -> str | None:
+    """The verified caller's OAuth subject, if FastMCP's own bearer-auth layer
+    authenticated one for this request — read from ``scope["user"]``, set by
+    Starlette's ``AuthenticationMiddleware`` deeper in the same ASGI call this
+    middleware wraps (see openspec add-bloommcp-oauth-usage-attribution
+    design.md Decision 1 for why this is safe to read here, including for a
+    reused streamable-http session).
+
+    Returns ``None`` for every "nothing to attribute" shape — no
+    ``scope["user"]`` at all (no ``auth`` configured), a non-authenticated
+    value, or an ``AccessToken`` with no ``subject`` (the shared
+    ``BLOOMMCP_API_KEY`` credential, via ``ApiKeyVerifier``, never sets one —
+    see ``bloom_mcp.auth``) — rather than raising, mirroring
+    ``verify_identity_header``'s own "absent means anonymous" contract.
+    """
+    user = scope.get("user")
+    access_token = getattr(user, "access_token", None)
+    subject = getattr(access_token, "subject", None)
+    return subject or None
 
 
 class IdentityMiddleware:
@@ -215,7 +251,10 @@ class IdentityMiddleware:
         if should_record and response_status.get("status") != 401:
             from bloom_mcp.usage import record_usage_async
 
-            record_usage_async(identity or ANONYMOUS, _action_from_path(path))
+            record_usage_async(
+                identity or _oauth_subject_from_scope(scope) or ANONYMOUS,
+                _action_from_path(path),
+            )
 
 
 async def _json_response(scope, receive, send, *, status: int, error: str) -> None:
