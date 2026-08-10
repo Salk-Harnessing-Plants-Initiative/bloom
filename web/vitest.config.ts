@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import tsconfigPaths from "vite-tsconfig-paths";
 
@@ -41,6 +42,23 @@ const plugins = [tsconfigPaths()] as any;
 
 export default defineConfig({
   plugins,
+  // web/ pins react exactly while the workspace root hoists a newer patch, so
+  // two copies exist. @testing-library/react installs at the root and binds to
+  // the root copy; a component importing web/'s copy would then render against
+  // a different react than the renderer, and every hook reads a null
+  // dispatcher. Point both at the root copy so there is one react in a test
+  // run. (Tests therefore run a patch ahead of what Next builds — the fix that
+  // removes the split is relaxing web/'s exact pin, which is an app-dependency
+  // change, not a test one.)
+  resolve: {
+    dedupe: ["react", "react-dom"],
+    alias: {
+      react: fileURLToPath(new URL("../node_modules/react", import.meta.url)),
+      "react-dom": fileURLToPath(
+        new URL("../node_modules/react-dom", import.meta.url)
+      ),
+    },
+  },
   test: {
     environment: "node",
     pool: "forks",
