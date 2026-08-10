@@ -297,9 +297,9 @@ def _local_root_env(monkeypatch, tmp_path, **overrides):
         "BLOOM_PLOTS_DIR",
         "BLOOM_EXPERIMENT_LOCAL_ROOT",
         "BLOOM_STORAGE_LOCAL_ROOT",
+        "BLOOM_PLOTS_URL",
     ):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("BLOOM_PLOTS_URL", "http://localhost/plots")
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     root = tmp_path / "local_root"
     root.mkdir()
@@ -307,10 +307,12 @@ def _local_root_env(monkeypatch, tmp_path, **overrides):
     for k, v in overrides.items():
         monkeypatch.setenv(k, str(v))
     sb.reset_backend_for_tests()
-    # PLOTS_DIR is a frozen module constant (resolved once at import); simulate
-    # what it resolves to given this env, matching this file's existing
-    # convention of monkeypatching the constant directly (see _local_dirs above).
+    # PLOTS_DIR/PLOTS_URL are frozen module constants (resolved once at
+    # import); simulate what they resolve to given this env, matching this
+    # file's existing convention of monkeypatching the constant directly (see
+    # _local_dirs above).
     monkeypatch.setattr(eu, "PLOTS_DIR", Path(eu._resolve_plots_dir()))
+    monkeypatch.setattr(eu, "PLOTS_URL", eu._resolve_plots_url())
     return root
 
 
@@ -450,11 +452,25 @@ def test_validate_env_fails_when_local_root_not_writable(monkeypatch, tmp_path):
 
 
 def test_validate_env_succeeds_with_only_local_root_set(monkeypatch, tmp_path):
-    """The three legacy dir vars are unset entirely (not merely pointed at a bad
-    path) — validate_env() must not raise "Missing required environment
+    """The four legacy dir/URL vars are unset entirely (not merely pointed at a
+    bad path) — validate_env() must not raise "Missing required environment
     variables"."""
     _local_root_env(monkeypatch, tmp_path)
     eu.validate_env()  # must not raise
+    assert eu.PLOTS_URL == "http://localhost:8811/plots"
+
+
+def test_fully_local_boot_succeeds_with_only_backend_and_local_root_set(
+    spy_run, monkeypatch, tmp_path
+):
+    """The literal 2-variable (BLOOM_STORAGE_BACKEND + BLOOM_LOCAL_ROOT) quick
+    start from storage-backends.md, driven through the real main() entry
+    point rather than validate_env() directly — the exact configuration
+    issue #642 is about."""
+    _local_root_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("BLOOM_AGENT_KEY", raising=False)
+    spy_run.main()  # must not raise
 
 
 def test_validate_env_and_experiment_root_create_subfolders(monkeypatch, tmp_path):

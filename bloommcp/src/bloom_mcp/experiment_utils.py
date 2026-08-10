@@ -247,16 +247,17 @@ def validate_env() -> None:
     When ``BLOOM_STORAGE_BACKEND=local`` and ``BLOOM_LOCAL_ROOT`` is set,
     ``BLOOM_LOCAL_ROOT`` itself is validated first (one clear error if it's
     missing, not a directory, or not writable — see ``_validate_local_root_dir``),
-    and ``BLOOM_TRAITS_DIR`` / ``BLOOM_OUTPUT_DIR`` / ``BLOOM_PLOTS_DIR`` drop out
-    of the required-vars check below; in every other combination they remain
-    exactly as required as before this change.
+    and ``BLOOM_TRAITS_DIR`` / ``BLOOM_OUTPUT_DIR`` / ``BLOOM_PLOTS_DIR`` /
+    ``BLOOM_PLOTS_URL`` drop out of the required-vars check below (#642); in
+    every other combination they remain exactly as required as before this
+    change.
     """
     local_root = _fully_local_root()
     if local_root is not None:
         _validate_local_root_dir(local_root)
 
     optional_when_local = (
-        {"BLOOM_TRAITS_DIR", "BLOOM_OUTPUT_DIR", "BLOOM_PLOTS_DIR"}
+        {"BLOOM_TRAITS_DIR", "BLOOM_OUTPUT_DIR", "BLOOM_PLOTS_DIR", "BLOOM_PLOTS_URL"}
         if local_root is not None
         else set()
     )
