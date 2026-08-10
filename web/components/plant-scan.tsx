@@ -66,13 +66,17 @@ export default function PlantScan({
   );
 
   useEffect(() => {
+    // This instance is reused across scans, so drop the previous scan's image
+    // before resolving the new one — otherwise a scan with no renderable frame
+    // keeps the last one on screen under the new scan's label and href.
+    setObjectUrl(null);
+    setImageIsLoaded(false);
     if (firstPath === null) {
       setLoading(false);
       return;
     }
     let active = true;
     setLoading(true);
-    setImageIsLoaded(false);
     getThumbUrl(firstPath, height || defaultHeight)
       .then((url) => {
         if (!active) return;
