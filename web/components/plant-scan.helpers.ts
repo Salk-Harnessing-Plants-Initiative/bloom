@@ -74,6 +74,26 @@ export function missingFrameNote(
   } not available.`;
 }
 
+// Says so when the recorded frame numbers skip one — frames 1,2,4 means angle 3
+// is absent from the rotation. Only interior gaps are detectable: nothing
+// records how many frames a scan was meant to have, so a capture that stopped
+// early leaves a contiguous run and is indistinguishable from a shorter scan.
+export function frameGapNote(frames: ScanFrame[]): string | null {
+  const numbers = frames
+    .map((f) => f.frame_number)
+    .filter((n): n is number => typeof n === "number");
+  if (numbers.length < 2) return null;
+
+  const span = Math.max(...numbers) - Math.min(...numbers) + 1;
+  const unique = new Set(numbers).size;
+  const missing = span - unique;
+  if (missing <= 0) return null;
+
+  return `${missing} frame${
+    missing === 1 ? "" : "s"
+  } missing from this rotation — the frames shown are not consecutive.`;
+}
+
 // A signed URL we can actually put in an href/src, or null. Signing helpers
 // report failure as an empty string, which passes a `!== null` guard and lands
 // in the DOM as `src=""` / `href=""` — the browser then resolves that against

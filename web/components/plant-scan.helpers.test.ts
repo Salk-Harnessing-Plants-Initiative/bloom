@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   clampFrameIndex,
+  frameGapNote,
   frameLabel,
   missingFrameNote,
   orderedFrames,
@@ -210,6 +211,74 @@ describe("missingFrameNote", () => {
 
   it("says nothing if the recorded count is somehow lower", () => {
     expect(missingFrameNote(72, 70)).toBeNull();
+  });
+});
+
+describe("frameGapNote", () => {
+  it("says nothing for a complete consecutive rotation", () => {
+    const rotation = Array.from({ length: 72 }, (_, i) =>
+      frame({ id: i + 1, frame_number: i + 1 })
+    );
+
+    expect(frameGapNote(rotation)).toBeNull();
+  });
+
+  it("discloses a single missing angle", () => {
+    const out = frameGapNote([
+      frame({ id: 1, frame_number: 1 }),
+      frame({ id: 2, frame_number: 2 }),
+      frame({ id: 3, frame_number: 4 }),
+    ]);
+
+    expect(out).toBe(
+      "1 frame missing from this rotation — the frames shown are not consecutive."
+    );
+  });
+
+  it("counts every missing angle, not just the gaps", () => {
+    const out = frameGapNote([
+      frame({ id: 1, frame_number: 1 }),
+      frame({ id: 2, frame_number: 10 }),
+      frame({ id: 3, frame_number: 20 }),
+    ]);
+
+    // Span 1..20 is 20 angles; 3 are present.
+    expect(out).toContain("17 frames missing");
+  });
+
+  it("cannot detect a capture that stopped early — the run is consecutive", () => {
+    // The scan was meant to be 72 frames but died at 40. Nothing records the
+    // intended count, so this is indistinguishable from a 40-frame scan.
+    const truncated = Array.from({ length: 40 }, (_, i) =>
+      frame({ id: i + 1, frame_number: i + 1 })
+    );
+
+    expect(frameGapNote(truncated)).toBeNull();
+  });
+
+  it("ignores unnumbered rows rather than inventing a gap", () => {
+    const out = frameGapNote([
+      frame({ id: 1, frame_number: 1 }),
+      frame({ id: 2, frame_number: 2 }),
+      frame({ id: 3, frame_number: null }),
+    ]);
+
+    expect(out).toBeNull();
+  });
+
+  it("says nothing when there is nothing to compare", () => {
+    expect(frameGapNote([])).toBeNull();
+    expect(frameGapNote([frame({ id: 1, frame_number: 5 })])).toBeNull();
+  });
+
+  it("does not treat a duplicated frame_number as filling a gap", () => {
+    const out = frameGapNote([
+      frame({ id: 1, frame_number: 1 }),
+      frame({ id: 2, frame_number: 1 }),
+      frame({ id: 3, frame_number: 3 }),
+    ]);
+
+    expect(out).toContain("1 frame missing");
   });
 });
 

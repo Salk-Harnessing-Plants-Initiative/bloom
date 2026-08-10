@@ -5,6 +5,7 @@ import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { CylScanWithImages } from "@/lib/custom.types";
 import {
   clampFrameIndex,
+  frameGapNote,
   frameLabel,
   missingFrameNote,
   orderedFrames,
@@ -31,7 +32,10 @@ async function getFrameUrls(paths: string[]) {
 export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   const [frameUrls, setFrameUrls] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState<boolean>(true);
-  const [imageIsLoaded, setImageIsLoaded] = useState<boolean>(false);
+  // Frames whose URL signed but whose image wouldn't load — a deleted object,
+  // or a URL that outlived its hour. Without this the browser just draws its
+  // broken-image glyph, which reads as a dark or empty capture.
+  const [failedPaths, setFailedPaths] = useState<Set<string>>(new Set());
   const [requestedIndex, setRequestedIndex] = useState<number>(0);
 
   // Keyed on the scan id, not the object: a refetch that returns the same scan
@@ -51,7 +55,7 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
 
   useEffect(() => {
     setRequestedIndex(0);
-    setImageIsLoaded(false);
+    setFailedPaths(new Set());
   }, [frames]);
 
   useEffect(() => {
@@ -77,7 +81,11 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
     };
   }, [frames, total]);
 
-  const objectUrl = currentPath ? frameUrls.get(currentPath) ?? null : null;
+  const signedUrl = currentPath ? frameUrls.get(currentPath) ?? null : null;
+  // A frame that failed to load is as unavailable as one that failed to sign;
+  // both must reach the same message rather than a broken image.
+  const objectUrl =
+    currentPath && failedPaths.has(currentPath) ? null : signedUrl;
 
   // Nothing to show: no renderable frame, or signing failed for every frame.
   if (!loading && (total === 0 || frameUrls.size === 0)) {
@@ -88,7 +96,10 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
     );
   }
 
+  // Two different absences: rows the scan recorded but can't render, and gaps
+  // in the frame numbers themselves.
   const shortfall = missingFrameNote(total, scan?.cyl_images?.length ?? 0);
+  const gap = frameGapNote(frames);
   const label = frameLabel(frames[frameIndex], frameIndex);
 
   return (
@@ -101,13 +112,18 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
       >
         {objectUrl !== null ? (
           <img
+            // Keyed on the url so paging to a new frame remounts the element —
+            // otherwise a failure on one frame wouldn't re-fire for the next.
+            key={objectUrl}
             src={objectUrl}
             className="rounded-md"
-            onLoad={() => setImageIsLoaded(true)}
-            onError={() => setImageIsLoaded(false)}
+            onError={() =>
+              currentPath &&
+              setFailedPaths((prev) => new Set(prev).add(currentPath))
+            }
           />
         ) : !loading ? (
-          // This one frame didn't sign — keep the pager so the rest stay reachable.
+          // This one frame is unavailable — keep the pager so the rest stay reachable.
           <div className="px-4 py-6 text-sm text-stone-500 italic">
             {label} could not be loaded.
           </div>
@@ -156,6 +172,10 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
         <p className="mt-2 text-center text-sm text-stone-500 italic">
           {shortfall}
         </p>
+      )}
+
+      {gap && (
+        <p className="mt-2 text-center text-sm text-stone-500 italic">{gap}</p>
       )}
     </div>
   );
