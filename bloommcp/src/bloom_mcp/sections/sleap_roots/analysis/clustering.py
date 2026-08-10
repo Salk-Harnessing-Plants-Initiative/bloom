@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -76,6 +76,12 @@ class ClusteringParams(BaseModel):
         "produced by qc_clean; clustering consumes it (require_clean). Resolves the most "
         "recent outlier trim when one exists for the experiment, not merely the most "
         "recent clean.",
+    )
+    version: Optional[str] = Field(
+        default=None,
+        description="Pin clustering to a specific committed cleaned version "
+        "(e.g. 'v2'; see list_existing_analyses). Omit to use the latest "
+        "cleaned version, same as today.",
     )
     method: Literal["kmeans", "gmm", "hierarchical"] = Field(
         default="kmeans",
@@ -307,8 +313,13 @@ def clustering(
     # Consumer: require a cleaned version. A missing one is a precondition failure with a
     # concrete remedy — caught here so it carries "run qc_clean first" rather than the
     # contract's generic tool_error message for the declared read error.
+    # #626: an explicit version selector is opt-in; omitting it makes this call
+    # identical to before this change (no version kwarg -> Protocol default "latest").
+    version_kwargs = {} if params.version is None else {"version": params.version}
     try:
-        frame = reader.load_experiment(params.experiment, require_clean=True)
+        frame = reader.load_experiment(
+            params.experiment, require_clean=True, **version_kwargs
+        )
     except CleanedVersionRequiredError:
         raise BloomMCPError(
             code="tool_error",

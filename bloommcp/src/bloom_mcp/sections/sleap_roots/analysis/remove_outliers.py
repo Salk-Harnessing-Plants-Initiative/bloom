@@ -138,6 +138,14 @@ class RemoveOutliersParams(BaseModel):
         description="Experiment identifier from list_available_experiments (must be "
         "cleaned).",
     )
+    version: Optional[str] = Field(
+        default=None,
+        description="Pin outlier detection to a specific committed cleaned "
+        "version (e.g. 'v2'; see list_existing_analyses). Omit to use the "
+        "latest plain-clean version (today's default is 'latest_qc', not "
+        "'latest' — it ignores any prior outlier trim so this tool trims "
+        "from the plain clean, not from its own previous output).",
+    )
     method: Literal["mahalanobis", "isolation_forest"] = Field(
         default="mahalanobis",
         description="Detection method. 'mahalanobis' (default) flags samples far in "
@@ -311,11 +319,15 @@ def remove_outliers(
     # qc_clean produces. A missing cleaned version is the QC guardrail, mapped here to
     # a self-correctable assumption_violated (not the reader's raw message / tool_error).
     try:
-        # version="latest_qc": always the current plain clean, never a prior trim of
-        # our own — see the module docstring's Composition section for why (a fresh
-        # qc_clean must always be visible to the *next* remove_outliers call).
+        # version="latest_qc" is this tool's own default (not the Protocol's generic
+        # "latest"): always the current plain clean, never a prior trim of our own —
+        # see the module docstring's Composition section for why (a fresh qc_clean
+        # must always be visible to the *next* remove_outliers call). #626: an
+        # explicit params.version overrides that default; omitting it preserves it.
         frame = reader.load_experiment(
-            params.experiment, require_clean=True, version="latest_qc"
+            params.experiment,
+            require_clean=True,
+            version=params.version if params.version is not None else "latest_qc",
         )
     except CleanedVersionRequiredError:
         raise BloomMCPError(

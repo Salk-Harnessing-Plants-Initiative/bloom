@@ -93,13 +93,13 @@
 
 ## 5. load_experiment_data: source pin (forces raw tier)
 
-- [ ] 5.1 Write a failing test: `_ports.load_frame(filename, source_id=7)` is rejected today
+- [x] 5.1 Write a failing test: `_ports.load_frame(filename, source_id=7)` is rejected today
       (`load_frame` takes only `filename`).
-- [ ] 5.2 Add `source_id`/`run_id` kwargs to `_ports.load_frame`. **When either is non-`None`,
+- [x] 5.2 Add `source_id`/`run_id` kwargs to `_ports.load_frame`. **When either is non-`None`,
       force `version="raw"`** on the inner `_reader.load_experiment(...)` call (design.md Decision
       6) — a pin cannot apply to a cleaned read, and this tool has no other way to select the raw
       tier. Add the same two plain kwargs to the `load_experiment_data` tool function signature.
-- [ ] 5.3 Write tests: an explicit pin changes which source's summary is returned, **including for
+- [x] 5.3 Write tests: an explicit pin changes which source's summary is returned, **including for
       an experiment that already has a cleaned version** (proving the raw-tier forcing actually
       avoids the `AmbiguousSourceSelectionError` collision Decision 6 exists to prevent); both given
       returns the ambiguous-selection error message as the function's string result (existing
@@ -108,7 +108,7 @@
 
 ## 6. require_clean tools: version selector
 
-- [ ] 6.1 For each of `clustering`, `descriptive_stats`, `umap_analysis` (the 3 tools with no
+- [x] 6.1 For each of `clustering`, `descriptive_stats`, `umap_analysis` (the 3 tools with no
       archived baseline spec — see 6.4 for `pca_analysis`, handled separately against its existing
       spec): write a failing/spy test asserting today's exact `load_experiment` call args
       (`load_experiment(params.experiment, require_clean=True)`, no `version` kwarg), then add the
@@ -118,12 +118,12 @@
   - [ ] 6.1.a clustering.py
   - [ ] 6.1.b descriptive_stats.py
   - [ ] 6.1.c umap_analysis.py
-- [ ] 6.2 `remove_outliers.py`: write a spy test asserting today's call is
+- [x] 6.2 `remove_outliers.py`: write a spy test asserting today's call is
       `load_experiment(params.experiment, require_clean=True, version="latest_qc")`. Add the
       optional `version` field with `version=params.version if params.version is not None else "latest_qc"`.
       Re-run the spy test (omitted case still resolves `"latest_qc"`), then add a second test
       confirming an explicit override is honored.
-- [ ] 6.3 `cross_experiment_correlations.py`: write a spy test on `reader.load_experiment` itself
+- [x] 6.3 `cross_experiment_correlations.py`: write a spy test on `reader.load_experiment` itself
       (**not** a wholesale mock of the `_load_cleaned` helper — `_load_cleaned` currently takes no
       `version` param at all, so mocking it out entirely cannot catch a bug where its new `version`
       param is accepted but never forwarded to the inner `load_experiment` call) asserting today's
@@ -133,7 +133,7 @@
       Re-run the spy test (both omitted -> unchanged), then add tests for: only `version_1` given
       (only experiment 1's call changes), only `version_2` given (only experiment 2's call
       changes).
-- [ ] 6.4 `pca_analysis.py`: same shape as 6.1 (spy test on `load_experiment`, omit-preserves,
+- [x] 6.4 `pca_analysis.py`: same shape as 6.1 (spy test on `load_experiment`, omit-preserves,
       explicit-honored), but this is a **MODIFIED** delta against the existing archived
       `bloommcp-pca-analysis-tool` spec, not the new `bloommcp-clean-version-selection` capability —
       keep its test file/PR description language consistent with "modifying an existing tool,"

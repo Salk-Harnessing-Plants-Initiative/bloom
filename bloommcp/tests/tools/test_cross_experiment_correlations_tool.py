@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -1004,3 +1005,54 @@ def test_reproduces_golden_correlation_unfiltered(monkeypatch):
         assert bool(corr_csv["significant"].iloc[0]) == g["significant"]
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+# ── explicit per-experiment cleaned-version selectors (#626) ────────────────
+
+
+def test_version_1_and_version_2_fields_exist():
+    assert "version_1" in CrossExperimentCorrelationsParams.model_fields
+    assert "version_2" in CrossExperimentCorrelationsParams.model_fields
+
+
+def test_omitting_both_versions_preserves_todays_exact_calls(injected_ports):
+    """Spy on load_experiment directly (not the _load_cleaned helper wholesale)
+    so a forgot-to-forward bug inside _load_cleaned's own new version param
+    would still be caught."""
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run()
+
+    assert reader.load_experiment.call_args_list == [
+        ((_EXP_1,), {"require_clean": True}),
+        ((_EXP_2,), {"require_clean": True}),
+    ]
+
+
+def test_version_1_alone_only_changes_experiment_1s_call(injected_ports):
+    reader, _store = injected_ports
+    df1, _df2 = _correlated_pair()
+    reader.add_cleaned_version(_EXP_1, "v2", df1, make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version_1="v2")
+
+    assert reader.load_experiment.call_args_list == [
+        ((_EXP_1,), {"require_clean": True, "version": "v2"}),
+        ((_EXP_2,), {"require_clean": True}),
+    ]
+
+
+def test_version_2_alone_only_changes_experiment_2s_call(injected_ports):
+    reader, _store = injected_ports
+    _df1, df2 = _correlated_pair()
+    reader.add_cleaned_version(_EXP_2, "v2", df2, make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version_2="v2")
+
+    assert reader.load_experiment.call_args_list == [
+        ((_EXP_1,), {"require_clean": True}),
+        ((_EXP_2,), {"require_clean": True, "version": "v2"}),
+    ]

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -185,6 +186,42 @@ def test_isolation_forest_golden_trim_counts_and_barcodes_match_recorded_snapsho
     assert sorted(result.outlier_barcodes) == _GOLDEN_IFOREST["outlier_barcodes"]
     assert result.fit_is_trustworthy is None
     assert result.goodness_of_fit is None
+
+
+# ── explicit cleaned-version selector (#626) ────────────────────────────────
+
+
+def test_version_field_exists():
+    assert "version" in RemoveOutliersParams.model_fields
+
+
+def test_omitting_version_still_defaults_to_latest_qc_not_latest(injected_ports):
+    """remove_outliers's own default is version="latest_qc" (not the Protocol's
+    generic "latest") — omitting the new field must preserve that exact call,
+    not silently switch defaults. Uses method="isolation_forest" (turface_19's
+    mahalanobis default is gated as untrustworthy — see
+    test_mahalanobis_default_untrustworthy_fit_is_gated_not_persisted) so the
+    spy assertion runs after a real success, not a caught exception."""
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(method="isolation_forest", seed=42)
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="latest_qc"
+    )
+
+
+def test_explicit_version_overrides_the_latest_qc_default(injected_ports):
+    reader, _store = injected_ports
+    reader.add_cleaned_version(_EXPERIMENT, "v2", _cleaned_df(), make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(method="isolation_forest", seed=42, version="v2")
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="v2"
+    )
 
 
 def test_persisted_trimmed_table_has_output_rows_and_no_nans(injected_ports):
