@@ -7,9 +7,7 @@ import {
 import PlantImage from "@/components/plant-image";
 import ScanFrameViewer from "@/components/scan-frame-viewer";
 import ScanVideoButton from "@/components/scan-video-button";
-import { toPublicStorageUrl } from "@/lib/supabase/storage-url";
-
-const VIDEO_URL_TTL = 3600;
+import { getStoredScanVideoUrl } from "@/lib/supabase/scan-video";
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
 
@@ -34,7 +32,7 @@ export default async function Image({
   const scan : any = await getScan(Number(scanId));
   // Resolved once here so the viewer's icon and the generate button agree on
   // whether a video exists, instead of each deciding for itself.
-  const videoUrl = scan ? await getScanVideoUrl(scan.id) : null;
+  const videoUrl = scan ? await getStoredScanVideoUrl(scan.id) : null;
   const wave = scan?.cyl_plants?.cyl_waves;
 
   const accession : any = await getAccession(Number(accessionId));
@@ -97,18 +95,6 @@ export default async function Image({
       </div>
     </div>
   );
-}
-
-// Null when the scan has no stored video. Signed server-side against the
-// internal host, so the URL needs rewriting before a browser can use it.
-async function getScanVideoUrl(scanId: number) {
-  const supabase = await createServerSupabaseClient();
-
-  const { data } = await supabase.storage
-    .from("videos")
-    .createSignedUrl(`cyl-videos/${scanId}.mp4`, VIDEO_URL_TTL);
-
-  return toPublicStorageUrl(data?.signedUrl);
 }
 
 function capitalizeFirstLetter(string: String) {

@@ -21,9 +21,15 @@ vi.mock("@/lib/supabase/server", () => ({
   getSession: vi.fn(),
 }));
 
+vi.mock("@/lib/supabase/scan-video", () => ({
+  getStoredScanVideoUrl: vi.fn(),
+}));
+
 import { getSession } from "@/lib/supabase/server";
+import { getStoredScanVideoUrl } from "@/lib/supabase/scan-video";
 
 const mockedGetSession = vi.mocked(getSession);
+const mockedStoredVideo = vi.mocked(getStoredScanVideoUrl);
 
 const RESULT = {
   scan_id: 5,
@@ -53,6 +59,8 @@ function upstreamJson(body: unknown, status = 200) {
 
 beforeEach(() => {
   mockedGetSession.mockResolvedValue({ access_token: "tok" } as never);
+  // Default: no video stored yet, so generation is allowed.
+  mockedStoredVideo.mockResolvedValue(null);
   fetchSpy = vi.fn().mockResolvedValue(upstreamJson(RESULT));
   vi.stubGlobal("fetch", fetchSpy);
 });
@@ -133,6 +141,50 @@ describe("auth", () => {
     const init = fetchSpy.mock.calls[0][1];
     expect(init.method).toBe("POST");
     expect(init.headers.Authorization).toBe("Bearer tok");
+  });
+});
+
+describe("a stored video is never overwritten", () => {
+  // Upstream overwrites cyl-videos/{scan_id}.mp4 in place and the bucket has
+  // no versioning, so reaching upstream at all is the thing to prevent —
+  // asserting only the 409 would still pass if the guard ran after the fetch.
+  it("refuses when a video already exists, without calling upstream", async () => {
+    mockedStoredVideo.mockResolvedValue("https://storage.test/cyl-videos/5.mp4?token=a");
+
+    const res = await callRoute("1", "5");
+
+    expect(res.status).toBe(409);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("explains that the stored video should be opened instead", async () => {
+    mockedStoredVideo.mockResolvedValue("https://storage.test/cyl-videos/5.mp4?token=a");
+
+    const detail = (await (await callRoute("1", "5")).json()).detail;
+
+    expect(detail).toContain("already has a video");
+    expect(detail).toContain("not regenerated");
+  });
+
+  it("checks the scan actually requested", async () => {
+    await callRoute("1", "42");
+
+    expect(mockedStoredVideo).toHaveBeenCalledWith(42);
+  });
+
+  it("generates when nothing is stored", async () => {
+    const res = await callRoute("1", "5");
+
+    expect(res.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalled();
+  });
+
+  it("does not probe storage before the caller is authenticated", async () => {
+    mockedGetSession.mockResolvedValue(null as never);
+
+    await callRoute("1", "5");
+
+    expect(mockedStoredVideo).not.toHaveBeenCalled();
   });
 });
 

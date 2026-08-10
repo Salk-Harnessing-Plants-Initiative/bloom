@@ -68,23 +68,11 @@ export default function ScanVideoButton({
 
   return (
     <div className="mt-4">
+      {/* A stored video is final — there is no regenerate path. Upstream
+          overwrites the scan's video in place and the bucket has no
+          versioning, so offering to replace one is offering to destroy it. */}
       <div className="flex items-center gap-3">
-        <button
-          type="button"
-          onClick={generate}
-          disabled={busy}
-          className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white"
-        >
-          {status === "generating"
-            ? "Generating video…"
-            : status === "pending"
-              ? "Still encoding…"
-              : videoUrl
-                ? "Regenerate video"
-                : "Generate video"}
-        </button>
-
-        {videoUrl && (
+        {videoUrl ? (
           <a
             href={videoUrl}
             target="_blank"
@@ -93,14 +81,21 @@ export default function ScanVideoButton({
           >
             Open video
           </a>
+        ) : (
+          <button
+            type="button"
+            onClick={generate}
+            disabled={busy}
+            className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white"
+          >
+            {status === "generating"
+              ? "Generating video…"
+              : status === "pending"
+                ? "Still encoding…"
+                : "Generate video"}
+          </button>
         )}
       </div>
-
-      {videoUrl && !busy && (
-        <p className="mt-2 text-sm text-stone-500 italic">
-          Regenerating replaces the stored video for this scan.
-        </p>
-      )}
 
       {/* Encoding a full rotation is slow and runs synchronously upstream — say
           so, rather than leaving a disabled button looking stuck. The bar is
