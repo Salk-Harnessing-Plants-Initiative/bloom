@@ -141,21 +141,21 @@
 
 ## 7. Spec + validation
 
-- [ ] 7.1 Run `openspec validate add-bloommcp-source-version-selection --strict` and resolve every
+- [x] 7.1 Run `openspec validate add-bloommcp-source-version-selection --strict` and resolve every
       issue.
-- [ ] 7.2 Confirm every scenario in the five spec delta files (`bloommcp-experiment-read`,
+- [x] 7.2 Confirm every scenario in the five spec delta files (`bloommcp-experiment-read`,
       `bloommcp-qc-clean-tool`, `bloommcp-pca-analysis-tool`, `bloommcp-source-selection`,
       `bloommcp-clean-version-selection`) has a corresponding test written above; add any missing
       test before marking this task done.
 
 ## 8. Pre-merge
 
-- [ ] 8.1 Run the repo's lint/format checks (ruff, black) on all touched Python files.
-- [ ] 8.2 Run the full `bloommcp` test suite; confirm no pre-existing test's assertions changed
+- [x] 8.1 Run the repo's lint/format checks (ruff, black) on all touched Python files.
+- [x] 8.2 Run the full `bloommcp` test suite; confirm no pre-existing test's assertions changed
       (only new tests added, per the default-preserving guarantee) — in particular confirm
       `test_fake_reader_is_not_source_selectable` still passes unmodified.
-- [ ] 8.3 Run `/pre-merge` end-to-end before opening the PR.
-- [ ] 8.4 (Follow-up, non-blocking) Recommend a manual check against a real multi-source
+- [x] 8.3 Run `/pre-merge` end-to-end before opening the PR.
+- [x] 8.4 (Follow-up, non-blocking) Recommend a manual check against a real multi-source
       experiment (`experiment_id=1` or `7206207`) on staging, since production-scale multi-source
       coverage is only 2/224 experiments and this proposal's automated tests are necessarily
       synthetic (design.md Risks).
