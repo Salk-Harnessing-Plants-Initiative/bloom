@@ -23,6 +23,18 @@ export const runtime = "nodejs";
 // rather than an opaque UND_ERR — the encode itself carries on upstream.
 const UPSTREAM_TIMEOUT_MS = 240_000;
 
+// Upstream failure details are written for operators, not callers: the 5xx ones
+// carry the internal gateway URL and the names of the service account's env
+// keys. Only 404 says something the caller needs ("No images found for scan 5");
+// every other status falls back to the client's own wording.
+const DETAIL_PASSTHROUGH_STATUSES = new Set([404]);
+
+function callerSafeDetail(status: number, parsed: unknown): string | null {
+  if (!DETAIL_PASSTHROUGH_STATUSES.has(status)) return null;
+  const detail = (parsed as { detail?: unknown } | null)?.detail;
+  return typeof detail === "string" && detail.trim() ? detail : null;
+}
+
 // Route ids as validated integers, or a 400 response. They land in an upstream
 // URL path segment, so a value like "1/../../health" would retarget the request.
 type RouteIds =
@@ -170,6 +182,15 @@ export async function POST(
     return NextResponse.json(
       { detail: "Unexpected response from the video service." },
       { status: 502 }
+    );
+  }
+
+  // Forward only the detail, and only where it is meant for the caller —
+  // the rest of an upstream error body is operator diagnostics.
+  if (!upstream.ok) {
+    return NextResponse.json(
+      { detail: callerSafeDetail(upstream.status, parsed) },
+      { status: upstream.status }
     );
   }
 

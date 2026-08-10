@@ -267,6 +267,68 @@ describe("upstream passthrough", () => {
   });
 });
 
+describe("upstream diagnostics stay server-side", () => {
+  // workflows writes its failure details for operators: auth.py embeds the raw
+  // httpx error (which names the internal gateway) and supabase_client.py names
+  // the service account's env keys. Those must not reach a browser.
+  it("suppresses a 503 that names the internal gateway", async () => {
+    fetchSpy.mockResolvedValue(
+      upstreamJson(
+        {
+          detail:
+            "auth check failed: ConnectError: All connection attempts failed to http://kong:8000/auth/v1/user",
+        },
+        503
+      )
+    );
+
+    const res = await callRoute("1", "5");
+    const text = await res.text();
+
+    expect(res.status).toBe(503);
+    expect(text).not.toContain("kong");
+    expect(text).not.toContain("auth check failed");
+  });
+
+  it("suppresses a 500 that names the service account's env keys", async () => {
+    fetchSpy.mockResolvedValue(
+      upstreamJson(
+        {
+          detail:
+            "workflows service not configured: missing WORKFLOWS_SUPABASE_EMAIL, WORKFLOWS_SUPABASE_PASSWORD",
+        },
+        500
+      )
+    );
+
+    const text = await (await callRoute("1", "5")).text();
+
+    expect(text).not.toContain("WORKFLOWS_SUPABASE_PASSWORD");
+    expect(text).not.toContain("not configured");
+  });
+
+  it("drops any extra fields an error body carries", async () => {
+    fetchSpy.mockResolvedValue(
+      upstreamJson({ detail: "nope", traceback: "File /app/video.py, line 12" }, 500)
+    );
+
+    const text = await (await callRoute("1", "5")).text();
+
+    expect(text).not.toContain("traceback");
+    expect(text).not.toContain("/app/video.py");
+  });
+
+  it("still passes the 404 a scientist needs", async () => {
+    fetchSpy.mockResolvedValue(
+      upstreamJson({ detail: "No images found for scan 5" }, 404)
+    );
+
+    expect((await (await callRoute("1", "5")).json()).detail).toBe(
+      "No images found for scan 5"
+    );
+  });
+});
+
 describe("bad upstream responses", () => {
   it("turns a non-JSON success body into a 502", async () => {
     fetchSpy.mockResolvedValue(new Response("<html>ok</html>", { status: 200 }));
@@ -326,6 +388,15 @@ describe("transport failures", () => {
 
     expect(res.status).toBe(502);
     expect(body).not.toContain("workflows");
+  });
+
+  // Asserting only the 504 branch would let the timeout itself be deleted: the
+  // test below fabricates a TimeoutError, so nothing there proves the request
+  // is ever given one. Without it a stalled encode holds the connection open.
+  it("gives the upstream request an abort signal", async () => {
+    await callRoute("1", "5");
+
+    expect(fetchSpy.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
   });
 
   it("reports a timeout as still-encoding, not as a failure", async () => {
