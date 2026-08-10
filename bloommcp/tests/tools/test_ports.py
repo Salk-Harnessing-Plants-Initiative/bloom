@@ -40,7 +40,9 @@ class _MultiSourceFakeReader(FakeReader):
     def __init__(self, source_ids):
         super().__init__()
         self._sources = [
-            SourceInfo(source_id=sid, source_name=f"run-{sid}", pipeline_run_id=f"p{sid}")
+            SourceInfo(
+                source_id=sid, source_name=f"run-{sid}", pipeline_run_id=f"p{sid}"
+            )
             for sid in source_ids
         ]
 
@@ -63,13 +65,21 @@ class _MultiSourceFakeReader(FakeReader):
         return self._sources[-1] if self._sources else None
 
     def load_experiment(
-        self, name, *, version="latest", require_clean=False, source_id=None, run_id=None
+        self,
+        name,
+        *,
+        version="latest",
+        require_clean=False,
+        source_id=None,
+        run_id=None,
     ):
         if source_id is not None or run_id is not None:
             resolved = self.resolve_source(name, source_id=source_id, run_id=run_id)
         else:
             resolved = None
-        frame = super().load_experiment(name, version=version, require_clean=require_clean)
+        frame = super().load_experiment(
+            name, version=version, require_clean=require_clean
+        )
         if resolved is not None:
             frame = dataclasses.replace(frame, resolved_source=resolved)
         return frame

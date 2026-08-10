@@ -93,9 +93,9 @@ def test_no_shipped_module_imports_vendored_analysis():
     offenders: list[str] = []
     for py in _SRC.rglob("*.py"):
         offenders.extend(_vendored_imports_in(py))
-    assert (
-        not offenders
-    ), "shipped modules still import vendored analysis code:\n" + "\n".join(offenders)
+    assert not offenders, (
+        "shipped modules still import vendored analysis code:\n" + "\n".join(offenders)
+    )
 
 
 def test_vendored_analysis_modules_absent():

@@ -317,9 +317,9 @@ def test_gmm_autoselect_bic_aic_reflect_the_selected_model(injected_ports, monke
     idx = result.n_clusters - 1
     # On this dataset auto-select collapses to n=1 out of the default max_components=5
     # candidates — making the negative assertion unconditional (selected ≠ last candidate).
-    assert (
-        result.n_clusters == 1
-    ), f"expected auto-collapse to n=1, got {result.n_clusters}"
+    assert result.n_clusters == 1, (
+        f"expected auto-collapse to n=1, got {result.n_clusters}"
+    )
     assert len(d["bic_scores"]) == 5  # default max_components=5
     # Corrected values == the selected candidate's per-candidate scores.
     assert result.bic == pytest.approx(d["bic_scores"][idx], abs=_TOL)

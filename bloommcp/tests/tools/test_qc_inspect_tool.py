@@ -961,7 +961,9 @@ class _MultiSourceFakeReader(FakeReader):
     def __init__(self, source_ids):
         super().__init__()
         self._sources = [
-            SourceInfo(source_id=sid, source_name=f"run-{sid}", pipeline_run_id=f"p{sid}")
+            SourceInfo(
+                source_id=sid, source_name=f"run-{sid}", pipeline_run_id=f"p{sid}"
+            )
             for sid in source_ids
         ]
 
@@ -984,10 +986,18 @@ class _MultiSourceFakeReader(FakeReader):
         return self._sources[-1] if self._sources else None
 
     def load_experiment(
-        self, name, *, version="latest", require_clean=False, source_id=None, run_id=None
+        self,
+        name,
+        *,
+        version="latest",
+        require_clean=False,
+        source_id=None,
+        run_id=None,
     ):
         resolved = self.resolve_source(name, source_id=source_id, run_id=run_id)
-        frame = super().load_experiment(name, version=version, require_clean=require_clean)
+        frame = super().load_experiment(
+            name, version=version, require_clean=require_clean
+        )
         if resolved is not None:
             frame = dataclasses.replace(frame, resolved_source=resolved)
         return frame
@@ -1030,7 +1040,10 @@ def test_explicit_source_pin_changes_which_source_is_inspected(multi_source_port
 def test_both_source_id_and_run_id_given_is_rejected(multi_source_ports):
     with pytest.raises(BloomMCPError) as exc:
         _run(source_id=9, run_id="p10")
-    assert "source_id" in exc.value.message.lower() or "run_id" in exc.value.message.lower()
+    assert (
+        "source_id" in exc.value.message.lower()
+        or "run_id" in exc.value.message.lower()
+    )
 
 
 def test_source_pin_matching_nothing_is_rejected(multi_source_ports):

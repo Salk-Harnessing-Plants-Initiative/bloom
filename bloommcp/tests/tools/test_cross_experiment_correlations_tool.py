@@ -836,12 +836,12 @@ def test_source_csv_content_addresses_both_inputs(injected_ports):
         return stored.output_sha256["correlations.csv"]
 
     baseline = _hash_for(None, None)
-    assert (
-        _hash_for(999.0, None) != baseline
-    ), "experiment_1 alone should change the hash"
-    assert (
-        _hash_for(None, 999.0) != baseline
-    ), "experiment_2 alone should change the hash"
+    assert _hash_for(999.0, None) != baseline, (
+        "experiment_1 alone should change the hash"
+    )
+    assert _hash_for(None, 999.0) != baseline, (
+        "experiment_2 alone should change the hash"
+    )
 
 
 def test_genotype_means_artifacts_persisted(injected_ports):
