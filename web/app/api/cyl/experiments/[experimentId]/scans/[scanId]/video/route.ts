@@ -23,20 +23,71 @@ export const runtime = "nodejs";
 // rather than an opaque UND_ERR — the encode itself carries on upstream.
 const UPSTREAM_TIMEOUT_MS = 240_000;
 
+// Route ids as validated integers, or a 400 response. They land in an upstream
+// URL path segment, so a value like "1/../../health" would retarget the request.
+type RouteIds =
+  | { error: NextResponse; experiment?: undefined; scan?: undefined }
+  | { error?: undefined; experiment: number; scan: number };
+
+function parseRouteIds(experimentId: string, scanId: string): RouteIds {
+  const experiment = parseId(experimentId);
+  const scan = parseId(scanId);
+  if (experiment === null || scan === null) {
+    return {
+      error: NextResponse.json(
+        { detail: "experimentId and scanId must be positive integers" },
+        { status: 400 }
+      ),
+    };
+  }
+  return { experiment, scan };
+}
+
+/**
+ * Whether this scan's video has landed yet.
+ *
+ * POST can time out at 240s while the encode carries on upstream (the handler
+ * there is synchronous, so a client disconnect doesn't cancel it) — which
+ * leaves the browser holding a 504 and no handle on the work. This is how it
+ * finds out how that ended.
+ */
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ experimentId: string; scanId: string }> }
+) {
+  const { experimentId, scanId } = await params;
+
+  const ids = parseRouteIds(experimentId, scanId);
+  if (ids.error) return ids.error;
+
+  const session = await getSession();
+  if (!session?.access_token) {
+    return NextResponse.json(
+      { detail: "Sign in to view this video." },
+      { status: 401 }
+    );
+  }
+
+  const downloadUrl = await getStoredScanVideoUrl(ids.scan);
+  if (!downloadUrl) {
+    return NextResponse.json(
+      { detail: "No video is stored for this scan yet." },
+      { status: 404 }
+    );
+  }
+
+  return NextResponse.json({ download_url: downloadUrl });
+}
+
 export async function POST(
   _request: Request,
   { params }: { params: Promise<{ experimentId: string; scanId: string }> }
 ) {
   const { experimentId, scanId } = await params;
 
-  const experiment = parseId(experimentId);
-  const scan = parseId(scanId);
-  if (experiment === null || scan === null) {
-    return NextResponse.json(
-      { detail: "experimentId and scanId must be positive integers" },
-      { status: 400 }
-    );
-  }
+  const ids = parseRouteIds(experimentId, scanId);
+  if (ids.error) return ids.error;
+  const { experiment, scan } = ids;
 
   // A short-circuit for the signed-out case, not the authorization decision:
   // the token is forwarded as-is and workflows verifies it against Supabase

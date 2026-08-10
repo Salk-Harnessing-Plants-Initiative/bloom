@@ -1,13 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  isScanVideoResult,
   videoErrorMessage,
   videoResultSummary,
   type ScanVideoResult,
 } from "./scan-video.helpers";
 
 type Status = "idle" | "generating" | "done" | "pending" | "error";
+
+// How often to ask whether a timed-out encode has landed, and how long to keep
+// asking before telling the user to come back later.
+const POLL_INTERVAL_MS = 10_000;
+const POLL_LIMIT_MS = 600_000;
 
 export default function ScanVideoButton({
   experimentId,
@@ -25,17 +31,17 @@ export default function ScanVideoButton({
   const [result, setResult] = useState<ScanVideoResult | null>(null);
   const [message, setMessage] = useState<string>("");
 
+  const endpoint = `/api/cyl/experiments/${experimentId}/scans/${scanId}/video`;
+  const busy = status === "generating" || status === "pending";
+
   async function generate() {
-    if (status === "generating") return;
+    if (busy) return;
     setStatus("generating");
     setMessage("");
 
     let response: Response;
     try {
-      response = await fetch(
-        `/api/cyl/experiments/${experimentId}/scans/${scanId}/video`,
-        { method: "POST" }
-      );
+      response = await fetch(endpoint, { method: "POST" });
     } catch {
       setMessage("Could not reach the video service.");
       setStatus("error");
@@ -44,10 +50,13 @@ export default function ScanVideoButton({
 
     const body = await response.json().catch(() => null);
 
-    // 504 means the encode is still running, not that it failed — offering
+    // 504 means the encode outlived the request, not that it failed — offering
     // "Generate" again here is how you end up with two encodes on one scan.
+    // The poll below takes over from here.
     if (response.status === 504) {
-      setMessage(videoErrorMessage(response.status, body?.detail));
+      setMessage(
+        "Still encoding — this scan is taking longer than the request allows. Waiting for it to finish…"
+      );
       setStatus("pending");
       return;
     }
@@ -58,13 +67,70 @@ export default function ScanVideoButton({
       return;
     }
 
-    const generated = body as ScanVideoResult;
-    setResult(generated);
-    setVideoUrl(generated.download_url);
+    // The route rejects a success it doesn't recognise; re-check here so a
+    // null body can't throw past this point and strand the button as "busy".
+    if (!isScanVideoResult(body)) {
+      setMessage("The video service returned an unexpected response.");
+      setStatus("error");
+      return;
+    }
+
+    setResult(body);
+    setVideoUrl(body.download_url);
     setStatus("done");
   }
 
-  const busy = status === "generating" || status === "pending";
+  // A 504 ends our request but not the encode — the upstream handler is
+  // synchronous, so a client disconnect doesn't cancel it. Nothing else will
+  // tell us how it ended, so ask until the video appears.
+  useEffect(() => {
+    if (status !== "pending") return;
+
+    let active = true;
+    let waited = 0;
+    let inFlight = false;
+
+    const timer = setInterval(async () => {
+      // A slow answer must not stack up behind the next tick.
+      if (inFlight) return;
+      inFlight = true;
+      waited += POLL_INTERVAL_MS;
+
+      let response: Response | null = null;
+      try {
+        response = await fetch(endpoint);
+      } catch {
+        // A blip mid-encode isn't an answer — keep asking.
+      } finally {
+        inFlight = false;
+      }
+      if (!active) return;
+
+      if (response?.ok) {
+        const body = await response.json().catch(() => null);
+        if (!active) return;
+        const url =
+          typeof body?.download_url === "string" ? body.download_url : null;
+        if (url) {
+          setVideoUrl(url);
+          setStatus("done");
+          return;
+        }
+      }
+
+      if (waited >= POLL_LIMIT_MS) {
+        setMessage(
+          "This encode is taking longer than expected. It may still finish — reload the page to check."
+        );
+        setStatus("error");
+      }
+    }, POLL_INTERVAL_MS);
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [status, endpoint]);
 
   return (
     <div className="mt-4">
@@ -101,7 +167,7 @@ export default function ScanVideoButton({
           so, rather than leaving a disabled button looking stuck. The bar is
           deliberately indeterminate: the endpoint reports nothing until it
           returns, so any percentage here would be invented. */}
-      {status === "generating" && (
+      {busy && (
         <div className="mt-2">
           <div
             role="progressbar"
@@ -111,14 +177,11 @@ export default function ScanVideoButton({
             <div className="h-full w-full animate-pulse bg-lime-600" />
           </div>
           <p className="mt-2 text-sm text-stone-500 italic">
-            Encoding every frame of this scan. This can take a minute — leave
-            the page open.
+            {status === "pending"
+              ? message
+              : "Encoding every frame of this scan. This can take a minute — leave the page open."}
           </p>
         </div>
-      )}
-
-      {status === "pending" && (
-        <p className="mt-2 text-sm text-stone-600">{message}</p>
       )}
 
       {status === "done" && result && (
