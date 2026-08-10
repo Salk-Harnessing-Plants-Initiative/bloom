@@ -72,11 +72,13 @@ expiry (the `SIGNED_URL_EXPIRES_SECONDS` constant in
 - **Local backend (opt-in):** a served URL built from `BLOOM_STORAGE_URL`
   (`f"{BLOOM_STORAGE_URL}/{key}"`), ignoring the expiry — this is a dev-only
   convenience with no real credential enforcement, matching this backend's other
-  documented caveats. **bloommcp does not itself serve `BLOOM_STORAGE_LOCAL_ROOT`
-  over HTTP** — `BLOOM_STORAGE_URL` only supplies the base URL for something an
-  operator has separately stood up to do that (mirroring how `BLOOM_PLOTS_URL`
-  already assumes an existing server for `PLOTS_DIR`). Without it configured,
-  `create_signed_url` raises rather than fabricate a `file://` URI.
+  documented caveats. **bloommcp self-serves this over HTTP itself** — when
+  `BLOOM_STORAGE_BACKEND=local`, `build_app()` mounts `/output` (serving the
+  resolved local storage root) and, when `BLOOM_STORAGE_URL` is unset, defaults
+  its base to bloommcp's own address (`BLOOMMCP_PUBLIC_URL` when set, else
+  `http://localhost:8811`) plus `/output` — so a generated link resolves with
+  no separately-stood-up server, standalone (`uv run bloom-mcp`) included.
+  `BLOOM_PLOTS_URL` gets the analogous `/plots` mount + default.
 
 **`create_signed_url` itself performs no ownership check.** It's a generic signing/
 serving primitive — given a key, it signs it, with no concept of which experiment
@@ -135,6 +137,14 @@ Drop input CSVs in `bloommcp-data/input/`; outputs and plots appear under
 `bloommcp-data/output/` and `bloommcp-data/plots/` — one folder to create by
 hand, nothing else to pre-create (see auto-create below).
 
+Both snippets above boot on just the two variables shown — no
+`BLOOM_STORAGE_URL`/`BLOOM_PLOTS_URL` needed (see "Downloading outputs"
+above). Running `bloommcp` directly is where this matters most: neither URL
+var had anything to point at before self-serving landed. In the
+docker-compose snippet, `BLOOM_PLOTS_URL` was already served by
+langchain-agent's own mount regardless; only its `BLOOM_STORAGE_URL`/`/output`
+side is new.
+
 Resulting on-disk output layout (the storage key becomes the path under the
 output root):
 
@@ -155,10 +165,9 @@ output root):
 - **Same output semantics as Supabase:** manifest/versioning are unchanged; the
   backend overwrites in place, copies bytes verbatim (so the recorded
   `output_sha256` matches the file on disk), and reads resolve back through the
-  same manifest/versioned-cleaned path. One difference: a Supabase-backed
-  `output_links[...].url` always resolves; the local backend's constructed URL
-  only resolves if `BLOOM_STORAGE_URL`'s root is separately being served over
-  HTTP (see "Downloading outputs" above) — bloommcp doesn't run that server.
+  same manifest/versioned-cleaned path. `output_links[...].url` resolves the
+  same way on both backends now — see "Downloading outputs" above for the
+  local backend's self-served default.
 - **Atomic writes (POSIX):** on POSIX filesystems the backend writes a temp file,
   `fsync`s it, then `os.replace`s it into place, so a crash mid-write never leaves
   a truncated `manifest.json`. **On Windows/NTFS** `os.replace` over an existing
@@ -171,8 +180,8 @@ output root):
   rejects any experiment name that escapes its input root.
 - **Backend-aware boot.** In `local` mode `server.main()` skips
   `validate_supabase_env()` and validates the local input root instead.
-  `BLOOM_TRAITS_DIR` / `BLOOM_OUTPUT_DIR` / `BLOOM_PLOTS_DIR` are required
-  **unless** `BLOOM_LOCAL_ROOT` is also set, in which case only
+  `BLOOM_TRAITS_DIR` / `BLOOM_OUTPUT_DIR` / `BLOOM_PLOTS_DIR` / `BLOOM_PLOTS_URL`
+  are required **unless** `BLOOM_LOCAL_ROOT` is also set, in which case only
   `BLOOM_LOCAL_ROOT` itself must exist and be writable — an invalid
   `BLOOM_STORAGE_BACKEND` value still fails fast in every mode. Production and
   staging never set `local`, so their boot fail-fast is unchanged.

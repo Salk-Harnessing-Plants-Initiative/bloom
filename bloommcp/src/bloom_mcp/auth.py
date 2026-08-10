@@ -34,7 +34,10 @@ API_KEY = os.getenv("BLOOMMCP_API_KEY")
 # Public base URL of this server, and of the Supabase Auth that issues its
 # tokens. Both must be reachable *by the MCP client* — a client running outside
 # Docker cannot resolve internal service names — so they are configured
-# explicitly rather than derived from SUPABASE_URL.
+# explicitly rather than derived from SUPABASE_URL. BLOOMMCP_PUBLIC_URL is also
+# reused (bloom#642, storage_backend.self_serve_base_url()) as the self-serve
+# base for local-backend /output and /plots URLs — see
+# bloommcp/docs/storage-backends.md.
 PUBLIC_URL = os.getenv("BLOOMMCP_PUBLIC_URL")
 AUTHORIZATION_SERVER = os.getenv("BLOOMMCP_OAUTH_AUTHORIZATION_SERVER")
 
