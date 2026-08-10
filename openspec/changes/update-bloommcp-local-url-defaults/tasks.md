@@ -1,130 +1,127 @@
-Commit plan (see design.md/review discussion): commit each numbered task group as ONE commit
-(not sub-step-by-sub-step) — within a group, the "test first" sub-step is designed to be red
-against pre-implementation code, so splitting a group across commits leaves an intermediate
-commit with intentionally-failing tests. Suggested commit messages use this repo's
-`type(#642): description` convention.
+This proposal was first implemented and pushed to PR #643 (open, not yet merged against
+`staging`), then revised in place — on the same branch, before merge — after the issue author's
+follow-up comment redirected the output-artifact half of the design. See design.md's "Revision
+history." Section A below is the original work already pushed (kept for history — do not redo
+it). Section B is the follow-up revision's own task list, landed as additional commits on the
+same branch/PR.
 
-## 1. `storage_backend.py`: self-serve base URL + local output root accessor
+Commit plan: commit each numbered task group as ONE commit (not sub-step-by-sub-step) — within a
+group, the "test first" sub-step is designed to be red against pre-implementation code, so
+splitting a group across commits leaves an intermediate commit with intentionally-failing tests.
+Suggested commit messages use this repo's `type(#642): description` convention.
 
-- [x] 1.1 **Test first** (`bloommcp/tests/test_storage_backend.py`): add
-      `test_self_serve_base_url_defaults_to_localhost_8811` (no `BLOOMMCP_PUBLIC_URL` ->
-      `http://localhost:8811`) and `test_self_serve_base_url_prefers_public_url` (with
-      `BLOOMMCP_PUBLIC_URL=https://example.internal/` -> `https://example.internal`, trailing
-      slash stripped). Run `uv run pytest bloommcp/tests/test_storage_backend.py -k self_serve`
-      and confirm both fail (`self_serve_base_url` does not exist yet).
-- [x] 1.2 Implement `self_serve_base_url() -> str` in `storage_backend.py`:
-      `(os.environ.get("BLOOMMCP_PUBLIC_URL") or "http://localhost:8811").rstrip("/")`. Confirm
-      1.1's tests pass.
-- [x] 1.3 **Test first**: add `test_local_output_root_matches_resolve_local_root` asserting
-      `sb.local_output_root()` equals `sb._resolve_local_root()` for a representative env
-      (`BLOOM_STORAGE_LOCAL_ROOT` set). Confirm it fails (no public wrapper yet). Note: since
-      `local_output_root()` is a one-line delegate, this test is a thin regression guard, not a
-      behavioral one — that's fine, keep it, but don't expect it to catch future bugs in
-      `_resolve_local_root()` itself (that function's own tests already cover its logic).
-- [x] 1.4 Implement `local_output_root() -> Path` as a thin public wrapper over the existing
-      `_resolve_local_root()`. Confirm 1.3 passes.
-- [x] Commit: `feat(#642): default BLOOM_STORAGE_URL to bloommcp's own address` — landed together
-      with task group 2 in one commit (`storage_backend.py`, `test_storage_backend.py`); both were
-      implemented in the same edit pass since `create_signed_url` immediately consumes
-      `self_serve_base_url()`. `uv run pytest tests/` — green (109 passed).
+## A. Original implementation (PR #643, merged — history, not re-done)
 
-## 2. `storage_backend.py`: `create_signed_url` defaults instead of raising
+Added `self_serve_base_url()`/`local_output_root()` helpers; defaulted `BLOOM_STORAGE_URL` in
+`create_signed_url` instead of raising; defaulted `BLOOM_PLOTS_URL` under the `BLOOM_LOCAL_ROOT`
+tier and added it to `validate_env()`'s optional set; mounted `/output` and `/plots` `StaticFiles`
+in `build_app()`. Full test suite green, lint clean, pushed to PR #643. See the original commits
+(`efb7443`, `b8da2c8`, `4eeab05`, `7cb6ff6`, `6ddb4ed`, `479a7db`) for the historical diff — not
+reproduced here since section B partially reverts and partially builds on top of it.
 
-- [x] 2.1 **Test first**: replaced `test_local_create_signed_url_raises_when_unset_no_path_leak`
-      (its asserted behavior is being removed) with
-      `test_local_create_signed_url_defaults_to_self_serve_base` and
-      `test_local_create_signed_url_default_honors_public_url`. Confirmed both failed against the
-      raising implementation before 2.2.
-- [x] 2.2 Implemented: `base = os.environ.get("BLOOM_STORAGE_URL") or f"{self_serve_base_url()}/output"`.
-      All of `test_storage_backend.py` passes (109 passed), including the untouched
-      `test_local_create_signed_url_returns_served_url` / `..._strips_trailing_slash` /
-      `..._ignores_expires_in`.
-- [x] Commit: landed with task group 1 (see above) — `efb7443`.
+## B. Follow-up revision: outputs get a direct path, not a URL
 
-## 3. `experiment_utils.py`: `BLOOM_PLOTS_URL` self-serve default under the `BLOOM_LOCAL_ROOT` tier
+### B1. Revert the `/output` self-serve mechanism (outputs only — `/plots` is untouched)
 
-- [x] 3.1 / 3.1a / 3.1b **Test first**: added `test_plots_url_resolves_under_local_root`,
-      `test_plots_url_explicit_override_wins_over_local_root`,
-      `test_plots_url_ignores_local_root_on_default_backend`, and
-      `test_plots_url_ignores_explicit_plots_dir_without_local_root` (the granular
-      explicit-override-tier case) to `test_local_mode.py`. Confirmed all four failed
-      (`AttributeError: no attribute '_resolve_plots_url'`) before 3.2.
-- [x] 3.2 Implemented `_resolve_plots_url()` next to `_resolve_plots_dir()`, same structure
-      (explicit wins, else `_fully_local_root()` gate + `self_serve_base_url() + "/plots"`, else
-      `""`). `PLOTS_URL = _resolve_plots_url()`.
-- [x] 3.3 **Test first**: added
-      `test_is_local_backend_not_consulted_when_local_root_unset_for_plots_url`, mirroring the
-      existing `PLOTS_DIR`-side test exactly (direct unit test with a call-counting monkeypatch,
-      not an extension of the subprocess-based import-purity test).
-- [x] Commit: `feat(#642): default BLOOM_PLOTS_URL under the BLOOM_LOCAL_ROOT tier` — `b8da2c8`.
-      `uv run pytest tests/test_local_mode.py` — green (39 passed).
+- [x] Revert `LocalStorageBackend.create_signed_url` (`storage_backend.py`) to its original
+      raising behavior when `BLOOM_STORAGE_URL` is unset — undoes A's defaulting change. Kept
+      `self_serve_base_url()`/`local_output_root()` themselves (still used elsewhere — see B2/B3).
+- [x] Remove the `/output` `Mount` from `server.py`'s `build_app()`; keep the `/plots` `Mount`
+      and its `is_local_backend()` gate.
+- [x] Restore `test_local_create_signed_url_raises_when_unset_no_path_leak` in
+      `test_storage_backend.py` (removing the two self-serve-default tests A added).
+- [x] Strip all `/output`-specific cases from `test_local_static_mounts.py` (absent-on-default,
+      serving tests for both tiers, garbage-identity, missing-file-404) — keep the `/plots`
+      cases. Remove the `/output/k` parametrize case from `test_identity_middleware.py`'s
+      `test_action_from_path` — keep `/plots/k`.
+- [x] Update `test_local_store_roundtrip_matches_contract` (`test_storage_backend.py`) and
+      `test_fully_local_qc_clean_to_pca_via_local_root_only`/
+      `test_fully_local_qc_clean_to_pca_no_supabase` (`test_local_mode.py`) to stop setting
+      `BLOOM_STORAGE_URL` and instead assert the new path-based `output_links` shape (see B2/B3).
 
-## 4. `experiment_utils.py`: `BLOOM_PLOTS_URL` joins the optional-under-`BLOOM_LOCAL_ROOT` set
+### B2. `OutputLink` gains `path`; `url` becomes optional
 
-- [x] 4.1 **Test first**: updated the shared `_local_root_env` fixture to `delenv` `BLOOM_PLOTS_URL`
-      by default and `monkeypatch.setattr(eu, "PLOTS_URL", eu._resolve_plots_url())`. Confirmed
-      exactly 9 tests went red with `Missing required environment variables: BLOOM_PLOTS_URL`
-      (matching the predicted list) before 4.2 landed.
-- [x] 3.5 **Test first**: added `test_fully_local_boot_succeeds_with_only_backend_and_local_root_set`
-      — drives the real `main()` entry point through the literal 2-variable
-      (`BLOOM_STORAGE_BACKEND` + `BLOOM_LOCAL_ROOT`) quick-start.
-- [x] 4.2 Implemented: `optional_when_local` now includes `"BLOOM_PLOTS_URL"`. Docstring updated
-      to say "four" variables.
-- [x] 4.3 Confirmed `test_fully_local_still_fails_fast_on_missing_data_dir` (granular-tier
-      `_local_dirs` helper) still passes unmodified.
-- [x] Commit: `fix(#642): make BLOOM_PLOTS_URL optional under BLOOM_LOCAL_ROOT` — `4eeab05`.
-      `uv run pytest tests/test_local_mode.py` — green (40 passed, 0 failed).
+- [x] **Test first** (`tests/contract/test_run_links.py`): updated `test_output_link_field_set`
+      to expect `path` in the field set; added
+      `test_output_link_url_and_path_both_default_to_none`. Confirmed the field-set test failed
+      before the model change.
+- [x] Implemented in `contract/models.py`: `OutputLink.url: Optional[str] = None`,
+      `OutputLink.path: Optional[str] = None`. Updated the class docstring.
 
-## 5. `server.py`: mount `/output` and `/plots` `StaticFiles` in local mode
+### B3. `build_output_links` takes `path_for` as an alternative to `url_for`
 
-- [x] 5.1 / 5.1b **Test first**: created `bloommcp/tests/test_local_static_mounts.py` with the
-      absent-on-default-backend tests, the granular-tier serving tests (with the `PLOTS_DIR`
-      frozen-constant `monkeypatch.setattr` called out explicitly), and the
-      `BLOOM_LOCAL_ROOT`-tier serving tests. Confirmed the 4 serving tests failed with `404`
-      before 5.2 (the 2 absent-mount tests trivially passed either way, as expected).
-- [x] 5.2 Implemented in `server.py`: added `StaticFiles` import; `build_app()` now appends the
-      `/output` and `/plots` `Mount`s (gated on `is_local_backend()`) before the catch-all
-      `Mount("/", ...)`.
-- [x] 5.4 **Test first**: extended `test_action_from_path`'s parametrize list with
-      `/output`/`/plots` -> `"combined"` in `test_identity_middleware.py`; added
-      `test_garbage_identity_header_rejected_on_local_mounts` and (bonus, beyond the reviewed
-      plan) `test_missing_file_returns_404_not_500` to `test_local_static_mounts.py`.
-- [x] 5.3 Ran the full suite: `1137 passed` (after also removing two pre-existing, untracked,
-      gitignored `__pycache__`-only leftover directories — `bloommcp/src/bloom_mcp/tools/workflows`
-      and `bloommcp/src/bloom_mcp/storage` — from an earlier local refactor that were making two
-      unrelated regression-guard tests fail for reasons that had nothing to do with this change;
-      confirmed those 2 failures reproduced identically before this change too).
-- [x] Commit: `feat(#642): mount /output and /plots StaticFiles in local mode` — `7cb6ff6`.
+- [x] **Test first** (`tests/result_store/test_artifacts.py`): added
+      `test_path_for_populates_path_and_leaves_url_none`, `test_url_for_leaves_path_none`,
+      `test_neither_url_for_nor_path_for_raises`, `test_both_url_for_and_path_for_raises`,
+      `test_path_for_key_scope_guard_still_applies`. Confirmed all four new
+      (path_for/neither/both/guard) tests failed with `TypeError`/wrong-behavior before the
+      signature change.
+- [x] Implemented in `result_store/_artifacts.py`: `build_output_links` signature becomes
+      `(output_keys, output_sha256, output_size_bytes, *, expected_prefix, url_for=None,
+path_for=None)` — both keyword-only, exactly one required
+      (`(url_for is None) == (path_for is None)` raises `ValueError`). Added an explicit
+      `if url_for and not url: raise ValueError(...)` guard, since `OutputLink.url` being
+      `Optional` (B2) removed Pydantic's own type-level rejection of a `None`/empty signed URL —
+      see design.md Decision 6.
+- [x] Fixed `tests/result_store/test_store_parity.py`'s `_wrong_prefix` helper, which called the
+      real `build_output_links` with `url_for` positionally — now keyword (`url_for=url_for`),
+      matching the new keyword-only signature. Confirmed `test_key_outside_run_prefix_fails_...`
+      (both `kind` parametrizations) still passes.
 
-## 6. Docs
+### B4. `SupabaseResultStore.commit()` branches on `is_local_backend()`
 
-- [x] 6.1 Updated `bloommcp/docs/storage-backends.md` ("Downloading outputs", the "one difference"
-      bullet, "Backend-aware boot", and a new sentence after the "Two ways to use it" snippets,
-      scoped accurately per review — the docker-compose snippet's plot URL already resolved via
-      langchain-agent's own mount before this change). Updated `bloom_mcp/auth.py`'s
-      `BLOOMMCP_PUBLIC_URL` comment and `docker-compose.dev.yml`'s matching `BLOOMMCP_PUBLIC_URL`
-      and `BLOOM_STORAGE_URL` comments. **Deviation from plan:** skipped `docker-compose.prod.yml`
-      — prod/staging never set `BLOOM_STORAGE_BACKEND=local` (confirmed via `.env.prod.defaults`
-      / `.env.staging.defaults`), so a self-serve cross-reference there would describe a feature
-      that structurally cannot activate in that file's context.
-- [x] 6.2 `openspec validate update-bloommcp-local-url-defaults --strict` — valid.
-- [x] Commit: `docs(#642): correct storage-backends.md and compose comments for self-served local
-      URLs` — `6ddb4ed`.
+- [x] Implemented in `result_store/supabase_store.py`: imported `is_local_backend`,
+      `local_output_root` from `storage_backend`. `commit()` now calls
+      `build_output_links(..., path_for=lambda key: str(local_output_root() / key), ...)` when
+      `is_local_backend()`, else the original `url_for=lambda key: _sc.create_signed_url(...)`
+      path, unchanged. `FakeResultStore.commit()` is untouched — it never simulates the local
+      backend and always synthesizes a `url` (confirmed: it imports nothing from
+      `storage_backend`).
+- [x] Updated `test_local_store_roundtrip_matches_contract` (`test_storage_backend.py`) to drop
+      `BLOOM_STORAGE_URL` entirely and assert
+      `stored.output_links["cleaned"].path == str(tmp_path / stored.output_keys["cleaned"])` and
+      `.url is None`.
+- [x] Updated `test_fully_local_qc_clean_to_pca_via_local_root_only` (`test_local_mode.py`) to
+      drop its `BLOOM_STORAGE_URL` setenv and assert every `qc_res.output_links.values()` entry
+      has `url is None`, `path is not None`, and `Path(path).is_file()`.
+- [x] Fixed the pre-existing regression this change surfaced:
+      `test_signing_call_returning_no_url_fails_commit_not_silently_none`
+      (`test_supabase_result_store.py`) relied on `OutputLink.url: str` (non-`Optional`) to reject
+      a `None` signed URL at construction — B2 made that no longer type-invalid. Fixed by B3's
+      explicit `url_for`-truthiness guard in `build_output_links` rather than by changing this
+      test; confirmed the test passes unmodified against the new guard.
 
-## 7. Full verification
+### B5. Docs
 
-- [x] 7.1 `cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration and not
-      live_smoke" -v --tb=short` — green (1137 passed, 33 deselected).
-- [x] 7.2 `bloommcp`'s Black/Ruff/Ruff-format aren't `uv run`-able directly (not project
-      dependencies — pre-commit manages its own tool envs); ran the actual configured gate via
-      `uvx pre-commit run --files <changed files>` instead. First pass auto-fixed 2 files (Black
-      line-wrapping) + 4 markdown files (Prettier); committed those fixes
-      (`style(#642): black/prettier auto-fixes from pre-commit`, `479a7db`); second pass — all
-      hooks pass.
-- [x] 7.3 Manual smoke: `BLOOM_STORAGE_BACKEND=local BLOOM_LOCAL_ROOT=/tmp/bloommcp-smoke uv run
-      bloom-mcp` (with `BLOOM_LOCAL_ROOT` pre-created, matching the documented "only the top-level
-      folder must pre-exist" contract) passed boot validation cleanly with no missing-variable
-      error — confirming the 2-var quick start works. Binding port 8811 itself failed only because
-      another bloommcp instance was already running on this dev machine (unrelated pre-existing
-      process, confirmed via `lsof`), not a defect in this change; the HTTP-serving half of this
-      smoke test is otherwise already covered by task 5's automated `TestClient` tests.
+- [x] Rewrote `bloommcp/docs/storage-backends.md`: retitled "Downloading outputs" to "Reaching
+      outputs: signed URLs and direct paths", rewrote the backend-specific bullets (outputs now
+      described as resolving via a direct filesystem path for the local backend — no URL, no
+      self-serving — distinct from plots' self-served `/plots` default), and fixed the
+      now-stale "Inline-vs-link" bullet, the "one difference" bullet, and the "Two ways to use
+      it" follow-up sentence to stop claiming outputs are self-served over HTTP.
+- [x] Fixed the same now-stale `/output` reference in
+      `specs/bloommcp-packaging/spec.md`'s "Local-Mode Self-Served Plots URL" requirement (it
+      cited `/output`'s precedent for `/plots`'s auth stance — `/output` no longer exists).
+- [x] Updated `bloom_mcp/auth.py`'s `BLOOMMCP_PUBLIC_URL` comment and `docker-compose.dev.yml`'s
+      matching comment to say "self-serve base for local-mode `/plots` URLs" (dropped the
+      "/output" half of the cross-reference A added).
+- [x] Reworded the `BLOOM_STORAGE_URL` comment in `docker-compose.dev.yml` — A's rewording
+      ("defaults to bloommcp's own address") was no longer accurate; now states plainly that
+      bloommcp's own `output_links` don't need this var at all, and it's only relevant for a
+      caller of `create_signed_url` against a separately-stood-up server.
+- [x] `openspec validate update-bloommcp-local-url-defaults --strict` — valid.
+
+### B6. Full verification
+
+- [x] `cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration and not
+      live_smoke" -v --tb=short` — green (1136 passed before this docs pass; docs-only changes
+      don't affect test outcomes).
+- [x] `uvx pre-commit run --files <all changed files>` — all hooks pass (Black/Ruff/Ruff-format/
+      Prettier/gitleaks/etc.), matching how A's own lint pass was actually run (bloommcp's own
+      `uv run black`/`ruff` aren't invokable directly — not project dependencies). One stable,
+      harmless Black/Ruff-format disagreement on a single assert-message line-wrap in
+      `test_run_links.py` — confirmed convergent (identical file hash before/after a repeat run),
+      not an infinite oscillation.
+- [ ] Update PR #643's description to reflect the revised design, noting that this supersedes
+      the `/output`-self-serve mechanism from the branch's earlier commits per the issue's
+      follow-up comment.

@@ -2,67 +2,67 @@
 
 Standing up `bloommcp` fully local (`uv run bloom-mcp`, no docker-compose) requires 5 hand-set
 env vars where 2 would do (#642): `BLOOM_PLOTS_URL` stays unconditionally required even though
-`storage-backends.md`'s own 2-var quick-start omits it (so following that doc literally fails
-boot), and `BLOOM_STORAGE_URL`/`BLOOM_PLOTS_URL` must point at something bloommcp itself never
-serves — standalone, any generated `output_links[...].url` or plot URL 404s. See design.md
-Context for the full history (three related, still-unarchived prior changes touch this exact
-seam).
+`storage-backends.md`'s own 2-var quick-start omits it, and — per the issue's follow-up
+discussion — the local backend should not need a signed/served URL for output artifacts at all,
+since the caller already has direct filesystem access to a file bloommcp just wrote. See
+design.md Context for the full history, including a design pivot mid-implementation (this
+proposal originally self-served `BLOOM_STORAGE_URL` over HTTP; the issue author's follow-up
+comment redirected outputs to a direct-path model instead — see design.md's "Revision History").
 
 ## What Changes
 
-- `LocalStorageBackend.create_signed_url` (`bloommcp/src/bloom_mcp/storage_backend.py`)
-  SHALL default `BLOOM_STORAGE_URL`, when unset, to `bloommcp`'s own address (`BLOOMMCP_PUBLIC_URL`
-  when set, else `http://localhost:8811`) plus `/output`, instead of raising.
-- `bloom_mcp.server.build_app()` SHALL mount `StaticFiles` at `/output` (the resolved local
-  storage root) and `/plots` (the resolved plots directory) whenever
-  `BLOOM_STORAGE_BACKEND=local`, so those self-served defaults actually resolve when bloommcp
-  runs standalone (`uv run bloom-mcp`), not only under `docker-compose.dev.yml`.
+- `bloom_mcp.result_store._artifacts.build_output_links` and `bloom_mcp.contract.models.OutputLink`
+  SHALL support a `path_for` alternative to `url_for`: `OutputLink` gains an `Optional[str] path`
+  field alongside a now-`Optional[str] url`; exactly one of the two is populated per link.
+- `SupabaseResultStore.commit()` SHALL use `path_for` (never `url_for`/`create_signed_url`) for
+  every output link when `BLOOM_STORAGE_BACKEND=local`, resolving each key to its absolute
+  filesystem path under `storage_backend.local_output_root()`. The default (Supabase) backend is
+  unaffected — it continues to use `url_for`/`create_signed_url` exactly as before.
+  `LocalStorageBackend.create_signed_url` is unchanged (still requires `BLOOM_STORAGE_URL`,
+  raising when unset) — it is simply no longer called by this pipeline; it remains available only
+  for an operator who deliberately wants a real served URL from their own external server.
 - `experiment_utils.PLOTS_URL`, when `BLOOM_PLOTS_URL` is unset and the single `BLOOM_LOCAL_ROOT`
   variable supplies a default (mirroring how `PLOTS_DIR` itself already resolves), SHALL default
-  to the same self-served base plus `/plots`, and `BLOOM_PLOTS_URL` SHALL join
+  to `storage_backend.self_serve_base_url()` plus `/plots`, and `BLOOM_PLOTS_URL` SHALL join
   `BLOOM_TRAITS_DIR`/`BLOOM_OUTPUT_DIR`/`BLOOM_PLOTS_DIR` as individually optional in
-  `validate_env()`'s required-vars check under that same condition.
-- `bloommcp/docs/storage-backends.md` SHALL be corrected to state that the 2-var
-  (`BLOOM_STORAGE_BACKEND` + `BLOOM_LOCAL_ROOT`) quick-start actually boots and that
-  `output_links`/plot URLs resolve out of the box, replacing the current "bloommcp does not
-  itself serve ... over HTTP" language for that configuration (including the trailing "without
-  it configured, `create_signed_url` raises" sentence in the same bullet, which becomes false
-  too). The corresponding `BLOOM_STORAGE_URL` comment in `docker-compose.dev.yml` making the same
-  now-false claim SHALL be corrected too. `BLOOMMCP_PUBLIC_URL`'s existing OAuth-only
-  documentation (`bloom_mcp/auth.py`, both compose files) SHALL gain a one-clause cross-reference
-  noting its reuse as the self-serve base, so a reader of either doesn't miss the other use.
-- **Non-goal:** the granular explicit-override tier (`BLOOM_STORAGE_LOCAL_ROOT` /
-  `BLOOM_PLOTS_DIR` set directly, without `BLOOM_LOCAL_ROOT`) keeps `BLOOM_PLOTS_URL`
-  unconditionally required at boot, unchanged — only the `BLOOM_STORAGE_URL` default (which is
-  never a boot-time requirement) benefits in that tier too, since it is resolved lazily per-call
-  rather than validated at boot.
-- **Non-goal:** no new auth is added for the `/output`/`/plots` static routes — they are
-  unauthenticated, mirroring the existing `/health` route and the already-shipped
-  `langchain-agent` `StaticFiles` mounts. Local mode's documented threat model is a solo
-  dev/offline convenience.
+  `validate_env()`'s required-vars check under that same condition. `bloom_mcp.server.build_app()`
+  SHALL mount `StaticFiles` at `/plots` (the resolved plots directory) whenever
+  `BLOOM_STORAGE_BACKEND=local`, so that self-served default actually resolves standalone. Plots
+  are unaffected by the output-path pivot above (the issue's follow-up comment did not ask for
+  this, and plots have no direct-filesystem-access alternative today — see design.md Decision 2).
+- `bloommcp/docs/storage-backends.md` SHALL be corrected to describe outputs as resolving via a
+  direct filesystem path for the local backend (no URL, no self-serving needed) and plots as
+  resolving via the self-served `/plots` default — two different mechanisms for two different
+  artifact kinds, stated as such. `BLOOMMCP_PUBLIC_URL`'s existing OAuth-only documentation
+  (`bloom_mcp/auth.py`, `docker-compose.dev.yml`) SHALL gain a one-clause cross-reference noting
+  its reuse as the plots self-serve base.
+- **Non-goal:** no new auth is added for the `/plots` static route — unauthenticated, mirroring
+  the existing `/health` route and the already-shipped `langchain-agent` `StaticFiles` mount.
+- **Non-goal:** the granular explicit-override tier (`BLOOM_PLOTS_DIR` set directly, without
+  `BLOOM_LOCAL_ROOT`) keeps `BLOOM_PLOTS_URL` unconditionally required at boot, unchanged — the
+  output-path behavior is unaffected either way, since it never depends on any URL var.
 
 ## Impact
 
-- Affected specs: `bloommcp-storage-backend` (MODIFIED "Signed URL Generation" — see note below),
-  `bloommcp-packaging` (extends the still-unarchived `add-bloommcp-local-root` /
-  `add-bloommcp-local-experiment-reader` changes' "Lazy Environment Validation" / "Server Boot
-  Fail-Fast Preserved" requirements with the `BLOOM_PLOTS_URL` carve-out and the `/plots` mount).
-- Affected code: `bloommcp/src/bloom_mcp/storage_backend.py`, `bloommcp/src/bloom_mcp/server.py`,
-  `bloommcp/src/bloom_mcp/experiment_utils.py`, `bloommcp/docs/storage-backends.md`, and the
-  `BLOOM_STORAGE_URL` comment in `docker-compose.dev.yml` (lines ~181-185, which currently states
-  "bloommcp does not run that server itself" — becomes false after this change).
-- Affected tests: `bloommcp/tests/test_storage_backend.py`, `bloommcp/tests/test_local_mode.py`,
-  `bloommcp/tests/test_identity_middleware.py`, new `bloommcp/tests/test_local_static_mounts.py`.
-- **Supersedes one scenario of a still-unarchived change:** `add-bloommcp-signed-url-download`'s
-  own delta (`openspec/changes/add-bloommcp-signed-url-download/specs/bloommcp-storage-backend/spec.md`)
-  added `Signed URL Generation`'s "Local backend fails closed... raises rather than returning a
-  `file://` URI" scenario for an unset `BLOOM_STORAGE_URL`. This change's delta for the same
-  requirement (below) replaces that scenario: an unset `BLOOM_STORAGE_URL` is no longer a failure
-  mode. Authored as `MODIFIED Requirements` against `Signed URL Generation` (pasting that
-  change's full current text) rather than a disconnected `ADDED` requirement, specifically so the
-  two deltas don't leave the eventual archived spec self-contradictory.
+- Affected specs: `bloommcp-result-store` (MODIFIED "Per-Output Signed Links And Size At Commit"
+  — local backend surfaces `path` instead of `url`), `bloommcp-packaging` (extends the
+  still-unarchived `add-bloommcp-local-root` / `add-bloommcp-local-experiment-reader` changes'
+  "Lazy Environment Validation" / "Server Boot Fail-Fast Preserved" requirements with the
+  `BLOOM_PLOTS_URL` carve-out and the `/plots` mount). No delta against `bloommcp-storage-backend`
+  in this revision — `create_signed_url` itself is unchanged from its still-unarchived
+  `add-bloommcp-signed-url-download` contract.
+- Affected code: `bloommcp/src/bloom_mcp/contract/models.py`,
+  `bloommcp/src/bloom_mcp/result_store/_artifacts.py`,
+  `bloommcp/src/bloom_mcp/result_store/supabase_store.py`,
+  `bloommcp/src/bloom_mcp/experiment_utils.py`, `bloommcp/src/bloom_mcp/server.py`,
+  `bloommcp/docs/storage-backends.md`, `bloommcp/src/bloom_mcp/auth.py` (comment),
+  `docker-compose.dev.yml` (comments).
+- Affected tests: `bloommcp/tests/result_store/test_artifacts.py`,
+  `bloommcp/tests/result_store/test_store_parity.py`, `bloommcp/tests/test_storage_backend.py`,
+  `bloommcp/tests/test_local_mode.py`, `bloommcp/tests/test_identity_middleware.py`,
+  `bloommcp/tests/test_local_static_mounts.py`.
 - **Pre-existing spec drift (not fixed here):** `openspec/specs/bloommcp-packaging/spec.md` and
-  `openspec/specs/bloommcp-storage-backend/spec.md` are stale relative to shipped code —
+  `openspec/specs/bloommcp-result-store/spec.md` are stale relative to shipped code —
   `add-bloommcp-local-root`, `add-bloommcp-local-experiment-reader`,
   `add-bloommcp-signed-url-download`, `add-bloommcp-signed-url-key-scoping`, and
   `update-dev-local-mode-toggle` are all fully implemented but never archived. This change's
