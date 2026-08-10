@@ -409,9 +409,18 @@ class LocalStorageBackend:
         # expires_in is accepted for Protocol parity with the Supabase adapter
         # and ignored — this is an opt-in dev feature with no real credential/
         # expiry enforcement (see the class docstring's Windows-atomicity caveat
-        # for the same rhetorical shape).
+        # for the same rhetorical shape). Not called by the local backend's own
+        # output_links pipeline (#642 follow-up) — commit() surfaces a direct
+        # filesystem path instead (see result_store/_artifacts.py's `path_for`)
+        # — this remains only for an operator who has deliberately stood up
+        # their own external server and wants a real served URL.
         del expires_in
-        base = os.environ.get("BLOOM_STORAGE_URL") or f"{self_serve_base_url()}/output"
+        base = os.environ.get("BLOOM_STORAGE_URL")
+        if not base:
+            raise StorageBackendError(
+                "BLOOM_STORAGE_URL is not set; cannot construct a served URL "
+                "for the local storage backend"
+            )
         return f"{base.rstrip('/')}/{key}"
 
 

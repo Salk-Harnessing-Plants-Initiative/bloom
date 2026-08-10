@@ -116,15 +116,22 @@ def build_app() -> Starlette:
     `auth=` on each `FastMCP` instance, inside each `Mount`) — the two checks
     are independent; see openspec add-bloommcp-caller-identity design.md.
 
-    In fully-local mode (`BLOOM_STORAGE_BACKEND=local`), also mounts `/output`
-    and `/plots` as `StaticFiles`, serving the same local storage/plots roots
-    the active backend itself writes to — so a served URL built from either
+    In fully-local mode (`BLOOM_STORAGE_BACKEND=local`), also mounts `/plots`
+    as `StaticFiles`, serving the local plots root the plotting tools
+    themselves write to — so a served URL built from either
     `storage_backend.self_serve_base_url()`'s default or an explicit
-    `BLOOM_STORAGE_URL`/`BLOOM_PLOTS_URL` pointing at this same address
-    actually resolves standalone, with no docker-compose. Unauthenticated
-    beyond `IdentityMiddleware`'s optional identity check (matching `/health`'s
+    `BLOOM_PLOTS_URL` pointing at this same address actually resolves
+    standalone, with no docker-compose. Unauthenticated beyond
+    `IdentityMiddleware`'s optional identity check (matching `/health`'s
     precedent) — see openspec update-bloommcp-local-url-defaults design.md
     Decision 3. Absent entirely on the default (Supabase) backend.
+
+    No analogous `/output` mount: analysis outputs' `output_links` surface a
+    direct resolved filesystem path for the local backend instead of a served
+    URL (`result_store/_artifacts.py`'s `path_for`) — the caller already has
+    direct filesystem access to a file bloommcp just wrote, so there is
+    nothing to self-serve over HTTP for outputs (see the GitHub issue #642
+    follow-up discussion linked from `update-bloommcp-local-url-defaults`).
     """
     combined_app = mcp.http_app(path="/mcp")
     section_apps = {
@@ -136,16 +143,9 @@ def build_app() -> Starlette:
     routes = [Mount(f"/{name}", app=app) for name, app in section_apps.items()]
 
     from bloom_mcp.experiment_utils import PLOTS_DIR
-    from bloom_mcp.storage_backend import is_local_backend, local_output_root
+    from bloom_mcp.storage_backend import is_local_backend
 
     if is_local_backend():
-        routes.append(
-            Mount(
-                "/output",
-                app=StaticFiles(directory=str(local_output_root()), check_dir=False),
-                name="local-output",
-            )
-        )
         routes.append(
             Mount(
                 "/plots",

@@ -1,13 +1,21 @@
-"""bloom_mcp.server.build_app()'s local-mode `/output`/`/plots` StaticFiles
-mounts (#642) — self-serving the local storage/plots roots so a
-BLOOM_STORAGE_URL/BLOOM_PLOTS_URL built from storage_backend.self_serve_base_url()
-actually resolves when bloommcp runs standalone (no docker-compose).
+"""bloom_mcp.server.build_app()'s local-mode `/plots` StaticFiles mount (#642)
+— self-serving the local plots root so a `BLOOM_PLOTS_URL` built from
+`storage_backend.self_serve_base_url()` actually resolves when bloommcp runs
+standalone (no docker-compose).
 
-Both mounts are gated on `is_local_backend()`; neither is present on the
-default (Supabase) backend. `IdentityMiddleware` wraps the whole app (outside
-every `Mount`, per `build_app()`'s own docstring), so it still applies to
-these routes even though nothing inside a `StaticFiles` mount does its own
-auth — see the garbage-identity-header tests at the bottom.
+Gated on `is_local_backend()`; absent on the default (Supabase) backend.
+`IdentityMiddleware` wraps the whole app (outside every `Mount`, per
+`build_app()`'s own docstring), so it still applies to this route even though
+nothing inside a `StaticFiles` mount does its own auth — see the
+garbage-identity-header test at the bottom.
+
+No analogous `/output` mount: per a GitHub issue #642 follow-up discussion,
+analysis outputs' `output_links` surface a direct resolved filesystem path
+for the local backend instead of a served URL (see
+`tests/result_store/test_artifacts.py` and `test_storage_backend.py`'s
+`test_local_store_roundtrip_matches_contract`) — the caller already has
+direct filesystem access to a file bloommcp just wrote, so there is nothing
+to self-serve over HTTP for outputs.
 """
 
 from __future__ import annotations
@@ -15,7 +23,6 @@ from __future__ import annotations
 import time
 
 import jwt
-import pytest
 from starlette.routing import Mount
 from starlette.testclient import TestClient
 
@@ -33,12 +40,6 @@ def _mount_paths(app):
 # ── absent on the default backend ───────────────────────────────────────────
 
 
-def test_output_mount_absent_on_default_backend(monkeypatch):
-    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
-    sb.reset_backend_for_tests()
-    assert "/output" not in _mount_paths(server.build_app())
-
-
 def test_plots_mount_absent_on_default_backend(monkeypatch):
     monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
     sb.reset_backend_for_tests()
@@ -46,20 +47,6 @@ def test_plots_mount_absent_on_default_backend(monkeypatch):
 
 
 # ── serving a real file: granular explicit-override tier ───────────────────
-
-
-def test_output_mount_serves_local_root_file(monkeypatch, tmp_path):
-    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
-    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
-    sb.reset_backend_for_tests()
-    nested = tmp_path / "bloommcp_output" / "qc_x" / "v1"
-    nested.mkdir(parents=True)
-    (nested / "_cleaned.csv").write_bytes(b"a,b\n1,2\n")
-
-    with TestClient(server.build_app()) as client:
-        resp = client.get("/output/bloommcp_output/qc_x/v1/_cleaned.csv")
-    assert resp.status_code == 200
-    assert resp.content == b"a,b\n1,2\n"
 
 
 def test_plots_mount_serves_plot_file(monkeypatch, tmp_path):
@@ -81,23 +68,6 @@ def test_plots_mount_serves_plot_file(monkeypatch, tmp_path):
 # ── serving a real file: BLOOM_LOCAL_ROOT-derived tier ──────────────────────
 
 
-def test_output_mount_serves_local_root_file_via_local_root_tier(monkeypatch, tmp_path):
-    root = tmp_path / "local_root"
-    root.mkdir()
-    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
-    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(root))
-    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
-    sb.reset_backend_for_tests()
-    nested = root / "output" / "bloommcp_output" / "qc_x" / "v1"
-    nested.mkdir(parents=True)
-    (nested / "_cleaned.csv").write_bytes(b"a,b\n1,2\n")
-
-    with TestClient(server.build_app()) as client:
-        resp = client.get("/output/bloommcp_output/qc_x/v1/_cleaned.csv")
-    assert resp.status_code == 200
-    assert resp.content == b"a,b\n1,2\n"
-
-
 def test_plots_mount_serves_plot_file_via_local_root_tier(monkeypatch, tmp_path):
     root = tmp_path / "local_root"
     root.mkdir()
@@ -115,19 +85,17 @@ def test_plots_mount_serves_plot_file_via_local_root_tier(monkeypatch, tmp_path)
     assert resp.content == b"\x89PNG-fake-bytes"
 
 
-# ── IdentityMiddleware still wraps the new mounts ───────────────────────────
+# ── IdentityMiddleware still wraps the new mount ────────────────────────────
 
 
-@pytest.mark.parametrize("path", ["/output/x", "/plots/x"])
-def test_garbage_identity_header_rejected_on_local_mounts(monkeypatch, tmp_path, path):
+def test_garbage_identity_header_rejected_on_plots_mount(monkeypatch, tmp_path):
     monkeypatch.setenv("JWT_SECRET", SECRET)
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
-    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
     sb.reset_backend_for_tests()
     monkeypatch.setattr(eu, "PLOTS_DIR", tmp_path)
 
     with TestClient(server.build_app()) as client:
-        resp = client.get(path, headers={"X-Bloom-Identity": "garbage"})
+        resp = client.get("/plots/x", headers={"X-Bloom-Identity": "garbage"})
     assert resp.status_code == 401
 
 
@@ -140,17 +108,15 @@ def _valid_identity_token():
     return jwt.encode(payload, SECRET, algorithm="HS256")
 
 
-@pytest.mark.parametrize("path", ["/output/x", "/plots/x"])
-def test_missing_file_returns_404_not_500(monkeypatch, tmp_path, path):
-    """A GET for a key/file that doesn't exist under the mounted root is a
+def test_missing_plot_file_returns_404_not_500(monkeypatch, tmp_path):
+    """A GET for a file that doesn't exist under the mounted plots root is a
     clean 404 from StaticFiles, not an unhandled error — no host path should
     leak into the response either way."""
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
-    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
     sb.reset_backend_for_tests()
     monkeypatch.setattr(eu, "PLOTS_DIR", tmp_path)
 
     with TestClient(server.build_app()) as client:
-        resp = client.get(path)
+        resp = client.get("/plots/x")
     assert resp.status_code == 404
     assert str(tmp_path) not in resp.text

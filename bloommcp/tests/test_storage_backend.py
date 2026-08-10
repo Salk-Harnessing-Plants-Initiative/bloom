@@ -510,7 +510,7 @@ def test_local_store_roundtrip_matches_contract(monkeypatch, tmp_path):
 
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
-    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
+    monkeypatch.delenv("BLOOM_STORAGE_URL", raising=False)
     sb.reset_backend_for_tests()
 
     store = SupabaseResultStore()
@@ -529,9 +529,11 @@ def test_local_store_roundtrip_matches_contract(monkeypatch, tmp_path):
     assert stored.output_keys["cleaned"].startswith("bloommcp_output/qc_exp/")
     assert store.get_run("exp.csv", "qc", "latest").run_ref == "v1"
 
-    # bloom#581: local backend's served URL, built from the real key
+    # #642 follow-up: local backend surfaces the resolved direct path, not a
+    # URL — no BLOOM_STORAGE_URL needed at all.
     link = stored.output_links["cleaned"]
-    assert link.url == f"http://localhost/output/{stored.output_keys['cleaned']}"
+    assert link.path == str(tmp_path / stored.output_keys["cleaned"])
+    assert link.url is None
     assert link.size_bytes == len(b"data")
 
     # real files on disk, laid out by key
@@ -1727,20 +1729,17 @@ def test_local_create_signed_url_ignores_expires_in(monkeypatch, tmp_path):
     assert b.create_signed_url("k", 60) == b.create_signed_url("k", 999999)
 
 
-def test_local_create_signed_url_defaults_to_self_serve_base(monkeypatch, tmp_path):
+def test_local_create_signed_url_raises_when_unset_no_path_leak(monkeypatch, tmp_path):
+    """Not called by the local backend's own output_links pipeline anymore
+    (#642 follow-up — commit() surfaces a direct path instead), but the
+    method itself still fails closed for an operator who deliberately calls
+    it (or configures BLOOM_STORAGE_URL) without finishing the setup."""
     monkeypatch.delenv("BLOOM_STORAGE_URL", raising=False)
-    monkeypatch.delenv("BLOOMMCP_PUBLIC_URL", raising=False)
-    url = sb.LocalStorageBackend(tmp_path).create_signed_url(
-        "bloommcp_output/qc_x/v1/_cleaned.csv", 3600
-    )
-    assert url == "http://localhost:8811/output/bloommcp_output/qc_x/v1/_cleaned.csv"
-
-
-def test_local_create_signed_url_default_honors_public_url(monkeypatch, tmp_path):
-    monkeypatch.delenv("BLOOM_STORAGE_URL", raising=False)
-    monkeypatch.setenv("BLOOMMCP_PUBLIC_URL", "https://example.internal")
-    url = sb.LocalStorageBackend(tmp_path).create_signed_url("k", 3600)
-    assert url == "https://example.internal/output/k"
+    with pytest.raises(Exception) as exc:
+        sb.LocalStorageBackend(tmp_path).create_signed_url("k", 3600)
+    msg = str(exc.value)
+    assert str(tmp_path) not in msg
+    assert "file://" not in msg
 
 
 def test_storage_backend_protocol_includes_create_signed_url(tmp_path):

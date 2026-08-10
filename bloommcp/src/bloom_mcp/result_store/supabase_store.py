@@ -27,7 +27,11 @@ from bloom_mcp.manifest import (
     version_dir_name,
     write_manifest,
 )
-from bloom_mcp.storage_backend import active_backend_name
+from bloom_mcp.storage_backend import (
+    active_backend_name,
+    is_local_backend,
+    local_output_root,
+)
 
 from ._artifacts import (
     SIGNED_URL_EXPIRES_SECONDS,
@@ -252,21 +256,35 @@ class SupabaseResultStore:
                 # Sign each just-uploaded key before the manifest is written —
                 # a signing failure (bloom#581 Decision 5) leaves `latest`
                 # un-advanced exactly like an upload failure, via the same
-                # except/cleanup block below.
-                output_links = build_output_links(
-                    output_keys,
-                    output_sha256,
-                    output_size_bytes,
-                    url_for=lambda key: _sc.create_signed_url(
-                        key, SIGNED_URL_EXPIRES_SECONDS
-                    ),
-                    # key_for("") is the same closure every real key above was
-                    # built from — reusing it (rather than a second, separately
-                    # written `adir.key(f"{version_dir}/")` template) means the
-                    # expected prefix and the actual keys structurally cannot
-                    # drift apart from a future refactor of key_for/AnalysisDir.
-                    expected_prefix=key_for(""),
-                )
+                # except/cleanup block below. The local backend has nothing to
+                # sign or serve: the caller already has direct filesystem
+                # access to a file bloommcp just wrote (#642 follow-up), so
+                # output_links carries the resolved absolute path instead.
+                #
+                # key_for("") is the same closure every real key above was
+                # built from — reusing it (rather than a second, separately
+                # written `adir.key(f"{version_dir}/")` template) means the
+                # expected prefix and the actual keys structurally cannot
+                # drift apart from a future refactor of key_for/AnalysisDir.
+                if is_local_backend():
+                    root = local_output_root()
+                    output_links = build_output_links(
+                        output_keys,
+                        output_sha256,
+                        output_size_bytes,
+                        path_for=lambda key: str(root / key),
+                        expected_prefix=key_for(""),
+                    )
+                else:
+                    output_links = build_output_links(
+                        output_keys,
+                        output_sha256,
+                        output_size_bytes,
+                        url_for=lambda key: _sc.create_signed_url(
+                            key, SIGNED_URL_EXPIRES_SECONDS
+                        ),
+                        expected_prefix=key_for(""),
+                    )
 
                 prov = state.provenance.model_copy(
                     update={

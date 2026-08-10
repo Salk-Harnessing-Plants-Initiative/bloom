@@ -728,7 +728,6 @@ def test_fully_local_qc_clean_to_pca_via_local_root_only(
     )
 
     root = _local_root_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("BLOOM_AGENT_KEY", raising=False)
 
@@ -752,6 +751,13 @@ def test_fully_local_qc_clean_to_pca_via_local_root_only(
 
     qc_res = qc_clean(QCCleanParams(experiment="offline_e2e.csv"))
     assert qc_res.run_ref
+
+    # #642 follow-up: no BLOOM_STORAGE_URL set at all, yet output_links still
+    # resolve — as a direct filesystem path, not a URL.
+    for link in qc_res.output_links.values():
+        assert link.url is None
+        assert link.path is not None
+        assert Path(link.path).is_file()
 
     cleaned = _ports.reader().load_experiment("offline_e2e.csv", require_clean=True)
     traits = list(cleaned.trait_cols)[:2]
