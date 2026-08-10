@@ -81,10 +81,8 @@
 			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
 		}
 
-		# Cylinder scan actions served by bloom-web's Next.js routes (currently the
-		# on-demand video proxy). `handle`, not `handle_path`: the /api prefix is
-		# part of the Next.js route, so stripping it would 404. Kong owns no /cyl/*
-		# route, so nothing is diverted from it (issue #347, same failure mode).
+		# Cyl scan actions on bloom-web. `handle`, not `handle_path` — the /api
+		# prefix is part of the Next.js route.
 		handle /api/cyl/* {
 			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
 		}
