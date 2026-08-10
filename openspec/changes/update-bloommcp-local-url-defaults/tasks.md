@@ -122,6 +122,6 @@ path_for=None)` — both keyword-only, exactly one required
       harmless Black/Ruff-format disagreement on a single assert-message line-wrap in
       `test_run_links.py` — confirmed convergent (identical file hash before/after a repeat run),
       not an infinite oscillation.
-- [ ] Update PR #643's description to reflect the revised design, noting that this supersedes
+- [x] Updated PR #643's description to reflect the revised design, noting that this supersedes
       the `/output`-self-serve mechanism from the branch's earlier commits per the issue's
       follow-up comment.
