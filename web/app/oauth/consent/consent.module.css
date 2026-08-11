@@ -1,0 +1,106 @@
+.page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+  background: #f5f6f8;
+}
+
+.card {
+  width: 100%;
+  max-width: 30rem;
+  background: #fff;
+  border: 1px solid #e3e5e9;
+  border-radius: 12px;
+  padding: 2rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.title {
+  margin: 0 0 0.75rem;
+  font-size: 1.35rem;
+  line-height: 1.3;
+}
+
+.lede {
+  margin: 0 0 1.5rem;
+  color: #3d4350;
+  line-height: 1.5;
+}
+
+.sectionTitle {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+}
+
+.scopeList {
+  margin: 0 0 1.5rem;
+  padding-left: 1.25rem;
+  color: #3d4350;
+  line-height: 1.7;
+}
+
+.note {
+  margin: 0 0 1.75rem;
+  padding: 0.75rem 0.9rem;
+  background: #f7f8fa;
+  border-left: 3px solid #c9ced8;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: #52586a;
+}
+
+.error {
+  margin-bottom: 1rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 6px;
+  background: #fdecec;
+  color: #8c1c1c;
+  font-size: 0.9rem;
+}
+
+.actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.btnPrimary,
+.btnSecondary {
+  padding: 0.6rem 1.15rem;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.btnPrimary {
+  background: #2f6f4f;
+  color: #fff;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  background: #275e43;
+}
+
+.btnSecondary {
+  background: #fff;
+  color: #3d4350;
+  border-color: #d2d6dd;
+}
+
+.btnSecondary:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+
+.btnPrimary:disabled,
+.btnSecondary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

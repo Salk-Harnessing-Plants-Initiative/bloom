@@ -1,7 +1,7 @@
 """Regression-guard: the bloommcp live_smoke/live_smoke_slow CI split stays intact.
 
 Enforces the "CI vs Pre-Merge Smoke Split" requirement added by
-``openspec/changes/add-bloommcp-cylinder-smoke-coverage/specs/bloommcp-smoke-testing/spec.md``.
+``openspec/changes/archive/2026-08-09-add-bloommcp-cylinder-smoke-coverage/specs/bloommcp-smoke-testing/spec.md``.
 
 Two independent guards, both static (no live dev stack, no bloommcp deps needed):
 

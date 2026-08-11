@@ -180,6 +180,10 @@ class FakeSupabaseDB:
         # Keyed by (function_name, experiment_id); experiment_id=None fails
         # every call to that function regardless of experiment.
         self.rpc_errors: dict[tuple[str, Optional[int]], Exception] = {}
+        # Every call_rpc invocation's function name, in order -- lets a test
+        # assert call counts (e.g. "one bulk call, not one per experiment")
+        # without a separate spy/monkeypatch layer.
+        self.rpc_calls: list[str] = []
 
     def seed_experiment(self, experiment_id: int, name: str) -> None:
         self.tables["cyl_experiments"].append({"id": experiment_id, "name": name})
@@ -200,6 +204,7 @@ class FakeSupabaseDB:
         self.rpc_errors[(function_name, experiment_id)] = exc
 
     def call_rpc(self, function_name: str, params: dict) -> list[dict]:
+        self.rpc_calls.append(function_name)
         experiment_id = params.get("experiment_id_")
         for key in ((function_name, experiment_id), (function_name, None)):
             if key in self.rpc_errors:
@@ -216,6 +221,37 @@ class FakeSupabaseDB:
             if run_id is not None:
                 rows = [r for r in rows if r.get("pipeline_run_id") == run_id]
             return rows
+        if function_name == "get_experiment_summary_counts":
+            # Mirrors the real SQL function's shape: aggregate counts derived
+            # from the same per-experiment trait rows `get_experiment_traits`
+            # reads above, applying the same source_id_/run_id_ filtering. An
+            # experiment_id_=None call (list_experiments()'s only use today)
+            # covers every seeded experiment; one with no matching rows after
+            # filtering is absent from the result, not zero-valued.
+            source_id = params.get("source_id_")
+            run_id = params.get("run_id_")
+            ids = (
+                [experiment_id]
+                if experiment_id is not None
+                else list(self._traits.keys())
+            )
+            result = []
+            for eid in ids:
+                rows = list(self._traits.get(eid, []))
+                if source_id is not None:
+                    rows = [r for r in rows if r.get("source_id") == source_id]
+                if run_id is not None:
+                    rows = [r for r in rows if r.get("pipeline_run_id") == run_id]
+                if not rows:
+                    continue
+                result.append(
+                    {
+                        "experiment_id": eid,
+                        "n_plants": len({r["plant_id"] for r in rows}),
+                        "n_traits": len({r["trait_name"] for r in rows}),
+                    }
+                )
+            return result
         raise AssertionError(f"unfaked RPC function: {function_name!r}")
 
     def get_postgrest_client(self) -> _FakePostgrestClient:

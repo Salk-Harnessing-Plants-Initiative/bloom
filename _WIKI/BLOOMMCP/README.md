@@ -130,6 +130,12 @@ species = client.table("species").select("*").execute()
 plants = client.table("plants").select("id, accession_id, sown_at").eq("experiment_id", 42).execute()
 ```
 
+Every request through this client carries a deliberately chosen, bounded timeout
+(`get_postgrest_client._DEFAULT_POSTGREST_TIMEOUT_SECONDS`) rather than `supabase-py`'s own un-chosen
+120s package default — a genuinely blocked or slow query fails loudly instead of hanging. Pass
+`get_postgrest_client(timeout_seconds=...)` to override it for a specific client instance (e.g. a call
+you expect to legitimately take longer than the default bound).
+
 **Source-aware cyl trait reads.** A scan can carry multiple `cyl_trait_sources`
 (one per pipeline run — reprocessing mints a new `source_id`), so reading
 `cyl_scan_traits` **directly returns duplicate/cross-source rows**. Read the
@@ -167,6 +173,14 @@ available before pinning one.
 traits = client.rpc("get_experiment_traits", {"experiment_id_": 42}).execute()
 sources = client.rpc("list_experiment_trait_sources", {"experiment_id_": 42}).execute()
 ```
+
+**Listing experiments without fetching every trait row.** `list_experiments()`
+(`SupabaseReader`) needs per-experiment plant/trait counts, not the trait rows themselves — calling
+`get_experiment_traits` once per experiment just to `len(set(...))` its rows doesn't scale (bloom#625).
+`get_experiment_summary_counts(experiment_id_, source_id_, run_id_)` computes those counts server-side
+via one aggregate call; with all three arguments `NULL` it covers every experiment in a single round
+trip, same latest/`source_id`/`run_id` selection as `get_experiment_traits` — see the `cyl-trait-read`
+spec for the definition (not restated here).
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.

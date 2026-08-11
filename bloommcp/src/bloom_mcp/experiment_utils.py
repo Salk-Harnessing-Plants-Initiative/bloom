@@ -404,7 +404,7 @@ def fit_is_trustworthy(goodness_of_fit: Optional[dict]) -> Optional[bool]:
 # outranks `qc`: for version="latest", a trim (once one exists) is preferred over a
 # plain clean regardless of which was committed more recently — see
 # `_resolve_versioned_cleaned` and
-# `openspec/changes/fix-bloommcp-remove-outliers-tool-class/design.md` for why a
+# `openspec/changes/archive/2026-08-09-fix-bloommcp-remove-outliers-tool-class/design.md` for why a
 # recency comparison does not work (the reverting `qc_clean` re-run is, by
 # construction, always the more recent commit).
 _CLEANED_TOOL_CLASSES_BY_PRIORITY = (QC_TOOL_CLASS, OUTLIERS_TOOL_CLASS)

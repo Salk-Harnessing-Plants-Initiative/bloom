@@ -14,7 +14,9 @@ from __future__ import annotations
 import threading
 import time
 
-from bloom_mcp.usage import record_usage_async
+import pytest
+
+from bloom_mcp.usage import _redact_identity, record_usage_async
 
 
 def test_record_usage_async_returns_before_call_rpc_runs(monkeypatch):
@@ -133,3 +135,115 @@ def test_record_usage_async_drops_when_too_many_in_flight(monkeypatch, caplog):
         assert any("dropped" in r.message for r in caplog.records)
     finally:
         release.set()
+
+
+# --- Identity redaction in log output (CodeQL: clear-text logging) ---------
+# `identity` can be a real Supabase user id sourced from a verified OAuth
+# caller (add-bloommcp-oauth-usage-attribution), not only ever the
+# X-Bloom-Identity header's sub or the literal "anonymous" — CodeQL flags the
+# raw value reaching these log calls as a credential-shaped source landing in
+# a clear-text sink. `_redact_identity` breaks that direct flow.
+
+
+def test_redact_identity_is_deterministic_and_excludes_the_raw_value():
+    real_id = "11111111-1111-1111-1111-111111111111"
+    redacted = _redact_identity(real_id)
+    assert redacted == _redact_identity(real_id)  # deterministic, for correlation
+    assert real_id not in redacted
+    assert _redact_identity("22222222-2222-2222-2222-222222222222") != redacted
+
+
+def test_redact_identity_handles_the_anonymous_sentinel():
+    """The most common real-world call: no caller identity resolved at all
+    — every unauthenticated request collapses to this exact string."""
+    redacted = _redact_identity("anonymous")
+    assert redacted != "anonymous"
+    assert _redact_identity("anonymous") == redacted  # deterministic
+
+
+def test_redact_identity_raises_on_non_str_input():
+    """`identity` is typed as `str` throughout this module; a caller passing
+    something else (e.g. `None`) must fail loudly here, not silently produce
+    a misleading redacted value."""
+    with pytest.raises(AttributeError):
+        _redact_identity(None)
+
+
+class _RecordingLogger:
+    """Stand-in for `usage.logger` that records fully-formatted messages
+    (`msg % args`, matching stdlib `logging`'s own deferred-formatting
+    convention) and signals `done` when a message is recorded.
+
+    `caplog.at_level(...)` races the background thread `_do_record` runs on:
+    `done.set()` inside a `call_rpc` stub can fire, and the main thread's
+    `done.wait()` return and exit the `with caplog.at_level(...)` block
+    (detaching its capture handler), *before* the background thread's own
+    `except` clause has actually reached its `logger.exception(...)` call —
+    an earlier version of these two tests hit exactly this race
+    intermittently when run after other test files. Recording directly on a
+    fake `logger` sidesteps it: there is no capture-handler attach/detach
+    window to race against.
+    """
+
+    def __init__(self):
+        self.messages = []
+        self.done = threading.Event()
+
+    def exception(self, msg, *args):
+        self.messages.append(msg % args if args else msg)
+        self.done.set()
+
+    def warning(self, msg, *args):
+        self.messages.append(msg % args if args else msg)
+        self.done.set()
+
+
+def test_dropped_recording_log_never_contains_the_raw_identity(monkeypatch):
+    import bloom_mcp.usage as usage
+
+    monkeypatch.setattr(usage, "_inflight", threading.Semaphore(1))
+    fake_logger = _RecordingLogger()
+    monkeypatch.setattr(usage, "logger", fake_logger)
+
+    release = threading.Event()
+
+    def _blocking_call(function_name, params):
+        release.wait(timeout=2)
+        return []
+
+    import bloom_mcp.supabase_client as sc
+
+    monkeypatch.setattr(sc, "call_rpc", _blocking_call)
+
+    real_id = "33333333-3333-3333-3333-333333333333"
+    try:
+        # Occupies the sole in-flight slot; the drop below is logged
+        # synchronously, before record_usage_async even returns, so there is
+        # no background-thread race for this one specifically — kept on the
+        # same fake logger as the test below for a consistent assertion style.
+        record_usage_async(real_id, "core")
+        record_usage_async(real_id, "core")
+        assert any("dropped" in m for m in fake_logger.messages)
+        assert not any(real_id in m for m in fake_logger.messages)
+    finally:
+        release.set()
+
+
+def test_call_rpc_failure_log_never_contains_the_raw_identity(monkeypatch):
+    import bloom_mcp.supabase_client as sc
+    import bloom_mcp.usage as usage
+
+    fake_logger = _RecordingLogger()
+    monkeypatch.setattr(usage, "logger", fake_logger)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr(sc, "call_rpc", _boom)
+
+    real_id = "44444444-4444-4444-4444-444444444444"
+    record_usage_async(real_id, "combined")
+    assert fake_logger.done.wait(timeout=2), "background call never logged"
+
+    assert any("failed to record" in m for m in fake_logger.messages)
+    assert not any(real_id in m for m in fake_logger.messages)

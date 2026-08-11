@@ -1,5 +1,7 @@
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { getUser } from "@/lib/supabase/server";
+import { safeNextPath } from "@/lib/oauth-consent";
 import LoginForm from "./LoginForm";
 import styles from "./login.module.css";
 
@@ -22,10 +24,16 @@ const PLANTS: Array<{
   { src: "/login/canola-watercolor.png", cls: "p11", drift: 3, name: "Canola", traits: 7 },
 ];
 
-export default async function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string }>;
+}) {
+  const { next } = await searchParams;
   const user = await getUser();
   if (user) {
-    redirect("/app");
+    // Already signed in — honour a pending destination (e.g. OAuth consent).
+    redirect(safeNextPath(next) ?? "/app");
   }
 
   return (
@@ -81,7 +89,9 @@ export default async function LoginPage() {
             </p>
           </section>
 
-          <LoginForm />
+          <Suspense fallback={null}>
+            <LoginForm />
+          </Suspense>
         </div>
 
         <div className={styles.statsStrip}>

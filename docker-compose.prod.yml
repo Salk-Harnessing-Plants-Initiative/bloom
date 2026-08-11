@@ -268,6 +268,15 @@ services:
       # actually carries the header), so this has no effect until a client
       # sends that header.
       JWT_SECRET: ${JWT_SECRET}
+      # OAuth login for external MCP clients. The URLs are set per environment
+      # in the defaults files; whether a login can actually complete is
+      # governed by GOTRUE_OAUTH_SERVER_ENABLED on the auth service. Where that
+      # is false, bloommcp still serves its discovery document but no client
+      # can register, so the flow ends in a clean 404 rather than a broken
+      # login. The API-key path is unaffected either way.
+      BLOOMMCP_PUBLIC_URL: ${BLOOMMCP_PUBLIC_URL:-}
+      BLOOMMCP_OAUTH_AUTHORIZATION_SERVER: ${BLOOMMCP_OAUTH_AUTHORIZATION_SERVER:-}
+      BLOOMMCP_OAUTH_JWKS_URI: ${BLOOMMCP_OAUTH_JWKS_URI:-}
       # numba AOT cache. bloommcp imports umap-learn, which uses
       # @numba.jit(cache=True); without this env var, numba tries to write
       # to site-packages/__pycache__/ and fails under read_only: true.
@@ -372,6 +381,21 @@ services:
       # Custom access token hook — assigns bloom_user/bloom_admin role via JWT
       GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_ENABLED: "true"
       GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_URI: "pg-functions://postgres/public/custom_access_token_hook"
+
+      # OAuth 2.1 server — lets MCP clients log in as a real user via bloom-web
+      # OAuth discovery must advertise absolute URLs. Without an issuer GoTrue
+      # emits relative endpoints a conforming client cannot resolve — discovery
+      # returns 200 and the flow dead-ends before registration.
+      # Asymmetric signing keys, required for ID tokens (the `openid`
+      # scope) — a shared HS256 secret cannot sign one. Empty array
+      # keeps GoTrue on the legacy secret, which is the default here.
+      GOTRUE_JWT_KEYS: ${JWT_KEYS:-[]}
+      GOTRUE_API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+      GOTRUE_JWT_ISSUER: ${API_EXTERNAL_URL}/auth/v1
+      GOTRUE_OAUTH_SERVER_ENABLED: ${GOTRUE_OAUTH_SERVER_ENABLED:-false}
+      GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH:-/oauth/consent}
+      GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION: ${GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION:-false}
+      GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL:-600s}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9999/health"]
       interval: 10s
@@ -395,7 +419,7 @@ services:
       PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
       PGRST_DB_ANON_ROLE: anon
-      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_JWT_SECRET: ${JWT_JWKS:-${JWT_SECRET}}
       PGRST_DB_USE_LEGACY_GUCS: "false"
       PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
       PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
@@ -432,7 +456,7 @@ services:
       DB_NAME: ${POSTGRES_DB}
       DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
       DB_ENC_KEY: ${DB_ENC_KEY}
-      API_JWT_SECRET: ${JWT_SECRET}
+      API_JWT_SECRET: ${JWT_JWKS:-${JWT_SECRET}}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
       ERL_AFLAGS: -proto_dist inet_tcp
       RLIMIT_NOFILE: "10000"
@@ -514,7 +538,7 @@ services:
       ANON_KEY: ${ANON_KEY}
       SERVICE_KEY: ${SERVICE_ROLE_KEY}
       POSTGREST_URL: http://rest:3000
-      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_JWT_SECRET: ${JWT_JWKS:-${JWT_SECRET}}
       DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       # 500 MB cap for GraviScan jpegs (single sensor image). Per-bucket
       # `storage.buckets.file_size_limit` further constrains where stricter caps are needed.
@@ -622,7 +646,7 @@ services:
       CLUSTER_POSTGRES: true
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
       VAULT_ENC_KEY: ${VAULT_ENC_KEY}
-      API_JWT_SECRET: ${JWT_SECRET}
+      API_JWT_SECRET: ${JWT_JWKS:-${JWT_SECRET}}
       METRICS_JWT_SECRET: ${JWT_SECRET}
       REGION: local
       ERL_AFLAGS: -proto_dist inet_tcp
