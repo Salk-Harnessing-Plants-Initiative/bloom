@@ -123,6 +123,97 @@ describe("ScanVideoButton after a 504", () => {
   });
 });
 
+describe("ScanVideoButton when the poll runs out of patience", () => {
+  it("stops offering Generate, so a second encode can't start", async () => {
+    // The encode is still running upstream; re-offering the button here is
+    // exactly how one scan ends up with two concurrent encodes.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ detail: "still encoding" }, 504))
+      .mockResolvedValue(json({ detail: "not yet" }, 404));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+    });
+
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByText(/taking longer than expected/)).toBeTruthy();
+
+    // And it has genuinely stopped asking.
+    const settled = fetchMock.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(fetchMock.mock.calls.length).toBe(settled);
+  });
+
+  it("measures elapsed time, not completed polls", async () => {
+    // Every poll answers slowly, so a tick-counting budget would never reach
+    // the limit and the give-up would never fire.
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      if (init?.method === "POST") {
+        return Promise.resolve(json({ detail: "still encoding" }, 504));
+      }
+      return new Promise((resolve) =>
+        setTimeout(() => resolve(json({ detail: "not yet" }, 404)), 9_000)
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+    });
+
+    expect(screen.getByText(/taking longer than expected/)).toBeTruthy();
+  });
+});
+
+describe("ScanVideoButton on a 409", () => {
+  it("adopts the stored video instead of naming one it doesn't show", async () => {
+    // Reachable from a second tab, or after the poll gave up and the encode
+    // then landed. Telling the reader to "open the stored one" while showing
+    // no link is a dead end.
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      if (init?.method === "POST") {
+        return Promise.resolve(
+          json({ detail: "This scan already has a video." }, 409)
+        );
+      }
+      return Promise.resolve(json({ download_url: VIDEO_URL }, 200));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    const link = screen.getByRole("link", { name: "Open video" });
+    expect(link.getAttribute("href")).toBe(VIDEO_URL);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("still reports an error if the stored video can't be fetched either", async () => {
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      if (init?.method === "POST") {
+        return Promise.resolve(json({ detail: "already has a video" }, 409));
+      }
+      return Promise.resolve(json({ detail: "nope" }, 404));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    expect(screen.getByRole("alert").textContent).toContain("already has a video");
+  });
+});
+
 describe("ScanVideoButton when a video already exists", () => {
   it("offers only the link — a stored video is never regenerated", () => {
     render(

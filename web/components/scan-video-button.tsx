@@ -8,7 +8,16 @@ import {
   type ScanVideoResult,
 } from "./scan-video.helpers";
 
-type Status = "idle" | "generating" | "done" | "pending" | "error";
+// `stalled` is terminal-for-this-page: the encode outlived even the poll, so we
+// stop asking without re-offering Generate — a second encode on the same scan
+// is the thing this component exists to avoid.
+type Status =
+  | "idle"
+  | "generating"
+  | "done"
+  | "pending"
+  | "stalled"
+  | "error";
 
 // How often to ask whether a timed-out encode has landed, and how long to keep
 // asking before telling the user to come back later.
@@ -33,6 +42,20 @@ export default function ScanVideoButton({
 
   const endpoint = `/api/cyl/experiments/${experimentId}/scans/${scanId}/video`;
   const busy = status === "generating" || status === "pending";
+
+  // The stored video's URL, or "" if there isn't one / we couldn't tell.
+  async function storedVideoUrl(): Promise<string> {
+    try {
+      const res = await fetch(endpoint);
+      if (!res.ok) return "";
+      const body = await res.json();
+      return typeof body?.download_url === "string"
+        ? body.download_url.trim()
+        : "";
+    } catch {
+      return "";
+    }
+  }
 
   async function generate() {
     if (busy) return;
@@ -61,6 +84,18 @@ export default function ScanVideoButton({
       return;
     }
 
+    // 409 means a video landed while this page was open — most likely the
+    // encode we started and stopped waiting on. Adopt it, rather than telling
+    // the reader to open something the page isn't showing.
+    if (response.status === 409) {
+      const adopted = await storedVideoUrl();
+      if (adopted) {
+        setVideoUrl(adopted);
+        setStatus("done");
+        return;
+      }
+    }
+
     if (!response.ok) {
       setMessage(videoErrorMessage(response.status, body?.detail));
       setStatus("error");
@@ -87,18 +122,23 @@ export default function ScanVideoButton({
     if (status !== "pending") return;
 
     let active = true;
-    let waited = 0;
     let inFlight = false;
+    // Wall clock, not a tick count: a slow or hung answer would otherwise stop
+    // the budget advancing and the give-up below would never fire.
+    const startedAt = Date.now();
 
     const timer = setInterval(async () => {
       // A slow answer must not stack up behind the next tick.
       if (inFlight) return;
       inFlight = true;
-      waited += POLL_INTERVAL_MS;
 
       let response: Response | null = null;
       try {
-        response = await fetch(endpoint);
+        // Bounded so a request that never settles can't latch inFlight on and
+        // silently end the polling.
+        response = await fetch(endpoint, {
+          signal: AbortSignal.timeout(POLL_INTERVAL_MS),
+        });
       } catch {
         // A blip mid-encode isn't an answer — keep asking.
       } finally {
@@ -110,7 +150,7 @@ export default function ScanVideoButton({
         const body = await response.json().catch(() => null);
         if (!active) return;
         const url =
-          typeof body?.download_url === "string" ? body.download_url : null;
+          typeof body?.download_url === "string" ? body.download_url.trim() : "";
         if (url) {
           setVideoUrl(url);
           setStatus("done");
@@ -118,11 +158,13 @@ export default function ScanVideoButton({
         }
       }
 
-      if (waited >= POLL_LIMIT_MS) {
+      if (Date.now() - startedAt >= POLL_LIMIT_MS) {
         setMessage(
           "This encode is taking longer than expected. It may still finish — reload the page to check."
         );
-        setStatus("error");
+        // Not "error": the encode is probably still running, and re-offering
+        // Generate here would start a second one on the same scan.
+        setStatus("stalled");
       }
     }, POLL_INTERVAL_MS);
 
@@ -147,7 +189,7 @@ export default function ScanVideoButton({
           >
             Open video
           </a>
-        ) : (
+        ) : status === "stalled" ? null : (
           <button
             type="button"
             onClick={generate}
@@ -182,6 +224,10 @@ export default function ScanVideoButton({
               : "Encoding every frame of this scan. This can take a minute — leave the page open."}
           </p>
         </div>
+      )}
+
+      {status === "stalled" && (
+        <p className="mt-2 text-sm text-stone-600">{message}</p>
       )}
 
       {status === "done" && result && (

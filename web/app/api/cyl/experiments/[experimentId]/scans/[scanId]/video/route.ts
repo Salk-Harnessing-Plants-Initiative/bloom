@@ -13,7 +13,10 @@
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
-import { getStoredScanVideoUrl } from "@/lib/supabase/scan-video";
+import {
+  getStoredScanVideo,
+  getStoredScanVideoUrl,
+} from "@/lib/supabase/scan-video";
 import { isScanVideoResult, parseId } from "@/components/scan-video.helpers";
 
 export const dynamic = "force-dynamic";
@@ -116,14 +119,25 @@ export async function POST(
   // in place, the bucket has no versioning, and videos predating
   // `cyl_scan_videos` carry no frame count for upstream's anti-degradation
   // check to compare against — so a regenerate could silently replace a
-  // complete rotation with a worse one, with no undo.
-  if (await getStoredScanVideoUrl(scan)) {
+  // complete rotation with a worse one, with no undo. A lookup that failed is
+  // therefore refused too: only a confirmed absence may proceed.
+  const stored = await getStoredScanVideo(scan);
+  if (stored.status === "present") {
     return NextResponse.json(
       {
         detail:
           "This scan already has a video. Open the stored one — existing videos are not regenerated.",
       },
       { status: 409 }
+    );
+  }
+  if (stored.status === "unknown") {
+    return NextResponse.json(
+      {
+        detail:
+          "Could not check whether this scan already has a video, so generation was not started. Try again shortly.",
+      },
+      { status: 503 }
     );
   }
 

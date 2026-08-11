@@ -22,14 +22,21 @@ vi.mock("@/lib/supabase/server", () => ({
 }));
 
 vi.mock("@/lib/supabase/scan-video", () => ({
+  getStoredScanVideo: vi.fn(),
   getStoredScanVideoUrl: vi.fn(),
 }));
 
 import { getSession } from "@/lib/supabase/server";
-import { getStoredScanVideoUrl } from "@/lib/supabase/scan-video";
+import {
+  getStoredScanVideo,
+  getStoredScanVideoUrl,
+} from "@/lib/supabase/scan-video";
 
 const mockedGetSession = vi.mocked(getSession);
-const mockedStoredVideo = vi.mocked(getStoredScanVideoUrl);
+const mockedStoredVideo = vi.mocked(getStoredScanVideo);
+const mockedStoredVideoUrl = vi.mocked(getStoredScanVideoUrl);
+
+const STORED_URL = "https://storage.test/cyl-videos/5.mp4?token=a";
 
 const RESULT = {
   scan_id: 5,
@@ -60,7 +67,8 @@ function upstreamJson(body: unknown, status = 200) {
 beforeEach(() => {
   mockedGetSession.mockResolvedValue({ access_token: "tok" } as never);
   // Default: no video stored yet, so generation is allowed.
-  mockedStoredVideo.mockResolvedValue(null);
+  mockedStoredVideo.mockResolvedValue({ status: "absent" } as never);
+  mockedStoredVideoUrl.mockResolvedValue(null);
   fetchSpy = vi.fn().mockResolvedValue(upstreamJson(RESULT));
   vi.stubGlobal("fetch", fetchSpy);
 });
@@ -154,7 +162,7 @@ describe("GET — has the video landed yet?", () => {
   }
 
   it("returns the stored video's url", async () => {
-    mockedStoredVideo.mockResolvedValue("https://storage.test/cyl-videos/5.mp4?token=a");
+    mockedStoredVideoUrl.mockResolvedValue(STORED_URL);
 
     const res = await callGet("1", "5");
 
@@ -165,13 +173,13 @@ describe("GET — has the video landed yet?", () => {
   });
 
   it("404s while no video is stored, so a poll keeps waiting", async () => {
-    mockedStoredVideo.mockResolvedValue(null);
+    mockedStoredVideoUrl.mockResolvedValue(null);
 
     expect((await callGet("1", "5")).status).toBe(404);
   });
 
   it("never calls the video service", async () => {
-    mockedStoredVideo.mockResolvedValue("https://storage.test/cyl-videos/5.mp4?token=a");
+    mockedStoredVideoUrl.mockResolvedValue(STORED_URL);
 
     await callGet("1", "5");
 
@@ -182,18 +190,18 @@ describe("GET — has the video landed yet?", () => {
     mockedGetSession.mockResolvedValue(null as never);
 
     expect((await callGet("1", "5")).status).toBe(401);
-    expect(mockedStoredVideo).not.toHaveBeenCalled();
+    expect(mockedStoredVideoUrl).not.toHaveBeenCalled();
   });
 
   it("rejects a traversal id", async () => {
     expect((await callGet("1", "5/../../health")).status).toBe(400);
-    expect(mockedStoredVideo).not.toHaveBeenCalled();
+    expect(mockedStoredVideoUrl).not.toHaveBeenCalled();
   });
 
   it("looks up the scan actually requested", async () => {
     await callGet("1", "42");
 
-    expect(mockedStoredVideo).toHaveBeenCalledWith(42);
+    expect(mockedStoredVideoUrl).toHaveBeenCalledWith(42);
   });
 });
 
@@ -202,7 +210,7 @@ describe("a stored video is never overwritten", () => {
   // no versioning, so reaching upstream at all is the thing to prevent —
   // asserting only the 409 would still pass if the guard ran after the fetch.
   it("refuses when a video already exists, without calling upstream", async () => {
-    mockedStoredVideo.mockResolvedValue("https://storage.test/cyl-videos/5.mp4?token=a");
+    mockedStoredVideo.mockResolvedValue({ status: "present", url: STORED_URL } as never);
 
     const res = await callRoute("1", "5");
 
@@ -211,7 +219,7 @@ describe("a stored video is never overwritten", () => {
   });
 
   it("explains that the stored video should be opened instead", async () => {
-    mockedStoredVideo.mockResolvedValue("https://storage.test/cyl-videos/5.mp4?token=a");
+    mockedStoredVideo.mockResolvedValue({ status: "present", url: STORED_URL } as never);
 
     const detail = (await (await callRoute("1", "5")).json()).detail;
 
@@ -223,6 +231,33 @@ describe("a stored video is never overwritten", () => {
     await callRoute("1", "42");
 
     expect(mockedStoredVideo).toHaveBeenCalledWith(42);
+  });
+
+  it("refuses when the lookup failed, rather than assuming there is none", async () => {
+    // The guard protects an irreversible overwrite, so an inconclusive answer
+    // must block. Reading a storage error as "no video" is how a complete
+    // rotation gets replaced by a worse one.
+    mockedStoredVideo.mockResolvedValue({
+      status: "unknown",
+      reason: "storage timeout",
+    } as never);
+
+    const res = await callRoute("1", "5");
+
+    expect(res.status).toBe(503);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not leak why the lookup failed", async () => {
+    mockedStoredVideo.mockResolvedValue({
+      status: "unknown",
+      reason: "connect ECONNREFUSED kong:8000",
+    } as never);
+
+    const text = await (await callRoute("1", "5")).text();
+
+    expect(text).not.toContain("kong");
+    expect(text).not.toContain("ECONNREFUSED");
   });
 
   it("generates when nothing is stored", async () => {
