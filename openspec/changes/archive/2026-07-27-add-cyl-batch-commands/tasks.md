@@ -250,6 +250,6 @@ checks against the branch as a whole, plus PR-description content.
       can race (`scan_is_already_staged` → `clear_scan_dir` has no lock/lease). Deliberately not
       fixed here — the real fix belongs with the not-yet-built `cyl_pipeline_run_scans` dispatch
       worker and Argo's `retryStrategy`, not a bolted-on file lock. See design.md's Risks section.
-- [ ] 9.7 Remaining SUGGESTIONS from the review (NDJSON for very large `--json` batches,
+- [x] 9.7 Remaining SUGGESTIONS from the review (NDJSON for very large `--json` batches,
       scan-key/idempotency indistinguishability in batch reports) left as-is — polish, not
       correctness, and not worth further delay on this PR.

@@ -17,7 +17,7 @@ dependencies = [
     # Bumped past CVE-2026-69247 (fixed in 50.0.0), disclosed 2026-08-03.
     "cryptography>=50.0.0",
     # compute_param_hash for the pipeline-trigger dedup preview (params-only, not
-    # model-version-aware — see openspec/changes/add-cyl-pipeline-trigger/design.md).
+    # model-version-aware — see openspec/changes/archive/2026-08-03-add-cyl-pipeline-trigger/design.md).
     "sleap-roots-contracts>=0.1.0a5",
     # Security floor for h2, transitive via httpx[http2]: CVE-2026-71554
     # (fixed in 4.4.1), disclosed 2026-08-06. Open floor per repo convention.

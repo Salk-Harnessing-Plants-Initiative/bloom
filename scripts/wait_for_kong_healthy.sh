@@ -25,7 +25,7 @@
 # result means for them — the forward path's crash-loop check (RestartCount
 # delta) decides pass/fail there, while the rollback path treats it as a
 # reason to warn instead of claiming a clean rollback. See
-# openspec/changes/fix-kong-reload-on-deploy/design.md Decision 5.
+# openspec/changes/archive/2026-08-09-fix-kong-reload-on-deploy/design.md Decision 5.
 #
 # Exit codes:
 #   0 — reported healthy within the timeout

@@ -254,7 +254,8 @@ writes it into `cyl_trait_sources`, `cyl_scan_traits` (via the `cyl_traits` regi
 `cyl_scan_intermediates`. The function SHALL pin its owner deterministically and harden its execution
 environment (`SET search_path` to a fixed safe value; schema-qualified writes; parameterized value
 binding, never string-interpolated SQL). It MUST NOT be executable by `PUBLIC`; `EXECUTE` SHALL be
-granted only to `bloom_writer`, `service_role`, and `bloom_admin`. The RPC performs, in order:
+granted only to `bloom_writer`, `service_role`, `bloom_admin`, and `bloom_workflows` (the scoped,
+non-interactive service identity used by cluster write-back pods). The RPC performs, in order:
 (1) structural + contract-version validation; (2) idempotency-key validation; (3) scan resolution;
 (4) the source upsert; (5) trait-name resolution and trait writes; (6) blob writes. Any validation or
 constraint failure SHALL abort the entire call so that no partial source, trait, registry, or blob
@@ -286,8 +287,15 @@ whether the call was a no-op re-delivery.
 #### Scenario: EXECUTE is granted only to the sanctioned roles, not PUBLIC
 
 - **WHEN** execute permissions on the write-back RPC are introspected
-- **THEN** `PUBLIC` cannot execute it and exactly `bloom_writer`, `service_role`, and `bloom_admin`
-  hold `EXECUTE`
+- **THEN** `PUBLIC` cannot execute it and exactly `bloom_writer`, `service_role`, `bloom_admin`, and
+  `bloom_workflows` hold `EXECUTE`
+
+#### Scenario: bloom_workflows can call the RPC end-to-end
+
+- **WHEN** a caller holding the `bloom_workflows` role calls the RPC with a valid `ResultEnvelope`
+  (e.g. a cluster write-back pod authenticated as the scoped, non-interactive service identity)
+- **THEN** the call succeeds exactly as it would for `bloom_writer`: the summary reports `was_noop:
+  false` and the correct source id, resolved scan id, trait count, and blob count
 
 #### Scenario: The definer can write after the lockdown (owner and FORCE RLS guard)
 
@@ -567,4 +575,42 @@ RLS.
 
 - **WHEN** a session assumes `bloom_writer` and runs `SELECT` against each of the three tables
 - **THEN** each read is permitted
+
+### Requirement: Intermediates blob bytes storage bucket and access control
+
+A `cyl-intermediates` Supabase Storage bucket SHALL exist to hold the `.slp`
+bytes referenced by `cyl_scan_intermediates.s3_location`. Unlike the
+`cyl_scan_intermediates` TABLE (whose direct writes are restricted to
+`bloom_admin` — see "Intermediates table role-based access control": all table
+writes go through the write-back RPC's `SECURITY DEFINER`), there is no
+RPC-mediated path for Supabase Storage byte writes, so this bucket's
+`storage.objects` RLS SHALL grant `bloom_writer` and `bloom_workflows` direct
+`SELECT`, `INSERT`, and `UPDATE` (scoped to `bucket_id = 'cyl-intermediates'`),
+mirroring the existing `bloom_workflows`/`videos`-bucket precedent. `bloom_admin`
+SHALL have `FOR ALL`; `bloom_agent` and `bloom_user` SHALL have `SELECT`-only.
+No role SHALL have `DELETE`.
+
+#### Scenario: bloom_writer can upload and read back
+
+- **WHEN** a session assumes `bloom_writer` and uploads then reads back an
+  object in the `cyl-intermediates` bucket
+- **THEN** both operations succeed
+
+#### Scenario: bloom_workflows can upload and read back
+
+- **WHEN** a session assumes `bloom_workflows` and uploads then reads back an
+  object in the `cyl-intermediates` bucket
+- **THEN** both operations succeed (mirrors its existing `videos`-bucket access)
+
+#### Scenario: Read-only roles cannot write
+
+- **WHEN** a session assumes `bloom_agent` or `bloom_user` and attempts to
+  `INSERT` or `UPDATE` an object in the `cyl-intermediates` bucket
+- **THEN** the write is rejected
+
+#### Scenario: No role can delete
+
+- **WHEN** any non-admin role attempts to `DELETE` an object in the
+  `cyl-intermediates` bucket
+- **THEN** the delete is rejected
 
