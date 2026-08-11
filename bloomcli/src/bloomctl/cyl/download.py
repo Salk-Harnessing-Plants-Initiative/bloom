@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import csv
 import errno
+import io
 import itertools
 import json
 import os
+import posixpath
 import threading
 import time
 import unicodedata
@@ -28,6 +30,7 @@ from ._storage import (
     already_downloaded,
     atomic_write_bytes,
     download_object,
+    object_sizes,
     sweep_orphan_temps,
 )
 
@@ -38,6 +41,13 @@ DEFAULT_WORKERS = 8
 # How often a long run reports what it has done. Frequent enough that the command never looks
 # hung, rare enough that a log file doesn't fill up with it.
 PROGRESS_INTERVAL_SECONDS = 5.0
+
+# Nothing more can be written: the disk is full, or the quota that stands in for it is spent.
+# Shared lab storage is usually quota-limited, where the kernel reports EDQUOT and never
+# ENOSPC. Looked up rather than named, because EDQUOT is absent on some platforms.
+OUT_OF_SPACE = frozenset(
+    code for code in (errno.ENOSPC, getattr(errno, "EDQUOT", None)) if code is not None
+)
 
 # Progress lines the rate and time-remaining estimate are averaged over (about a minute).
 RATE_WINDOW_SAMPLES = 12
@@ -142,12 +152,17 @@ def ensure_writable(out_dir: Path) -> None:
 
 
 def write_scans_csv(rows: list[dict[str, Any]], path: Path) -> None:
-    """Write rows to scans.csv with the fixed column order."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
-        writer.writeheader()
-        writer.writerows(rows)
+    """Write rows to scans.csv with the fixed column order.
+
+    Rendered in full before anything touches the file: this runs on every invocation,
+    including a re-run that resumes, so opening the existing scans.csv for writing would
+    empty it before the first row was written and a full disk would leave it that way.
+    """
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS, lineterminator="\r\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    atomic_write_bytes(path, buffer.getvalue().encode("utf-8"))
 
 
 # Records which experiment an output directory holds, so a later run into the same directory
@@ -384,6 +399,7 @@ def download_frame(
     out_dir: Path,
     *,
     stop: threading.Event | None = None,
+    expected_size: int | None = None,
 ) -> FrameResult:
     """Download one frame to its destination, returning the outcome.
 
@@ -391,7 +407,9 @@ def download_frame(
     the result instead, so one bad frame can't abort the run. Safe to call from a worker thread.
 
     A frame already on disk is reported as skipped without making a request, which is what
-    makes an interrupted run cheap to pick back up.
+    makes an interrupted run cheap to pick back up. Given ``expected_size`` that check is a
+    real one: a file of the wrong length is fetched again rather than counted as present.
+    Without it, all that can be said is that the file isn't empty.
 
     ``stop`` is set when the disk fills. Frames that have not started yet are recorded as
     failed without being fetched — there is nowhere to put them, and a large experiment would
@@ -402,11 +420,11 @@ def download_frame(
     object_path = image.get("object_path", "")
     result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
     if stop is not None and stop.is_set():
-        result.error = "no space left on device — nothing further was downloaded"
+        result.error = "nowhere left to write — nothing further was downloaded"
         return result
     try:
         dest = image_dest(out_dir, scan, image)
-        if already_downloaded(dest):
+        if already_downloaded(dest, expected_size):
             result.ok = True
             result.skipped = True
             return result
@@ -416,7 +434,7 @@ def download_frame(
         result.error = f"malformed cyl_images row: {exc}"
     except OSError as exc:
         # A full disk isn't this frame's problem, it's every remaining frame's.
-        if exc.errno == errno.ENOSPC and stop is not None:
+        if exc.errno in OUT_OF_SPACE and stop is not None:
             stop.set()
         result.error = str(exc)
     except Exception as exc:  # per-frame: record and continue
@@ -481,6 +499,20 @@ def _list_scan_frames(
             error=f"list images: {exc}",
             unlisted=True,
         )
+
+
+def frame_sizes(client: Any, images: list[dict[str, Any]]) -> dict[str, int]:
+    """Expected byte size of each frame, keyed by ``object_path``.
+
+    One listing per storage prefix rather than one request per frame: a scan keeps its frames
+    together, so a scan of several thousand costs a handful of requests. A path whose size
+    could not be read is simply absent, and that frame is resumed the way it always was.
+    """
+    prefixes = {posixpath.dirname(str(image.get("object_path") or "")) for image in images}
+    sizes: dict[str, int] = {}
+    for prefix in sorted(prefix for prefix in prefixes if prefix):
+        sizes.update(object_sizes(client, prefix))
+    return sizes
 
 
 class CollidingFrames(ValueError):
@@ -570,7 +602,10 @@ def download_images(
     A failing frame is recorded rather than raised, so one bad frame can't abort the run.
 
     Frames already written by an earlier run are skipped, which is what makes an interrupted
-    download cheap to resume. To fetch an experiment afresh, download into a new directory.
+    download cheap to resume. Storage is asked for the expected sizes while the frames are
+    being listed, so a file left part written by an interrupted older version is fetched
+    again rather than counted as present. To fetch an experiment afresh, download into a new
+    directory.
 
     ``on_progress(phase, done, total, failed)`` is called as work completes, with ``phase``
     of ``"listing"`` or ``"downloading"``. It is only ever called from this thread.
@@ -581,6 +616,7 @@ def download_images(
     # to fetch. Building the list this way keeps unlisted scans next to the scans around them
     # rather than collected at the end of the log.
     slots: list[Any] = []
+    sizes: dict[str, int] = {}
     for listed, scan in enumerate(scans, start=1):
         if on_progress is not None:
             on_progress("listing", listed, len(scans), 0)
@@ -597,6 +633,8 @@ def download_images(
                 )
             )
         slots.extend((scan, image) for image in images)
+        if images:
+            sizes.update(frame_sizes(client, images))
 
     work = [slot for slot in slots if not isinstance(slot, FrameResult)]
 
@@ -607,7 +645,8 @@ def download_images(
     stop = threading.Event()
 
     def _one(pair: tuple[dict[str, Any], dict[str, Any]]) -> FrameResult:
-        return download_frame(client, pair[0], pair[1], out_dir, stop=stop)
+        expected = sizes.get(str(pair[1].get("object_path") or ""))
+        return download_frame(client, pair[0], pair[1], out_dir, stop=stop, expected_size=expected)
 
     # Never start more threads than there are frames, than were asked for, or than the limit.
     n = min(workers, MAX_WORKERS, len(work)) if work else 0

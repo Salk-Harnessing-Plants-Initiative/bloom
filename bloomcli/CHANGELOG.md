@@ -21,6 +21,17 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 - A full disk ended in a traceback with no summary. The counts are now printed before the log
   is written, the log is written atomically so a failed write leaves the previous one intact,
   and the error names the disk as the cause.
+- `scans.csv` is written atomically too. It is rewritten on every run, including a re-run that
+  resumes, and opening it for writing emptied it before the first row was written — so a full
+  disk destroyed the previous run's metadata instead of leaving it in place.
+- A resumed download no longer trusts a frame that is merely present. `0.1.0a3` wrote frames
+  straight to their final path, so a run interrupted then could leave one part written — and
+  every resume since has counted it as finished and reported the experiment complete. Storage
+  is now asked for the expected sizes while the frames are being listed, and a file of the
+  wrong length is fetched again. A storage that cannot report sizes resumes as before.
+- A download that runs into a filled quota now stops, as one that fills the disk already did.
+  Shared lab storage is usually quota-limited, where the kernel reports `EDQUOT` and never
+  `ENOSPC`, so such a run kept pulling every remaining frame off the server and discarding it.
 - `cyl download` checks the output directory is writable before signing in, rather than
   failing after every metadata query has run.
 - Failures that no command anticipated are reported as one line rather than a stack trace.

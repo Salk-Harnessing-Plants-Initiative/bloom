@@ -2,6 +2,7 @@
 
 import csv
 
+import pytest
 from click.testing import CliRunner
 
 import bloomctl.auth as auth
@@ -58,6 +59,56 @@ def test_write_scans_csv_roundtrip(tmp_path):
         rows = list(reader)
     assert len(rows) == 1
     assert rows[0]["genotype"] == "Spring-32"
+
+
+def test_a_failed_csv_write_leaves_the_previous_csv_intact(tmp_path, monkeypatch):
+    """Opening scans.csv for writing would empty it before the first row was written.
+
+    This runs again on every resume, so a full disk would take the previous run's metadata
+    with it. A full disk fails at the write, not the open, which is what makes the order
+    matter: by then the file it opened has already been emptied.
+    """
+    import errno
+    from pathlib import Path
+
+    path = tmp_path / "scans.csv"
+    path.write_text("the scans.csv from the run before\n")
+
+    real_open = Path.open
+
+    class _FullDisk:
+        """An opened file that accepted the truncation and then ran out of space."""
+
+        def __init__(self, fh):
+            self._fh = fh
+
+        def write(self, *_args):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        writelines = write
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            self._fh.close()
+            return False
+
+        def __getattr__(self, name):
+            return getattr(self._fh, name)
+
+    def _no_space(self, mode="r", *args, **kwargs):
+        fh = real_open(self, mode, *args, **kwargs)
+        return _FullDisk(fh) if any(c in mode for c in "wa+") else fh
+
+    monkeypatch.setattr(Path, "open", _no_space)
+
+    with pytest.raises(OSError):
+        dl.write_scans_csv([dl.build_scan_row(SCAN, "Spring-32")], path)
+
+    monkeypatch.undo()
+    assert path.read_text() == "the scans.csv from the run before\n"
+    assert not list(tmp_path.glob(".dl-*.tmp")), "no temp file left behind"
 
 
 def test_meta_only_writes_csv_and_skips_images(tmp_path, monkeypatch):

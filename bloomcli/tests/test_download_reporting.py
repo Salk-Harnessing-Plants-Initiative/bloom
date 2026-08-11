@@ -196,18 +196,22 @@ class _DiskFillsAfter:
         return b"x"
 
 
-def _fills_disk_after(monkeypatch, capacity: int):
-    """Make the write fail with ENOSPC once `capacity` frames have landed."""
+def _fills_disk_after(
+    monkeypatch, capacity: int, code: int | None = None, message: str | None = None
+):
+    """Make the write fail once `capacity` frames land, with ENOSPC unless told otherwise."""
     import errno
     from pathlib import Path
 
+    code = errno.ENOSPC if code is None else code
+    message = message or "No space left on device"
     written = {"n": 0}
     real = Path.write_bytes
 
     def _write(self, data):
         written["n"] += 1
         if written["n"] > capacity:
-            raise OSError(errno.ENOSPC, "No space left on device")
+            raise OSError(code, message)
         return real(self, data)
 
     monkeypatch.setattr(Path, "write_bytes", _write)
@@ -237,6 +241,27 @@ def test_the_frames_after_a_full_disk_say_why(tmp_path, monkeypatch):
 
     assert "No space left on device" in result.frames[2].error
     assert "nothing further was downloaded" in result.frames[-1].error
+
+
+@pytest.mark.skipif(not hasattr(__import__("errno"), "EDQUOT"), reason="no EDQUOT on this platform")
+def test_a_spent_quota_stops_the_run_the_way_a_full_disk_does(tmp_path, monkeypatch):
+    """Shared lab storage is usually quota-limited, and the kernel says EDQUOT, never ENOSPC.
+
+    Matching only ENOSPC left such a run fetching every remaining frame off the server and
+    throwing each one away for want of somewhere to put it.
+    """
+    import errno
+
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(40))
+    client = _Client()
+    client.bucket = _DiskFillsAfter(3)
+    _fills_disk_after(monkeypatch, 3, code=errno.EDQUOT, message="Disc quota exceeded")
+
+    result = dl.download_images(client, [SCAN], tmp_path, workers=1)
+
+    assert result.disk_full, "the run has to stop; there is nowhere left to write"
+    assert client.bucket.calls == 4, "one frame discovers the quota; none after it are fetched"
+    assert "Disc quota exceeded" in result.frames[3].error, "the log says which it was"
 
 
 def test_the_log_records_what_a_full_disk_did(tmp_path, monkeypatch):

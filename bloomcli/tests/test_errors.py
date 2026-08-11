@@ -101,8 +101,42 @@ def test_recording_never_raises_when_the_log_cannot_be_written(tmp_path, monkeyp
 
     returned = errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log)
 
-    assert returned == log
+    assert returned is None, "nothing was written, so there is nowhere to send the user"
     assert not log.exists()
+
+
+def test_recording_survives_a_command_line_that_cannot_be_encoded(tmp_path):
+    """A path the shell passed as undecodable bytes reaches argv as surrogates.
+
+    Encoding those raises ValueError, not OSError, so a guard that only caught OSError let it
+    out of the handler — replacing the traceback with a traceback, which is the one thing this
+    must never do.
+    """
+    log = tmp_path / "errors.log"
+    argv = ["bloomctl", "cyl", "download", "/mnt/\udcff\udcfe"]
+
+    returned = errors.record(_raise(ValueError("boom")), argv, path=log)
+
+    assert returned == log
+    assert "boom" in log.read_text(), "the traceback is kept; only the bad bytes are replaced"
+
+
+def test_nothing_is_reported_when_the_log_was_created_but_never_written(tmp_path, monkeypatch):
+    """`touch` succeeding is not the same as the traceback landing.
+
+    Reporting on the file existing would send someone to an empty log.
+    """
+    log = tmp_path / "errors.log"
+
+    def _fail(*args, **kwargs):
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(Path, "chmod", _fail)  # after touch has created the file
+
+    returned = errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log)
+
+    assert returned is None
+    assert log.exists() and log.read_text() == "", "the empty file is exactly the trap"
 
 
 def test_the_log_is_capped_so_it_cannot_grow_forever(tmp_path):
@@ -114,6 +148,29 @@ def test_the_log_is_capped_so_it_cannot_grow_forever(tmp_path):
     assert log.stat().st_size < errors.MAX_LOG_BYTES
     assert "boom" in log.read_text()
     assert "earlier entries dropped" in log.read_text()
+
+
+def test_a_failed_rotation_keeps_the_log_it_was_called_to_preserve(tmp_path, monkeypatch):
+    """Rotation rewrites the whole file, and doing that in place would empty it first.
+
+    It only runs on a machine that has been failing often enough to fill the log, which is
+    when those tracebacks are worth the most.
+    """
+    log = tmp_path / "errors.log"
+    log.write_bytes(b"y" * (errors.MAX_LOG_BYTES + 1))
+
+    real = Path.write_bytes
+
+    def _no_space(self, data):
+        real(self, b"")  # the temp file is created, then the disk gives out
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", _no_space)
+    errors._trim(log)
+    monkeypatch.undo()
+
+    assert log.stat().st_size == errors.MAX_LOG_BYTES + 1, "the log it could not rotate is intact"
+    assert not list(tmp_path.glob(".errors.log.*.tmp")), "no temp file left behind"
 
 
 def test_the_log_sits_beside_the_credentials(tmp_path):
@@ -202,7 +259,7 @@ def test_a_failure_is_still_reported_when_the_log_cannot_be_written(
         raise RuntimeError("nobody planned for this")
 
     monkeypatch.setattr("bloomctl.cli.cli", boom)
-    monkeypatch.setattr(errors, "record", lambda *a, **k: _log_in_tmp)
+    monkeypatch.setattr(errors, "record", lambda *a, **k: None)  # nothing could be written
 
     code = errors.main(args=[])
 
@@ -241,6 +298,35 @@ def test_the_equals_form_of_a_password_is_redacted_too(tmp_path):
 
 def test_redact_leaves_an_ordinary_command_alone():
     argv = ["bloomctl", "cyl", "download", "./out", "--experiment-id", "42", "--workers", "16"]
+
+    assert errors.redact(argv) == argv
+
+
+def test_an_anon_key_never_reaches_the_log(tmp_path):
+    """The key this flag is for is public, but it is the one a service-role key is pasted
+    into by mistake, and the value is no use in a traceback either way."""
+    log = tmp_path / "errors.log"
+    argv = ["bloomctl", "login", "--api-url", "https://x/api", "--anon-key", "eyJhbGciOi.Jsecret"]
+
+    errors.record(_raise(ValueError("boom")), argv, path=log)
+
+    text = log.read_text()
+    assert "eyJhbGciOi.Jsecret" not in text
+    assert "--anon-key ***" in text
+    assert "https://x/api" in text, "the rest of the command is still useful"
+
+
+def test_the_equals_form_of_an_anon_key_is_redacted_too():
+    assert errors.redact(["bloomctl", "login", "--anon-key=eyJsecret"]) == [
+        "bloomctl",
+        "login",
+        "--anon-key=***",
+    ]
+
+
+def test_the_profile_flag_is_not_mistaken_for_a_secret():
+    """`-p` is `--profile`; the redaction only matches long names, and this locks that in."""
+    argv = ["bloomctl", "-p", "staging", "cyl", "download", "./out"]
 
     assert errors.redact(argv) == argv
 
