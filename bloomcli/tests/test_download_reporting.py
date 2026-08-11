@@ -6,7 +6,7 @@ import click
 import pytest
 from click.testing import CliRunner
 from test_download_metadata import SCAN
-from test_download_session_resume import _Client, _images, _patch_cli
+from test_download_session_resume import _Client, _frame, _images, _patch_cli
 
 import bloomctl.cyl.download as dl
 from bloomctl.cli import cli
@@ -437,12 +437,30 @@ def test_an_unwritable_output_directory_fails_before_signing_in(tmp_path, monkey
 
 
 def test_a_writable_directory_is_created_and_left_clean(tmp_path):
-    out = tmp_path / "new" / "nested"
+    out = tmp_path / "new"
 
     dl.ensure_writable(out)
 
     assert out.is_dir()
     assert list(out.iterdir()) == [], "the probe file is cleaned up"
+
+
+def test_a_path_whose_parent_is_missing_is_refused_rather_than_built(tmp_path):
+    """An unmounted drive is the case this exists for.
+
+    Building the whole chain meant `cyl download /Volumes/LabDrive/run3` with the drive
+    unmounted created that path on the boot disk and filled it with an experiment the
+    scientist meant to put on the drive.
+    """
+    unmounted = tmp_path / "Volumes" / "LabDrive" / "run3"
+
+    with pytest.raises(click.ClickException) as failure:
+        dl.ensure_writable(unmounted)
+
+    assert "does not exist" in str(failure.value)
+    assert "mounted" in str(failure.value), "name the cause a scientist will actually have hit"
+    assert not unmounted.exists(), "nothing was created"
+    assert not (tmp_path / "Volumes").exists()
 
 
 def test_a_path_blocked_by_a_file_says_so_rather_than_raising(tmp_path):
@@ -623,3 +641,29 @@ def test_a_full_disk_is_caught_by_the_writability_check(tmp_path, monkeypatch):
 
     assert "cannot write to" in str(failure.value)
     assert "No space left on device" in str(failure.value)
+
+
+def test_frames_already_on_disk_are_still_reported_present_when_the_disk_fills(
+    tmp_path, monkeypatch
+):
+    """A resumed run that runs out of space must not disown what it already fetched.
+
+    Checking `stop` before looking at the file reported every remaining frame as missing —
+    including the ones sitting complete on disk — in the log we ask people to send us.
+    """
+    import errno
+
+    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(6))
+    client = _Client()
+    dl.download_images(client, [SCAN], tmp_path, workers=1)  # first run: everything lands
+    _frame(tmp_path, 0).unlink()  # one frame goes missing
+
+    client = _Client()
+    client.bucket = _DiskFillsAfter(0)
+    _fills_disk_after(monkeypatch, 0, code=errno.ENOSPC)
+
+    result = dl.download_images(client, [SCAN], tmp_path, workers=1)
+
+    assert result.disk_full, "the run still stops; there is nowhere to write the missing frame"
+    assert result.failed == 1, "only the frame that actually needed writing failed"
+    assert result.skipped == 5, "the five still on disk are present, not missing"

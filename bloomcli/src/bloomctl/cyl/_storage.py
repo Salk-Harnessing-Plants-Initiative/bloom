@@ -26,11 +26,6 @@ _EXPIRED_HINT = "expired session (storage reports an unauthenticated caller as a
 # moment rather than an immediate second request from every worker.
 RETRY_DELAY_SECONDS = 0.5
 
-# Storage returns a page at a time. The ceiling is a guard against a prefix that never stops
-# paginating; a cylinder scan holds frames in the thousands, not the hundreds of thousands.
-LIST_PAGE_SIZE = 100
-LIST_MAX_OBJECTS = 100_000
-
 
 class StorageError(RuntimeError):
     """A storage request failed, after any retry."""
@@ -117,36 +112,6 @@ def _fetch(client: Any, bucket: str, object_path: str) -> bytes:
     return data
 
 
-def object_sizes(client: Any, prefix: str, *, bucket: str = IMAGES_BUCKET) -> dict[str, int]:
-    """Byte size of every object directly under ``prefix``, keyed by full object path.
-
-    Used to tell a complete frame on disk from one an interrupted older version left part
-    written. Storage is the only place that knows the size — `cyl_images` records the path
-    but not the length.
-
-    Returns what it managed to read. A listing that fails yields nothing rather than raising:
-    not knowing a frame's size is the position every run was in before this existed, so it
-    costs a re-download at worst and must never fail a download that would otherwise work.
-    """
-    sizes: dict[str, int] = {}
-    for offset in range(0, LIST_MAX_OBJECTS, LIST_PAGE_SIZE):
-        try:
-            page = client.storage.from_(bucket).list(
-                prefix, {"limit": LIST_PAGE_SIZE, "offset": offset}
-            )
-        except Exception:
-            return sizes
-        for entry in page or []:
-            name = entry.get("name") if isinstance(entry, dict) else None
-            size = (entry.get("metadata") or {}).get("size") if isinstance(entry, dict) else None
-            # bool is an int; a stray True would otherwise become a size of 1.
-            if name and isinstance(size, int) and not isinstance(size, bool):
-                sizes[f"{prefix}/{name}" if prefix else name] = size
-        if not page or len(page) < LIST_PAGE_SIZE:
-            break
-    return sizes
-
-
 def _unlink_quietly(path: str) -> None:
     try:
         os.unlink(path)
@@ -178,12 +143,16 @@ def sweep_orphan_temps(out_dir: Path) -> int:
 
     A normal failure cleans up after itself, but a hard kill or a power cut doesn't get
     the chance.
+
+    Swept from the output root down, not just `images/`: `scans.csv` and `download_log.txt`
+    are written the same atomic way and leave their temp file beside themselves, so a sweep
+    of the frames alone would leave those two behind for good.
     """
-    images_root = Path(out_dir) / "images"
-    if not images_root.exists():
+    root = Path(out_dir)
+    if not root.exists():
         return 0
     removed = 0
-    for tmp in images_root.rglob(".dl-*.tmp"):
+    for tmp in root.rglob(".dl-*.tmp"):
         _unlink_quietly(str(tmp))
         removed += 1
     return removed

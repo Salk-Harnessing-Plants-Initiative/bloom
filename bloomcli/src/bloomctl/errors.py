@@ -13,6 +13,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .credentials import default_config_dir
 
@@ -98,9 +99,10 @@ def record(
     Written 0600 in a 0700 directory, matching the credentials stored alongside it.
 
     Raises nothing of its own: this runs while already handling a failure, so every step is
-    inside the guard — including rendering the traceback, which is not the safe half it looks
-    like. An argument that reached us as undecodable bytes carries surrogates, and encoding
-    those raises ValueError, which an `except OSError` would let straight back out.
+    inside the guard, and the guard is `Exception` rather than `OSError`. Writing the log is
+    not the only thing here that can fail — rendering a traceback runs `repr()` on values
+    this module has never seen, and one of those raising would replace the failure being
+    reported with a worse one.
     """
     log = path or error_log_path()
     try:
@@ -113,7 +115,11 @@ def record(
         # 0700 because this may be what creates ~/.bloom, and mkdir(exist_ok=True) later
         # cannot tighten a directory that already exists.
         log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _trim(log)
+        if not _trim(log):
+            # Rotation is what keeps the cap. If it could not run, appending anyway would
+            # grow the log without bound, one failure at a time, for as long as whatever
+            # stopped the rotation persists.
+            return None
         log.touch(mode=0o600)
         log.chmod(0o600)  # tighten a log left readable by an earlier version
         # errors="replace" so an undecodable path costs a few question marks in the command
@@ -125,33 +131,47 @@ def record(
     return log
 
 
-def _trim(log: Path) -> None:
-    """Drop the oldest half once the log passes its cap, so it can't grow forever.
+def _trim(log: Path) -> bool:
+    """Drop the oldest half once the log passes its cap; return whether it is safe to append.
+
+    False means the log is over its cap and could not be rotated, so the caller must not add
+    to it — the cap is only a cap if something enforces it when rotation fails.
 
     Rotated through a temp file. Rewriting the log where it lies would empty it before the
     kept half was written, so a rotation that failed would cost every traceback it was called
     to preserve — and rotation only happens on a machine that has been failing often enough
     to fill the log, which is exactly when those tracebacks are worth something.
 
-    A rotation that cannot be finished is abandoned rather than raised: the caller can still
-    append to the untrimmed log, and an oversized log beats no log.
+    A rotation that cannot be finished is abandoned rather than raised — this runs inside a
+    failure handler, where raising would be worse than losing one entry.
+
+    The temp file is opened the way the credentials are — unguessable name, ``O_EXCL`` so an
+    existing file is never adopted, ``O_NOFOLLOW`` so a symlink is never followed, and 0600
+    from the moment it exists. `~/.bloom` is not reliably private (``mkdir`` cannot tighten a
+    directory that is already there), and this file holds the largest single batch of
+    tracebacks and command lines the tool ever writes.
     """
     try:
         if log.stat().st_size <= MAX_LOG_BYTES:
-            return
+            return True  # nothing to rotate, and room to append
         keep = log.read_bytes()[-(MAX_LOG_BYTES // 2) :]
+    except FileNotFoundError:
+        return True  # no log yet is the ordinary first-failure case
     except OSError:
-        return
-    tmp = log.with_name(f".{log.name}.{os.getpid()}.tmp")
+        return False
+    tmp = log.with_name(f".{log.name}.{uuid4().hex}.tmp")
     try:
-        tmp.write_bytes(b"(earlier entries dropped)\n" + keep)
-        tmp.chmod(0o600)  # the log's own mode, in case this is what replaces it
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(tmp, flags, 0o600), "wb") as fh:
+            fh.write(b"(earlier entries dropped)\n" + keep)
         os.replace(tmp, log)
     except OSError:
         try:
             os.unlink(tmp)
         except OSError:
             pass
+        return False
+    return True
 
 
 def main(args: Any = None) -> int:

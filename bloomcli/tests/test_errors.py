@@ -11,6 +11,7 @@ Worth knowing: the rest of the suite invokes `cli` through `CliRunner`, which by
 from __future__ import annotations
 
 import errno
+import os
 import stat
 from pathlib import Path
 
@@ -108,9 +109,8 @@ def test_recording_never_raises_when_the_log_cannot_be_written(tmp_path, monkeyp
 def test_recording_survives_a_command_line_that_cannot_be_encoded(tmp_path):
     """A path the shell passed as undecodable bytes reaches argv as surrogates.
 
-    Encoding those raises ValueError, not OSError, so a guard that only caught OSError let it
-    out of the handler — replacing the traceback with a traceback, which is the one thing this
-    must never do.
+    Encoding those would raise; `errors="replace"` spends a few question marks instead, so
+    the traceback the log exists for still lands.
     """
     log = tmp_path / "errors.log"
     argv = ["bloomctl", "cyl", "download", "/mnt/\udcff\udcfe"]
@@ -119,6 +119,24 @@ def test_recording_survives_a_command_line_that_cannot_be_encoded(tmp_path):
 
     assert returned == log
     assert "boom" in log.read_text(), "the traceback is kept; only the bad bytes are replaced"
+
+
+def test_recording_never_raises_when_rendering_the_traceback_fails(tmp_path, monkeypatch):
+    """The guard has to be wider than OSError.
+
+    Rendering a traceback runs `repr()` on values this module has never seen, and one of them
+    raising must not replace the failure being reported with a worse one. `errors="replace"`
+    handles the encoding case, so nothing else pins the guard's width.
+    """
+    log = tmp_path / "errors.log"
+
+    def _explodes(*_args, **_kwargs):
+        raise RecursionError("maximum recursion depth exceeded while getting the repr")
+
+    monkeypatch.setattr(errors.traceback, "format_exception", _explodes)
+
+    assert errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log) is None
+    assert not log.exists()
 
 
 def test_nothing_is_reported_when_the_log_was_created_but_never_written(tmp_path, monkeypatch):
@@ -159,18 +177,53 @@ def test_a_failed_rotation_keeps_the_log_it_was_called_to_preserve(tmp_path, mon
     log = tmp_path / "errors.log"
     log.write_bytes(b"y" * (errors.MAX_LOG_BYTES + 1))
 
-    real = Path.write_bytes
-
-    def _no_space(self, data):
-        real(self, b"")  # the temp file is created, then the disk gives out
+    def _no_space(src, dst):  # the kept half is written, then it cannot be moved into place
         raise OSError(errno.ENOSPC, "No space left on device")
 
-    monkeypatch.setattr(Path, "write_bytes", _no_space)
+    monkeypatch.setattr(errors.os, "replace", _no_space)
+    rotated = errors._trim(log)
+    monkeypatch.undo()
+
+    assert rotated is False, "the caller must be told, so it does not append past the cap"
+    assert log.stat().st_size == errors.MAX_LOG_BYTES + 1, "the log it could not rotate is intact"
+    assert not list(tmp_path.glob(".errors.log.*.tmp")), "no temp file left behind"
+
+
+def test_the_log_is_not_appended_to_when_it_is_over_cap_and_cannot_be_rotated(
+    tmp_path, monkeypatch
+):
+    """Rotation is what enforces the cap, so appending anyway would grow the log forever."""
+    log = tmp_path / "errors.log"
+    log.write_bytes(b"y" * (errors.MAX_LOG_BYTES + 1))
+    monkeypatch.setattr(errors, "_trim", lambda _log: False)
+
+    for _ in range(3):
+        assert errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log) is None
+
+    assert log.stat().st_size == errors.MAX_LOG_BYTES + 1, "not one byte was added"
+
+
+def test_the_rotated_log_is_never_readable_by_others_even_briefly(tmp_path, monkeypatch):
+    """The rotated half is the largest batch of tracebacks the tool ever writes at once."""
+    log = tmp_path / "errors.log"
+    log.write_bytes(b"y" * (errors.MAX_LOG_BYTES + 1))
+    seen = {}
+
+    real_open = errors.os.open
+
+    def _watch(path, flags, mode=0o777):
+        fd = real_open(path, flags, mode)
+        seen["mode"] = stat.S_IMODE(os.fstat(fd).st_mode)
+        seen["flags"] = flags
+        return fd
+
+    monkeypatch.setattr(errors.os, "open", _watch)
     errors._trim(log)
     monkeypatch.undo()
 
-    assert log.stat().st_size == errors.MAX_LOG_BYTES + 1, "the log it could not rotate is intact"
-    assert not list(tmp_path.glob(".errors.log.*.tmp")), "no temp file left behind"
+    assert seen["mode"] == 0o600, "readable by others while it was being written"
+    assert seen["flags"] & os.O_EXCL, "an existing file must never be adopted"
+    assert seen["flags"] & getattr(os, "O_NOFOLLOW", 0), "a symlink must never be followed"
 
 
 def test_the_log_sits_beside_the_credentials(tmp_path):
@@ -351,3 +404,55 @@ def test_a_log_left_readable_by_an_earlier_version_is_tightened(tmp_path):
     errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log)
 
     assert stat.S_IMODE(log.stat().st_mode) == 0o600
+
+
+def test_the_console_script_points_at_the_handler_not_the_bare_cli():
+    """This one line in pyproject is the only thing that puts the handler in the path.
+
+    Every other test here calls `main` directly, and the rest of the suite drives `cli`
+    through CliRunner — so pointing the script back at `bloomctl.cli:cli` would disable
+    the whole "a failure is a message, not a stack trace" behaviour with the suite green.
+    PyPI uploads are immutable, so this has to be caught before the release, not after.
+    """
+    import tomllib
+    from pathlib import Path as _Path
+
+    pyproject = _Path(__file__).resolve().parents[1] / "pyproject.toml"
+    scripts = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["scripts"]
+
+    assert scripts["bloomctl"] == "bloomctl.errors:main"
+
+
+def test_the_installed_console_script_turns_a_crash_into_one_line(tmp_path):
+    """The wiring proved end to end, through the real entry point in a real subprocess."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = tmp_path / "boom.py"
+    script.write_text(
+        textwrap.dedent("""
+        import click
+        from bloomctl import errors
+
+        @click.command()
+        def boom():
+            raise RuntimeError("nobody planned for this")
+
+        errors.cli = boom
+        import bloomctl.cli
+        bloomctl.cli.cli = boom
+        raise SystemExit(errors.main(args=[]))
+        """),
+        encoding="utf-8",
+    )
+    env = {**os.environ, "HOME": str(tmp_path)}
+
+    done = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, env=env, cwd=str(tmp_path)
+    )
+
+    assert done.returncode == 1
+    assert "Error: nobody planned for this" in done.stderr
+    assert "Traceback" not in done.stderr, "the traceback belongs in the log, not on screen"
+    assert (tmp_path / ".bloom" / "errors.log").exists()

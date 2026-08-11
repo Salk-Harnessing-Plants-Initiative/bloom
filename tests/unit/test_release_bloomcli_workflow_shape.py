@@ -65,10 +65,13 @@ def test_release_triggers_only_on_release_and_dispatch():
 # --- publish workflow: validate gates publish ------------------------------
 
 def test_publish_needs_validate_release():
+    """Publishing stays downstream of validation, now via the build-and-verify job."""
     jobs = _load(RELEASE)["jobs"]
     assert "validate-release" in jobs
+    assert "build-and-verify" in jobs
     assert "build-and-publish" in jobs
-    assert jobs["build-and-publish"]["needs"] == "validate-release"
+    assert jobs["build-and-verify"]["needs"] == "validate-release"
+    assert jobs["build-and-publish"]["needs"] == "build-and-verify"
 
 
 def test_validate_checks_tag_changelog_lint_tests():
@@ -102,11 +105,32 @@ def test_publish_step_gated_on_real_release():
 
 
 def test_built_wheel_is_smoke_tested_before_publish():
-    text = _steps_text(_load(RELEASE)["jobs"]["build-and-publish"])
+    text = _steps_text(_load(RELEASE)["jobs"]["build-and-verify"])
     assert "uv build" in text
     assert "import bloomctl" in text            # wheel imports
     assert "bloomctl --version" in text         # CLI entry point runs
     assert "dist/*.whl" in text                 # from the freshly built wheel
+
+
+def test_nothing_but_the_upload_runs_in_the_job_holding_the_credential():
+    """The smoke runs import every dependency, the second at its newest pre-release.
+
+    Run beside `id-token: write`, a malicious pre-release of any transitive dependency
+    could mint a PyPI token or rewrite the wheel about to be uploaded. `--isolated`
+    isolates the virtualenv, not the process — so the split is the control.
+    """
+    jobs = _load(RELEASE)["jobs"]
+    publish, verify = jobs["build-and-publish"], jobs["build-and-verify"]
+
+    assert "id-token" not in (verify.get("permissions") or {})
+    assert verify.get("environment") is None
+
+    runs = [str(s.get("run", "")) for s in publish["steps"] if s.get("run")]
+    assert runs == ["uv publish --trusted-publishing always"], (
+        f"only the upload may run with the credential, found: {runs}"
+    )
+    for forbidden in ("uv build", "twine", "--prerelease=allow", "import_smoke"):
+        assert forbidden not in _steps_text(publish)
 
 
 # --- version workflow -------------------------------------------------------

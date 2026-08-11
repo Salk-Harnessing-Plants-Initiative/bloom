@@ -12,7 +12,6 @@ import io
 import itertools
 import json
 import os
-import posixpath
 import threading
 import time
 import unicodedata
@@ -30,7 +29,6 @@ from ._storage import (
     already_downloaded,
     atomic_write_bytes,
     download_object,
-    object_sizes,
     sweep_orphan_temps,
 )
 
@@ -133,17 +131,32 @@ def ensure_writable(out_dir: Path) -> None:
 
     Probes with a real file: `os.access` answers from the permission bits, which is the wrong
     answer on network mounts and as root.
+
+    The parent has to exist already — only the last directory is created. `parents=True` would
+    happily build the whole of `/Volumes/LabDrive/run3` while the drive was unmounted, and
+    then fill the boot disk with an experiment the scientist meant to put on the drive.
     """
     path = Path(out_dir)
+    parent = path.parent
+    if not parent.is_dir():
+        raise click.ClickException(
+            f"cannot write to {path}: {parent} does not exist. Check the path is spelled "
+            f"correctly, and if it is on a removable or network drive, that it is mounted. "
+            f"Only the last directory is created for you."
+        )
     probe = path / f".bloomctl-probe-{uuid4().hex}"
     try:
-        path.mkdir(parents=True, exist_ok=True)
+        path.mkdir(exist_ok=True)
         probe.write_bytes(b"bloomctl write test")  # bytes, so a full disk fails here too
     except OSError as exc:
-        raise click.ClickException(
-            f"cannot write to {path}: {exc.strerror or exc}. Check the path is spelled "
-            f"correctly, exists, and that you have permission to write there."
-        ) from exc
+        # A full disk is not a typo, and telling someone to check their spelling when the
+        # disk is full sends them off after the wrong thing entirely.
+        advice = (
+            "Free some space, or download somewhere else."
+            if exc.errno in OUT_OF_SPACE
+            else "Check the path is spelled correctly and that you have permission to write there."
+        )
+        raise click.ClickException(f"cannot write to {path}: {exc.strerror or exc}. {advice}") from exc
     finally:
         try:
             probe.unlink()
@@ -399,7 +412,6 @@ def download_frame(
     out_dir: Path,
     *,
     stop: threading.Event | None = None,
-    expected_size: int | None = None,
 ) -> FrameResult:
     """Download one frame to its destination, returning the outcome.
 
@@ -407,26 +419,28 @@ def download_frame(
     the result instead, so one bad frame can't abort the run. Safe to call from a worker thread.
 
     A frame already on disk is reported as skipped without making a request, which is what
-    makes an interrupted run cheap to pick back up. Given ``expected_size`` that check is a
-    real one: a file of the wrong length is fetched again rather than counted as present.
-    Without it, all that can be said is that the file isn't empty.
+    makes an interrupted run cheap to pick back up.
 
     ``stop`` is set when the disk fills. Frames that have not started yet are recorded as
     failed without being fetched — there is nowhere to put them, and a large experiment would
     otherwise pull hundreds of gigabytes only to throw them away. The few already in flight
     run to completion, so a little work carries on past the point the disk fills, bounded by
     the number of workers.
+
+    A frame already on disk is still reported as present once the disk has filled. Nothing
+    needs writing for it, and a resumed run that runs out of space part way through would
+    otherwise report every frame it had already fetched as missing.
     """
     object_path = image.get("object_path", "")
     result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
-    if stop is not None and stop.is_set():
-        result.error = "nowhere left to write — nothing further was downloaded"
-        return result
     try:
         dest = image_dest(out_dir, scan, image)
-        if already_downloaded(dest, expected_size):
+        if already_downloaded(dest):
             result.ok = True
             result.skipped = True
+            return result
+        if stop is not None and stop.is_set():
+            result.error = "nowhere left to write — nothing further was downloaded"
             return result
         atomic_write_bytes(dest, download_object(client, object_path))
         result.ok = True
@@ -499,20 +513,6 @@ def _list_scan_frames(
             error=f"list images: {exc}",
             unlisted=True,
         )
-
-
-def frame_sizes(client: Any, images: list[dict[str, Any]]) -> dict[str, int]:
-    """Expected byte size of each frame, keyed by ``object_path``.
-
-    One listing per storage prefix rather than one request per frame: a scan keeps its frames
-    together, so a scan of several thousand costs a handful of requests. A path whose size
-    could not be read is simply absent, and that frame is resumed the way it always was.
-    """
-    prefixes = {posixpath.dirname(str(image.get("object_path") or "")) for image in images}
-    sizes: dict[str, int] = {}
-    for prefix in sorted(prefix for prefix in prefixes if prefix):
-        sizes.update(object_sizes(client, prefix))
-    return sizes
 
 
 class CollidingFrames(ValueError):
@@ -602,10 +602,7 @@ def download_images(
     A failing frame is recorded rather than raised, so one bad frame can't abort the run.
 
     Frames already written by an earlier run are skipped, which is what makes an interrupted
-    download cheap to resume. Storage is asked for the expected sizes while the frames are
-    being listed, so a file left part written by an interrupted older version is fetched
-    again rather than counted as present. To fetch an experiment afresh, download into a new
-    directory.
+    download cheap to resume. To fetch an experiment afresh, download into a new directory.
 
     ``on_progress(phase, done, total, failed)`` is called as work completes, with ``phase``
     of ``"listing"`` or ``"downloading"``. It is only ever called from this thread.
@@ -616,7 +613,6 @@ def download_images(
     # to fetch. Building the list this way keeps unlisted scans next to the scans around them
     # rather than collected at the end of the log.
     slots: list[Any] = []
-    sizes: dict[str, int] = {}
     for listed, scan in enumerate(scans, start=1):
         if on_progress is not None:
             on_progress("listing", listed, len(scans), 0)
@@ -633,8 +629,6 @@ def download_images(
                 )
             )
         slots.extend((scan, image) for image in images)
-        if images:
-            sizes.update(frame_sizes(client, images))
 
     work = [slot for slot in slots if not isinstance(slot, FrameResult)]
 
@@ -645,8 +639,7 @@ def download_images(
     stop = threading.Event()
 
     def _one(pair: tuple[dict[str, Any], dict[str, Any]]) -> FrameResult:
-        expected = sizes.get(str(pair[1].get("object_path") or ""))
-        return download_frame(client, pair[0], pair[1], out_dir, stop=stop, expected_size=expected)
+        return download_frame(client, pair[0], pair[1], out_dir, stop=stop)
 
     # Never start more threads than there are frames, than were asked for, or than the limit.
     n = min(workers, MAX_WORKERS, len(work)) if work else 0
@@ -827,7 +820,10 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     if result.scans_without_frames:
         summary += f", {result.scans_without_frames} scan(s) have no images"
     if result.disk_full:
-        summary += " — the disk filled up, so the remaining frames were never attempted"
+        summary += (
+            " — the disk filled up or the storage quota was spent, so the remaining frames "
+            "were never attempted"
+        )
     lines.append(summary)
     atomic_write_bytes(path, ("\n".join(lines) + "\n").encode("utf-8"))
 
@@ -1081,7 +1077,9 @@ def download(
                 f"{result.scans_unlisted} scan(s) could not be listed at all "
                 f"(an unknown number of further frames is missing)"
             )
-        cause = "the disk filled up; " if result.disk_full else ""
+        # Not "the disk filled up": shared lab storage is quota-limited, where the disk has
+        # plenty of space and `df` sends the reader off after the wrong thing entirely.
+        cause = "the disk filled up or the storage quota was spent; " if result.disk_full else ""
         where = f" — see {log_path}" if logged else ""
         raise click.ClickException(
             f"{cause}{'; '.join(problems)}{where}. "

@@ -24,17 +24,26 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 - `scans.csv` is written atomically too. It is rewritten on every run, including a re-run that
   resumes, and opening it for writing emptied it before the first row was written — so a full
   disk destroyed the previous run's metadata instead of leaving it in place.
-- A resumed download no longer trusts a frame that is merely present. `0.1.0a3` wrote frames
-  straight to their final path, so a run interrupted then could leave one part written — and
-  every resume since has counted it as finished and reported the experiment complete. Storage
-  is now asked for the expected sizes while the frames are being listed, and a file of the
-  wrong length is fetched again. A storage that cannot report sizes resumes as before.
 - A download that runs into a filled quota now stops, as one that fills the disk already did.
   Shared lab storage is usually quota-limited, where the kernel reports `EDQUOT` and never
   `ENOSPC`, so such a run kept pulling every remaining frame off the server and discarding it.
 - `cyl download` checks the output directory is writable before signing in, rather than
   failing after every metadata query has run.
+- A run that stops for want of space no longer reports the frames it had already fetched as
+  missing. It tested "has the disk filled?" before "is this frame already here?", so a resumed
+  run that ran out of space partway listed every remaining frame as `FAIL` — including the
+  ones sitting complete on disk — in the log we ask people to send us.
+- The sweep for temp files left by a killed run now covers the whole output directory.
+  `scans.csv` and `download_log.txt` are written atomically too and leave their temp file
+  beside themselves, where a sweep of `images/` alone never reached it.
 - Failures that no command anticipated are reported as one line rather than a stack trace.
+
+### Changed
+
+- `cyl download` creates only the last directory of the output path, and fails if the parent
+  is missing. It used to build the whole chain, so `cyl download /Volumes/LabDrive/run3` with
+  the drive unmounted created that path on the boot disk and filled it with an experiment that
+  was meant to go on the drive.
 
 ### Added
 

@@ -88,7 +88,7 @@ Summary: 3/8 frames present (3 downloaded this run, 0 already on disk), 5 failed
 | Status     | What it means                                                                     |
 | ---------- | --------------------------------------------------------------------------------- |
 | `OK`       | Downloaded during this run                                                        |
-| `SKIP`     | Already on disk at its full size, so it was not fetched again — a resumed run working |
+| `SKIP`     | Already on disk, so it was not fetched again — this is a resumed run working       |
 | `FAIL`     | This frame is missing; `error=` says why                                          |
 | `UNLISTED` | The scan's frame list could not be fetched, so an **unknown** number is missing    |
 | `NOFRAMES` | The scan has no images recorded in Bloom — nothing to download, not a failure      |
@@ -132,8 +132,7 @@ Tags: `:staging` (latest staging build) · `:<version>` (matches the PyPI releas
   see frames fail, and the fix is a lower number, not a higher one.
 - **Resuming** — a download that stops for any reason (interrupted, connection dropped, failed
   frames) picks up where it left off when you re-run the same command in the same directory.
-  Frames already on disk at their full size are skipped; one left part written by an older
-  version is fetched again rather than trusted. One experiment per output directory.
+  Frames already on disk are skipped. One experiment per output directory.
 
 ## Documentation
 

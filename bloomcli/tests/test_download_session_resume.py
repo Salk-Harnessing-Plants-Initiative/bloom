@@ -56,33 +56,6 @@ class _Client:
         self.storage = _Storage()
 
 
-class _ListingBucket(_Bucket):
-    """A bucket that also reports object sizes, the way storage's paginated `list()` does."""
-
-    def __init__(self, sizes: dict[str, int], budget: int | None = None):
-        super().__init__(budget)
-        self.sizes = sizes
-        self.list_calls = 0
-
-    def list(self, prefix, options=None):
-        self.list_calls += 1
-        options = options or {}
-        limit, offset = options.get("limit", 100), options.get("offset", 0)
-        under = sorted(name for name in self.sizes if name.rsplit("/", 1)[0] == prefix)
-        return [
-            {"name": name.rsplit("/", 1)[1], "metadata": {"size": self.sizes[name]}}
-            for name in under[offset : offset + limit]
-        ]
-
-
-class _ListingClient(_Client):
-    """A client whose storage can be asked what each object should weigh."""
-
-    def __init__(self, sizes: dict[str, int], budget: int | None = None):
-        super().__init__(budget)
-        self.bucket = _ListingBucket(sizes, budget)
-
-
 class _RotatingClient:
     """A client that renews its token, like the real one does.
 
@@ -176,8 +149,7 @@ def test_each_frame_gets_its_own_bucket_handle(tmp_path, monkeypatch):
 
     dl.download_images(client, [SCAN], tmp_path, workers=1)
 
-    # Five frames, plus the one listing that asks storage for their expected sizes.
-    assert client.handles_issued == 5 + 1
+    assert client.handles_issued == 5
 
 
 # --- retry policy -----------------------------------------------------------
@@ -308,105 +280,6 @@ def test_already_downloaded_checks_the_expected_size_when_one_is_known(tmp_path)
     assert storage.already_downloaded(truncated)  # size unknown: only "non-empty"
     assert not storage.already_downloaded(truncated, expected_size=815689)
     assert storage.already_downloaded(truncated, expected_size=len(b"partial"))
-
-
-def _sizes_for(count: int) -> dict[str, int]:
-    """What storage would report for the frames `_images(count)` describes."""
-    return {f"cyl-images/{i}.png": len(f"bytes::cyl-images/{i}.png") for i in range(count)}
-
-
-def test_a_truncated_frame_from_an_older_version_is_fetched_again(tmp_path, monkeypatch):
-    """0.1.0a3 wrote frames straight to their final path, so an interrupted run left fragments.
-
-    Non-empty was the only test a resumed run could apply, so a fragment counted as finished
-    and the run reported every frame present.
-    """
-    client = _ListingClient(_sizes_for(3))
-    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(3))
-    truncated = _frame(tmp_path, 1)
-    truncated.parent.mkdir(parents=True, exist_ok=True)
-    truncated.write_bytes(b"frag")
-
-    result = dl.download_images(client, [SCAN], tmp_path, workers=1)
-
-    assert result.failed == 0
-    assert truncated.read_bytes() == b"bytes::cyl-images/1.png"
-    assert result.skipped == 0, "the fragment was the wrong size, so nothing was taken on trust"
-
-
-def test_a_complete_frame_is_still_skipped_when_its_size_matches(tmp_path, monkeypatch):
-    """Verifying sizes must not cost a resumed run the work it already did."""
-    client = _ListingClient(_sizes_for(2))
-    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(2))
-    done = _frame(tmp_path, 0)
-    done.parent.mkdir(parents=True, exist_ok=True)
-    done.write_bytes(b"bytes::cyl-images/0.png")
-
-    result = dl.download_images(client, [SCAN], tmp_path, workers=1)
-
-    assert result.skipped == 1 and result.downloaded == 1
-    assert client.bucket.calls == 1, "the finished frame was never requested"
-
-
-def test_a_storage_that_cannot_list_resumes_the_way_it_always_did(tmp_path, monkeypatch):
-    """Sizes are an improvement on the old check, never a new way for a download to fail."""
-    client = _Client()  # its bucket has no list()
-    monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(2))
-    existing = _frame(tmp_path, 0)
-    existing.parent.mkdir(parents=True, exist_ok=True)
-    existing.write_bytes(b"short")  # the wrong size, but there is no way to know that
-
-    result = dl.download_images(client, [SCAN], tmp_path, workers=1)
-
-    assert result.failed == 0
-    assert result.skipped == 1, "a non-empty file is still taken on trust"
-    assert existing.read_bytes() == b"short"
-
-
-def test_object_sizes_pages_through_a_prefix_bigger_than_one_page():
-    sizes = {f"cyl-images/{i}.png": i + 1 for i in range(storage.LIST_PAGE_SIZE * 2 + 7)}
-    client = _ListingClient(sizes)
-
-    assert storage.object_sizes(client, "cyl-images") == sizes
-    assert client.bucket.list_calls == 3, "two full pages and the short one that ends it"
-
-
-def test_object_sizes_gives_nothing_when_the_listing_fails():
-    assert storage.object_sizes(_Client(), "cyl-images") == {}
-
-
-def test_object_sizes_keeps_what_it_read_when_a_later_page_fails():
-    """A prefix half-read is still worth having: those frames get a real check."""
-
-    class _FailsSecondPage(_ListingBucket):
-        def list(self, prefix, options=None):
-            if (options or {}).get("offset"):
-                raise RuntimeError("connection reset")
-            return super().list(prefix, options)
-
-    client = _ListingClient({})
-    client.bucket = _FailsSecondPage({f"cyl-images/{i}.png": 1 for i in range(150)})
-
-    assert len(storage.object_sizes(client, "cyl-images")) == storage.LIST_PAGE_SIZE
-
-
-def test_object_sizes_ignores_entries_whose_size_is_not_a_number():
-    """A folder placeholder has no metadata, and `True` is an int that must not become a size."""
-
-    class _Odd:
-        def list(self, prefix, options=None):
-            if (options or {}).get("offset"):
-                return []
-            return [
-                {"name": "folder", "metadata": None},
-                {"name": "flagged.png", "metadata": {"size": True}},
-                {"name": "real.png", "metadata": {"size": 42}},
-            ]
-
-    client = _ListingClient({})
-    client.bucket = _Odd()
-
-    assert storage.object_sizes(client, "cyl-images") == {"cyl-images/real.png": 42}
 
 
 def test_download_images_skips_frames_already_on_disk(tmp_path, monkeypatch):
@@ -623,3 +496,33 @@ def test_the_retry_asks_for_a_new_bucket_handle():
 
     assert storage.download_object(client, "cyl-images/0.png") == b"fetched with a fresh handle"
     assert client.storage.handles == 2, "the retry must resolve its own handle"
+
+
+def test_the_sweep_reaches_temp_files_outside_the_images_tree(tmp_path):
+    """`scans.csv` and `download_log.txt` write atomically too, beside themselves in the root.
+
+    Sweeping only `images/` left those two behind for good after a hard kill.
+    """
+    (tmp_path / "images" / "Wave2").mkdir(parents=True)
+    beside_a_frame = tmp_path / "images" / "Wave2" / ".dl-deadbeef.tmp"
+    beside_the_csv = tmp_path / ".dl-cafebabe.tmp"
+    beside_a_frame.write_bytes(b"half a frame")
+    beside_the_csv.write_bytes(b"half a scans.csv")
+
+    removed = storage.sweep_orphan_temps(tmp_path)
+
+    assert removed == 2
+    assert not beside_a_frame.exists() and not beside_the_csv.exists()
+
+
+def test_the_sweep_leaves_the_real_output_alone(tmp_path):
+    """It runs at the start of every download, over a directory holding finished work."""
+    (tmp_path / "images").mkdir()
+    csv = tmp_path / "scans.csv"
+    csv.write_text("scan_id\n1\n")
+    frame = tmp_path / "images" / "0.png"
+    frame.write_bytes(b"a real frame")
+
+    assert storage.sweep_orphan_temps(tmp_path) == 0
+    assert csv.read_text() == "scan_id\n1\n"
+    assert frame.read_bytes() == b"a real frame"

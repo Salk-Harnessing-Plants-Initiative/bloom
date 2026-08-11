@@ -88,14 +88,24 @@ jobs:
         # Exclude the env-gated integration test (needs live staging creds).
         run: uv run --extra test pytest -m "not integration" -q
 
-  build-and-publish:
-    name: Build and publish
+  # Builds the artifact and proves it, WITHOUT the publishing credential.
+  #
+  # Every step here executes third-party code: `twine check`, and two smoke runs that
+  # deliberately import the whole dependency chain — the second with --prerelease=allow,
+  # which resolves every transitive dependency to its newest alpha or dev build. Slipping
+  # an unnoticed malicious pre-release onto PyPI is a far lower bar than a stable release,
+  # and #629 is proof that broken pre-releases of these exact packages do reach it.
+  #
+  # So this job carries no `id-token: write` and no `pypi` environment. Run inside the
+  # publishing job, that code would execute alongside ACTIONS_ID_TOKEN_REQUEST_TOKEN and
+  # with write access to the dist/ uploaded seconds later; `--isolated` isolates the
+  # virtualenv, not the process.
+  build-and-verify:
+    name: Build and verify
     needs: validate-release
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
       contents: read
-      id-token: write # OIDC token for PyPI trusted publishing
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
@@ -167,8 +177,49 @@ jobs:
           echo "== pre-release resolution =="
           uv run --isolated --no-project --prerelease=allow --with dist/*.whl python /tmp/import_smoke.py
 
+      # Not `bloomctl --version`: that prints the same string whether the console script
+      # points at the handler or straight at the bare CLI, so it cannot tell a correctly
+      # wired entry point from one that has quietly lost the last-resort handler (#629).
+      # This runs the installed script on a command that raises, and demands a message.
       - name: Verify CLI entry point
-        run: uv run --isolated --no-project --with dist/*.whl bloomctl --version
+        run: |
+          uv run --isolated --no-project --with dist/*.whl bloomctl --version
+          set +e
+          OUT=$(uv run --isolated --no-project --with dist/*.whl \
+            bloomctl cyl download /proc/nonexistent/nope --experiment-id 0 2>&1)
+          CODE=$?
+          set -e
+          echo "$OUT"
+          if [ "$CODE" -eq 0 ]; then echo "::error::expected a non-zero exit"; exit 1; fi
+          case "$OUT" in
+            *Traceback*) echo "::error::a stack trace reached the user; entry point not wired"; exit 1 ;;
+          esac
+
+      - name: Upload the verified artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bloomctl-dist
+          path: bloomcli/dist/
+          if-no-files-found: error
+
+  # Holds the credential and does nothing else. It runs no third-party code: the artifact
+  # was built and proved in build-and-verify, and `uv publish` only uploads the files.
+  build-and-publish:
+    name: Publish
+    needs: build-and-verify
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write # OIDC token for PyPI trusted publishing
+    steps:
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+
+      - name: Download the verified artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bloomctl-dist
+          path: bloomcli/dist/
 
       # Publishes only on a real Release; a workflow_dispatch dry run stops here.
       - name: Publish to PyPI (trusted publishing)
