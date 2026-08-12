@@ -144,7 +144,12 @@ async function getScan(scanId: number) {
 
   const { data } = await supabase
     .from("cyl_scans")
-    .select("*, cyl_images(*), cyl_plants(*, cyl_waves(*))")
+    // Named columns on cyl_images, not `*`: the whole embed is serialised into the
+    // client payload, a scan runs to thousands of frames, and the viewer reads three
+    // fields. PostgREST has no db-max-rows configured, so nothing else bounds it.
+    .select(
+      "*, cyl_images(id, frame_number, object_path), cyl_plants(*, cyl_waves(*))"
+    )
     .eq("id", scanId)
     .order("frame_number", { referencedTable: "cyl_images", ascending: true })
     .single();

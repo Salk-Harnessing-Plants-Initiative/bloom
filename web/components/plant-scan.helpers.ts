@@ -57,7 +57,10 @@ export function frameLabel(
 ): string {
   const number = frame?.frame_number;
   if (number === null || number === undefined) {
-    return `Frame ${index + 1} (unnumbered)`;
+    // Never `Frame ${index + 1}`: the UNIQUE constraint on (scan_id, frame_number)
+    // does not cover NULLs, so a position can coincide with a real frame's number and
+    // print the same label twice on one rotation, over two different images.
+    return `Unnumbered frame (${index + 1} in order)`;
   }
   return `Frame ${number}`;
 }

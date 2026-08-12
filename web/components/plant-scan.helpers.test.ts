@@ -180,12 +180,21 @@ describe("frameLabel", () => {
     expect(frameLabel(frame({ id: 9, frame_number: 71 }), 5)).toBe("Frame 71");
   });
 
-  it("falls back to position, marked, when the row has no frame_number", () => {
-    expect(frameLabel(frame({ id: 1 }), 4)).toBe("Frame 5 (unnumbered)");
+  it("names the position without minting a frame number for it", () => {
+    // Not "Frame 5 (unnumbered)": frame_number's UNIQUE constraint does not cover
+    // NULLs, so position 5 can coincide with a real frame 5 on the same rotation
+    // and label two different images identically.
+    expect(frameLabel(frame({ id: 1 }), 4)).toBe("Unnumbered frame (5 in order)");
   });
 
   it("falls back when there is no frame at that index", () => {
-    expect(frameLabel(undefined, 0)).toBe("Frame 1 (unnumbered)");
+    expect(frameLabel(undefined, 0)).toBe("Unnumbered frame (1 in order)");
+  });
+
+  it("never renders a bare `Frame <n>` for a row that has none", () => {
+    for (const index of [0, 1, 2, 41]) {
+      expect(frameLabel(frame({ id: 1 }), index)).not.toMatch(/^Frame \d+$/);
+    }
   });
 });
 

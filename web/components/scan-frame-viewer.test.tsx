@@ -133,3 +133,133 @@ describe("ScanFrameViewer", () => {
     expect(screen.queryByText(/missing from this rotation/)).toBeNull();
   });
 });
+
+/**
+ * Paging — the feature this component is named after. The mislabel risk lives in
+ * the wiring (frameIndex -> currentPath -> frameUrls.get -> <img src> -> label),
+ * which the pure helpers cannot reach.
+ */
+describe("paging", () => {
+  const GAPPED = scanWith([
+    { n: 1, path: "f1.png" },
+    { n: 2, path: "f2.png" },
+    { n: 4, path: "f4.png" },
+  ]);
+
+  async function pagedViewer() {
+    render(<ScanFrameViewer scan={GAPPED} />);
+    await waitFor(() => expect(screen.getByText("Frame 1")).toBeTruthy());
+  }
+
+  it("shows the frame's own number, not its position", async () => {
+    await pagedViewer();
+
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+    // Third in the list, but frame 4 — the whole reason positions are not labels.
+    expect(screen.getByText("Frame 4")).toBeTruthy();
+    const img = document.querySelector("img") as HTMLImageElement;
+    expect(img.src).toContain("f4.png");
+  });
+
+  it("steps back to the frame it came from", async () => {
+    await pagedViewer();
+
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    expect(screen.getByText("Frame 2")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /previous/i }));
+
+    expect(screen.getByText("Frame 1")).toBeTruthy();
+    const img = document.querySelector("img") as HTMLImageElement;
+    expect(img.src).toContain("f1.png");
+  });
+
+  it("cannot page past either end", async () => {
+    await pagedViewer();
+
+    const prev = screen.getByRole("button", { name: /previous/i });
+    expect(prev.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+    expect(screen.getByText("Frame 4")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /next/i }).hasAttribute("disabled")
+    ).toBe(true);
+  });
+});
+
+describe("an unnumbered frame", () => {
+  it("is never given a number that another frame already has", async () => {
+    // The UNIQUE constraint on (scan_id, frame_number) does not cover NULLs, so
+    // this shape is reachable. Labelled by position, the third frame would read
+    // "Frame 3" — the same as the second, over a different image.
+    render(
+      <ScanFrameViewer
+        scan={scanWith([
+          { n: 2, path: "a.png" },
+          { n: 3, path: "b.png" },
+          { n: null, path: "c.png" },
+        ])}
+      />
+    );
+    await waitFor(() => expect(screen.getByText("Frame 2")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+    expect(screen.queryByText("Frame 3 (unnumbered)")).toBeNull();
+    expect(screen.getByText(/Unnumbered frame/)).toBeTruthy();
+  });
+});
+
+/**
+ * The empty states. A scientist acts differently on each of these, so one
+ * sentence for all three is a wrong answer two times out of three.
+ */
+describe("when there is nothing to show", () => {
+  it("says so plainly when the scan recorded no frames at all", async () => {
+    render(<ScanFrameViewer scan={scanWith([])} />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/No frames are recorded/)).toBeTruthy()
+    );
+  });
+
+  it("distinguishes frames that are recorded but not yet uploaded", async () => {
+    // Rows exist with no object_path — the pre-upload state. Reporting this as
+    // "unable to retrieve" hides that the capture itself succeeded.
+    const pending = scanWith([]);
+    pending.cyl_images = [
+      { id: 1, frame_number: 1, object_path: null, scan_id: 1 },
+      { id: 2, frame_number: 2, object_path: null, scan_id: 1 },
+    ];
+    render(<ScanFrameViewer scan={pending} />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/All 2 recorded frames are still uploading/)).toBeTruthy()
+    );
+  });
+
+  it("distinguishes frames that exist but could not be signed", async () => {
+    unsignable.add("s1.png");
+    unsignable.add("s2.png");
+    try {
+      render(
+        <ScanFrameViewer
+          scan={scanWith([
+            { n: 1, path: "s1.png" },
+            { n: 2, path: "s2.png" },
+          ])}
+        />
+      );
+      await waitFor(() =>
+        expect(screen.getByText(/could not be retrieved/)).toBeTruthy()
+      );
+    } finally {
+      unsignable.clear();
+    }
+  });
+});

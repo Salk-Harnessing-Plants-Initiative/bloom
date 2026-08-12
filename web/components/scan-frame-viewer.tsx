@@ -87,19 +87,30 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   const objectUrl =
     currentPath && failedPaths.has(currentPath) ? null : signedUrl;
 
-  // Nothing to show: no renderable frame, or signing failed for every frame.
+  // Two different absences: rows the scan recorded but can't render, and gaps
+  // in the frame numbers themselves. `frameGapNote` gets every recorded frame,
+  // not the renderable ones — otherwise a row dropped for a missing object_path
+  // is counted once here and again as a gap, reading as two separate problems.
+  const recorded = scan?.cyl_images?.length ?? 0;
+  const shortfall = missingFrameNote(total, recorded);
+  const gap = frameGapNote(scan?.cyl_images ?? []);
+
+  // Three different conclusions, and a scientist acts differently on each: nothing
+  // was ever captured, frames exist but aren't retrievable yet, or the frames are
+  // fine and our access to them is not.
   if (!loading && (total === 0 || frameUrls.size === 0)) {
+    const reason =
+      total === 0 && recorded === 0
+        ? "No frames are recorded for this scan."
+        : total === 0
+          ? `All ${recorded} recorded frames are still uploading or unavailable.`
+          : "Frames are recorded but could not be retrieved — try reloading.";
     return (
       <div className="rounded-lg border-2 border-dashed border-stone-300 bg-stone-50 px-4 py-6 text-sm text-stone-500 italic">
-        Unable to retrieve scan image.
+        {reason}
       </div>
     );
   }
-
-  // Two different absences: rows the scan recorded but can't render, and gaps
-  // in the frame numbers themselves.
-  const shortfall = missingFrameNote(total, scan?.cyl_images?.length ?? 0);
-  const gap = frameGapNote(frames);
   const label = frameLabel(frames[frameIndex], frameIndex);
 
   return (
@@ -125,7 +136,24 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
         ) : !loading ? (
           // This one frame is unavailable — keep the pager so the rest stay reachable.
           <div className="px-4 py-6 text-sm text-stone-500 italic">
-            {label} could not be loaded.
+            {label} could not be loaded.{" "}
+            <button
+              type="button"
+              // A dropped connection marks the frame failed for as long as the page
+              // lives, though the object is intact. Forgetting the failure is what
+              // lets the image be requested again.
+              className="not-italic underline underline-offset-2 hover:text-stone-700"
+              onClick={() =>
+                currentPath &&
+                setFailedPaths((prev) => {
+                  const next = new Set(prev);
+                  next.delete(currentPath);
+                  return next;
+                })
+              }
+            >
+              Try again
+            </button>
           </div>
         ) : null}
       </div>

@@ -23,8 +23,17 @@ export function scanVideoPath(scanId: number): string {
 
 // Storage reports a missing object as an error, so only a genuine not-found
 // counts as "absent" — anything else (permissions, gateway, timeout) is unknown.
-function isNotFound(error: { message?: string; status?: number }): boolean {
-  if (error.status === 404) return true;
+//
+// `statusCode` is the service's own code and is a *string*; `status` is the HTTP
+// status, and Storage answers a missing object with 400, not 404. Checking only
+// `status === 404` therefore never matched, leaving the wording regex as the sole
+// guard on an irreversible overwrite.
+export function isNotFound(error: {
+  message?: string;
+  status?: number;
+  statusCode?: string;
+}): boolean {
+  if (error.statusCode === "404" || error.status === 404) return true;
   return /not[_ ]?found|does not exist|no such/i.test(error.message ?? "");
 }
 
