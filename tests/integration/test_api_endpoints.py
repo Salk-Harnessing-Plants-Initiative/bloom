@@ -104,14 +104,22 @@ SECURITY_HEADERS = {
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 }
 
-# One route per handler class under `handle @main`, chosen so status is
-# irrelevant — Caddy applies the headers ahead of the handler chain, so a
-# proxied 200, a synthetic 404 and an upstream-error 502 must all carry them:
-#   /api/client-info  -> bloom-web, exact path (200)
-#   /                 -> bloom-web catch-all (200)
-#   /workflows/health -> Caddy's own `respond 404`
-#   /langchain/models -> langchain-agent, preserved prefix (401 without a JWT)
-HEADER_ROUTES = ["/api/client-info", "/", "/workflows/health", "/langchain/models"]
+# Every handler declared under `handle @main`, one route each. Status is
+# deliberately irrelevant — Caddy applies the headers ahead of the handler
+# chain, so a proxied 200, a synthetic 404 and an upstream-error 502 must all
+# carry them. Asserting on status here would make the test brittle against
+# stack configuration; asserting on headers alone is the actual contract.
+HEADER_ROUTES = [
+    "/api/client-info",  # exact path -> bloom-web
+    "/api/oauth/consent",  # exact path -> bloom-web
+    "/api/auth/v1/health",  # /api/* -> kong (prefix stripped)
+    "/langchain/models",  # /langchain/* -> agent (prefix preserved)
+    "/.well-known/oauth-protected-resource/bloommcp/mcp",  # RFC 9728 -> bloommcp
+    "/bloommcp/mcp",  # /bloommcp/* -> bloommcp (prefix stripped)
+    "/workflows/health",  # Caddy's own `respond 404`
+    "/workflows/runs",  # /workflows/* -> workflows
+    "/",  # catch-all -> bloom-web
+]
 
 
 @pytest.mark.parametrize("path", HEADER_ROUTES)
