@@ -8,6 +8,7 @@ held for the whole run stops working the moment that token is replaced.
 
 from __future__ import annotations
 
+import errno
 import stat
 from pathlib import Path
 
@@ -242,6 +243,23 @@ def test_a_crash_mid_write_leaves_the_previous_file_intact(tmp_path, monkeypatch
 
     assert dest.read_bytes() == b"old-bytes"
     assert list(tmp_path.glob(".dl-*")) == []
+
+
+def test_a_failed_write_names_the_file_asked_for_not_the_temp_one(tmp_path, monkeypatch):
+    """The temp file is gone by the time anyone reads the error it is named in."""
+    dest = tmp_path / "frame.png"
+
+    def _full_disk(self, data):
+        raise OSError(errno.ENOSPC, "No space left on device", str(self))
+
+    monkeypatch.setattr(Path, "write_bytes", _full_disk)
+
+    with pytest.raises(OSError) as caught:
+        storage.atomic_write_bytes(dest, b"bytes")
+
+    assert caught.value.filename == str(dest), "the temp name is an implementation detail"
+    assert ".tmp" not in str(caught.value)
+    assert caught.value.errno == errno.ENOSPC, "the full-disk stop reads this"
 
 
 def test_frames_are_written_atomically(tmp_path, monkeypatch):

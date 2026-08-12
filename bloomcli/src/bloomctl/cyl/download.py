@@ -50,6 +50,10 @@ OUT_OF_SPACE = frozenset(
 # Progress lines the rate and time-remaining estimate are averaged over (about a minute).
 RATE_WINDOW_SAMPLES = 12
 
+# How far the rate must fall below the window's before the window is started again. Well clear
+# of network variation; the drop it looks for is orders of magnitude.
+BURST_DROP_FACTOR = 10
+
 RETRY_HINT = "Some frames are failing — re-run this command afterwards and it will retry them."
 
 # Upper limit on concurrent downloads, applied both to the flag and inside download_images so
@@ -719,7 +723,7 @@ class ProgressReporter:
         if len(self._samples) >= 2:
             just_now = _rate_between(self._samples[-1], latest)
             window = _rate_between(self._samples[0], latest)
-            if just_now is not None and window is not None and just_now * 10 < window:
+            if just_now is not None and window is not None and just_now * BURST_DROP_FACTOR < window:
                 self._samples.clear()
         self._samples.append(latest)
         rate = _rate_between(self._samples[0], latest)

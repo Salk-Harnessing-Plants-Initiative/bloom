@@ -36,6 +36,9 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 - The sweep for temp files left by a killed run now covers the whole output directory.
   `scans.csv` and `download_log.txt` are written atomically too and leave their temp file
   beside themselves, where a sweep of `images/` alone never reached it.
+- A failed write names the file that was asked for. It reported the temp file it writes
+  through, so a full disk pointed at a `.dl-*.tmp` the user never chose and which had already
+  been deleted — on screen, and in the `error=` field of every `FAIL` line in the download log.
 - Failures that no command anticipated are reported as one line rather than a stack trace.
 
 ### Changed

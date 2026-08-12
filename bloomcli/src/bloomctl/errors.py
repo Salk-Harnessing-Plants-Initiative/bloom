@@ -99,7 +99,9 @@ def record(
     """Append ``exc``'s traceback to the error log and return where it went, or None if it
     could not be written.
 
-    Written 0600 in a 0700 directory, matching the credentials stored alongside it.
+    Written 0600 in a 0700 directory, matching the credentials stored alongside it. On Windows
+    `chmod` only toggles the read-only bit, so the log is no more private there than any other
+    file in the profile.
 
     Raises nothing of its own: this runs while already handling a failure, so every step is
     inside the guard, and the guard is `Exception` rather than `OSError`. Writing the log is

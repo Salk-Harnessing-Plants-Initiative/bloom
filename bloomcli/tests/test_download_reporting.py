@@ -598,15 +598,21 @@ def test_the_percentage_never_reads_complete_while_frames_are_outstanding():
 
 def test_a_resumed_run_stops_quoting_the_skipped_frames(capsys):
     """Frames already on disk complete in an instant. Carrying that rate into the estimate
-    said "~0s left" with ten minutes of downloading to go."""
+    said "~0s left" with ten minutes of downloading to go.
+
+    Opening at zero rather than on the burst: the burst has to land between two samples to be
+    in the window the reset measures against, or the branch never runs.
+    """
     clock = _Clock()
     report = dl.ProgressReporter(interval=5.0, now=clock)
 
-    clock.t = 1.0
-    report("downloading", 55000, 60336)  # the skip burst
-    clock.t = 6.0
+    clock.t = 0.0
+    report("downloading", 0, 60336)
+    clock.t = 5.0
+    report("downloading", 55000, 60336)  # already on disk, skipped at once
+    clock.t = 10.0
     report("downloading", 55040, 60336)  # real downloads begin
-    clock.t = 11.0
+    clock.t = 15.0
     report("downloading", 55080, 60336)
 
     last = capsys.readouterr().err.strip().splitlines()[-1]

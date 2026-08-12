@@ -17,9 +17,11 @@ dependencies = [
     "rich>=13.0",
     # Both upper bounds are load-bearing: httpx 1.0 and supabase 3.0 each remove
     # something we import, so a --pre install picks them up and nothing runs (#629).
+    # Lifted once those ship stable (#645).
     "httpx>=0.27,<1.0",
     "supabase>=2.0.0,<3",
     "python-dotenv>=1.0.0",
+    # Floors, not caps: a cap here would only keep the next security fix out.
     "cryptography>=50.0.0",  # CVE-2026-69247
     "sleap-roots-contracts>=0.1.0a5",  # pydantic models for `cyl ingest`
     "h2>=4.4.1",  # CVE-2026-71554
