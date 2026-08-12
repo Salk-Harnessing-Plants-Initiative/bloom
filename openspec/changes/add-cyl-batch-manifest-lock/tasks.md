@@ -261,8 +261,9 @@ test confirming the bump actually worked, not a RED test in the usual sense.
       environment-specific failures unrelated to this change — confirmed by re-running them
       against the unmodified tree), the `bloomcli` Docker image build (succeeds, resolves
       `sleap-roots-contracts==0.1.0a7`) and `--version`/`--help` smoke test, ruff, and pip-audit.
-- [ ] 7.6 Open the PR against `staging`; obtain a non-author approving review (branch protection
-      has `enforce_admins=true` on `staging`).
+- [x] 7.6 Open the PR against `staging` — [PR #655](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/655).
+      Still needed: a non-author approving review (branch protection has `enforce_admins=true`
+      on `staging`) before merge.
 - [ ] 7.7 After merge: tick the `bloomctl` row in `sleap-roots-pipeline`'s
       `docs/bloom-integration/roadmap.md` ("Cross-repo correctness: manifest-scoped processing"
       section) per that repo's own close-the-loop convention — a follow-up action in that repo,
