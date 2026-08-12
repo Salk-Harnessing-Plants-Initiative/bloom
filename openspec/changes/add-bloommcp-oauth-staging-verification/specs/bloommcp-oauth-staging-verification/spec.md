@@ -5,7 +5,8 @@
 The full `mcp-remote` OAuth 2.1 flow — discovery, dynamic client registration, browser login,
 consent, token exchange, and an authenticated tool call — SHALL be exercised against staging
 (`https://staging.bloom.salk.edu:8443/bloommcp/mcp`) using a disposable, clearly-labeled test
-identity, and the outcome of each step SHALL be recorded.
+identity that is itself deleted from staging afterward, and the outcome of each step SHALL be
+recorded.
 
 #### Scenario: Full flow succeeds against staging
 
@@ -32,14 +33,27 @@ identity, and the outcome of each step SHALL be recorded.
 
 - **WHEN** request/response detail from any step (registration, consent, token exchange) is
   recorded for the write-up or a follow-up issue
-- **THEN** bearer tokens, authorization codes, and `client_secret` values are replaced with
-  `[REDACTED]` before being recorded — this repository is public
+- **THEN** bearer tokens, authorization codes, `client_secret` values, session cookies, and PKCE
+  `code_verifier`/`state` values are replaced with `[REDACTED]` before being recorded, and the
+  draft is independently re-checked for these patterns immediately before posting — this
+  repository is public and posting is not reversible
+
+#### Scenario: A consent denial is exercised as a negative-path check
+
+- **WHEN** a second, deliberate run through registration and login denies consent instead of
+  approving it
+- **THEN** no token is issued and no tool call is possible afterward, and the result — including
+  the `oauth_clients` row this second registration also creates — is recorded and cleaned up the
+  same as the primary run
 
 #### Scenario: Staging state created by the run is cleaned up
 
-- **WHEN** the run completes, whether it succeeds or fails
-- **THEN** any `oauth_clients`/session row created by the run's disposable test identity is
-  identified and deleted, and the write-up records that the cleanup happened
+- **WHEN** the run completes, whether it succeeds, fails, or is aborted partway
+- **THEN** every `oauth_clients` row is deleted by the `client_id` it was registered under, the
+  disposable test identity's session row and its `auth.users` row are deleted by that identity's
+  email/id, and the write-up records that all three were cleaned up — leaving the disposable
+  `auth.users` row in place does not satisfy this requirement, since it is itself the state this
+  scenario requires removed
 
 ### Requirement: Existing fallback path re-confirmed before being relied upon
 
@@ -95,10 +109,11 @@ the run.
 - **THEN** the recommendation is "go" — proceed with `mcp-remote` + Claude Desktop against staging
   for the demo
 
-#### Scenario: Verification fails or cannot complete in time — no-go
+#### Scenario: Verification fails — no-go
 
-- **WHEN** any step in the flow fails against staging, or a needed fix cannot land and be
-  re-verified before Tuesday
+- **WHEN** any step in the flow fails against staging
 - **THEN** the recommendation is "no-go" — fall back to the existing Claude Code +
   `BLOOMMCP_API_KEY` path against staging
-  (see [connecting-claude-code.md](../../../../../bloommcp/docs/connecting-claude-code.md))
+  (see [connecting-claude-code.md](../../../../../bloommcp/docs/connecting-claude-code.md)) — full
+  stop, without attempting to land and re-verify a fix in the same session; a needed fix is filed
+  as a follow-up issue and re-verified as its own later run, not a same-session judgment call

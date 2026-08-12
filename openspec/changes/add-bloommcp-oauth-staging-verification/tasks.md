@@ -1,6 +1,11 @@
-**Timing note:** #620 was filed 2026-08-06 referencing "demo Tuesday" — today may already be that
-Tuesday. Treat this as immediate, not something to schedule later. Section 0 exists specifically so
-the fallback is known-good before time is spent on anything else.
+**Timing note:** #620 was filed 2026-08-06 referencing "demo Tuesday" (2026-08-11). As of this
+revision it is 2026-08-12 — one day past that date — and #620 has zero comments: no run write-up,
+no go/no-go call. Whether the demo already happened without this verification ever running, or
+this has simply slipped unnoticed, cannot be determined from the repo alone. Treat this as
+**overdue**, not "today is the day": run it immediately regardless, and task 4.5's notification
+must say plainly that the recommendation is arriving after, not before, the date the issue itself
+referenced. Section 0 exists specifically so the fallback is known-good before time is spent on
+anything else.
 
 ## 0. Confirm the fallback first
 
@@ -9,9 +14,11 @@ the fallback is known-good before time is spent on anything else.
       [connecting-claude-code.md](../../../bloommcp/docs/connecting-claude-code.md)) still works
       today: `claude mcp add --transport http bloommcp-staging
       https://staging.bloom.salk.edu:8443/bloommcp/mcp --header "Authorization: Bearer <token>"`,
-      then one read-only tool call. Pass = a real result, not an auth or connection error. If this
-      is already broken, escalate immediately — there is no time left to discover it later (see
-      design.md, "re-confirm the fallback... first").
+      then one read-only tool call. Pass = a real result, not an auth or connection error. **If
+      this is already broken: STOP. Do not proceed to Section 1.** Escalate immediately instead —
+      there is no time left to discover it later (see design.md, "re-confirm the fallback...
+      first"), and there is no point verifying a new auth path while the only known-good fallback
+      for the demo is unconfirmed.
 
 ## 1. Prep
 
@@ -31,9 +38,20 @@ the fallback is known-good before time is spent on anything else.
       `connecting-claude-code.md`'s own warning that an unreachable host looks like a hang, not a
       clean error) — reconfirm connectivity before treating it as a server-side failure.
 - [ ] 1.3 Set up a disposable, clearly-labeled test identity for the login/consent step — sign up
-      via bloom-web on staging with an address like `oauth-verify-620+<yyyymmdd>@<your-domain>`; do
-      not use a real Salk/SSO account. Record this exact identifier in the task 4.1 write-up so it
-      can be located later for cleanup (task 4.6).
+      via bloom-web on staging with an address like `oauth-verify-620+<yyyymmdd>-a1@<your-domain>`
+      (the `-a1` attempt suffix matters: if this run aborts and is re-attempted the same day,
+      increment it to `-a2`, etc., so 4.6's cleanup and the 4.1 write-up can tell which attempt's
+      state belongs to which signup instead of colliding on an identical address); do not use a
+      real Salk/SSO account. Plus-addressing survives client-side (`LoginForm.tsx`'s
+      `sanitizeLocalPart` allow-list includes `+`, and the concatenated address reaches
+      `supabase.auth.signUp()` verbatim) — but that only covers this repo's code, not whatever
+      Supabase Auth or the mail provider might do server-side, so still confirm the confirmation
+      email actually arrives at the exact plussed address before relying on it. Perform this
+      signup, and the login/consent step in task 2.1, in a private/incognito browser window on a
+      profile with no existing bloom-web session — if a real account were already logged in there,
+      consent could complete silently under that account instead of this disposable one, with no
+      error to signal it. Record this exact identifier in the task 4.1 write-up so it can be
+      located later for cleanup (task 4.6).
 
 ## 2. Run the flow
 
@@ -45,7 +63,12 @@ the fallback is known-good before time is spent on anything else.
       (expect `201` + a `client_id` in the response), browser redirect to login, login, redirect to
       consent, consent decision, token exchange (expect `200` + an `access_token`). **Cap
       registration attempts at 3 total** — this route has no rate limiting (PR #613) — and if still
-      failing after 3, stop and record it as failed rather than continuing to retry.
+      failing after 3, stop and record it as failed rather than continuing to retry. **Record every
+      `client_id` returned by a `201` in this task** (one per registration attempt, so up to 3) —
+      dynamic registration creates the `oauth_clients` row before login even happens, so `client_id`
+      is the actual lookup key task 4.6 uses to delete it, not the disposable identity from 1.3
+      (that identity is unrelated to which client got registered). Carry these `client_id` values
+      into the task 4.1 write-up even if the run later fails or aborts.
 - [ ] 2.2 Once authenticated, issue exactly one **read-only** tool call —
       `list_available_experiments` — against staging through this connection and confirm it returns
       real staging data, not an auth error. **Do not call `remove_outliers`, `qc_clean`, or any tool
@@ -59,8 +82,16 @@ the fallback is known-good before time is spent on anything else.
       for whether staging currently signs ES256 — task 1.1's env-var check alone can't answer that.
 - [ ] 2.4 If any step fails, capture the request/response detail needed to file a follow-up issue
       (status code, error body, which step) — don't just note "it failed." **Redact `client_secret`,
-      bearer tokens, authorization codes, and refresh tokens before recording anything** — replace
-      secret fields with `[REDACTED]`. This repository is public.
+      bearer tokens, authorization codes, refresh tokens, session cookies, and PKCE `code_verifier`/
+      `state` values before recording anything** — replace secret fields with `[REDACTED]`. The
+      last two are easy to miss because they show up in dev-tools network captures of the
+      login/consent redirects, not just in JSON response bodies. This repository is public.
+- [ ] 2.5 As a secondary, informational check (not required for the go/no-go decision in Section
+      4, and not counted against 2.1's 3-attempt retry cap — that cap is for isolating a failure,
+      this is one deliberate, planned run): repeat registration and login once more, but **deny**
+      consent at the consent screen instead of approving it. Confirm no token is issued and no tool
+      call is possible afterward. Record the `client_id` this second registration returns (task 4.6
+      needs to delete this row too) and fold the result into the 4.1 write-up.
 
 ## 3. Claude Desktop cached-token check
 
@@ -73,13 +104,22 @@ the fallback is known-good before time is spent on anything else.
 
 ## 4. Record results and decide
 
+**Abort-safe:** if this run is stopped or crashes anywhere after 1.3 (identity created) or 2.1/2.5
+(a `client_id` registered), tasks 4.1, 4.5, and 4.6 are still mandatory using whatever was captured
+up to that point — an incomplete run is not an exemption from notifying Evelyn or cleaning up
+staging state, it's a reason to say so explicitly in the write-up.
+
 - [ ] 4.1 Write up the verification record as a comment on #620, including for each step in
       Sections 0–3: timestamp, HTTP status (or "hung/timed out"), a one-line description of the
       response body (redacted per 2.4), the decoded JWT `alg` and which verifier path accepted it
-      (2.3), the tool called and a one-line summary of what it returned (2.2), Desktop version/OS
-      and restart behavior (3.1–3.2), the test identity used (1.3), whether any staging state was
-      left behind and cleaned up (4.6), and whether the `.env.staging.defaults` comment was accurate
-      or stale.
+      (2.3), the tool called and a one-line summary of what it returned (2.2), the deny-consent
+      result (2.5), Desktop version/OS and restart behavior (3.1–3.2), the test identity used (1.3)
+      and every `client_id` registered (2.1, 2.5), whether any staging state was left behind and
+      cleaned up (4.6), and whether the `.env.staging.defaults` comment was accurate or stale.
+      **Before posting:** grep the draft for `secret`, `Bearer `, `access_token`, `refresh_token`,
+      `code_verifier`, and `state=` as an independent check that 2.4's redaction actually caught
+      everything — this is a public repo and a missed secret can't be un-posted after the fact; one
+      remembered pass during drafting is not enough for something irreversible.
 - [ ] 4.2 File a follow-up GitHub issue for any failed step, with enough detail to act on without
       re-running the flow (per Requirement: mcp-remote OAuth flow verified end-to-end against
       staging).
@@ -87,9 +127,27 @@ the fallback is known-good before time is spent on anything else.
 - [ ] 4.4 If the `.env.staging.defaults` comment above `GOTRUE_OAUTH_SERVER_ENABLED` is confirmed
       stale, correct or remove it in a small follow-up commit (config/comment fix, not a proposal —
       see `openspec/AGENTS.md`'s "Skip proposal for... Configuration changes").
-- [ ] 4.5 Notify Evelyn of the go/no-go recommendation immediately — per the timing note above,
-      there is likely no lead time left, so this should happen as soon as 4.3 is decided, not
-      batched with other follow-up.
-- [ ] 4.6 Query staging's `oauth_clients` (and session) tables for rows created by this run's
-      disposable identity (1.3); delete them regardless of whether the run succeeded or failed
-      (design.md: cleanup is unconditional, not contingent on failure).
+- [ ] 4.5 Notify Evelyn of the go/no-go recommendation immediately — per the timing note above, this
+      is already overdue against the date #620 referenced, so say that plainly rather than
+      presenting it as on-time, and send it as soon as 4.3 is decided, not batched with other
+      follow-up.
+- [ ] 4.6 Clean up every piece of state this run created on staging, unconditionally (design.md:
+      cleanup does not depend on success or failure). Three separate things need deleting, keyed by
+      three different identifiers captured above — none of them share a key with each other:
+      1. **The OAuth client(s).** Dynamic registration creates the `oauth_clients` row before any
+         login happens, keyed by `client_id` (2.1, 2.5) — **not** by the disposable identity from
+         1.3. For each `client_id` recorded:
+         `DELETE FROM auth.oauth_clients WHERE client_id = '<client_id>';`
+         (run `\d auth.oauth_clients` first to confirm the exact column name on staging's deployed
+         GoTrue version if this errors — the row is keyed by the client_id returned in the `201`,
+         but the column name itself hasn't been directly confirmed against staging's schema.)
+      2. **The session.** Keyed by the disposable identity's `auth.users.id`:
+         `DELETE FROM auth.sessions WHERE user_id = (SELECT id FROM auth.users WHERE email =
+         '<disposable email from 1.3>');`
+      3. **The disposable user account itself.** This is the step design.md's "avoids polluting
+         staging's user list" rationale for using a disposable identity actually depends on — a
+         disposable identity that never gets deleted pollutes the user list exactly as much as a
+         real account would:
+         `DELETE FROM auth.users WHERE email = '<disposable email from 1.3>';`
+      Record in the 4.1 write-up that all three were run, or which ones couldn't be (per the
+      abort-safe note above) and why.

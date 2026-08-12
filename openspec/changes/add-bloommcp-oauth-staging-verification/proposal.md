@@ -20,15 +20,19 @@ and two related questions are explicitly still open:
   succeeds post-login.
 
 [#620](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/620) tracks exactly this
-verification. It matters now because Evelyn has a demo Tuesday and wants to run bloommcp live
-against staging through Claude Desktop; confirming this works — or confirming it doesn't, with
-enough lead time to fall back to the existing Claude Code + `BLOOMMCP_API_KEY` path
+verification. It matters because Evelyn has a demo Tuesday and wants to run bloommcp live against
+staging through Claude Desktop; confirming this works — or confirming it doesn't, with enough lead
+time to fall back to the existing Claude Code + `BLOOMMCP_API_KEY` path
 ([connecting-claude-code.md](../../../bloommcp/docs/connecting-claude-code.md), which already
-works today) — is the point. **Timing note, found while drafting this proposal:** #620 was filed
-2026-08-06 (a Thursday); today is 2026-08-11 — the Tuesday the issue itself refers to. There is no
-banked lead time left. Whoever runs this needs to treat it as immediate, not schedule it for later
-in the week, and the fallback (below) should be sanity-checked early specifically because there
-may be no time left to recover if it turns out to be broken too.
+works today) — is the point. **Timing note, updated while revising this proposal:** #620 was filed
+2026-08-06 (a Thursday) referencing that Tuesday, 2026-08-11. As of this revision it is
+2026-08-12 — one day past it — and #620 still has zero comments: no run write-up, no go/no-go call
+posted. Whether the demo already happened without this verification ever running, or this has
+simply slipped unnoticed, is not answerable from the repo alone. Whoever runs this needs to treat
+it as **overdue**, not merely immediate — run it now regardless, and say plainly in the eventual
+notification (tasks.md 4.5) that the result is arriving after the referenced date, not before it.
+The fallback (below) should still be sanity-checked first, since there's no more lead time to
+recover if it turns out to be broken too, whatever the calendar says at that point.
 
 This change does **not** attempt to resolve [#616](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/616)
 (the still-open network-path decision for Claude Desktop's in-app "Connectors" UX), and #616 does
@@ -68,10 +72,13 @@ rate limiting) are addressed directly in Non-Goals and design.md rather than wav
 - Check the stale-looking comment above `GOTRUE_OAUTH_SERVER_ENABLED=true` in
   `.env.staging.defaults` against what's actually observed (does login reach and pass the consent
   screen, or fail there) and correct or remove the comment if it no longer reflects reality.
-- Clean up any state the run itself creates on shared staging (a registered OAuth client, a test
-  login session) regardless of whether the run succeeds or fails.
-- Redact credentials (bearer tokens, authorization codes, `client_secret`) from anything recorded in
-  the write-up below — this repository is public.
+- Clean up every piece of state the run itself creates on shared staging — each registered OAuth
+  client, the test login session, and the disposable user account (`auth.users` row) itself —
+  regardless of whether the run succeeds, fails, or is aborted partway.
+- Redact credentials (bearer tokens, authorization codes, `client_secret`, session cookies, PKCE
+  `code_verifier`/`state`) from anything recorded in the write-up below, and independently re-check
+  the draft for these patterns immediately before posting — this repository is public and posting
+  is not reversible.
 - Record a go/no-go recommendation for Tuesday's demo: either this path is confirmed working, or
   the fallback (Claude Code + `BLOOMMCP_API_KEY` against staging) is confirmed as the path to use
   instead.
