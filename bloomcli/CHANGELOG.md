@@ -24,6 +24,29 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   targeting the same scan_id could both pass the skip-check and clobber each other's writes
   (#533). A stale lock (past `--lock-staleness-seconds`, default `900`, new option) is
   reclaimed rather than permanently wedging the directory.
+- `bloomctl plate download` — pull a plate (GraviScan) experiment or single scan out of Bloom:
+  `plates.csv`, `plate_sections.csv`, and the plate images. Selected the same way as
+  `cyl download` (`--experiment-id` / `--scan-id` / `--experiment-name` with `--species`), and
+  narrowed with `--plate-id`, `--wave-number` or `--session-id`. Until now there was no way to
+  get plate images out in bulk — a continuous session is one image per plate per cycle, which is
+  thousands of files, and the only route was clicking through the web UI one at a time.
+  An ambiguous `--experiment-name` lists each candidate's rig, because plate experiments are
+  unique on _(species, name, system)_ and one name can legitimately exist on two rigs.
+  Needs the `gravi_scans_extended` view and `gravi_experiment_search` function on the server.
+- Plate resume verifies size. `gravi_images` records `file_size_bytes` where `cyl_images` does
+  not, so a file is skipped only when its size matches the database — a truncated file is
+  re-fetched rather than treated as complete forever. When the recorded size is itself wrong the
+  download still succeeds and the log carries a `note=`, so an object that will be re-fetched on
+  every run is diagnosable instead of silently repeating.
+
+### Changed
+
+- The download mechanism is now shared between instruments rather than living inside the
+  cylinder command: object fetching and retry, atomic writes, resume, bounded concurrency,
+  disk-full handling, collision detection, progress and logging moved to `bloomctl/_download.py`
+  and `bloomctl/_storage.py`. Queries, CSV columns, path layout and the per-scan loop stay with
+  each instrument. No behaviour change to `cyl download`. The storage bucket is now a required
+  argument rather than a default, so no command can read another's bucket.
 
 ## [0.1.0a5] - 2026-08-13 — cylinder download reliability
 
@@ -160,7 +183,7 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 ### Added
 
 - `bloomctl cyl download` can select the experiment by name: `--experiment-name
-  "<text>"` resolves a single experiment by a case-insensitive substring match on its
+"<text>"` resolves a single experiment by a case-insensitive substring match on its
   name, then downloads it; `--species` narrows an ambiguous name. The match runs
   server-side via the new `cyl_experiment_search` RPC (a `SECURITY INVOKER` function
   taking the query as a bound parameter, trigram-indexed so it scales), so the CLI

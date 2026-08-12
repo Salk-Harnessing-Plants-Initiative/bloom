@@ -1,0 +1,424 @@
+"""`bloomctl plate download` — queries, the download loop, resume and failure handling.
+
+A plate scan holds exactly one image, so the loop is one-image-per-scan rather than the
+cylinder's many-frames-per-scan. Resume can verify size here, because gravi_images records
+file_size_bytes where cyl_images does not.
+"""
+
+from __future__ import annotations
+
+import threading
+
+import os
+
+import pytest
+from test_plate_download_paths import SCAN
+
+import bloomctl.plate.download as pd
+
+
+class _Bucket:
+    def __init__(self, fail_on=()):
+        self.fail_on = set(fail_on)
+        self.requested = []
+
+    def download(self, object_path):
+        self.requested.append(object_path)
+        if object_path in self.fail_on:
+            raise RuntimeError("500 storage error")
+        return f"bytes::{object_path}".encode()
+
+
+class _Client:
+    """Stand-in client that records which bucket was asked for."""
+
+    def __init__(self, fail_on=()):
+        self.bucket = _Bucket(fail_on)
+        self.buckets_asked = []
+        client = self
+
+        class _Storage:
+            def from_(self, name):
+                client.buckets_asked.append(name)
+                return client.bucket
+
+        self.storage = _Storage()
+
+
+def _scan(scan_id, plate_id, **overrides):
+    return {**SCAN, "scan_id": scan_id, "plate_id": plate_id, **overrides}
+
+
+def _image(scan_id, size=2048, name=None):
+    return {
+        "scan_id": scan_id,
+        "object_path": name or f"gravi/{scan_id}.jpg",
+        "file_size_bytes": size,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Queries
+# --------------------------------------------------------------------------- #
+
+
+class _Query:
+    """Records the PostgREST filter chain so the tests can assert on it."""
+
+    def __init__(self, recorder, rows):
+        self.recorder = recorder
+        self.rows = rows
+
+    def select(self, *a):
+        return self
+
+    def eq(self, column, value):
+        self.recorder.setdefault("eq", []).append((column, value))
+        return self
+
+    def in_(self, column, values):
+        self.recorder.setdefault("in", []).append((column, list(values)))
+        return self
+
+    def order(self, column):
+        self.recorder["order"] = column
+        return self
+
+    def limit(self, n):
+        self.recorder["limit"] = n
+        return self
+
+    def execute(self):
+        return type("R", (), {"data": self.rows})()
+
+
+class _TableClient:
+    def __init__(self, rows=None):
+        self.calls = {}
+        self.rows = rows or []
+
+    def table(self, name):
+        self.calls["table"] = name
+        return _Query(self.calls, self.rows)
+
+    def rpc(self, name, params):
+        self.calls["rpc"] = (name, params)
+        return type("R", (), {"execute": lambda _self: type("D", (), {"data": self.rows})()})()
+
+
+def test_fetch_plate_scans_reads_the_extended_view():
+    client = _TableClient([SCAN])
+    pd.fetch_plate_scans(client, 12)
+    assert client.calls["table"] == "gravi_scans_extended"
+    assert ("experiment_id", 12) in client.calls["eq"]
+
+
+def test_fetch_plate_scans_applies_every_filter():
+    client = _TableClient([])
+    pd.fetch_plate_scans(client, 12, plate_id="P1", wave_number=3, session_id=88, limit=50)
+    applied = dict(client.calls["eq"])
+    assert applied["plate_id"] == "P1"
+    assert applied["wave_number"] == 3
+    assert applied["session_id"] == 88
+    assert client.calls["limit"] == 50
+
+
+def test_fetch_plate_scans_omits_filters_that_were_not_given():
+    client = _TableClient([])
+    pd.fetch_plate_scans(client, 12)
+    assert [c for c, _ in client.calls["eq"]] == ["experiment_id"]
+
+
+def test_fetch_plate_images_maps_scan_id_to_its_single_image():
+    rows = [_image(1), _image(2)]
+    client = _TableClient(rows)
+    found = pd.fetch_plate_images(client, [1, 2])
+    assert client.calls["table"] == "gravi_images"
+    assert found[1]["object_path"] == "gravi/1.jpg"
+    assert found[2]["object_path"] == "gravi/2.jpg"
+
+
+def test_fetch_plate_images_is_one_query_for_every_scan():
+    # One image per scan means the whole selection can be fetched with a single `in` filter,
+    # rather than the cylinder's per-scan listing round-trip.
+    client = _TableClient([])
+    pd.fetch_plate_images(client, [1, 2, 3])
+    assert client.calls["in"] == [("scan_id", [1, 2, 3])]
+
+
+def test_search_plate_experiments_calls_the_gravi_rpc():
+    client = _TableClient([])
+    pd.search_experiments(client, "gravi", species="Pennycress")
+    name, params = client.calls["rpc"]
+    assert name == "gravi_experiment_search"
+    assert params["p_query"] == "gravi" and params["p_species"] == "Pennycress"
+
+
+# --------------------------------------------------------------------------- #
+# Downloading
+# --------------------------------------------------------------------------- #
+
+
+def test_download_reads_the_graviscan_bucket_never_the_cyl_one(tmp_path):
+    client = _Client()
+    pd.download_images(client, [_scan(1, "P1")], {1: _image(1)}, tmp_path)
+    assert client.buckets_asked == ["graviscan-images"]
+
+
+def test_each_scan_writes_exactly_one_image(tmp_path):
+    client = _Client()
+    scans = [_scan(1, "P1"), _scan(2, "P2")]
+    result = pd.download_images(client, scans, {1: _image(1), 2: _image(2)}, tmp_path)
+
+    assert result.ok == 2 and result.total == 2 and result.failed == 0
+    written = sorted(p.name for p in (tmp_path / "images").rglob("*.jpg"))
+    assert len(written) == 2
+
+
+def test_a_scan_with_no_image_row_is_noted_but_does_not_fail_the_run(tmp_path):
+    client = _Client()
+    result = pd.download_images(client, [_scan(1, "P1"), _scan(2, "P2")], {1: _image(1)}, tmp_path)
+
+    assert result.scans_without_frames == 1
+    assert result.failed == 0
+    assert result.incomplete is False, "nothing to fetch is not a failure"
+
+
+def test_a_failing_object_is_recorded_and_the_run_continues(tmp_path):
+    client = _Client(fail_on={"gravi/2.jpg"})
+    scans = [_scan(1, "P1"), _scan(2, "P2"), _scan(3, "P3")]
+    images = {1: _image(1), 2: _image(2), 3: _image(3)}
+
+    result = pd.download_images(client, scans, images, tmp_path)
+
+    assert result.failed == 1 and result.ok == 2
+    assert result.incomplete is True
+
+
+def test_malformed_image_row_is_reported_against_gravi_images(tmp_path):
+    client = _Client()
+    result = pd.download_images(client, [_scan(1, "P1")], {1: {"scan_id": 1}}, tmp_path)
+    assert result.failed == 1
+    assert "gravi_images" in result.frames[0].error
+
+
+def test_results_stay_in_scan_order(tmp_path):
+    client = _Client()
+    scans = [_scan(i, f"P{i}") for i in range(1, 6)]
+    images = {i: _image(i) for i in range(1, 6)}
+    result = pd.download_images(client, scans, images, tmp_path, workers=4)
+    assert [f.scan_id for f in result.frames] == [1, 2, 3, 4, 5]
+
+
+def test_sequential_mode_downloads_one_at_a_time(tmp_path):
+    client = _Client()
+    scans = [_scan(i, f"P{i}") for i in range(1, 4)]
+    images = {i: _image(i) for i in range(1, 4)}
+    result = pd.download_images(client, scans, images, tmp_path, workers=1)
+    assert result.ok == 3
+    assert client.bucket.requested == ["gravi/1.jpg", "gravi/2.jpg", "gravi/3.jpg"]
+
+
+def test_progress_reports_captures_not_frames(tmp_path):
+    seen = []
+    client = _Client()
+    pd.download_images(
+        client,
+        [_scan(1, "P1")],
+        {1: _image(1)},
+        tmp_path,
+        on_progress=lambda *a: seen.append(a),
+    )
+    assert seen, "progress must be reported"
+    assert seen[-1][0] == "downloading"
+
+
+# --------------------------------------------------------------------------- #
+# Resume — the plate side can verify size, unlike the cylinder side
+# --------------------------------------------------------------------------- #
+
+
+def test_an_image_of_the_recorded_size_is_skipped(tmp_path):
+    client = _Client()
+    scan, image = _scan(1, "P1"), _image(1, size=len(b"bytes::gravi/1.jpg"))
+    pd.download_images(client, [scan], {1: image}, tmp_path)
+    client.bucket.requested.clear()
+
+    result = pd.download_images(client, [scan], {1: image}, tmp_path)
+
+    assert result.skipped == 1 and result.ok == 1
+    assert client.bucket.requested == [], "a complete image must not be re-requested"
+
+
+def test_a_truncated_image_is_downloaded_again(tmp_path):
+    client = _Client()
+    scan, image = _scan(1, "P1"), _image(1, size=9999)
+    dest = pd.image_dest(tmp_path, scan, image)
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"short")
+
+    result = pd.download_images(client, [scan], {1: image}, tmp_path)
+
+    assert result.skipped == 0 and result.downloaded == 1
+    assert dest.read_bytes() == b"bytes::gravi/1.jpg"
+
+
+def test_a_null_recorded_size_falls_back_to_non_empty(tmp_path):
+    client = _Client()
+    scan, image = _scan(1, "P1"), _image(1, size=None)
+    dest = pd.image_dest(tmp_path, scan, image)
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"anything")
+
+    result = pd.download_images(client, [scan], {1: image}, tmp_path)
+
+    assert result.skipped == 1
+    assert client.bucket.requested == []
+
+
+def test_a_wrong_recorded_size_is_noted_so_endless_re_downloads_are_diagnosable(tmp_path):
+    # If file_size_bytes disagrees with what storage serves, the resume check can never be
+    # satisfied and every run re-fetches. The bytes are fine, so it isn't a failure — but
+    # without a note the user sees an experiment re-download forever with no explanation.
+    client = _Client()
+    scan, image = _scan(1, "P1"), _image(1, size=9999)
+
+    result = pd.download_images(client, [scan], {1: image}, tmp_path)
+
+    assert result.ok == 1 and result.failed == 0
+    note = result.frames[0].note
+    assert "9999" in note and "re-runs" in note
+
+
+def test_a_matching_recorded_size_produces_no_note(tmp_path):
+    client = _Client()
+    scan, image = _scan(1, "P1"), _image(1, size=len(b"bytes::gravi/1.jpg"))
+    result = pd.download_images(client, [scan], {1: image}, tmp_path)
+    assert result.frames[0].note == ""
+
+
+def test_the_size_note_reaches_the_download_log(tmp_path):
+    import bloomctl._download as shared
+
+    client = _Client()
+    result = pd.download_images(client, [_scan(1, "P1")], {1: _image(1, size=9999)}, tmp_path)
+    log = tmp_path / "log.txt"
+    shared.write_download_log(result, log, noun="capture")
+    assert "note=" in log.read_text()
+
+
+def test_an_empty_file_is_not_treated_as_complete(tmp_path):
+    client = _Client()
+    scan, image = _scan(1, "P1"), _image(1, size=None)
+    dest = pd.image_dest(tmp_path, scan, image)
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"")
+
+    assert pd.download_images(client, [scan], {1: image}, tmp_path).downloaded == 1
+
+
+def test_orphan_temp_files_are_swept_before_the_run(tmp_path):
+    orphan = tmp_path / "images" / "Wave3" / "P1" / ".dl-deadbeef.tmp"
+    orphan.parent.mkdir(parents=True)
+    orphan.write_bytes(b"partial")
+    os.utime(orphan, (0, 0))  # left by a run that is long gone, not one still writing
+
+    pd.download_images(_Client(), [_scan(1, "P1")], {1: _image(1)}, tmp_path)
+
+    assert not orphan.exists()
+
+
+def test_a_temp_file_from_a_live_run_is_left_alone(tmp_path):
+    """A temp cannot be told from a live one by name, so a fresh one is another run's."""
+    live = tmp_path / "images" / "Wave3" / "P1" / ".dl-inflight.tmp"
+    live.parent.mkdir(parents=True)
+    live.write_bytes(b"being written right now")
+
+    pd.download_images(_Client(), [_scan(1, "P1")], {1: _image(1)}, tmp_path)
+
+    assert live.exists(), "sweeping a live temp breaks the run that is writing it"
+
+
+# --------------------------------------------------------------------------- #
+# Collisions
+# --------------------------------------------------------------------------- #
+
+
+def test_two_scans_mapping_to_one_file_are_refused(tmp_path):
+    # Same plate, same wave, same capture instant and cycle: one destination, two scans.
+    a = _scan(1, "P1")
+    b = _scan(2, "P1")
+    with pytest.raises(pd.CollidingFrames) as excinfo:
+        pd.download_images(_Client(), [a, b], {1: _image(1), 2: _image(2)}, tmp_path)
+    assert "scan 1" in str(excinfo.value) and "scan 2" in str(excinfo.value)
+
+
+def test_nothing_is_downloaded_when_a_collision_is_found(tmp_path):
+    client = _Client()
+    with pytest.raises(pd.CollidingFrames):
+        pd.download_images(
+            client, [_scan(1, "P1"), _scan(2, "P1")], {1: _image(1), 2: _image(2)}, tmp_path
+        )
+    assert client.bucket.requested == []
+
+
+def test_plate_ids_differing_only_by_case(tmp_path):
+    import bloomctl._download as shared
+
+    scans = [_scan(1, "st0-001"), _scan(2, "ST0-001")]
+    images = {1: _image(1), 2: _image(2)}
+    if shared.filesystem_folds_case(tmp_path):
+        with pytest.raises(pd.CollidingFrames):
+            pd.download_images(_Client(), scans, images, tmp_path)
+    else:
+        assert pd.download_images(_Client(), scans, images, tmp_path).ok == 2
+
+
+def test_different_cycles_of_one_plate_do_not_collide(tmp_path):
+    scans = [
+        _scan(1, "P1", cycle_number=0, capture_date="2026-05-27T14:03:11+00:00"),
+        _scan(2, "P1", cycle_number=1, capture_date="2026-05-27T14:13:11+00:00"),
+    ]
+    result = pd.download_images(_Client(), scans, {1: _image(1), 2: _image(2)}, tmp_path)
+    assert result.ok == 2
+
+
+# --------------------------------------------------------------------------- #
+# Disk full
+# --------------------------------------------------------------------------- #
+
+
+def test_disk_full_abandons_work_that_has_not_started(tmp_path, monkeypatch):
+    import bloomctl._download as shared
+
+    def _no_space(path, data):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(shared, "atomic_write_bytes", _no_space)
+
+    scans = [_scan(i, f"P{i}") for i in range(1, 21)]
+    images = {i: _image(i) for i in range(1, 21)}
+    result = pd.download_images(_Client(), scans, images, tmp_path, workers=1)
+
+    assert result.failed == 20
+    assert any("nowhere left to write" in f.error.lower() for f in result.frames)
+
+
+def test_an_expired_session_is_named_rather_than_a_missing_bucket(tmp_path):
+    class _Expired(_Bucket):
+        def download(self, object_path):
+            raise RuntimeError("{'statusCode': 404, 'message': Bucket not found}")
+
+    client = _Client()
+    client.bucket = _Expired()
+    result = pd.download_images(client, [_scan(1, "P1")], {1: _image(1)}, tmp_path)
+    assert "expired session" in result.frames[0].error
+
+
+def test_stop_event_short_circuits_a_pending_scan(tmp_path):
+    stop = threading.Event()
+    stop.set()
+    outcome = pd.download_plate_image(
+        _Client(), _scan(1, "P1"), _image(1), tmp_path, stop=stop
+    )
+    assert outcome.ok is False and "nowhere left to write" in outcome.error.lower()

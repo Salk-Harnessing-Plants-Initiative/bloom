@@ -167,6 +167,7 @@ class FrameResult:
     skipped: bool = False  # already on disk from an earlier run
     unlisted: bool = False  # set on a scan whose frame list could not be fetched at all
     no_frames: bool = False  # set on a scan that listed cleanly but has no images
+    note: str = ""  # something worth saying about a download that still succeeded
 
     @property
     def scan_level(self) -> bool:
@@ -266,7 +267,7 @@ def download_to(
     of workers.
     """
     if stop is not None and stop.is_set():
-        return Fetched(False, False, "no space left on device — nothing further was downloaded")
+        return Fetched(False, False, "nowhere left to write — nothing further was downloaded")
     try:
         if already_downloaded(dest, expected_size):
             return Fetched(True, True, "")
@@ -281,11 +282,14 @@ def download_to(
         return Fetched(True, False, "", note)
     except OSError as exc:
         # A full disk isn't this image's problem, it's every remaining image's.
-        if exc.errno == errno.ENOSPC and stop is not None:
+        if exc.errno in OUT_OF_SPACE and stop is not None:
             stop.set()
         return Fetched(False, False, str(exc))
     except Exception as exc:  # per-image: record and continue
         return Fetched(False, False, str(exc))
+
+
+# --- bounded concurrency ----------------------------------------------------
 
 
 def run_bounded(
@@ -429,9 +433,12 @@ class ProgressReporter:
     summary on stdout stay usable in a script.
     """
 
-    def __init__(self, *, interval: float | None = None, now=time.monotonic):
+    def __init__(
+        self, *, interval: float | None = None, now=time.monotonic, noun: str = "frames"
+    ):
         self._interval = PROGRESS_INTERVAL_SECONDS if interval is None else interval
         self._now = now
+        self._noun = noun
         self._last = 0.0
         self._phase = ""
         self._samples: deque[tuple[float, int]] = deque(maxlen=RATE_WINDOW_SAMPLES)
@@ -453,7 +460,8 @@ class ProgressReporter:
         arrived = failed - self._failures_seen
         self._failures_seen = failed
         line = format_progress(
-            phase, done, total, failed, rate=rate, seconds_left=seconds_left, new_failures=arrived
+            phase, done, total, failed, rate=rate, seconds_left=seconds_left,
+            new_failures=arrived, noun=self._noun,
         )
         click.echo(f"  {line}", err=True)
         if failed and not self._mentioned_retry:  # once, when failures first appear
@@ -491,13 +499,14 @@ def format_progress(
     rate: float | None = None,
     seconds_left: float | None = None,
     new_failures: int = 0,
+    noun: str = "frames",
 ) -> str:
     """One progress line, e.g. ``349/60,336 frames (0.6%)  6.3/s  ~2h39m left, 33 failed (+12)``.
 
     ``(+N)`` counts failures since the last line, so its absence means they have stopped.
     """
-    noun = "scans" if phase == "listing" else "frames"
-    prefix = "Listing frames: " if phase == "listing" else ""
+    unit = "scans" if phase == "listing" else noun
+    prefix = f"Listing {noun}: " if phase == "listing" else ""
     # Held below 100 until the last frame lands: rounding alone reads 100.0% with frames
     # still outstanding on any run of a few thousand.
     share = min(done * 100 / total, 99.9) if total and done < total else (100.0 if total else 0)
@@ -506,7 +515,7 @@ def format_progress(
     left = f"  ~{format_duration(seconds_left)} left" if seconds_left else ""
     problem = f", {failed:,} failed" if failed else ""
     arrived = f" (+{new_failures:,})" if failed and new_failures > 0 else ""
-    return f"{prefix}{done:,}/{total:,} {noun}{percent}{pace}{left}{problem}{arrived}"
+    return f"{prefix}{done:,}/{total:,} {unit}{percent}{pace}{left}{problem}{arrived}"
 
 
 def _one_line(text: Any) -> str:
@@ -518,8 +527,10 @@ def _one_line(text: Any) -> str:
     return " ".join(str(text).split())
 
 
-def write_download_log(result: DownloadResult, path: Path) -> None:
-    """Write a per-frame download log (one line per frame) with a summary footer.
+def write_download_log(result: DownloadResult, path: Path, *, noun: str = "frame") -> None:
+    """Write a per-item download log (one line each) with a summary footer.
+
+    ``noun`` names the unit of work, so a plate run logs captures rather than frames.
 
     Written atomically, so a failed write leaves the previous log intact.
     """
@@ -528,29 +539,31 @@ def write_download_log(result: DownloadResult, path: Path) -> None:
     for f in result.frames:
         if f.unlisted:
             lines.append(
-                f"UNLISTED scan={f.scan_id} (frame count unknown)  error={_one_line(f.error)}"
+                f"UNLISTED scan={f.scan_id} ({noun} count unknown)  error={_one_line(f.error)}"
             )
             continue
         if f.no_frames:
             lines.append(f"NOFRAMES scan={f.scan_id} (no images recorded for this scan)")
             continue
         status = "SKIP" if f.skipped else "OK  " if f.ok else "FAIL"
-        line = f"{status} scan={f.scan_id} frame={f.frame_number} {_one_line(f.object_path)}"
+        line = f"{status} scan={f.scan_id} {noun}={f.frame_number} {_one_line(f.object_path)}"
         if not f.ok:
             line += f"  error={_one_line(f.error)}"
+        if f.note:
+            line += f"  note={_one_line(f.note)}"
         lines.append(line)
     summary = (
-        f"\nSummary: {result.ok}/{result.total} frames present "
+        f"\nSummary: {result.ok}/{result.total} {noun}s present "
         f"({result.downloaded} downloaded this run, {result.skipped} already on disk), "
         f"{result.failed} failed"
     )
     if result.scans_unlisted:
-        summary += f", {result.scans_unlisted} scan(s) could not be listed (frames unknown)"
+        summary += f", {result.scans_unlisted} scan(s) could not be listed ({noun}s unknown)"
     if result.scans_without_frames:
         summary += f", {result.scans_without_frames} scan(s) have no images"
     if result.disk_full:
         summary += (
-            " — the disk filled up or the storage quota was spent, so the remaining frames "
+            f" — the disk filled up or the storage quota was spent, so the remaining {noun}s "
             "were never attempted"
         )
     lines.append(summary)

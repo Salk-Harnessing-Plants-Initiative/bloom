@@ -40,8 +40,9 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 
 ## Commands
 
-`login` is flat; assay-specific commands are grouped by data type (`cyl`). Each
-command is tagged **[read]** or **[write]** — see [Access & roles](#access--roles).
+`login` is flat; assay-specific commands are grouped by data type (`cyl`,
+`plate`). Each command is tagged **[read]** or **[write]** — see
+[Access & roles](#access--roles).
 
 - `bloomctl login` — bootstrap client config from the Bloom server and store
   credentials per profile.
@@ -51,6 +52,10 @@ command is tagged **[read]** or **[write]** — see [Access & roles](#access--ro
   case-insensitive substring search on the experiment name, run server-side and
   index-backed; `--species` to narrow; an ambiguous name lists the candidates and
   exits without downloading).
+- **[read]** `bloomctl plate download <out_dir> …` — download a plate (GraviScan)
+  experiment or single scan (metadata `plates.csv` + per-plate images). Same
+  selectors as `cyl download`; narrow with `--plate-id`, `--wave-number` or
+  `--session-id`.
 - **[read]** `bloomctl cyl download-for-predict <scan-id> <out>` — stage one scan
   into the predict-ready layout (see below); produces a **different** output tree
   than `cyl download` — use this only for A4 pipeline stage-in.
@@ -114,8 +119,8 @@ These apply across the `cyl` commands, so the per-command sections below stay sh
 
 ## Worked example: from login to a downloaded experiment
 
-A start-to-finish walkthrough for the common task — *"get me the images + metadata for the soybean
-drought experiment."*
+A start-to-finish walkthrough for the common task — _"get me the images + metadata for the soybean
+drought experiment."_
 
 ```bash
 # 1. Log in (once). Defaults to prod; use --server + -p for a named staging/local profile.
@@ -227,7 +232,7 @@ bloomctl cyl download ./out --experiment-id 42   # picks up from 117k
 ```
 
 **One selection per directory.** A download records what it fetched, so re-running the same
-command resumes it. Downloading something *different* into the same directory is refused —
+command resumes it. Downloading something _different_ into the same directory is refused —
 otherwise you would end up with two sets of images in one tree and a `scans.csv` describing only
 the newer one. So a spot-check and a full pull want separate directories:
 
@@ -246,6 +251,76 @@ command resumes from wherever it stopped.
 
 > `--experiment-name` requires the `cyl_experiment_search` DB function (migration
 > `…_add_cyl_experiment_search.sql`) to be applied on the server you're pointed at.
+
+## `bloomctl plate download`
+
+Download a whole plate (GraviScan) experiment, or a single plate scan: the metadata table
+`plates.csv` plus every plate image, into `<out_dir>`.
+
+```
+bloomctl plate download <out_dir>
+  ( --experiment-id N | --scan-id N | --experiment-name "<text>" [--species <name>] )
+  [--meta-only] [--plate-id ID] [--wave-number N] [--session-id N]
+  [--limit N] [-n/--workers N] [-p/--profile PROFILE]
+```
+
+Target selection works exactly like `cyl download` — one of `--experiment-id`, `--scan-id`, or
+`--experiment-name`, with `--species` to narrow an ambiguous name. One difference: the candidate
+list also prints each experiment's **rig** (`system_name`), because a plate experiment is unique
+on _(species, name, system)_ — the same name really can exist on two GraviScan rigs, and without
+the rig the two rows would look identical.
+
+Narrowing options: `--plate-id` (one plate barcode), `--wave-number` (one wave), `--session-id`
+(one continuous run of cycles), `--limit` (max scans, default 100000).
+
+```bash
+# a whole experiment, or just one plate from it
+bloomctl plate download ./gravi --experiment-id 12
+bloomctl plate download ./gravi --experiment-id 12 --plate-id PLATE-001
+
+# one session's cycles; metadata only first
+bloomctl plate download ./gravi --experiment-id 12 --session-id 88 --meta-only
+```
+
+### What lands on disk
+
+A cylinder scan holds many frames of one plant at one moment. A plate scan holds exactly **one**
+image — repetition comes from _time_ instead, because a continuous session captures the same
+plate once per cycle. So the tree groups by plate, and names each file by its capture:
+
+```
+out/
+  plates.csv                 one row per scan, with an image_path column
+  plate_sections.csv         one row per (section, plant QR) — only if the plates carry metadata
+  download_log.txt           one line per capture, plus a summary
+  .bloomctl-download.json    which selection this directory holds
+  images/
+    Wave3/
+      PLATE-001/
+        c0_2026-05-27T14-03-11+00-00.jpg
+        c1_2026-05-27T14-13-11+00-00.jpg
+```
+
+The cycle prefix is dropped for single-mode scans, which have no cycle. Lexical order matches
+capture order, so a gravitropism time series reads correctly straight off a directory listing.
+
+`plate_sections.csv` is separate rather than more columns on `plates.csv`: a plate's sections are
+one-to-many and their plant QR codes one-to-many again, so folding them in would mean duplicating
+every scan row. Join it back on `metadata_id`.
+
+### Resume
+
+Same as `cyl download` — re-running the same command into the same directory picks up where it
+stopped, and a _different_ selection in that directory is refused rather than mixed in.
+
+Plate resume is slightly stronger: `gravi_images` records `file_size_bytes`, so a file is only
+skipped when its size matches what the database says. A truncated file is fetched again instead
+of being treated as complete forever. If the recorded size is itself wrong, the download still
+succeeds and the log carries a `note=` saying so — otherwise that object would be re-fetched on
+every run with no explanation.
+
+> `plate download` requires the `gravi_scans_extended` view and, for `--experiment-name`, the
+> `gravi_experiment_search` function to be applied on the server you're pointed at.
 
 ## Finding what to download
 
@@ -330,8 +405,8 @@ bloomctl cyl batch-download-for-predict <out_dir>
 - Exactly one of `--scan-ids-file` (a JSON array of integer scan_ids, read from
   a path or stdin when the value is `-`) or `--scan-ids` (a comma-separated
   list, for ad hoc manual use) is required.
-- Stages every scan_id into `<out_dir>/scan_<scan_id>/`, identical to what
-  `download-for-predict` writes for one scan.
+- Stages every scan*id into `<out_dir>/scan*<scan_id>/`, identical to what
+`download-for-predict` writes for one scan.
 - **Isolates per-scan failures** — one bad scan (not found, no frames, a
   metadata-resolution failure, a partial frame-download failure, or lock
   contention with another live invocation) is recorded and reported, but does
@@ -372,10 +447,10 @@ Commands run **as the logged-in user** — every query and mutation is RLS-enfor
 under the caller's role, not a service key. So the role your `bloomctl login`
 profile maps to determines what works:
 
-| Command tag | Required role | Intended user |
-|---|---|---|
-| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account |
-| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`) | `bloom_writer` / `bloom_admin` | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
+| Command tag                                                                                    | Required role                         | Intended user                                                                             |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------- |
+| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
+| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`)                        | `bloom_writer` / `bloom_admin`        | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
 
 A read-only `bloom_user` can `list` datasets but **cannot** `create` one — the
 write path (the `create_cyl_dataset` / `insert_cyl_result_envelope` RPCs and the

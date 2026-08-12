@@ -184,14 +184,20 @@ def sweep_orphan_temps(out_dir: Path) -> int:
     return removed
 
 
-def already_downloaded(path: Path) -> bool:
-    """True if ``path`` already holds this frame, so a resumed run can skip fetching it.
+def already_downloaded(path: Path, expected_size: int | None = None) -> bool:
+    """True if ``path`` already holds this object, so a resumed run can skip fetching it.
 
-    All this can say is that the file isn't empty. It won't catch one left truncated by
-    `0.1.0a3`, which wrote frames without the temp-file step — download those afresh into
-    a new directory. `cyl_images` records no length to check against; #657 tracks adding
-    one at upload, as `gravi_images` already does.
+    Given ``expected_size`` this is a real completeness check, and a truncated file is
+    fetched again rather than treated as done forever. Without it, all this can say is that
+    the file isn't empty — which won't catch one left truncated by `0.1.0a3`, which wrote
+    frames without the temp-file step; download those afresh into a new directory.
+
+    `gravi_images` records a length to check against, so plate downloads pass one.
+    `cyl_images` does not; #657 tracks adding it at upload.
     """
     if not path.is_file():
         return False
-    return path.stat().st_size > 0
+    size = path.stat().st_size
+    if expected_size is not None:
+        return size == expected_size
+    return size > 0
