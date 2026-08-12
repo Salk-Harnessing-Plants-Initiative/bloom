@@ -40,6 +40,9 @@ _CONSUMERS = [
     "sections/core/list_available_experiments.py",
     "sections/core/load_experiment_data.py",
     "sections/core/list_existing_analyses.py",
+    # get_download_links.py (bloom#599) — a fourth core read consumer, added here
+    # for the same reason list_existing_analyses.py already is.
+    "sections/core/get_download_links.py",
     "sections/sleap_roots/analysis/pca_analysis.py",
     "sections/sleap_roots/analysis/qc_clean.py",
     "sections/sleap_roots/analysis/qc_inspect.py",

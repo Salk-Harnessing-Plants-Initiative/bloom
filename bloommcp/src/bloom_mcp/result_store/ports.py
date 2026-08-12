@@ -29,6 +29,24 @@ class RunNotFoundError(ResultStoreError):
     """No run matches the requested ``(experiment, tool_class, run_ref)``."""
 
 
+class CorruptRunLinksError(ResultStoreError):
+    """A resolved run's persisted ``output_keys`` fall outside its own expected
+    object-key prefix (bloom#599's read-path guard).
+
+    Raised by :meth:`ResultStore.get_download_links` before signing or sizing
+    any output whose key does not fall under the freshly recomputed
+    ``(experiment, tool_class, version_dir)`` prefix — never a caller-input
+    condition, always a corrupt-manifest-data or resolution-bug signal.
+    Structurally distinct from ``_artifacts.KeyScopeGuardError``
+    (``add-bloommcp-signed-url-key-scoping``'s *write*-path guard on
+    ``commit()``, a ``RuntimeError`` subclass): that one guards a key before
+    it is ever uploaded/signed; this one guards a key already read back from
+    a committed manifest. The two are independent by design (see that
+    change's design.md) and living in different modules avoids any merge
+    collision regardless of which change lands second.
+    """
+
+
 class RunStateError(ResultStoreError):
     """A run handle was misused — committed twice, or never created here."""
 
@@ -176,4 +194,28 @@ class ResultStore(Protocol):
         run_ref: str = "latest",
     ) -> StoredRun:
         """Resolve a run by reference; ``"latest"`` resolves the most recent."""
+        ...
+
+    def get_download_links(
+        self,
+        experiment: str,
+        tool_class: str,
+        run_ref: str = "latest",
+    ) -> StoredRun:
+        """Resolve a run exactly as ``get_run`` does, but with ``output_links``
+        freshly (re-)populated (bloom#599) — the deliberate, caller-opted-in
+        exception to ``get_run``/``list_runs`` always returning it empty.
+
+        Every ``size_bytes`` is resolved live via
+        :meth:`StorageBackend.get_object_size` on every call — nothing is
+        ever persisted for it, and no manifest/``Provenance``/``VersionEntry``
+        field is read, written, or created for this purpose. A run whose
+        ``output_keys`` is empty (e.g. a legacy v2 manifest entry, recorded
+        before per-artifact keys existed) returns ``output_links == {}``
+        rather than raising. Raises :class:`CorruptRunLinksError` if any
+        persisted ``output_key`` falls outside the freshly recomputed
+        ``(experiment, tool_class, version_dir)`` prefix, before signing or
+        sizing it. A single output's lookup failure fails the whole call —
+        never a partially-populated ``output_links``.
+        """
         ...
