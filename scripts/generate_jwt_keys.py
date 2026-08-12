@@ -11,9 +11,19 @@ This prints two values:
     JWT_KEYS   the EC P-256 *private* key plus the existing JWT_SECRET.
                Only Supabase Auth gets this; it is what signs new tokens.
 
-    JWT_JWKS   the EC *public* half plus the existing JWT_SECRET. Given to
-               everything that only verifies (PostgREST, Realtime, Storage)
-               so both new ES256 and older HS256 tokens validate.
+    JWT_JWKS   the EC *public* half plus the existing JWT_SECRET, so both new
+               ES256 and older HS256 tokens validate.
+
+               Each verifier reads key material from a *different* variable, and
+               only PostgREST accepts it inside its secret. Wiring JWT_JWKS into
+               the wrong one leaves that service HS256-only, which is how #646
+               broke Storage:
+
+                   rest       PGRST_JWT_SECRET: ${JWT_JWKS:-${JWT_SECRET}}
+                   storage    JWT_JWKS      (PGRST_JWT_SECRET stays symmetric)
+                   realtime   API_JWT_JWKS  (API_JWT_SECRET stays symmetric)
+
+               Supavisor has no documented JWKS input; leave it on JWT_SECRET.
 
 BOTH VALUES ARE SECRETS. `JWT_JWKS` reads like public key material, but it
 embeds JWT_SECRET as a symmetric JWK so pre-migration tokens keep working —
