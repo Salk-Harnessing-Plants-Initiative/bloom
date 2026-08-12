@@ -160,3 +160,72 @@ def test_enqueue_skips_when_video_exists(monkeypatch):
 
     result = video_queue.enqueue_experiment_scan_video(1, 5)
     assert result == {"job_id": None, "status": "exists"}
+
+
+def test_a_failed_claim_does_not_reach_the_reconnect_path(monkeypatch, caplog):
+    """A claim commits server-side before its response is read, so a lost response is ordinary
+    network flakiness, not a dead client. Reconnecting on it would drop the session for nothing."""
+
+    def _boom(_client):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(worker, "claim_job", _boom)
+
+    with caplog.at_level("WARNING"):
+        assert worker.process_one(object()) is False
+
+    assert "claim failed" in caplog.text
+
+
+def _stats(queued, processing=0, oldest=None):
+    return {
+        "queued": queued,
+        "processing": processing,
+        "oldest_queued_seconds": oldest,
+    }
+
+
+def test_the_high_water_mark_only_moves_up(monkeypatch, caplog):
+    """A queue that was 400 deep and is now empty is why this is recorded at all."""
+    monkeypatch.setattr(worker, "_max_depth_seen", 0)
+    monkeypatch.setattr(worker, "_last_depth_log", 0.0)
+    depths = iter([_stats(3), _stats(11), _stats(2), _stats(0)])
+    monkeypatch.setattr(worker, "queue_stats", lambda c: next(depths))
+
+    with caplog.at_level("INFO"):
+        for _ in range(4):
+            worker.log_backlog(object(), now=lambda: 0.0)
+
+    assert worker._max_depth_seen == 11, "the peak must survive the queue draining"
+    assert "high-water mark 11" in caplog.text
+    assert "high-water mark 2" not in caplog.text
+
+
+def test_backlog_is_reported_while_it_persists_but_not_when_empty(monkeypatch, caplog):
+    monkeypatch.setattr(worker, "_max_depth_seen", 100)  # already peaked
+    monkeypatch.setattr(worker, "_last_depth_log", 0.0)
+    monkeypatch.setattr(worker, "DEPTH_LOG_INTERVAL", 60.0)
+    monkeypatch.setattr(worker, "queue_stats", lambda c: _stats(7, oldest=1234.0))
+
+    with caplog.at_level("INFO"):
+        worker.log_backlog(object(), now=lambda: 100.0)  # past the interval
+        worker.log_backlog(object(), now=lambda: 110.0)  # inside it — stays quiet
+
+    assert caplog.text.count("queue depth 7") == 1
+    assert "oldest queued 1234s" in caplog.text
+
+    caplog.clear()
+    monkeypatch.setattr(worker, "queue_stats", lambda c: _stats(0))
+    with caplog.at_level("INFO"):
+        worker.log_backlog(object(), now=lambda: 500.0)
+    assert caplog.text == "", "an idle worker must not log a line every poll"
+
+
+def test_stats_failure_never_costs_a_job(monkeypatch):
+    """Instrumentation must not be able to break the loop it reports on."""
+
+    def _boom(_client):
+        raise RuntimeError("stats rpc down")
+
+    monkeypatch.setattr(worker, "queue_stats", _boom)
+    worker.log_backlog(object())  # must not raise

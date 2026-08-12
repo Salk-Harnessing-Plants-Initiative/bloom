@@ -190,6 +190,21 @@ BEGIN
 END;
 $$;
 
+-- Backlog for the worker's log. bloom_workflows cannot read cyl_video_jobs (the read policy
+-- and grant target the session roles only), so the counts come through a wrapper like
+-- everything else the worker touches.
+CREATE OR REPLACE FUNCTION public.cyl_video_queue_stats()
+RETURNS TABLE(queued bigint, processing bigint, oldest_queued_seconds double precision)
+LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public
+AS $$
+  SELECT
+    count(*) FILTER (WHERE status = 'queued'),
+    count(*) FILTER (WHERE status = 'processing'),
+    -- extract() returns numeric on PG14+, so cast to match the declared column type.
+    extract(epoch FROM now() - min(created_at) FILTER (WHERE status = 'queued'))::double precision
+  FROM public.cyl_video_jobs;
+$$;
+
 -- Lock EXECUTE to bloom_workflows only. These are SECURITY DEFINER on the
 -- PostgREST-exposed public schema, so any client-reachable grant lets anon/
 -- authenticated call them via /rest/v1/rpc, bypassing the API's auth and scan
@@ -199,19 +214,26 @@ REVOKE EXECUTE ON FUNCTION public.enqueue_cyl_video(bigint, bigint) FROM PUBLIC,
 REVOKE EXECUTE ON FUNCTION public.claim_cyl_video_job(integer, integer) FROM PUBLIC, anon, authenticated, service_role;
 REVOKE EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) FROM PUBLIC, anon, authenticated, service_role;
 REVOKE EXECUTE ON FUNCTION public.fail_cyl_video_job(uuid, bigint, text, integer) FROM PUBLIC, anon, authenticated, service_role;
+REVOKE EXECUTE ON FUNCTION public.cyl_video_queue_stats() FROM PUBLIC, anon, authenticated, service_role;
 
 GRANT EXECUTE ON FUNCTION public.enqueue_cyl_video(bigint, bigint) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.claim_cyl_video_job(integer, integer) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.fail_cyl_video_job(uuid, bigint, text, integer) TO bloom_workflows;
+GRANT EXECUTE ON FUNCTION public.cyl_video_queue_stats() TO bloom_workflows;
 
--- Deterministic DEFINER identity: pin the owner to postgres (rolbypassrls = true), which
--- these functions rely on to write RLS-protected cyl_video_jobs and to use pgmq. Without an
--- explicit owner the DEFINER role would be whoever applies the migration. Matches the
--- established SECURITY DEFINER convention (e.g. insert_cyl_result_envelope).
-ALTER FUNCTION public.enqueue_cyl_video(bigint, bigint) OWNER TO postgres;
-ALTER FUNCTION public.claim_cyl_video_job(integer, integer) OWNER TO postgres;
-ALTER FUNCTION public.complete_cyl_video_job(uuid, bigint, text) OWNER TO postgres;
-ALTER FUNCTION public.fail_cyl_video_job(uuid, bigint, text, integer) OWNER TO postgres;
+-- Deterministic DEFINER identity, pinned to the role that owns the queue. A SECURITY DEFINER
+-- function runs with its owner's privileges, and the pgmq schema and the q_/a_ tables belong
+-- to supabase_admin (pgmq.create is SECURITY INVOKER, so the queue belongs to whoever ran the
+-- migration). postgres cannot be the owner here: it is not a superuser on Supabase and holds
+-- no privileges on another role's tables — rolbypassrls only skips row policies, it grants
+-- nothing at the table level, so every wrapper fails with "permission denied for table
+-- q_cyl_video_generation". Without an explicit owner the DEFINER would be whoever applied the
+-- migration.
+ALTER FUNCTION public.enqueue_cyl_video(bigint, bigint) OWNER TO supabase_admin;
+ALTER FUNCTION public.claim_cyl_video_job(integer, integer) OWNER TO supabase_admin;
+ALTER FUNCTION public.complete_cyl_video_job(uuid, bigint, text) OWNER TO supabase_admin;
+ALTER FUNCTION public.fail_cyl_video_job(uuid, bigint, text, integer) OWNER TO supabase_admin;
+ALTER FUNCTION public.cyl_video_queue_stats() OWNER TO supabase_admin;
 
 COMMIT;

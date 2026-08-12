@@ -40,6 +40,17 @@ def enqueue_experiment_scan_video(experiment_id: int, scan_id: int) -> dict:
     return {"job_id": res.data, "status": "queued"}
 
 
+def queue_stats(client) -> dict:
+    """Queued/processing counts and the age of the oldest queued job, in seconds."""
+    rows = client.rpc("cyl_video_queue_stats", {}).execute().data or []
+    row = rows[0] if rows else {}
+    return {
+        "queued": row.get("queued") or 0,
+        "processing": row.get("processing") or 0,
+        "oldest_queued_seconds": row.get("oldest_queued_seconds"),
+    }
+
+
 def claim_job(client, vt: int = VISIBILITY_TIMEOUT):
     """Claim the next queued job (or None if the queue is empty)."""
     rows = client.rpc("claim_cyl_video_job", {"p_vt": vt}).execute().data or []

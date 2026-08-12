@@ -24,13 +24,22 @@ from fastapi import HTTPException
 
 from supabase_client import app_client
 from video import generate_experiment_scan_video
-from video_queue import claim_job, complete_job, fail_job
+from video_queue import claim_job, complete_job, fail_job, queue_stats
 
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = float(os.environ.get("WORKFLOWS_WORKER_POLL_SECONDS", "5"))
 
+# How often the backlog is reported while it is non-empty. The high-water mark is logged the
+# moment it moves, regardless.
+DEPTH_LOG_INTERVAL = float(os.environ.get("WORKFLOWS_WORKER_DEPTH_LOG_SECONDS", "60"))
+
 _running = True
+
+# Deepest backlog this process has seen. Nothing else records it: a queue that was 400 deep an
+# hour ago and is empty now looks identical to one that was never used.
+_max_depth_seen = 0
+_last_depth_log = 0.0
 
 
 def _stop(signum, _frame):
@@ -52,9 +61,52 @@ def _safe_detail(exc: Exception) -> str:
     return "video generation failed (internal error)"
 
 
+def log_backlog(client, now=time.monotonic) -> None:
+    """Report the backlog, and its high-water mark whenever that moves.
+
+    Never raises: this is instrumentation, and a failed stats call must not cost a job.
+    """
+    global _max_depth_seen, _last_depth_log
+    try:
+        stats = queue_stats(client)
+    except Exception as exc:
+        logger.debug("worker: queue stats unavailable: %s", exc)
+        return
+
+    depth = stats["queued"] + stats["processing"]
+    moment = now()
+    if depth > _max_depth_seen:
+        _max_depth_seen = depth
+        logger.info("worker: queue depth high-water mark %s", depth)
+    elif not depth or moment - _last_depth_log < DEPTH_LOG_INTERVAL:
+        return
+
+    _last_depth_log = moment
+    oldest = stats["oldest_queued_seconds"]
+    logger.info(
+        "worker: queue depth %s (queued %s, processing %s), oldest queued %s, max seen %s",
+        depth,
+        stats["queued"],
+        stats["processing"],
+        f"{oldest:.0f}s" if oldest is not None else "n/a",
+        _max_depth_seen,
+    )
+
+
 def process_one(client) -> bool:
     """Claim and process a single job. Returns True if a job was handled."""
-    job = claim_job(client)
+    # Claiming is its own step: the RPC commits server-side before the response is read, so a
+    # lost response leaves a job claimed that this worker never learned the id of. It cannot be
+    # failed here — there is no job_id to fail — but it is worth its own line rather than
+    # arriving in run() indistinguishable from an expired session. The message reappears when
+    # its visibility timeout lapses.
+    try:
+        job = claim_job(client)
+    except Exception as exc:
+        logger.warning(
+            "worker: claim failed (a claimed job may await redelivery): %s", exc
+        )
+        return False
     if not job:
         return False
 
@@ -101,6 +153,7 @@ def run():
     logger.info("cyl-video worker started (poll=%ss)", POLL_INTERVAL)
     while _running:
         try:
+            log_backlog(client)
             handled = process_one(client)
         except Exception as exc:
             # A loop-level error (e.g. an expired session) — reconnect and retry.

@@ -192,6 +192,7 @@ def test_wrappers_denied_to_public(pg_conn):
         "public.claim_cyl_video_job(integer, integer)",
         "public.complete_cyl_video_job(uuid, bigint, text)",
         "public.fail_cyl_video_job(uuid, bigint, text, integer)",
+        "public.cyl_video_queue_stats()",
     ]
     # Also cover service_role and the JWT-hook session roles: none may call the wrappers directly.
     denied = (
@@ -401,3 +402,47 @@ def test_concurrent_enqueue_dedupes_to_one_job(pg_conn, pg_conninfo):
                 "DELETE FROM public.cyl_video_jobs WHERE scan_id = %s", (scan_id,)
             )
             cur.execute("DELETE FROM public.cyl_scans WHERE id = %s", (scan_id,))
+
+
+def test_queue_stats_counts_the_backlog_and_its_age(pg_conn):
+    # The worker cannot read cyl_video_jobs (the policy and grant name the session roles only),
+    # so the backlog it logs has to come through this wrapper.
+    try:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM public.cyl_video_jobs")
+            for _ in range(3):
+                scan_id = _new_scan(cur)
+                cur.execute(
+                    "INSERT INTO public.cyl_video_jobs (scan_id, experiment_id, status, created_at)"
+                    " VALUES (%s, 1, 'queued', now() - interval '10 minutes')",
+                    (scan_id,),
+                )
+            scan_id = _new_scan(cur)
+            cur.execute(
+                "INSERT INTO public.cyl_video_jobs (scan_id, experiment_id, status)"
+                " VALUES (%s, 1, 'processing')",
+                (scan_id,),
+            )
+
+            cur.execute("SELECT * FROM public.cyl_video_queue_stats()")
+            queued, processing, oldest = cur.fetchone()
+
+            assert queued == 3
+            assert processing == 1
+            assert oldest >= 600, "the age of the oldest queued job is the backlog signal"
+    finally:
+        pg_conn.rollback()
+
+
+def test_queue_stats_is_quiet_on_an_empty_queue(pg_conn):
+    # An idle worker calls this every poll; it must return a row, not no rows.
+    try:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM public.cyl_video_jobs")
+            cur.execute("SELECT * FROM public.cyl_video_queue_stats()")
+            queued, processing, oldest = cur.fetchone()
+
+            assert (queued, processing) == (0, 0)
+            assert oldest is None
+    finally:
+        pg_conn.rollback()
