@@ -104,10 +104,44 @@ def api_request(
             return e.code, content
 
 
+def api_response_headers(path: str, api_key: str = None):
+    """Return the response headers for a GET, including on error responses.
+
+    Returns the raw `http.client.HTTPMessage`, not a dict, so repeated headers
+    stay distinguishable via `.get_all()`. That distinction is the point: Caddy
+    sets its headers before the handler chain and `reverse_proxy` then *adds*
+    the upstream's, so a header both sides emit arrives twice. Where the two
+    values differ, `Referrer-Policy` and `Permissions-Policy` resolve
+    last-wins — the upstream silently overrides the edge. A dict, or an `in`
+    check, cannot see that.
+
+    HTTP errors are returned rather than raised: the headers are asserted on
+    Caddy-generated 404s and 502s too.
+    """
+    url = f"{BASE_URL}{path}"
+    headers = {}
+    if api_key:
+        headers["apikey"] = api_key
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.headers
+    except urllib.error.HTTPError as e:
+        return e.headers
+
+
 @pytest.fixture
 def api():
     """Fixture that returns the api_request helper."""
     return api_request
+
+
+@pytest.fixture
+def api_headers():
+    """Fixture that returns the api_response_headers helper."""
+    return api_response_headers
 
 
 # -----------------------------------------------------------------------------

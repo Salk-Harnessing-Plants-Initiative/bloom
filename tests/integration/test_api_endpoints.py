@@ -91,6 +91,70 @@ def test_other_api_traffic_still_reaches_kong(api, anon_key):
     assert status == 200, f"/api/auth/v1/health must still reach Kong, got {status}"
 
 
+# --- Edge security headers (issue #108 item 1) ------------------------------
+# Set once at site level in caddy/Caddyfile so every hostname inherits them.
+# The config-shape counterpart is tests/unit/test_caddy_security_headers.py;
+# these assert the live wire.
+
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+}
+
+# One route per handler class under `handle @main`, chosen so status is
+# irrelevant — Caddy applies the headers ahead of the handler chain, so a
+# proxied 200, a synthetic 404 and an upstream-error 502 must all carry them:
+#   /api/client-info  -> bloom-web, exact path (200)
+#   /                 -> bloom-web catch-all (200)
+#   /workflows/health -> Caddy's own `respond 404`
+#   /langchain/models -> langchain-agent, preserved prefix (401 without a JWT)
+HEADER_ROUTES = ["/api/client-info", "/", "/workflows/health", "/langchain/models"]
+
+
+@pytest.mark.parametrize("path", HEADER_ROUTES)
+@pytest.mark.parametrize("name,value", sorted(SECURITY_HEADERS.items()))
+def test_security_headers_present(api_headers, path, name, value):
+    """Each security header reaches the client exactly once, with its exact
+    value, on every handler class under the main hostname.
+
+    `get_all` rather than `in`: Caddy sets these before the handler chain and
+    `reverse_proxy` then adds whatever the upstream sent, so a header both
+    emit arrives twice. Two of them resolve last-wins, meaning a duplicate
+    from an upstream silently downgrades the edge policy — a presence-only
+    check reports that broken state as healthy. No upstream sets these today
+    (verified across bloom-web, Kong, GoTrue, storage-api and langchain), so
+    this is the guard for the day one of them starts.
+    """
+    received = api_headers(path).get_all(name)
+    assert received, f"{name} missing from the response to {path}"
+    assert len(received) == 1, (
+        f"{name} returned {len(received)} times for {path}: {received!r} — "
+        "an upstream is also setting it; Referrer-Policy and Permissions-Policy "
+        "resolve last-wins, so a duplicate can silently weaken the edge policy"
+    )
+    assert received[0] == value, (
+        f"{name} for {path} is {received[0]!r}, expected {value!r}"
+    )
+
+
+def test_hsts_not_yet_set(api_headers):
+    """HSTS is deliberately absent until the exposure work.
+
+    Asserted on the wire, not only in config: browsers cache it for its full
+    `max-age` and it cannot be withdrawn server-side, so an accidental
+    rollout is materially harder to undo than any other header here — it has
+    to expire out of every client that ever saw it.
+    """
+    received = api_headers("/api/client-info").get_all("Strict-Transport-Security")
+    assert not received, (
+        f"Strict-Transport-Security is being sent ({received!r}) — it is "
+        "browser-cached and cannot be withdrawn server-side"
+    )
+
+
 # --- Kong Routing Tests ---
 
 def test_kong_routes_auth(api, anon_key):
