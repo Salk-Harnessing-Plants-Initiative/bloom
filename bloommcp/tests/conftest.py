@@ -27,7 +27,7 @@ os.environ.setdefault("BLOOM_PLOTS_URL", "http://localhost/plots")
 
 # --- In-memory Supabase Storage boundary (Tier 2 adapter tests) ---------------
 #
-# The storage stack funnels every read/write through the six bloom_mcp.supabase_client
+# The storage stack funnels every read/write through the eight bloom_mcp.supabase_client
 # helpers (+ the names re-bound into bloom_mcp.manifest.manifest). This fixture
 # fakes that boundary in memory so SupabaseReader / SupabaseResultStore run with
 # no live Supabase and no `supabase.create_client` call.
@@ -85,6 +85,13 @@ class _InMemoryObjectStore:
         # real backend, so there is nothing to sign against (bloom#581).
         return f"fake://signed/{key}?expires_in={expires_in}"
 
+    def get_object_size(self, key: str) -> int:
+        # A real len() against the genuine in-memory bytes this store holds —
+        # not synthesized, unlike create_signed_url above (bloom#599).
+        if key not in self.objects:
+            raise KeyError(f"object not found: {key}")
+        return len(self.objects[key])
+
 
 @pytest.fixture
 def fake_supabase_storage(monkeypatch):
@@ -104,6 +111,7 @@ def fake_supabase_storage(monkeypatch):
         "download_file",
         "delete_files",
         "create_signed_url",
+        "get_object_size",
     ):
         monkeypatch.setattr(_sc, name, getattr(store, name))
     for name in ("list_prefix", "read_json", "write_json"):

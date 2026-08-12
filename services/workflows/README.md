@@ -77,7 +77,7 @@ curl -X POST http://localhost:5100/cyl/experiments/123/scans/456/video \
 ### Pipeline trigger
 
 `POST /pipeline` (bloom #11/#404, Phase 1 of 3 — see
-`openspec/changes/add-cyl-pipeline-trigger/design.md` for the full phasing and
+`openspec/changes/archive/2026-08-03-add-cyl-pipeline-trigger/design.md` for the full phasing and
 dedup-mechanism rationale) validates `{target_level, target_id | scan_ids,
 params}`, enumerates the target's scans via `cyl_scans_extended`, computes an
 **informational** dedup preview (`reused_count` — every scan is enqueued

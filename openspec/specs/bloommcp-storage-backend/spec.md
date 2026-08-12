@@ -12,21 +12,20 @@ import contract. The local backend writes files laid out by storage key under a 
 (`BLOOM_STORAGE_LOCAL_ROOT`, falling back to `BLOOM_OUTPUT_DIR`), enforces path-traversal
 containment, uses atomic writes on POSIX, and guarantees byte-identical provenance records across
 both backends.
-
 ## Requirements
 ### Requirement: Storage Backend Interface
 
-The system SHALL define a backend-agnostic object-storage interface covering the exact five
+The system SHALL define a backend-agnostic object-storage interface covering the exact seven
 helpers bloommcp's write and output-read paths depend on — `upload_file`, `download_file`,
-`write_json`, `read_json`, and `list_prefix` — with at least two implementations: a Supabase
-Storage backend (the deployed default) and a local-filesystem backend. The public
-`bloom_mcp.supabase_client` helper functions SHALL remain the call surface and delegate to
-the process's active backend, so existing consumers (`storage.writer`, `storage.manifest`,
-`result_store.supabase_store`, `experiment_utils`) and the in-memory test fake keep working
-without modification. This interface SHALL cover object storage only. PostgREST/table access
-via `get_postgrest_client` — including `read_input_csv`, which rides that client — and
-raw-experiment-input reads from the local `BLOOM_TRAITS_DIR` are outside the seam and SHALL
-remain unchanged regardless of the selected storage backend.
+`write_json`, `read_json`, `list_prefix`, `delete_files`, and `create_signed_url` — with at
+least two implementations: a Supabase Storage backend (the deployed default) and a
+local-filesystem backend. The public `bloom_mcp.supabase_client` helper functions SHALL remain
+the call surface and delegate to the process's active backend, so existing consumers
+(`storage.writer`, `storage.manifest`, `result_store.supabase_store`, `experiment_utils`) and
+the in-memory test fake keep working without modification. This interface SHALL cover object
+storage only. PostgREST/table access via `get_postgrest_client` — including `read_input_csv`,
+which rides that client — and raw-experiment-input reads from the local `BLOOM_TRAITS_DIR` are
+outside the seam and SHALL remain unchanged regardless of the selected storage backend.
 
 #### Scenario: Callers and the test fake are unchanged
 
@@ -34,14 +33,14 @@ remain unchanged regardless of the selected storage backend.
 - **THEN** `storage.writer`, `storage.manifest`, `result_store.supabase_store`, and
   `experiment_utils` still import the same `bloom_mcp.supabase_client` helper names, and
   the existing `fake_supabase_storage` fixture still substitutes the boundary by
-  monkeypatching those five module-level names in `supabase_client` and `manifest`
+  monkeypatching those helper names in `supabase_client` and `manifest`
 
 #### Scenario: Table reads and input reads are unaffected by the storage backend
 
 - **WHEN** any storage backend is selected
 - **THEN** `get_postgrest_client` and its table reads, `read_input_csv`, and raw-input reads
   from `BLOOM_TRAITS_DIR` continue to behave exactly as before, because the backend selection
-  governs only the five object-storage helpers
+  governs only the seven object-storage helpers
 
 ### Requirement: Backend Selection via BLOOM_STORAGE_BACKEND
 
@@ -208,23 +207,38 @@ validation the server already runs (`experiment_utils.validate_env`, called by
 Switching backends SHALL NOT change what is recorded for a run. For the same run, the local
 and Supabase backends SHALL produce a byte-identical serialized `manifest.json` (identical
 `seed`, `agent`, `environment`, `code_versions`, `outputs`, `output_keys`, and
-`output_sha256`), because provenance is built above the storage seam. The bytes the local
-backend writes SHALL be verbatim copies of the staged bytes (no newline or encoding
-translation), so the recorded `output_sha256` equals the SHA-256 of the artifact on disk.
-`download_file` SHALL copy bytes to the caller's destination and SHALL NOT expose or mutate
-the canonical file under the root. The local backend SHALL provide the same single-writer,
-last-write-wins, no-compare-and-swap semantics as the Supabase path — no stronger, no weaker.
-A backend is not a migration: the two stores are independent catalogs, and mixing backends for
-one experiment (flipping `BLOOM_STORAGE_BACKEND` mid-history) splits its version history and
-can re-allocate colliding version ids — this SHALL be documented as a non-goal, not silently
-relied upon.
+`output_sha256`) — except `storage_backend`, which SHALL instead record whichever backend
+most recently wrote the manifest and therefore legitimately differs between the two — because
+provenance is built above the storage seam. The bytes the local backend writes SHALL be
+verbatim copies of the staged bytes (no newline or encoding translation), so the recorded
+`output_sha256` equals the SHA-256 of the artifact on disk. `download_file` SHALL copy bytes
+to the caller's destination and SHALL NOT expose or mutate the canonical file under the root.
+The local backend SHALL provide the same single-writer, last-write-wins, no-compare-and-swap
+semantics as the Supabase path — no stronger, no weaker. A backend is not a migration: the two
+stores are independent catalogs, and mixing backends for one experiment (flipping
+`BLOOM_STORAGE_BACKEND` mid-history) splits its version history and can re-allocate colliding
+version ids — this SHALL be documented as a non-goal, not silently relied upon. Because the two
+stores are physically disjoint, no single manifest can ever itself contain entries from both
+backends, so full cross-backend detection is infeasible without contacting the inactive
+backend (out of scope); instead, every manifest write SHALL stamp a `storage_backend` field
+naming the backend that produced it, and allocating a fresh catalog (no existing manifest for
+the (experiment, tool_class) pair) SHALL log an informational message naming the experiment,
+tool class, and active backend — the only locally-observable signal that a split may be
+starting. This SHALL be logged at a level below warning/error (informational), since it fires
+on every brand-new experiment's first commit — the common, non-mixing case — and a
+warning-level log would page on-call in any environment alerting on warning-and-above for a
+near-always-benign event. This signal SHALL NOT be relied upon to catch every mixing event:
+it fires only when no manifest yet exists for the active backend, so a repeated flip back to a
+backend that already has a catalog (e.g. `supabase` → `local` → `supabase`) SHALL NOT log again
+on the return trip, even though history diverged in between.
 
 #### Scenario: Manifest and provenance are byte-identical across backends
 
 - **WHEN** the same run is committed through the Supabase-fake boundary and through the local
   backend
 - **THEN** the serialized `manifest.json` bytes are identical (same provenance fields and
-  per-artifact hash/key maps), and all logical keys use `/` separators regardless of host OS
+  per-artifact hash/key maps) other than `storage_backend`, which reflects each backend's own
+  name, and all logical keys use `/` separators regardless of host OS
 
 #### Scenario: Recorded hash equals the bytes on disk
 
@@ -245,7 +259,37 @@ relied upon.
   is then flipped to `local` (or vice versa)
 - **THEN** the behavior is documented as unsupported — the local read sees only the local
   catalog, `next_version_id` may re-allocate a colliding `v<N>`, and the docs warn against
-  mixing backends for one experiment — rather than the split being silent
+  mixing backends for one experiment — rather than the split being silent, and the flip is
+  additionally observable via the fresh-catalog log line and the `storage_backend` field
+  recorded on each store's own manifest
+
+#### Scenario: Manifest records which backend wrote it
+
+- **WHEN** `write_manifest` serializes a manifest, under either backend
+- **THEN** the written JSON's `storage_backend` field equals the active backend's name
+  (`supabase` or `local`), read from `storage_backend.selected_backend_name()` at write time —
+  so inspecting either store's `manifest.json` directly identifies which backend produced it,
+  without needing to know which backend is currently configured
+
+#### Scenario: Fresh-catalog allocation logs an informational message
+
+- **WHEN** `SupabaseResultStore.commit` reads the manifest for an (experiment, tool_class) pair
+  and finds none (a fresh catalog is about to be created — i.e. `v1` is being allocated)
+- **THEN** it logs (at info level, not warning — this is the common case for a genuinely new
+  experiment, not just a mixing event, and warning-level would page on-call for routine
+  new-experiment onboarding) a message naming the experiment, tool class, and active backend,
+  noting that any history for this experiment under a different backend is now invisible from
+  this catalog going forward — logged, not raised, so the commit still succeeds
+
+#### Scenario: Repeated backend flips do not repeatedly signal
+
+- **WHEN** an experiment is committed under `supabase`, `BLOOM_STORAGE_BACKEND` is flipped to
+  `local` (logging the fresh-catalog message for `local`'s new catalog), a run is committed
+  under `local`, and `BLOOM_STORAGE_BACKEND` is then flipped back to `supabase`
+- **THEN** the return trip to `supabase` logs nothing, because `supabase`'s own manifest still
+  exists from before the flip — a known, documented limitation of the fresh-catalog signal (it
+  detects only the first write to a backend's own catalog, not every divergence), not a silently
+  unstated gap
 
 #### Scenario: Local layout is disjoint from the legacy cleaned-CSV fallback
 
@@ -263,7 +307,16 @@ the MCP read tools), and SHALL clarify that `BLOOM_OUTPUT_DIR` and `BLOOM_USE_LO
 produce local CSVs by default. Documentation SHALL describe the opt-in
 `BLOOM_STORAGE_BACKEND=local` backend, the `BLOOM_STORAGE_LOCAL_ROOT` root variable (and its
 fallback to `BLOOM_OUTPUT_DIR`), the resulting on-disk layout keyed by storage key, and the
-warning that backends MUST NOT be mixed for one experiment.
+warning that backends MUST NOT be mixed for one experiment. Documentation SHALL additionally
+describe: `create_signed_url` and the `output_links` field every consumer-tool result carries
+(one signed/served URL, hash, and size per output); the `BLOOM_STORAGE_URL` env var the local
+backend uses to construct a served URL (and that this requires an operator-configured HTTP
+server for the local storage root — bloommcp does not run one); the `BLOOM_PUBLIC_SUPABASE_URL`
+env var used to rewrite a Supabase-backed signed URL off the internal Docker host onto a
+publicly reachable base; the chosen signed-URL expiry, named by its code constant rather than
+restated as an independent number; and the chosen inline-vs-link size threshold, explicitly
+flagged as documentation-only guidance (not enforced in code — no tool changes its response
+shape based on it).
 
 #### Scenario: Default destination is documented
 
@@ -277,6 +330,22 @@ warning that backends MUST NOT be mixed for one experiment.
 - **THEN** the docs show setting `BLOOM_STORAGE_BACKEND=local` (and optionally
   `BLOOM_STORAGE_LOCAL_ROOT`), describe the on-disk layout keyed by storage key, and warn not
   to mix backends for one experiment (no cross-store view; version ids can collide)
+
+#### Scenario: Signed-URL download and its env vars are documented
+
+- **WHEN** a developer reads the storage docs after this change
+- **THEN** they learn that every consumer-tool result carries an `output_links` entry per
+  output (URL, `sha256`, `size_bytes`); that `BLOOM_STORAGE_URL` configures the local backend's
+  served-URL base and requires a separately-run HTTP server for that root; that
+  `BLOOM_PUBLIC_SUPABASE_URL` rewrites a Supabase signed URL off the internal Docker host for
+  prod/staging; and the code constant naming the signed-URL expiry (rather than a bare number
+  restated in prose)
+
+#### Scenario: The inline-vs-link threshold is documented as guidance, not enforced behavior
+
+- **WHEN** a developer reads the storage docs' description of the inline-vs-link size threshold
+- **THEN** the documented number is explicitly labeled as documentation-only guidance for a
+  caller applying it themselves, not a behavior any bloommcp tool implements or enforces
 
 ### Requirement: Local Backend Test Coverage
 
@@ -319,4 +388,115 @@ SHALL remain green after the helper bodies are re-pointed to the backend.
 - **THEN** the fixture-based suites (`test_store_parity`, `test_supabase_result_store`,
   `test_supabase_reader`, `test_workflow_persistence`) still pass unchanged, because the fake
   monkeypatches the same module-level helper names
+
+### Requirement: Signed URL Generation
+
+The `StorageBackend` protocol SHALL expose `create_signed_url(key: str, expires_in: int) ->
+str`, implemented by both adapters.
+
+`SupabaseStorageBackend.create_signed_url` SHALL call the Supabase Storage client's own
+signed-url method with `key` and `expires_in`, extract the URL from its response (a `dict`
+whose key casing for the URL — `signedURL` / `signed_url` / `signedUrl` — is not guaranteed
+stable across client library versions, so extraction SHALL try each in turn rather than assume
+one), and SHALL then rewrite the URL's host from the internal `SUPABASE_URL` base to a public
+base read from `BLOOM_PUBLIC_SUPABASE_URL`, a no-op when either variable is unset or the URL is
+not on the internal host. A response carrying none of the expected URL keys SHALL be treated as
+a failure (propagating, not returning an empty/`None` string).
+
+`LocalStorageBackend.create_signed_url` SHALL return a served URL built from the
+`BLOOM_STORAGE_URL` environment variable (`f"{BLOOM_STORAGE_URL.rstrip('/')}/{key}"` — trailing
+slashes on the configured base SHALL NOT produce a doubled slash) and SHALL ignore `expires_in`
+— the local backend is an opt-in dev feature with no real credential/expiry enforcement,
+documented rather than worked around, matching this capability's existing local-backend
+caveats. When `BLOOM_STORAGE_URL` is unset, the local backend SHALL raise rather than fabricate
+a `file://` URI or otherwise leak an absolute host filesystem path.
+
+`bloom_mcp.supabase_client` SHALL re-export `create_signed_url(key, expires_in)` as a seventh
+delegate-to-active-backend helper, following the existing pattern of its siblings exactly. Standing up an HTTP server to serve the local backend's storage root, and standing up
+any infrastructure beyond the `BLOOM_PUBLIC_SUPABASE_URL` rewrite for the Supabase backend, are
+out of scope of this requirement.
+
+**Trust boundary (documentation only — no runtime behavior change here):** neither
+implementation of `create_signed_url` SHALL perform, nor is required to perform, any check that
+`key` is within a scope the calling context is authorized to access — this is a generic
+object-storage primitive with no concept of "run" or "experiment" ownership. The one production
+caller, `ResultStore.commit()`, is responsible for restricting `key` to its own authorized scope
+before calling this primitive (see `bloommcp-result-store`'s "Per-Output Signed Links And Size At
+Commit" requirement for that enforcement). A future caller of `create_signed_url` outside
+`ResultStore.commit()` SHALL NOT assume this primitive itself provides any ownership guarantee.
+
+#### Scenario: Supabase backend extracts and returns the signed URL
+
+- **WHEN** `create_signed_url(key, expires_in)` is called against the Supabase backend for an
+  existing object
+- **THEN** it calls the Supabase Storage client's signed-url method with `key` and
+  `expires_in`, and returns the URL extracted from that call's response
+
+#### Scenario: Supabase backend rewrites the internal host to the public base
+
+- **WHEN** the Supabase Storage client's response yields a URL on the internal `SUPABASE_URL`
+  host and `BLOOM_PUBLIC_SUPABASE_URL` is set
+- **THEN** `create_signed_url` returns that URL with the internal host prefix replaced by
+  `BLOOM_PUBLIC_SUPABASE_URL`, leaving the rest of the URL (path, query, signature) unchanged
+
+#### Scenario: The rewrite is a no-op when unconfigured or not applicable
+
+- **WHEN** `BLOOM_PUBLIC_SUPABASE_URL` or `SUPABASE_URL` is unset, or the signed URL returned by
+  the client is not on the internal `SUPABASE_URL` host
+- **THEN** `create_signed_url` returns the URL unchanged
+
+#### Scenario: A response with no extractable URL is a failure
+
+- **WHEN** the Supabase Storage client's `create_signed_url` response carries none of the
+  expected URL keys
+- **THEN** `create_signed_url` raises rather than returning `None` or an empty string
+
+#### Scenario: Local backend returns a served URL and ignores expiry
+
+- **WHEN** `create_signed_url(key, expires_in)` is called against the local backend with
+  `BLOOM_STORAGE_URL` set
+- **THEN** it returns `f"{BLOOM_STORAGE_URL.rstrip('/')}/{key}"` regardless of the `expires_in`
+  value passed, with no doubled slash even when `BLOOM_STORAGE_URL` itself ends in `/`
+
+#### Scenario: Local backend fails closed with no path leak when unconfigured
+
+- **WHEN** `create_signed_url` is called against the local backend and `BLOOM_STORAGE_URL` is
+  unset
+- **THEN** it raises rather than returning a `file://` URI or any string containing an absolute
+  host filesystem path
+
+#### Scenario: supabase_client re-exports the seventh helper
+
+- **WHEN** `bloom_mcp.supabase_client.create_signed_url(key, expires_in)` is called
+- **THEN** it delegates to the process's active backend exactly like its six existing siblings
+  (`upload_file`, `download_file`, `write_json`, `read_json`, `list_prefix`, `delete_files`)
+
+#### Scenario: The primitive itself performs no ownership check
+
+- **WHEN** `create_signed_url` is called directly (bypassing `ResultStore.commit()`) with any
+  syntactically valid key string
+- **THEN** neither backend implementation rejects it on ownership/scope grounds — this primitive
+  provides signing/serving only; scope enforcement is the caller's responsibility, documented here
+  so a reader of this file alone learns where the actual guarantee lives
+
+### Requirement: Backend Selection Boot Visibility
+
+The server SHALL print which object-storage backend is active (`local` or `supabase`) at
+startup, alongside the existing authentication-mode message. This is an observability addition
+only — it SHALL NOT alter backend selection, fail-fast validation, or resolution/precedence
+behavior defined by `Backend Selection via BLOOM_STORAGE_BACKEND`.
+
+#### Scenario: Active backend is printed at boot
+
+- **WHEN** `main()` starts the server, in either backend mode
+- **THEN** a log line states which backend is active (`local` or `supabase`) before the server
+  begins accepting requests
+
+#### Scenario: No change to selection or fail-fast behavior
+
+- **WHEN** `BLOOM_STORAGE_BACKEND` is unset, `supabase`, `local`, or an unrecognized value
+- **THEN** the boot-visibility print does not change which backend is selected, whether startup
+  validation fails fast, or any behavior described by `Backend Selection via
+  BLOOM_STORAGE_BACKEND` — it only adds a message describing the outcome already determined by
+  that requirement
 

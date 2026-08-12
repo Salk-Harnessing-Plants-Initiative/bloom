@@ -92,7 +92,9 @@ def test_sleap_roots_section_exposes_the_expected_namespaced_tools():
 
 
 def test_core_section_exposes_the_expected_namespaced_discovery_tools():
-    """The 3 cross-cutting discovery tools are namespaced core_<tool>."""
+    """The 3 cross-cutting discovery tools, plus get_download_links
+    (bloom#599 — a targeted retrieval tool, not a discovery tool, but still
+    registered in this same section), are namespaced core_<tool>."""
     import asyncio
 
     tools = {t.name for t in asyncio.run(server.mcp.list_tools())}
@@ -100,5 +102,6 @@ def test_core_section_exposes_the_expected_namespaced_discovery_tools():
         "list_available_experiments",
         "load_experiment_data",
         "list_existing_analyses",
+        "get_download_links",
     ):
         assert f"core_{tool}" in tools
