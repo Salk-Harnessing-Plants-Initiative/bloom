@@ -87,6 +87,38 @@ def test_workers_below_one_is_rejected(tmp_path):
     assert result.exit_code != 0
 
 
+def test_the_workers_flag_reaches_the_download(tmp_path, monkeypatch):
+    # Validating the flag's range proves nothing about it being used. Without this, dropping
+    # `workers=workers` at the call site would leave every download stuck on the default.
+    seen = {}
+    _signed_in(monkeypatch)
+    _one_scan(monkeypatch)
+    monkeypatch.setattr(
+        pd,
+        "download_images",
+        lambda *a, **k: seen.update(k) or pd.DownloadResult([]),
+    )
+
+    _run(str(tmp_path / "out"), "--experiment-id", "12", "--workers", "3")
+
+    assert seen["workers"] == 3
+
+
+def test_the_default_worker_count_is_concurrent(tmp_path, monkeypatch):
+    seen = {}
+    _signed_in(monkeypatch)
+    _one_scan(monkeypatch)
+    monkeypatch.setattr(
+        pd,
+        "download_images",
+        lambda *a, **k: seen.update(k) or pd.DownloadResult([]),
+    )
+
+    _run(str(tmp_path / "out"), "--experiment-id", "12")
+
+    assert seen["workers"] == pd.DEFAULT_WORKERS > 1
+
+
 def test_missing_credentials_hints_at_login(tmp_path, monkeypatch):
     def _no_creds(*a, **k):
         raise FileNotFoundError("no credentials file")

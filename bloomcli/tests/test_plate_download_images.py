@@ -8,6 +8,7 @@ file_size_bytes where cyl_images does not.
 from __future__ import annotations
 
 import threading
+import time
 
 import os
 
@@ -217,6 +218,64 @@ def test_sequential_mode_downloads_one_at_a_time(tmp_path):
     result = pd.download_images(client, scans, images, tmp_path, workers=1)
     assert result.ok == 3
     assert client.bucket.requested == ["gravi/1.jpg", "gravi/2.jpg", "gravi/3.jpg"]
+
+
+class _CountingBucket(_Bucket):
+    """Blocks each download until released, recording the high-water mark of concurrent calls."""
+
+    def __init__(self, release: threading.Event):
+        super().__init__()
+        self.release = release
+        self.in_flight = 0
+        self.peak = 0
+        self.lock = threading.Lock()
+
+    def download(self, object_path):
+        with self.lock:
+            self.in_flight += 1
+            self.peak = max(self.peak, self.in_flight)
+        # Hold the call open so overlapping downloads are actually simultaneous rather than
+        # merely fast — without this, workers could run one at a time and still pass.
+        self.release.wait(timeout=5)
+        with self.lock:
+            self.in_flight -= 1
+        return f"bytes::{object_path}".encode()
+
+
+def test_captures_really_download_concurrently(tmp_path):
+    # The point of --workers: several captures in flight at once. A large plate experiment is
+    # thousands of one-request-each downloads, so overlapping the waiting is what makes it
+    # finish in a sensible time.
+    release = threading.Event()
+    client = _Client()
+    client.bucket = _CountingBucket(release)
+
+    scans = [_scan(i, f"P{i}") for i in range(1, 9)]
+    images = {i: _image(i) for i in range(1, 9)}
+
+    watcher = threading.Thread(target=lambda: (time.sleep(0.3), release.set()))
+    watcher.start()
+    result = pd.download_images(client, scans, images, tmp_path, workers=4)
+    watcher.join()
+
+    assert result.ok == 8
+    assert client.bucket.peak > 1, "captures downloaded one at a time despite --workers 4"
+    assert client.bucket.peak <= 4, f"more than --workers in flight: {client.bucket.peak}"
+
+
+def test_worker_count_never_exceeds_the_number_of_captures(tmp_path):
+    # Two captures must not start four threads.
+    release = threading.Event()
+    release.set()
+    client = _Client()
+    client.bucket = _CountingBucket(release)
+
+    result = pd.download_images(
+        client, [_scan(1, "P1"), _scan(2, "P2")], {1: _image(1), 2: _image(2)}, tmp_path, workers=8
+    )
+
+    assert result.ok == 2
+    assert client.bucket.peak <= 2
 
 
 def test_progress_reports_captures_not_frames(tmp_path):
