@@ -162,16 +162,13 @@ def sweep_orphan_temps(out_dir: Path) -> int:
     return removed
 
 
-def already_downloaded(path: Path, expected_size: int | None = None) -> bool:
+def already_downloaded(path: Path) -> bool:
     """True if ``path`` already holds this frame, so a resumed run can skip fetching it.
 
-    Given ``expected_size`` this is a real completeness check. Without it, all that can be
-    said is that the file isn't empty — which won't catch a file truncated by a version of
-    bloomctl that wrote frames without the temp-file step.
+    All this can say is that the file isn't empty. It won't catch one left truncated by
+    `0.1.0a3`, which wrote frames without the temp-file step — download those afresh into
+    a new directory.
     """
     if not path.is_file():
         return False
-    size = path.stat().st_size
-    if expected_size is not None:
-        return size == expected_size
-    return size > 0
+    return path.stat().st_size > 0

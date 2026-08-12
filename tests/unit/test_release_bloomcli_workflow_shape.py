@@ -125,11 +125,12 @@ def test_nothing_but_the_upload_runs_in_the_job_holding_the_credential():
     assert "id-token" not in (verify.get("permissions") or {})
     assert verify.get("environment") is None
 
+    # Checking the artifact and uploading it, and nothing else. `sha256sum` is coreutils;
+    # what must never appear here is anything that executes package code.
+    allowed = {"sha256sum -c dist.sha256", "uv publish --trusted-publishing always"}
     runs = [str(s.get("run", "")) for s in publish["steps"] if s.get("run")]
-    assert runs == ["uv publish --trusted-publishing always"], (
-        f"only the upload may run with the credential, found: {runs}"
-    )
-    for forbidden in ("uv build", "twine", "--prerelease=allow", "import_smoke"):
+    assert set(runs) <= allowed, f"unexpected step in the credentialed job: {runs}"
+    for forbidden in ("uv build", "twine", "--prerelease=allow", "import_smoke", "--with"):
         assert forbidden not in _steps_text(publish)
 
 
@@ -154,3 +155,46 @@ def test_version_workflow_bumps_and_opens_pr():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_the_wheel_gate_imports_the_dependency_chain_not_just_bloomctl():
+    """#629's gate passed on a build where every real command died.
+
+    `import bloomctl` alone stays green because commands import supabase lazily, so the
+    gate has to walk the package and pull the chain in explicitly.
+    """
+    text = _steps_text(_load(RELEASE)["jobs"]["build-and-verify"])
+
+    assert "walk_packages" in text, "the gate must import every bloomctl module"
+    assert "from supabase import create_client" in text
+    assert "from postgrest import APIError" in text
+
+
+def test_the_wheel_gate_also_resolves_with_prereleases():
+    """The install users actually did. Without this pass the a4 build looked fine."""
+    assert "--prerelease=allow" in _steps_text(_load(RELEASE)["jobs"]["build-and-verify"])
+
+
+def test_the_published_artifact_is_checksummed_across_the_handoff():
+    """The verify job runs third-party code with write access to dist/.
+
+    Removing the credential from the publishing job stops an attacker minting a token; it
+    does not stop them replacing the wheel a trusted job then uploads.
+    """
+    jobs = _load(RELEASE)["jobs"]
+    verify, publish = _steps_text(jobs["build-and-verify"]), _steps_text(jobs["build-and-publish"])
+
+    assert "sha256sum dist/*" in verify, "nothing records what was built"
+    assert "sha256sum -c" in verify, "the upload is not checked against the build"
+    assert "sha256sum -c" in publish, "the publish job trusts the artifact blindly"
+
+
+def test_the_entry_point_check_would_notice_a_lost_handler():
+    """`bloomctl --version` and any ClickException read the same either way.
+
+    Only an unhandled exception distinguishes the wrapper from the bare CLI.
+    """
+    text = _steps_text(_load(RELEASE)["jobs"]["build-and-verify"])
+
+    assert "bloomctl.errors:main" in text, "nothing pins the shipped console script"
+    assert "Details written to" in text, "nothing asserts the handler-only behaviour"

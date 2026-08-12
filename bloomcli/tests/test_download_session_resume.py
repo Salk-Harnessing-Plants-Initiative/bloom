@@ -290,14 +290,17 @@ def test_already_downloaded_ignores_empty_and_missing_files(tmp_path):
     assert storage.already_downloaded(complete)
 
 
-def test_already_downloaded_checks_the_expected_size_when_one_is_known(tmp_path):
-    """A half-written frame from an older version must not count as finished."""
+def test_a_truncated_frame_is_taken_on_trust_because_no_size_is_known(tmp_path):
+    """Pins the limit of what resume can promise, so the docs cannot drift past it.
+
+    Nothing tells `bloomctl` how long a frame should be — `cyl_images` records the path,
+    not the length — so a fragment left by `0.1.0a3` counts as present. The CHANGELOG
+    says to download such a directory afresh; this is the code that makes that necessary.
+    """
     truncated = tmp_path / "frame.png"
     truncated.write_bytes(b"partial")
 
-    assert storage.already_downloaded(truncated)  # size unknown: only "non-empty"
-    assert not storage.already_downloaded(truncated, expected_size=815689)
-    assert storage.already_downloaded(truncated, expected_size=len(b"partial"))
+    assert storage.already_downloaded(truncated)
 
 
 def test_download_images_skips_frames_already_on_disk(tmp_path, monkeypatch):

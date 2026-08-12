@@ -483,3 +483,122 @@ def test_the_installed_console_script_turns_a_crash_into_one_line(tmp_path):
     assert "Error: nobody planned for this" in done.stderr
     assert "Traceback" not in done.stderr, "the traceback belongs in the log, not on screen"
     assert (tmp_path / ".bloom" / "errors.log").exists()
+
+
+# --- the handler must survive the failures it exists to report ----------------
+
+
+def _in_fresh_python(body: str, *, broken: str = ""):
+    """Run `body` in a subprocess, optionally with a dependency sabotaged first."""
+    import subprocess
+    import sys
+
+    return subprocess.run(
+        [sys.executable, "-c", broken + body], capture_output=True, text=True
+    )
+
+
+def test_a_half_built_httpx_does_not_escape_the_handler():
+    """`httpx 1.0.dev3` imported fine and dropped names this CLI used — that is #629.
+
+    `_is_network_error` reaches for `httpx.TransportError`; guarding only ImportError
+    let the AttributeError out of the handler as a stack trace.
+    """
+    done = _in_fresh_python(
+        "from bloomctl import errors\n"
+        "print('EXPLAINED:', errors.explain(ValueError('boom')))\n",
+        broken=(
+            "import sys, types\n"
+            "half = types.ModuleType('httpx')\n"  # imports, but has no TransportError
+            "sys.modules['httpx'] = half\n"
+        ),
+    )
+
+    assert "EXPLAINED: boom" in done.stdout, done.stdout + done.stderr
+    assert "Traceback" not in done.stderr
+
+
+class _Hostile(Exception):
+    """An exception that raises while being described — `explain()` calls str() on it."""
+
+    def __str__(self):
+        raise RuntimeError("__str__ blew up")
+
+
+def test_an_exception_that_cannot_describe_itself_still_gets_one_line():
+    assert errors._describe(_Hostile()) == "_Hostile"
+
+
+def test_a_failure_that_cannot_describe_itself_still_leaves_main_cleanly(
+    _log_in_tmp, monkeypatch, capsys
+):
+    """Through `main()`, not just the helper — the call site is what protects the user."""
+
+    @click.command()
+    def boom():
+        raise _Hostile()
+
+    monkeypatch.setattr("bloomctl.cli.cli", boom)
+
+    code = errors.main(args=[])
+
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "Error: _Hostile" in err
+    assert "Traceback" not in err, "describing the failure must not become the failure"
+
+
+def test_a_dependency_that_fails_to_import_is_a_message_not_a_stack_trace():
+    """The CLI's own imports happen inside the guard.
+
+    At module scope a broken dependency lands before any handler exists — which is the
+    state a `--pre` install produced, and the reason this module was written.
+    """
+    done = _in_fresh_python(
+        "from bloomctl import errors\n"
+        "raise SystemExit(errors.main(args=[]))\n",
+        broken=(
+            "import sys, types\n"
+            "boom = types.ModuleType('dotenv')\n"  # imports, but without dotenv_values
+            "sys.modules['dotenv'] = boom\n"
+        ),
+    )
+
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "Error:" in done.stderr
+    assert "Traceback" not in done.stderr, "a broken dependency reached the user as a stack"
+
+
+# --- the two changes whose failure is silent ---------------------------------
+
+
+def _pyproject() -> dict:
+    import tomllib
+    from pathlib import Path as _Path
+
+    return tomllib.loads(
+        (_Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+
+def test_the_dependency_caps_that_made_the_cli_installable_are_still_there():
+    """`httpx 1.0` drops Timeout/HTTPError and `supabase 3.0` drops create_client (#629).
+
+    Nothing else fails when these come off: the suite runs against the installed versions,
+    so the first sign would be the release itself, at the moment of an immutable upload.
+    """
+    deps = " ".join(_pyproject()["project"]["dependencies"])
+
+    assert "httpx>=0.27,<1.0" in deps
+    assert "supabase>=2.0.0,<3" in deps
+
+
+def test_the_credentials_secrets_stay_out_of_their_repr():
+    """A traceback carrying a Credentials lands in the file users are told to send us."""
+    from bloomctl.credentials import Credentials
+
+    rendered = repr(Credentials("https://x/api", "ANON-KEY-VALUE", "u@s.edu", "hunter2"))
+
+    assert "hunter2" not in rendered
+    assert "ANON-KEY-VALUE" not in rendered
+    assert "u@s.edu" in rendered, "the rest is what makes a traceback worth reading"

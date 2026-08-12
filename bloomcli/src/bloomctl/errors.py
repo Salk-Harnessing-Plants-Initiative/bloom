@@ -14,8 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .credentials import default_config_dir
-
 LOG_NAME = "errors.log"
 
 # Options whose value must never reach the log. The log sits beside the credentials and users
@@ -40,6 +38,11 @@ def error_log_path(config_dir: Path | None = None) -> Path:
     Beside the credentials rather than in the working directory, so it is the same path every
     time and stays writable when the output directory is not.
     """
+    # Imported here so this module has no import-time dependencies of its own: `credentials`
+    # pulls in `dotenv`, and a dependency that fails to import is one of the failures this
+    # module exists to report.
+    from .credentials import default_config_dir
+
     return (config_dir or default_config_dir()) / LOG_NAME
 
 
@@ -62,17 +65,33 @@ def explain(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
+def _describe(exc: BaseException) -> str:
+    """``explain(exc)``, falling back to the type name if describing it raises.
+
+    `explain` runs `str()` and `getattr` on an exception this module has never seen, and
+    one of those raising here would replace the failure being reported with a worse one —
+    the same reason `record()` guards everything it does.
+    """
+    try:
+        return explain(exc)
+    except Exception:
+        return type(exc).__name__
+
+
 def _is_network_error(exc: BaseException) -> bool:
     """True for a connection-level httpx failure.
 
     Recognised by type: a dropped connection or a timeout often carries no message at all,
     so there is nothing to match text against.
     """
+    # AttributeError as well as ImportError: a half-built httpx imports and then lacks the
+    # name, which is exactly what `httpx 1.0.dev3` did to this CLI (#629).
     try:
         import httpx
-    except ImportError:  # pragma: no cover - httpx is a hard dependency of supabase
+
+        return isinstance(exc, httpx.TransportError)
+    except (ImportError, AttributeError):  # pragma: no cover - httpx ships with supabase
         return False
-    return isinstance(exc, httpx.TransportError)
 
 
 def redact(argv: list[str]) -> list[str]:
@@ -109,8 +128,10 @@ def record(
     this module has never seen, and one of those raising would replace the failure being
     reported with a worse one.
     """
-    log = path or error_log_path()
     try:
+        # Inside the guard: resolving the path reads the config dir, which is one more
+        # thing that can fail while a failure is already being handled.
+        log = path or error_log_path()
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
         command = " ".join(redact(argv or []))
         body = (
@@ -184,12 +205,14 @@ def main(args: Any = None) -> int:
 
     import click
 
-    from .cli import cli
-
     try:
+        # Imported here, not at module scope: a dependency that fails to import is one of
+        # the failures this exists to catch, and at module scope it lands before the guard.
+        from .cli import cli
+
         cli(args=args)
     except Exception as exc:
-        click.echo(f"Error: {explain(exc)}", err=True)
+        click.echo(f"Error: {_describe(exc)}", err=True)
         log = record(exc, sys.argv)
         if log is not None:  # not `log.exists()`: a touched file with no traceback in it
             click.echo(f"Details written to {log}", err=True)

@@ -144,6 +144,14 @@ jobs:
       - name: Build sdist + wheel
         run: uv build
 
+      # Recorded before anything third-party runs. Every step below deliberately executes
+      # dependency code — that is how they prove the wheel works — and they run with write
+      # access to dist/. Removing the credential from the publishing job stops an attacker
+      # minting a token; it does not stop them swapping the parcel a trusted job then
+      # uploads. The checksum is what makes that swap fail instead of ship.
+      - name: Record the built artifact's checksum
+        run: sha256sum dist/* | tee dist.sha256
+
       # Validate packaging metadata (e.g. long-description rendering) so a
       # malformed README/metadata fails here, before the immutable PyPI upload.
       - name: Check package metadata
@@ -181,25 +189,53 @@ jobs:
       # points at the handler or straight at the bare CLI, so it cannot tell a correctly
       # wired entry point from one that has quietly lost the last-resort handler (#629).
       # This runs the installed script on a command that raises, and demands a message.
+      # Not `bloomctl --version`, and not a ClickException either: click handles those
+      # itself and exits, so they read identically whether the console script points at
+      # the handler or at the bare CLI. Only an *unhandled* exception tells the two apart.
       - name: Verify CLI entry point
         run: |
           uv run --isolated --no-project --with dist/*.whl bloomctl --version
-          set +e
-          OUT=$(uv run --isolated --no-project --with dist/*.whl \
-            bloomctl cyl download /proc/nonexistent/nope --experiment-id 0 2>&1)
-          CODE=$?
-          set -e
-          echo "$OUT"
-          if [ "$CODE" -eq 0 ]; then echo "::error::expected a non-zero exit"; exit 1; fi
-          case "$OUT" in
-            *Traceback*) echo "::error::a stack trace reached the user; entry point not wired"; exit 1 ;;
-          esac
+          cat > /tmp/entrypoint_check.py <<'PY'
+          import subprocess, sys, tempfile, os
+          from importlib.metadata import entry_points
+
+          # Read from the *installed* wheel, so this is about the artifact being published
+          # rather than about the pyproject.toml in the checkout.
+          script = next(e for e in entry_points(group="console_scripts") if e.name == "bloomctl")
+          assert script.value == "bloomctl.errors:main", f"console script is {script.value}"
+
+          env = {**os.environ, "HOME": tempfile.mkdtemp()}
+          # `-c` a command that raises something click does not handle, through the
+          # installed console script's own module path.
+          done = subprocess.run(
+              [sys.executable, "-c",
+               "import click, bloomctl.cli as c\n"
+               "@click.command()\n"
+               "def boom(): raise RuntimeError('nobody planned for this')\n"
+               "c.cli = boom\n"
+               "from bloomctl import errors\n"
+               "raise SystemExit(errors.main(args=[]))\n"],
+              capture_output=True, text=True, env=env,
+          )
+          print(done.stdout, done.stderr)
+          assert done.returncode == 1, f"expected exit 1, got {done.returncode}"
+          assert "Error: nobody planned for this" in done.stderr, "no one-line message"
+          assert "Traceback" not in done.stderr, "a stack trace reached the user"
+          assert "Details written to" in done.stderr, "the traceback was not recorded"
+          print("entry point wired: unhandled failure became a message plus a log")
+          PY
+          uv run --isolated --no-project --with dist/*.whl python /tmp/entrypoint_check.py
+
+      - name: Verify the artifact is the one that was built
+        run: sha256sum -c dist.sha256
 
       - name: Upload the verified artifact
         uses: actions/upload-artifact@v4
         with:
           name: bloomctl-dist
-          path: bloomcli/dist/
+          path: |
+            bloomcli/dist/
+            bloomcli/dist.sha256
           if-no-files-found: error
 
   # Holds the credential and does nothing else. It runs no third-party code: the artifact
@@ -219,7 +255,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: bloomctl-dist
-          path: bloomcli/dist/
+          path: bloomcli/
+
+      # The last point at which a swap could still be caught, and the only check standing
+      # between the build job's filesystem and an upload that cannot be undone.
+      - name: Verify the artifact matches what was built
+        run: sha256sum -c dist.sha256
 
       # Publishes only on a real Release; a workflow_dispatch dry run stops here.
       - name: Publish to PyPI (trusted publishing)
