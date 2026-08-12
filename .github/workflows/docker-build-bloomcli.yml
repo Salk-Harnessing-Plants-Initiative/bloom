@@ -3,7 +3,7 @@ name: docker-build-bloomcli
 # Publishes the bloomctl container image to GHCR. Push-only — PR-time
 # Dockerfile validation + CVE scanning happens in pr-checks.yml's
 # docker-build job instead (see
-# openspec/changes/add-bloomcli-container-release/design.md Decision 6).
+# openspec/changes/archive/2026-07-24-add-bloomcli-container-release/design.md Decision 6).
 #
 # Trigger: push to staging (path-filtered to bloomcli/**), a published
 # GitHub Release, or a manual workflow_dispatch. No pull_request trigger.

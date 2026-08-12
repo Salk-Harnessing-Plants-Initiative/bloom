@@ -8,6 +8,7 @@ can exercise both backends against one shared failure/collision scenario set.
 
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
 import threading
@@ -21,6 +22,7 @@ from bloom_mcp.manifest.versioning import next_version_id, version_dir_name
 from ._artifacts import (
     SIGNED_URL_EXPIRES_SECONDS,
     KeyScopeGuardError,
+    build_download_links,
     build_output_links,
     hash_outputs,
     validate_outputs,
@@ -28,12 +30,15 @@ from ._artifacts import (
 from ._locks import KeyedLock
 from .ports import (
     CommitFailedError,
+    CorruptRunLinksError,
     ManifestReadError,
     RunHandle,
     RunNotFoundError,
     RunStateError,
     StoredRun,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from bloom_mcp.contract.provenance import Provenance
@@ -109,6 +114,13 @@ class FakeResultStore:
         # documented one-shot contract.
         self._fail_next_read: set[tuple[str, str]] = set()
         self._fail_next_read_lock = threading.Lock()
+        # (experiment, tool_class, run_ref) -> {key: size}, captured at commit
+        # time from the same `hash_outputs` computation the real adapter also
+        # performs (bloom#599). Purely internal bookkeeping — not on
+        # `StoredRun`/any manifest shape — since this store never uploads
+        # real bytes for a live `StorageBackend.get_object_size` call to
+        # meaningfully target; see design.md Decision 6.
+        self._output_sizes: dict[tuple[str, str, str], dict[str, int]] = {}
 
     def create_run(
         self,
@@ -269,6 +281,13 @@ class FakeResultStore:
                     experiment=state.experiment,
                     manifest_path=run.manifest_path,
                 )
+                # Success-only bookkeeping for get_download_links (bloom#599)
+                # — recorded here, not earlier, so a commit that ultimately
+                # fails never leaves an orphaned entry for a version_id that
+                # was never actually appended to self._runs.
+                sizes_by_key = {
+                    output_keys[name]: output_size_bytes[name] for name in output_keys
+                }
             except Exception as exc:
                 # Leave the handle open and the staging dir intact so the
                 # caller can retry — a retry re-enters commit() and
@@ -295,6 +314,18 @@ class FakeResultStore:
             # mirrors what a real manifest-backed get_run/list_runs would
             # re-derive (never signed, bloom#581 Decision 1). Only commit()'s
             # own return value carries the freshly-built links.
+            #
+            # Ordering is deliberate: this store's own lock only serializes
+            # concurrent commit() calls against each other — a concurrent,
+            # unlocked get_download_links() read is not excluded by it (reads
+            # never take this lock at all). Populating `_output_sizes` before
+            # `_runs` closes the window where such a read could resolve the
+            # newly-committed run via `get_run` but find no matching size
+            # entry yet, which would otherwise surface as a bare KeyError
+            # instead of a documented error (review finding, PR #611).
+            self._output_sizes[(state.experiment, state.tool_class, version_id)] = (
+                sizes_by_key
+            )
             self._runs.setdefault(key, []).append(stored)
             return replace(stored, output_links=output_links)
 
@@ -320,6 +351,55 @@ class FakeResultStore:
         raise RunNotFoundError(
             f"No run {run_ref!r} for {tool_class}/{_stem(experiment)}."
         )
+
+    def get_download_links(
+        self,
+        experiment: str,
+        tool_class: str,
+        run_ref: str = "latest",
+    ) -> StoredRun:
+        stored = self.get_run(experiment, tool_class, run_ref)
+        if not stored.output_keys:
+            # A legacy entry (e.g. seed_v2_run) with no per-artifact keys at
+            # all — nothing to sign or size (bloom#599).
+            return stored
+        prefix = f"{self._output_root}/{tool_class}_{_stem(experiment)}/"
+        expected_prefix = f"{prefix}{stored.version_dir}/"
+        sizes = self._output_sizes.get((experiment, tool_class, stored.run_ref), {})
+
+        def size_for(key: str) -> int:
+            # A KeyError here means commit() never recorded this key's size —
+            # a bug in this test double, not a caller-input condition; it is
+            # deliberately NOT masked with a fallback value.
+            return sizes[key]
+
+        try:
+            output_links = build_download_links(
+                stored.output_keys,
+                stored.output_sha256,
+                url_for=lambda key: (
+                    f"fake://signed/{key}?expires_in={SIGNED_URL_EXPIRES_SECONDS}"
+                ),
+                size_for=size_for,
+                expected_prefix=expected_prefix,
+            )
+        except CorruptRunLinksError as exc:
+            # Mirrors SupabaseResultStore's identical redaction so fake/real
+            # parity holds for the message too, not just the exception type
+            # (PR #611 review finding: the raw message embeds the offending,
+            # possibly cross-experiment, storage key).
+            logger.exception(
+                "get_download_links found a scope-mismatched key for %s/%s %s",
+                tool_class,
+                _stem(experiment),
+                stored.run_ref,
+            )
+            raise CorruptRunLinksError(
+                f"get_download_links found corrupt link data for "
+                f"{tool_class}/{_stem(experiment)} (structural bug — see "
+                f"server logs)"
+            ) from exc
+        return replace(stored, output_links=output_links)
 
     # --- Test-only failure/collision injection ------------------------------
 
@@ -403,6 +483,44 @@ class FakeResultStore:
             self._pending_collisions.setdefault(key, []).append(version_id)
         else:
             raise ValueError(f"unknown visible_at: {visible_at!r}")
+
+    def seed_run_with_keys(
+        self,
+        experiment: str,
+        tool_class: str,
+        *,
+        output_keys: dict[str, str],
+        output_sha256: Optional[dict[str, str]] = None,
+        sizes: Optional[dict[str, int]] = None,
+        tool: str = "seeded",
+    ) -> StoredRun:
+        """Register a historical run with caller-supplied `output_keys`
+        (bloom#599) — the only way to exercise `get_download_links`'s
+        key-scoping guard against a mismatched key, since no real `commit()`
+        call path can ever produce one (every real key is derived from this
+        same run's own `key_for` closure). `output_sha256`/`sizes` default to
+        a placeholder per output name when omitted, since most callers of
+        this helper care only about the `output_keys` shape.
+        """
+        key = (experiment, tool_class)
+        existing = self._runs.get(key, [])
+        version_id = next_version_id(_manifest_view(existing))
+        version_dir = version_dir_name(version_id)
+        output_sha256 = output_sha256 or {name: "0" * 64 for name in output_keys}
+        sizes = sizes or {key_: 0 for key_ in output_keys.values()}
+        stored = self._stub_stored_run(
+            experiment=experiment,
+            tool_class=tool_class,
+            version_id=version_id,
+            version_dir=version_dir,
+            tool=tool,
+            outputs={name: name for name in output_keys},
+            output_keys=output_keys,
+            output_sha256=output_sha256,
+        )
+        self._runs.setdefault(key, []).append(stored)
+        self._output_sizes[(experiment, tool_class, version_id)] = dict(sizes)
+        return stored
 
     def seed_v2_run(
         self, experiment: str, tool_class: str, *, tool: str, outputs: dict[str, str]

@@ -5,7 +5,7 @@ Adding a service to only some of scripts/check-uv-locks.py's SERVICES tuple,
 .pre-commit-config.yaml's uv-lock-check hook, pr-checks.yml's python-audit
 job, and .claude/commands/pre-merge.md's audit loop is easy to do by
 accident (bloomcli itself almost shipped with a similar gap — see
-openspec/changes/add-bloomcli-container-release/design.md Decision 7). This
+openspec/changes/archive/2026-07-24-add-bloomcli-container-release/design.md Decision 7). This
 test is a standing guard for the *next* service added, not just a one-time
 confirmation that bloomcli landed correctly.
 

@@ -12,13 +12,14 @@ import pytest
 from bloom_mcp.contract import Provenance
 from bloom_mcp.result_store import (
     CommitFailedError,
+    CorruptRunLinksError,
     FakeResultStore,
     ManifestReadError,
     RunNotFoundError,
     RunStateError,
     SupabaseResultStore,
 )
-from bloom_mcp.manifest import AnalysisDir
+from bloom_mcp.manifest import AnalysisDir, ExperimentBlock, Manifest, write_manifest
 from bloom_mcp.result_store._artifacts import KeyScopeGuardError
 from bloom_mcp.result_store._artifacts import (
     build_output_links as _real_build_output_links,
@@ -204,6 +205,217 @@ def test_output_links_empty_for_get_run_and_list_runs_parity(kind, stores):
 
     assert store.get_run("exp.csv", "qc", "latest").output_links == {}
     assert all(r.output_links == {} for r in store.list_runs("exp.csv", "qc"))
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_get_download_links_reruns_signing_for_a_prior_run_parity(kind, stores):
+    """bloom#599: unlike get_run/list_runs, get_download_links always
+    (re-)populates output_links -- resolving "latest" and an explicit
+    run_ref both work, with a live-resolved size_bytes matching the real
+    byte count on both backends."""
+    store = stores[kind]
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"aaa")
+    committed = store.commit(run, {"a": "a.csv"})
+
+    for ref in ("latest", committed.run_ref):
+        resolved = store.get_download_links("exp.csv", "qc", ref)
+        assert resolved.run_ref == committed.run_ref
+        link = resolved.output_links["a"]
+        assert link.key == committed.output_keys["a"]
+        assert link.sha256 == committed.output_sha256["a"]
+        assert link.size_bytes == 3
+        assert link.url
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_get_download_links_no_persisted_size_field_parity(kind, stores):
+    """bloom#599 Decision 1: size_bytes is resolved live on every call --
+    there is no persisted-size fast path to bypass, on either backend."""
+    store = stores[kind]
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"aaaaa")
+    store.commit(run, {"a": "a.csv"})
+
+    resolved = store.get_download_links("exp.csv", "qc", "latest")
+    assert resolved.output_links["a"].size_bytes == 5
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_get_download_links_retired_tool_class_still_resolves_parity(kind, stores):
+    """A retired-but-historical tool_class (still queryable per
+    list_existing_analyses.TOOL_CLASSES) resolves and re-signs normally --
+    ResultStore itself has no allowlist of tool_class values."""
+    store = stores[kind]
+    run = store.create_run(experiment="exp.csv", tool_class="stats", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"a")
+    store.commit(run, {"a": "a.csv"})
+
+    resolved = store.get_download_links("exp.csv", "stats", "latest")
+    assert resolved.output_links["a"].url
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_get_download_links_legacy_run_with_no_keys_yields_no_links_parity(
+    kind, stores
+):
+    """A legacy v2-shaped run (no output_keys ever recorded) returns
+    output_links == {} rather than raising -- nothing to sign or size."""
+    store = stores[kind]
+    if kind == "fake":
+        store.seed_v2_run(
+            "exp.csv", "qc", tool="qc_clean", outputs={"cleaned": "_cleaned.csv"}
+        )
+    else:
+        # A real v2 manifest entry, mirroring the fixture-based v2-backcompat
+        # test elsewhere in this file — no output_keys/output_sha256 at all.
+        prov = _prov().model_copy(
+            update={
+                "outputs": {"cleaned": "_cleaned.csv"},
+                "output_keys": {},
+                "output_sha256": {},
+                "version_dir": "v1",
+            }
+        )
+        entry = prov.to_version_entry(version_id="v1")
+        adir = AnalysisDir("bloommcp_output", "exp.csv", "qc")
+        write_manifest(
+            adir.path,
+            Manifest(
+                experiment=ExperimentBlock(
+                    filename="exp.csv", source_path="", input_sha256=""
+                ),
+                versions=[entry],
+                latest="v1",
+            ),
+        )
+
+    resolved = store.get_download_links("exp.csv", "qc", "latest")
+    assert resolved.output_links == {}
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_get_download_links_empty_experiment_string_parity(kind, stores):
+    """An empty experiment string does not crash the lookup -- it resolves
+    through the same not-found path an unknown experiment would."""
+    store = stores[kind]
+    with pytest.raises(RunNotFoundError):
+        store.get_download_links("", "qc", "latest")
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_get_download_links_unknown_run_raises_not_found_parity(kind, stores):
+    store = stores[kind]
+    with pytest.raises(RunNotFoundError):
+        store.get_download_links("never-committed.csv", "qc", "latest")
+
+
+def _seed_mismatched_key(kind, store, *, experiment, tool_class):
+    """Seed a historical run whose persisted output_keys fall outside its own
+    expected prefix -- the only way to exercise the CorruptRunLinksError
+    guard, since no real commit() call path can ever produce this (every
+    real key is derived from this same run's own key_for closure)."""
+    bad_key = f"bloommcp_output/{tool_class}_someone_elses_experiment/v1/_cleaned.csv"
+    if kind == "fake":
+        store.seed_run_with_keys(
+            experiment, tool_class, output_keys={"cleaned": bad_key}
+        )
+        return
+    prov = _prov().model_copy(
+        update={
+            "outputs": {"cleaned": "_cleaned.csv"},
+            "output_keys": {"cleaned": bad_key},
+            "output_sha256": {"cleaned": "0" * 64},
+            "version_dir": "v1_2026-01-01",
+        }
+    )
+    entry = prov.to_version_entry(version_id="v1")
+    adir = AnalysisDir("bloommcp_output", experiment, tool_class)
+    write_manifest(
+        adir.path,
+        Manifest(
+            experiment=ExperimentBlock(
+                filename=experiment, source_path="", input_sha256=""
+            ),
+            versions=[entry],
+            latest="v1",
+        ),
+    )
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_get_download_links_key_outside_scope_raises_parity(kind, stores):
+    store = stores[kind]
+    _seed_mismatched_key(kind, store, experiment="exp.csv", tool_class="qc")
+
+    with pytest.raises(CorruptRunLinksError):
+        store.get_download_links("exp.csv", "qc", "latest")
+
+
+@pytest.mark.parametrize("kind", ["fake", "supabase"])
+def test_get_download_links_multi_output_partial_failure_aborts_whole_call_parity(
+    kind, stores, monkeypatch
+):
+    """A second output's lookup failure aborts the whole call -- the first,
+    already-succeeded output's link must not leak out as a partial result."""
+    store = stores[kind]
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"aaa")
+    (run.staging_dir / "b.csv").write_bytes(b"bb")
+    committed = store.commit(run, {"a": "a.csv", "b": "b.csv"})
+
+    if kind == "fake":
+        # Force specifically the *second* output's ("b") size lookup to
+        # raise, not an arbitrary one -- next(iter(...)) previously picked
+        # whichever key happened to be first in dict order (always "a" here,
+        # since dicts preserve insertion order), which never actually
+        # exercised "the first output already succeeded, then the second
+        # failed" -- it just made the *first* lookup fail immediately
+        # (review finding, PR #611).
+        key_to_break = committed.output_keys["b"]
+        for key_tuple, sizes in store._output_sizes.items():
+            if key_tuple[:2] == ("exp.csv", "qc") and key_to_break in sizes:
+                del sizes[key_to_break]
+    else:
+        import bloom_mcp.supabase_client as sc
+
+        real_get_object_size = sc.get_object_size
+        calls = {"n": 0}
+
+        def _flaky(key):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated failure (get_object_size)")
+            return real_get_object_size(key)
+
+        monkeypatch.setattr(sc, "get_object_size", _flaky)
+
+    with pytest.raises(Exception):
+        store.get_download_links("exp.csv", "qc", "latest")
+
+
+def test_fake_get_download_links_never_calls_storage_backend(monkeypatch):
+    """design.md Decision 6: FakeResultStore.get_download_links never calls
+    anything on StorageBackend for any run it recorded itself -- it has its
+    own private size bookkeeping instead. Specific to FakeResultStore (the
+    real adapter's equivalent guarantee is instead "makes exactly one live
+    call per output," covered by the no-persisted-size-field test above)."""
+    store = FakeResultStore()
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "a.csv").write_bytes(b"aaa")
+    store.commit(run, {"a": "a.csv"})
+
+    import bloom_mcp.storage_backend as sb_module
+
+    def _boom():
+        raise AssertionError(
+            "FakeResultStore.get_download_links must never call active_backend()"
+        )
+
+    monkeypatch.setattr(sb_module, "active_backend", _boom)
+
+    resolved = store.get_download_links("exp.csv", "qc", "latest")
+    assert resolved.output_links["a"].size_bytes == 3
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
@@ -498,6 +710,9 @@ _READ_CALL_SITES = {
     "get_run": lambda store, experiment, tool_class: store.get_run(
         experiment, tool_class, "latest"
     ),
+    "get_download_links": lambda store, experiment, tool_class: (
+        store.get_download_links(experiment, tool_class, "latest")
+    ),
 }
 
 
@@ -508,7 +723,9 @@ def test_manifest_read_failure_parity(kind, call_site, stores, monkeypatch):
     ManifestReadError on both backends. FakeResultStore has no real read to
     fail organically — `fail_next_read` is its only way to exercise the same
     contract SupabaseResultStore's guard provides for a real storage/network
-    failure."""
+    failure. `get_download_links` (bloom#599) resolves through the same
+    `get_run` lookup, so it inherits this guarantee rather than needing a
+    separate one."""
     store = stores[kind]
     _inject_read_failure(
         kind, store, monkeypatch, experiment="read-fail.csv", tool_class="qc"

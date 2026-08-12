@@ -47,14 +47,42 @@ Two env vars look like they'd control this and don't:
 Every consumer tool (`qc_clean`, `qc_inspect`, `pca_analysis`, `remove_outliers`,
 `descriptive_stats`, `cross_experiment_correlations`, `umap_analysis`, `clustering`)
 returns an `output_links` field alongside its existing `outputs` (object-key) field:
-one entry per output, each carrying exactly one of a downloadable `url` (Supabase
-backend) or a direct filesystem `path` (local backend — see below), the artifact's
-`sha256` (matching the manifest's `output_sha256` — verify what you downloaded/read
-against it), and its `size_bytes`. This is populated only on the result a tool call
-itself returns — resolving or listing a prior run (`list_existing_analyses`, or
-reading `get_run`/`list_runs` through the `ResultStore` port) never carries links for
-artifacts other than the one just committed; browsing and downloading _historical_
-runs is not yet supported (tracked separately).
+one entry per output, each carrying a downloadable `url`, the artifact's `sha256`
+(matching the manifest's `output_sha256` — verify what you downloaded against it),
+and its `size_bytes`. This is populated only on the result a tool call itself
+returns — resolving or listing a prior run (`list_existing_analyses`, or reading
+`get_run`/`list_runs` through the `ResultStore` port) never carries signed links for
+artifacts other than the one just committed.
+
+### Re-fetching a link for an already-committed run (`get_download_links`)
+
+A signed URL expires after an hour, and a chat session can end before it's used.
+The `get_download_links(experiment, tool_class, run_ref="latest")` MCP tool
+(bloom#599) re-signs fresh links for a run you already know about — from a prior
+`list_existing_analyses` call, or a tool response from a now-expired session.
+Three things worth knowing before you reach for it:
+
+- **It must be called by name for one already-known run** — it is not a browsing
+  or discovery feature. There is still no way to list or browse every historical
+  run across an experiment/tool_class beyond what `list_existing_analyses` already
+  shows; a general file-explorer over Supabase Storage remains out of scope (the
+  `#388` file-explorer third mentioned at the bottom of this doc).
+- **A single output's lookup failure aborts the whole call** — you get either every
+  output's link, or a clean error; never a partially-populated `output_links` that
+  silently omits one output.
+- **A legacy run recorded before per-artifact keys existed** (a v2 manifest entry)
+  has nothing to sign — `output_links` comes back empty for it, not an error.
+
+Unlike the per-tool `output_links` above, `get_download_links`'s `size_bytes` is
+resolved via a live storage lookup on every call — nothing about a run's size is
+ever cached or persisted in the manifest. This relies on one assumption: that a
+committed output's bytes are never mutated out-of-band after commit (true under
+bloommcp's normal write path — each version directory is written once, never
+overwritten). If an object were ever replaced behind bloommcp's back (a storage
+incident, a manual admin fix), the freshly-queried `size_bytes` could describe
+different bytes than the manifest's own `sha256` — always verify what you
+download against the returned `sha256`, which is unaffected by this and comes
+from the same immutable record `output_links` above already relies on.
 
 Backed by `StorageBackend.create_signed_url(key, expires_in)` — a 3600-second
 expiry (the `SIGNED_URL_EXPIRES_SECONDS` constant in

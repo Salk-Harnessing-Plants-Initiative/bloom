@@ -24,10 +24,10 @@ requirement below.
 
 ### Requirement: bloommcp Data Directory Writability
 
-The three host directories `bloommcp` bind-mounts (`bloommcp/data/TRAITS_DIR`,
-`bloommcp/data/PLOTS_DIR`, `bloommcp/data/ANALYSIS_OUTPUT`) SHALL exist and be writable by
-the `bloommcp` container's runtime user **before** `docker compose up` runs, on every fresh
-clone. This SHALL NOT rely on Docker's default behavior for a missing bind-mount source
+The three host directories `bloommcp` bind-mounts SHALL exist and be writable by the
+`bloommcp` container's runtime user **before** `docker compose up` runs, on every fresh
+clone — specifically `bloommcp/data/TRAITS_DIR`, `bloommcp/data/PLOTS_DIR`, and
+`bloommcp/data/ANALYSIS_OUTPUT`. This SHALL NOT rely on Docker's default behavior for a missing bind-mount source
 (creating it owned by the Docker daemon's user, typically root) — that default leaves the
 non-root `bloommcp` container user unable to write into them, which silently breaks every
 tool that writes to local disk (the 5 `sleap_roots` plotting tools always do, regardless of

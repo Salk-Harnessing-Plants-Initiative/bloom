@@ -36,6 +36,7 @@ from bloom_mcp.storage_backend import (
 from ._artifacts import (
     SIGNED_URL_EXPIRES_SECONDS,
     KeyScopeGuardError,
+    build_download_links,
     build_output_links,
     hash_outputs,
     validate_outputs,
@@ -43,6 +44,7 @@ from ._artifacts import (
 from ._locks import KeyedLock
 from .ports import (
     CommitFailedError,
+    CorruptRunLinksError,
     ManifestIncompatibleError,
     ManifestReadError,
     RunHandle,
@@ -445,3 +447,43 @@ class SupabaseResultStore:
             experiment=experiment,
             manifest_path=f"{adir.path}manifest.json",
         )
+
+    def get_download_links(
+        self,
+        experiment: str,
+        tool_class: str,
+        run_ref: str = "latest",
+    ) -> StoredRun:
+        stored = self.get_run(experiment, tool_class, run_ref)
+        if not stored.output_keys:
+            # A legacy entry (e.g. v2 manifest) with no per-artifact keys at
+            # all — nothing to sign or size (bloom#599).
+            return stored
+        adir = AnalysisDir(self._output_root, experiment, tool_class)
+        expected_prefix = adir.key(f"{stored.version_dir}/")
+        try:
+            output_links = build_download_links(
+                stored.output_keys,
+                stored.output_sha256,
+                url_for=lambda key: _sc.create_signed_url(
+                    key, SIGNED_URL_EXPIRES_SECONDS
+                ),
+                size_for=_sc.get_object_size,
+                expected_prefix=expected_prefix,
+            )
+        except CorruptRunLinksError as exc:
+            # The raw message embeds the offending (possibly cross-experiment)
+            # storage key — full detail server-side only, never in the
+            # caller-facing message, mirroring commit()'s own
+            # KeyScopeGuardError handling below (PR #611 review finding).
+            logger.exception(
+                "get_download_links found a scope-mismatched key for %s/%s %s",
+                tool_class,
+                adir.stem,
+                stored.run_ref,
+            )
+            raise CorruptRunLinksError(
+                f"get_download_links found corrupt link data for "
+                f"{tool_class}/{adir.stem} (structural bug — see server logs)"
+            ) from exc
+        return replace(stored, output_links=output_links)

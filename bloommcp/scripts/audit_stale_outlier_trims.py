@@ -22,7 +22,7 @@ second `remove_outliers` is the current latest, is not a hit -- even though a re
 temporary exposure window existed between the two `qc_clean` commits. Reconstructing
 every historical exposure window a manifest ever passed through (as opposed to
 reporting experiments whose trim is *currently* superseded) is a heavier, unscoped
-lift -- see `openspec/changes/add-bloommcp-outliers-staleness-audit/design.md`.
+lift -- see `openspec/changes/archive/2026-08-09-add-bloommcp-outliers-staleness-audit/design.md`.
 
 Each hit also carries `post_420_status` (`"not_remediated"`, `"remediated_and_current"`,
 `"remediated_but_stale_again"`, or `"unknown"`): this legacy `qc_<stem>` manifest is

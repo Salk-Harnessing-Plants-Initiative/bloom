@@ -45,7 +45,7 @@ silently reverting a trim with no signal): the trade-off is auditable (the stale
 ``outliers`` entry's own ``based_on_version`` still names the ``qc`` version it was
 trimmed from) and recoverable by a known action (re-run ``remove_outliers``), unlike
 the silent revert it replaces. See
-``openspec/changes/fix-bloommcp-remove-outliers-tool-class/design.md`` for the full
+``openspec/changes/archive/2026-08-09-fix-bloommcp-remove-outliers-tool-class/design.md`` for the full
 reasoning, including why a recency-based cross-class comparison (an earlier draft of
 this fix) does not actually work.
 

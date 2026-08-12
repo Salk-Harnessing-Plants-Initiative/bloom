@@ -23,7 +23,7 @@ pre-#420 `remove_outliers` entry that still happens to be that manifest's `lates
 (a `qc_clean` -> `remove_outliers` sequence, before #420 shipped, with no
 `qc_clean` or post-#420 `remove_outliers` re-run since — so no `outliers_<stem>`
 manifest was ever created for it at all). This is a real, disclosed, narrower edge
-case — see `openspec/changes/add-bloommcp-outliers-fit-audit/design.md` Decision 2
+case — see `openspec/changes/archive/2026-08-09-add-bloommcp-outliers-fit-audit/design.md` Decision 2
 for the full reasoning and the recommended follow-up (extending `#585`'s own
 `qc_`-scanning script, which already identifies this exact subset, rather than
 duplicating its scan/error-handling machinery here).

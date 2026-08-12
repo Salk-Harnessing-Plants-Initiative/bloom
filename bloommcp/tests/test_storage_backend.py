@@ -636,6 +636,14 @@ class _FakeSbStorageClient:
         # verbatim.
         return {"signedURL": f"http://kong:8000/sign/{path}?expires_in={expires_in}"}
 
+    def info(self, path):
+        # Realistic nested shape (bloom#599) — real Supabase Storage's
+        # object-info endpoint nests size under `metadata`, matching
+        # storage3's only comparable typed object (`SearchV2Object`).
+        if path not in self.objects:
+            raise KeyError(f"object not found: {path}")
+        return {"name": path, "metadata": {"size": len(self.objects[path])}}
+
 
 def test_write_manifest_stamps_active_backend(monkeypatch, tmp_path):
     """`write_manifest` stamps `Manifest.storage_backend` with whichever
@@ -1806,3 +1814,168 @@ def test_supabase_client_reexports_create_signed_url(monkeypatch):
     monkeypatch.setattr(sb_module, "active_backend", lambda: _FakeBackend())
     assert sc.create_signed_url("k", 3600) == "http://x/signed"
     assert captured["args"] == ("k", 3600)
+
+
+# ─── 9. Object byte size lookup (#599) ─────────────────────────────────────────
+
+
+class _FakeInfoClient:
+    """Stand-in for the storage3 bucket client's `info()` method."""
+
+    def __init__(self, response):
+        self._response = response
+        self.calls: list[str] = []
+
+    def info(self, path):
+        self.calls.append(path)
+        if isinstance(self._response, Exception):
+            raise self._response
+        return self._response
+
+
+def test_supabase_get_object_size_extracts_nested_metadata_size(monkeypatch):
+    # The real (and only typed-sibling-confirmed) shape: size nested under
+    # `metadata` (design.md Decision 2).
+    client = _FakeInfoClient({"name": "k", "metadata": {"size": 1234}})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    size = sb.SupabaseStorageBackend().get_object_size("k")
+
+    assert client.calls == ["k"]
+    assert size == 1234
+
+
+def test_supabase_get_object_size_extracts_flat_size_fallback(monkeypatch):
+    # A flat top-level `size` is accepted as a fallback in case a future
+    # client version flattens the response.
+    client = _FakeInfoClient({"name": "k", "size": 5678})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    size = sb.SupabaseStorageBackend().get_object_size("k")
+
+    assert size == 5678
+
+
+def test_supabase_get_object_size_raises_when_size_field_missing(monkeypatch):
+    client = _FakeInfoClient({"name": "k", "metadata": {}})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    with pytest.raises(Exception):
+        sb.SupabaseStorageBackend().get_object_size("k")
+
+
+def test_supabase_get_object_size_raises_when_size_is_non_numeric(monkeypatch):
+    client = _FakeInfoClient({"name": "k", "metadata": {"size": "not-a-number"}})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    with pytest.raises(Exception):
+        sb.SupabaseStorageBackend().get_object_size("k")
+
+
+def test_supabase_get_object_size_raises_when_size_is_negative(monkeypatch):
+    client = _FakeInfoClient({"name": "k", "metadata": {"size": -1}})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    with pytest.raises(Exception):
+        sb.SupabaseStorageBackend().get_object_size("k")
+
+
+def test_supabase_get_object_size_propagates_client_raise_unmodified(monkeypatch):
+    # `client.info()` itself raising for a missing/deleted object propagates
+    # as-is -- matching this class's own download_file/read_json, neither of
+    # which wraps a missing-key failure into a bloommcp-defined type either.
+    client = _FakeInfoClient(KeyError("object not found: k"))
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    with pytest.raises(KeyError):
+        sb.SupabaseStorageBackend().get_object_size("k")
+
+
+def test_supabase_get_object_size_performs_no_ownership_check(monkeypatch):
+    # A syntactically valid key belonging to a different experiment/tool_class
+    # succeeds with no authorization error -- restricting scope is the
+    # caller's responsibility (identically to create_signed_url).
+    client = _FakeInfoClient({"name": "other", "metadata": {"size": 42}})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    size = sb.SupabaseStorageBackend().get_object_size(
+        "bloommcp_output/qc_someone_elses_experiment/v1/_cleaned.csv"
+    )
+
+    assert size == 42
+
+
+def test_local_get_object_size_returns_real_stat_size(tmp_path):
+    b = _local(tmp_path)
+    src = _seed_file(tmp_path, b"0123456789")
+    b.upload_file("bloommcp_output/x/v1/f.csv", src)
+
+    assert b.get_object_size("bloommcp_output/x/v1/f.csv") == 10
+
+
+def test_local_get_object_size_missing_key_raises_storage_key_not_found(tmp_path):
+    b = _local(tmp_path)
+    with pytest.raises(sb.StorageKeyNotFound) as exc:
+        b.get_object_size("bloommcp_output/x/missing.csv")
+    assert str(tmp_path) not in str(exc.value)
+    assert "bloommcp_output/x/missing.csv" in str(exc.value)
+
+
+def test_storage_backend_protocol_includes_get_object_size(tmp_path):
+    assert hasattr(sb.SupabaseStorageBackend, "get_object_size")
+    assert hasattr(sb.LocalStorageBackend, "get_object_size")
+    assert isinstance(sb.SupabaseStorageBackend(), sb.StorageBackend)
+    assert isinstance(sb.LocalStorageBackend(tmp_path), sb.StorageBackend)
+
+
+def test_supabase_client_reexports_get_object_size(monkeypatch):
+    import bloom_mcp.storage_backend as sb_module
+    import bloom_mcp.supabase_client as sc
+
+    captured = {}
+
+    class _FakeBackend:
+        def get_object_size(self, key):
+            captured["key"] = key
+            return 999
+
+    monkeypatch.setattr(sb_module, "active_backend", lambda: _FakeBackend())
+    assert sc.get_object_size("k") == 999
+    assert captured["key"] == "k"
+
+
+def test_get_object_size_real_dispatch_through_active_backend(monkeypatch):
+    """Exercises get_object_size through genuine `active_backend()` dispatch
+    (task 1.6) -- not only through the always-faked `_sc`-module fixtures,
+    matching this file's existing real-dispatch convention
+    (`_FakeSbStorageClient` patches only `get_storage_client`, letting the
+    real `SupabaseStorageBackend` class run through the real dispatch path).
+    """
+    sb.reset_backend_for_tests()
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "supabase")
+    fake_client = _FakeSbStorageClient()
+    fake_client.objects["bloommcp_output/qc_x/v1/f.csv"] = b"0123456789ab"
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: fake_client
+    )
+
+    import bloom_mcp.supabase_client as sc
+
+    size = sc.get_object_size("bloommcp_output/qc_x/v1/f.csv")
+
+    assert size == 12
+    sb.reset_backend_for_tests()

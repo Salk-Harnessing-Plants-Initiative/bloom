@@ -25,7 +25,7 @@
 # assumption, so it was a documentation-only error, not a behavioral one).
 # Only a delta beyond <threshold> additional (unplanned) restarts indicates
 # the restart policy is retrying a crashing container, i.e. a bad kong.yml.
-# See openspec/changes/fix-kong-reload-on-deploy/design.md Decision 2/3.
+# See openspec/changes/archive/2026-08-09-fix-kong-reload-on-deploy/design.md Decision 2/3.
 #
 # Everything after `--` is the exact `docker compose -f ... --env-file ...
 # [-p ...]` prefix the calling job already uses for every other compose
