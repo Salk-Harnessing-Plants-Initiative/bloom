@@ -2,10 +2,12 @@
 
 import hashlib
 import json
+import re
 
 import pytest
 import sleap_roots_contracts
 from click.testing import CliRunner
+from sleap_roots_contracts import RUN_MANIFEST_FILENAME
 from test_download_metadata import SCAN
 
 import bloomctl.auth as auth
@@ -1188,3 +1190,430 @@ def test_batch_cli_profile_option_passed_through(tmp_path, monkeypatch):
 def test_batch_cli_registration_shows_in_help():
     result = CliRunner().invoke(cli, ["cyl", "--help"])
     assert "batch-download-for-predict" in result.output
+
+
+# --- per-scan lock (bloom #653/#533) -------------------------------------------
+
+
+def _write_lock(out_dir, scan_key, *, acquired_at, pid=999):
+    lock_path = out_dir / ".locks" / f"{scan_key}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(json.dumps({"pid": pid, "acquired_at": acquired_at}), encoding="utf-8")
+    return lock_path
+
+
+def test_stage_one_scan_lock_contention_reports_failed_naming_pid_and_age(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    import time as time_module
+
+    _write_lock(tmp_path, "scan_1", acquired_at=time_module.time())
+
+    def _boom(client, scan_id):
+        raise AssertionError("fetch_scan must not be called while the scan's lock is contended")
+
+    monkeypatch.setattr(dfp, "fetch_scan", _boom)
+
+    client = auth.make_authed_client(None)
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+
+    assert result.status == "failed"
+    assert "999" in result.error
+    assert not (tmp_path / "scan_1" / "scan_1.scan_metadata.json").exists()
+
+
+def test_stage_one_scan_stale_lock_is_reclaimed_and_stages_normally(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    import time as time_module
+
+    _write_lock(tmp_path, "scan_1", acquired_at=time_module.time() - 10_000)
+
+    client = auth.make_authed_client(None)
+    result = dfp.stage_one_scan(client, 1, tmp_path)
+
+    assert result.status == "ok"
+    assert (tmp_path / "scan_1" / "scan_1.scan_metadata.json").exists()
+
+
+def test_stage_one_scan_lock_released_after_success(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    client = auth.make_authed_client(None)
+    dfp.stage_one_scan(client, 1, tmp_path)
+    assert not (tmp_path / ".locks" / "scan_1.lock").exists()
+
+
+def test_batch_cli_lock_contention_isolates_one_scan_others_succeed(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    import time as time_module
+
+    out = tmp_path / "out"
+    _write_lock(out, "scan_1", acquired_at=time_module.time())
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1, 2]", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code != 0
+    assert "scan_1" in result.output
+    assert (out / "scan_2" / "scan_2.scan_metadata.json").exists()
+    assert not (out / "scan_1" / "scan_1.scan_metadata.json").exists()
+
+
+def test_stage_one_scan_first_ever_out_dir_has_no_locks_directory_yet(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    out = tmp_path / "brand_new_out_dir"
+    assert not out.exists()
+
+    client = auth.make_authed_client(None)
+    result = dfp.stage_one_scan(client, 1, out)
+
+    assert result.status == "ok"
+
+
+# --- RunManifest write + merge (bloom #653) -------------------------------------
+
+
+def _read_manifest(out_dir):
+    return json.loads((out_dir / RUN_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+
+
+def test_batch_cli_writes_manifest_with_every_staged_scan_key(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1, 2, 3]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    manifest = _read_manifest(out)
+    assert sorted(manifest["scan_keys"]) == ["scan_1", "scan_2", "scan_3"]
+
+
+def test_batch_cli_manifest_excludes_a_scan_that_failed_this_run(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch, scan_id_to_images={2: []})
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1, 2, 3]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    manifest = _read_manifest(out)
+    assert sorted(manifest["scan_keys"]) == ["scan_1", "scan_3"]
+
+
+def test_batch_cli_manifest_includes_a_skipped_already_staged_scan(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    scan_dir = tmp_path / "out" / "scan_1"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "scan_1.scan_metadata.json").write_text(
+        json.dumps({"scan_key": "scan_1"}), encoding="utf-8"
+    )
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1, 2]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    manifest = _read_manifest(out)
+    assert sorted(manifest["scan_keys"]) == ["scan_1", "scan_2"]
+
+
+def test_batch_cli_pipeline_run_id_from_argo_workflow_name(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-abc123")
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert _read_manifest(out)["pipeline_run_id"] == "wf-abc123"
+
+
+def test_batch_cli_pipeline_run_id_falls_back_to_generated_local_placeholder(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    monkeypatch.delenv("ARGO_WORKFLOW_NAME", raising=False)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert re.fullmatch(r"local-[0-9a-f]{8}", _read_manifest(out)["pipeline_run_id"])
+
+
+def test_batch_cli_two_invocations_without_argo_workflow_name_get_distinguishable_ids(
+    tmp_path, monkeypatch
+):
+    _patch_batch(monkeypatch)
+    monkeypatch.delenv("ARGO_WORKFLOW_NAME", raising=False)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+    first_id = _read_manifest(out)["pipeline_run_id"]
+
+    ids_file2 = tmp_path / "scan_ids2.json"
+    ids_file2.write_text("[1]", encoding="utf-8")
+    CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file2)]
+    )
+    second_id = _read_manifest(out)["pipeline_run_id"]
+
+    assert first_id != second_id
+
+
+def test_batch_cli_second_invocation_merges_disjoint_scan_keys(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    out = tmp_path / "out"
+
+    ids_file_1 = tmp_path / "scan_ids_1.json"
+    ids_file_1.write_text("[1, 2]", encoding="utf-8")
+    CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file_1)]
+    )
+    assert sorted(_read_manifest(out)["scan_keys"]) == ["scan_1", "scan_2"]
+
+    ids_file_2 = tmp_path / "scan_ids_2.json"
+    ids_file_2.write_text("[3]", encoding="utf-8")
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file_2)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sorted(_read_manifest(out)["scan_keys"]) == ["scan_1", "scan_2", "scan_3"]
+
+
+def test_batch_cli_second_invocation_with_overlapping_scan_keys_has_no_duplicates(
+    tmp_path, monkeypatch
+):
+    _patch_batch(monkeypatch)
+    out = tmp_path / "out"
+
+    ids_file_1 = tmp_path / "scan_ids_1.json"
+    ids_file_1.write_text("[1, 2]", encoding="utf-8")
+    CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file_1)]
+    )
+
+    ids_file_2 = tmp_path / "scan_ids_2.json"
+    ids_file_2.write_text("[2, 3]", encoding="utf-8")
+    CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file_2)]
+    )
+
+    scan_keys = _read_manifest(out)["scan_keys"]
+    assert sorted(scan_keys) == ["scan_1", "scan_2", "scan_3"]
+    assert len(scan_keys) == len(set(scan_keys))
+
+
+def test_batch_cli_manifest_lock_contention_fails_without_corrupting_existing_manifest(
+    tmp_path, monkeypatch
+):
+    _patch_batch(monkeypatch)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / RUN_MANIFEST_FILENAME).write_text(
+        json.dumps({"schema_version": "1", "pipeline_run_id": "wf-old", "scan_keys": ["scan_9"]}),
+        encoding="utf-8",
+    )
+    import time as time_module
+
+    _write_lock(out, "manifest", acquired_at=time_module.time())
+
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code != 0
+    assert json.loads((out / RUN_MANIFEST_FILENAME).read_text(encoding="utf-8")) == {
+        "schema_version": "1",
+        "pipeline_run_id": "wf-old",
+        "scan_keys": ["scan_9"],
+    }
+
+
+def test_batch_cli_manifest_lock_contention_with_no_existing_manifest_fails_cleanly(
+    tmp_path, monkeypatch
+):
+    _patch_batch(monkeypatch)
+    out = tmp_path / "out"
+    import time as time_module
+
+    _write_lock(out, "manifest", acquired_at=time_module.time())
+
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code != 0
+    assert not (out / RUN_MANIFEST_FILENAME).exists()
+
+
+def test_batch_cli_corrupt_existing_manifest_fails_loud_not_silently_discarded(
+    tmp_path, monkeypatch
+):
+    _patch_batch(monkeypatch)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / RUN_MANIFEST_FILENAME).write_text("{ not json", encoding="utf-8")
+
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code != 0
+    assert (out / RUN_MANIFEST_FILENAME).read_text(encoding="utf-8") == "{ not json"
+
+
+def test_batch_cli_all_scans_failed_no_prior_manifest_skips_write_no_crash(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch, scan_id_to_images={1: []})
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code != 0
+    assert not (out / RUN_MANIFEST_FILENAME).exists()
+
+
+def test_batch_cli_stale_manifest_lock_is_reclaimed(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    out = tmp_path / "out"
+    import time as time_module
+
+    _write_lock(out, "manifest", acquired_at=time_module.time() - 10_000)
+
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sorted(_read_manifest(out)["scan_keys"]) == ["scan_1"]
+
+
+def test_batch_cli_manifest_lock_released_after_success(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert not (out / ".locks" / "manifest.lock").exists()
+
+
+def test_batch_cli_lock_staleness_seconds_threads_to_per_scan_lock(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    out = tmp_path / "out"
+    import time as time_module
+
+    _write_lock(out, "scan_1", acquired_at=time_module.time() - 10)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "cyl",
+            "batch-download-for-predict",
+            str(out),
+            "--scan-ids-file",
+            str(ids_file),
+            "--lock-staleness-seconds",
+            "5",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (out / "scan_1" / "scan_1.scan_metadata.json").exists()
+
+
+def test_batch_cli_lock_staleness_seconds_threads_to_manifest_lock(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    out = tmp_path / "out"
+    import time as time_module
+
+    _write_lock(out, "manifest", acquired_at=time_module.time() - 10)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "cyl",
+            "batch-download-for-predict",
+            str(out),
+            "--scan-ids-file",
+            str(ids_file),
+            "--lock-staleness-seconds",
+            "5",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sorted(_read_manifest(out)["scan_keys"]) == ["scan_1"]
+
+
+def test_batch_cli_manifest_write_after_simulated_mid_batch_crash_is_healed_by_retry(
+    tmp_path, monkeypatch
+):
+    """Confirms design.md's Risks/Trade-offs claim: a same-scan_ids retry closes the
+    mid-batch-crash gap. Stages scans 1-3 directly (bypassing the manifest write, standing
+    in for a process killed before it ran), then re-runs the real batch command over
+    scan_ids 1-5 and confirms the manifest ends up with all five."""
+    _patch_batch(monkeypatch)
+    out = tmp_path / "out"
+    client = auth.make_authed_client(None)
+    for scan_id in (1, 2, 3):
+        result = dfp.stage_one_scan(client, scan_id, out)
+        assert result.status == "ok"
+    assert not (out / RUN_MANIFEST_FILENAME).exists()
+
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1, 2, 3, 4, 5]", encoding="utf-8")
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sorted(_read_manifest(out)["scan_keys"]) == [
+        "scan_1",
+        "scan_2",
+        "scan_3",
+        "scan_4",
+        "scan_5",
+    ]
