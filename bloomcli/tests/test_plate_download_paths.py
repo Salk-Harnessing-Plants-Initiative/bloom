@@ -154,6 +154,14 @@ def test_build_plate_row_without_an_image_has_no_image_path():
     assert pd.build_plate_row(SCAN, None)["image_path"] == ""
 
 
+def test_build_plate_row_survives_an_image_row_it_cannot_path():
+    # plates.csv is written before anything is fetched, so raising here would abort the whole
+    # run over one bad row — while the download itself records that row and carries on.
+    row = pd.build_plate_row(SCAN, {"scan_id": 1})  # no object_path
+    assert row["image_path"] == ""
+    assert row["scan_id"] == 1, "the rest of the row is still written"
+
+
 def test_write_plates_csv_roundtrip(tmp_path):
     path = tmp_path / "plates.csv"
     pd.write_plates_csv([pd.build_plate_row(SCAN, IMAGE)], path)

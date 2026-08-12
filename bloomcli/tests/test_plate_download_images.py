@@ -139,12 +139,53 @@ def test_fetch_plate_images_maps_scan_id_to_its_single_image():
     assert found[2]["object_path"] == "gravi/2.jpg"
 
 
-def test_fetch_plate_images_is_one_query_for_every_scan():
-    # One image per scan means the whole selection can be fetched with a single `in` filter,
-    # rather than the cylinder's per-scan listing round-trip.
+def test_fetch_plate_images_is_one_query_for_a_small_selection():
+    # One image per scan means a whole batch comes back in a single `in` filter, rather than
+    # the cylinder's per-scan listing round-trip.
     client = _TableClient([])
     pd.fetch_plate_images(client, [1, 2, 3])
     assert client.calls["in"] == [("scan_id", [1, 2, 3])]
+
+
+def test_fetch_plate_images_batches_so_the_url_cannot_get_too_long():
+    # A PostgREST `in.(…)` filter travels in the URL. Sending every scan id at once returns
+    # 414 URI Too Long past roughly 1,300 ids — which a continuous session passes easily.
+    client = _TableClient([])
+    pd.fetch_plate_images(client, list(range(1, 5001)))
+
+    batches = [ids for column, ids in client.calls["in"] if column == "scan_id"]
+    assert len(batches) > 1, "5,000 scan ids must not go out as one filter"
+    assert sum(len(b) for b in batches) == 5000, "every id must still be requested"
+    assert [i for b in batches for i in b] == list(range(1, 5001)), "no id lost or reordered"
+    for batch in batches:
+        assert len(",".join(map(str, batch))) <= pd.ID_FILTER_BUDGET_CHARS
+
+
+def test_id_batches_adapt_to_wide_ids():
+    # Batching by count would break on bigints: 500 nineteen-digit ids is a 10 KB filter.
+    wide = [10**18 + i for i in range(1000)]
+    for batch in pd.id_batches(wide):
+        assert len(",".join(map(str, batch))) <= pd.ID_FILTER_BUDGET_CHARS
+    assert sum(len(b) for b in pd.id_batches(wide)) == 1000
+
+
+def test_id_batches_keeps_an_oversized_single_id():
+    # Better one request the server refuses clearly than a silently dropped row.
+    huge = "9" * (pd.ID_FILTER_BUDGET_CHARS + 10)
+    assert pd.id_batches([huge]) == [[huge]]
+
+
+def test_no_scan_ids_makes_no_query():
+    client = _TableClient([])
+    assert pd.fetch_plate_images(client, []) == {}
+    assert "in" not in client.calls
+
+
+def test_fetch_plate_sections_batches_too():
+    client = _TableClient([])
+    pd.fetch_plate_sections(client, list(range(1, 5001)))
+    metadata_batches = [ids for column, ids in client.calls["in"] if column == "metadata_id"]
+    assert len(metadata_batches) > 1
 
 
 def test_search_plate_experiments_calls_the_gravi_rpc():

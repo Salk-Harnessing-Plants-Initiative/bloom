@@ -142,17 +142,30 @@ def image_dest(out_dir: Path, scan: dict[str, Any], image: dict[str, Any]) -> Pa
 
 
 def build_plate_row(scan: dict[str, Any], image: dict[str, Any] | None) -> dict[str, Any]:
-    """Map a gravi_scans_extended row (plus its image, if any) to the ordered plates.csv row."""
+    """Map a gravi_scans_extended row (plus its image, if any) to the ordered plates.csv row.
+
+    An image row this can't build a path from leaves `image_path` empty rather than raising.
+    The CSV is written before anything is fetched, so raising here would abort the whole run
+    over one bad row — where the download itself records that row and carries on.
+    """
     row: dict[str, Any] = {}
     for name, key in _COLUMNS:
         if name == "image_path":
-            row[name] = (
-                f"{plate_relative_dir(scan)}/{capture_filename(scan, image)}" if image else ""
-            )
+            row[name] = _relative_image_path(scan, image)
         else:
             value = scan.get(key)
             row[name] = "" if value is None else value
     return row
+
+
+def _relative_image_path(scan: dict[str, Any], image: dict[str, Any] | None) -> str:
+    """Where this scan's image will land, relative to the output dir; "" if there isn't one."""
+    if not image:
+        return ""
+    try:
+        return f"{plate_relative_dir(scan)}/{capture_filename(scan, image)}"
+    except (KeyError, TypeError):
+        return ""
 
 
 def write_plates_csv(rows: list[dict[str, Any]], path: Path) -> None:
@@ -198,6 +211,33 @@ def download_selector(**options: Any) -> dict[str, Any]:
 
 # --- supabase / storage I/O -------------------------------------------------
 
+# A PostgREST `in.(…)` filter travels in the URL, and the gateway rejects a long one with
+# 414 URI Too Long — measured at roughly 5.4 KB of id list against the dev stack. Batching by
+# characters rather than by count keeps that safe whatever the ids look like: a run of
+# 19-digit bigints packs far fewer ids into the same URL than a run of 4-digit ones.
+ID_FILTER_BUDGET_CHARS = 4000
+
+
+def id_batches(ids: list[Any], budget: int = ID_FILTER_BUDGET_CHARS) -> list[list[Any]]:
+    """Split ids into batches whose rendered `in.(…)` list stays under ``budget`` characters.
+
+    A single id longer than the budget still gets its own batch — better one over-long request
+    that the server can refuse clearly than silently dropping the row.
+    """
+    batches: list[list[Any]] = []
+    current: list[Any] = []
+    length = 0
+    for value in ids:
+        rendered = len(str(value)) + 1  # +1 for the separating comma
+        if current and length + rendered > budget:
+            batches.append(current)
+            current, length = [], 0
+        current.append(value)
+        length += rendered
+    if current:
+        batches.append(current)
+    return batches
+
 
 def fetch_plate_scans(
     client: Any,
@@ -236,14 +276,16 @@ def fetch_plate_scan(client: Any, scan_id: Any) -> dict[str, Any] | None:
 def fetch_plate_images(client: Any, scan_ids: list[Any]) -> dict[Any, dict[str, Any]]:
     """Map scan_id -> its image row.
 
-    One query for the whole selection rather than one per scan: gravi_images is
-    UNIQUE(scan_id), so there is no per-scan list to page through.
+    Batched rather than one query per scan: gravi_images is UNIQUE(scan_id), so there is no
+    per-scan list to page through and a whole batch comes back in one round trip. The batches
+    exist only because the `in.(…)` filter travels in the URL — see ``id_batches``.
     """
     ids = [i for i in scan_ids if i is not None]
-    if not ids:
-        return {}
-    rows = client.table("gravi_images").select("*").in_("scan_id", ids).execute().data or []
-    return {row["scan_id"]: row for row in rows}
+    found: dict[Any, dict[str, Any]] = {}
+    for batch in id_batches(ids):
+        rows = client.table("gravi_images").select("*").in_("scan_id", batch).execute().data or []
+        found.update({row["scan_id"]: row for row in rows})
+    return found
 
 
 def fetch_plate_sections(client: Any, metadata_ids: list[Any]) -> list[dict[str, Any]]:
@@ -251,25 +293,29 @@ def fetch_plate_sections(client: Any, metadata_ids: list[Any]) -> list[dict[str,
     ids = sorted({i for i in metadata_ids if i is not None})
     if not ids:
         return []
-    sections = (
-        client.table("gravi_scan_metadata_sections")
-        .select("*")
-        .in_("metadata_id", ids)
-        .execute()
-        .data
-        or []
-    )
+    sections: list[dict[str, Any]] = []
+    for batch in id_batches(ids):
+        sections += (
+            client.table("gravi_scan_metadata_sections")
+            .select("*")
+            .in_("metadata_id", batch)
+            .execute()
+            .data
+            or []
+        )
     if not sections:
         return []
     by_id = {s["id"]: s for s in sections}
-    plants = (
-        client.table("gravi_scan_metadata_section_plants")
-        .select("*")
-        .in_("section_id", sorted(by_id))
-        .execute()
-        .data
-        or []
-    )
+    plants: list[dict[str, Any]] = []
+    for batch in id_batches(sorted(by_id)):
+        plants += (
+            client.table("gravi_scan_metadata_section_plants")
+            .select("*")
+            .in_("section_id", batch)
+            .execute()
+            .data
+            or []
+        )
     rows = []
     for plant in plants:
         section = by_id.get(plant.get("section_id"))
