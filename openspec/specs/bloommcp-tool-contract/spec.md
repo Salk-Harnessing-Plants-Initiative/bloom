@@ -264,3 +264,73 @@ writer emits v3 — this is a Tier 2 (live-write) deploy gate, recorded here.
   is dumped with `model_dump(mode="json")` and re-validated
 - **THEN** the reconstructed entry equals the original exactly
 
+### Requirement: RunLinks Output Signed URLs
+
+`RunLinks` SHALL carry an additive `output_links: dict[str, OutputLink]` field alongside its
+existing `outputs: dict[str, str]` field — `outputs` SHALL remain unchanged in meaning and
+value (logical output name → object key). Each `OutputLink` SHALL carry the output's storage
+`key`, a signed/served `url`, its `sha256`, and its non-negative `size_bytes`. Every tool result model that
+persists artifacts through `ResultStore` — whether it inherits `RunLinks` directly or
+independently declares the same four run-link fields — SHALL populate `output_links` from the
+`StoredRun` its own `commit()` call returned, so that every consumer-tool result includes a
+working download link and integrity hash for every output it reports, with no exceptions.
+
+#### Scenario: A consumer tool's result carries a link per output
+
+- **WHEN** any tool that persists via `ResultStore` (e.g. `pca_analysis`, `remove_outliers`,
+  `qc_clean`) completes successfully
+- **THEN** its result's `output_links` has one entry per `outputs` entry, each with a non-empty
+  `url`, a `sha256` matching the committed run's `output_sha256`, and a non-negative `size_bytes`
+
+#### Scenario: The existing outputs field is unchanged
+
+- **WHEN** a tool result is constructed after this change
+- **THEN** its `outputs: dict[str, str]` field has the exact same keys and values
+  (`{name: object_key}`) it would have had before `output_links` was added
+
+#### Scenario: A tool result model that duplicates RunLinks's fields still gets the field
+
+- **WHEN** a tool result model (e.g. `ClusteringResult`, `QCCleanResult`, `QCInspectResult`)
+  declares `run_ref`/`version_dir`/`manifest_path`/`outputs` inline instead of inheriting
+  `RunLinks`
+- **THEN** it still carries `output_links`, populated the same way as a `RunLinks` subclass
+
+### Requirement: RunLinks Base Model
+
+The system SHALL provide a `RunLinks` Pydantic base model in `bloom_mcp.contract.models`,
+re-exported from `bloom_mcp.contract` (included in `__all__`), carrying the four run-link
+fields common to all consumer tool result models: `run_ref: str`, `version_dir: str`,
+`manifest_path: str`, and `outputs: dict[str, str]`. Consumer tool result models (e.g.
+`PCAAnalysisResult`, `RemoveOutliersResult`) SHALL inherit from `RunLinks` rather than
+repeating these four fields verbatim.
+
+#### Scenario: RunLinks is importable from the contract package
+
+- **WHEN** `from bloom_mcp.contract import RunLinks` is executed in a clean import context
+- **THEN** the import succeeds and `RunLinks` is a Pydantic `BaseModel` subclass whose
+  field set includes exactly `run_ref`, `version_dir`, `manifest_path`, and `outputs`
+- **AND** `"RunLinks"` is present in `bloom_mcp.contract.__all__`
+
+#### Scenario: Consumer result models inherit RunLinks fields without redeclaring them
+
+- **WHEN** a `PCAAnalysisResult` instance is constructed with `run_ref`, `version_dir`,
+  `manifest_path`, and `outputs` supplied alongside its tool-specific fields (e.g.
+  `experiment`, `n_samples`, `n_components`)
+- **THEN** the model validates successfully, the four run-link attributes are accessible on
+  the instance, and none of the four field names appear in `PCAAnalysisResult.__fields__`
+  directly — they are inherited from `RunLinks`
+
+#### Scenario: RunLinks fields survive round-trip serialization
+
+- **WHEN** a `PCAAnalysisResult` instance (a concrete `RunLinks` subclass) is serialized
+  with `.model_dump()` and reconstructed with `PCAAnalysisResult.model_validate()`
+- **THEN** the `run_ref`, `version_dir`, `manifest_path`, and `outputs` values are identical
+  before and after the round-trip alongside the tool-specific fields
+
+#### Scenario: A missing or wrong-typed run-link field is rejected at construction
+
+- **WHEN** a `RunLinks` subclass is constructed with `run_ref` omitted or with `outputs`
+  set to a non-string-valued dict (e.g. `{"key": 42}`)
+- **THEN** Pydantic raises a `ValidationError` identifying the offending field, and the
+  model instance is not created
+
