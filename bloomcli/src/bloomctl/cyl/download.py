@@ -52,6 +52,7 @@ from .._download import (
     write_failed,
     write_manifest,
 )
+from .._postgrest import fetch_in_batches
 from .._storage import (
     already_downloaded,
     atomic_write_bytes,
@@ -245,9 +246,9 @@ def fetch_scan(client: Any, scan_id: Any) -> dict[str, Any] | None:
 def fetch_genotypes(client: Any, accession_ids: list[Any]) -> dict[Any, str]:
     """Map accession_id -> accessions.name for the given ids."""
     ids = sorted({a for a in accession_ids if a is not None})
-    if not ids:
-        return {}
-    rows = client.table("accessions").select("id, name").in_("id", ids).execute().data or []
+    rows = fetch_in_batches(
+        lambda batch: client.table("accessions").select("id, name").in_("id", batch), ids
+    )
     return {row["id"]: row["name"] for row in rows}
 
 def fetch_images(client: Any, scan_id: Any) -> list[dict[str, Any]]:

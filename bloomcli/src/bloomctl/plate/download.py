@@ -42,6 +42,7 @@ from .._download import (
     write_download_log,
     write_manifest,
 )
+from .._postgrest import fetch_in_batches
 from .._storage import sweep_orphan_temps
 from ..credentials import DEFAULT_PROFILE
 
@@ -211,34 +212,6 @@ def download_selector(**options: Any) -> dict[str, Any]:
 
 # --- supabase / storage I/O -------------------------------------------------
 
-# A PostgREST `in.(…)` filter travels in the URL, and the gateway rejects a long one with
-# 414 URI Too Long — measured at roughly 5.4 KB of id list against the dev stack. Batching by
-# characters rather than by count keeps that safe whatever the ids look like: a run of
-# 19-digit bigints packs far fewer ids into the same URL than a run of 4-digit ones.
-ID_FILTER_BUDGET_CHARS = 4000
-
-
-def id_batches(ids: list[Any], budget: int = ID_FILTER_BUDGET_CHARS) -> list[list[Any]]:
-    """Split ids into batches whose rendered `in.(…)` list stays under ``budget`` characters.
-
-    A single id longer than the budget still gets its own batch — better one over-long request
-    that the server can refuse clearly than silently dropping the row.
-    """
-    batches: list[list[Any]] = []
-    current: list[Any] = []
-    length = 0
-    for value in ids:
-        rendered = len(str(value)) + 1  # +1 for the separating comma
-        if current and length + rendered > budget:
-            batches.append(current)
-            current, length = [], 0
-        current.append(value)
-        length += rendered
-    if current:
-        batches.append(current)
-    return batches
-
-
 def fetch_plate_scans(
     client: Any,
     experiment_id: int,
@@ -281,11 +254,10 @@ def fetch_plate_images(client: Any, scan_ids: list[Any]) -> dict[Any, dict[str, 
     exist only because the `in.(…)` filter travels in the URL — see ``id_batches``.
     """
     ids = [i for i in scan_ids if i is not None]
-    found: dict[Any, dict[str, Any]] = {}
-    for batch in id_batches(ids):
-        rows = client.table("gravi_images").select("*").in_("scan_id", batch).execute().data or []
-        found.update({row["scan_id"]: row for row in rows})
-    return found
+    rows = fetch_in_batches(
+        lambda batch: client.table("gravi_images").select("*").in_("scan_id", batch), ids
+    )
+    return {row["scan_id"]: row for row in rows}
 
 
 def fetch_plate_sections(client: Any, metadata_ids: list[Any]) -> list[dict[str, Any]]:
@@ -293,42 +265,37 @@ def fetch_plate_sections(client: Any, metadata_ids: list[Any]) -> list[dict[str,
     ids = sorted({i for i in metadata_ids if i is not None})
     if not ids:
         return []
-    sections: list[dict[str, Any]] = []
-    for batch in id_batches(ids):
-        sections += (
-            client.table("gravi_scan_metadata_sections")
-            .select("*")
-            .in_("metadata_id", batch)
-            .execute()
-            .data
-            or []
-        )
+    sections = fetch_in_batches(
+        lambda batch: client.table("gravi_scan_metadata_sections")
+        .select("*")
+        .in_("metadata_id", batch),
+        ids,
+    )
     if not sections:
         return []
     by_id = {s["id"]: s for s in sections}
-    plants: list[dict[str, Any]] = []
-    for batch in id_batches(sorted(by_id)):
-        plants += (
-            client.table("gravi_scan_metadata_section_plants")
-            .select("*")
-            .in_("section_id", batch)
-            .execute()
-            .data
-            or []
-        )
-    rows = []
+    plants = fetch_in_batches(
+        lambda batch: client.table("gravi_scan_metadata_section_plants")
+        .select("*")
+        .in_("section_id", batch),
+        sorted(by_id),
+    )
+    by_section: dict[Any, list[dict[str, Any]]] = {}
     for plant in plants:
-        section = by_id.get(plant.get("section_id"))
-        if section is None:
-            continue
-        rows.append(
-            {
-                "metadata_id": section.get("metadata_id"),
-                "plate_section_id": section.get("plate_section_id"),
-                "medium": section.get("medium"),
-                "plant_qr": plant.get("plant_qr"),
-            }
-        )
+        by_section.setdefault(plant.get("section_id"), []).append(plant)
+
+    rows = []
+    for section_id, section in by_id.items():
+        base = {
+            "metadata_id": section.get("metadata_id"),
+            "plate_section_id": section.get("plate_section_id"),
+            "medium": section.get("medium"),
+        }
+        # A section with no plant QRs recorded still gets a row, with an empty plant_qr.
+        # Dropping it would lose that section's `medium` — the growth condition is a property
+        # of the section, not of the plants in it, and it is what most analyses group by.
+        found = by_section.get(section_id) or [{}]
+        rows += [{**base, "plant_qr": plant.get("plant_qr", "")} for plant in found]
     return rows
 
 

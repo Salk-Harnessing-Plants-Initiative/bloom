@@ -16,6 +16,7 @@ import pytest
 from test_plate_download_paths import SCAN
 
 import bloomctl.plate.download as pd
+from bloomctl._postgrest import ID_FILTER_BUDGET_CHARS
 
 
 class _Bucket:
@@ -158,27 +159,53 @@ def test_fetch_plate_images_batches_so_the_url_cannot_get_too_long():
     assert sum(len(b) for b in batches) == 5000, "every id must still be requested"
     assert [i for b in batches for i in b] == list(range(1, 5001)), "no id lost or reordered"
     for batch in batches:
-        assert len(",".join(map(str, batch))) <= pd.ID_FILTER_BUDGET_CHARS
+        assert len(",".join(map(str, batch))) <= ID_FILTER_BUDGET_CHARS
 
-
-def test_id_batches_adapt_to_wide_ids():
-    # Batching by count would break on bigints: 500 nineteen-digit ids is a 10 KB filter.
-    wide = [10**18 + i for i in range(1000)]
-    for batch in pd.id_batches(wide):
-        assert len(",".join(map(str, batch))) <= pd.ID_FILTER_BUDGET_CHARS
-    assert sum(len(b) for b in pd.id_batches(wide)) == 1000
-
-
-def test_id_batches_keeps_an_oversized_single_id():
-    # Better one request the server refuses clearly than a silently dropped row.
-    huge = "9" * (pd.ID_FILTER_BUDGET_CHARS + 10)
-    assert pd.id_batches([huge]) == [[huge]]
 
 
 def test_no_scan_ids_makes_no_query():
     client = _TableClient([])
     assert pd.fetch_plate_images(client, []) == {}
     assert "in" not in client.calls
+
+
+class _SectionClient:
+    """Serves sections and their plants from two tables, like the real schema."""
+
+    def __init__(self, sections, plants):
+        self.sections, self.plants = sections, plants
+
+    def table(self, name):
+        rows = self.sections if name == "gravi_scan_metadata_sections" else self.plants
+        return _Query({}, rows)
+
+
+def test_a_section_with_no_plants_keeps_its_medium():
+    # The growth condition is a property of the section, not of the plants in it. Dropping a
+    # plantless section would lose the medium — and medium is what analyses group by.
+    client = _SectionClient(
+        sections=[
+            {"id": 1, "metadata_id": 55, "plate_section_id": "top", "medium": "MS"},
+            {"id": 2, "metadata_id": 55, "plate_section_id": "empty", "medium": "MS+NaCl"},
+        ],
+        plants=[{"section_id": 1, "plant_qr": "QR-1"}],
+    )
+    rows = pd.fetch_plate_sections(client, [55])
+
+    by_section = {r["plate_section_id"]: r for r in rows}
+    assert set(by_section) == {"top", "empty"}
+    assert by_section["empty"]["medium"] == "MS+NaCl"
+    assert by_section["empty"]["plant_qr"] == "", "no plant recorded, so the column is empty"
+
+
+def test_a_section_with_several_plants_gets_a_row_each():
+    client = _SectionClient(
+        sections=[{"id": 1, "metadata_id": 55, "plate_section_id": "top", "medium": "MS"}],
+        plants=[{"section_id": 1, "plant_qr": "QR-1"}, {"section_id": 1, "plant_qr": "QR-2"}],
+    )
+    rows = pd.fetch_plate_sections(client, [55])
+    assert sorted(r["plant_qr"] for r in rows) == ["QR-1", "QR-2"]
+    assert all(r["medium"] == "MS" for r in rows)
 
 
 def test_fetch_plate_sections_batches_too():

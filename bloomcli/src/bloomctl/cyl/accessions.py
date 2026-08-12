@@ -11,6 +11,7 @@ from typing import Any
 
 import click
 
+from .._postgrest import fetch_in_batches
 from ..credentials import DEFAULT_PROFILE
 from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
 from ._select import resolve_by_name, select_from_menu
@@ -122,14 +123,12 @@ def fetch_experiments_with_accessions(client: Any) -> list[tuple[int, str]]:
     ids = sorted({r["experiment_id"] for r in rows if r.get("experiment_id") is not None})
     if not ids:
         return []
-    exps = (
-        client.table("cyl_experiments")
+    exps = fetch_in_batches(
+        lambda batch: client.table("cyl_experiments")
         .select("id, name, species(common_name)")
-        .in_("id", ids)
-        .is_("deleted_at", "null")
-        .execute()
-        .data
-        or []
+        .in_("id", batch)
+        .is_("deleted_at", "null"),
+        ids,
     )
     items = [
         (e["id"], f"{e.get('name') or ''} ({(e.get('species') or {}).get('common_name') or '?'})")
