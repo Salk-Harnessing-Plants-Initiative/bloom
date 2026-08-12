@@ -569,6 +569,27 @@ schema itself enforces for every migration.
 
 ## Open Questions
 
+- **The Migration Plan's Phase 2 needs re-sequencing — discovered during Phase 1 implementation,
+  not resolved here.** `cyl_scan_traits_source.is_latest` stays live-computed (the `WindowAgg`)
+  until M4 lands — meaning `compute_cyl_experiment_summary_counts_live` (which joins through that
+  view, not the stored column) is correct regardless of the stored column's backfill state, for as
+  long as M4 hasn't cut over. That's good for Phase 1 (the rollup's event-driven refresh is
+  already correct the moment M3 merges), but it means the rollup *backfill*'s cost is not actually
+  reduced until M4 is live — Benfica's "step 1 is what makes the refresh cheap enough to run"
+  claim is about M4 (the view reading the indexed column), not M1-M3. As originally sequenced
+  (operator runbook step (c), the rollup backfill, running *before* Phase 2/M4 even opens), the
+  rollup backfill would still pay the full live-`WindowAgg` cost — the exact cost this whole
+  change exists to remove. Correct ordering is a three-way constraint: **M4 (view cutover) →
+  rollup backfill (now cheap) → M5 (RPC rewrite)** — and because staging's deploy workflow applies
+  every migration in one PR's merge unconditionally (the same reasoning as D8), M4 and M5 likely
+  can't safely land in the same PR either, the same way M1-M3 and M4/M5 can't. **This likely means
+  a three-PR landing plan, not two** (Phase 1 as scoped here; Phase 2 = M4 only + a rollup-backfill
+  runbook window; Phase 3 = M5 only). Not fixed in this pass because it only affects Phase 2/3
+  sequencing, which this implementation pass doesn't touch — Phase 1 (M1-M3, this document's
+  actual scope right now) is unaffected and already verified correct against this exact
+  live-view behavior (see `tests/integration/test_cyl_experiment_summary_rollup.py`'s skipped
+  `test_rollup_backfill_ordering_gate_consequence`, which documents this finding in place). Revise
+  the Migration Plan's Phase 2 section before starting Phase 2 implementation.
 - **D6's refresh mechanism (event-driven vs. scheduled)** — the one point in Benfica's comment this
   design had to resolve without her explicit confirmation. Flagged in the PR description for her review,
   per this repo's established D1/D5 precedent (ship a considered default, confirm via review).
