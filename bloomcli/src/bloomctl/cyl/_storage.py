@@ -127,9 +127,6 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     finished one, and two workers handed the same destination must not interleave their
     writes. The temp file is written with an ordinary open, so it ends up with the same
     permissions any other file in the directory would get.
-
-    A failure is re-raised against ``path``, since the temp file it names is already deleted
-    by the time the error is read. ``errno`` survives, so a caller can still spot a full disk.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".dl-{uuid4().hex}.tmp")
@@ -138,6 +135,7 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
         os.replace(tmp, path)
     except OSError as exc:
         _unlink_quietly(str(tmp))
+        # Report the file asked for, not the temp file, which is deleted by now.
         raise OSError(exc.errno, exc.strerror, str(path)) from exc
     except BaseException:
         _unlink_quietly(str(tmp))
