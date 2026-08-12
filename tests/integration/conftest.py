@@ -138,9 +138,13 @@ def api():
     return api_request
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def api_headers():
-    """Fixture that returns the api_response_headers helper."""
+    """Fixture that returns the api_response_headers helper.
+
+    Session-scoped so module-scoped fixtures can depend on it and fetch each
+    route once, rather than once per assertion.
+    """
     return api_response_headers
 
 

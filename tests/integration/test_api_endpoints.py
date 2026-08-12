@@ -122,9 +122,24 @@ HEADER_ROUTES = [
 ]
 
 
+@pytest.fixture(scope="module")
+def header_responses(api_headers):
+    """Fetch each route exactly once and reuse the headers across assertions.
+
+    Deliberately not one request per (route, header) pair. Two of these routes
+    reach bloommcp, whose `IdentityMiddleware` records a usage row per request
+    on a background thread (`bloommcp/src/bloom_mcp/usage.py`). Those writes
+    land after the response returns, so surplus requests here surface later as
+    inflated counts in `test_bloommcp_usage_rpc.py`, which measures a delta in
+    `bloommcp_usage` for the shared `anonymous` identity. Fetching once keeps
+    this suite's footprint at one request per route.
+    """
+    return {path: api_headers(path) for path in HEADER_ROUTES}
+
+
 @pytest.mark.parametrize("path", HEADER_ROUTES)
 @pytest.mark.parametrize("name,value", sorted(SECURITY_HEADERS.items()))
-def test_security_headers_present(api_headers, path, name, value):
+def test_security_headers_present(header_responses, path, name, value):
     """Each security header reaches the client exactly once, with its exact
     value, on every handler class under the main hostname.
 
@@ -136,7 +151,7 @@ def test_security_headers_present(api_headers, path, name, value):
     (verified across bloom-web, Kong, GoTrue, storage-api and langchain), so
     this is the guard for the day one of them starts.
     """
-    received = api_headers(path).get_all(name)
+    received = header_responses[path].get_all(name)
     assert received, f"{name} missing from the response to {path}"
     assert len(received) == 1, (
         f"{name} returned {len(received)} times for {path}: {received!r} — "
@@ -148,7 +163,7 @@ def test_security_headers_present(api_headers, path, name, value):
     )
 
 
-def test_hsts_not_yet_set(api_headers):
+def test_hsts_not_yet_set(header_responses):
     """HSTS is deliberately absent until the exposure work.
 
     Asserted on the wire, not only in config: browsers cache it for its full
@@ -156,7 +171,7 @@ def test_hsts_not_yet_set(api_headers):
     rollout is materially harder to undo than any other header here — it has
     to expire out of every client that ever saw it.
     """
-    received = api_headers("/api/client-info").get_all("Strict-Transport-Security")
+    received = header_responses["/api/client-info"].get_all("Strict-Transport-Security")
     assert not received, (
         f"Strict-Transport-Security is being sent ({received!r}) — it is "
         "browser-cached and cannot be withdrawn server-side"
