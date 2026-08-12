@@ -10,7 +10,9 @@ contract mapping. When the target experiment has more than one source and neithe
 `run_id` was given, the result SHALL include an advisory note naming the source actually used and
 pointing at `core_list_experiment_sources` to choose a different one. The note SHALL be absent on
 the `csv_content` (inline) path, for single- or zero-source experiments, and whenever a pin was
-given.
+given. A source pin only ever applies to the DB-backed raw-tier read that `csv_content` bypasses
+entirely, so `source_id`/`run_id` given alongside `csv_content` SHALL be rejected as a structured
+`invalid_input` `BloomMCPError` rather than silently ignored.
 
 #### Scenario: Omitting both source params preserves today's behavior
 
@@ -48,6 +50,12 @@ given.
 - **WHEN** `qc_clean` is invoked with `csv_content` instead of a registered `experiment`
 - **THEN** the result's advisory note is `None` regardless of source count, since inline content
   has no experiment identity to enumerate sources for
+
+#### Scenario: A source pin given alongside csv_content is rejected, not silently dropped
+
+- **WHEN** `qc_clean` is invoked with `csv_content` and either `source_id` or `run_id` also set
+- **THEN** the tool returns an `invalid_input` `BloomMCPError` rather than silently cleaning the
+  inline content while ignoring the pin
 
 #### Scenario: A pinned source is traceable from the committed run's provenance
 

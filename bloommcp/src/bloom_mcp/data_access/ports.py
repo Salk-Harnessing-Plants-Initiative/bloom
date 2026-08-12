@@ -104,6 +104,16 @@ class ExperimentFrame:
     frame's data never touched the DB at all, and even for a raw read, a fresh
     re-resolution at commit time can race ahead of what this frame's data
     actually is (see ``ResultStore.create_run``'s ``source`` parameter).
+
+    ``available_source_count`` is the number of distinct sources ``list_sources``
+    would return for this experiment, captured from the SAME resolution
+    ``load_experiment`` already performed to produce ``resolved_source`` — never
+    a fresh, independent ``list_sources`` call. A caller that wants to tell an
+    agent "there was more than one source to choose from" should read this
+    field rather than re-querying: a second call would be both a redundant DB
+    round-trip and a TOCTOU window (the count could change between the two
+    reads). ``None`` for a cleaned-tier read or an adapter with no source
+    concept, same as ``resolved_source``.
     """
 
     df: pd.DataFrame
@@ -114,6 +124,7 @@ class ExperimentFrame:
     sample_id_col: Optional[str]
     source: str
     resolved_source: Optional["SourceInfo"] = None
+    available_source_count: Optional[int] = None
 
 
 @dataclass(frozen=True)

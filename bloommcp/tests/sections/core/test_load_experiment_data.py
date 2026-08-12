@@ -34,6 +34,34 @@ def test_omitting_both_preserves_todays_summary():
     result = load_experiment_data(_EXPERIMENT)
 
     assert "Samples: 2" in result
+    # FakeReader has no source concept at all, so there is no ambiguity note.
+    assert "sources available" not in result
+
+
+def test_multi_source_experiment_with_no_pin_gets_an_advisory_note(
+    make_multi_source_fake_reader,
+):
+    reader = make_multi_source_fake_reader([9, 10, 11])
+    reader.add_experiment(_EXPERIMENT, _raw())
+    _ports.configure(reader=reader)
+
+    result = load_experiment_data(_EXPERIMENT)
+
+    assert "3 sources" in result
+    assert "core_list_experiment_sources" in result
+    assert "11" in result  # the resolved (max) source_id
+
+
+def test_explicit_source_pin_suppresses_the_advisory_note(
+    make_multi_source_fake_reader,
+):
+    reader = make_multi_source_fake_reader([9, 10, 11])
+    reader.add_experiment(_EXPERIMENT, _raw())
+    _ports.configure(reader=reader)
+
+    result = load_experiment_data(_EXPERIMENT, source_id=10)
+
+    assert "sources available" not in result
 
 
 def test_both_source_id_and_run_id_returns_the_error_string_not_a_crash():

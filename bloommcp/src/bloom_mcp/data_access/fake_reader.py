@@ -94,10 +94,12 @@ class FakeReader:
     ) -> ExperimentFrame:
         if source_id is not None or run_id is not None:
             # FakeReader has no source-versioned substrate — reject outright
-            # rather than silently ignoring the pin (#626).
+            # rather than silently ignoring the pin (#626). The message names
+            # no internal adapter/class, mirroring list_experiment_sources's
+            # own care not to leak backend implementation detail.
             raise SourcePinningUnsupportedError(
-                "FakeReader has no source concept; source_id/run_id pinning "
-                "is not supported for this backend."
+                "This backend has no source-versioned raw data to pin "
+                "against; source_id/run_id pinning is not supported here."
             )
         key = (name, version)
         if key in self._fail_next:

@@ -10,7 +10,6 @@ it produces no cleaned version.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import hashlib
 import json
 from pathlib import Path
@@ -20,11 +19,8 @@ import pytest
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import (
-    AmbiguousSourceSelectionError,
     CleanedVersionRequiredError,
     FakeReader,
-    SourceInfo,
-    SourcePinNotFoundError,
     SupabaseReader,
 )
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
@@ -948,64 +944,15 @@ def test_source_csv_honors_local_root_only_mode(tmp_path, monkeypatch):
 
 
 # ── explicit source pin (#626) ──────────────────────────────────────────────
-
-
-class _MultiSourceFakeReader(FakeReader):
-    """Test-local double: FakeReader + a bolted-on SourceSelectable surface.
-
-    Local to this test file — the shared FakeReader class must stay
-    non-SourceSelectable (test_fake_reader_is_not_source_selectable in
-    test_supabase_reader.py).
-    """
-
-    def __init__(self, source_ids):
-        super().__init__()
-        self._sources = [
-            SourceInfo(
-                source_id=sid, source_name=f"run-{sid}", pipeline_run_id=f"p{sid}"
-            )
-            for sid in source_ids
-        ]
-
-    def list_sources(self, name):
-        return list(self._sources)
-
-    def resolve_source(self, name, *, source_id=None, run_id=None):
-        if source_id is not None and run_id is not None:
-            raise AmbiguousSourceSelectionError("both source_id and run_id given")
-        if source_id is not None:
-            for s in self._sources:
-                if s.source_id == source_id:
-                    return s
-            raise SourcePinNotFoundError(f"no source_id={source_id}")
-        if run_id is not None:
-            for s in self._sources:
-                if s.pipeline_run_id == run_id:
-                    return s
-            raise SourcePinNotFoundError(f"no run_id={run_id}")
-        return self._sources[-1] if self._sources else None
-
-    def load_experiment(
-        self,
-        name,
-        *,
-        version="latest",
-        require_clean=False,
-        source_id=None,
-        run_id=None,
-    ):
-        resolved = self.resolve_source(name, source_id=source_id, run_id=run_id)
-        frame = super().load_experiment(
-            name, version=version, require_clean=require_clean
-        )
-        if resolved is not None:
-            frame = dataclasses.replace(frame, resolved_source=resolved)
-        return frame
+# The multi-source test double (FakeReader + a bolted-on SourceSelectable
+# surface) lives in the root tests/conftest.py as make_multi_source_fake_reader
+# — it was duplicated near-verbatim across this file, test_qc_clean_tool.py,
+# and test_ports.py before being consolidated there.
 
 
 @pytest.fixture
-def multi_source_ports():
-    reader = _MultiSourceFakeReader([9, 10])
+def multi_source_ports(make_multi_source_fake_reader):
+    reader = make_multi_source_fake_reader([9, 10])
     store = FakeResultStore()
     reader.add_experiment(_EXPERIMENT, _raw_df())
     _ports.configure(reader=reader, store=store)
@@ -1022,9 +969,11 @@ def test_source_id_and_run_id_fields_exist():
 
 def test_omitting_both_source_params_preserves_todays_behavior(injected_ports):
     """No behavior change beyond accepting (and ignoring, when None) the two
-    new fields — same recommendation oracle as before this change."""
+    new fields — same recommendation oracle as before this change, plus a
+    source_note that must stay None on a single-source (FakeReader) experiment."""
     result = _run()
     assert result.n_samples == 187
+    assert result.source_note is None
 
 
 def test_explicit_source_pin_changes_which_source_is_inspected(multi_source_ports):
@@ -1035,6 +984,17 @@ def test_explicit_source_pin_changes_which_source_is_inspected(multi_source_port
     # rather than being silently dropped.
     assert result_9.n_samples > 0
     assert result_10.n_samples > 0
+    # A pin was given, so there is nothing to advise.
+    assert result_9.source_note is None
+    assert result_10.source_note is None
+
+
+def test_multi_source_experiment_with_no_pin_gets_an_advisory_note(multi_source_ports):
+    result = _run()
+    assert result.source_note is not None
+    assert "2 sources" in result.source_note
+    assert "core_list_experiment_sources" in result.source_note
+    assert "10" in result.source_note  # the resolved (max) source_id
 
 
 def test_both_source_id_and_run_id_given_is_rejected(multi_source_ports):

@@ -96,6 +96,27 @@ def test_ambiguous_source_selection_is_a_distinct_class_from_unsupported():
     assert not issubclass(AmbiguousSourceSelectionError, SourcePinningUnsupportedError)
 
 
+def test_both_given_is_ambiguous_via_protocol_typed_handle_on_a_source_capable_adapter(
+    make_multi_source_fake_reader,
+):
+    """The spec's own scenario ('Both source_id and run_id given is rejected at
+    the Protocol level') requires this be verified generically through the
+    ExperimentReader Protocol type, not only against SupabaseReader's concrete
+    implementation (test_supabase_reader.py already covers that concrete case).
+
+    The parametrized checks above cover SourcePinningUnsupportedError — adapters
+    with NO source concept at all (FakeReader/LocalReader), where both pins
+    given never even reaches an ambiguity check. This covers the distinct
+    AmbiguousSourceSelectionError case: an adapter that DOES have a source
+    concept, given two conflicting pins.
+    """
+    reader: ExperimentReader = make_multi_source_fake_reader([9, 10])
+    assert isinstance(reader, ExperimentReader)
+    reader.add_experiment("exp.csv", _raw())
+    with pytest.raises(AmbiguousSourceSelectionError):
+        reader.load_experiment("exp.csv", source_id=9, run_id="p10")
+
+
 def _raw() -> pd.DataFrame:
     return pd.DataFrame(
         {

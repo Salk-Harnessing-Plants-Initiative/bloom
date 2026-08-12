@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -77,7 +77,7 @@ class ClusteringParams(BaseModel):
         "recent outlier trim when one exists for the experiment, not merely the most "
         "recent clean.",
     )
-    version: Optional[str] = Field(
+    version: str | None = Field(
         default=None,
         description="Pin clustering to a specific committed cleaned version "
         "(e.g. 'v2'; see list_existing_analyses). Omit to use the latest "

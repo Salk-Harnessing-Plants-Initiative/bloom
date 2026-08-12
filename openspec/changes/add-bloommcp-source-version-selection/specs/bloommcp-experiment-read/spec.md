@@ -5,7 +5,11 @@
 The system SHALL define a backend-agnostic `ExperimentReader` port exposing
 `load_experiment(name, version, require_clean, source_id, run_id)` and `list_experiments()`,
 where `load_experiment` returns an `ExperimentFrame` carrying the experiment frame,
-**adapter-declared** column roles (trait vs metadata columns), and a source label. Column roles
+**adapter-declared** column roles (trait vs metadata columns), a source label, and — for a raw-tier
+read on a source-versioned adapter — the resolved `SourceInfo` plus the total number of known
+sources at the time of that same resolution (`available_source_count`), so a caller building a
+source-ambiguity advisory never needs an independent `list_sources` round-trip against the same
+read. Column roles
 SHALL be declared by the adapter, not re-inferred by callers, so a future adapter sourcing
 tidy/long rows can satisfy the contract without reproducing dtype-based detection. Consumers SHALL
 depend only on this port — never on `supabase`, `experiment_utils`, or `storage/` primitives
@@ -40,6 +44,11 @@ ignoring the pin or raising an unrelated `TypeError`.
 
 - **WHEN** `load_experiment(name)` is called for a name the reader cannot resolve in any tier
 - **THEN** the reader surfaces a structured not-found condition with no raw Supabase or filesystem traceback, bucket name, or connection string leaked to the caller
+
+#### Scenario: A resolvable-but-unreadable committed version is a caller-safe error, not a leaked exception
+
+- **WHEN** `load_experiment(name, version=...)` resolves a manifest entry that names a real, committed version, but reading that entry — the manifest lookup itself, its recorded output key, its version directory, or the file download — raises a storage or filesystem exception partway through
+- **THEN** the reader converts that exception into a structured error before it reaches the caller, never letting a raw exception, filesystem path, or storage traceback escape
 
 #### Scenario: List experiments enumerates available inputs
 
@@ -77,3 +86,12 @@ ignoring the pin or raising an unrelated `TypeError`.
 - **THEN** the call raises `SourcePinNotFoundError` — distinct from `AmbiguousSourceSelectionError`
   (wrong pin, not conflicting pins) and from `ExperimentNotFoundError` (the experiment itself
   exists; only the pin is wrong)
+
+#### Scenario: A raw-tier read on a source-versioned adapter reports how many sources it saw
+
+- **WHEN** `load_experiment(name)` performs a raw-tier read against an adapter implementing
+  `SourceSelectable`, and the experiment has more than one known source
+- **THEN** the returned `ExperimentFrame.available_source_count` equals the number of sources
+  `list_sources(name)` would report, without the adapter making a second `list_sources` call to
+  compute it — a consumer building a source-ambiguity advisory reads this field rather than
+  re-querying independently

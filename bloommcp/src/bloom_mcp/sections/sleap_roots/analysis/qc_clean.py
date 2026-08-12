@@ -71,7 +71,7 @@ from pydantic import BaseModel, Field
 from sleap_roots_analyze import clean_traits_for_analysis
 
 from bloom_mcp.contract import BloomMCPError, OutputLink, Provenance, as_mcp_tool
-from bloom_mcp.data_access import ExperimentReadError, SourceSelectable
+from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.data_access.columns import resolve_columns, run_input_validation
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, QC_TOOL_CLASS
@@ -306,6 +306,27 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     # there is no experiment identity on the inline path.
     experiment_label = _INLINE_EXPERIMENT_LABEL if is_inline else params.experiment
 
+    # A source/run pin only ever means anything against the DB-backed raw tier —
+    # csv_content bypasses the reader port entirely, so there is no source to pin.
+    # Reject rather than silently drop (the same "reject, don't silently ignore"
+    # principle the exactly-one-of-experiment/csv_content check above applies) —
+    # checked here, not via a @model_validator, for the same reason documented in
+    # the NOTE on QCCleanParams: a validator's raised ValueError loses this specific
+    # message to the contract layer's generic "(<root>: value_error)" text.
+    if is_inline and (params.source_id is not None or params.run_id is not None):
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                "source_id/run_id cannot be used with csv_content: a source pin "
+                "only applies to a registered experiment's raw DB-backed read, "
+                "and csv_content bypasses that read entirely."
+            ),
+            remedy=(
+                "Omit source_id/run_id when using csv_content, or supply "
+                "experiment instead of csv_content to pin a source."
+            ),
+        )
+
     source_note: Optional[str] = None
     if is_inline:
         # Inline content bypasses the ExperimentReader port entirely — parsed directly
@@ -327,19 +348,23 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         # #626: when neither source_id nor run_id was given and the experiment has
         # more than one known source, say so explicitly rather than silently
         # resolving "latest" — an agent that hasn't already discovered the sources
-        # should still learn there was a choice to make.
+        # should still learn there was a choice to make. Reads frame.available_source_count
+        # (stamped from the SAME resolution load_experiment already performed) rather than
+        # a fresh reader.list_sources call — that would be a redundant DB round-trip with a
+        # TOCTOU window against the read above.
         if (
             params.source_id is None
             and params.run_id is None
-            and isinstance(reader, SourceSelectable)
+            and frame.available_source_count is not None
+            and frame.available_source_count > 1
+            and frame.resolved_source is not None
         ):
-            sources = reader.list_sources(params.experiment)
-            if len(sources) > 1 and frame.resolved_source is not None:
-                source_note = (
-                    f"{len(sources)} sources available for {params.experiment!r}; "
-                    f"used latest (source_id={frame.resolved_source.source_id}). "
-                    "Call core_list_experiment_sources to choose a different one."
-                )
+            source_note = (
+                f"{frame.available_source_count} sources available for "
+                f"{params.experiment!r}; used latest "
+                f"(source_id={frame.resolved_source.source_id}). Call "
+                "core_list_experiment_sources to choose a different one."
+            )
 
     # B-4: the same column cannot serve as both genotype label and sample identifier.
     if (

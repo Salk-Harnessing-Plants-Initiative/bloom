@@ -46,6 +46,26 @@ def load_experiment_data(
         f"  Samples: {n_samples}",
     ]
 
+    # #626: when neither source_id nor run_id was given and the experiment has
+    # more than one known source, say so explicitly rather than silently
+    # resolving "latest" — mirrors qc_clean's source_note. Reads the count/id
+    # _load_data already resolved (see _ports.load_frame) rather than a fresh
+    # reader.list_sources call.
+    available = config.get("available_source_count")
+    resolved_source_id = config.get("resolved_source_id")
+    if (
+        source_id is None
+        and run_id is None
+        and available is not None
+        and available > 1
+        and resolved_source_id is not None
+    ):
+        lines.append(
+            f"  Note: {available} sources available for {filename!r}; used "
+            f"latest (source_id={resolved_source_id}). Call "
+            "core_list_experiment_sources to choose a different one."
+        )
+
     if genotype_col and genotype_col in df.columns:
         lines.append(
             f"  Genotypes: {df[genotype_col].nunique()} (column: {genotype_col})"

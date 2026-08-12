@@ -72,7 +72,12 @@ def load_frame(
 
     Returns ``(df, trait_cols, config, source)`` on success, or
     ``(None, None, None, error_message)`` when the experiment cannot be loaded —
-    preserving the contract the tools were written against.
+    preserving the 4-tuple contract the tools were written against. ``config``
+    additionally carries ``resolved_source_id``/``available_source_count`` (both
+    ``None`` when not applicable) — read from the SAME ``ExperimentFrame``
+    resolution already performed here, so a caller building a source-ambiguity
+    advisory (like ``qc_clean``'s ``source_note``) never needs its own
+    ``list_sources`` round-trip.
 
     ``source_id``/``run_id`` optionally pin a specific raw DB source (#626). A
     pin only ever means anything against the raw tier, and this seam has no
@@ -94,6 +99,10 @@ def load_frame(
         "genotype_col": frame.genotype_col,
         "replicate_col": frame.replicate_col,
         "sample_id_col": frame.sample_id_col,
+        "resolved_source_id": (
+            frame.resolved_source.source_id if frame.resolved_source else None
+        ),
+        "available_source_count": frame.available_source_count,
     }
     return frame.df, frame.trait_cols, config, frame.source
 

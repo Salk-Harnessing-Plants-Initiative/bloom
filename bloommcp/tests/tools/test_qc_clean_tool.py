@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import json
 import logging
 from pathlib import Path
@@ -21,13 +20,7 @@ import pandas as pd
 import pytest
 
 from bloom_mcp.contract import BloomMCPError
-from bloom_mcp.data_access import (
-    AmbiguousSourceSelectionError,
-    FakeReader,
-    SourceInfo,
-    SourcePinNotFoundError,
-    SupabaseReader,
-)
+from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._inline_input import compute_input_sha256
@@ -1339,67 +1332,16 @@ def test_csv_content_never_appears_in_logs_on_internal_error(
 
 
 # ── explicit source pin (#626) ──────────────────────────────────────────────
-
-
-class _MultiSourceFakeReader(FakeReader):
-    """Test-local double: FakeReader + a bolted-on SourceSelectable surface.
-
-    Local to this test file only — the *shared* FakeReader class must stay
-    non-SourceSelectable (test_fake_reader_is_not_source_selectable in
-    test_supabase_reader.py locks that in). This subclass exists purely to
-    exercise qc_clean's own source-pin/source_note logic without needing a
-    full DB-shaped SupabaseReader fixture.
-    """
-
-    def __init__(self, source_ids):
-        super().__init__()
-        self._sources = [
-            SourceInfo(
-                source_id=sid, source_name=f"run-{sid}", pipeline_run_id=f"p{sid}"
-            )
-            for sid in source_ids
-        ]
-
-    def list_sources(self, name):
-        return list(self._sources)
-
-    def resolve_source(self, name, *, source_id=None, run_id=None):
-        if source_id is not None and run_id is not None:
-            raise AmbiguousSourceSelectionError("both source_id and run_id given")
-        if source_id is not None:
-            for s in self._sources:
-                if s.source_id == source_id:
-                    return s
-            raise SourcePinNotFoundError(f"no source_id={source_id}")
-        if run_id is not None:
-            for s in self._sources:
-                if s.pipeline_run_id == run_id:
-                    return s
-            raise SourcePinNotFoundError(f"no run_id={run_id}")
-        return self._sources[-1] if self._sources else None
-
-    def load_experiment(
-        self,
-        name,
-        *,
-        version="latest",
-        require_clean=False,
-        source_id=None,
-        run_id=None,
-    ):
-        resolved = self.resolve_source(name, source_id=source_id, run_id=run_id)
-        frame = super().load_experiment(
-            name, version=version, require_clean=require_clean
-        )
-        if resolved is not None:
-            frame = dataclasses.replace(frame, resolved_source=resolved)
-        return frame
+# The multi-source test double (FakeReader + a bolted-on SourceSelectable
+# surface) lives in the root tests/conftest.py as make_multi_source_fake_reader
+# — it was duplicated near-verbatim across this file, test_qc_inspect_tool.py,
+# and test_ports.py before being consolidated there.
 
 
 @pytest.fixture
-def multi_source_ports():
-    """Like injected_ports, but the reader is _MultiSourceFakeReader(sources=[9, 10, 11])."""
-    reader = _MultiSourceFakeReader([9, 10, 11])
+def multi_source_ports(make_multi_source_fake_reader):
+    """Like injected_ports, but the reader has sources=[9, 10, 11]."""
+    reader = make_multi_source_fake_reader([9, 10, 11])
     store = FakeResultStore()
     reader.add_experiment(_EXPERIMENT, _raw_df())
     _ports.configure(reader=reader, store=store)
@@ -1477,6 +1419,24 @@ def test_csv_content_path_never_surfaces_a_source_note(injected_ports):
     csv_text = _RAW.read_text(encoding="utf-8")
     result = qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
     assert result.source_note is None
+
+
+def test_csv_content_with_source_id_is_rejected_not_silently_dropped(injected_ports):
+    """A source pin only ever applies to the DB-backed raw tier -- csv_content
+    bypasses the reader port entirely, so a pin given alongside it must be
+    rejected, not silently ignored (the same principle the mutual-exclusivity
+    check on experiment/csv_content already applies)."""
+    csv_text = _RAW.read_text(encoding="utf-8")
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(csv_content=csv_text, source_id=9))
+    assert "csv_content" in exc.value.message
+
+
+def test_csv_content_with_run_id_is_rejected_not_silently_dropped(injected_ports):
+    csv_text = _RAW.read_text(encoding="utf-8")
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(csv_content=csv_text, run_id="p9"))
+    assert "csv_content" in exc.value.message
 
 
 def test_pinned_source_is_traceable_from_the_committed_runs_provenance(

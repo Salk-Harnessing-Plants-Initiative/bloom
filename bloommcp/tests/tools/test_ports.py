@@ -10,18 +10,10 @@ cleaned version.
 
 from __future__ import annotations
 
-import dataclasses
-
 import pandas as pd
 import pytest
 
-from bloom_mcp.data_access import (
-    AmbiguousSourceSelectionError,
-    FakeReader,
-    SourceInfo,
-    SourcePinNotFoundError,
-    SupabaseReader,
-)
+from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.tools import _ports
 
@@ -32,62 +24,20 @@ def _raw() -> pd.DataFrame:
     return pd.DataFrame({"Genotype": ["g1", "g2"], "trait_x": [1.0, 2.0]})
 
 
-class _MultiSourceFakeReader(FakeReader):
-    """Test-local double: FakeReader + a bolted-on SourceSelectable surface
-    that also serves a cleaned version, to exercise the raw-tier forcing.
-    Local to this test file — the shared FakeReader stays non-SourceSelectable."""
-
-    def __init__(self, source_ids):
-        super().__init__()
-        self._sources = [
-            SourceInfo(
-                source_id=sid, source_name=f"run-{sid}", pipeline_run_id=f"p{sid}"
-            )
-            for sid in source_ids
-        ]
-
-    def list_sources(self, name):
-        return list(self._sources)
-
-    def resolve_source(self, name, *, source_id=None, run_id=None):
-        if source_id is not None and run_id is not None:
-            raise AmbiguousSourceSelectionError("both source_id and run_id given")
-        if source_id is not None:
-            for s in self._sources:
-                if s.source_id == source_id:
-                    return s
-            raise SourcePinNotFoundError(f"no source_id={source_id}")
-        if run_id is not None:
-            for s in self._sources:
-                if s.pipeline_run_id == run_id:
-                    return s
-            raise SourcePinNotFoundError(f"no run_id={run_id}")
-        return self._sources[-1] if self._sources else None
-
-    def load_experiment(
-        self,
-        name,
-        *,
-        version="latest",
-        require_clean=False,
-        source_id=None,
-        run_id=None,
-    ):
-        if source_id is not None or run_id is not None:
-            resolved = self.resolve_source(name, source_id=source_id, run_id=run_id)
-        else:
-            resolved = None
-        frame = super().load_experiment(
-            name, version=version, require_clean=require_clean
-        )
-        if resolved is not None:
-            frame = dataclasses.replace(frame, resolved_source=resolved)
-        return frame
+# The multi-source test double (FakeReader + a bolted-on SourceSelectable
+# surface) lives in the root tests/conftest.py as make_multi_source_fake_reader
+# — it was duplicated near-verbatim across this file, test_qc_clean_tool.py,
+# and test_qc_inspect_tool.py before being consolidated there.
 
 
 @pytest.fixture
-def multi_source_ports():
-    reader = _MultiSourceFakeReader([9, 10])
+def multi_source_ports(make_multi_source_fake_reader):
+    # resolve_when_unpinned=False: this fixture's whole point is proving an
+    # UNPINNED call leaves the cleaned-version resolution alone (resolves
+    # "v1_cleaned", never touching a source) -- the opposite of qc_clean/
+    # qc_inspect's fixtures, which need an unpinned call to resolve "latest"
+    # so their source_note advisory can populate.
+    reader = make_multi_source_fake_reader([9, 10], resolve_when_unpinned=False)
     reader.add_experiment(_EXPERIMENT, _raw())
     # A committed cleaned version exists — the case that would spuriously
     # raise AmbiguousSourceSelectionError without the raw-tier forcing.

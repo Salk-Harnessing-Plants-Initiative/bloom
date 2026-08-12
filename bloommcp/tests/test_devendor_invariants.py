@@ -446,11 +446,13 @@ def test_expected_tool_surface():
         "sleap_roots_plot_variance_decomposition",
         # core: the 3 discovery tools + get_download_links (bloom#599 — a
         # targeted retrieval tool, not a discovery tool, but still a core-
-        # section registration)
+        # section registration) + list_experiment_sources (bloom#626 — a
+        # fourth discovery tool)
         "core_list_available_experiments",
         "core_load_experiment_data",
         "core_list_existing_analyses",
         "core_get_download_links",
+        "core_list_experiment_sources",
     }
     not_expected = {
         # Un-namespaced Phase-1 names must NOT survive the P2.2/P2.3 move —

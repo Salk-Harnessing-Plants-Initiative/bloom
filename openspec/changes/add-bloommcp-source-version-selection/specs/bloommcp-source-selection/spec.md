@@ -33,22 +33,33 @@ backend" message rather than raising an error.
 
 The `qc_inspect` tool SHALL accept optional `source_id`/`run_id` params, threaded into its
 existing raw-tier `load_experiment` call, with the same default-preserving,
-ambiguous-pin-rejection, and pin-not-found guarantees as `qc_clean`'s equivalent params.
+ambiguous-pin-rejection, pin-not-found, and multi-source advisory-note guarantees as `qc_clean`'s
+equivalent params — an agent inspecting raw missingness should learn there was a source choice to
+make just as readily as one cleaning it.
 
 #### Scenario: Omitting both source params preserves today's behavior
 
 - **WHEN** `qc_inspect` is invoked on a registered experiment with no `source_id`/`run_id` given
-- **THEN** the tool loads the raw frame exactly as before this change
+- **THEN** the tool loads the raw frame exactly as before this change, and the result's advisory
+  note field is `None` unless the experiment has more than one source
 
 #### Scenario: An explicit source pin is honored
 
 - **WHEN** `qc_inspect` is invoked with `source_id` set to one of the experiment's known sources
-- **THEN** the tool inspects the raw frame backed by that specific source
+- **THEN** the tool inspects the raw frame backed by that specific source, and the result's
+  advisory note is `None` (a pin was given, so there is nothing to advise)
 
 #### Scenario: Both source_id and run_id given is rejected
 
 - **WHEN** `qc_inspect` is invoked with both `source_id` and `run_id` set
 - **THEN** the tool returns a `BloomMCPError` derived from `AmbiguousSourceSelectionError`
+
+#### Scenario: A multi-source experiment with no pin gets an explicit advisory note
+
+- **WHEN** `qc_inspect` is invoked on a registered experiment that has more than one known source,
+  and neither `source_id` nor `run_id` is given
+- **THEN** the result's advisory note names the resolved source (e.g. its `source_id`) and directs
+  the caller to `core_list_experiment_sources` to pick a different one
 
 ### Requirement: load_experiment_data Accepts an Explicit Source Pin
 
@@ -61,13 +72,24 @@ a pin on any experiment that already has a cleaned version would spuriously rais
 `AmbiguousSourceSelectionError` even though the caller gave only one selector. Omitting both
 kwargs SHALL be behavior-identical to today (no forcing, default `version="latest"` resolution).
 Any resulting `ExperimentReadError` (ambiguous pin, unsupported pin, pin-not-found) SHALL surface
-through the tool's existing string-error return contract, not an unhandled exception.
+through the tool's existing string-error return contract, not an unhandled exception. When the
+target experiment has more than one source and neither `source_id` nor `run_id` was given, the
+text summary SHALL include the same advisory note `qc_clean`/`qc_inspect` give, naming the source
+actually used and pointing at `core_list_experiment_sources`.
 
 #### Scenario: Omitting both source params preserves today's behavior
 
 - **WHEN** `load_experiment_data` is invoked with no `source_id`/`run_id` given
 - **THEN** the tool summarizes the experiment exactly as before this change, including its
-  existing `version="latest"` resolution order
+  existing `version="latest"` resolution order, plus an advisory note when the experiment has more
+  than one source
+
+#### Scenario: A multi-source experiment with no pin gets an explicit advisory note
+
+- **WHEN** `load_experiment_data` is invoked on a registered experiment that has more than one
+  known source, and neither `source_id` nor `run_id` is given
+- **THEN** the text summary names the resolved source (e.g. its `source_id`) and directs the
+  caller to `core_list_experiment_sources` to pick a different one
 
 #### Scenario: An explicit source pin is honored, even on an already-cleaned experiment
 
