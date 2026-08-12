@@ -46,8 +46,11 @@ properties that apply identically over `mcp-remote`. This change does not close 
 proceeds anyway, on the basis that both are *pre-existing, already-disclosed* risk that the
 currently-used Claude Code + `BLOOMMCP_API_KEY` path already carries today (see
 `connecting-claude-code.md`'s own "what this token actually grants" disclosure), not new exposure
-created by testing OAuth specifically. #265 (silent zero-auth on a missing API key) and #108 (no
-rate limiting) are addressed directly in Non-Goals and design.md rather than waved away.
+created by testing OAuth specifically. #265 (silent zero-auth on a missing API key) is addressed
+directly in Non-Goals below (this change doesn't touch the API-key auth path at all — it verifies
+OAuth, not the code #265 concerns); #108 (no rate limiting) is addressed directly in design.md (the
+registration-retry-cap decision) — neither is waved away, but they're addressed in different places
+for different reasons, not both in both.
 
 ## What Changes
 

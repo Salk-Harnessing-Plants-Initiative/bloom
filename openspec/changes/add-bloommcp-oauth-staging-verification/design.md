@@ -41,11 +41,12 @@ comments, follow-up issues) is world-readable — see the redaction decision bel
   flipped" — the flag already reads `true`. Rather than treating that as ambiguous and blocking on
   a clarification round-trip, this change proceeds on the observed value (which is what the running
   server actually uses) and uses the run's own outcome as the *authoritative* signal for whether the
-  comment or the value is the stale one — a 200 from a lightweight reachability check (tasks.md 1.2)
-  on the consent route only proves the route responds at all, not that consent actually completes
-  correctly, so it doesn't replace the live run's own result. If the flow fails specifically at the
-  consent step in a way consistent with the bloom-web consent route not actually being deployed to
-  staging, that's the answer; if it succeeds, the comment is simply stale and gets corrected.
+  comment or the value is the stale one — tasks.md 1.2's lightweight reachability check only touches
+  discovery and the bare MCP endpoint, never the consent route itself, so a `200`/`401` there says
+  nothing about whether consent actually completes correctly; it doesn't replace the live run's own
+  result at the consent step. If the flow fails specifically at the consent step in a way consistent
+  with the bloom-web consent route not actually being deployed to staging, that's the answer; if it
+  succeeds, the comment is simply stale and gets corrected.
 - **Decision: also exercise the consent-denial path once, as a secondary check (tasks.md 2.5).**
   This is the first time this OAuth surface has been exercised against anything other than a dev
   stack, and every scenario tried so far is the happy path. Confirming that denying consent

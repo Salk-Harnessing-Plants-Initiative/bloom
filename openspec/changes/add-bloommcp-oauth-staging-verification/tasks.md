@@ -127,10 +127,13 @@ staging state, it's a reason to say so explicitly in the write-up.
 - [ ] 4.4 If the `.env.staging.defaults` comment above `GOTRUE_OAUTH_SERVER_ENABLED` is confirmed
       stale, correct or remove it in a small follow-up commit (config/comment fix, not a proposal —
       see `openspec/AGENTS.md`'s "Skip proposal for... Configuration changes").
-- [ ] 4.5 Notify Evelyn of the go/no-go recommendation immediately — per the timing note above, this
-      is already overdue against the date #620 referenced, so say that plainly rather than
-      presenting it as on-time, and send it as soon as 4.3 is decided, not batched with other
-      follow-up.
+- [ ] 4.5 Notify Evelyn of the go/no-go recommendation immediately, concretely: @-mention her
+      GitHub handle (`@egao28`) directly on the #620 comment from 4.3 (not just posting and assuming
+      she sees it), and — since a passive GitHub notification isn't "immediate" — also reach her
+      through whatever direct channel (Slack/in-person) is fastest if this run is being executed on
+      her behalf rather than by her. Per the timing note above, this is already overdue against the
+      date #620 referenced, so say that plainly rather than presenting it as on-time, and send it as
+      soon as 4.3 is decided, not batched with other follow-up.
 - [ ] 4.6 Clean up every piece of state this run created on staging, unconditionally (design.md:
       cleanup does not depend on success or failure). Three separate things need deleting, keyed by
       three different identifiers captured above — none of them share a key with each other:
