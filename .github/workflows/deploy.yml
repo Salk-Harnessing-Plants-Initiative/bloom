@@ -351,7 +351,7 @@ jobs:
       # regenerated from the bind-mounted temp.yml by this container's
       # custom entrypoint at container START, and DB-less `kong reload` has
       # a documented history of not reliably applying config changes anyway.
-      # See openspec/changes/fix-kong-reload-on-deploy/design.md Decision 1.
+      # See openspec/changes/archive/2026-08-09-fix-kong-reload-on-deploy/design.md Decision 1.
       - name: Restart Kong config (production)
         id: restart_kong_prod
         if: steps.pull_prod.outputs.kongfile_changed == 'true'
