@@ -31,6 +31,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILES = ("docker-compose.prod.yml", "docker-compose.dev.yml")
+PR_CHECKS = REPO_ROOT / ".github" / "workflows" / "pr-checks.yml"
 
 # Service -> the variable that service reads a JWKS from.
 JWKS_VARS = {
@@ -143,4 +144,58 @@ def test_auth_is_the_only_service_holding_signing_keys(compose: str):
     assert holders == {"auth"}, (
         f"{compose}: only auth may hold the signing key (JWT_KEYS); found "
         f"{sorted(holders)}. Verifiers take the public JWKS via JWT_JWKS."
+    )
+
+
+# --- CI must run the stack in the shape that can fail ------------------------
+# Everything above is a string assertion over a compose file. None of it can
+# fail the way #646 failed, because the bug lives in what the container does
+# with the JWKS it parses. That needs a booted stack holding a real key pair —
+# which CI did not have: GoTrue signed HS256, so no job ever produced an ES256
+# token and compose-health-check passed identically either way.
+
+
+def _health_check_steps() -> list[dict]:
+    workflow = yaml.safe_load(PR_CHECKS.read_text(encoding="utf-8"))
+    return workflow["jobs"]["compose-health-check"]["steps"]
+
+
+def _provisioning_step_index() -> int | None:
+    """Index of the step that writes both key variables into `.env.ci`."""
+    for i, step in enumerate(_health_check_steps()):
+        run = str(step.get("run", ""))
+        if "JWT_KEYS=" in run and "JWT_JWKS=" in run and ".env.ci" in run:
+            return i
+    return None
+
+
+def test_ci_provisions_an_asymmetric_key_pair():
+    assert _provisioning_step_index() is not None, (
+        "compose-health-check must write JWT_KEYS and JWT_JWKS into .env.ci. "
+        "Without a pair, CI's GoTrue signs HS256 and never issues the ES256 "
+        "token Storage refused, so nothing in CI can reproduce #646."
+    )
+
+
+def test_ci_provisions_the_key_pair_before_the_stack_starts():
+    """Compose reads the env file when it creates a container.
+
+    A pair written after the first `up -d` reaches nothing already running —
+    the same recreate-vs-restart trap that makes this fix a redeploy.
+    """
+    provisioned = _provisioning_step_index()
+    assert provisioned is not None  # covered by the test above
+    first_up = next(
+        (
+            i
+            for i, step in enumerate(_health_check_steps())
+            if "up -d" in str(step.get("run", ""))
+        ),
+        None,
+    )
+    assert first_up is not None, "compose-health-check no longer starts a stack"
+    assert provisioned < first_up, (
+        f"the key pair is written at step {provisioned}, after the first "
+        f"`up -d` at step {first_up} — containers created before it never see "
+        f"it, and the ES256 coverage silently disappears."
     )
