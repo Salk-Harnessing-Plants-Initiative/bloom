@@ -13,6 +13,7 @@ from click.testing import CliRunner
 from test_download_metadata import SCAN
 from test_download_session_resume import CREDS, _Client, _frame, _images
 
+import bloomctl._download as shared_dl
 import bloomctl.auth as auth
 import bloomctl.cyl.download as dl
 from bloomctl.cli import cli
@@ -52,14 +53,14 @@ def test_workers_one_runs_sequentially(tmp_path, monkeypatch):
     """`--workers 1` should download in order on one thread, with no pool at all."""
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(3))
     used: list[str] = []
-    real_pool = dl.ThreadPoolExecutor
+    real_pool = shared_dl.ThreadPoolExecutor
 
     class _Spy(real_pool):
         def __init__(self, *a, **k):
             used.append("pool")
             super().__init__(*a, **k)
 
-    monkeypatch.setattr(dl, "ThreadPoolExecutor", _Spy)
+    monkeypatch.setattr(shared_dl, "ThreadPoolExecutor", _Spy)
 
     result = dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
 
@@ -71,14 +72,14 @@ def test_the_pool_never_exceeds_the_ceiling_even_via_a_direct_call(tmp_path, mon
     """The limit has to hold when the function is called directly, not just via the flag."""
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(200))
     seen: dict = {}
-    real_pool = dl.ThreadPoolExecutor
+    real_pool = shared_dl.ThreadPoolExecutor
 
     class _Spy(real_pool):
         def __init__(self, max_workers=None, **kwargs):
             seen["max_workers"] = max_workers
             super().__init__(max_workers=max_workers, **kwargs)
 
-    monkeypatch.setattr(dl, "ThreadPoolExecutor", _Spy)
+    monkeypatch.setattr(shared_dl, "ThreadPoolExecutor", _Spy)
 
     result = dl.download_images(_Client(), [SCAN], tmp_path, workers=1000)
 
@@ -89,14 +90,14 @@ def test_the_pool_never_exceeds_the_ceiling_even_via_a_direct_call(tmp_path, mon
 def test_the_pool_is_never_larger_than_the_work(tmp_path, monkeypatch):
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(3))
     seen: dict = {}
-    real_pool = dl.ThreadPoolExecutor
+    real_pool = shared_dl.ThreadPoolExecutor
 
     class _Spy(real_pool):
         def __init__(self, max_workers=None, **kwargs):
             seen["max_workers"] = max_workers
             super().__init__(max_workers=max_workers, **kwargs)
 
-    monkeypatch.setattr(dl, "ThreadPoolExecutor", _Spy)
+    monkeypatch.setattr(shared_dl, "ThreadPoolExecutor", _Spy)
 
     dl.download_images(_Client(), [SCAN], tmp_path, workers=32)
 

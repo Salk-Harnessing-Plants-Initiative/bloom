@@ -17,8 +17,8 @@ import pytest
 from click.testing import CliRunner
 from test_download_metadata import SCAN
 
+import bloomctl._storage as storage
 import bloomctl.auth as auth
-import bloomctl.cyl._storage as storage
 import bloomctl.cyl.download as dl
 from bloomctl.cli import cli
 from bloomctl.credentials import Credentials
@@ -117,11 +117,11 @@ def test_a_cached_bucket_handle_dies_when_the_client_refreshes():
 def test_download_object_resolves_a_fresh_handle_so_it_survives_the_refresh():
     """Asking for a handle each time picks up the renewed token."""
     client = _RotatingClient()
-    assert storage.download_object(client, "cyl-images/0.png") == b"bytes::cyl-images/0.png"
+    assert storage.download_object(client, "cyl-images/0.png", bucket="images") == b"bytes::cyl-images/0.png"
 
     client.auto_refresh()
 
-    assert storage.download_object(client, "cyl-images/1.png") == b"bytes::cyl-images/1.png"
+    assert storage.download_object(client, "cyl-images/1.png", bucket="images") == b"bytes::cyl-images/1.png"
 
 
 def test_a_whole_download_survives_a_refresh_mid_run(tmp_path, monkeypatch):
@@ -160,7 +160,7 @@ def test_each_frame_gets_its_own_bucket_handle(tmp_path, monkeypatch):
 def test_an_expired_looking_failure_is_retried_once():
     client = _Client(budget=0)
     with pytest.raises(storage.StorageError):
-        storage.download_object(client, "cyl-images/0.png")
+        storage.download_object(client, "cyl-images/0.png", bucket="images")
     assert client.bucket.calls == 2  # first attempt + one retry
 
 
@@ -179,7 +179,7 @@ def test_a_missing_object_is_not_retried():
     client.bucket = _MissingBucket()
 
     with pytest.raises(storage.StorageError):
-        storage.download_object(client, "cyl-images/0.png")
+        storage.download_object(client, "cyl-images/0.png", bucket="images")
     assert client.bucket.calls == 1
 
 
@@ -192,13 +192,13 @@ def test_no_credentials_are_needed_to_recover(monkeypatch):
     monkeypatch.setattr(auth, "make_authed_client", _must_not_authenticate)
     client = _RotatingClient()
     client.auto_refresh()
-    assert storage.download_object(client, "cyl-images/0.png") == b"bytes::cyl-images/0.png"
+    assert storage.download_object(client, "cyl-images/0.png", bucket="images") == b"bytes::cyl-images/0.png"
 
 
 def test_an_expired_session_is_named_instead_of_a_missing_bucket():
     client = _Client(budget=0)
     with pytest.raises(storage.StorageError) as excinfo:
-        storage.download_object(client, "cyl-images/0.png")
+        storage.download_object(client, "cyl-images/0.png", bucket="images")
 
     message = str(excinfo.value)
     assert "expired session" in message
@@ -214,7 +214,7 @@ def test_an_unrelated_error_message_is_left_alone():
     client.bucket = _BrokenBucket()
 
     with pytest.raises(storage.StorageError) as excinfo:
-        storage.download_object(client, "cyl-images/0.png")
+        storage.download_object(client, "cyl-images/0.png", bucket="images")
     assert str(excinfo.value) == "disk on fire"
 
 
@@ -485,7 +485,7 @@ def test_the_retry_waits_before_trying_again(monkeypatch):
 
     client = _Client(budget=0)
     with pytest.raises(storage.StorageError):
-        storage.download_object(client, "cyl-images/0.png")
+        storage.download_object(client, "cyl-images/0.png", bucket="images")
 
     assert slept == [storage.RETRY_DELAY_SECONDS]
 
@@ -516,7 +516,7 @@ def test_the_retry_asks_for_a_new_bucket_handle():
     client = _Client()
     client.storage = _StaleFirstHandle()
 
-    assert storage.download_object(client, "cyl-images/0.png") == b"fetched with a fresh handle"
+    assert storage.download_object(client, "cyl-images/0.png", bucket="images") == b"fetched with a fresh handle"
     assert client.storage.handles == 2, "the retry must resolve its own handle"
 
 

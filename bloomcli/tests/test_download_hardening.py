@@ -13,7 +13,8 @@ import pytest
 from test_download_metadata import SCAN
 from test_download_session_resume import _Client, _images
 
-import bloomctl.cyl._storage as storage
+import bloomctl._download as shared_dl
+import bloomctl._storage as storage
 import bloomctl.cyl.download as dl
 
 SCAN_B = {**SCAN, "scan_id": 2, "qr_code": "QR-2"}
@@ -195,7 +196,7 @@ def test_futures_in_flight_stay_bounded(tmp_path, monkeypatch):
     """Queueing every frame at once would cost hundreds of MB before the first one arrives."""
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(500))
     in_flight = []
-    real_submit = dl.ThreadPoolExecutor.submit
+    real_submit = shared_dl.ThreadPoolExecutor.submit
     live = {"n": 0, "peak": 0}
 
     def _tracking_submit(self, fn, *a, **k):
@@ -205,7 +206,7 @@ def test_futures_in_flight_stay_bounded(tmp_path, monkeypatch):
         future.add_done_callback(lambda _f: live.__setitem__("n", live["n"] - 1))
         return future
 
-    monkeypatch.setattr(dl.ThreadPoolExecutor, "submit", _tracking_submit)
+    monkeypatch.setattr(shared_dl.ThreadPoolExecutor, "submit", _tracking_submit)
 
     result = dl.download_images(_Client(), [SCAN], tmp_path, workers=4)
 
@@ -330,7 +331,7 @@ def test_two_qr_codes_differing_only_by_case_are_caught(tmp_path):
 
     clashes = dl.find_frame_collisions(tmp_path, work)
 
-    if dl.filesystem_folds_case(tmp_path):
+    if shared_dl.filesystem_folds_case(tmp_path):
         assert clashes, "these land on one file here, so they must be reported"
     else:
         assert not clashes, "these are genuinely different files here, so must not be"
