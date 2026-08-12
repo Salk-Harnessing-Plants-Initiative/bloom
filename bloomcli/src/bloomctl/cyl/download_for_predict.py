@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import sys
@@ -389,8 +390,10 @@ def write_run_manifest(out_dir: Path, result: BatchResult, *, staleness_seconds:
     logical request across multiple invocations sharing one `out_dir` with disjoint scan_ids
     (see design.md). Skips the write entirely if the merged scan_keys would be empty (nothing
     usable to record — `RunManifest` itself rejects an empty list). Raises `click.ClickException`
-    on manifest-lock contention or a corrupt existing manifest, rather than silently dropping
-    scan_keys.
+    for every failure mode here — manifest-lock contention, a corrupt existing manifest, an
+    `OSError` from the lock's own file operations or from `atomic_write_bytes`, or a
+    `RunManifest` construction failure — rather than letting any of them surface as a raw
+    traceback or silently dropping scan_keys.
     """
     this_run_scan_keys = {s.scan_key for s in result.scans if s.status in ("ok", "skipped")}
 
@@ -419,10 +422,15 @@ def write_run_manifest(out_dir: Path, result: BatchResult, *, staleness_seconds:
                 pipeline_run_id=resolve_pipeline_run_id(), scan_keys=merged_scan_keys
             )
             atomic_write_bytes(manifest_path, manifest.model_dump_json().encode("utf-8"))
-    except (LockContendedError, OSError) as exc:
+    except (LockContendedError, OSError, ValidationError) as exc:
         # OSError covers disk-full/permission failures from the lock's own file operations or
-        # from atomic_write_bytes — every manifest-write failure mode this design commits to
-        # should exit via a clean, actionable click.ClickException, not a raw traceback.
+        # from atomic_write_bytes. ValidationError guards the RunManifest(...) construction
+        # itself — practically unreachable today (merged_scan_keys is deduplicated via a set
+        # union and every entry comes from scan_key_for()'s fixed format, so RunManifest's own
+        # empty/duplicate/blank checks can't trip), but kept here so a future change to either
+        # invariant fails loud via ClickException rather than silently regaining a raw
+        # traceback. Every manifest-write failure mode this design commits to should exit via
+        # a clean, actionable click.ClickException, not a raw traceback.
         raise click.ClickException(str(exc)) from exc
 
 
@@ -497,6 +505,19 @@ def batch_download_for_predict(
     """
     if (scan_ids_file is None) == (scan_ids_flag is None):
         raise click.UsageError("Pass exactly one of --scan-ids-file or --scan-ids.")
+
+    if not math.isfinite(lock_staleness_seconds):
+        # click.FloatRange(min=0, min_open=True) lets `nan` straight through — NaN
+        # comparisons are always False, so its own range check never rejects it, and a NaN
+        # threshold would silently make every lock look immediately reclaimable. Caught here,
+        # before any work starts, rather than only inside acquire_lock's own defense-in-depth
+        # ValueError (which would otherwise surface late, and inconsistently — masked as a
+        # per-scan failure by stage_one_scan's catch-all, or as a raw exception from
+        # write_run_manifest — rather than one clean, immediate usage error).
+        raise click.UsageError(
+            f"--lock-staleness-seconds must be a finite positive number, "
+            f"got {lock_staleness_seconds!r}."
+        )
 
     try:
         scan_ids = (

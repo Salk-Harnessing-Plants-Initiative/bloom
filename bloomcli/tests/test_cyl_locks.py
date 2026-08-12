@@ -245,3 +245,145 @@ def test_release_does_not_delete_a_lock_reclaimed_by_another_process_while_we_he
     # Our release must have left the peer's lock alone.
     assert lock_path.exists()
     assert json.loads(lock_path.read_text(encoding="utf-8"))["pid"] == 424242
+
+
+# --- Round-2 /review-pr hardening (found on the re-review of PR #655) ------------------
+
+
+def test_release_does_not_delete_an_unreadable_lock_file(tmp_path, monkeypatch):
+    """PR #655 round-2 review finding: release's "unreadable = treat as ours" fallback
+    could delete a PEER's freshly-reclaimed-but-not-yet-written lock file. Concretely: our
+    lock ages out, a peer reclaims it (unlinks ours, creates its own fresh file) but hasn't
+    finished writing its body yet — that fresh file is transiently empty/unreadable. If our
+    own release runs in that exact window, treating "unreadable" as "still ours, delete it"
+    destroys the peer's brand-new live lock. Release must never delete on ambiguous content
+    — only a positively-confirmed pid match justifies deleting."""
+    lock_path = tmp_path / "scan_1.lock"
+
+    with locks.acquire_lock(lock_path, staleness_seconds=900):
+        # Simulate a peer's reclaim having unlinked ours and created its own, not-yet-written
+        # (transiently empty, unreadable) file in its place.
+        lock_path.write_text("")
+
+    # Our release must not have touched the ambiguous file.
+    assert lock_path.exists()
+    assert lock_path.read_text(encoding="utf-8") == ""
+
+
+def test_write_lock_body_cleans_up_even_when_close_after_write_failure_also_raises(
+    tmp_path, monkeypatch
+):
+    """PR #655 round-2 review finding: the cleanup-on-write-failure path called
+    `os.close(fd)` unguarded. If that close ALSO raised (e.g. EIO flushing on a network
+    filesystem), the nested unlink-and-reraise cleanup never ran, reopening the exact
+    "unreadable lock file, permanently unreclaimable at any staleness" bug this hardening
+    pass exists to close — just triggered by close() failing instead of write()."""
+    lock_path = tmp_path / "scan_1.lock"
+    real_write = os.write
+    real_close = os.close
+
+    def _write_raises(fd, data):
+        raise OSError("simulated write failure")
+
+    def _close_also_raises(fd):
+        # Real close() semantics (POSIX): the fd is released/invalidated regardless of
+        # whether an error is reported (e.g. a delayed write-back failure surfacing at
+        # close time) — so the mock must still release the real OS handle before raising,
+        # or an unrelated Windows open-handle-blocks-delete artifact (not the bug under
+        # test) would make the later unlink fail for the wrong reason.
+        real_close(fd)
+        raise OSError("simulated close failure on top of the write failure")
+
+    monkeypatch.setattr(os, "write", _write_raises)
+    monkeypatch.setattr(os, "close", _close_also_raises)
+
+    with pytest.raises(OSError):
+        with locks.acquire_lock(lock_path, staleness_seconds=900):
+            pass
+
+    monkeypatch.setattr(os, "write", real_write)
+    monkeypatch.setattr(os, "close", real_close)
+
+    assert not lock_path.exists()
+
+    # A fresh acquire must succeed immediately afterward.
+    with locks.acquire_lock(lock_path, staleness_seconds=900):
+        assert lock_path.exists()
+
+
+def test_write_lock_body_closes_fd_before_unlinking_on_write_failure(tmp_path, monkeypatch):
+    """PR #655 round-2 review finding: on Windows, an end-to-end "the file got deleted"
+    assertion for the cleanup-on-failure path can pass even if `close` were called AFTER
+    `unlink` (or not distinctly ordered at all) — Windows' own open-handle-blocks-delete
+    behavior would make an out-of-order attempt fail differently, incidentally still
+    leaving no file behind for a different reason. This repo's CI is Linux-only, where
+    unlinking an open fd is always permitted regardless of ordering, so only an explicit
+    call-order assertion (mirroring `test_lock_fd_is_closed_before_guarded_code_runs`'s own
+    approach for the success path) actually verifies `close` happens before `unlink` on the
+    platform this suite runs on."""
+    lock_path = tmp_path / "scan_1.lock"
+    events = []
+    real_close = os.close
+    real_unlink = os.unlink
+
+    def _write_raises(fd, data):
+        raise OSError("simulated write failure")
+
+    def _tracking_close(fd):
+        events.append("close")
+        real_close(fd)
+
+    def _tracking_unlink(path):
+        events.append("unlink")
+        real_unlink(path)
+
+    monkeypatch.setattr(os, "write", _write_raises)
+    monkeypatch.setattr(os, "close", _tracking_close)
+    monkeypatch.setattr(os, "unlink", _tracking_unlink)
+
+    with pytest.raises(OSError):
+        with locks.acquire_lock(lock_path, staleness_seconds=900):
+            pass
+
+    assert events == ["close", "unlink"]
+
+
+def test_write_lock_body_treats_a_short_write_as_failure(tmp_path, monkeypatch):
+    """PR #655 round-2 review finding: `os.write`'s return value (bytes actually written)
+    was never checked. POSIX permits a short write (fewer bytes than requested) without
+    raising, e.g. under signal interruption — silently leaving a truncated, unparseable
+    lock body on disk, which `_reclaim_or_raise` then judges contended forever at any
+    staleness_seconds (the identical failure class this whole pass exists to close, via a
+    different trigger than a raised exception)."""
+    lock_path = tmp_path / "scan_1.lock"
+    real_write = os.write
+
+    def _short_write(fd, data):
+        return real_write(fd, data[: len(data) // 2])  # writes less than requested, no error
+
+    monkeypatch.setattr(os, "write", _short_write)
+
+    with pytest.raises(OSError):
+        with locks.acquire_lock(lock_path, staleness_seconds=900):
+            pass
+
+    monkeypatch.setattr(os, "write", real_write)
+
+    assert not lock_path.exists()
+
+    with locks.acquire_lock(lock_path, staleness_seconds=900):
+        assert lock_path.exists()
+
+
+def test_acquire_rejects_non_finite_staleness_seconds(tmp_path):
+    """PR #655 round-2 review finding: `click.FloatRange(min=0, min_open=True)` silently
+    passes `nan` through (NaN comparisons are always False, so `nan <= 0` is False and the
+    range check never rejects it) — `nan` then makes `age <= staleness_seconds` false for
+    ANY age, reclaiming every lock immediately regardless of freshness. `_locks.py` is
+    documented as a generic, reusable primitive (bloom #481), so it must reject this
+    itself, not rely solely on one caller's CLI-level validation."""
+    lock_path = tmp_path / "scan_1.lock"
+    for bad_value in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError):
+            with locks.acquire_lock(lock_path, staleness_seconds=bad_value):
+                pass

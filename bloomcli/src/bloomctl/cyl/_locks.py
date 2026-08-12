@@ -8,6 +8,7 @@ doesn't need a rename/extraction first.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from contextlib import contextmanager
@@ -89,16 +90,27 @@ def _create_lock_file(path: Path) -> int | None:
 def _write_lock_body(fd: int, path: Path) -> None:
     """Write this process's pid/acquired_at through `fd`, closing it before returning.
 
-    If the write itself fails partway (crash, disk error), the just-created lock file is
-    removed rather than left behind — an unreadable lock file can never be judged stale (see
-    `_reclaim_or_raise`), so leaving one behind on a failed write would permanently wedge this
-    path for every future invocation, exactly the outcome this whole primitive exists to avoid.
+    If the write itself fails partway (crash, disk error, or a short write that returns
+    without raising — POSIX permits writing fewer bytes than requested, e.g. under signal
+    interruption), the just-created lock file is removed rather than left behind — an
+    unreadable/truncated lock file can never be judged stale (see `_reclaim_or_raise`), so
+    leaving one behind would permanently wedge this path for every future invocation, exactly
+    the outcome this whole primitive exists to avoid. The cleanup itself (`os.close`, then
+    `path.unlink()`) is best-effort at every step — if `os.close` also raises, the unlink and
+    the original failure's re-raise must still happen, not be preempted by the close failure.
     """
     try:
         body = json.dumps({"pid": os.getpid(), "acquired_at": time.time()}).encode("utf-8")
-        os.write(fd, body)
+        written = os.write(fd, body)
+        if written != len(body):
+            raise OSError(
+                f"short write to lock file {path}: wrote {written} of {len(body)} bytes"
+            )
     except BaseException:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
         try:
             path.unlink()
         except OSError:
@@ -121,13 +133,18 @@ def _release(path: Path) -> None:
     an accepted trade-off of pure age-based staleness with no heartbeat/renewal (see design.md).
     Blindly deleting on release would then remove that peer's brand-new live lock, letting a
     third process acquire a "free" lock while the peer is still mid-critical-section — exactly
-    the corruption this primitive exists to prevent. An unreadable/unparseable file is treated
-    as still ours (the ambiguous case: the only realistic way our own successfully-written file
-    becomes unreadable is a peer's write racing in mid-flight, which is already covered by the
-    reclaim-side re-read mitigation, not a case release needs to additionally guard).
+    the corruption this primitive exists to prevent.
+
+    An unreadable/unparseable file at release time is deliberately left alone, not deleted —
+    an earlier version of this function treated "unreadable" as "still ours" and deleted it,
+    but that's unsafe: an unreadable file at this exact moment is most plausibly a peer's own
+    fresh reclaim (its `_create_lock_file` succeeded, its `_write_lock_body` hasn't run yet),
+    not our own file somehow becoming corrupted while nothing else should be touching it. Only
+    a positively-confirmed pid match justifies deleting; ambiguity means leave it for whichever
+    process actually holds — or will finish writing — it.
     """
     current = _read_lock_info(path)
-    if current is not None and current.get("pid") != os.getpid():
+    if current is None or current.get("pid") != os.getpid():
         return
     try:
         path.unlink()
@@ -143,7 +160,19 @@ def acquire_lock(path: Path, *, staleness_seconds: float) -> Iterator[None]:
     by another live process. A lock whose age exceeds `staleness_seconds` is reclaimed once;
     if that reclaim loses a race to another process, `LockContendedError` is raised instead
     of retrying further.
+
+    Raises `ValueError` if `staleness_seconds` isn't a finite positive number. This is
+    validated here, not only by callers — this module is meant to be a generic, reusable
+    primitive (bloom #481's first concrete implementation), and `nan` in particular is a real
+    footgun: `age <= staleness_seconds` is `False` for any `age` when `staleness_seconds` is
+    `nan`, silently reclaiming every lock immediately regardless of freshness. A CLI-level
+    range check alone isn't sufficient — `click.FloatRange(min=0, min_open=True)` was found to
+    let `nan` straight through, since NaN comparisons are always `False`.
     """
+    if not (staleness_seconds > 0 and math.isfinite(staleness_seconds)):
+        raise ValueError(
+            f"staleness_seconds must be a finite, positive number, got {staleness_seconds!r}"
+        )
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 

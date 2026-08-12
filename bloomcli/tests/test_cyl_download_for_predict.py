@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import sleap_roots_contracts
 from click.testing import CliRunner
+from pydantic import ValidationError
 from sleap_roots_contracts import RUN_MANIFEST_FILENAME
 from test_download_metadata import SCAN
 
@@ -1714,3 +1715,59 @@ def test_batch_cli_lock_staleness_seconds_negative_is_rejected(tmp_path, monkeyp
 
     assert result.exit_code != 0
     assert "lock-staleness-seconds" in result.output.lower()
+
+
+def test_batch_cli_lock_staleness_seconds_nan_is_rejected(tmp_path, monkeypatch):
+    """PR #655 round-2 review finding: click.FloatRange(min=0, min_open=True) lets `nan`
+    straight through (NaN comparisons are always False, so its own range check never
+    rejects it) — a NaN threshold would make `age <= staleness_seconds` false for any age,
+    silently reclaiming every lock regardless of freshness."""
+    _patch_batch(monkeypatch)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "cyl",
+            "batch-download-for-predict",
+            str(out),
+            "--scan-ids-file",
+            str(ids_file),
+            "--lock-staleness-seconds",
+            "nan",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "lock-staleness-seconds" in result.output.lower()
+
+
+def test_batch_cli_manifest_validation_error_becomes_clean_error_not_raw_crash(
+    tmp_path, monkeypatch
+):
+    """PR #655 round-2 review finding: write_run_manifest's except clause didn't cover a
+    pydantic.ValidationError from the RunManifest(...) construction itself — practically
+    unreachable today given merged_scan_keys is deduplicated and every entry comes from
+    scan_key_for()'s fixed format, but a latent gap in the "every manifest-write failure
+    exits via ClickException" guarantee. Simulated by monkeypatching RunManifest itself,
+    the same technique already used to simulate the OSError case."""
+    _patch_batch(monkeypatch)
+
+    def _boom(**kwargs):
+        raise ValidationError.from_exception_data("RunManifest", [])
+
+    monkeypatch.setattr(dfp, "RunManifest", _boom)
+
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert (out / "scan_1" / "scan_1.scan_metadata.json").exists()
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit)

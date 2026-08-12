@@ -322,8 +322,84 @@ scope for a review-response pass).
       cover the resulting paths unchanged).
 - [x] 8.11 Full suite green (583 passed, 6 skipped, the same 6 pre-existing environment-specific
       failures unrelated to this change), ruff clean, `openspec validate --strict` passes.
-- [ ] 8.12 Documented, not code-fixed (see design.md's Risks/Trade-offs): the residual
+- [x] 8.12 Documented, not code-fixed (see design.md's Risks/Trade-offs): the residual
       slow-but-alive-holder reclaim risk, the no-migration-path-for-pre-existing-`out_dir`s gap
       (a cross-repo follow-up needed before any consumer trusts the manifest exclusively), and
       `scan_is_already_staged` not re-verifying frame files exist. None block this PR; each is a
       candidate follow-up issue to file once a downstream consumer of the manifest exists.
+
+## 9. Round 2 post-review hardening (found on a second `/review-pr` pass on #655, fixed same PR)
+
+A second review round specifically re-probed whether section 8's fixes were themselves correct.
+Two agents independently found that round 1's own release fix ("unreadable = treat as ours,
+delete it") reopened the identical failure class it was written to close, via a different
+trigger — worth reading design.md's new "Round 2 post-review hardening" entry for the full
+pattern (fixing one trigger without enumerating every trigger for the same failure mode).
+
+- [x] 9.1 RED: `bloomcli/tests/test_cyl_locks.py` — if a peer's fresh reclaim (its
+      `_create_lock_file` succeeded, its `_write_lock_body` hasn't run yet) leaves a transiently
+      empty/unreadable lock file, and *this* process's release runs in that exact window,
+      release must NOT delete it. Round 1's `_release` treated "unreadable" as "still ours,
+      delete" — unsafe, since the file is more plausibly a peer's in-flight write than genuine
+      self-corruption.
+- [x] 9.2 GREEN: `_release` now only deletes on a *positively confirmed* pid match; unreadable
+      or different-pid content is left alone unconditionally.
+- [x] 9.3 RED: if `_write_lock_body`'s cleanup-on-write-failure's own `os.close(fd)` call also
+      raises, the nested unlink-and-reraise cleanup must still run (previously that `os.close`
+      was unguarded, so its own failure would skip cleanup entirely and mask the original
+      write-failure exception — reopening "unreadable, permanently unreclaimable lock file"
+      through close failing instead of write failing).
+- [x] 9.4 RED: a short write (`os.write` returning fewer bytes than requested without raising —
+      POSIX-permitted, e.g. under signal interruption) is treated as a failure, taking the same
+      cleanup path as a raised exception — previously the return value was never checked, so a
+      short write would silently leave a truncated, unparseable lock body on disk (the same
+      failure class again, via a return value nobody was checking).
+- [x] 9.5 GREEN: `_write_lock_body`'s cleanup path now guards `os.close` with its own
+      `try/except OSError: pass` before attempting the unlink and re-raising, and explicitly
+      raises on a short write before that cleanup path, so both 9.3 and 9.4 take the identical,
+      already-hardened cleanup route.
+- [x] 9.6 RED: `bloomcli/tests/test_cyl_locks.py` — mirroring `test_lock_fd_is_closed_before_
+      guarded_code_runs`'s own approach for the success path, an explicit call-order assertion
+      (not an end-to-end deletion check, which can pass on Windows for the wrong reason) proves
+      `close` happens before `unlink` on the write-failure cleanup path — the platform this
+      suite's CI actually runs on (Linux) permits unlinking an open fd regardless of ordering, so
+      only an explicit order assertion catches a regression here.
+- [x] 9.7 RED: `acquire_lock(path, staleness_seconds=float("nan"))` (and `inf`/`-inf`) raises
+      `ValueError` — `_locks.py` is documented as a generic, reusable primitive (bloom #481), so
+      it must reject this itself, not rely solely on the CLI's own validation.
+- [x] 9.8 GREEN: `acquire_lock` now validates `staleness_seconds` is finite and positive
+      (`math.isfinite`) before doing anything else, raising `ValueError` if not.
+- [x] 9.9 RED: `bloomcli/tests/test_cyl_download_for_predict.py` —
+      `--lock-staleness-seconds nan` is rejected by the CLI itself (`click.FloatRange(min=0,
+      min_open=True)` was found to let `nan` straight through, since NaN comparisons are always
+      `False` — a third way, after `0` and negative values, to reach the same "staleness check
+      silently defeated" outcome).
+- [x] 9.10 GREEN: `batch_download_for_predict` now explicitly rejects non-finite
+      `--lock-staleness-seconds` values via `click.UsageError` before any work starts (not only
+      via `acquire_lock`'s own defense-in-depth `ValueError`, which would otherwise surface late
+      and inconsistently — masked as a per-scan failure by `stage_one_scan`'s catch-all, or as a
+      raw exception from `write_run_manifest`, rather than one clean, immediate usage error).
+- [x] 9.11 RED: a `pydantic.ValidationError` from constructing `RunManifest(...)` itself (not
+      just from `model_validate_json` on an existing corrupt file) is caught and converted to a
+      clean `click.ClickException` — simulated by monkeypatching `RunManifest` directly, since
+      this path is otherwise practically unreachable given `merged_scan_keys`'s deduplication
+      and `scan_key_for()`'s fixed format.
+- [x] 9.12 GREEN: `write_run_manifest`'s except clause widened to
+      `(LockContendedError, OSError, ValidationError)`.
+- [x] 9.13 Corrected a stale cross-reference in design.md's "Lock mechanism" section: the
+      original "Accepted limitation" paragraph (about the reclaim-vs-reclaim race on an
+      already-stale lock) could read, in isolation, as covering the full risk picture — it
+      doesn't; the materially larger slow-but-alive-holder-gets-reclaimed-at-all risk is
+      documented separately in Risks/Trade-offs, now cross-referenced from both directions.
+      Also elevated that risk's language from "a reasonable follow-up if this proves
+      insufficient in practice" to explicitly recommending lease-renewal as a near-term
+      follow-up, given a second reviewer traced a concrete, silent (non-erroring) data-integrity
+      consequence — not just wasted duplicate work — if the reclaim-of-a-live-lock scenario is
+      ever actually hit.
+- [x] 9.14 Full suite green (590 passed, 6 skipped, the same 6 pre-existing environment-specific
+      failures unrelated to this change), ruff clean, `openspec validate --strict` passes.
+- [ ] 9.15 Still not code-fixed, by design (see design.md): lease-renewal itself (the actual fix
+      for "a slow-but-alive holder's lock can still be initially reclaimed," as opposed to round
+      1+2's fixes, which only stop that reclaim from cascading into further corruption) —
+      recommended as a near-term follow-up, not a blocking requirement for this PR, since no live
+      caller submits concurrently yet.

@@ -235,7 +235,12 @@ file lock has (there is no filesystem-portable compare-and-swap primitive availa
 accepted because this is single-host advisory locking for an internal pipeline tool with low
 contention (reclaim only happens after a crash, which is rare, followed by a second invocation
 arriving within the now-much-narrower reclaim window, which is rarer still), not a security boundary
-or a high-frequency-contention system. See tasks.md 3.10/3.11/3.12 for the tests this re-read step adds.
+or a high-frequency-contention system. See tasks.md 3.10/3.11/3.12 for the tests this re-read step
+adds. **This paragraph describes only the reclaim-vs-reclaim race on an already-stale lock — it is
+not the full risk picture.** A materially larger and more likely gap — a *legitimately still-running
+(not crashed) holder* having its live lock reclaimed at all, not just the narrow window in reclaiming
+it safely — is covered separately below in Risks/Trade-offs; a reader stopping at this paragraph
+alone would significantly underestimate that risk.
 
 ### A corrupt existing manifest fails loud, rather than being silently treated as empty
 
@@ -269,23 +274,22 @@ directly undermine goals stated earlier in this document.
   **unconditionally**, with no fallback staleness check for unparseable content — so that file
   could never be reclaimed, at *any* `--lock-staleness-seconds` value, by any future invocation.
   This directly contradicted this document's own stated Goal ("A crashed process must not
-  permanently wedge `out_dir`"). Fixed: the acquire/write sequence now cleans up (unlinks) its own
-  just-created file if the write fails, before re-raising — mirroring the
-  temp-file-then-cleanup-on-failure discipline `atomic_write_bytes`/`write_sidecar` already use
-  elsewhere in this codebase, which the lock's own write had been the one write path in this
-  feature *not* to follow.
+  permanently wedge `out_dir`"). Fixed by splitting the acquire sequence into
+  `_create_lock_file` (the exclusive create) and `_write_lock_body` (writes pid/`acquired_at`
+  through the fd, closes it) — `_write_lock_body` now cleans up (unlinks) its own just-created
+  file if the write fails, before re-raising — mirroring the temp-file-then-cleanup-on-failure
+  discipline `atomic_write_bytes`/`write_sidecar` already use elsewhere in this codebase, which
+  the lock's own write had been the one write path in this feature *not* to follow.
 - **Release unconditionally deleted whatever lock file was present, without checking it was still
-  this process's own.** Combined with pure age-based staleness (no heartbeat/renewal — see the new
+  this process's own.** Combined with pure age-based staleness (no heartbeat/renewal — see the
   Risks/Trade-offs entry below), this meant: if a peer legitimately reclaimed this process's lock
   as stale while it was still (slowly) working, and then the original process finally finished and
   reached its own release, that release would blindly unlink the *peer's* brand-new live lock —
   letting a third process then acquire a "free" lock while the peer was still mid-critical-section.
   That's the exact #533-style corruption this whole feature exists to prevent, reintroduced through
-  the release path, with no crash required anywhere in the sequence. Fixed: release now re-reads
-  the lock file and only unlinks it if the recorded `pid` still matches this process's own; an
-  unreadable/unparseable file at release time is treated as still-ours (the only realistic cause is
-  a peer's write racing in mid-flight, already covered by the reclaim-side re-read mitigation, not a
-  case release needs to separately guard).
+  the release path, with no crash required anywhere in the sequence. Fixed by extracting a new
+  `_release` helper (called from `acquire_lock`'s `finally` block) that re-reads the lock file and
+  only unlinks it if the recorded `pid` still matches this process's own.
 
 Also fixed in the same pass: `write_run_manifest`'s `except LockContendedError` was widened to
 `except (LockContendedError, OSError)`, since an `OSError` from the lock's own file operations or
@@ -297,6 +301,55 @@ freshly held when the threshold was `<= 0`, silently defeating the entire lockin
 error. `.locks`/`manifest.lock` were also promoted from string literals repeated at each call site
 to named constants (`LOCKS_DIRNAME`, `MANIFEST_LOCK_FILENAME`) in `_locks.py`, for the same reason
 `RUN_MANIFEST_FILENAME` is imported rather than copied.
+
+### Round 2 post-review hardening (found via a second `/review-pr` pass on #655, fixed same PR)
+
+A second adversarial review round, specifically re-probing whether the round 1 fixes above were
+themselves correct, found four more real (though progressively narrower) gaps — worth recording
+because two of them are the identical failure class from round 1 ("unreadable lock file,
+permanently unreclaimable at any staleness"), reopened through a different door each time. This
+pattern — fixing one trigger for a failure mode without fully enumerating every trigger — is the
+main lesson worth carrying forward if this primitive changes again.
+
+- **Round 1's own release fix ("unreadable = treat as ours, delete it") was itself unsafe.** Two
+  independently-reviewing agents traced the same concrete race: a peer's stale-lock reclaim does
+  `_create_lock_file` (succeeds, file now exists but empty) *before* `_write_lock_body` runs — if
+  the original holder's release executes in that exact window, it sees an unreadable (empty) file,
+  concludes "unreadable == still ours" per round 1's own reasoning, and deletes the peer's
+  brand-new, not-yet-written lock. A third process can then acquire the "freed" path while the
+  peer believes it still holds a valid lock — the identical #533-style corruption round 1's release
+  fix was written to close, reopened by that same fix's own fallback case. Fixed: `_release` no
+  longer treats ambiguity as ownership — it only deletes on a *positively confirmed* pid match;
+  an unreadable/unparseable file (or one belonging to a different pid) is left alone.
+- **`_write_lock_body`'s cleanup-on-write-failure called `os.close(fd)` unguarded.** If that close
+  itself also raised (e.g. a delayed write-back error surfacing at close time), the nested
+  unlink-and-reraise cleanup never ran — reopening "unreadable, permanently unreclaimable lock
+  file," this time triggered by a close failure stacked on a write failure rather than a write
+  failure alone. Fixed: the close is now itself wrapped in `try/except OSError: pass`, so the
+  unlink and the original exception's re-raise always run regardless of what the close does.
+- **`_write_lock_body` never checked `os.write`'s return value against the payload length.**
+  POSIX permits a short write (fewer bytes than requested) without raising — e.g. under signal
+  interruption — which would silently leave a truncated, unparseable lock body on disk: the same
+  failure class again, this time via a return value nobody was checking rather than an exception.
+  Fixed: a short write is now explicitly treated as a failure, taking the same cleanup path as a
+  raised exception.
+- **`--lock-staleness-seconds nan` silently passed `click.FloatRange(min=0, min_open=True)`'s own
+  validation.** NaN comparisons are always `False` in Python, so `nan <= 0` evaluates `False` and
+  the range check never rejects it; `nan` then makes `age <= staleness_seconds` `False` for any
+  age, reclaiming every lock immediately regardless of freshness — a third way (after `0` and
+  negative values) to reach the same "staleness check silently defeated" outcome. Fixed at two
+  layers: the CLI now explicitly rejects non-finite values before any work starts
+  (`click.UsageError`, checked via `math.isfinite`), and `acquire_lock` itself now validates
+  `staleness_seconds` and raises `ValueError` if it isn't finite and positive — this module is
+  documented as a generic, reusable primitive (bloom #481), so it shouldn't depend solely on one
+  caller's CLI-level validation to stay safe.
+
+Also, for completeness against the "every manifest-write failure mode exits via `ClickException`"
+guarantee: `write_run_manifest`'s except clause was further widened to include `ValidationError`,
+covering the `RunManifest(...)` construction itself — practically unreachable today given
+`merged_scan_keys` is deduplicated via a set union and every entry comes from `scan_key_for()`'s
+fixed format, but kept so a future change to either invariant fails loud rather than silently
+regaining a raw traceback.
 
 ## Risks / Trade-offs
 
@@ -325,19 +378,37 @@ to named constants (`LOCKS_DIRNAME`, `MANIFEST_LOCK_FILENAME`) in `_locks.py`, f
   does not grow unboundedly across normal operation, only a crash leaves a file behind, and that
   file is reclaimed (and removed) by the next invocation that touches the same scan_key.
 - **Staleness is purely age-based with no heartbeat/lease-renewal, so a legitimately slow (not
-  crashed) lock holder can still have its live lock reclaimed** — the Post-PR-review hardening
-  above (ownership-checked release) stops that reclaim from *cascading* into a third process
-  deleting the new holder's lock too, but it does not stop the initial reclaim-of-a-live-lock from
-  happening in the first place: a scan whose download genuinely takes longer than
-  `--lock-staleness-seconds` (this document's own rationale for the 900s default already concedes
-  frame downloads "could stretch to several minutes" under degraded network/storage) can have its
-  lock reclaimed by a second invocation that believes it dead — e.g. an Argo retry triggered by a
-  step-level timeout shorter than 900s. If that happens, the two processes *do* end up concurrently
-  writing the same `scan_dir`, the #533 corruption this feature exists to prevent. Accepted for now
-  given no live caller submits concurrently yet (per the roadmap's own status), but operators should
-  tune `--lock-staleness-seconds` well above the worst-case expected per-scan download time for
-  their environment; a proper fix (the holder periodically re-touching its own lock's `acquired_at`
-  while still working) is a reasonable follow-up if this proves insufficient in practice.
+  crashed) lock holder can still have its live lock reclaimed — and this chains with the
+  `scan_is_already_staged` gap below into a genuinely silent corruption path, not just a wasted
+  duplicate download.** The round 2 hardening (ownership-checked release) stops the reclaim from
+  *cascading* into a third process deleting the new holder's lock too, but it does not stop the
+  initial reclaim-of-a-live-lock from happening in the first place: a scan whose download genuinely
+  takes longer than `--lock-staleness-seconds` (this document's own rationale for the 900s default
+  already concedes frame downloads "could stretch to several minutes" under degraded
+  network/storage) can have its lock reclaimed by a second invocation that believes it dead — e.g.
+  an Argo retry triggered by a step-level timeout shorter than 900s. Concretely: A (slow, not
+  crashed) is reclaimed by B; both are now unlocked-in-practice and writing the same `scan_dir`
+  concurrently — `clear_scan_dir` may run against files A is still writing. Each process's sidecar
+  checksum is computed from its own **in-memory** `frame_bytes` collected during its own download
+  loop, never re-read from final on-disk content after both processes settle — so whichever sidecar
+  gets written last can describe neither process's actual final on-disk bytes if the two downloads
+  diverged at the byte level (a network retry landing a different chunk, a source object updated
+  mid-run). Nothing raises, nothing fails: the scan still reports `ok`/`skipped`, still enters the
+  manifest, and `scan_is_already_staged`'s sidecar-shape-only check (below) is exactly the gate that
+  would need to catch this and doesn't. This requires two low-probability events to compound (the
+  reclaim window being hit, and a byte-level divergence between two downloads of "the same" scan),
+  but it is **silent by construction** on a platform whose entire point is a downstream ML pipeline
+  trusting the manifest. Accepted for the initial version given no live caller submits concurrently
+  yet (per the roadmap's own status) — but given this design deliberately pays the complexity cost
+  of preserving `K`-way batch concurrency specifically so concurrent callers can exist, shipping the
+  one mechanism that can silently corrupt data exactly when that concurrency is exercised is an
+  inconsistency in risk posture worth resolving proactively, not deferring to "if this proves
+  insufficient in practice." **Treat lease-renewal (the holder periodically re-touching its own
+  lock's `acquired_at` while still working) as a near-term follow-up to land before
+  `sleap-roots-pipeline`'s own semaphore work makes concurrent callers real** — by the time this is
+  observed in production, the corruption is already silent and possibly already consumed downstream.
+  In the interim, operators should tune `--lock-staleness-seconds` well above the worst-case expected
+  per-scan download time for their environment.
 - **No migration/backfill path for scans staged in an `out_dir` before this change shipped.** A
   directory with valid, pre-existing `{scan_key}/` sidecars but no manifest (staged by a pre-#653
   `bloomctl`) only gets those scan_keys into the manifest if a later invocation's `--scan-ids`
