@@ -51,7 +51,10 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   remaining. Failures that arrived since the last line are marked `(+N)`, so the marker
   disappearing means they have stopped, and the first failure says that re-running resumes.
 - `~/.bloom/errors.log` records the traceback behind an unexpected failure. Written `0600`
-  alongside the credentials, with the value of `--password` redacted.
+  alongside the credentials, with the values of `--password` and `--anon-key` redacted. Capped
+  at 256KB: once past it the log is renamed to `errors.log.1` and a fresh one started, keeping
+  the filled log whole rather than discarding half of it, and leaving nothing for a second
+  `bloomctl` failing at the same moment to overwrite.
 
 ## [0.1.0a4] - 2026-08-06
 

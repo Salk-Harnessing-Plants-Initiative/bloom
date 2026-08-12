@@ -13,7 +13,6 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from .credentials import default_config_dir
 
@@ -27,8 +26,12 @@ LOG_NAME = "errors.log"
 SECRET_OPTIONS = ("--password", "--anon-key")
 
 # Keep the file from growing without bound on a machine that hits errors often. Big enough to
-# hold the last several failures, small enough to paste into a message.
+# hold the last several failures, small enough to paste into a message. Rotation keeps one
+# previous log beside it, so the pair costs twice this on disk.
 MAX_LOG_BYTES = 256 * 1024
+
+# The previous log, kept alongside the current one and replaced by the next rotation.
+ROTATED_SUFFIX = ".1"
 
 
 def error_log_path(config_dir: Path | None = None) -> Path:
@@ -115,7 +118,7 @@ def record(
         # 0700 because this may be what creates ~/.bloom, and mkdir(exist_ok=True) later
         # cannot tighten a directory that already exists.
         log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if not _trim(log):
+        if not _rotate(log):
             # Rotation is what keeps the cap. If it could not run, appending anyway would
             # grow the log without bound, one failure at a time, for as long as whatever
             # stopped the rotation persists.
@@ -131,45 +134,39 @@ def record(
     return log
 
 
-def _trim(log: Path) -> bool:
-    """Drop the oldest half once the log passes its cap; return whether it is safe to append.
+def _rotate(log: Path) -> bool:
+    """Move the log aside once it passes its cap; return whether it is safe to append.
 
     False means the log is over its cap and could not be rotated, so the caller must not add
     to it — the cap is only a cap if something enforces it when rotation fails.
 
-    Rotated through a temp file. Rewriting the log where it lies would empty it before the
-    kept half was written, so a rotation that failed would cost every traceback it was called
-    to preserve — and rotation only happens on a machine that has been failing often enough
-    to fill the log, which is exactly when those tracebacks are worth something.
+    A rename rather than a rewrite. Reading the log and writing a kept portion back would put
+    a window between the two where another `bloomctl` appends: the write-back would then land
+    on top of a traceback recorded after the read, destroying it, with both processes
+    reporting success. Renaming touches only the name, in one step, so there is no window and
+    nothing is ever written over. A process already holding the log open keeps writing to the
+    same file through its own handle — its traceback arrives in the rotated copy rather than
+    being lost.
+
+    Nothing is dropped: the full log becomes ``errors.log.1``, which the next rotation
+    replaces. Two files rather than one, and twice the cap on disk.
 
     A rotation that cannot be finished is abandoned rather than raised — this runs inside a
     failure handler, where raising would be worse than losing one entry.
 
-    The temp file is opened the way the credentials are — unguessable name, ``O_EXCL`` so an
-    existing file is never adopted, ``O_NOFOLLOW`` so a symlink is never followed, and 0600
-    from the moment it exists. `~/.bloom` is not reliably private (``mkdir`` cannot tighten a
-    directory that is already there), and this file holds the largest single batch of
-    tracebacks and command lines the tool ever writes.
+    The rotated file keeps the log's own inode and mode, so it is already 0600 and no new
+    file is created here for a symlink or a stale name to be aimed at.
     """
     try:
         if log.stat().st_size <= MAX_LOG_BYTES:
             return True  # nothing to rotate, and room to append
-        keep = log.read_bytes()[-(MAX_LOG_BYTES // 2) :]
     except FileNotFoundError:
         return True  # no log yet is the ordinary first-failure case
     except OSError:
         return False
-    tmp = log.with_name(f".{log.name}.{uuid4().hex}.tmp")
     try:
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
-        with os.fdopen(os.open(tmp, flags, 0o600), "wb") as fh:
-            fh.write(b"(earlier entries dropped)\n" + keep)
-        os.replace(tmp, log)
+        os.replace(log, log.with_name(log.name + ROTATED_SUFFIX))
     except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
         return False
     return True
 

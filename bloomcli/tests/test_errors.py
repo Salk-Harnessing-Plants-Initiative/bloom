@@ -165,28 +165,78 @@ def test_the_log_is_capped_so_it_cannot_grow_forever(tmp_path):
 
     assert log.stat().st_size < errors.MAX_LOG_BYTES
     assert "boom" in log.read_text()
-    assert "earlier entries dropped" in log.read_text()
+
+
+def test_rotation_keeps_the_filled_log_rather_than_dropping_half_of_it(tmp_path):
+    """The old log is moved aside whole, so nothing recorded before the cap is discarded."""
+    log = tmp_path / "errors.log"
+    log.write_bytes(b"x" * errors.MAX_LOG_BYTES + b"the-oldest-traceback")
+
+    errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log)
+
+    rotated = tmp_path / "errors.log.1"
+    assert rotated.exists(), "the filled log is kept, not deleted"
+    assert b"the-oldest-traceback" in rotated.read_bytes()
+    assert "boom" in log.read_text(), "the new traceback goes to a fresh log"
+
+
+def test_a_traceback_written_during_a_rotation_is_not_destroyed(tmp_path):
+    """The race this rename exists to close: another bloomctl appending mid-rotation.
+
+    A read-then-write-back rotation would write over a traceback recorded after its read.
+    A rename touches only the name, so the other process's open handle follows the file.
+    """
+    log = tmp_path / "errors.log"
+    log.write_bytes(b"x" * (errors.MAX_LOG_BYTES + 1))
+
+    with log.open("a", encoding="utf-8") as other_process:
+        assert errors._rotate(log) is True
+        other_process.write("traceback from the other process")
+
+    rotated = (tmp_path / "errors.log.1").read_text()
+    assert "traceback from the other process" in rotated, "the concurrent append was lost"
+
+
+def test_the_previous_rotated_log_is_replaced_rather_than_accumulating(tmp_path):
+    """Two files is the bound; a third would put the cap back where it started."""
+    log = tmp_path / "errors.log"
+    (tmp_path / "errors.log.1").write_text("from two rotations ago")
+    log.write_bytes(b"x" * (errors.MAX_LOG_BYTES + 1))
+
+    assert errors._rotate(log) is True
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["errors.log.1"]
+    assert "from two rotations ago" not in (tmp_path / "errors.log.1").read_text()
+
+
+def test_the_rotated_log_is_never_readable_by_others(tmp_path):
+    """It carries every traceback and command line the filled log held."""
+    log = tmp_path / "errors.log"
+    log.write_bytes(b"y" * (errors.MAX_LOG_BYTES + 1))
+    log.chmod(0o600)
+
+    errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log)
+
+    rotated = tmp_path / "errors.log.1"
+    assert stat.S_IMODE(rotated.stat().st_mode) == 0o600
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
 
 
 def test_a_failed_rotation_keeps_the_log_it_was_called_to_preserve(tmp_path, monkeypatch):
-    """Rotation rewrites the whole file, and doing that in place would empty it first.
-
-    It only runs on a machine that has been failing often enough to fill the log, which is
-    when those tracebacks are worth the most.
-    """
+    """Rotation only runs on a machine that has been failing often enough to fill the log,
+    which is when those tracebacks are worth the most."""
     log = tmp_path / "errors.log"
     log.write_bytes(b"y" * (errors.MAX_LOG_BYTES + 1))
 
-    def _no_space(src, dst):  # the kept half is written, then it cannot be moved into place
+    def _no_space(src, dst):
         raise OSError(errno.ENOSPC, "No space left on device")
 
     monkeypatch.setattr(errors.os, "replace", _no_space)
-    rotated = errors._trim(log)
+    rotated = errors._rotate(log)
     monkeypatch.undo()
 
     assert rotated is False, "the caller must be told, so it does not append past the cap"
     assert log.stat().st_size == errors.MAX_LOG_BYTES + 1, "the log it could not rotate is intact"
-    assert not list(tmp_path.glob(".errors.log.*.tmp")), "no temp file left behind"
 
 
 def test_the_log_is_not_appended_to_when_it_is_over_cap_and_cannot_be_rotated(
@@ -195,35 +245,12 @@ def test_the_log_is_not_appended_to_when_it_is_over_cap_and_cannot_be_rotated(
     """Rotation is what enforces the cap, so appending anyway would grow the log forever."""
     log = tmp_path / "errors.log"
     log.write_bytes(b"y" * (errors.MAX_LOG_BYTES + 1))
-    monkeypatch.setattr(errors, "_trim", lambda _log: False)
+    monkeypatch.setattr(errors, "_rotate", lambda _log: False)
 
     for _ in range(3):
         assert errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log) is None
 
     assert log.stat().st_size == errors.MAX_LOG_BYTES + 1, "not one byte was added"
-
-
-def test_the_rotated_log_is_never_readable_by_others_even_briefly(tmp_path, monkeypatch):
-    """The rotated half is the largest batch of tracebacks the tool ever writes at once."""
-    log = tmp_path / "errors.log"
-    log.write_bytes(b"y" * (errors.MAX_LOG_BYTES + 1))
-    seen = {}
-
-    real_open = errors.os.open
-
-    def _watch(path, flags, mode=0o777):
-        fd = real_open(path, flags, mode)
-        seen["mode"] = stat.S_IMODE(os.fstat(fd).st_mode)
-        seen["flags"] = flags
-        return fd
-
-    monkeypatch.setattr(errors.os, "open", _watch)
-    errors._trim(log)
-    monkeypatch.undo()
-
-    assert seen["mode"] == 0o600, "readable by others while it was being written"
-    assert seen["flags"] & os.O_EXCL, "an existing file must never be adopted"
-    assert seen["flags"] & getattr(os, "O_NOFOLLOW", 0), "a symlink must never be followed"
 
 
 def test_the_log_sits_beside_the_credentials(tmp_path):
