@@ -42,16 +42,18 @@ def get_download_links(
     from the immutable manifest record, independent of the live-refreshed
     `url`/`size_bytes`.
 
-    Also returns `manifest_url` — a fresh signed/served link for the run's
-    own `manifest.json` (bloom#600), independent of whether `output_links`
-    is empty: a run's manifest always exists once committed, so this is
-    never skipped for a legacy run the way `output_links` is. Unlike each
-    `output_links` entry, `manifest_url` has no `sha256`/`size_bytes`
-    counterpart — it is a bare link; fetch and read the manifest itself if
-    you need its contents. That fetched content includes
-    `ExperimentBlock.source_path` (an absolute host path, not a credential —
-    see `docs/storage-backends.md`), returned exactly as stored, with no
-    redaction or filtering.
+    Also returns `params` (the exact tool-call kwargs the resolved run was
+    committed with) and `based_on_version` (bloom#600, reworked per bloom#622
+    review — see design.md Decision 5), scoped to this one resolved run only.
+    An earlier version of this field returned a signed link to the run's
+    shared `manifest.json` instead — dropped because that file is keyed only
+    by `(experiment, tool_class)` and lists every run ever committed for that
+    pair, so a link to it could never be scoped to the single `run_ref` a
+    caller asked about. `params`/`based_on_version` carry the same
+    provenance-verification value without that exposure: they come straight
+    from this run's own manifest entry, present regardless of manifest schema
+    version (unlike `seed`/`agent`/`environment`, these were part of the
+    schema from the start, so even a legacy v2-era run has them).
 
     Args:
         experiment: experiment identifier, e.g. "alfalfa_gwas_wave2.csv"
@@ -98,6 +100,7 @@ def get_download_links(
             name: link.model_dump(mode="json")
             for name, link in stored.output_links.items()
         },
-        "manifest_url": stored.manifest_url,
+        "params": stored.params,
+        "based_on_version": stored.based_on_version,
     }
     return json.dumps(response, indent=2)

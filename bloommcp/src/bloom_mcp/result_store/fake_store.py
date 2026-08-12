@@ -121,6 +121,18 @@ class FakeResultStore:
         # real bytes for a live `StorageBackend.get_object_size` call to
         # meaningfully target; see design.md Decision 6.
         self._output_sizes: dict[tuple[str, str, str], dict[str, int]] = {}
+        # (experiment, tool_class, run_ref) -> (params, based_on_version),
+        # captured at commit time from the same `entry` the real adapter
+        # re-reads fresh from its manifest on every `get_run` call (bloom#600,
+        # reworked per bloom#622 review — see design.md Decision 5). Kept off
+        # the `StoredRun` objects stored in `self._runs` themselves (unlike
+        # `_output_sizes`, which backs a field every commit already carries)
+        # specifically so `list_runs` — which returns those stored objects
+        # verbatim, with no rebuild step the way the real adapter's
+        # `list_runs` has — never surfaces another run's `params` through
+        # `list_existing_analyses`'s `dataclasses.asdict` dump. Only
+        # `get_run` (and therefore `get_download_links`) consults this table.
+        self._provenance: dict[tuple[str, str, str], tuple[dict, str]] = {}
 
     def create_run(
         self,
@@ -326,6 +338,10 @@ class FakeResultStore:
             self._output_sizes[(state.experiment, state.tool_class, version_id)] = (
                 sizes_by_key
             )
+            self._provenance[(state.experiment, state.tool_class, version_id)] = (
+                dict(entry.params),
+                entry.based_on_version,
+            )
             self._runs.setdefault(key, []).append(stored)
             return replace(stored, output_links=output_links)
 
@@ -344,13 +360,25 @@ class FakeResultStore:
         if not runs:
             raise RunNotFoundError(f"No runs for {tool_class}/{_stem(experiment)}.")
         if run_ref == "latest":
-            return runs[-1]
-        for stored in runs:
-            if stored.run_ref == run_ref:
-                return stored
-        raise RunNotFoundError(
-            f"No run {run_ref!r} for {tool_class}/{_stem(experiment)}."
+            stored = runs[-1]
+        else:
+            stored = next((r for r in runs if r.run_ref == run_ref), None)
+            if stored is None:
+                raise RunNotFoundError(
+                    f"No run {run_ref!r} for {tool_class}/{_stem(experiment)}."
+                )
+        # params/based_on_version (bloom#600, reworked per bloom#622 review —
+        # see design.md Decision 5): looked up from the commit-time side
+        # table, not stored on `stored` itself, so `list_runs` (which returns
+        # these exact objects, unlike the real adapter's rebuild-on-read
+        # `list_runs`) never carries another run's params. Absent for a run
+        # seeded via `seed_run_with_keys`/`seed_v2_run`/`seed_collision`
+        # (no real `commit()` call, so nothing to look up) — defaults to
+        # `({}, "")`, identical to a `StoredRun`'s own dataclass defaults.
+        params, based_on_version = self._provenance.get(
+            (experiment, tool_class, stored.run_ref), ({}, "")
         )
+        return replace(stored, params=dict(params), based_on_version=based_on_version)
 
     def get_download_links(
         self,
@@ -359,19 +387,10 @@ class FakeResultStore:
         run_ref: str = "latest",
     ) -> StoredRun:
         stored = self.get_run(experiment, tool_class, run_ref)
-        # manifest_url (bloom#600) is independent of the output_keys-empty
-        # short-circuit below — the manifest always exists for a committed
-        # run, regardless of whether per-artifact output keys were ever
-        # recorded for it. Plain string synthesis, no external call, no
-        # bookkeeping needed (design.md Decision 3).
-        manifest_url = (
-            f"fake://signed/{stored.manifest_path}"
-            f"?expires_in={SIGNED_URL_EXPIRES_SECONDS}"
-        )
         if not stored.output_keys:
             # A legacy entry (e.g. seed_v2_run) with no per-artifact keys at
             # all — nothing to sign or size (bloom#599).
-            return replace(stored, manifest_url=manifest_url)
+            return stored
         prefix = f"{self._output_root}/{tool_class}_{_stem(experiment)}/"
         expected_prefix = f"{prefix}{stored.version_dir}/"
         sizes = self._output_sizes.get((experiment, tool_class, stored.run_ref), {})
@@ -408,7 +427,7 @@ class FakeResultStore:
                 f"{tool_class}/{_stem(experiment)} (structural bug — see "
                 f"server logs)"
             ) from exc
-        return replace(stored, output_links=output_links, manifest_url=manifest_url)
+        return replace(stored, output_links=output_links)
 
     # --- Test-only failure/collision injection ------------------------------
 

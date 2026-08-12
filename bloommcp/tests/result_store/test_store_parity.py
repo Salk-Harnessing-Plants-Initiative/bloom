@@ -208,19 +208,30 @@ def test_output_links_empty_for_get_run_and_list_runs_parity(kind, stores):
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
-def test_manifest_url_none_for_get_run_and_list_runs_parity(kind, stores):
-    """bloom#600, mirroring #581 Decision 1 for manifest_url: only
-    get_download_links's own return value carries a signed manifest_url --
-    get_run/list_runs leave it None, identically to how they leave
-    output_links empty."""
+def test_params_populated_only_by_get_run_not_commit_or_list_runs_parity(kind, stores):
+    """bloom#600, reworked per bloom#622 review (see design.md Decision 5):
+    params/based_on_version are populated only by get_run (and therefore by
+    get_download_links, which calls it internally) -- commit's own return
+    value and list_runs both leave them at their StoredRun defaults
+    (`{}`/`""`), mirroring #581 Decision 1's output_links-empty pattern.
+    This is deliberate: list_runs backs list_existing_analyses, which dumps
+    every returned StoredRun verbatim via dataclasses.asdict -- populating
+    params there would leak every historical run's raw params (the same
+    class of cross-run exposure this rework exists to close) to an
+    always-included, no-opt-in discovery tool."""
     store = stores[kind]
     run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
     (run.staging_dir / "a.csv").write_bytes(b"a")
     committed = store.commit(run, {"a": "a.csv"})
 
-    assert committed.manifest_url is None
-    assert store.get_run("exp.csv", "qc", "latest").manifest_url is None
-    assert all(r.manifest_url is None for r in store.list_runs("exp.csv", "qc"))
+    assert committed.params == {}
+    assert committed.based_on_version == ""
+    assert all(r.params == {} for r in store.list_runs("exp.csv", "qc"))
+    assert all(r.based_on_version == "" for r in store.list_runs("exp.csv", "qc"))
+
+    resolved = store.get_run("exp.csv", "qc", "latest")
+    assert resolved.params == {"a": 1}
+    assert resolved.based_on_version == "raw"
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
@@ -258,21 +269,42 @@ def test_get_download_links_no_persisted_size_field_parity(kind, stores):
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
-def test_manifest_url_signed_and_bound_to_key_parity(kind, stores):
-    """bloom#600: get_download_links also re-signs the run's own
-    manifest_path -- resolving "latest" and an explicit run_ref both return
-    a non-empty manifest_url, bound to the correct key (not just truthy --
-    mirrors test_output_links_parity's own `link.key in link.url` check, so
-    a bug that wired manifest_url to some other key's URL would be caught)."""
+def test_get_download_links_returns_only_the_resolved_runs_own_params_parity(
+    kind, stores
+):
+    """bloom#622 review fix: the resolved run's params/based_on_version must
+    never leak another run's data. This is the exact property the prior
+    manifest_url design (a signed link to the shared, all-versions
+    manifest.json) violated -- any known run_ref unlocked every run's
+    params for that (experiment, tool_class) pair. Two runs with distinct
+    params on the same pair: each must resolve only its own, for both
+    "latest" and an explicit run_ref."""
     store = stores[kind]
-    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
-    (run.staging_dir / "a.csv").write_bytes(b"aaa")
-    committed = store.commit(run, {"a": "a.csv"})
+    run1 = store.create_run(
+        experiment="exp.csv",
+        tool_class="qc",
+        provenance=Provenance.stamp(tool="t", params={"which": "first"}, seed=1),
+    )
+    (run1.staging_dir / "a.csv").write_bytes(b"a")
+    first = store.commit(run1, {"a": "a.csv"})
 
-    for ref in ("latest", committed.run_ref):
-        resolved = store.get_download_links("exp.csv", "qc", ref)
-        assert resolved.manifest_url
-        assert resolved.manifest_path in resolved.manifest_url
+    run2 = store.create_run(
+        experiment="exp.csv",
+        tool_class="qc",
+        provenance=Provenance.stamp(tool="t", params={"which": "second"}, seed=2),
+    )
+    (run2.staging_dir / "a.csv").write_bytes(b"aa")
+    second = store.commit(run2, {"a": "a.csv"})
+    assert first.run_ref != second.run_ref
+
+    resolved_first = store.get_download_links("exp.csv", "qc", first.run_ref)
+    resolved_second = store.get_download_links("exp.csv", "qc", second.run_ref)
+    resolved_latest = store.get_download_links("exp.csv", "qc", "latest")
+
+    assert resolved_first.params == {"which": "first"}
+    assert resolved_second.params == {"which": "second"}
+    assert resolved_latest.params == resolved_second.params
+    assert resolved_latest.run_ref == second.run_ref
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
@@ -287,7 +319,7 @@ def test_get_download_links_retired_tool_class_still_resolves_parity(kind, store
 
     resolved = store.get_download_links("exp.csv", "stats", "latest")
     assert resolved.output_links["a"].url
-    assert resolved.manifest_url
+    assert resolved.params == {"a": 1}
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
@@ -327,10 +359,17 @@ def test_get_download_links_legacy_run_with_no_keys_yields_no_links_parity(
 
     resolved = store.get_download_links("exp.csv", "qc", "latest")
     assert resolved.output_links == {}
-    # bloom#600: unlike output_links, manifest_url is never gated on
-    # output_keys being non-empty -- this run's manifest.json exists
-    # regardless of whether per-artifact keys were ever recorded for it.
-    assert resolved.manifest_url
+    # bloom#600, reworked per bloom#622 review: unlike output_links,
+    # params/based_on_version are never gated on output_keys being
+    # non-empty -- they were part of the manifest schema since v2, present
+    # regardless of whether per-artifact keys were ever recorded for this
+    # run. Content isn't asserted for exact equality here (the fake's
+    # seed_v2_run stub and the supabase branch's real Provenance-derived
+    # entry aren't constructed to match each other's specific values) --
+    # only that both backends return the correctly-typed fields, not a
+    # missing/None value, for a legacy run.
+    assert isinstance(resolved.params, dict)
+    assert isinstance(resolved.based_on_version, str)
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
@@ -433,43 +472,14 @@ def test_get_download_links_multi_output_partial_failure_aborts_whole_call_parit
         store.get_download_links("exp.csv", "qc", "latest")
 
 
-def test_manifest_url_signing_failure_aborts_whole_call_supabase(stores, monkeypatch):
-    """bloom#600: a create_signed_url failure for the manifest key specifically
-    aborts the whole call, not just a missing manifest_url on an otherwise-
-    populated result. Supabase-only: FakeResultStore's manifest_url is plain
-    string synthesis from a field already present on `stored` (see design.md
-    Decision 3) with no external call to fail -- there is no equivalent
-    injection point on that adapter, mirroring why
-    test_fake_get_download_links_never_calls_storage_backend has no Supabase
-    counterpart either (the asymmetry runs the other way there)."""
-    store = stores["supabase"]
-    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
-    (run.staging_dir / "a.csv").write_bytes(b"aaa")
-    committed = store.commit(run, {"a": "a.csv"})
-
-    import bloom_mcp.supabase_client as sc
-
-    real_create_signed_url = sc.create_signed_url
-
-    def _flaky(key, expires_in):
-        if key == committed.manifest_path:
-            raise RuntimeError("simulated failure (manifest signing)")
-        return real_create_signed_url(key, expires_in)
-
-    monkeypatch.setattr(sc, "create_signed_url", _flaky)
-
-    with pytest.raises(Exception):
-        store.get_download_links("exp.csv", "qc", "latest")
-
-
 def test_fake_get_download_links_never_calls_storage_backend(monkeypatch):
-    """design.md Decision 6 (outputs) / Decision 3 (manifest_url, bloom#600):
-    FakeResultStore.get_download_links never calls anything on StorageBackend
-    for any run it recorded itself -- it has its own private size bookkeeping
-    for outputs, and synthesizes manifest_url as a plain fake:// string with
-    no external call at all. Specific to FakeResultStore (the real adapter's
-    equivalent guarantee is instead "makes exactly one live call per output
-    plus one for the manifest," covered by the parity tests above)."""
+    """design.md Decision 6 (outputs): FakeResultStore.get_download_links
+    never calls anything on StorageBackend for any run it recorded itself --
+    it has its own private size bookkeeping for outputs, and its
+    params/based_on_version come from an in-memory side table (Decision 5,
+    bloom#622), not a live call. Specific to FakeResultStore (the real
+    adapter's equivalent guarantee is instead "makes exactly one live call
+    per output," covered by the parity tests above)."""
     store = FakeResultStore()
     run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
     (run.staging_dir / "a.csv").write_bytes(b"aaa")
@@ -486,8 +496,7 @@ def test_fake_get_download_links_never_calls_storage_backend(monkeypatch):
 
     resolved = store.get_download_links("exp.csv", "qc", "latest")
     assert resolved.output_links["a"].size_bytes == 3
-    assert resolved.manifest_url
-    assert resolved.manifest_url.startswith("fake://")
+    assert resolved.params == {"a": 1}
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])

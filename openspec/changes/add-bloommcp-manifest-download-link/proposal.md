@@ -10,6 +10,17 @@ direct Supabase Storage/admin access is required today. This is `#600`, filed as
 non-blocking follow-ups from the #581/#595 post-PR review, alongside #598 (closed via #609)
 and #599 (this change's own prerequisite).
 
+**Reworked on PR #622 review.** The signed-link approach below (implemented and reviewed twice
+on PR #612, then re-opened as this PR) turned out to be fundamentally unscopable: `manifest.json`
+is keyed only by `(experiment, tool_class)`, never by `run_ref`, so a signed link to it exposes
+every run ever committed for that pair — not just the one the caller asked about — including
+every version's raw `params` (potentially unpublished genotype/treatment identifiers),
+`source_id`/`source_name`, and `based_on_version`. See design.md Decision 5 for the full finding
+and the fix: `manifest_url` is dropped, replaced with the resolved run's own `params` and
+`based_on_version` returned inline, scoped to exactly that run. The rest of this document
+(What Changes / Non-Goals / Impact below) describes the original, since-reworked
+`manifest_url` design — left as the historical record of what was built and evaluated first.
+
 ## What Changes
 
 - Add a `manifest_url: Optional[str]` field to `StoredRun` (`result_store/ports.py`),
@@ -86,11 +97,36 @@ and #599 (this change's own prerequisite).
   `umap_analysis`, `clustering`) and their own `commit()`-time responses — none of them call
   `get_download_links`, and their own `manifest_path` stays unsigned exactly as today.
 - **Dependencies:** none new.
-- **Sequencing:** branch cut from `egao28/bloommcp-get-download-links-599` (PR #611, not yet
-  merged into `staging`), not `origin/staging` directly — `get_download_links`
-  (`ResultStore` method, MCP tool, `StoredRun.output_links`) does not exist on `staging` yet,
-  and this change is a direct extension of it. **This change must not be archived
-  independently of `add-bloommcp-get-download-links`** (#599's own change), and — per that
-  change's own note — nor of `add-bloommcp-signed-url-download` (#581/#595) or
+- **Sequencing:** branch originally cut from `egao28/bloommcp-get-download-links-599`
+  (PR #611), before `get_download_links` existed on `staging`. **#611 has since merged into
+  `staging`**, and this change's own PR retargeted there automatically. **This change must not
+  be archived independently of `add-bloommcp-get-download-links`** (#599's own change), and —
+  per that change's own note — nor of `add-bloommcp-signed-url-download` (#581/#595) or
   `add-bloommcp-signed-url-key-scoping` (#598), all still unarchived as of this writing.
 - **Closes #600.**
+
+## Rework (PR #622 review) — what actually shipped
+
+The sections above describe the original `manifest_url` design, kept as the historical record.
+What actually shipped, per design.md Decision 5:
+
+- **Dropped:** `StoredRun.manifest_url`, and both adapters' `create_signed_url` call against
+  `manifest_path` inside `get_download_links`.
+- **Added:** `StoredRun.params: dict` / `StoredRun.based_on_version: str`, populated only by
+  `ResultStore.get_run` (and therefore by `get_download_links`, its only caller) from the single
+  `VersionEntry` each of those methods already resolves — never by `commit`/`list_runs`/
+  `from_version_entry`, so `list_existing_analyses` (which surfaces every `list_runs` result
+  verbatim) never gains a new cross-run disclosure.
+- **`get_download_links`'s JSON response** carries `params`/`based_on_version` in place of
+  `manifest_url`.
+- **`FakeResultStore`** gained a private `self._provenance` side table (populated at `commit()`
+  time, consulted only by `get_run`) to keep `params`/`based_on_version` off the shared
+  `StoredRun` objects `list_runs` returns, since that adapter has no per-call manifest re-read
+  the way `SupabaseResultStore` does.
+- **Affected code (superseding the list above):** the same five files, same methods — no new
+  files, no new `StorageBackend` primitive, no manifest/`Provenance`/`VersionEntry` schema
+  change. The Non-Goals above (no schema change, no new primitive, no key-scope guard) all still
+  hold for the shipped design.
+- Still **closes #600** — the issue's underlying motivation (inspect a run's own recorded
+  provenance without direct storage access) is met; its literal "download link" wording is not,
+  per design.md Decision 5's own note on why.

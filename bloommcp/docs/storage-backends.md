@@ -60,8 +60,10 @@ A signed URL expires after an hour, and a chat session can end before it's used.
 The `get_download_links(experiment, tool_class, run_ref="latest")` MCP tool
 (bloom#599) re-signs fresh links for a run you already know about — from a prior
 `list_existing_analyses` call, or a tool response from a now-expired session —
-for both the run's per-output `output_links` and a `manifest_url` for the run's
-own `manifest.json` (bloom#600). Five things worth knowing before you reach for it:
+for the run's per-output `output_links`, and also returns that run's own
+`params` (the exact tool-call kwargs it was committed with) and
+`based_on_version` (bloom#600, reworked per bloom#622 review — see that change's
+design.md Decision 5). Four things worth knowing before you reach for it:
 
 - **It must be called by name for one already-known run** — it is not a browsing
   or discovery feature. There is still no way to list or browse every historical
@@ -70,30 +72,22 @@ own `manifest.json` (bloom#600). Five things worth knowing before you reach for 
   `#388` file-explorer third mentioned at the bottom of this doc).
 - **A single output's lookup failure aborts the whole call** — you get either every
   output's link, or a clean error; never a partially-populated `output_links` that
-  silently omits one output. A failure signing the manifest itself aborts the call
-  identically.
+  silently omits one output.
 - **A legacy run recorded before per-artifact keys existed** (a v2 manifest entry)
   has nothing to sign for its outputs — `output_links` comes back empty for it, not
-  an error — but `manifest_url` is still populated: a run's manifest always exists
-  once committed, regardless of whether per-artifact output keys were ever recorded
-  for it, so this is never gated on `output_links` being non-empty. That said, a
-  v2-era manifest is also schema-thin: don't expect `seed`/`agent`/`environment` or
-  per-artifact `output_sha256`/`output_keys` in what you fetch — those are v3-only
-  fields that were never recorded for a run that old, not something this working
-  link failed to surface.
-- **`manifest_url` has no `sha256`/`size_bytes` counterpart** — unlike each
-  `output_links` entry, it is a bare signed link (the manifest has no persisted
-  self-hash to verify against); fetch and read the manifest itself if you need its
-  contents.
-- **The fetched manifest includes `ExperimentBlock.source_path`** — an absolute
-  path on the machine that committed the run (e.g. a `TRAITS_DIR` mount point).
-  This is a path string, not experiment data or a credential, and bloommcp's own
-  data-directory paths are already non-secret by convention in every environment
-  (see the root `openspec/project.md`'s constraints) — but it is worth knowing that
-  `manifest_url` is the first MCP-reachable way to see it; previously this required
-  direct Supabase Storage/admin access. No redaction or filtering is performed of
-  any kind: this is a direct signed link to the existing object's real bytes,
-  exactly like every other link this feature returns, never a filtered view.
+  an error — but `params`/`based_on_version` are still populated: unlike
+  `seed`/`agent`/`environment`/per-artifact `output_sha256`/`output_keys` (v3-only
+  fields, absent from a v2-era manifest), `params`/`based_on_version` were part of
+  the manifest schema from the start, so even the oldest recorded run has them.
+- **`params`/`based_on_version` are scoped to exactly the one resolved run** —
+  never any other run for the same `(experiment, tool_class)`. An earlier version
+  of this tool instead returned `manifest_url`, a signed link to the run's shared
+  `manifest.json`; that was reworked away because the file is keyed only by
+  `(experiment, tool_class)` and lists every run ever committed for that pair
+  (each with its own `params`, `based_on_version`, and source info) — a link to it
+  could never be scoped to one `run_ref`, so knowing any single run's reference
+  would have unlocked every other run's data too. Direct Supabase Storage/admin
+  access remains the only way to read a `manifest.json` in full.
 
 Unlike the per-tool `output_links` above, `get_download_links`'s `size_bytes` is
 resolved via a live storage lookup on every call — nothing about a run's size is

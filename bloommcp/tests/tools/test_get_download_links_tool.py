@@ -7,6 +7,7 @@ Re-signs fresh download links for an already-committed run. Mirrors
 from __future__ import annotations
 
 import json
+from typing import Optional
 
 import pandas as pd
 import pytest
@@ -53,11 +54,13 @@ def injected_ports():
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
-def _commit_a_run(store: FakeResultStore) -> None:
+def _commit_a_run(store: FakeResultStore, params: Optional[dict] = None) -> None:
     run = store.create_run(
         experiment=_EXPERIMENT,
         tool_class="qc",
-        provenance=Provenance.stamp(tool="qc_clean", params={}, seed=1),
+        provenance=Provenance.stamp(
+            tool="qc_clean", params=params if params is not None else {}, seed=1
+        ),
     )
     (run.staging_dir / "_cleaned.csv").write_bytes(b"cleaned-bytes")
     store.commit(run, {"cleaned": "_cleaned.csv"})
@@ -65,7 +68,7 @@ def _commit_a_run(store: FakeResultStore) -> None:
 
 def test_happy_path_returns_resolved_run_and_output_links(injected_ports):
     _reader, store = injected_ports
-    _commit_a_run(store)
+    _commit_a_run(store, params={"exclude": ["p0"]})
 
     result = get_download_links_mod.get_download_links(_EXPERIMENT, "qc", "latest")
     payload = json.loads(result)
@@ -78,20 +81,23 @@ def test_happy_path_returns_resolved_run_and_output_links(injected_ports):
     assert link["url"]
     assert link["sha256"]
     assert link["size_bytes"] == len(b"cleaned-bytes")
-    # bloom#600: a signed link for the run's own manifest.json, alongside its
-    # per-output links. The response never carried a raw `manifest_path` key
-    # to begin with -- this is a wholly new key, not a signed sibling of an
-    # existing unsigned one.
+    # bloom#600, reworked per bloom#622 review (see design.md Decision 5):
+    # the resolved run's own params/based_on_version, scoped to this one
+    # run -- not a signed link to the shared manifest.json, which would
+    # have exposed every run for this (experiment, tool_class) pair.
     assert "manifest_path" not in payload
-    assert payload["manifest_url"]
+    assert "manifest_url" not in payload
+    assert payload["params"] == {"exclude": ["p0"]}
+    assert payload["based_on_version"] == "raw"
 
 
-def test_legacy_run_response_still_carries_a_manifest_link(injected_ports):
-    """bloom#600: a legacy run with no per-artifact output_keys returns
-    output_links == {} in the JSON (as it already did per #599), but
-    manifest_url is still populated -- it is never gated on the outputs'
-    own key-presence check, since the manifest always exists for a
-    committed run."""
+def test_legacy_run_response_still_carries_its_own_params(injected_ports):
+    """bloom#600, reworked per bloom#622 review: a legacy run with no
+    per-artifact output_keys returns output_links == {} in the JSON (as it
+    already did per #599), but params/based_on_version are still
+    populated -- they are never gated on the outputs' own key-presence
+    check, since they were part of the manifest schema since v2 (unlike
+    seed/agent/environment, v3-only fields absent from this seeded run)."""
     _reader, store = injected_ports
     store.seed_v2_run(
         _EXPERIMENT, "qc", tool="qc_clean", outputs={"cleaned": "_cleaned.csv"}
@@ -101,7 +107,8 @@ def test_legacy_run_response_still_carries_a_manifest_link(injected_ports):
     payload = json.loads(result)
 
     assert payload["output_links"] == {}
-    assert payload["manifest_url"]
+    assert "params" in payload
+    assert "based_on_version" in payload
 
 
 def test_unknown_experiment_reports_available_experiments(injected_ports):

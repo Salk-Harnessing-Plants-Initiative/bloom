@@ -159,3 +159,58 @@
       feature branch, not `main`/`staging` — already disclosed in the PR body's own stacking
       note. Confirmed the suite/lint claims independently instead (5.1's re-run); CI will run
       for real once this is retargeted to `staging` per task 4.3's plan.
+
+## 6. Post-PR review rework (PR #622, two independent lenses — scientific rigor + security)
+
+- [x] 6.1 **Blocking:** `manifest_url` is not scoped to the requested run at all — `manifest.json`
+      is keyed only by `(experiment, tool_class)`, so any known `run_ref` unlocks every run's
+      `params`/`source_id`/`source_name`/`based_on_version` for that pair, not just the resolved
+      one. Directly contradicts this tool's own documented "not a browsing/discovery feature"
+      invariant. Decision: drop `manifest_url` entirely; return the resolved run's own `params`/
+      `based_on_version` inline instead (see design.md Decision 5 for the full finding and the
+      two-option decision this required).
+      **Done:**
+      - `result_store/ports.py`: removed `StoredRun.manifest_url`; added `params: dict` /
+        `based_on_version: str` fields, both defaulting empty, documented as populated only by
+        `get_run`/`get_download_links` — never `from_version_entry`/`commit`/`list_runs`.
+      - `result_store/supabase_store.py`: `get_run` now attaches `params`/`based_on_version` from
+        the same `entry` it already resolves; `get_download_links` no longer signs
+        `manifest_path` at all (the `if not stored.output_keys: return stored` short-circuit
+        needed no `manifest_url=` kwarg to drop, since `get_run` already carries the two new
+        fields through).
+      - `result_store/fake_store.py`: added a private `self._provenance` side table (mirrors the
+        existing `_output_sizes` pattern), populated at `commit()` time, consulted only by
+        `get_run` — keeps `params`/`based_on_version` off the shared `StoredRun` objects
+        `list_runs` returns, since this adapter has no per-call manifest re-read the way
+        `SupabaseResultStore` does. Confirmed via grep that `get_run` has exactly one caller in
+        the codebase (`get_download_links`, both adapters) before scoping the attachment there.
+      - `sections/core/get_download_links.py`: response carries `params`/`based_on_version` in
+        place of `manifest_url`; docstring rewritten to explain the drop and why.
+      - `docs/storage-backends.md`: rewrote the `get_download_links` section's manifest-specific
+        bullets to describe `params`/`based_on_version` instead of `manifest_url`.
+      - `design.md`/`proposal.md`: added Decision 5 / a rework note documenting the finding, the
+        two options the review posed, and why "scope down" was chosen over "re-open risk
+        acceptance" (external OAuth-authenticated MCP clients, #613, merged in the same commit
+        range the review flagged as changing who this now reaches).
+      - Both spec deltas (`bloommcp-result-store`, `bloommcp-get-download-links-tool`) rewritten
+        to describe the new fields; see task 6.4.
+- [x] 6.2 **Important (compounding the above, now moot):** because `manifest.json` is rewritten
+      in place on every future commit, a `manifest_url` signed for one run could return a
+      different document by the time it's fetched. Moot — no manifest is signed or fetched
+      anymore.
+- [x] 6.3 **Important (now moot):** no server-side log line existed for a manifest-signing
+      failure, and the tool layer's generic `{"error": ...}` gave no indication which resource
+      failed. Moot — there is no manifest-signing call left to fail.
+- [x] 6.4 Updated `test_store_parity.py` and `test_get_download_links_tool.py`: replaced every
+      `manifest_url`-shaped assertion with the `params`/`based_on_version` equivalent (including
+      a new parity check that `get_run`/`get_download_links` return the *resolved* run's own
+      `params`, not some other run's — the regression this rework exists to prevent — and that
+      `list_runs`/`commit()`'s own return value still leave `params == {}`/`based_on_version ==
+      ""`, mirroring the existing `output_links`-empty regression guard). Full suite re-run
+      green after the rework; `black`/`ruff` clean on every touched file.
+- [x] 6.5 **Informational:** design.md/proposal.md still asserted "#611 not yet merged into
+      staging" / "get_download_links does not exist on staging yet" — both false since #611
+      merged (2026-08) and this PR's own base auto-retargeted to `staging` as a result. Fixed:
+      updated the Context/Risks (design.md) and Sequencing (proposal.md) sections to record the
+      merge and mark the old sequencing constraint superseded, rather than silently deleting the
+      historical narrative.
