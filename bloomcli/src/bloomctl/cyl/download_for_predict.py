@@ -23,7 +23,13 @@ from sleap_roots_contracts import RUN_MANIFEST_FILENAME, RunManifest
 
 from ..credentials import DEFAULT_PROFILE
 from ._batch import BatchResult, ScanResult, format_json, format_summary
-from ._locks import DEFAULT_LOCK_STALENESS_SECONDS, LockContendedError, acquire_lock
+from ._locks import (
+    DEFAULT_LOCK_STALENESS_SECONDS,
+    LOCKS_DIRNAME,
+    MANIFEST_LOCK_FILENAME,
+    LockContendedError,
+    acquire_lock,
+)
 from ._storage import atomic_write_bytes, download_object
 from .download import DownloadResult, FrameResult, fetch_images, fetch_scan
 
@@ -320,7 +326,7 @@ def stage_one_scan(
     """
     scan_key = scan_key_for(scan_id)
     scan_dir = Path(out_dir) / scan_key
-    lock_path = Path(out_dir) / ".locks" / f"{scan_key}.lock"
+    lock_path = Path(out_dir) / LOCKS_DIRNAME / f"{scan_key}.lock"
 
     try:
         with acquire_lock(lock_path, staleness_seconds=staleness_seconds):
@@ -389,7 +395,7 @@ def write_run_manifest(out_dir: Path, result: BatchResult, *, staleness_seconds:
     this_run_scan_keys = {s.scan_key for s in result.scans if s.status in ("ok", "skipped")}
 
     manifest_path = Path(out_dir) / RUN_MANIFEST_FILENAME
-    lock_path = Path(out_dir) / ".locks" / "manifest.lock"
+    lock_path = Path(out_dir) / LOCKS_DIRNAME / MANIFEST_LOCK_FILENAME
 
     try:
         with acquire_lock(lock_path, staleness_seconds=staleness_seconds):
@@ -413,7 +419,10 @@ def write_run_manifest(out_dir: Path, result: BatchResult, *, staleness_seconds:
                 pipeline_run_id=resolve_pipeline_run_id(), scan_keys=merged_scan_keys
             )
             atomic_write_bytes(manifest_path, manifest.model_dump_json().encode("utf-8"))
-    except LockContendedError as exc:
+    except (LockContendedError, OSError) as exc:
+        # OSError covers disk-full/permission failures from the lock's own file operations or
+        # from atomic_write_bytes — every manifest-write failure mode this design commits to
+        # should exit via a clean, actionable click.ClickException, not a raw traceback.
         raise click.ClickException(str(exc)) from exc
 
 
@@ -450,11 +459,12 @@ def write_run_manifest(out_dir: Path, result: BatchResult, *, staleness_seconds:
 @click.option(
     "--lock-staleness-seconds",
     "lock_staleness_seconds",
-    type=float,
+    type=click.FloatRange(min=0, min_open=True),
     default=DEFAULT_LOCK_STALENESS_SECONDS,
     show_default=True,
     help="Age (seconds) past which a per-scan or manifest lock is considered abandoned "
-    "and reclaimable.",
+    "and reclaimable. Must be strictly positive: 0 (or negative) would treat a lock's age "
+    "as always past the threshold, reclaiming even a lock held a moment ago.",
 )
 @click.pass_context
 def batch_download_for_predict(

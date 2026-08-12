@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+from pathlib import Path
 
 import pytest
 import sleap_roots_contracts
@@ -1445,6 +1446,12 @@ def test_batch_cli_manifest_lock_contention_fails_without_corrupting_existing_ma
     )
 
     assert result.exit_code != 0
+    # A clean click.ClickException (and a plain ctx.exit()) both normalize to SystemExit via
+    # CliRunner — a raw, unhandled exception (e.g. an OSError escaping acquire_lock) would
+    # instead surface here as that exception's own instance, not SystemExit. Confirmed
+    # empirically: click.ClickException/ctx.exit() -> result.exception is SystemExit(1); an
+    # unhandled exception -> result.exception is that exception itself.
+    assert isinstance(result.exception, SystemExit)
     assert json.loads((out / RUN_MANIFEST_FILENAME).read_text(encoding="utf-8")) == {
         "schema_version": "1",
         "pipeline_run_id": "wf-old",
@@ -1469,6 +1476,7 @@ def test_batch_cli_manifest_lock_contention_with_no_existing_manifest_fails_clea
     )
 
     assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit)
     assert not (out / RUN_MANIFEST_FILENAME).exists()
 
 
@@ -1488,6 +1496,7 @@ def test_batch_cli_corrupt_existing_manifest_fails_loud_not_silently_discarded(
     )
 
     assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit)
     assert (out / RUN_MANIFEST_FILENAME).read_text(encoding="utf-8") == "{ not json"
 
 
@@ -1502,6 +1511,7 @@ def test_batch_cli_all_scans_failed_no_prior_manifest_skips_write_no_crash(tmp_p
     )
 
     assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit)
     assert not (out / RUN_MANIFEST_FILENAME).exists()
 
 
@@ -1617,3 +1627,90 @@ def test_batch_cli_manifest_write_after_simulated_mid_batch_crash_is_healed_by_r
         "scan_4",
         "scan_5",
     ]
+
+
+# --- Post-/review-pr hardening (found via /review-pr on #655, fixed same PR) ---------
+
+
+def test_batch_cli_manifest_write_oserror_becomes_clean_error_not_raw_crash(tmp_path, monkeypatch):
+    """PR #655 review finding: write_run_manifest only caught LockContendedError around the
+    whole acquire+write — an OSError from the write itself (disk full, permissions) escaped
+    as a raw, unhandled traceback instead of the click.ClickException every other
+    manifest-write failure mode in this design produces.
+
+    `atomic_write_bytes` is also used for per-frame writes (`download_frames_for_predict`),
+    so the mock must only fail for the manifest's own write — a blanket failure would break
+    frame staging first and never even reach the manifest write, exercising the wrong path."""
+    _patch_batch(monkeypatch)
+    real_atomic_write_bytes = dfp.atomic_write_bytes
+
+    def _fail_only_for_manifest(path, data):
+        if Path(path).name == RUN_MANIFEST_FILENAME:
+            raise OSError("simulated disk-full mid-write")
+        return real_atomic_write_bytes(path, data)
+
+    monkeypatch.setattr(dfp, "atomic_write_bytes", _fail_only_for_manifest)
+
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
+    )
+
+    assert (out / "scan_1" / "scan_1.scan_metadata.json").exists(), (
+        "the scan itself must have staged successfully — otherwise this test never "
+        "reaches the manifest write at all"
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit)
+
+
+def test_batch_cli_lock_staleness_seconds_zero_is_rejected(tmp_path, monkeypatch):
+    """PR #655 review finding: --lock-staleness-seconds 0 (or negative) made `age <=
+    staleness_seconds` false for essentially any lock, however freshly held, silently
+    reclaiming a live lock and defeating the entire feature with no error."""
+    _patch_batch(monkeypatch)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "cyl",
+            "batch-download-for-predict",
+            str(out),
+            "--scan-ids-file",
+            str(ids_file),
+            "--lock-staleness-seconds",
+            "0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "lock-staleness-seconds" in result.output.lower()
+
+
+def test_batch_cli_lock_staleness_seconds_negative_is_rejected(tmp_path, monkeypatch):
+    _patch_batch(monkeypatch)
+    ids_file = tmp_path / "scan_ids.json"
+    ids_file.write_text("[1]", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "cyl",
+            "batch-download-for-predict",
+            str(out),
+            "--scan-ids-file",
+            str(ids_file),
+            "--lock-staleness-seconds",
+            "-5",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "lock-staleness-seconds" in result.output.lower()

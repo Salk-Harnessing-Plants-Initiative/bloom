@@ -269,3 +269,61 @@ test confirming the bump actually worked, not a RED test in the usual sense.
       section) per that repo's own close-the-loop convention — a follow-up action in that repo,
       not a task in this one.
 - [ ] 7.8 Run `openspec archive add-cyl-batch-manifest-lock` once deployed.
+
+## 8. Post-PR-review hardening (found via `/review-pr` on #655, fixed same PR)
+
+`/review-pr` ran 5 parallel subagents against PR #655. Two independent agents traced the same
+BLOCKING bug from different angles (an unrecoverable corrupt lock on a write failure during
+acquire; a slow-holder's lock being reclaimed and then that holder's own release deleting the
+new holder's live lock) — both fixed here, in `_locks.py`. See design.md's new "Post-PR-review
+hardening" and "Risks/Trade-offs" entries for the full reasoning, including the residual
+"slow-but-alive holder can still be initially reclaimed" risk that the release-path fix narrows
+but does not eliminate (documented, not code-fixed — a proper fix needs lease renewal, out of
+scope for a review-response pass).
+
+- [x] 8.1 RED: `bloomcli/tests/test_cyl_locks.py` — an `OSError` during the lock body's write
+      (after the exclusive create succeeds) does not leave the lock file behind; a fresh
+      `acquire_lock` on the same path immediately afterward succeeds (no permanently
+      unreclaimable lock from an interrupted write, at any `staleness_seconds`).
+- [x] 8.2 RED: if the lock file is reclaimed by another process (different `pid`) while this
+      process is still inside its own `with acquire_lock(...)` block, this process's own release
+      does NOT delete the peer's now-live lock file.
+- [x] 8.3 RED: a stale-lock reclaim whose final `unlink()` raises `PermissionError` (not just
+      `FileNotFoundError` — the case a competing process's file handle overlaps the unlink,
+      observed on this repo's own Windows dev platform) raises `LockContendedError`, not an
+      unhandled `PermissionError`.
+- [x] 8.4 GREEN: `_locks.py` — split lock-file creation and body-write into
+      `_create_lock_file`/`_write_lock_body`, cleaning up (unlinking) the just-created file if
+      the write itself fails before re-raising; add a `_release` helper that only unlinks the
+      lock file if it still records this process's own pid; widen the reclaim path's final
+      `unlink()` exception handling to `(FileNotFoundError, PermissionError)`.
+- [x] 8.5 RED: `write_run_manifest`'s manifest write raising a plain `OSError` (e.g. simulating
+      disk-full via a mock that fails only for the manifest path specifically, not per-frame
+      writes, which also go through `atomic_write_bytes`) surfaces as a clean
+      `click.ClickException` (`isinstance(result.exception, SystemExit)` under `CliRunner`, not
+      the raw `OSError` instance — confirmed empirically that click normalizes both
+      `ClickException` and `ctx.exit()` to `SystemExit` in `CliRunner`'s `result.exception`,
+      while a genuinely unhandled exception surfaces as itself).
+- [x] 8.6 GREEN: widen `write_run_manifest`'s `except LockContendedError` to
+      `except (LockContendedError, OSError)`.
+- [x] 8.7 RED: strengthened the 4 existing manifest-lock-contention/corruption/all-failed tests
+      that only asserted `exit_code != 0` (vacuous — couldn't distinguish a clean
+      `click.ClickException` from an unhandled crash, confirmed by deliberately breaking each
+      guard and re-running: the tests still passed) to also assert
+      `isinstance(result.exception, SystemExit)`.
+- [x] 8.8 RED: `--lock-staleness-seconds 0` and a negative value are both rejected by the CLI
+      (previously silently accepted and defeated the entire locking feature — confirmed
+      empirically that `age <= staleness_seconds` is false for essentially any lock, however
+      freshly held, once the threshold is `<= 0`).
+- [x] 8.9 GREEN: `--lock-staleness-seconds` now uses `click.FloatRange(min=0, min_open=True)`.
+- [x] 8.10 Promoted the `.locks`/`manifest.lock` string literals (previously repeated at each of
+      the two call sites in `download_for_predict.py`) to named constants (`LOCKS_DIRNAME`,
+      `MANIFEST_LOCK_FILENAME`) in `_locks.py` — no test needed (pure refactor, existing tests
+      cover the resulting paths unchanged).
+- [x] 8.11 Full suite green (583 passed, 6 skipped, the same 6 pre-existing environment-specific
+      failures unrelated to this change), ruff clean, `openspec validate --strict` passes.
+- [ ] 8.12 Documented, not code-fixed (see design.md's Risks/Trade-offs): the residual
+      slow-but-alive-holder reclaim risk, the no-migration-path-for-pre-existing-`out_dir`s gap
+      (a cross-repo follow-up needed before any consumer trusts the manifest exclusively), and
+      `scan_is_already_staged` not re-verifying frame files exist. None block this PR; each is a
+      candidate follow-up issue to file once a downstream consumer of the manifest exists.

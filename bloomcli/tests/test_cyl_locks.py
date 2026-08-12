@@ -152,17 +152,11 @@ def test_reclaim_of_an_already_removed_lock_raises_contended_not_file_not_found(
         json.dumps({"pid": 1, "acquired_at": stale_acquired_at}), encoding="utf-8"
     )
 
-    real_read_lock_info = locks._read_lock_info
-
-    def _read_then_vanish(path):
-        return real_read_lock_info(path)
-
     real_unlink = os.unlink
 
     def _unlink_raises_missing(path):
         raise FileNotFoundError(f"simulated: {path} already removed by a peer")
 
-    monkeypatch.setattr(locks, "_read_lock_info", _read_then_vanish)
     monkeypatch.setattr(os, "unlink", _unlink_raises_missing)
 
     with pytest.raises(locks.LockContendedError):
@@ -170,3 +164,84 @@ def test_reclaim_of_an_already_removed_lock_raises_contended_not_file_not_found(
             pass
 
     monkeypatch.setattr(os, "unlink", real_unlink)
+
+
+def test_reclaim_of_an_already_removed_lock_raises_contended_on_permission_error(
+    tmp_path, monkeypatch
+):
+    """Windows can raise PermissionError (not FileNotFoundError) when a competing process's
+    file handle overlaps the unlink — this repo's own dev platform, so this is a real,
+    reachable case, not just a POSIX-only hypothetical."""
+    lock_path = tmp_path / "scan_1.lock"
+    stale_acquired_at = locks.time.time() - 1000
+    lock_path.write_text(
+        json.dumps({"pid": 1, "acquired_at": stale_acquired_at}), encoding="utf-8"
+    )
+
+    real_unlink = os.unlink
+
+    def _unlink_raises_permission(path):
+        raise PermissionError(f"simulated: {path} in use by another process")
+
+    monkeypatch.setattr(os, "unlink", _unlink_raises_permission)
+
+    with pytest.raises(locks.LockContendedError):
+        with locks.acquire_lock(lock_path, staleness_seconds=900):
+            pass
+
+    monkeypatch.setattr(os, "unlink", real_unlink)
+
+
+def test_a_write_failure_during_acquire_does_not_leave_a_permanently_unreclaimable_lock(
+    tmp_path, monkeypatch
+):
+    """PR #655 review finding (BLOCKING): if the process is killed/errors between the
+    exclusive create and finishing the write of the lock body, the lock file was left
+    behind empty/truncated — and an unreadable lock file was judged contended, never
+    stale, at ANY staleness_seconds. That's an unrecoverable deadlock from a single
+    interrupted write, violating the "a crashed process must not permanently wedge
+    out_dir" goal. The failed acquire must clean up its own just-created file so a
+    fresh acquire can succeed immediately afterward."""
+    lock_path = tmp_path / "scan_1.lock"
+    real_write = os.write
+
+    def _write_raises(fd, data):
+        raise OSError("simulated crash mid-write")
+
+    monkeypatch.setattr(os, "write", _write_raises)
+
+    with pytest.raises(OSError):
+        with locks.acquire_lock(lock_path, staleness_seconds=900):
+            pass
+
+    assert not lock_path.exists()
+
+    monkeypatch.setattr(os, "write", real_write)
+
+    # A fresh acquire must succeed immediately — no orphaned unreadable lock remains.
+    with locks.acquire_lock(lock_path, staleness_seconds=900):
+        assert lock_path.exists()
+
+
+def test_release_does_not_delete_a_lock_reclaimed_by_another_process_while_we_held_it(
+    tmp_path, monkeypatch
+):
+    """PR #655 review finding (BLOCKING): release unconditionally unlinked whatever lock
+    file was present, without checking it was still this process's own. If a peer
+    legitimately reclaimed our lock as stale while we were still (slowly) working —
+    the accepted trade-off design.md already documents — our own release would then
+    delete the peer's brand-new live lock, letting a third process acquire a "free"
+    lock while the peer is still mid-critical-section. Release must only remove the
+    lock file if it still records our own pid."""
+    lock_path = tmp_path / "scan_1.lock"
+
+    with locks.acquire_lock(lock_path, staleness_seconds=900):
+        assert json.loads(lock_path.read_text(encoding="utf-8"))["pid"] == os.getpid()
+
+        # Simulate a peer reclaiming this "stale" lock while we're still inside the
+        # `with` block — it unlinks ours and writes its own, different pid.
+        lock_path.write_text(json.dumps({"pid": 424242, "acquired_at": locks.time.time()}))
+
+    # Our release must have left the peer's lock alone.
+    assert lock_path.exists()
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["pid"] == 424242

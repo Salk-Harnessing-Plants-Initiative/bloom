@@ -255,6 +255,49 @@ bloom #481 explicitly frames this as needing "a first concrete implementation" o
 lock design — naming the module generically (not e.g. `_download_for_predict_locks.py`) means a
 future command that needs the same primitive doesn't need a rename/extraction first.
 
+### Post-PR-review hardening (found via `/review-pr` on #655, fixed same PR)
+
+Two BLOCKING bugs were found by adversarial review after this design's first implementation
+landed, both in `_locks.py`'s acquire/release sequence — worth recording precisely since both
+directly undermine goals stated earlier in this document.
+
+- **A crash between the exclusive create and finishing the write of the lock body left an
+  unreadable, permanently unreclaimable lock file.** The original `acquire_lock` did
+  `os.open(...)` then `os.write(fd, body)` then `os.close(fd)` with no cleanup on failure. If the
+  process died (or `os.write`/`os.close` itself raised) in that window, the lock file was left
+  behind empty/truncated. `_reclaim_or_raise` treats any unreadable lock content as contended
+  **unconditionally**, with no fallback staleness check for unparseable content — so that file
+  could never be reclaimed, at *any* `--lock-staleness-seconds` value, by any future invocation.
+  This directly contradicted this document's own stated Goal ("A crashed process must not
+  permanently wedge `out_dir`"). Fixed: the acquire/write sequence now cleans up (unlinks) its own
+  just-created file if the write fails, before re-raising — mirroring the
+  temp-file-then-cleanup-on-failure discipline `atomic_write_bytes`/`write_sidecar` already use
+  elsewhere in this codebase, which the lock's own write had been the one write path in this
+  feature *not* to follow.
+- **Release unconditionally deleted whatever lock file was present, without checking it was still
+  this process's own.** Combined with pure age-based staleness (no heartbeat/renewal — see the new
+  Risks/Trade-offs entry below), this meant: if a peer legitimately reclaimed this process's lock
+  as stale while it was still (slowly) working, and then the original process finally finished and
+  reached its own release, that release would blindly unlink the *peer's* brand-new live lock —
+  letting a third process then acquire a "free" lock while the peer was still mid-critical-section.
+  That's the exact #533-style corruption this whole feature exists to prevent, reintroduced through
+  the release path, with no crash required anywhere in the sequence. Fixed: release now re-reads
+  the lock file and only unlinks it if the recorded `pid` still matches this process's own; an
+  unreadable/unparseable file at release time is treated as still-ours (the only realistic cause is
+  a peer's write racing in mid-flight, already covered by the reclaim-side re-read mitigation, not a
+  case release needs to separately guard).
+
+Also fixed in the same pass: `write_run_manifest`'s `except LockContendedError` was widened to
+`except (LockContendedError, OSError)`, since an `OSError` from the lock's own file operations or
+from `atomic_write_bytes` (disk-full, permissions) previously escaped as a raw traceback instead of
+the `click.ClickException` every other manifest-write failure mode in this design produces; and
+`--lock-staleness-seconds` now rejects `0` and negative values (`click.FloatRange(min=0,
+min_open=True)`) — previously, `age <= staleness_seconds` was false for essentially any lock however
+freshly held when the threshold was `<= 0`, silently defeating the entire locking feature with no
+error. `.locks`/`manifest.lock` were also promoted from string literals repeated at each call site
+to named constants (`LOCKS_DIRNAME`, `MANIFEST_LOCK_FILENAME`) in `_locks.py`, for the same reason
+`RUN_MANIFEST_FILENAME` is imported rather than copied.
+
 ## Risks / Trade-offs
 
 - `download-for-predict` (single-scan) remains unlocked. If someone runs it concurrently with
@@ -281,3 +324,45 @@ future command that needs the same primitive doesn't need a rename/extraction fi
   staged, but each file is removed on the lock's own release (success or failure) — the directory
   does not grow unboundedly across normal operation, only a crash leaves a file behind, and that
   file is reclaimed (and removed) by the next invocation that touches the same scan_key.
+- **Staleness is purely age-based with no heartbeat/lease-renewal, so a legitimately slow (not
+  crashed) lock holder can still have its live lock reclaimed** — the Post-PR-review hardening
+  above (ownership-checked release) stops that reclaim from *cascading* into a third process
+  deleting the new holder's lock too, but it does not stop the initial reclaim-of-a-live-lock from
+  happening in the first place: a scan whose download genuinely takes longer than
+  `--lock-staleness-seconds` (this document's own rationale for the 900s default already concedes
+  frame downloads "could stretch to several minutes" under degraded network/storage) can have its
+  lock reclaimed by a second invocation that believes it dead — e.g. an Argo retry triggered by a
+  step-level timeout shorter than 900s. If that happens, the two processes *do* end up concurrently
+  writing the same `scan_dir`, the #533 corruption this feature exists to prevent. Accepted for now
+  given no live caller submits concurrently yet (per the roadmap's own status), but operators should
+  tune `--lock-staleness-seconds` well above the worst-case expected per-scan download time for
+  their environment; a proper fix (the holder periodically re-touching its own lock's `acquired_at`
+  while still working) is a reasonable follow-up if this proves insufficient in practice.
+- **No migration/backfill path for scans staged in an `out_dir` before this change shipped.** A
+  directory with valid, pre-existing `{scan_key}/` sidecars but no manifest (staged by a pre-#653
+  `bloomctl`) only gets those scan_keys into the manifest if a later invocation's `--scan-ids`
+  happens to include them (skip-check → `skipped` → folded in). If an operator only ever resubmits
+  a *subset* going forward (reasonably assuming "the old ones are already done"), those older scans
+  are never entered into the manifest at all. This is not a problem *today* — nothing in this repo
+  or the pipeline yet reads the manifest to decide what to process, per this proposal's own
+  "Explicitly out of scope" list — but per `sleap_roots_contracts/run_manifest.py`'s own stated
+  intent (scope processing to the manifest's `scan_keys` **instead of** directory-wide-scanning),
+  once a downstream consumer starts trusting the manifest exclusively, those older scans would
+  become silently invisible to it. This needs resolving (a one-time backfill scan, or an explicit
+  operator runbook step to resubmit full historical scan_id sets once after upgrade) before any
+  consumer makes that switch — flagged here as a cross-repo follow-up, not something this
+  producer-side change can unilaterally close without knowing exactly how the consumer will roll
+  out that trust.
+- **`scan_is_already_staged` (pre-existing, unchanged by this PR) only checks the sidecar's shape,
+  never that the frame files it references still exist on disk.** This was a low-stakes check
+  before this change (it only affected a human-readable CLI summary line); it is now the sole gate
+  for a scan's inclusion in the persistent manifest a downstream ML pipeline is meant to trust. If a
+  frame file is removed independently of its sidecar (manual cleanup, a partial disk/backup issue),
+  the scan is still reported `skipped`, still enters the manifest, with no signal anything is wrong.
+  Worth hardening (verify frame count/presence, not just sidecar shape) as a follow-up, not blocking
+  this change given the scope above.
+- The lock file records only `pid`, not host/pod identity — in the actual multi-pod Argo topology
+  this feature targets, containers don't share a PID namespace, so a contention error naming "pid
+  47" doesn't tell an operator which pod holds it without extra host-level correlation. Worth
+  including `ARGO_POD_NAME`/hostname in the lock body when available, as a future improvement to
+  the error message's actionability.

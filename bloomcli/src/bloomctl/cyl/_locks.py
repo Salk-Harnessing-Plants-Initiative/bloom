@@ -18,6 +18,14 @@ from typing import Any, Iterator
 # --lock-staleness-seconds option).
 DEFAULT_LOCK_STALENESS_SECONDS = 900
 
+# The directory (sibling of every {scan_key}/ directory, at out_dir's own root) that holds every
+# lock file this module manages, and the manifest lock's fixed filename within it. Named here,
+# not re-literaled at each call site, for the same reason RUN_MANIFEST_FILENAME is imported
+# rather than copied: a typo in one of two otherwise-identical string literals wouldn't be
+# caught by anything.
+LOCKS_DIRNAME = ".locks"
+MANIFEST_LOCK_FILENAME = "manifest.lock"
+
 
 class LockContendedError(RuntimeError):
     """Raised when a lock is held by another live (non-stale) process, or its reclaim raced."""
@@ -62,8 +70,69 @@ def _reclaim_or_raise(path: Path, staleness_seconds: float) -> None:
 
     try:
         os.unlink(str(path))
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError):
+        # FileNotFoundError: a peer's own reclaim attempt already removed it.
+        # PermissionError: a peer's file handle overlapped the unlink (observed on Windows,
+        # this repo's own dev platform — a peer can hold the path open transiently around
+        # its own create/write).
         raise LockContendedError(f"{path} was reclaimed by another process") from None
+
+
+def _create_lock_file(path: Path) -> int | None:
+    """Attempt the atomic exclusive create; return its fd, or None if it already exists."""
+    try:
+        return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return None
+
+
+def _write_lock_body(fd: int, path: Path) -> None:
+    """Write this process's pid/acquired_at through `fd`, closing it before returning.
+
+    If the write itself fails partway (crash, disk error), the just-created lock file is
+    removed rather than left behind — an unreadable lock file can never be judged stale (see
+    `_reclaim_or_raise`), so leaving one behind on a failed write would permanently wedge this
+    path for every future invocation, exactly the outcome this whole primitive exists to avoid.
+    """
+    try:
+        body = json.dumps({"pid": os.getpid(), "acquired_at": time.time()}).encode("utf-8")
+        os.write(fd, body)
+    except BaseException:
+        os.close(fd)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
+    else:
+        # Closed immediately, before the guarded code runs — never held open for the `with`
+        # block's duration. On Windows an open handle blocks deletion (no FILE_SHARE_DELETE),
+        # which would make this lock's own release-on-exit fail with PermissionError; POSIX
+        # allows unlinking an open file unconditionally, so this has no signal from this
+        # repo's Linux-only CI (see design.md).
+        os.close(fd)
+
+
+def _release(path: Path) -> None:
+    """Remove `path` only if it still records this process's own pid.
+
+    Never unconditionally delete whatever lock file happens to be there: a peer may have
+    legitimately reclaimed this lock as stale while this process was still (slowly) working —
+    an accepted trade-off of pure age-based staleness with no heartbeat/renewal (see design.md).
+    Blindly deleting on release would then remove that peer's brand-new live lock, letting a
+    third process acquire a "free" lock while the peer is still mid-critical-section — exactly
+    the corruption this primitive exists to prevent. An unreadable/unparseable file is treated
+    as still ours (the ambiguous case: the only realistic way our own successfully-written file
+    becomes unreadable is a peer's write racing in mid-flight, which is already covered by the
+    reclaim-side re-read mitigation, not a case release needs to additionally guard).
+    """
+    current = _read_lock_info(path)
+    if current is not None and current.get("pid") != os.getpid():
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
 
 
 @contextmanager
@@ -78,30 +147,16 @@ def acquire_lock(path: Path, *, staleness_seconds: float) -> Iterator[None]:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    try:
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
+    fd = _create_lock_file(path)
+    if fd is None:
         _reclaim_or_raise(path, staleness_seconds)
-        try:
-            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            raise LockContendedError(
-                f"{path} was re-acquired by another process during reclaim"
-            ) from None
+        fd = _create_lock_file(path)
+        if fd is None:
+            raise LockContendedError(f"{path} was re-acquired by another process during reclaim")
 
-    # The fd is closed immediately, before the guarded code runs — never held open for the
-    # `with` block's duration. On Windows an open handle blocks deletion (no
-    # FILE_SHARE_DELETE), which would make this lock's own release-on-exit fail with
-    # PermissionError; POSIX allows unlinking an open file unconditionally, so this has no
-    # signal from this repo's Linux-only CI (see design.md).
-    body = json.dumps({"pid": os.getpid(), "acquired_at": time.time()}).encode("utf-8")
-    os.write(fd, body)
-    os.close(fd)
+    _write_lock_body(fd, path)
 
     try:
         yield
     finally:
-        try:
-            path.unlink()
-        except OSError:
-            pass
+        _release(path)
