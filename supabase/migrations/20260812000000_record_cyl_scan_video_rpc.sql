@@ -31,8 +31,7 @@ REVOKE EXECUTE ON FUNCTION public.record_cyl_scan_video(bigint, text, integer)
   FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.record_cyl_scan_video(bigint, text, integer) TO bloom_workflows;
 
--- Owned by the table's owner so the DEFINER can write it, and fixed rather than left as
--- whoever applies the migration.
-ALTER FUNCTION public.record_cyl_scan_video(bigint, text, integer) OWNER TO supabase_admin;
+-- Owner left to whoever applies this migration, matching the queue wrappers: it is the role
+-- that owns cyl_scan_videos, so the DEFINER can always write the row.
 
 COMMIT;

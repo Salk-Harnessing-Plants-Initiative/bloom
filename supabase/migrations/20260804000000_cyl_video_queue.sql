@@ -222,18 +222,14 @@ GRANT EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) TO b
 GRANT EXECUTE ON FUNCTION public.fail_cyl_video_job(uuid, bigint, text, integer) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.cyl_video_queue_stats() TO bloom_workflows;
 
--- Deterministic DEFINER identity, pinned to the role that owns the queue. A SECURITY DEFINER
--- function runs with its owner's privileges, and the pgmq schema and the q_/a_ tables belong
--- to supabase_admin (pgmq.create is SECURITY INVOKER, so the queue belongs to whoever ran the
--- migration). postgres cannot be the owner here: it is not a superuser on Supabase and holds
--- no privileges on another role's tables — rolbypassrls only skips row policies, it grants
--- nothing at the table level, so every wrapper fails with "permission denied for table
--- q_cyl_video_generation". Without an explicit owner the DEFINER would be whoever applied the
--- migration.
-ALTER FUNCTION public.enqueue_cyl_video(bigint, bigint) OWNER TO supabase_admin;
-ALTER FUNCTION public.claim_cyl_video_job(integer, integer) OWNER TO supabase_admin;
-ALTER FUNCTION public.complete_cyl_video_job(uuid, bigint, text) OWNER TO supabase_admin;
-ALTER FUNCTION public.fail_cyl_video_job(uuid, bigint, text, integer) OWNER TO supabase_admin;
-ALTER FUNCTION public.cyl_video_queue_stats() OWNER TO supabase_admin;
+-- Owner is left to whoever applies this migration, deliberately. A SECURITY DEFINER function
+-- runs with its owner's privileges, and these have to reach pgmq's queue tables — which
+-- pgmq.create (SECURITY INVOKER, a few lines above) hands to that same role, as it does
+-- cyl_video_jobs. Naming a role instead breaks that tie: pinning to postgres leaves the
+-- wrappers unable to touch a queue owned by supabase_admin ("permission denied for table
+-- q_cyl_video_generation"), and pinning to supabase_admin cannot be applied at all, because
+-- `supabase db push` downgrades the session role first ("must be member of role
+-- supabase_admin"). Inheriting the applier keeps owner-of-wrappers == owner-of-queue in every
+-- environment, which is the property that actually matters.
 
 COMMIT;
