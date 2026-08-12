@@ -7,17 +7,18 @@
       review, that's a follow-up fix commit on this same PR, not a blocker to starting section 1.
       **Implemented as `bigint` throughout; flagged in the roadmap doc's "Questions for Benfica" Q4 and
       the PR description — Benfica's actual review is still pending, not resolved by this task.**
-- [ ] 0.2 **Not completed in this implementation pass — this sandboxed dev environment has no access to
-      staging and no 13.8M-row local fixture.** Shipped with the default unchanged at 120s (matching
-      `supabase-py`'s own prior package default exactly — see design.md D5; an earlier revision of this
-      task shipped a lower, unbenchmarked 30s value, reverted after PR review flagged it as a real risk
-      to the large-experiment `get_experiment_traits` call path). Before *lowering* the default below
-      120s: benchmark `get_experiment_traits(1)` (staging's largest experiment, 13.8M `cyl_scan_traits`
-      rows, or an equivalent local-Postgres seed at that scale — write a seeding-loop script if no such
-      fixture exists yet) via `psql`'s `\timing` or a `time.perf_counter()`-wrapped call, over 10 runs.
-      Record the p99 duration. Set `_DEFAULT_POSTGREST_TIMEOUT_SECONDS = ceil(3 * p99, nearest 5s)` in
-      both design.md D5 and `supabase_client.py` — only if that value is actually lower than 120s;
-      otherwise leave the default as-is.
+- [x] 0.2 **Superseded, not completed as originally scoped — see bloom#637 /
+      `fix-cyl-scan-traits-latest-rollup`.** This task called for benchmarking `get_experiment_traits(1)`
+      (staging's largest experiment) to size `_DEFAULT_POSTGREST_TIMEOUT_SECONDS` below the 120s interim
+      default. Before that benchmark was run, bloom#637 found that `list_experiments()`'s *unpinned*
+      call to `get_experiment_summary_counts` times out outright on staging (>90s, root-caused to a live
+      `WindowAgg` over 28.8M rows for `is_latest` plus a 5-way join/`GROUP BY` over ~26M rows) —
+      a distinct, more severe problem than "is the timeout budget generous enough," which made
+      benchmarking the *pinned* single-experiment call moot until the underlying query itself is fixed.
+      `fix-cyl-scan-traits-latest-rollup` fixes the query (stored/indexed `is_latest` column + a
+      per-experiment rollup table), after which the timeout question this task asked becomes
+      unnecessary at the current default — closing this task as superseded rather than leaving it open
+      indefinitely blocking this change's archival.
 
 ## 1. SQL integration test scaffolding (RED first)
 
