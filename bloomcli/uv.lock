@@ -53,7 +53,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "rich", specifier = ">=13.0" },
-    { name = "sleap-roots-contracts", specifier = ">=0.1.0a5" },
+    { name = "sleap-roots-contracts", specifier = ">=0.1.0a7" },
     { name = "supabase", specifier = ">=2.0.0" },
 ]
 provides-extras = ["test"]
@@ -885,15 +885,15 @@ wheels = [
 
 [[package]]
 name = "sleap-roots-contracts"
-version = "0.1.0a5"
+version = "0.1.0a7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2c/cf/1a3d0aeaede3023a615334c6327e3212614495980b18a6c52cae26da8984/sleap_roots_contracts-0.1.0a5.tar.gz", hash = "sha256:30b61c9195818b3b0b78a1ecc8d03d2f042fce7a6590a092a99f32eb40a6e44e", size = 23724, upload-time = "2026-07-21T23:21:20.521Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3f/dd/e512bb46a6209ed8c0e47d4861d8774fa94fc619ed4bc9b8bd675e377c61/sleap_roots_contracts-0.1.0a7.tar.gz", hash = "sha256:d3363ece42dc9052e6085016a54b52a921af01d75b325c9f9df52ced7466cd95", size = 28976, upload-time = "2026-08-04T21:24:13.24Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/30/cd/58c9b8743eafb74b5cb51b2c73b8ca13d2b689cf35669a253dae79245fb3/sleap_roots_contracts-0.1.0a5-py3-none-any.whl", hash = "sha256:9a0f395e0a74132ea8ba61379c2a6fb324dd14156130039ee7cad9d8117993e8", size = 31126, upload-time = "2026-07-21T23:21:19.512Z" },
+    { url = "https://files.pythonhosted.org/packages/06/a8/f8bebd47b8c4d1a7d79a54c6ca5e499a42a40568a7b220cbba7a35195f64/sleap_roots_contracts-0.1.0a7-py3-none-any.whl", hash = "sha256:716f2055e893176ef60193f589789a528e3e397bffe08ab7577203c824815335", size = 36954, upload-time = "2026-08-04T21:24:12.299Z" },
 ]
 
 [[package]]

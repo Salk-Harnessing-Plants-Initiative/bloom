@@ -25,12 +25,13 @@ dependencies = [
     # (open floor past the upstream CVE fix; see bloommcp/pyproject.toml).
     # Bumped past CVE-2026-69247 (fixed in 50.0.0), disclosed 2026-08-03.
     "cryptography>=50.0.0",
-    # ResultEnvelope model for `cyl ingest` fail-fast validation, plus (a5+)
+    # ResultEnvelope model for `cyl ingest` fail-fast validation, (a5+)
     # PredictionArtifact/PredictionManifest for `cyl ingest-result
-    # --predictions-dir` blob construction (bloom #407). No [pandas] extra —
-    # only the pydantic models are needed (pydantic already present
-    # transitively via supabase->postgrest).
-    "sleap-roots-contracts>=0.1.0a5",
+    # --predictions-dir` blob construction (bloom #407), and (a7+) RunManifest/
+    # RUN_MANIFEST_FILENAME for `cyl batch-download-for-predict`'s manifest
+    # write (bloom #653). No [pandas] extra — only the pydantic models are
+    # needed (pydantic already present transitively via supabase->postgrest).
+    "sleap-roots-contracts>=0.1.0a7",
     # Security floor for h2, transitive via httpx[http2]: CVE-2026-71554
     # (fixed in 4.4.1), disclosed 2026-08-06. Open floor per repo convention.
     "h2>=4.4.1",
