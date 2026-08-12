@@ -28,9 +28,10 @@ from bloom_mcp.manifest import (
     write_manifest,
 )
 from bloom_mcp.storage_backend import (
+    LocalStorageBackend,
+    active_backend,
     active_backend_name,
     is_local_backend,
-    local_output_root,
 )
 
 from ._artifacts import (
@@ -269,12 +270,13 @@ class SupabaseResultStore:
                 # expected prefix and the actual keys structurally cannot
                 # drift apart from a future refactor of key_for/AnalysisDir.
                 if is_local_backend():
-                    root = local_output_root()
+                    backend = active_backend()
+                    assert isinstance(backend, LocalStorageBackend)
                     output_links = build_output_links(
                         output_keys,
                         output_sha256,
                         output_size_bytes,
-                        path_for=lambda key: str(root / key),
+                        path_for=lambda key: str(backend.resolve_path(key)),
                         expected_prefix=key_for(""),
                     )
                 else:
@@ -462,15 +464,33 @@ class SupabaseResultStore:
         adir = AnalysisDir(self._output_root, experiment, tool_class)
         expected_prefix = adir.key(f"{stored.version_dir}/")
         try:
-            output_links = build_download_links(
-                stored.output_keys,
-                stored.output_sha256,
-                url_for=lambda key: _sc.create_signed_url(
-                    key, SIGNED_URL_EXPIRES_SECONDS
-                ),
-                size_for=_sc.get_object_size,
-                expected_prefix=expected_prefix,
-            )
+            # Mirrors commit()'s own is_local_backend() branch (#642
+            # follow-up): the local backend has nothing to sign or serve —
+            # create_signed_url would just raise without BLOOM_STORAGE_URL —
+            # so this re-fetch surfaces the same direct filesystem path
+            # instead. size_for stays _sc.get_object_size in both branches:
+            # it already dispatches through active_backend(), so it works
+            # unchanged for the local backend too.
+            if is_local_backend():
+                backend = active_backend()
+                assert isinstance(backend, LocalStorageBackend)
+                output_links = build_download_links(
+                    stored.output_keys,
+                    stored.output_sha256,
+                    path_for=lambda key: str(backend.resolve_path(key)),
+                    size_for=_sc.get_object_size,
+                    expected_prefix=expected_prefix,
+                )
+            else:
+                output_links = build_download_links(
+                    stored.output_keys,
+                    stored.output_sha256,
+                    url_for=lambda key: _sc.create_signed_url(
+                        key, SIGNED_URL_EXPIRES_SECONDS
+                    ),
+                    size_for=_sc.get_object_size,
+                    expected_prefix=expected_prefix,
+                )
         except CorruptRunLinksError as exc:
             # The raw message embeds the offending (possibly cross-experiment)
             # storage key — full detail server-side only, never in the

@@ -351,6 +351,17 @@ class LocalStorageBackend:
             raise ValueError(f"storage key {key!r} escapes the local root")
         return target
 
+    def resolve_path(self, key: str) -> Path:
+        """Public entry point for resolving ``key`` under this backend's root.
+
+        Routes through the same :meth:`_resolve` traversal guard every I/O
+        method here already uses (#642 follow-up) — a caller that needs the
+        on-disk path for a key (e.g. ``OutputLink.path``) must not hand-roll a
+        second, unguarded ``root / key`` join that could silently reopen the
+        traversal risk :meth:`_resolve` already closes.
+        """
+        return self._resolve(key)
+
     def _atomic_write(self, target: Path, data: bytes, *, key: str) -> None:
         """Write ``data`` to ``target`` atomically on POSIX.
 
@@ -542,9 +553,13 @@ def local_output_root() -> Path:
 
     Thin wrapper over :func:`_resolve_local_root` so ``server.build_app()`` can
     mount exactly the directory :class:`LocalStorageBackend` itself writes to
-    and reads from, without reaching into a private name.
+    and reads from, without reaching into a private name. Calls ``.resolve()``
+    (unlike ``_resolve_local_root`` itself, whose unresolved return value
+    ``validate_storage_backend`` depends on to detect an empty/unset root) so
+    a relative ``BLOOM_LOCAL_ROOT``/``BLOOM_STORAGE_LOCAL_ROOT`` still yields
+    the absolute path this function's own docstring promises.
     """
-    return _resolve_local_root()
+    return _resolve_local_root().resolve()
 
 
 def _resolve_local_root() -> Path:

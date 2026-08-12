@@ -46,6 +46,23 @@ def test_plots_mount_absent_on_default_backend(monkeypatch):
     assert "/plots" not in _mount_paths(server.build_app())
 
 
+def test_output_mount_absent_on_default_backend(monkeypatch):
+    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+    sb.reset_backend_for_tests()
+    assert "/output" not in _mount_paths(server.build_app())
+
+
+def test_output_mount_absent_on_local_backend(monkeypatch, tmp_path):
+    """Regression guard for this module's own docstring: an earlier revision
+    of this PR mounted /output and reverted it once outputs moved to
+    surfacing a direct filesystem path instead of a served URL (#642
+    follow-up) — nothing should re-introduce that mount silently."""
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
+    sb.reset_backend_for_tests()
+    assert "/output" not in _mount_paths(server.build_app())
+
+
 # ── serving a real file: granular explicit-override tier ───────────────────
 
 

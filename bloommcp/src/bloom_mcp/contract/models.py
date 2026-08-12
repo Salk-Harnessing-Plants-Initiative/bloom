@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from bloom_mcp.contract.provenance import SEED_MAX
 
@@ -37,6 +37,12 @@ class OutputLink(BaseModel):
     path: Optional[str] = None
     sha256: str
     size_bytes: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _exactly_one_of_url_or_path(self) -> "OutputLink":
+        if (self.url is None) == (self.path is None):
+            raise ValueError("exactly one of url or path must be set")
+        return self
 
 
 class RunLinks(BaseModel):

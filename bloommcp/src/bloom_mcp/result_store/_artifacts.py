@@ -137,6 +137,8 @@ def build_output_links(
         # rather than silently commit a link with no URL and no path either.
         if url_for and not url:
             raise ValueError(f"url_for returned no usable URL for key {key!r}")
+        if path_for and not Path(path).is_file():
+            raise ValueError(f"path_for returned a non-existent path for key {key!r}")
         links[name] = OutputLink(
             key=key,
             url=url,
@@ -144,26 +146,31 @@ def build_output_links(
             sha256=output_sha256[name],
             size_bytes=output_size_bytes[name],
         )
-        for name in output_keys
-    }
+    return links
 
 
 def build_download_links(
     output_keys: dict[str, str],
     output_sha256: dict[str, str],
-    url_for: Callable[[str], str],
-    size_for: Callable[[str], int],
     *,
+    size_for: Callable[[str], int],
     expected_prefix: str,
+    url_for: Optional[Callable[[str], str]] = None,
+    path_for: Optional[Callable[[str], str]] = None,
 ) -> dict[str, OutputLink]:
     """Build the per-output ``OutputLink`` dict ``get_download_links`` attaches
     when re-signing an already-committed run (bloom#599).
 
-    ``url_for(key)``/``size_for(key)`` supply the URL/size — a real signed
-    call and a live ``StorageBackend.get_object_size`` call for
-    ``SupabaseResultStore``, an already-recorded value for ``FakeResultStore``
+    ``size_for(key)`` supplies the size — a live ``StorageBackend.get_object_size``
+    call for ``SupabaseResultStore`` (backend-agnostic already, since it
+    dispatches through ``active_backend()``, so it works unchanged for the
+    local backend too), an already-recorded value for ``FakeResultStore``
     (which never uploads real bytes for a live lookup to meaningfully
-    target) — so this one assembly step is shared by both adapters.
+    target). Exactly one of ``url_for``/``path_for`` must be given, mirroring
+    ``build_output_links`` (#642 follow-up): ``url_for(key)`` supplies a
+    signed/served URL; ``path_for(key)`` supplies the resolved absolute
+    filesystem path instead, for the local backend, which has no URL to sign
+    or serve.
 
     ``expected_prefix`` is recomputed *fresh at read time* from
     ``(experiment, tool_class, the resolved run's version_dir)`` — this is
@@ -175,11 +182,13 @@ def build_download_links(
     outside it is never a caller-input condition (every ``output_keys`` value
     here came from a manifest this same lookup already resolved) — it
     signals corrupt manifest data or a resolution bug, and raises
-    :class:`CorruptRunLinksError` before either ``url_for`` or ``size_for`` is
-    called for that key, so neither the signing nor the sizing primitive
-    (both of which perform no ownership check of their own) is ever reached
-    for an out-of-scope key.
+    :class:`CorruptRunLinksError` before ``url_for``/``path_for``/``size_for``
+    is ever called for that key, so none of the signing, pathing, or sizing
+    primitives (none of which perform an ownership check of their own) is
+    ever reached for an out-of-scope key.
     """
+    if (url_for is None) == (path_for is None):
+        raise ValueError("exactly one of url_for or path_for must be given")
     if not expected_prefix:
         raise CorruptRunLinksError(
             f"expected_prefix must be non-empty; got {expected_prefix!r}"
@@ -190,12 +199,19 @@ def build_download_links(
                 f"output key {key!r} (output {name!r}) is outside the "
                 f"expected run prefix {expected_prefix!r}"
             )
-    return {
-        name: OutputLink(
+    links = {}
+    for name, key in output_keys.items():
+        url = url_for(key) if url_for else None
+        path = path_for(key) if path_for else None
+        if url_for and not url:
+            raise ValueError(f"url_for returned no usable URL for key {key!r}")
+        if path_for and not Path(path).is_file():
+            raise ValueError(f"path_for returned a non-existent path for key {key!r}")
+        links[name] = OutputLink(
             key=key,
-            url=url_for(key),
+            url=url,
+            path=path,
             sha256=output_sha256[name],
             size_bytes=size_for(key),
         )
-        for name, key in output_keys.items()
-    }
+    return links

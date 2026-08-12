@@ -177,6 +177,23 @@ follow-up — user-confirmed).
   configured `BLOOM_LOCAL_ROOT`), this is not a new information disclosure; it is the intended
   mechanism. It would be a real concern only if fully-local mode were ever run with the caller on
   a _different_ machine from bloommcp itself — not a documented or supported configuration today.
+  Two narrower variants of "different machine" are worth naming explicitly, since both are
+  realistic even for a solo-dev/offline user who never leaves one physical host:
+  - **Same host, different container.** `docker-compose.dev.yml`'s own pre-existing env-var
+    comments already anticipate `BLOOM_STORAGE_BACKEND=local` being driven from a container
+    other than `bloommcp` itself (e.g. `langchain-agent`) — that caller sees `bloommcp`'s
+    container-internal path (`/app/data/LOCAL_ROOT/...`), which is meaningless (and typically
+    inaccessible) outside `bloommcp`'s own container filesystem unless the two containers
+    happen to share the same bind mount. This is a usability gap (the path may simply not
+    resolve for that caller), not a new disclosure beyond what this design already accepts.
+  - **The path leaves the machine entirely via the human, not the network.** A scientist who
+    pastes a tool response into Slack, a GitHub issue, or a chat transcript shares the host
+    username and `BLOOM_LOCAL_ROOT` project-layout embedded in the absolute path — something a
+    signed URL (opaque, time-limited, revocable) never exposes. Still consistent with the
+    documented single-machine threat model (nothing crosses the network unauthenticated), but
+    a real, human-mediated exposure a signed URL avoids by construction; not mitigated further
+    here, since redacting or shortening the path would defeat the feature's own purpose (direct
+    filesystem access).
 - `BLOOMMCP_PUBLIC_URL` reuse (for plots only, post-pivot) means a misconfigured value (pointing
   at a host that isn't actually this bloommcp instance) would produce a self-served-looking plot
   URL that 404s elsewhere — no worse than today's `BLOOM_PLOTS_URL` misconfiguration risk, and

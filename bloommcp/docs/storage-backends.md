@@ -72,6 +72,13 @@ Three things worth knowing before you reach for it:
   silently omits one output.
 - **A legacy run recorded before per-artifact keys existed** (a v2 manifest entry)
   has nothing to sign — `output_links` comes back empty for it, not an error.
+- **Local backend: a re-resolved direct path, not a re-signed URL.** Exactly like
+  the per-tool `output_links` a fresh `commit()` returns (see "Local backend"
+  below), `get_download_links` never calls `create_signed_url` for the local
+  backend — it re-derives the same resolved absolute filesystem path instead,
+  so it works with no `BLOOM_STORAGE_URL` needed, on the same 2-env-var setup
+  this doc's "Opt-in" section documents. `size_bytes` is still resolved live
+  (via a real `stat()`, not a network call) — see below.
 
 Unlike the per-tool `output_links` above, `get_download_links`'s `size_bytes` is
 resolved via a live storage lookup on every call — nothing about a run's size is
@@ -84,9 +91,10 @@ different bytes than the manifest's own `sha256` — always verify what you
 download against the returned `sha256`, which is unaffected by this and comes
 from the same immutable record `output_links` above already relies on.
 
-Backed by `StorageBackend.create_signed_url(key, expires_in)` — a 3600-second
-expiry (the `SIGNED_URL_EXPIRES_SECONDS` constant in
-`bloom_mcp/result_store/_artifacts.py`), not configurable per call.
+For the Supabase backend, backed by `StorageBackend.create_signed_url(key, expires_in)`
+— a 3600-second expiry (the `SIGNED_URL_EXPIRES_SECONDS` constant in
+`bloom_mcp/result_store/_artifacts.py`), not configurable per call. `get_download_links`
+never calls this for the local backend, per the local-backend bullet above.
 
 - **Supabase backend (default):** a real, time-limited signed URL from Supabase
   Storage's own signing call, in `output_links[...].url`; `output_links[...].path`

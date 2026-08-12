@@ -70,10 +70,20 @@ def test_output_link_field_set():
     }
 
 
-def test_output_link_url_and_path_both_default_to_none():
-    link = OutputLink(key="k", sha256="abc", size_bytes=0)
+def test_output_link_rejects_neither_url_nor_path():
+    with pytest.raises(ValidationError):
+        OutputLink(key="k", sha256="abc", size_bytes=0)
+
+
+def test_output_link_rejects_both_url_and_path():
+    with pytest.raises(ValidationError):
+        OutputLink(key="k", url="http://x", path="/tmp/x", sha256="abc", size_bytes=0)
+
+
+def test_output_link_accepts_path_only():
+    link = OutputLink(key="k", path="/tmp/x", sha256="abc", size_bytes=0)
     assert link.url is None
-    assert link.path is None
+    assert link.path == "/tmp/x"
 
 
 def test_output_link_rejects_negative_size_bytes():

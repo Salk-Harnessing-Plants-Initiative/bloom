@@ -541,6 +541,15 @@ def test_local_store_roundtrip_matches_contract(monkeypatch, tmp_path):
     assert (out / "manifest.json").is_file()
     assert (out / stored.version_dir / "_cleaned.csv").read_bytes() == b"data"
 
+    # #642 review finding: get_download_links must not require
+    # BLOOM_STORAGE_URL either — it re-derives the same direct path rather
+    # than calling create_signed_url (which would raise without that var).
+    resolved = store.get_download_links("exp.csv", "qc", "latest")
+    relink = resolved.output_links["cleaned"]
+    assert relink.path == link.path
+    assert relink.url is None
+    assert relink.size_bytes == len(b"data")
+
 
 def test_default_path_writes_no_local_files(
     fake_supabase_storage, monkeypatch, tmp_path
@@ -1753,6 +1762,8 @@ def test_local_create_signed_url_raises_when_unset_no_path_leak(monkeypatch, tmp
 def test_storage_backend_protocol_includes_create_signed_url(tmp_path):
     assert isinstance(sb.SupabaseStorageBackend(), sb.StorageBackend)
     assert isinstance(sb.LocalStorageBackend(tmp_path), sb.StorageBackend)
+    assert hasattr(sb.SupabaseStorageBackend, "create_signed_url")
+    assert hasattr(sb.LocalStorageBackend, "create_signed_url")
 
 
 # ─── 9. Local-mode self-serve base URL (#642) ──────────────────────────────────
@@ -1771,8 +1782,6 @@ def test_self_serve_base_url_prefers_public_url(monkeypatch):
 def test_local_output_root_matches_resolve_local_root(monkeypatch, tmp_path):
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
     assert sb.local_output_root() == sb._resolve_local_root()
-    assert hasattr(sb.SupabaseStorageBackend, "create_signed_url")
-    assert hasattr(sb.LocalStorageBackend, "create_signed_url")
 
 
 def test_create_signed_url_performs_no_ownership_check(monkeypatch):
