@@ -55,7 +55,8 @@ def session_token(api, anon_key, jwks_configured):
     if not jwks_configured:
         pytest.skip("stack has no JWKS provisioned — GoTrue signs HS256 here")
 
-    email = f"es256-{uuid.uuid4().hex[:12]}@bloom-ci.local"
+    # @salk.edu: a DB trigger rejects every other domain with P0001.
+    email = f"es256-{uuid.uuid4().hex[:12]}@salk.edu"
     status, body = api(
         "/api/auth/v1/signup",
         api_key=anon_key,
