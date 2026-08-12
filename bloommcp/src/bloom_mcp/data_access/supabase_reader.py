@@ -59,6 +59,7 @@ _FIXED_COLUMN_COUNT = 2 + len(_METADATA_COLS)
 
 # RPC/table names, named once so a rename or typo is a single-line fix.
 _RPC_GET_EXPERIMENT_TRAITS = "get_experiment_traits"
+_RPC_GET_EXPERIMENT_SUMMARY_COUNTS = "get_experiment_summary_counts"
 _RPC_LIST_EXPERIMENT_TRAIT_SOURCES = "list_experiment_trait_sources"
 _TABLE_CYL_EXPERIMENTS = "cyl_experiments"
 
@@ -252,37 +253,59 @@ class SupabaseReader:
                 "Could not list experiments: the database read failed."
             ) from exc
 
+        # One bulk aggregate call covers every experiment's counts in a single
+        # round trip (design.md Decision D2/D3) -- replaces the former
+        # per-experiment get_experiment_traits loop, which fetched and
+        # discarded a full experiment's raw trait rows 224 times on staging
+        # just to compute two counts (bloom#625). A failure here has no
+        # per-experiment granularity to fail-open into, so it surfaces as a
+        # structured error rather than silently excluding whichever
+        # experiment happened to be mid-loop (Decision D4). Not routed through
+        # `_safe_rpc`: that helper's `name` parameter is for a single
+        # experiment's error message and has no fit for an all-experiments
+        # bulk call.
+        try:
+            counts_rows = _sc.call_rpc(
+                _RPC_GET_EXPERIMENT_SUMMARY_COUNTS,
+                {"experiment_id_": None, "source_id_": None, "run_id_": None},
+            )
+        except Exception as exc:
+            # Unlike the old per-experiment loop's per-row logger.warning below,
+            # a failure here fails the whole listing (Decision D4) -- log it so
+            # a total-listing failure isn't LESS observable than the partial
+            # failures it replaces, even though the caller also gets the
+            # chained ExperimentReadError.
+            logger.warning(
+                "list_experiments: %s RPC failed; the whole listing is failing "
+                "(no per-experiment fallback for a bulk call).",
+                _RPC_GET_EXPERIMENT_SUMMARY_COUNTS,
+                exc_info=True,
+            )
+            raise ExperimentReadError(
+                "Could not list experiments: the database read failed."
+            ) from exc
+        counts_by_id = {row["experiment_id"]: row for row in counts_rows}
+
         summaries: list[ExperimentSummary] = []
         for row in response.data:
             # The whole per-row body is one try/except -- a malformed row (a
-            # missing "id"/"plant_id"/"trait_name" key) must exclude only this
-            # experiment from the listing, not crash the entire call, same as
-            # an RPC failure below.
+            # missing "id" key) must exclude only this experiment from the
+            # listing, not crash the entire call.
             try:
                 experiment_id = row["id"]
                 filename = str(experiment_id)
-                # A per-experiment bulk fetch — the same call load_experiment
-                # itself makes — is the only way to get an accurate trait
-                # count; there is no per-experiment distinct-trait-name view
-                # (see design.md's Decision D4). Reused here to also derive
-                # `rows` (distinct plant count) from the same round trip
-                # rather than a second, separately-guessed join query.
-                rows = _sc.call_rpc(
-                    _RPC_GET_EXPERIMENT_TRAITS,
-                    {
-                        "experiment_id_": experiment_id,
-                        "source_id_": None,
-                        "run_id_": None,
-                    },
-                )
-                plant_ids = {r["plant_id"] for r in rows}
-                trait_names = {r["trait_name"] for r in rows}
+                # The bulk RPC only returns a row for experiments with at
+                # least one matching trait row -- an experiment with none is
+                # absent from counts_by_id, not zero-valued (design.md D2),
+                # so a missing entry here defaults to zero rather than being
+                # excluded from the listing.
+                counts = counts_by_id.get(experiment_id, {"n_plants": 0, "n_traits": 0})
                 summary = ExperimentSummary(
                     filename=filename,
                     stem=filename,
-                    rows=len(plant_ids),
-                    total_columns=len(trait_names) + _FIXED_COLUMN_COUNT,
-                    trait_columns=len(trait_names),
+                    rows=counts["n_plants"],
+                    total_columns=counts["n_traits"] + _FIXED_COLUMN_COUNT,
+                    trait_columns=counts["n_traits"],
                     experiment_name=str(row.get("name") or filename),
                     genotype_col=_GENOTYPE_COL,
                     sample_id_col=_SAMPLE_ID_COL,

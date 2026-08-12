@@ -32,6 +32,11 @@ The system SHALL define a backend-agnostic `ExperimentReader` port exposing `loa
 - **WHEN** `load_experiment(name)` is called for a name the reader cannot resolve in any tier
 - **THEN** the reader surfaces a structured not-found condition with no raw Supabase or filesystem traceback, bucket name, or connection string leaked to the caller
 
+#### Scenario: A resolvable-but-unreadable committed version is a caller-safe error, not a leaked exception
+
+- **WHEN** `load_experiment(name, version=...)` resolves a manifest entry that names a real, committed version, but reading that entry — the manifest lookup itself, its recorded output key, its version directory, or the file download — raises a storage or filesystem exception partway through
+- **THEN** the reader converts that exception into a structured error before it reaches the caller, never letting a raw exception, filesystem path, or storage traceback escape
+
 #### Scenario: List experiments enumerates available inputs
 
 - **WHEN** a consumer calls `list_experiments()`
@@ -49,26 +54,50 @@ The system SHALL define a backend-agnostic `ExperimentReader` port exposing `loa
 
 ### Requirement: SupabaseReader Adapter
 
-The system SHALL provide a `SupabaseReader` adapter implementing `ExperimentReader` that preserves the deployed read behaviour: raw inputs from the local `BLOOM_TRAITS_DIR` and versioned-cleaned outputs from Supabase Storage under `bloommcp_output/` as `bloom_agent`. The local raw-input read is **retained but deprecated**: it SHALL emit a deprecation signal so the follow-up that migrates inputs to Supabase Storage can remove it.
+The system SHALL provide a `SupabaseReader` adapter implementing `ExperimentReader` that
+preserves the deployed read behaviour: raw inputs from the local `BLOOM_TRAITS_DIR` and
+versioned-cleaned outputs from Supabase Storage under `bloommcp_output/` as `bloom_agent`. The
+local raw-input read is **retained but deprecated**: it SHALL emit a deprecation signal so the
+follow-up that migrates inputs to Supabase Storage can remove it.
 
-#### Scenario: Resolves the latest versioned cleaned output from Supabase
+#### Scenario: Resolves the outliers-preferring cleaned output for version="latest"
 
-- **WHEN** `SupabaseReader.load_experiment(name)` is called and a versioned `qc_<stem>` manifest with a `latest` cleaned output exists
-- **THEN** it downloads and returns that cleaned CSV from Supabase Storage, with a source label identifying the version
+- **WHEN** `SupabaseReader.load_experiment(name)` is called and both a `qc_<stem>` and an
+  `outliers_<stem>` manifest exist with their own `latest` cleaned output
+- **THEN** it downloads and returns the cleaned CSV from the `outliers`-class manifest, with a
+  source label identifying it as such
+
+#### Scenario: An untrimmed experiment sees no change in the resolved label
+
+- **WHEN** `SupabaseReader.load_experiment(name)` is called for an experiment that has only ever
+  been cleaned, never trimmed (no `outliers_<stem>` manifest exists)
+- **THEN** the resolved cleaned CSV and its source label are byte-for-byte identical to what this
+  adapter returned before this change — the unqualified `f"{entry.id}_cleaned"` label, not the
+  tool-class-qualified form
+
+#### Scenario: Resolves the plain-clean output for version="latest_qc"
+
+- **WHEN** `SupabaseReader.load_experiment(name, version="latest_qc")` is called and both
+  manifests exist
+- **THEN** it downloads and returns the cleaned CSV from the `qc`-class manifest specifically,
+  ignoring the `outliers`-class manifest
 
 #### Scenario: Falls back to the local raw input with a deprecation signal
 
-- **WHEN** `SupabaseReader.load_experiment(name)` is called for an experiment with no cleaned output, and only a raw CSV under `BLOOM_TRAITS_DIR` exists
-- **THEN** it returns the raw frame and emits a deprecation signal indicating the local raw-read path is slated for removal
+- **WHEN** `SupabaseReader.load_experiment(name)` is called for an experiment with no cleaned
+  output in any cleaned-producing tool class, and only a raw CSV under `BLOOM_TRAITS_DIR` exists
+- **THEN** it returns the raw frame and emits a deprecation signal indicating the local raw-read
+  path is slated for removal
 
 #### Scenario: Adapter tests do not touch the network
 
 - **WHEN** the `SupabaseReader` test suite runs
-- **THEN** it exercises the adapter against a monkeypatched `supabase_client` boundary (no `supabase.create_client` call) and passes with no `SUPABASE_URL`/`BLOOM_AGENT_KEY` configured
+- **THEN** it exercises the adapter against a monkeypatched `supabase_client` boundary (no
+  `supabase.create_client` call) and passes with no `SUPABASE_URL`/`BLOOM_AGENT_KEY` configured
 
 ### Requirement: FakeReader Adapter
 
-The system SHALL provide an in-memory `FakeReader` adapter implementing `ExperimentReader`, behaviourally equivalent to `SupabaseReader` for observable outcomes, so the full read path is testable with no live Supabase.
+The system SHALL provide an in-memory `FakeReader` adapter implementing `ExperimentReader`, behaviourally equivalent to `SupabaseReader` for observable outcomes, so the full read path is testable with no live Supabase. `FakeReader` SHALL also expose a test-only failure-injection hook so a mid-read storage failure — the one hazard class `SupabaseReader`'s multi-step cleaned-tier resolution has that a flat in-memory lookup cannot otherwise represent — is exercisable without a live Supabase adapter.
 
 #### Scenario: In-memory experiment loads without Supabase
 
@@ -77,6 +106,11 @@ The system SHALL provide an in-memory `FakeReader` adapter implementing `Experim
 
 #### Scenario: Fake and Supabase adapters agree on observable behaviour
 
-- **WHEN** the same scenario set (load, version selection, not-found, empty list) runs against both `FakeReader` and `SupabaseReader` (on a monkeypatched boundary)
-- **THEN** both produce equivalent observable results — return shapes, source labels, and not-found signalling match
+- **WHEN** the same scenario set (load, version selection, not-found, empty list, a mid-read storage failure) runs against both `FakeReader` and `SupabaseReader` (on a monkeypatched boundary)
+- **THEN** both produce equivalent observable results — return shapes, source labels, not-found signalling, and failure signalling all match
+
+#### Scenario: Fake simulates a mid-load storage failure
+
+- **WHEN** a test calls `FakeReader.fail_next_load(name, version=...)` and then `load_experiment(name, version=...)`
+- **THEN** that call raises `ExperimentReadError`, then the hook clears itself so a subsequent call for the same `(name, version)` resolves normally
 

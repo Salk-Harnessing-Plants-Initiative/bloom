@@ -8,7 +8,7 @@ policies bound what this can touch.
 
 This phase does NOT submit anything to Argo/Kubernetes — every enumerated scan is
 always enqueued regardless of the dedup preview's outcome. See
-openspec/changes/add-cyl-pipeline-trigger/design.md for why: the dedup preview
+openspec/changes/archive/2026-08-03-add-cyl-pipeline-trigger/design.md for why: the dedup preview
 can only compare `params` (not model versions/code shas, which Bloom cannot
 cheaply know before submission), so hard-skipping enqueue on a params-only match
 would silently and permanently suppress recomputation after a model-version bump

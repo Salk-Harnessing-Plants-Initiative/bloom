@@ -107,6 +107,8 @@ jobs:
           cat >> "$f_next" << 'SECRETS'
           POSTGRES_PASSWORD=${{ secrets.PROD_POSTGRES_PASSWORD }}
           JWT_SECRET=${{ secrets.PROD_JWT_SECRET }}
+          JWT_KEYS=${{ secrets.PROD_JWT_KEYS }}
+          JWT_JWKS=${{ secrets.PROD_JWT_JWKS }}
           ANON_KEY=${{ secrets.PROD_ANON_KEY }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.PROD_ANON_KEY }}
           SERVICE_ROLE_KEY=${{ secrets.PROD_SERVICE_ROLE_KEY }}
@@ -183,9 +185,13 @@ jobs:
             AFTER=\$(git rev-parse HEAD)
             git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- caddy/Caddyfile \
               && echo 'CADDYFILE_CHANGED=false' || echo 'CADDYFILE_CHANGED=true'
+            git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- volumes/api/kong.yml \
+              && echo 'KONGFILE_CHANGED=false' || echo 'KONGFILE_CHANGED=true'
           " | tee /tmp/pull_prod.out
           changed=$(grep '^CADDYFILE_CHANGED=' /tmp/pull_prod.out | tail -1 | cut -d= -f2)
           echo "caddyfile_changed=${changed:-true}" >> "$GITHUB_OUTPUT"
+          kong_changed=$(grep '^KONGFILE_CHANGED=' /tmp/pull_prod.out | tail -1 | cut -d= -f2)
+          echo "kongfile_changed=${kong_changed:-true}" >> "$GITHUB_OUTPUT"
 
       - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
         run: |
@@ -336,6 +342,86 @@ jobs:
               exit 1
             fi
             echo \"caddy restart count: \$restarts\"
+          "
+
+      # Restart Kong so bind-mounted kong.yml changes take effect — `up -d`
+      # won't recreate kong when its image/env is unchanged, so route/plugin
+      # edits are otherwise ignored. Unlike Caddy, a full restart (not
+      # `kong reload`) is required: Kong's declarative config is only
+      # regenerated from the bind-mounted temp.yml by this container's
+      # custom entrypoint at container START, and DB-less `kong reload` has
+      # a documented history of not reliably applying config changes anyway.
+      # See openspec/changes/archive/2026-08-09-fix-kong-reload-on-deploy/design.md Decision 1.
+      - name: Restart Kong config (production)
+        id: restart_kong_prod
+        if: steps.pull_prod.outputs.kongfile_changed == 'true'
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            cid=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps -q kong)
+            if [ -z \"\$cid\" ]; then
+              echo \"::error::kong container is not running before restart\"
+              exit 1
+            fi
+            before=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\")
+            echo \"BEFORE_RESTART_COUNT=\$before\"
+            # Wrap in an external timeout — --timeout 10 only bounds Docker's
+            # own graceful-stop grace period, not the whole command's wall
+            # time if the Docker daemon itself is unresponsive.
+            timeout 60 docker compose -f docker-compose.prod.yml --env-file .env.prod restart kong --timeout 10
+            # Poll for healthy instead of a flat sleep — Kong's healthcheck
+            # start_period/interval/retries mean a merely-slow (not crashed)
+            # boot can legitimately still be starting well past a short
+            # fixed sleep. A timeout here doesn't fail the step; the
+            # crash-loop check that follows decides pass/fail via
+            # RestartCount. See design.md Decision 5. Extracted into a
+            # script (Decision 3) so this loop has real execution-level test
+            # coverage instead of only ever running for the first time on a
+            # live deploy.
+            status=\$(bash scripts/wait_for_kong_healthy.sh \"\$cid\" 120) || true
+            echo \"kong health status after restart: \$status\"
+          " | tee /tmp/restart_kong_prod.out
+          before=$(grep '^BEFORE_RESTART_COUNT=' /tmp/restart_kong_prod.out | tail -1 | cut -d= -f2)
+          # Deliberately no ':-0' fallback here, unlike caddyfile_changed's
+          # fail-toward-action default: defaulting a missing/malformed count
+          # to 0 would inflate the crash-loop check's delta and could stop a
+          # perfectly healthy kong. An empty value instead fails the next
+          # step's own usage-error validation (exit 2) — the deploy still
+          # correctly fails, but without a false-positive "stop kong" action.
+          echo "before_restart_count=${before}" >> "$GITHUB_OUTPUT"
+
+      # Delta-based crash-loop check: unlike Caddy's absolute threshold, the
+      # restart step above deliberately restarts Kong via `docker compose
+      # restart` as its normal, successful-path action. That kind of restart
+      # does not itself move RestartCount (it only moves when Docker's
+      # `restart: unless-stopped` policy retries the container after an
+      # unexpected exit), so the happy-path delta is 0. Only unplanned
+      # restarts beyond that indicate a bad config. See design.md Decision 2.
+      - name: Kong crash-loop check (production)
+        if: steps.pull_prod.outputs.kongfile_changed == 'true'
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            ANON_KEY=\$(grep '^ANON_KEY=' .env.prod | cut -d= -f2-)
+            SERVICE_ROLE_KEY=\$(grep '^SERVICE_ROLE_KEY=' .env.prod | cut -d= -f2-)
+            BLOOM_AGENT_KEY=\$(grep '^BLOOM_AGENT_KEY=' .env.prod | cut -d= -f2-)
+            DASHBOARD_USERNAME=\$(grep '^DASHBOARD_USERNAME=' .env.prod | cut -d= -f2-)
+            DASHBOARD_PASSWORD=\$(grep '^DASHBOARD_PASSWORD=' .env.prod | cut -d= -f2-)
+            : \"\${ANON_KEY:?missing ANON_KEY in .env.prod}\"
+            : \"\${SERVICE_ROLE_KEY:?missing SERVICE_ROLE_KEY in .env.prod}\"
+            : \"\${BLOOM_AGENT_KEY:?missing BLOOM_AGENT_KEY in .env.prod}\"
+            : \"\${DASHBOARD_USERNAME:?missing DASHBOARD_USERNAME in .env.prod}\"
+            : \"\${DASHBOARD_PASSWORD:?missing DASHBOARD_PASSWORD in .env.prod}\"
+            echo \"::add-mask::\$ANON_KEY\"
+            echo \"::add-mask::\$SERVICE_ROLE_KEY\"
+            echo \"::add-mask::\$BLOOM_AGENT_KEY\"
+            echo \"::add-mask::\$DASHBOARD_USERNAME\"
+            echo \"::add-mask::\$DASHBOARD_PASSWORD\"
+            bash scripts/check_kong_restart_delta.sh \
+              \"${{ steps.restart_kong_prod.outputs.before_restart_count }}\" 2 -- \
+              docker compose -f docker-compose.prod.yml --env-file .env.prod
           "
 
       # Layer 2 — Verify Caddy obtained a real Let's Encrypt cert. First
@@ -639,7 +725,53 @@ jobs:
               docker compose -f docker-compose.prod.yml --env-file .env.prod \
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
                 || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
-              echo 'Rollback complete — previous version restored and healthy'
+              # Same root cause as the reason this whole feature exists: up -d
+              # cannot detect that kong.yml's bind-mounted CONTENT changed back
+              # (only file-list/env/image changes trigger a recreate). If this
+              # job's forward path already restarted Kong onto the now-reverted
+              # kong.yml before a later step failed, Kong is still serving that
+              # config after the reset above — explicitly restart it too so
+              # rollback doesn't reintroduce the exact bug #634 fixed.
+              kong_rollback_ok=true
+              if [ \"${{ steps.pull_prod.outputs.kongfile_changed }}\" = \"true\" ]; then
+                echo 'kong.yml changed during this deploy — restarting kong so the reverted config takes effect'
+                kong_cid=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps -q kong)
+                if [ -z \"\$kong_cid\" ]; then
+                  echo '::warning::kong container not found during rollback restart — skipping'
+                  kong_rollback_ok=false
+                elif ! timeout 60 docker compose -f docker-compose.prod.yml --env-file .env.prod restart kong --timeout 10; then
+                  # A hiccup here is best-effort-recovery failing, not the
+                  # rollback itself — the critical code/env revert above
+                  # already succeeded. Warn instead of exit 1 so this
+                  # secondary problem cannot mask that success under set -e.
+                  echo '::warning::kong restart during rollback failed — kong may still be serving the prior unreverted config, verify manually on the deploy host'
+                  kong_rollback_ok=false
+                else
+                  kong_status=\$(bash scripts/wait_for_kong_healthy.sh \"\$kong_cid\" 120) || true
+                  echo \"kong health status after rollback restart: \$kong_status\"
+                  if [ \"\$kong_status\" != \"healthy\" ]; then
+                    # A rollback that got this far already succeeded at the
+                    # critical revert, but reporting an unqualified 'healthy'
+                    # here would be false — Kong may still be down or stuck
+                    # starting on the reverted config. Flag it instead of
+                    # letting the unconditional success message below paper
+                    # over it.
+                    echo \"::warning::kong did not report healthy within 120s after rollback restart (status: \$kong_status) — the API gateway may still be down or serving the wrong config; verify manually on the deploy host\"
+                    kong_rollback_ok=false
+                  fi
+                fi
+              fi
+              if [ \"\$kong_rollback_ok\" = \"true\" ]; then
+                echo 'Rollback complete — previous version restored and healthy'
+              else
+                echo '::warning::Rollback complete — previous version code/env restored, but kong health could not be confirmed (see warning above) — verify manually on the deploy host'
+                # Fail this step, not just warn — the critical code/env revert
+                # above already succeeded, so this doesn't retroactively mark
+                # that work as failed, but on-call scanning step colors in the
+                # Actions UI (rather than reading annotations) would otherwise
+                # miss that Kong may still be down after a 'successful' rollback.
+                exit 1
+              fi
             else
               echo '::error::No previous SHA saved — manual recovery required'
               exit 1
@@ -713,6 +845,8 @@ jobs:
           cat >> "$f_next" << 'SECRETS'
           POSTGRES_PASSWORD=${{ secrets.STAGING_POSTGRES_PASSWORD }}
           JWT_SECRET=${{ secrets.STAGING_JWT_SECRET }}
+          JWT_KEYS=${{ secrets.STAGING_JWT_KEYS }}
+          JWT_JWKS=${{ secrets.STAGING_JWT_JWKS }}
           ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.STAGING_ANON_KEY }}
           SERVICE_ROLE_KEY=${{ secrets.STAGING_SERVICE_ROLE_KEY }}
@@ -781,9 +915,13 @@ jobs:
             AFTER=\$(git rev-parse HEAD)
             git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- caddy/Caddyfile \
               && echo 'CADDYFILE_CHANGED=false' || echo 'CADDYFILE_CHANGED=true'
+            git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- volumes/api/kong.yml \
+              && echo 'KONGFILE_CHANGED=false' || echo 'KONGFILE_CHANGED=true'
           " | tee /tmp/pull_staging.out
           changed=$(grep '^CADDYFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2)
           echo "caddyfile_changed=${changed:-true}" >> "$GITHUB_OUTPUT"
+          kong_changed=$(grep '^KONGFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2)
+          echo "kongfile_changed=${kong_changed:-true}" >> "$GITHUB_OUTPUT"
 
       - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
         run: |
@@ -910,6 +1048,62 @@ jobs:
               exit 1
             fi
             echo \"caddy restart count: \$restarts\"
+          "
+
+      # Restart Kong so bind-mounted kong.yml changes take effect. See
+      # deploy-production's equivalent step for rationale.
+      - name: Restart Kong config (staging)
+        id: restart_kong_staging
+        if: steps.pull_staging.outputs.kongfile_changed == 'true'
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            cid=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps -q kong)
+            if [ -z \"\$cid\" ]; then
+              echo \"::error::kong container is not running before restart\"
+              exit 1
+            fi
+            before=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\")
+            echo \"BEFORE_RESTART_COUNT=\$before\"
+            timeout 60 docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging restart kong --timeout 10
+            status=\$(bash scripts/wait_for_kong_healthy.sh \"\$cid\" 120) || true
+            echo \"kong health status after restart: \$status\"
+          " | tee /tmp/restart_kong_staging.out
+          before=$(grep '^BEFORE_RESTART_COUNT=' /tmp/restart_kong_staging.out | tail -1 | cut -d= -f2)
+          # Deliberately no ':-0' fallback here, unlike caddyfile_changed's
+          # fail-toward-action default: defaulting a missing/malformed count
+          # to 0 would inflate the crash-loop check's delta and could stop a
+          # perfectly healthy kong. An empty value instead fails the next
+          # step's own usage-error validation (exit 2) — the deploy still
+          # correctly fails, but without a false-positive "stop kong" action.
+          echo "before_restart_count=${before}" >> "$GITHUB_OUTPUT"
+
+      # See deploy-production's equivalent step for rationale.
+      - name: Kong crash-loop check (staging)
+        if: steps.pull_staging.outputs.kongfile_changed == 'true'
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            ANON_KEY=\$(grep '^ANON_KEY=' .env.staging | cut -d= -f2-)
+            SERVICE_ROLE_KEY=\$(grep '^SERVICE_ROLE_KEY=' .env.staging | cut -d= -f2-)
+            BLOOM_AGENT_KEY=\$(grep '^BLOOM_AGENT_KEY=' .env.staging | cut -d= -f2-)
+            DASHBOARD_USERNAME=\$(grep '^DASHBOARD_USERNAME=' .env.staging | cut -d= -f2-)
+            DASHBOARD_PASSWORD=\$(grep '^DASHBOARD_PASSWORD=' .env.staging | cut -d= -f2-)
+            : \"\${ANON_KEY:?missing ANON_KEY in .env.staging}\"
+            : \"\${SERVICE_ROLE_KEY:?missing SERVICE_ROLE_KEY in .env.staging}\"
+            : \"\${BLOOM_AGENT_KEY:?missing BLOOM_AGENT_KEY in .env.staging}\"
+            : \"\${DASHBOARD_USERNAME:?missing DASHBOARD_USERNAME in .env.staging}\"
+            : \"\${DASHBOARD_PASSWORD:?missing DASHBOARD_PASSWORD in .env.staging}\"
+            echo \"::add-mask::\$ANON_KEY\"
+            echo \"::add-mask::\$SERVICE_ROLE_KEY\"
+            echo \"::add-mask::\$BLOOM_AGENT_KEY\"
+            echo \"::add-mask::\$DASHBOARD_USERNAME\"
+            echo \"::add-mask::\$DASHBOARD_PASSWORD\"
+            bash scripts/check_kong_restart_delta.sh \
+              \"${{ steps.restart_kong_staging.outputs.before_restart_count }}\" 2 -- \
+              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging
           "
 
       # Layer 2 — Verify Caddy obtained a real Let's Encrypt cert. See
@@ -1173,7 +1367,37 @@ jobs:
               docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
                 || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
-              echo 'Rollback complete — previous version restored and healthy'
+              # See the matching comment on the production rollback step above.
+              kong_rollback_ok=true
+              if [ \"${{ steps.pull_staging.outputs.kongfile_changed }}\" = \"true\" ]; then
+                echo 'kong.yml changed during this deploy — restarting kong so the reverted config takes effect'
+                kong_cid=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps -q kong)
+                if [ -z \"\$kong_cid\" ]; then
+                  echo '::warning::kong container not found during rollback restart — skipping'
+                  kong_rollback_ok=false
+                elif ! timeout 60 docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging restart kong --timeout 10; then
+                  echo '::warning::kong restart during rollback failed — kong may still be serving the prior unreverted config, verify manually on the deploy host'
+                  kong_rollback_ok=false
+                else
+                  kong_status=\$(bash scripts/wait_for_kong_healthy.sh \"\$kong_cid\" 120) || true
+                  echo \"kong health status after rollback restart: \$kong_status\"
+                  if [ \"\$kong_status\" != \"healthy\" ]; then
+                    echo \"::warning::kong did not report healthy within 120s after rollback restart (status: \$kong_status) — the API gateway may still be down or serving the wrong config; verify manually on the deploy host\"
+                    kong_rollback_ok=false
+                  fi
+                fi
+              fi
+              if [ \"\$kong_rollback_ok\" = \"true\" ]; then
+                echo 'Rollback complete — previous version restored and healthy'
+              else
+                echo '::warning::Rollback complete — previous version code/env restored, but kong health could not be confirmed (see warning above) — verify manually on the deploy host'
+                # Fail this step, not just warn — the critical code/env revert
+                # above already succeeded, so this doesn't retroactively mark
+                # that work as failed, but on-call scanning step colors in the
+                # Actions UI (rather than reading annotations) would otherwise
+                # miss that Kong may still be down after a 'successful' rollback.
+                exit 1
+              fi
             else
               echo '::error::No previous SHA saved — manual recovery required'
               exit 1

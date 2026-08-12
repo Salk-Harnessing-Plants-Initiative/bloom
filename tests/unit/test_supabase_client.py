@@ -58,13 +58,19 @@ def supabase_mock(monkeypatch):
     client = MagicMock()
     client.storage = storage
 
+    # `options=None` (not a bare 2-arg lambda) since get_postgrest_client()
+    # always passes options= now -- its own un-overridden default is a
+    # deliberately chosen timeout, not "no options kwarg at all".
     monkeypatch.setattr(
-        supabase_client.supabase, "create_client", lambda url, key: client
+        supabase_client.supabase,
+        "create_client",
+        lambda url, key, options=None: client,
     )
     return storage_from
 
 
 # ───────────────────────── prefix logic ─────────────────────────
+
 
 def test_read_input_csv_uses_input_prefix(supabase_mock):
     df = supabase_client.read_input_csv("accessions.csv")
@@ -76,6 +82,7 @@ def test_read_input_csv_uses_input_prefix(supabase_mock):
 
 
 # ─────────────────────── basename validation ────────────────────────
+
 
 @pytest.mark.parametrize(
     "bad_name",
@@ -90,11 +97,12 @@ def test_read_input_csv_rejects_non_basename(bad_name, supabase_mock):
 
 # ─────────────────────── client construction ────────────────────────
 
+
 def test_get_postgrest_client_returns_a_fresh_client(supabase_mock, monkeypatch):
     """Each call returns a new client — verifies no module-level cache."""
     calls = []
 
-    def fake_create_client(url, key):
+    def fake_create_client(url, key, options=None):
         c = MagicMock(name=f"client-{len(calls)}")
         calls.append(c)
         return c
@@ -107,7 +115,105 @@ def test_get_postgrest_client_returns_a_fresh_client(supabase_mock, monkeypatch)
     assert len(calls) == 2
 
 
+def test_get_postgrest_client_default_uses_the_bounded_module_default(monkeypatch):
+    """Unlike `get_storage_client` (whose un-overridden default is the library's own,
+    unchanged), `get_postgrest_client`'s un-overridden default is itself the thing this
+    change is choosing deliberately -- so the no-override case must build `ClientOptions`
+    with this module's own constant, not skip `options=` entirely."""
+    captured = {}
+
+    def _fake_create_client(url, key, options=None):
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(supabase_client.supabase, "create_client", _fake_create_client)
+
+    supabase_client.get_postgrest_client()
+
+    assert (
+        captured["options"].postgrest_client_timeout
+        == supabase_client._DEFAULT_POSTGREST_TIMEOUT_SECONDS
+    )
+
+
+def test_get_postgrest_client_timeout_override_builds_client_options(monkeypatch):
+    captured = {}
+
+    def _fake_create_client(url, key, options=None):
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(supabase_client.supabase, "create_client", _fake_create_client)
+
+    supabase_client.get_postgrest_client(timeout_seconds=5.0)
+
+    assert captured["options"].postgrest_client_timeout == 5.0
+
+
+def test_postgrest_client_timeout_is_enforced_end_to_end(monkeypatch):
+    """The two tests above only prove `ClientOptions` is built with the right number --
+    this proves supabase-py actually enforces it through httpx when a request genuinely
+    blocks, not just that the value is threaded through and ignored. Uses a local socket
+    that accepts a connection and never responds -- no external network or live Supabase
+    needed, so this is deterministic and fast, not flaky.
+
+    Bounded via a `ThreadPoolExecutor(...).result(timeout=...)` wrapper rather than
+    `pytest.mark.timeout` (the `pytest-timeout` plugin isn't a dependency here): if the exact
+    regression this test guards against ever recurs (the timeout silently not enforced), the
+    call would otherwise block on the stalled socket for the full 5s `_accept_and_stall` sleep
+    with no per-test bound of its own -- this fails fast with a clear message well before that.
+    """
+    import concurrent.futures
+    import socket
+    import threading
+    import time
+
+    import httpx
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def _accept_and_stall():
+        try:
+            conn, _ = server.accept()
+            time.sleep(5)  # long enough to outlast the short timeout below
+            conn.close()
+        except OSError:
+            pass  # server socket closed while accept() was blocking
+
+    thread = threading.Thread(target=_accept_and_stall, daemon=True)
+    thread.start()
+
+    monkeypatch.setenv("SUPABASE_URL", f"http://127.0.0.1:{port}")
+    monkeypatch.setenv("BLOOM_AGENT_KEY", "fake-agent-jwt")
+
+    client = supabase_client.get_postgrest_client(timeout_seconds=0.3)
+
+    def _call():
+        return client.table("cyl_experiments").select("id").execute()
+
+    start = time.monotonic()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_call)
+        with pytest.raises(httpx.TimeoutException):
+            # 5s hard bound: if the timeout regressed and the call actually blocks
+            # on the stalled socket, this raises TimeoutError with a clear message
+            # instead of hanging until an external CI/workflow timeout kills it.
+            future.result(timeout=5)
+    elapsed = time.monotonic() - start
+
+    server.close()
+    thread.join(timeout=1)
+    # Lower bound proves the timeout itself fired, not some unrelated fast failure
+    # (e.g. a URL-parse error) that would satisfy a bare `elapsed < N` assertion
+    # without ever exercising the configured 0.3s bound.
+    assert 0.2 < elapsed < 3.0, f"expected a ~0.3s timeout, took {elapsed:.2f}s instead"
+
+
 # ─────────────────────── env-validation at import ────────────────────
+
 
 def test_validate_env_raises_naming_supabase_url(monkeypatch):
     """Validation is lazy: validate_env() raises naming only the missing URL."""
@@ -164,6 +270,7 @@ def test_get_storage_client_returns_bucket_bound_handle(supabase_mock, monkeypat
 
 # ─── list_prefix ────────────────────────────────────────────────────────────
 
+
 def test_list_prefix_returns_basenames(supabase_mock):
     supabase_mock.list.return_value = [
         {"name": "v1_2026-06-05_initial", "id": "a"},
@@ -183,11 +290,16 @@ def test_list_prefix_returns_empty_when_no_objects(supabase_mock):
 
 # ─── read_json / write_json ─────────────────────────────────────────────────
 
+
 def test_read_json_parses_downloaded_bytes(supabase_mock):
-    supabase_mock.download.return_value = b'{"manifest_schema_version": 1, "versions": []}'
+    supabase_mock.download.return_value = (
+        b'{"manifest_schema_version": 1, "versions": []}'
+    )
     payload = supabase_client.read_json("bloommcp_output/qc_my_exp/manifest.json")
     assert payload == {"manifest_schema_version": 1, "versions": []}
-    supabase_mock.download.assert_called_once_with("bloommcp_output/qc_my_exp/manifest.json")
+    supabase_mock.download.assert_called_once_with(
+        "bloommcp_output/qc_my_exp/manifest.json"
+    )
 
 
 def test_write_json_uploads_canonical_bytes_with_upsert(supabase_mock):
@@ -205,11 +317,13 @@ def test_write_json_uploads_canonical_bytes_with_upsert(supabase_mock):
     # Bytes are sort_keys=True + indent=2 — deterministic.
     body = kwargs["file"]
     import json as _json
+
     assert _json.loads(body) == payload
     assert body == _json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
 
 
 # ─── upload_file / download_file ────────────────────────────────────────────
+
 
 def test_upload_file_reads_bytes_and_calls_upload(supabase_mock, tmp_path):
     local = tmp_path / "v1_2026-06-05" / "_cleaned.csv"
