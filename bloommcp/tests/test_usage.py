@@ -187,14 +187,19 @@ class _RecordingLogger:
 
     def __init__(self):
         self.messages = []
+        self.calls = []  # (level, formatted_message) — which method was called
         self.done = threading.Event()
 
     def exception(self, msg, *args):
-        self.messages.append(msg % args if args else msg)
+        formatted = msg % args if args else msg
+        self.messages.append(formatted)
+        self.calls.append(("exception", formatted))
         self.done.set()
 
     def warning(self, msg, *args):
-        self.messages.append(msg % args if args else msg)
+        formatted = msg % args if args else msg
+        self.messages.append(formatted)
+        self.calls.append(("warning", formatted))
         self.done.set()
 
 
@@ -247,3 +252,45 @@ def test_call_rpc_failure_log_never_contains_the_raw_identity(monkeypatch):
 
     assert any("failed to record" in m for m in fake_logger.messages)
     assert not any(real_id in m for m in fake_logger.messages)
+
+
+# --- Failure logging is a warning, not a full traceback (bloom#641) --------
+# Usage recording is documented as best-effort/non-blocking — its failure
+# mode shouldn't look like a crash. `logger.exception` always attaches a full
+# stack trace; `logger.warning` does not.
+
+
+def test_call_rpc_failure_is_logged_as_warning_not_exception(monkeypatch):
+    import bloom_mcp.supabase_client as sc
+    import bloom_mcp.usage as usage
+
+    fake_logger = _RecordingLogger()
+    monkeypatch.setattr(usage, "logger", fake_logger)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr(sc, "call_rpc", _boom)
+
+    record_usage_async("44444444-4444-4444-4444-444444444444", "combined")
+    assert fake_logger.done.wait(timeout=2), "background call never logged"
+
+    assert any(level == "warning" for level, _ in fake_logger.calls)
+    assert not any(level == "exception" for level, _ in fake_logger.calls)
+
+
+def test_submission_failure_is_logged_as_warning_not_exception(monkeypatch):
+    import bloom_mcp.usage as usage
+
+    class _DeadExecutor:
+        def submit(self, *_a, **_k):
+            raise RuntimeError("cannot schedule new futures after shutdown")
+
+    monkeypatch.setattr(usage, "_EXECUTOR", _DeadExecutor())
+    fake_logger = _RecordingLogger()
+    monkeypatch.setattr(usage, "logger", fake_logger)
+
+    record_usage_async("anonymous", "combined")  # must not raise
+
+    assert any(level == "warning" for level, _ in fake_logger.calls)
+    assert not any(level == "exception" for level, _ in fake_logger.calls)
