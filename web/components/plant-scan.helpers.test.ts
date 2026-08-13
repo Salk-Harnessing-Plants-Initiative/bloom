@@ -5,6 +5,7 @@ import {
   frameLabel,
   missingFrameNote,
   orderedFrames,
+  completenessWarning,
   signedUrlsByPath,
   usableUrl,
   type ScanFrame,
@@ -351,5 +352,48 @@ describe("signedUrlsByPath", () => {
     expect(signedUrlsByPath(null).size).toBe(0);
     expect(signedUrlsByPath(undefined).size).toBe(0);
     expect(signedUrlsByPath([]).size).toBe(0);
+  });
+});
+
+describe("completenessWarning", () => {
+  // The single source of the signal that gates the confirm step. Deleting its body used to
+  // leave the whole suite green.
+  it("is null when every recorded frame is renderable and consecutive", () => {
+    const images = [1, 2, 3].map((n) => frame({ id: n, frame_number: n }));
+
+    expect(completenessWarning(images)).toBeNull();
+  });
+
+  it("reports rows that cannot be rendered", () => {
+    const images = [
+      frame({ id: 1, frame_number: 1 }),
+      frame({ id: 2, frame_number: 2, object_path: null }),
+    ];
+
+    expect(completenessWarning(images)).toContain("Showing 1 of 2 frames");
+  });
+
+  it("reports a gap in the rotation", () => {
+    const images = [1, 2, 4].map((n) => frame({ id: n, frame_number: n }));
+
+    expect(completenessWarning(images)).toContain("missing from this rotation");
+  });
+
+  it("joins both when a scan has each problem", () => {
+    const images = [
+      frame({ id: 1, frame_number: 1 }),
+      frame({ id: 2, frame_number: 2, object_path: null }),
+      frame({ id: 4, frame_number: 4 }),
+    ];
+    const note = completenessWarning(images);
+
+    expect(note).toContain("Showing 2 of 3 frames");
+    expect(note).toContain("missing from this rotation");
+  });
+
+  it("is null for a scan with no images at all", () => {
+    expect(completenessWarning([])).toBeNull();
+    expect(completenessWarning(null)).toBeNull();
+    expect(completenessWarning(undefined)).toBeNull();
   });
 });

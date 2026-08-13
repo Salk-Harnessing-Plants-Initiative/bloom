@@ -221,28 +221,16 @@ describe("ScanVideoButton on a 409", () => {
 });
 
 describe("ScanVideoButton when a video already exists", () => {
-  it("offers the stored video and a regenerate, for once more frames have landed", () => {
+  it("offers only the link — a stored video is not regenerated", () => {
+    // Upstream can only refuse a worse encode when `cyl_scan_videos` records the stored
+    // video's frame count, and it records none in prod. Until that is backfilled, replacing
+    // one is unguardable, so the product does not offer it.
     render(
       <ScanVideoButton experimentId={1} scanId={5} initialVideoUrl={VIDEO_URL} />
     );
 
     expect(screen.getByRole("link", { name: "Open video" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Regenerate video" })).toBeTruthy();
-  });
-
-  it("does not start the encode on the first click", async () => {
-    // Upstream writes the same object, and the frames available now are not necessarily
-    // the frames the stored video holds — so replacing one is not a one-click action.
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(
-      <ScanVideoButton experimentId={1} scanId={5} initialVideoUrl={VIDEO_URL} />
-    );
-    await click("Regenerate video");
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "Regenerate anyway" })).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });
 
@@ -276,6 +264,23 @@ describe("ScanVideoButton on a scan the page is calling incomplete", () => {
 
     expect(fetchMock).toHaveBeenCalled();
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
+  });
+
+  it("cancel closes the panel and offers Generate again", async () => {
+    // The only way out of `confirming` — the main button is hidden while it is open, so a
+    // broken Cancel strands the user with no way to dismiss it and no way to generate.
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ScanVideoButton experimentId={1} scanId={5} completenessWarning={WARNING} />
+    );
+    await click("Generate video");
+    await click("Cancel");
+
+    expect(screen.getByRole("button", { name: "Generate video" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Generate anyway" })).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("goes straight to encoding when the scan looks whole", async () => {

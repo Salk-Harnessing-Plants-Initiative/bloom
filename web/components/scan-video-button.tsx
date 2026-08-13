@@ -47,13 +47,12 @@ export default function ScanVideoButton({
   const endpoint = `/api/cyl/experiments/${experimentId}/scans/${scanId}/video`;
   const busy = status === "generating" || status === "pending";
 
-  // Neither is refused, but neither should happen on a single stray click.
-  const replacing = Boolean(videoUrl);
-  const needsConfirm = replacing || Boolean(completenessWarning);
-
+  // A partial scan may be all there will ever be, so this is a confirmation rather than a
+  // refusal — but the video it produces is the one everyone sees, and a stored video cannot
+  // be replaced until `cyl_scan_videos` records frame counts to compare against.
   function requestGenerate() {
     if (busy) return;
-    if (needsConfirm && status !== "confirming") {
+    if (completenessWarning && status !== "confirming") {
       setMessage("");
       setStatus("confirming");
       return;
@@ -194,9 +193,10 @@ export default function ScanVideoButton({
 
   return (
     <div className="mt-4">
-      {/* Replacing a stored video is allowed; upstream keeps whichever encode has more frames. */}
+      {/* A stored video is final until `cyl_scan_videos` records the frame counts an
+          overwrite would have to be checked against. */}
       <div className="flex items-center gap-3">
-        {videoUrl && (
+        {videoUrl ? (
           <a
             href={videoUrl}
             target="_blank"
@@ -205,8 +205,7 @@ export default function ScanVideoButton({
           >
             Open video
           </a>
-        )}
-        {status === "stalled" || status === "confirming" ? null : (
+        ) : status === "stalled" || status === "confirming" ? null : (
           <button
             type="button"
             onClick={requestGenerate}
@@ -217,9 +216,7 @@ export default function ScanVideoButton({
               ? "Generating video…"
               : status === "pending"
                 ? "Still encoding…"
-                : replacing
-                  ? "Regenerate video"
-                  : "Generate video"}
+                : "Generate video"}
           </button>
         )}
       </div>
@@ -227,11 +224,8 @@ export default function ScanVideoButton({
       {status === "confirming" && (
         <div className="mt-2 max-w-sm rounded-md border border-amber-300 bg-amber-50 p-3">
           <p className="text-sm text-stone-700">
-            {completenessWarning
-              ? `${completenessWarning} A video made now will be missing those angles.`
-              : "This scan already has a video."}
-            {replacing &&
-              " The stored video is only replaced if this encode captures more frames."}
+            {completenessWarning} A video made now will be missing those angles, and it
+            cannot be replaced later.
           </p>
           <div className="mt-2 flex items-center gap-3">
             <button
@@ -239,7 +233,7 @@ export default function ScanVideoButton({
               onClick={generate}
               className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-100"
             >
-              {replacing ? "Regenerate anyway" : "Generate anyway"}
+              Generate anyway
             </button>
             <button
               type="button"

@@ -205,18 +205,26 @@ describe("GET — has the video landed yet?", () => {
   });
 });
 
-describe("a stored video is never overwritten by a worse one", () => {
-  // Regenerating is how a video encoded from a part-uploaded scan gets fixed once the rest
-  // of the frames land, so an existing video must not block the request here. Which encode
-  // survives is upstream's call — it is the only side that can read `cyl_scan_videos` and
-  // compare frame counts, and it keeps the stored one when it cannot.
-  it("forwards to upstream even when a video already exists", async () => {
+describe("a stored video is never overwritten", () => {
+  // Upstream overwrites cyl-videos/{scan_id}.mp4 in place and the bucket has no versioning,
+  // so reaching upstream at all is the thing to prevent — asserting only the 409 would still
+  // pass if the guard ran after the fetch.
+  it("refuses when a video already exists, without calling upstream", async () => {
     mockedStoredVideo.mockResolvedValue({ status: "present", url: STORED_URL } as never);
 
     const res = await callRoute("1", "5");
 
-    expect(res.status).toBe(200);
-    expect(fetchSpy).toHaveBeenCalled();
+    expect(res.status).toBe(409);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("explains that the stored video should be opened instead", async () => {
+    mockedStoredVideo.mockResolvedValue({ status: "present", url: STORED_URL } as never);
+
+    const detail = (await (await callRoute("1", "5")).json()).detail;
+
+    expect(detail).toContain("already has a video");
+    expect(detail).toContain("not regenerated");
   });
 
   it("checks the scan actually requested", async () => {
