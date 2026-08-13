@@ -32,15 +32,26 @@ only.
    (`validate-release` blocks publishing if this entry is missing.)
 
 4. **Dry-run (optional but recommended).** Trigger `release-bloomcli.yml` via
-   `workflow_dispatch` — it validates, builds, and smoke-tests the wheel
-   (`import bloomctl` + `bloomctl --version`) without publishing.
+   `workflow_dispatch` — it validates, builds, and verifies the wheel by importing
+   every `bloomctl` module plus the supabase/postgrest chain, with and without
+   pre-release dependencies, without publishing.
 
 5. **Cut the Release.** Create a GitHub Release whose tag matches the version
    (`bloomctl-vX.Y.Z`). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.
-   Publishing it runs `release-bloomcli.yml` → validate → build → publish to PyPI.
+   Publishing it runs `release-bloomcli.yml` → `validate-release` →
+   `build-and-verify` → `build-and-publish` (the last holds the PyPI credential and
+   runs nothing but the checksum check and `uv publish`).
 
-6. **Verify.** `uvx bloomctl --version` (stable) or
-   `uvx --prerelease=allow bloomctl --version` (pre-release).
+6. **Verify.** Not `--version` — it passed on the broken `0.1.0a4`, because commands
+   import supabase lazily. Pull the chain:
+
+   ```bash
+   uvx --from "bloomctl==X.Y.Z" python -c "
+   import importlib, pkgutil, bloomctl
+   [importlib.import_module(m.name) for m in pkgutil.walk_packages(bloomctl.__path__, 'bloomctl.')]
+   from supabase import create_client
+   print('ok')"
+   ```
 
 ## Guardrails
 

@@ -112,6 +112,12 @@ class DescriptiveStatsParams(BaseModel):
         "most recent outlier trim when one exists for the experiment, not merely the most "
         "recent clean.",
     )
+    version: Optional[str] = Field(
+        default=None,
+        description="Pin the analysis to a specific committed cleaned version "
+        "(e.g. 'v2'; see list_existing_analyses). Omit to use the latest "
+        "cleaned version, same as today.",
+    )
     trait_columns: Optional[list[str]] = Field(
         default=None,
         description="Subset of certified-clean trait columns to summarize; omit to use "
@@ -200,8 +206,13 @@ def descriptive_stats(
     # Consumer: require a cleaned version. Genuinely mirrors pca_analysis/clustering's
     # own handling of this exact guard (both use code="tool_error") — not
     # remove_outliers's assumption_violated.
+    # #626: an explicit version selector is opt-in; omitting it makes this call
+    # identical to before this change (no version kwarg -> Protocol default "latest").
+    version_kwargs = {} if params.version is None else {"version": params.version}
     try:
-        frame = reader.load_experiment(params.experiment, require_clean=True)
+        frame = reader.load_experiment(
+            params.experiment, require_clean=True, **version_kwargs
+        )
     except CleanedVersionRequiredError:
         raise BloomMCPError(
             code="tool_error",

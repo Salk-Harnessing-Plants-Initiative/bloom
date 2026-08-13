@@ -132,7 +132,15 @@ class SupabaseReader:
             )
 
         experiment_id = _parse_experiment_id(name)
-        source = self.resolve_source(name, source_id=source_id, run_id=run_id)
+        # A single list_sources call backs both the resolved source AND the
+        # available-source-count stamped onto the returned frame -- a second,
+        # independent list_sources call to compute that count (e.g. from a
+        # downstream tool) would be a redundant DB round-trip with a TOCTOU
+        # window against this one. See ExperimentFrame.available_source_count.
+        sources = self.list_sources(name)
+        source = self._resolve_from_sources(
+            name, sources, source_id=source_id, run_id=run_id
+        )
 
         rpc_params = {
             "experiment_id_": experiment_id,
@@ -146,7 +154,7 @@ class SupabaseReader:
         if not rows and not self._experiment_exists(experiment_id):
             raise ExperimentNotFoundError(f"Experiment {name!r} could not be resolved.")
 
-        return _pivot_wide(rows, name, source)
+        return _pivot_wide(rows, name, source, available_source_count=len(sources))
 
     def list_sources(self, name: str) -> list[SourceInfo]:
         experiment_id = _parse_experiment_id(name)
@@ -171,12 +179,36 @@ class SupabaseReader:
         source_id: Optional[int] = None,
         run_id: Optional[str] = None,
     ) -> Optional[SourceInfo]:
+        # Checked before the list_sources RPC (not left to _resolve_from_sources
+        # alone) so an ambiguous pin is rejected without any DB round-trip.
+        if source_id is not None and run_id is not None:
+            raise AmbiguousSourceSelectionError(
+                "source_id and run_id are mutually exclusive; supply at most one."
+            )
+        return self._resolve_from_sources(
+            name, self.list_sources(name), source_id=source_id, run_id=run_id
+        )
+
+    def _resolve_from_sources(
+        self,
+        name: str,
+        sources: list[SourceInfo],
+        *,
+        source_id: Optional[int] = None,
+        run_id: Optional[str] = None,
+    ) -> Optional[SourceInfo]:
+        """Resolve a pin against an already-fetched ``sources`` list.
+
+        Shared by :meth:`resolve_source` (the public, occasional-discovery
+        path — fetches its own ``sources``) and :meth:`load_experiment` (which
+        passes the ``sources`` it already fetched, so a single raw read never
+        calls ``list_sources`` twice).
+        """
         if source_id is not None and run_id is not None:
             raise AmbiguousSourceSelectionError(
                 "source_id and run_id are mutually exclusive; supply at most one."
             )
 
-        sources = self.list_sources(name)
         if not sources:
             if source_id is not None or run_id is not None:
                 # Distinguish "this experiment doesn't exist at all" from "it
@@ -353,7 +385,11 @@ def _parse_experiment_id(name: str) -> int:
 
 
 def _pivot_wide(
-    rows: list[dict], name: str, source: Optional[SourceInfo]
+    rows: list[dict],
+    name: str,
+    source: Optional[SourceInfo],
+    *,
+    available_source_count: int,
 ) -> ExperimentFrame:
     """Pivot `get_experiment_traits`'s long-format rows into a wide frame.
 
@@ -382,6 +418,7 @@ def _pivot_wide(
             sample_id_col=None,
             source="raw",
             resolved_source=source,
+            available_source_count=available_source_count,
         )
 
     long_df = pd.DataFrame(rows)
@@ -470,6 +507,7 @@ def _pivot_wide(
         sample_id_col=_SAMPLE_ID_COL,
         source="raw",
         resolved_source=source,
+        available_source_count=available_source_count,
     )
 
 

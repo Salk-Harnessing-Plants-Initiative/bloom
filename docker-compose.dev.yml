@@ -153,7 +153,9 @@ services:
       # OAuth login for external MCP clients. Both URLs must be reachable by
       # the *client* (which runs outside Docker), so they use host-facing
       # addresses, not the internal kong hostname. Setting both turns on the
-      # /.well-known/oauth-protected-resource.
+      # /.well-known/oauth-protected-resource. Also reused (bloom#642) as the
+      # self-serve base for local-backend /plots URLs below — see
+      # bloommcp/docs/storage-backends.md.
       BLOOMMCP_PUBLIC_URL: ${BLOOMMCP_PUBLIC_URL:-http://localhost:8811}
       BLOOMMCP_OAUTH_AUTHORIZATION_SERVER: ${BLOOMMCP_OAUTH_AUTHORIZATION_SERVER:-http://localhost:8000/auth/v1}
       # Set once Supabase signs asymmetrically; unset falls back to JWT_SECRET.
@@ -178,10 +180,12 @@ services:
       BLOOM_STORAGE_LOCAL_ROOT: ${BLOOM_STORAGE_LOCAL_ROOT:-}
       BLOOM_EXPERIMENT_LOCAL_ROOT: ${BLOOM_EXPERIMENT_LOCAL_ROOT:-}
       BLOOM_LOCAL_ROOT: ${BLOOM_LOCAL_ROOT:-}
-      # Served-URL base the local backend uses to construct output_links URLs
-      # (bloom#581) — only meaningful with BLOOM_STORAGE_BACKEND=local, and
-      # only if something is separately serving BLOOM_STORAGE_LOCAL_ROOT over
-      # HTTP at this base (bloommcp does not run that server itself).
+      # Served-URL base for LocalStorageBackend.create_signed_url (bloom#581) —
+      # NOT used by bloommcp's own output_links (bloom#642: those carry a
+      # direct filesystem path for the local backend, no URL needed at all).
+      # Only relevant if you're deliberately calling create_signed_url
+      # yourself against a server you've separately stood up to serve
+      # BLOOM_STORAGE_LOCAL_ROOT over HTTP; leave unset otherwise.
       BLOOM_STORAGE_URL: ${BLOOM_STORAGE_URL:-}
       # Kept in sync with docker-compose.prod.yml for dev/prod parity, even
       # though dev has a writable root FS. See the prod compose for rationale.

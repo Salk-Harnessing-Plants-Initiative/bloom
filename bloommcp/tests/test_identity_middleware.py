@@ -310,6 +310,7 @@ def test_identity_header_takes_precedence_over_a_simultaneous_oauth_subject(
         ("/sleap_roots/mcp", "sleap_roots"),
         ("/phenotyping_segmentation/mcp", "phenotyping_segmentation"),
         ("/not-a-real-section/mcp", "combined"),
+        ("/plots/k", "combined"),  # local-mode static mount (#642)
     ],
 )
 def test_action_from_path(path, expected):

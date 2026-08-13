@@ -5,12 +5,18 @@ Not a ``sleap-roots-analyze`` wrapper — reads through the injected
 adapter). Always-included in the agent's tool set.
 """
 
+from typing import Optional
+
 from bloom_mcp.tools import _ports
 
 _load_data = _ports.load_frame
 
 
-def load_experiment_data(filename: str) -> str:
+def load_experiment_data(
+    filename: str,
+    source_id: Optional[int] = None,
+    run_id: Optional[str] = None,
+) -> str:
     """Load a SLEAP experiment CSV and show a summary of its contents.
 
     Shows the number of samples, genotypes, replicates, trait columns,
@@ -18,8 +24,16 @@ def load_experiment_data(filename: str) -> str:
 
     Args:
         filename: experiment identifier from list_available_experiments
+        source_id: pin the summary to a specific raw DB source (see
+            core_list_experiment_sources). Omit to use the latest source,
+            same as today. Mutually exclusive with run_id.
+        run_id: pin the summary to a specific raw DB source by its pipeline
+            run id (see core_list_experiment_sources). Omit to use the latest
+            source, same as today. Mutually exclusive with source_id.
     """
-    df, trait_cols, config, source = _load_data(filename)
+    df, trait_cols, config, source = _load_data(
+        filename, source_id=source_id, run_id=run_id
+    )
     if df is None:
         return source  # error string
 
@@ -31,6 +45,26 @@ def load_experiment_data(filename: str) -> str:
         f"Experiment: {filename} (source: {source})",
         f"  Samples: {n_samples}",
     ]
+
+    # #626: when neither source_id nor run_id was given and the experiment has
+    # more than one known source, say so explicitly rather than silently
+    # resolving "latest" — mirrors qc_clean's source_note. Reads the count/id
+    # _load_data already resolved (see _ports.load_frame) rather than a fresh
+    # reader.list_sources call.
+    available = config.get("available_source_count")
+    resolved_source_id = config.get("resolved_source_id")
+    if (
+        source_id is None
+        and run_id is None
+        and available is not None
+        and available > 1
+        and resolved_source_id is not None
+    ):
+        lines.append(
+            f"  Note: {available} sources available for {filename!r}; used "
+            f"latest (source_id={resolved_source_id}). Call "
+            "core_list_experiment_sources to choose a different one."
+        )
 
     if genotype_col and genotype_col in df.columns:
         lines.append(

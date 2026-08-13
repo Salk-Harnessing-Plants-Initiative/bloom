@@ -379,6 +379,29 @@ def test_resolved_source_is_none_for_cleaned_tier_read(
     frame = SupabaseReader().load_experiment(str(experiment_id))
     assert frame.source.endswith("_cleaned")
     assert frame.resolved_source is None
+    assert frame.available_source_count is None
+
+
+def test_available_source_count_reflects_the_real_multi_source_read(
+    fake_supabase_storage, fake_supabase_db, seed_multi_source_experiment
+):
+    """PR #644 review: every prior multi-source test went through the hand-rolled
+    _MultiSourceFakeReader double, which reimplements the resolution logic rather
+    than exercising the real adapter -- design.md's own Decision 5 says multi-source
+    *data* tests should use the monkeypatched-SupabaseReader boundary instead. This
+    is that direct coverage: the real SupabaseReader.load_experiment, against a real
+    (fake-DB-backed) list_experiment_trait_sources RPC, actually populates
+    available_source_count -- and does so from a SINGLE list_sources-backing RPC
+    call, proving the no-redundant-round-trip claim against the real adapter too,
+    not just the test double that stands in for it elsewhere."""
+    experiment_id = seed_multi_source_experiment(fake_supabase_db, 42, [9, 10, 11])
+    reader = SupabaseReader()
+
+    frame = reader.load_experiment(str(experiment_id))
+
+    assert frame.available_source_count == 3
+    assert frame.resolved_source.source_id == 11  # unpinned resolves the max id
+    assert fake_supabase_db.rpc_calls.count("list_experiment_trait_sources") == 1
 
 
 def test_resolved_source_reflects_load_time_not_a_later_resolution(

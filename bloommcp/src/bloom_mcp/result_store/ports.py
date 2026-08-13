@@ -47,6 +47,21 @@ class CorruptRunLinksError(ResultStoreError):
     """
 
 
+class OutputFileMissingError(ResultStoreError):
+    """A resolved local-backend output path has no file on disk (#642 follow-up).
+
+    Raised by :meth:`ResultStore.get_download_links`'s ``build_download_links``
+    call when a previously-committed output was deleted or moved out-of-band
+    after commit — an environment/filesystem change, never a caller-input
+    condition, and structurally distinct from :class:`CorruptRunLinksError`
+    (a manifest-key-scope mismatch): the key here is exactly where the
+    manifest says it should be, but nothing is there anymore. The raw message
+    embeds the offending storage key — full detail server-side only;
+    ``get_download_links`` catches this and raises a redacted message to the
+    caller, mirroring its existing ``CorruptRunLinksError`` handling.
+    """
+
+
 class RunStateError(ResultStoreError):
     """A run handle was misused — committed twice, or never created here."""
 
@@ -119,6 +134,24 @@ class StoredRun:
     # those use) leave this `{}`, so listing/resolving a historical run never
     # eagerly signs a URL for it. Never persisted into the manifest.
     output_links: dict[str, "OutputLink"] = field(default_factory=dict)
+    # The resolved run's own recorded `params` (raw tool-call kwargs) and
+    # `based_on_version` (bloom#600, reworked on bloom#622 review — see
+    # add-bloommcp-manifest-download-link's design.md Decision 5). Populated only by `get_run`/`get_download_links`,
+    # each of which resolve exactly *one* run by `run_ref`: `commit` and
+    # `list_runs` (and `from_version_entry`, which all three use) leave these
+    # at their defaults (`{}`/`""`). This is deliberate, not an oversight —
+    # `list_runs` backs `list_existing_analyses`, which dumps every returned
+    # `StoredRun` verbatim via `dataclasses.asdict` for every historical run
+    # under an experiment; populating `params` there would turn that
+    # always-on discovery tool into an unscoped, cross-run leak of every
+    # run's raw params (column selections, exclusion thresholds, filenames —
+    # potentially unpublished genotype/treatment identifiers), the same class
+    # of exposure this field replaces. `get_run`/`get_download_links` are
+    # both scoped to the single `(experiment, tool_class, run_ref)` the
+    # caller already asked for, so no other run's data is ever reachable
+    # through them. Never persisted into the manifest.
+    params: dict = field(default_factory=dict)
+    based_on_version: str = ""
 
     @classmethod
     def from_version_entry(
@@ -193,7 +226,18 @@ class ResultStore(Protocol):
         tool_class: str,
         run_ref: str = "latest",
     ) -> StoredRun:
-        """Resolve a run by reference; ``"latest"`` resolves the most recent."""
+        """Resolve a run by reference; ``"latest"`` resolves the most recent.
+
+        Unlike ``list_runs``, the returned :class:`StoredRun` carries that
+        resolved run's own ``params`` (its exact recorded tool-call kwargs)
+        and ``based_on_version`` (bloom#600, reworked per bloom#622 review —
+        see add-bloommcp-manifest-download-link's design.md Decision 5). This is the only place either field is
+        populated: ``commit`` and ``list_runs`` both build their
+        :class:`StoredRun`\\ s via ``StoredRun.from_version_entry``, which
+        leaves ``params``/``based_on_version`` at their dataclass defaults
+        (``{}``/``""``) — never another run's values, only the one this
+        call resolves.
+        """
         ...
 
     def get_download_links(
@@ -204,7 +248,7 @@ class ResultStore(Protocol):
     ) -> StoredRun:
         """Resolve a run exactly as ``get_run`` does, but with ``output_links``
         freshly (re-)populated (bloom#599) — the deliberate, caller-opted-in
-        exception to ``get_run``/``list_runs`` always returning it empty.
+        exception to ``list_runs`` always returning it empty.
 
         Every ``size_bytes`` is resolved live via
         :meth:`StorageBackend.get_object_size` on every call — nothing is
@@ -217,5 +261,15 @@ class ResultStore(Protocol):
         ``(experiment, tool_class, version_dir)`` prefix, before signing or
         sizing it. A single output's lookup failure fails the whole call —
         never a partially-populated ``output_links``.
+
+        Also carries ``params``/``based_on_version`` for the resolved run
+        (bloom#600, reworked per bloom#622 review — see add-bloommcp-manifest-download-link's design.md Decision 5)
+        via ``get_run``, which this method calls internally: a caller who
+        already knows one run's ``run_ref`` can inspect that run's own exact
+        params and lineage without direct Supabase Storage/admin access,
+        without ever exposing any *other* run's data the way a signed link to
+        the shared ``manifest.json`` would have (that file is keyed only by
+        ``(experiment, tool_class)`` and lists every run ever committed for
+        that pair — it cannot be scoped to one ``run_ref`` at all).
         """
         ...
