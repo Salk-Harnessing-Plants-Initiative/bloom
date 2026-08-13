@@ -77,8 +77,9 @@ export function missingFrameNote(
   } not available.`;
 }
 
-// What the viewer says about this scan when frames are missing, or null when every
-// recorded frame is there. The same call the viewer makes, so the two cannot disagree.
+// Whether the generate button should ask before encoding: the shortfall to quote, or null
+// when every recorded frame is there. The viewer computes the same sentence for its own
+// line, so a change to what counts as incomplete belongs in both.
 export function completenessWarning(
   images: ScanFrame[] | null | undefined
 ): string | null {

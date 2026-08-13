@@ -40,9 +40,8 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   // Keyed on the scan id, not the object: a refetch that returns the same scan
   // must not look like a different one, or it would reset the reader's frame.
   const scanId = scan?.id;
-  // The recorded rows are captured with the frames, not read live: the two are compared
-  // against each other, so a message built from one fresh number and one stale one could
-  // report a shortfall that matches neither.
+  // The row count is captured with the frames rather than read live, so the two numbers the
+  // shortfall compares always come from the same list.
   const snapshot = useMemo(
     () => {
       const images = scan?.cyl_images ?? [];
