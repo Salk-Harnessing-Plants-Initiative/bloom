@@ -91,7 +91,9 @@ def get_scan_images(client, scan_id: int, limit: int = MAX_IMAGES) -> list[dict]
 
 
 # Deciding whether to keep the stored video and then uploading is a read-modify-write on an
-# unversioned object. Process-local, which is how this runs: one uvicorn worker, sync route.
+# unversioned object. This lock holds only within one process, so it depends on the service
+# running a single uvicorn worker — `--workers 1` in docker-compose.prod.yml. Raising that
+# reopens the race, and closing it across processes needs a lock in the database instead.
 _scan_locks: dict[int, threading.Lock] = {}
 _scan_locks_guard = threading.Lock()
 
