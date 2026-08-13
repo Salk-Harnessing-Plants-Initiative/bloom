@@ -264,11 +264,29 @@ test confirming the bump actually worked, not a RED test in the usual sense.
 - [x] 7.6 Open the PR against `staging` — [PR #655](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/655).
       Still needed: a non-author approving review (branch protection has `enforce_admins=true`
       on `staging`) before merge.
-- [ ] 7.7 After merge: tick the `bloomctl` row in `sleap-roots-pipeline`'s
+- [x] 7.7 Manually verified against the real `pipeline-staging` Supabase profile (not mocks),
+      per the reviewers' own repeated note that the mocked test suite can't exercise real
+      network I/O or genuine OS-level process races:
+      - `batch-download-for-predict` against 3 real scans (289, 577, 1009) — all staged, correct
+        `run_manifest.json` written.
+      - Re-running with one already-staged scan — reported `skipped`, not re-downloaded.
+      - A nonexistent scan_id — excluded from the manifest, other scans unaffected.
+      - Two separate real invocations with disjoint scan sets into one `out_dir` — manifest
+        correctly merged to the union, `pipeline_run_id` updated to the latest invocation's.
+      - **Two actual `bloomctl` processes launched simultaneously** against the same scan_id and
+        `out_dir` (real OS-level race, not simulated timing) — one won and staged normally, the
+        other got a clean `failed` result naming the holder's pid and lock age; `.locks/` empty
+        afterward, no corruption on disk. This is the exact bloom #533 scenario this whole
+        feature exists to prevent, now confirmed closed against genuinely concurrent processes.
+      - A hand-planted stale lock (fake dead pid, `acquired_at` far in the past) — correctly
+        reclaimed; the scan staged normally, no `LockContendedError`.
+      - `--lock-staleness-seconds nan` and `0` — both rejected by a clean `click.UsageError`
+        before any network call, matching the unit-tested behavior exactly.
+- [ ] 7.8 After merge: tick the `bloomctl` row in `sleap-roots-pipeline`'s
       `docs/bloom-integration/roadmap.md` ("Cross-repo correctness: manifest-scoped processing"
       section) per that repo's own close-the-loop convention — a follow-up action in that repo,
       not a task in this one.
-- [ ] 7.8 Run `openspec archive add-cyl-batch-manifest-lock` once deployed.
+- [ ] 7.9 Run `openspec archive add-cyl-batch-manifest-lock` once deployed.
 
 ## 8. Post-PR-review hardening (found via `/review-pr` on #655, fixed same PR)
 
