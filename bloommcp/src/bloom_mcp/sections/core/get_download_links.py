@@ -42,6 +42,20 @@ def get_download_links(
     from the immutable manifest record, independent of the live-refreshed
     `url`/`size_bytes`.
 
+    Also returns `params` (the exact tool-call kwargs the resolved run was
+    committed with) and `based_on_version` (bloom#600, reworked per bloom#622
+    review — see add-bloommcp-manifest-download-link's own design.md
+    Decision 5), scoped to this one resolved run only.
+    An earlier version of this field returned a signed link to the run's
+    shared `manifest.json` instead — dropped because that file is keyed only
+    by `(experiment, tool_class)` and lists every run ever committed for that
+    pair, so a link to it could never be scoped to the single `run_ref` a
+    caller asked about. `params`/`based_on_version` carry the same
+    provenance-verification value without that exposure: they come straight
+    from this run's own manifest entry, present regardless of manifest schema
+    version (unlike `seed`/`agent`/`environment`, these were part of the
+    schema from the start, so even a legacy v2-era run has them).
+
     Args:
         experiment: experiment identifier, e.g. "alfalfa_gwas_wave2.csv"
         tool_class: the tool's storage class, e.g. "qc", "pca", "clustering"
@@ -87,5 +101,7 @@ def get_download_links(
             name: link.model_dump(mode="json")
             for name, link in stored.output_links.items()
         },
+        "params": stored.params,
+        "based_on_version": stored.based_on_version,
     }
     return json.dumps(response, indent=2)

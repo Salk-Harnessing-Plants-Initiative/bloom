@@ -79,7 +79,8 @@ Any new tool that reads or writes a CSV should use this bucket.
 
 Analysis **outputs** go to Supabase Storage by default — in local dev that means
 MinIO, not files under `./bloommcp/data/ANALYSIS_OUTPUT`. `BLOOM_STORAGE_BACKEND=local`
-opts into a fully-local (offline) mode instead — input, output, and boot. See
+opts into a fully-local mode instead — no experiment data leaves your machine — input,
+output, and boot. See
 [storage-backends.md](../../bloommcp/docs/storage-backends.md) for the full
 precedence table (including the single `BLOOM_LOCAL_ROOT` var) and setup details —
 not duplicated here to avoid the two docs drifting out of sync. (This is the same

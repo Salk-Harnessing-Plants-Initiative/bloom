@@ -59,8 +59,12 @@ artifacts other than the one just committed.
 A signed URL expires after an hour, and a chat session can end before it's used.
 The `get_download_links(experiment, tool_class, run_ref="latest")` MCP tool
 (bloom#599) re-signs fresh links for a run you already know about — from a prior
-`list_existing_analyses` call, or a tool response from a now-expired session.
-Three things worth knowing before you reach for it:
+`list_existing_analyses` call, or a tool response from a now-expired session —
+for the run's per-output `output_links`, and also returns that run's own
+`params` (the exact tool-call kwargs it was committed with) and
+`based_on_version` (bloom#600, reworked per bloom#622 review — see
+add-bloommcp-manifest-download-link's design.md Decision 5). Five things worth
+knowing before you reach for it:
 
 - **It must be called by name for one already-known run** — it is not a browsing
   or discovery feature. There is still no way to list or browse every historical
@@ -142,7 +146,7 @@ and the `size_bytes` data needed to apply it themselves.
 
 ## Opt-in: the `local` backend (real files on disk)
 
-Set `BLOOM_STORAGE_BACKEND=local` to run fully offline — local input, local
+Set `BLOOM_STORAGE_BACKEND=local` so no experiment data leaves your machine — local input, local
 output, no Supabase boot gate. Three subpaths resolve independently, each with
 the same 3-tier precedence (highest wins):
 
@@ -266,8 +270,8 @@ and is blind to the other's versions. **Pick one backend per experiment and keep
 it stable** for the life of that experiment's analysis history.
 
 This can't be _prevented_ from purely local information — the `local` backend
-runs fully offline and has no way to check whether `supabase` already has
-history for an experiment (and vice versa) without contacting it, which would
+never contacts `supabase` and has no way to check whether `supabase` already
+has history for an experiment (and vice versa) without doing so, which would
 defeat the point. It is made **observable** instead (#395):
 
 - Every `manifest.json` records a `storage_backend` field naming whichever

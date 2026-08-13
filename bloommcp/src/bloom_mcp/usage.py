@@ -6,8 +6,11 @@ the `record_bloommcp_usage` Postgres RPC, run on a background thread so it
 never adds latency to the request/response cycle it's attributed to (the RPC
 is a synchronous, blocking network call via `supabase-py` — `call_rpc()` has
 no async variant). A recording failure — including a failure to even submit
-the work — is caught and logged; it can never affect the response already in
-flight, since submission happens fire-and-forget, never awaited inline.
+the work — is caught and logged as a warning (not `logger.exception`, so no
+full traceback — bloom#641); it can never affect the response already in
+flight, since submission happens fire-and-forget, never awaited inline. Not
+called at all for the `local` storage backend — see
+`bloom_mcp.identity.IdentityMiddleware`.
 """
 
 from __future__ import annotations
@@ -91,11 +94,21 @@ def _do_record(identity: str, action: str) -> None:
             "record_bloommcp_usage",
             {"p_identity": identity, "p_action": action},
         )
-    except Exception:
-        logger.exception(
-            "failed to record bloommcp_usage (identity=%s, action=%r)",
+    except Exception as exc:
+        # Best-effort, non-blocking recording (module docstring) — a failure
+        # here shouldn't look like a crash, so this is a warning naming the
+        # error, not a full traceback (bloom#641). Only the exception's type
+        # name is interpolated, never `exc`/`str(exc)` itself: today's
+        # `record_bloommcp_usage` RPC is a plain upsert that can't echo
+        # `p_identity` back, but a future schema constraint or a
+        # postgrest-py `APIError` with a `DETAIL` field could carry the raw
+        # identity in its message, which would defeat `_redact_identity`
+        # right next to it (review follow-up, PR #659).
+        logger.warning(
+            "failed to record bloommcp_usage (identity=%s, action=%r): %s",
             _redact_identity(identity),
             action,
+            type(exc).__name__,
         )
     finally:
         _inflight.release()
@@ -121,10 +134,13 @@ def record_usage_async(identity: str, action: str) -> None:
         return
     try:
         _EXECUTOR.submit(_do_record, identity, action)
-    except Exception:
+    except Exception as exc:
         _inflight.release()
-        logger.exception(
-            "failed to submit bloommcp_usage recording (identity=%s, action=%r)",
+        # Same redaction-bypass reasoning as `_do_record`'s except clause:
+        # only the exception's type name is logged, never `exc` itself.
+        logger.warning(
+            "failed to submit bloommcp_usage recording (identity=%s, action=%r): %s",
             _redact_identity(identity),
             action,
+            type(exc).__name__,
         )
