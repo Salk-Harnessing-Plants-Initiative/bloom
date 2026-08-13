@@ -9,7 +9,7 @@
 
 - [x] 1.1 Write a failing test in `bloommcp/tests/test_identity_middleware.py`:
       `test_local_backend_skips_usage_recording` — with `monkeypatch.setenv("BLOOM_STORAGE_BACKEND",
-      "local")`, a qualifying (non-`/health`, non-`401`) request through `IdentityMiddleware`
+"local")`, a qualifying (non-`/health`, non-`401`) request through `IdentityMiddleware`
       results in `record_usage_async` never being called (assert `recorded_usage == []`,
       mirroring `test_health_path_is_not_recorded`'s style).
 - [x] 1.2 Write a second failing test, `test_supabase_backend_still_records_usage` — same
@@ -53,9 +53,9 @@
       assertion: `"warning"` logged, `"exception"` not.
 - [x] 2.4 In `usage.py`, change `_do_record`'s except clause from `logger.exception(...)` to
       `logger.warning(...)`, capturing the exception (`except Exception as exc:`) and
-      interpolating its message explicitly (e.g. `%s`, `exc`) — `logger.warning` does not
-      include a traceback by default the way `logger.exception` does, so the message itself
-      must now name the failure.
+      interpolating its _type name_ (`type(exc).__name__`), not `exc`/`str(exc)` — see task 5
+      for why type, not message. `logger.warning` does not include a traceback by default the
+      way `logger.exception` does, so the message itself must now name the failure class.
 - [x] 2.5 Make the same change to `record_usage_async`'s own except clause (the
       submission-failure path a few lines below `_do_record`) for consistency — same rationale,
       not explicitly named in the issue but the same "best-effort recording shouldn't look like
@@ -97,18 +97,43 @@
       minimal and consistent with that existing practice.
 - [x] 3.5 Run the new `test_bloommcp_local_mode_docs.py` test; confirm it passes.
 
-## 4. Validate
+## 5. Review follow-up (PR #659): redaction bypass + import-scoping accuracy
 
-- [x] 4.1 Run `openspec validate fix-bloommcp-local-usage-telemetry --strict` and resolve any
+- [x] 5.1 Write failing tests `test_call_rpc_failure_log_never_contains_the_raw_exception_message`
+      and `test_submission_failure_log_never_contains_the_raw_exception_message` in
+      `test_usage.py`, asserting a secret-shaped substring embedded in the raised exception's
+      message never reaches `.messages`, and that the exception's type name does — pins the
+      review's flagged risk (interpolating `exc` right next to `_redact_identity(identity)`
+      could reintroduce clear-text-identity logging if a future exception message ever echoed
+      it back) as an explicit regression test rather than relying on doc claims.
+- [x] 5.2 In `usage.py`, change both `logger.warning(...)` calls (2.4/2.5) to interpolate
+      `type(exc).__name__` instead of `exc` (design.md Decision 7).
+- [x] 5.3 In `identity.py`, move `from bloom_mcp.usage import record_usage_async` from above
+      the `if not is_local_backend():` check to inside it, so local mode's "skip it outright"
+      claim (module docstring, inline comment) is literally true — no `usage` module import at
+      all in local mode, not just no call into it.
+- [x] 5.4 Reword the `bloommcp-caller-identity` spec delta's "evaluated before" phrasing (which
+      implied a code-ordering guarantee the implementation doesn't have — the local-backend
+      check is nested inside the `/health`/`401` check, not short-circuited ahead of it) to
+      describe the three gates as combined via AND, order-independent.
+- [x] 5.5 Update `design.md` (new Decision 7, Risks section) and `proposal.md` to describe
+      type-name-only interpolation instead of "the exception message," and to note the
+      level-based-alerting angle (WARNING vs. ERROR for a genuine `supabase`-backend outage)
+      the original Risks section didn't cover.
+- [x] 5.6 Re-run the full `bloommcp` test suite and lint/format checks; confirm no regressions.
+
+## 6. Validate
+
+- [x] 6.1 Run `openspec validate fix-bloommcp-local-usage-telemetry --strict` and resolve any
       issues.
-- [x] 4.2 Run the bloommcp test suite the way CI actually runs it:
+- [x] 6.2 Run the bloommcp test suite the way CI actually runs it:
       `cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration and not
-      live_smoke" -v --tb=short`, and separately `uv run --extra test pytest tests/unit/test_bloommcp_local_mode_docs.py`
+live_smoke" -v --tb=short`, and separately `uv run --extra test pytest tests/unit/test_bloommcp_local_mode_docs.py`
       from the repo root, to confirm no regressions beyond the files touched above.
-- [x] 4.3 Run this repo's formatting/lint checks on every changed file type: `ruff`/`black` for
+- [x] 6.3 Run this repo's formatting/lint checks on every changed file type: `ruff`/`black` for
       the two changed Python source files and the three changed/added test files, and
       `prettier` for the three changed Markdown doc files (`.pre-commit-config.yaml` runs
       prettier on `.md` files too) — e.g. `uv run pre-commit run --files <changed files>`.
-- [x] 4.4 Mark every task above `[x]` once done, as its own final commit
+- [x] 6.4 Mark every task above `[x]` once done, as its own final commit
       (`docs(#641): mark tasks.md complete`), matching this repo's own precedent (e.g. the
       sibling #626 branch's closing commit of the same shape).

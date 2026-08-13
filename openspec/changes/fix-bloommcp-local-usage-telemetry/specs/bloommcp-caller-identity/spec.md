@@ -5,9 +5,12 @@
 When `storage_backend.is_local_backend()` is true (`BLOOM_STORAGE_BACKEND=local`),
 `IdentityMiddleware` SHALL NOT invoke `record_usage_async` for any request, qualifying or
 not. No `bloommcp_usage` RPC attempt SHALL be made, no failure SHALL occur, and no
-recording-related log line SHALL be emitted. This gate is independent of, and evaluated
-before, the existing `/health`-path and downstream-`401` gates. Behavior for the `supabase`
-backend (the default) is unchanged by this requirement.
+recording-related log line SHALL be emitted. This gate is independent of the existing
+`/health`-path and downstream-`401` gates: all three are combined with AND, so which one is
+checked first has no observable effect (none of them has a side effect on its own), and the
+implementation is free to nest the local-backend check inside the other two rather than
+short-circuit on it first. Behavior for the `supabase` backend (the default) is unchanged by
+this requirement.
 
 #### Scenario: A qualifying request under the local backend is never recorded
 
@@ -53,7 +56,10 @@ identity, and SHALL run without blocking or adding latency to the request it is 
 Recording attempts SHALL be bounded: beyond a fixed number of concurrently in-flight recording
 attempts, further attempts SHALL be dropped (logged) rather than queued or blocked on. **A failure
 while recording usage — including a dropped or unschedulable attempt — SHALL be caught and logged
-as a warning naming the underlying exception's message, not a full stack trace**, and SHALL NOT
+as a warning naming the underlying exception's type, not its message or a full stack trace**
+(logging the raw exception message, alongside the redacted identity in the same log line,
+risks reintroducing the clear-text-identity logging that redaction exists to prevent — see
+design.md Decision 7), and SHALL NOT
 cause the underlying request to fail. This table records the most recent state per identity; it
 is not an append-only history (repeat activity from the same identity overwrites `last_action`
 and does not preserve the previous one), and `request_count` counts qualifying HTTP requests, not
@@ -102,7 +108,8 @@ share its limitation — see `add-bloommcp-oauth-usage-attribution` design.md De
 - **WHEN** the `bloommcp_usage` upsert raises (e.g. a transient DB error), or recording cannot
   even be scheduled
 - **THEN** the triggering request still completes and returns its normal result
-- **AND** the failure is logged as a warning with the exception's message, not a full traceback
+- **AND** the failure is logged as a warning naming the exception's type, not its message or a
+  full traceback
 
 #### Scenario: Usage recording does not add latency to the request it is attributed to
 

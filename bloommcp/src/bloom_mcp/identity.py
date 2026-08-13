@@ -252,12 +252,16 @@ class IdentityMiddleware:
 
         if should_record and response_status.get("status") != 401:
             from bloom_mcp.storage_backend import is_local_backend
-            from bloom_mcp.usage import record_usage_async
 
             # Fully-local mode has no Supabase to record usage against at all —
             # skip it outright rather than attempting (and always failing) the
-            # RPC (bloom#641).
+            # RPC (bloom#641). `record_usage_async` is imported here, inside
+            # the gate, rather than above it, so local mode really does skip
+            # it outright — no import of the usage module at all, not just no
+            # call into it.
             if not is_local_backend():
+                from bloom_mcp.usage import record_usage_async
+
                 record_usage_async(
                     identity or _oauth_subject_from_scope(scope) or ANONYMOUS,
                     _action_from_path(path),

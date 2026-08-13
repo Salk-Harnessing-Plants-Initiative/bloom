@@ -97,12 +97,18 @@ def _do_record(identity: str, action: str) -> None:
     except Exception as exc:
         # Best-effort, non-blocking recording (module docstring) — a failure
         # here shouldn't look like a crash, so this is a warning naming the
-        # error, not a full traceback (bloom#641).
+        # error, not a full traceback (bloom#641). Only the exception's type
+        # name is interpolated, never `exc`/`str(exc)` itself: today's
+        # `record_bloommcp_usage` RPC is a plain upsert that can't echo
+        # `p_identity` back, but a future schema constraint or a
+        # postgrest-py `APIError` with a `DETAIL` field could carry the raw
+        # identity in its message, which would defeat `_redact_identity`
+        # right next to it (review follow-up, PR #659).
         logger.warning(
             "failed to record bloommcp_usage (identity=%s, action=%r): %s",
             _redact_identity(identity),
             action,
-            exc,
+            type(exc).__name__,
         )
     finally:
         _inflight.release()
@@ -130,9 +136,11 @@ def record_usage_async(identity: str, action: str) -> None:
         _EXECUTOR.submit(_do_record, identity, action)
     except Exception as exc:
         _inflight.release()
+        # Same redaction-bypass reasoning as `_do_record`'s except clause:
+        # only the exception's type name is logged, never `exc` itself.
         logger.warning(
             "failed to submit bloommcp_usage recording (identity=%s, action=%r): %s",
             _redact_identity(identity),
             action,
-            exc,
+            type(exc).__name__,
         )
