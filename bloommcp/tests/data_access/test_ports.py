@@ -117,6 +117,19 @@ def test_both_given_is_ambiguous_via_protocol_typed_handle_on_a_source_capable_a
         reader.load_experiment("exp.csv", source_id=9, run_id="p10")
 
 
+def test_multi_source_fake_reader_unpinned_resolution_is_max_by_id_not_last_arg(
+    make_multi_source_fake_reader,
+):
+    """make_multi_source_fake_reader's unpinned resolution must match
+    SupabaseReader's own exactly: the experiment-wide MAX source_id, not
+    whichever source happened to be passed last to the constructor. Every
+    other caller of this fixture passes ids in ascending order, where "last"
+    and "max" coincide — masking this as latent until exercised out of order
+    (PR #644 review)."""
+    reader = make_multi_source_fake_reader([11, 9, 10])
+    assert reader.resolve_source("exp.csv").source_id == 11
+
+
 def _raw() -> pd.DataFrame:
     return pd.DataFrame(
         {

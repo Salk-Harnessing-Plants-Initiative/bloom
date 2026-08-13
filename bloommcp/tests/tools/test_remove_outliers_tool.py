@@ -224,6 +224,23 @@ def test_explicit_version_overrides_the_latest_qc_default(injected_ports):
     )
 
 
+def test_explicit_version_latest_is_treated_the_same_as_omitting_it(injected_ports):
+    """An explicit version="latest" is NOT a deliberate override of this tool's
+    own "latest_qc" default -- it's the bare Protocol default, passed through
+    unchanged it would resolve the generic outliers-preferring "latest" instead
+    of the plain clean, silently trimming from this tool's own prior output
+    rather than the fresh qc_clean (the exact hazard "latest_qc" exists to
+    prevent). Found in PR #644 review; no test exercised this before."""
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(method="isolation_forest", seed=42, version="latest")
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="latest_qc"
+    )
+
+
 def test_persisted_trimmed_table_has_output_rows_and_no_nans(injected_ports):
     """2.3 — the persisted trimmed table has n_output_samples rows and no NaNs."""
     _reader, store = injected_ports

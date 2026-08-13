@@ -52,6 +52,21 @@ def test_zero_source_experiment_gets_a_clear_message(
     assert "no meaningful" in result.lower() or "no source" in result.lower()
 
 
+def test_invalid_experiment_id_returns_an_error_string_not_a_crash(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A non-numeric experiment id (SupabaseReader.list_sources -> _parse_experiment_id
+    -> ExperimentNotFoundError, an ExperimentReadError subclass) must return a clear
+    error string, like every sibling source-pinning tool (qc_clean/qc_inspect/
+    load_experiment_data) — not raise uncaught. Found in PR #644 review; no test
+    exercised this before."""
+    _ports.configure(reader=SupabaseReader())
+
+    result = list_experiment_sources("not-a-number")
+
+    assert "not-a-number" in result
+
+
 def test_non_source_selectable_backend_gets_not_applicable_message():
     reader = FakeReader()
     reader.add_experiment("exp.csv", _raw())

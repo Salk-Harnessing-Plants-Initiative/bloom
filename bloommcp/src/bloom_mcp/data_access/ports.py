@@ -160,7 +160,12 @@ class ExperimentReader(Protocol):
         plain clean whenever one exists for the experiment), ``"latest_qc"``
         (the plain-clean tier specifically, ignoring any trim — what
         ``remove_outliers`` reads as its trimming input), ``"raw"``, or an
-        explicit ``"v<N>"`` (qc-class only). An explicit-version miss raises
+        explicit ``"v<N>"``. An explicit version checks every cleaned tool
+        class (``qc`` and ``outliers`` each have their own independently-numbered
+        ``v<N>`` sequence): it resolves whichever single class has that id,
+        refuses as ambiguous if more than one does, and reports not-found if
+        none does — never silently prefers ``qc`` the way an earlier revision of
+        this adapter did (bloom#644). An explicit-version miss raises
         :class:`ExperimentNotFoundError`; a ``"latest"``/``"latest_qc"`` miss
         falls through the resolution order to the raw input.
         ``require_clean=True`` raises :class:`CleanedVersionRequiredError` when

@@ -6,7 +6,7 @@ Not a ``sleap-roots-analyze`` wrapper — a thin, isinstance-gated wrapper over
 it is an occasional discovery aid, not a foundational read path (#626).
 """
 
-from bloom_mcp.data_access import SourceSelectable
+from bloom_mcp.data_access import ExperimentReadError, SourceSelectable
 from bloom_mcp.tools import _ports
 
 
@@ -29,7 +29,18 @@ def list_experiment_sources(experiment: str) -> str:
             "between."
         )
 
-    sources = reader.list_sources(experiment)
+    # An invalid/nonexistent experiment id (or a transient DB failure —
+    # SupabaseReader.list_sources already maps those to a caller-safe
+    # ExperimentReadError, never a raw traceback) must return an error string,
+    # like every sibling source-pinning tool (qc_clean/qc_inspect/
+    # load_experiment_data all route ExperimentReadError through the
+    # as_mcp_tool contract or their own string-error convention) — not raise
+    # uncaught, which this bare string-returning tool has no contract wrapper
+    # to convert into a structured response.
+    try:
+        sources = reader.list_sources(experiment)
+    except ExperimentReadError as exc:
+        return str(exc)
 
     if len(sources) == 0:
         return (

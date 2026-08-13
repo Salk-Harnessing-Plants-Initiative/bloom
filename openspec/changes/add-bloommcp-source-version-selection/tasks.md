@@ -241,3 +241,60 @@ the full diff.
       `available_source_count` field (`bloommcp-experiment-read`), qc_clean's csv_content+pin
       rejection (`bloommcp-qc-clean-tool`), and qc_inspect/load_experiment_data's advisory note
       (`bloommcp-source-selection`). Re-ran `openspec validate --strict` clean afterward.
+
+## 10. PR #644 5-lens review round 2 fixes
+
+A second, 5-lens parallel review (code quality, testing, scientific rigor, security, behavioral
+correctness) of the fixes in section 9 found one real correctness bug — everything else, including
+security, was clean.
+
+- [x] 10.1 **Blocking**: `_resolve_versioned_cleaned`'s explicit `"v<N>"` path resolved against the
+      `qc` manifest class only, never `outliers` — each class has its own independently-numbered
+      `v<N>` sequence, so a version id a caller saw listed under `outliers` (via
+      `list_existing_analyses`) could silently resolve an unrelated `qc`-class entry of the same id
+      instead: the wrong, untrimmed dataset, not an error. Factored a new
+      `_resolve_one_class_explicit_version` (checks both classes; resolves the one match, refuses as
+      ambiguous if both match, reports not-found naming both if neither does — an infra failure in
+      either always takes priority over a plain not-found miss in the other) into
+      `experiment_utils.py`, and updated the now-stale "qc-class only" line in
+      `ExperimentReader.load_experiment`'s own Protocol docstring (`ports.py`) to match. 5 new tests
+      in `test_storage_backend.py`'s new "5b-2" section (none existed before — the collision case is
+      the actual bug repro).
+- [x] 10.2 **Blocking**: an explicit `version="latest"` passed to `remove_outliers` bypassed its own
+      `"latest_qc"` default (only `params.version is None` triggered the override), silently
+      resolving the generic outliers-preferring `"latest"` instead — trimming from this tool's own
+      prior output rather than the plain clean, the exact hazard `"latest_qc"` exists to prevent.
+      Fixed: `version="latest"` is now treated identically to omitting the field. New test
+      `test_explicit_version_latest_is_treated_the_same_as_omitting_it`.
+- [x] 10.3 **Important**: added direct `SupabaseReader` test coverage for `available_source_count`
+      and the real `list_sources()`/`load_experiment()` multi-source path — every prior multi-source
+      test went through the hand-rolled `_MultiSourceFakeReader` double, which reimplements the
+      resolution logic rather than exercising the real adapter (design.md's own Decision 5 says
+      multi-source *data* tests should use the monkeypatched-`SupabaseReader` boundary instead — the
+      shipped tests did the opposite). New
+      `test_available_source_count_reflects_the_real_multi_source_read` in
+      `test_supabase_reader.py`, using `seed_multi_source_experiment` per that decision, also
+      asserting exactly one `list_experiment_trait_sources` RPC call.
+- [x] 10.4 **Important**: `cross_experiment_correlations` never tested `version_1` AND `version_2`
+      pinned to different real values simultaneously — only "one set, other omitted" was covered,
+      so the "independently selectable" guarantee wasn't proven for the case that matters most. New
+      `test_version_1_and_version_2_both_pinned_to_different_real_values`, asserting both the call
+      args and the result's `source_1`/`source_2` fields (proving the actual data read, not just
+      that the call looked right).
+- [x] 10.5 **Important**: `core_list_experiment_sources` had no try/except around
+      `reader.list_sources(experiment)` — an invalid/nonexistent experiment id raised uncaught,
+      unlike every sibling source-pinning tool. Added a catch for `ExperimentReadError`, returning
+      the caller-safe message as a string (this tool's own established string-response convention).
+      New `test_invalid_experiment_id_returns_an_error_string_not_a_crash`.
+- [x] 10.6 **Suggestion**: added `qc_inspect`'s provenance-traceability test mirroring `qc_clean`'s
+      (design.md documents both threading `resolved_source` into `store.create_run`, but only
+      `qc_clean` had a test locking it in) —
+      `test_pinned_source_is_traceable_from_the_committed_runs_provenance` in
+      `test_qc_inspect_tool.py`.
+- [x] 10.7 **Suggestion**: `make_multi_source_fake_reader`'s unpinned-resolution branch (root
+      `tests/conftest.py`) returned the last constructor-order source rather than max-by-`source_id`
+      like the real adapter — latent, masked because every existing caller passes ascending ids.
+      Fixed to `max(self._sources, key=lambda s: s.source_id)`, matching `SupabaseReader` exactly.
+      New `test_multi_source_fake_reader_unpinned_resolution_is_max_by_id_not_last_arg`.
+- [x] 10.8 Updated the `bloommcp-experiment-read` and `bloommcp-clean-version-selection` spec deltas
+      with scenarios for 10.1/10.2's new behavior; re-ran `openspec validate --strict` clean.

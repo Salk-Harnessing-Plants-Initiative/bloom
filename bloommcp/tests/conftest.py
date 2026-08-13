@@ -387,7 +387,12 @@ class _MultiSourceFakeReader(FakeReader):
                 if s.pipeline_run_id == run_id:
                     return s
             raise SourcePinNotFoundError(f"no run_id={run_id}")
-        return self._sources[-1] if self._sources else None
+        # max by source_id, not constructor order -- matches SupabaseReader's own
+        # unpinned resolution exactly (the experiment-wide max source_id), so a
+        # caller constructing sources out of ascending order still gets the same
+        # semantics the real adapter would (PR #644 review: this was latent,
+        # masked only by every existing caller happening to pass ascending ids).
+        return max(self._sources, key=lambda s: s.source_id) if self._sources else None
 
     def load_experiment(
         self,

@@ -35,6 +35,24 @@ ignoring the pin or raising an unrelated `TypeError`.
 - **WHEN** `load_experiment(name, version="v9")` is called for a version that does not exist
 - **THEN** the reader signals a not-found condition for that explicit version rather than silently falling back to another tier
 
+#### Scenario: An explicit version id colliding across cleaned tool classes is ambiguous, not silently qc
+
+- **WHEN** `load_experiment(name, version="v1")` is called and BOTH the `qc` and `outliers` classes
+  independently have their own, differently-content `v1` entry (each class has its own
+  independently-numbered `v<N>` sequence — see the `bloommcp-clean-version-selection` capability)
+- **THEN** the reader refuses to resolve either one and signals the id is ambiguous, rather than
+  silently preferring `qc` and returning the wrong, untrimmed dataset — the fix for the bloom#644
+  review's blocking finding, where an earlier revision of this behavior resolved against the `qc`
+  class only
+
+#### Scenario: An explicit version id that exists in exactly one cleaned tool class resolves there
+
+- **WHEN** `load_experiment(name, version="v1")` is called and only the `outliers` class (not `qc`)
+  has a `v1` entry
+- **THEN** the reader resolves the `outliers`-class entry — a version a caller saw listed under
+  `outliers` via `list_existing_analyses` is always pinnable by id, not only versions that happen
+  to also exist under `qc`
+
 #### Scenario: Clean-required load
 
 - **WHEN** `load_experiment(name, require_clean=True)` is called and no cleaned output exists

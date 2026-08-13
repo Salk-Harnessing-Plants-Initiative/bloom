@@ -997,6 +997,21 @@ def test_multi_source_experiment_with_no_pin_gets_an_advisory_note(multi_source_
     assert "10" in result.source_note  # the resolved (max) source_id
 
 
+def test_pinned_source_is_traceable_from_the_committed_runs_provenance(
+    multi_source_ports,
+):
+    """Mirrors qc_clean's own test of the same name: design.md's traceability
+    guarantee (frame.resolved_source flows into store.create_run(source=...))
+    is documented as applying to BOTH qc_clean and qc_inspect, but before this
+    fix only qc_clean had a test locking it in. Found in PR #644 review."""
+    _reader, store = multi_source_ports
+    _run(source_id=9)
+
+    stored = store.get_run(_EXPERIMENT, "qc_inspect", "latest")
+    assert stored.source_id == 9
+    assert stored.source_name == "run-9"
+
+
 def test_both_source_id_and_run_id_given_is_rejected(multi_source_ports):
     with pytest.raises(BloomMCPError) as exc:
         _run(source_id=9, run_id="p10")

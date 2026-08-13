@@ -141,10 +141,12 @@ class RemoveOutliersParams(BaseModel):
     version: Optional[str] = Field(
         default=None,
         description="Pin outlier detection to a specific committed cleaned "
-        "version (e.g. 'v2'; see list_existing_analyses). Omit to use the "
-        "latest plain-clean version (today's default is 'latest_qc', not "
-        "'latest' — it ignores any prior outlier trim so this tool trims "
-        "from the plain clean, not from its own previous output).",
+        "version (e.g. 'v2'; see list_existing_analyses). Omit (or pass "
+        "'latest') to use the latest plain-clean version (today's default is "
+        "'latest_qc', not 'latest' — it ignores any prior outlier trim so this "
+        "tool trims from the plain clean, not from its own previous output; "
+        "'latest' is treated identically to omitting this field, not as an "
+        "override of that default).",
     )
     method: Literal["mahalanobis", "isolation_forest"] = Field(
         default="mahalanobis",
@@ -324,10 +326,19 @@ def remove_outliers(
         # see the module docstring's Composition section for why (a fresh qc_clean
         # must always be visible to the *next* remove_outliers call). #626: an
         # explicit params.version overrides that default; omitting it preserves it.
+        # An explicit version="latest" is treated the same as omitting it (both map
+        # to "latest_qc"): the bare Protocol default isn't a deliberate override of
+        # this tool's own default, and passing it through unchanged would silently
+        # resolve the generic outliers-preferring "latest" instead — trimming from
+        # this tool's own prior output rather than the plain clean, exactly what
+        # "latest_qc" exists to prevent (found in PR #644 review).
+        version = params.version
+        if version is None or version == "latest":
+            version = "latest_qc"
         frame = reader.load_experiment(
             params.experiment,
             require_clean=True,
-            version=params.version if params.version is not None else "latest_qc",
+            version=version,
         )
     except CleanedVersionRequiredError:
         raise BloomMCPError(

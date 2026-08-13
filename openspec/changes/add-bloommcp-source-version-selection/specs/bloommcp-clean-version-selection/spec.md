@@ -36,9 +36,17 @@ selectors (`version_1`/`version_2`), each threaded only to its own experiment's 
 
 #### Scenario: remove_outliers honors an explicit version override
 
-- **WHEN** `remove_outliers` is invoked with an explicit version selector
+- **WHEN** `remove_outliers` is invoked with an explicit version selector (other than `"latest"`)
 - **THEN** the tool calls `load_experiment(params.experiment, require_clean=True, version=<given>)`,
   overriding its own `"latest_qc"` default
+
+#### Scenario: remove_outliers treats an explicit "latest" the same as omitting the selector
+
+- **WHEN** `remove_outliers` is invoked with `version="latest"` given explicitly
+- **THEN** the tool still calls `load_experiment(params.experiment, require_clean=True,
+  version="latest_qc")` — the bare Protocol default is not a deliberate override of this tool's
+  own default, and passing it through unchanged would silently trim from this tool's own prior
+  output (the generic outliers-preferring `"latest"`) instead of the plain clean
 
 #### Scenario: cross_experiment_correlations selects each experiment's version independently
 
