@@ -21,7 +21,7 @@ import pytest
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
-from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.result_store import FakeResultStore, RunStateError, SupabaseResultStore
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._inline_input import compute_input_sha256
 from bloom_mcp.sections.sleap_roots.analysis import qc_clean as qc_clean_tool
@@ -388,6 +388,24 @@ def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
         _run()
     assert exc.value.code == "tool_error"
     assert "manifest read failure" in exc.value.message
+
+
+def test_run_state_error_from_commit_still_maps_to_internal_error(
+    injected_ports, monkeypatch
+):
+    """RunStateError (a handle-misuse/wiring bug, never triggerable via tool input) must
+    stay internal_error even after declaring CommitFailedError/ManifestReadError — proves
+    the errors= tuple wasn't accidentally widened to the full ResultStoreError base
+    (design.md Decision 1; #660 review: only qc_inspect had this test)."""
+    _reader, store = injected_ports
+
+    def _boom(run, outputs):
+        raise RunStateError("commit() on an unknown or already-committed run")
+
+    monkeypatch.setattr(store, "commit", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
 
 
 # ── 3.8 composition: qc_clean run resolves as a cleaned version ──────────────

@@ -71,7 +71,10 @@ general write-path hardening for the gap #640's own broader ask names ("audit ot
 
 ### Decision 1 — Declare `(CommitFailedError, ManifestReadError)`, not the full `ResultStoreError` base
 
-`bloom_mcp.result_store.ResultStoreError` has 6 subtypes:
+`bloom_mcp.result_store.ResultStoreError` has 6 direct subtypes. The table below has a
+7th row for `ManifestIncompatibleError`, a `ManifestReadError` *subclass* (not a sibling
+direct subtype), included for completeness since it shares `ManifestReadError`'s call
+site and reachability:
 
 | Subtype | Reachable from these 8 tools' calls? | Caller-safe to relabel `tool_error`? |
 |---|---|---|
@@ -166,15 +169,32 @@ delta claim. Four additions, folded into `tasks.md`:
    `from_exception` does `message=str(exc) or exc.__class__.__name__` for any declared
    exception with **zero scrubbing** — no length bound, no credential/path stripping (unlike
    `get_download_links.py`'s `safe_error_text`, which layers that on top of the same kind of
-   `ResultStore` exception as defense-in-depth). Today's `CommitFailedError`/
-   `ManifestReadError` raise sites happen to be static templates with no exception-text
-   interpolation (confirmed by reading every raise site in `supabase_store.py`), so nothing
-   leaks *today* — but there was no regression test locking that in, and this change is what
-   makes that property load-bearing at the tool-contract boundary for the first time (before
-   this change, any accidental leak here was harmlessly swallowed into the generic
-   `internal_error` branch instead). Added: a test constructing a `CommitFailedError`/
-   `ManifestReadError` whose text is checked not to contain a planted path/host-shaped
-   string, run through a tool via the fakes.
+   `ResultStore` exception as defense-in-depth). `CommitFailedError`/`ManifestReadError`'s
+   own raise sites are static templates with no exception-text interpolation, so nothing
+   leaks *today* through those two — but there was no regression test locking that in, and
+   this change is what makes that property load-bearing at the tool-contract boundary for
+   the first time (before this change, any accidental leak here was harmlessly swallowed
+   into the generic `internal_error` branch instead). Added: a test constructing a
+   `CommitFailedError`/`ManifestReadError` whose text is checked not to contain a planted
+   path/host-shaped string, run through a tool via the fakes.
+
+   **Correction found during a later review pass (2026-08-13):** the claim above — "confirmed
+   by reading every raise site in `supabase_store.py`" — was itself wrong for one site.
+   `_guarded_manifest_read`'s `ManifestSchemaError` branch raised `ManifestIncompatibleError`
+   with `f"...is unsupported: {exc}"`, directly interpolating the caught exception's text —
+   the opposite of the generic branch's static-template style two lines below it. It was
+   inert only because `ManifestSchemaError`'s own messages (`manifest/manifest.py`) happen to
+   contain nothing but a schema-version int/repr, never a path/host/credential — an unstated,
+   untested second-order invariant one layer removed from this PR's own diff, and now
+   agent-visible pass-through via the `isinstance` mechanism this PR relies on. Fixed by
+   stripping the `{exc}` interpolation so this raise site is a static template too (message
+   is now `f"manifest schema for {adir.tool_class}/{adir.stem} is unsupported"`, matching the
+   sibling branch), and by strengthening the existing real-chain test
+   (`test_manifest_schema_error_raises_manifest_incompatible_error` in
+   `test_supabase_result_store.py`, which already drove `ManifestSchemaError` through the real
+   `_guarded_manifest_read` code path rather than a hand-written stand-in) to simulate a
+   `ManifestSchemaError` whose message embeds planted unsafe content and assert none of it
+   survives into `ManifestIncompatibleError`'s message.
 4. **`ResultStoreError`'s docstring doesn't literally state the no-leak obligation this
    proposal's own Why section claims it "mirrors" from `ExperimentReadError`.**
    `ExperimentReadError` (`data_access/ports.py`) spells out "Adapters MUST NOT leak a

@@ -463,10 +463,14 @@ def test_run_state_error_from_commit_still_maps_to_internal_error(
 def test_commit_failed_message_excludes_underlying_secret_detail(
     injected_ports, monkeypatch
 ):
-    """CommitFailedError's own message is a safe, static template (never interpolating the
-    underlying cause) — this proves that property, not just that a message passes through,
-    now that CommitFailedError is a declared (pass-through) type rather than swallowed into
-    internal_error (review finding: this safety property had no regression test)."""
+    """Scope: proves `from_exception`'s message construction doesn't reach into a declared
+    exception's `__cause__`/traceback text (via a hand-written `CommitFailedError` built
+    the same way the real static templates are: no interpolation of the chained cause).
+    It does NOT drive the real `supabase_store.py` raise sites themselves under adversarial
+    input — that guarantee instead rests on those sites being static templates, which
+    `test_manifest_schema_error_raises_manifest_incompatible_error` in
+    `test_supabase_result_store.py` now pins directly for the one sibling site
+    (`ManifestIncompatibleError`) that used to interpolate `{exc}` (#660 review)."""
     _reader, store = injected_ports
 
     def _boom(run, outputs):

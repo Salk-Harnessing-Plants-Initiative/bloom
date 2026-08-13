@@ -114,6 +114,24 @@ covered automatically (subclass of `ManifestReadError`).
       filesystem path, bucket name, or storage traceback in the message") — documentation
       only, no behavior change; backs the claim `proposal.md`'s Why section makes that the
       write-side mirrors the read-side's contract.
+- [x] 3.6 (Found in a later PR-660 review pass) Strip the `{exc}` interpolation from
+      `_guarded_manifest_read`'s `ManifestSchemaError` branch in `supabase_store.py` — it
+      raised `ManifestIncompatibleError(f"...is unsupported: {exc}")`, contradicting design.md
+      Decision 4.3's "no exception-text interpolation" claim; safe today only because
+      `ManifestSchemaError`'s own messages never contain a path/host/credential, an unstated
+      invariant one layer away from this diff. Now a static template, matching the sibling
+      `ManifestReadError` branch. Strengthened
+      `test_manifest_schema_error_raises_manifest_incompatible_error`
+      (`test_supabase_result_store.py`) — already drives the real `ManifestSchemaError` →
+      `ManifestIncompatibleError` chain, not a hand-written stand-in — to plant unsafe content
+      in the simulated `ManifestSchemaError` message and assert it does not survive into the
+      caller-facing message.
+- [x] 3.7 (Found in a later PR-660 review pass) Add the same
+      `test_run_state_error_from_commit_still_maps_to_internal_error`-style regression test
+      (previously only in `test_qc_inspect_tool.py`) to the other 7 tools'
+      `bloommcp/tests/tools/test_*_tool.py` files — each tool's `errors=` tuple got the
+      identical edit, but only one had a test that would catch a future copy-paste slip
+      widening it to the full `ResultStoreError` base.
 
 ## 4. Validate
 
