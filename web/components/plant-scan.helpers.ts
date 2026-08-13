@@ -77,38 +77,12 @@ export function missingFrameNote(
   } not available.`;
 }
 
-// Says so when the recorded frame numbers skip one — frames 1,2,4 means angle 3
-// is absent from the rotation. Only interior gaps are detectable: nothing
-// records how many frames a scan was meant to have, so a capture that stopped
-// early leaves a contiguous run and is indistinguishable from a shorter scan.
-export function frameGapNote(frames: ScanFrame[]): string | null {
-  const numbers = frames
-    .map((f) => f.frame_number)
-    .filter((n): n is number => typeof n === "number");
-  if (numbers.length < 2) return null;
-
-  const span = Math.max(...numbers) - Math.min(...numbers) + 1;
-  const unique = new Set(numbers).size;
-  const missing = span - unique;
-  if (missing <= 0) return null;
-
-  return `${missing} frame${
-    missing === 1 ? "" : "s"
-  } missing from this rotation — the frames shown are not consecutive.`;
-}
-
-// Everything the viewer would warn about, as one line, or null when the scan looks whole.
-// Shared so the frame viewer and the generate button cannot disagree about completeness.
+// What the viewer says about this scan when frames are missing, or null when every
+// recorded frame is there. The same call the viewer makes, so the two cannot disagree.
 export function completenessWarning(
   images: ScanFrame[] | null | undefined
 ): string | null {
-  const frames = orderedFrames(images);
-  const notes = [
-    missingFrameNote(frames.length, images?.length ?? 0),
-    frameGapNote(images ?? []),
-  ].filter((note): note is string => note !== null);
-
-  return notes.length > 0 ? notes.join(" ") : null;
+  return missingFrameNote(orderedFrames(images).length, images?.length ?? 0);
 }
 
 // A signed URL we can actually put in an href/src, or null. Signing helpers

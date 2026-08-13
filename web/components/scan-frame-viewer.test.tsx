@@ -112,7 +112,9 @@ describe("ScanFrameViewer", () => {
     await screen.findByText("Frame 1 could not be loaded.");
   });
 
-  it("discloses a gap in the recorded frame numbers", async () => {
+  it("says nothing about skipped frame numbers", async () => {
+    // Frames 1,2,4 all render. A count of absent frame *numbers* is a second figure
+    // against a different denominator, and it tells a reader nothing they can act on.
     render(
       <ScanFrameViewer
         scan={scanWith([
@@ -123,14 +125,9 @@ describe("ScanFrameViewer", () => {
       />
     );
 
-    await screen.findByText(/1 frame missing from this rotation/);
-  });
-
-  it("says nothing about gaps on a consecutive rotation", async () => {
-    render(<ScanFrameViewer scan={THREE_FRAMES} />);
-
     await screen.findByText("Frame 1");
     expect(screen.queryByText(/missing from this rotation/)).toBeNull();
+    expect(screen.queryByText(/not available/)).toBeNull();
   });
 });
 

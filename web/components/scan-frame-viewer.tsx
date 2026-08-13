@@ -5,7 +5,6 @@ import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { CylScanWithImages } from "@/lib/custom.types";
 import {
   clampFrameIndex,
-  frameGapNote,
   frameLabel,
   missingFrameNote,
   orderedFrames,
@@ -94,13 +93,9 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   const objectUrl =
     currentPath && failedPaths.has(currentPath) ? null : signedUrl;
 
-  // Two different absences: rows the scan recorded but can't render, and gaps
-  // in the frame numbers themselves. `frameGapNote` gets every recorded frame,
-  // not the renderable ones — otherwise a row dropped for a missing object_path
-  // is counted once here and again as a gap, reading as two separate problems.
+  // Rows the scan recorded whose image never arrived — the one completeness signal.
   const recorded = snapshot.recorded;
   const shortfall = missingFrameNote(total, recorded);
-  const gap = frameGapNote(scan?.cyl_images ?? []);
 
   // Three different conclusions, and a scientist acts differently on each: nothing
   // was ever captured, frames exist but aren't retrievable yet, or the frames are
@@ -209,9 +204,6 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
         </p>
       )}
 
-      {gap && (
-        <p className="mt-2 text-center text-sm text-stone-500 italic">{gap}</p>
-      )}
     </div>
   );
 }
