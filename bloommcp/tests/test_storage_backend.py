@@ -510,7 +510,7 @@ def test_local_store_roundtrip_matches_contract(monkeypatch, tmp_path):
 
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
-    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
+    monkeypatch.delenv("BLOOM_STORAGE_URL", raising=False)
     sb.reset_backend_for_tests()
 
     store = SupabaseResultStore()
@@ -529,15 +529,38 @@ def test_local_store_roundtrip_matches_contract(monkeypatch, tmp_path):
     assert stored.output_keys["cleaned"].startswith("bloommcp_output/qc_exp/")
     assert store.get_run("exp.csv", "qc", "latest").run_ref == "v1"
 
-    # bloom#581: local backend's served URL, built from the real key
+    # #642 follow-up: local backend surfaces the resolved direct path, not a
+    # URL — no BLOOM_STORAGE_URL needed at all.
     link = stored.output_links["cleaned"]
-    assert link.url == f"http://localhost/output/{stored.output_keys['cleaned']}"
+    assert link.path == str(tmp_path / stored.output_keys["cleaned"])
+    assert link.url is None
     assert link.size_bytes == len(b"data")
 
     # real files on disk, laid out by key
     out = tmp_path / "bloommcp_output" / "qc_exp"
     assert (out / "manifest.json").is_file()
     assert (out / stored.version_dir / "_cleaned.csv").read_bytes() == b"data"
+
+    # #642 review finding: get_download_links must not require
+    # BLOOM_STORAGE_URL either — it re-derives the same direct path rather
+    # than calling create_signed_url (which would raise without that var).
+    resolved = store.get_download_links("exp.csv", "qc", "latest")
+    relink = resolved.output_links["cleaned"]
+    assert relink.path == link.path
+    assert relink.url is None
+    assert relink.size_bytes == len(b"data")
+
+    # #643 review finding: a deleted/moved committed output must not leak its
+    # raw storage key to the caller — get_download_links redacts this the
+    # same way it already redacts a scope-mismatched key (CorruptRunLinksError).
+    Path(link.path).unlink()
+    from bloom_mcp.result_store import OutputFileMissingError
+
+    with pytest.raises(OutputFileMissingError) as exc_info:
+        store.get_download_links("exp.csv", "qc", "latest")
+    msg = str(exc_info.value)
+    assert stored.output_keys["cleaned"] not in msg
+    assert "see server logs" in msg
 
 
 def test_default_path_writes_no_local_files(
@@ -1548,6 +1571,40 @@ def test_validate_storage_backend_output_subfolder_blocked_by_file(
         sb.validate_storage_backend()
 
 
+def test_validate_storage_backend_rejects_relative_local_root(monkeypatch, tmp_path):
+    """A relative BLOOM_LOCAL_ROOT resolves against the process's CWD — a
+    restart from a different CWD would silently point at a different
+    directory, making prior on-disk results unretrievable with no error at
+    all. Caught at boot instead, before any mkdir."""
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", "relative/local/root")
+    monkeypatch.chdir(tmp_path)
+    sb.reset_backend_for_tests()
+    with pytest.raises(RuntimeError, match="not an absolute path"):
+        sb.validate_storage_backend()
+    assert not (tmp_path / "relative").exists()  # fails before any mkdir
+
+
+def test_validate_storage_backend_rejects_relative_explicit_override(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", "relative/output/root")
+    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
+    sb.reset_backend_for_tests()
+    with pytest.raises(RuntimeError, match="not an absolute path"):
+        sb.validate_storage_backend()
+
+
+def test_validate_storage_backend_accepts_absolute_local_root(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    sb.reset_backend_for_tests()
+    sb.validate_storage_backend()  # must not raise
+
+
 # ─── 5d. bloom#593 — shared `fit_is_trustworthy` primitive ────────────────────
 # Promoted from `remove_outliers.py`'s private `_fit_is_trustworthy`/
 # `_UNTRUSTWORTHY_FIT` (#419) so `remove_outliers`'s live gate and
@@ -1857,6 +1914,10 @@ def test_local_create_signed_url_ignores_expires_in(monkeypatch, tmp_path):
 
 
 def test_local_create_signed_url_raises_when_unset_no_path_leak(monkeypatch, tmp_path):
+    """Not called by the local backend's own output_links pipeline anymore
+    (#642 follow-up — commit() surfaces a direct path instead), but the
+    method itself still fails closed for an operator who deliberately calls
+    it (or configures BLOOM_STORAGE_URL) without finishing the setup."""
     monkeypatch.delenv("BLOOM_STORAGE_URL", raising=False)
     with pytest.raises(Exception) as exc:
         sb.LocalStorageBackend(tmp_path).create_signed_url("k", 3600)
@@ -1870,6 +1931,19 @@ def test_storage_backend_protocol_includes_create_signed_url(tmp_path):
     assert isinstance(sb.LocalStorageBackend(tmp_path), sb.StorageBackend)
     assert hasattr(sb.SupabaseStorageBackend, "create_signed_url")
     assert hasattr(sb.LocalStorageBackend, "create_signed_url")
+
+
+# ─── 9. Local-mode self-serve base URL (#642) ──────────────────────────────────
+
+
+def test_self_serve_base_url_defaults_to_localhost_8811(monkeypatch):
+    monkeypatch.delenv("BLOOMMCP_PUBLIC_URL", raising=False)
+    assert sb.self_serve_base_url() == "http://localhost:8811"
+
+
+def test_self_serve_base_url_prefers_public_url(monkeypatch):
+    monkeypatch.setenv("BLOOMMCP_PUBLIC_URL", "https://example.internal/")
+    assert sb.self_serve_base_url() == "https://example.internal"
 
 
 def test_create_signed_url_performs_no_ownership_check(monkeypatch):
