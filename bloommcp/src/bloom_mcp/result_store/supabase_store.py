@@ -459,11 +459,21 @@ class SupabaseResultStore:
         entry = _guarded_manifest_read(adir, lambda: adir.get_version(run_ref))
         if entry is None:
             raise RunNotFoundError(f"No run {run_ref!r} for {tool_class}/{adir.stem}.")
-        return StoredRun.from_version_entry(
+        stored = StoredRun.from_version_entry(
             entry,
             tool_class=tool_class,
             experiment=experiment,
             manifest_path=f"{adir.path}manifest.json",
+        )
+        # params/based_on_version (bloom#600, reworked per bloom#622 review —
+        # see add-bloommcp-manifest-download-link's design.md Decision 5):
+        # attached here, not in
+        # `from_version_entry` itself, so `list_runs` (which every returned
+        # entry of `list_existing_analyses` is built from) never carries them
+        # — only this single resolved `entry`'s own values, never another
+        # run's.
+        return replace(
+            stored, params=dict(entry.params), based_on_version=entry.based_on_version
         )
 
     def get_download_links(

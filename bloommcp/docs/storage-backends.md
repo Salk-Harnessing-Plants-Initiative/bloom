@@ -59,8 +59,12 @@ artifacts other than the one just committed.
 A signed URL expires after an hour, and a chat session can end before it's used.
 The `get_download_links(experiment, tool_class, run_ref="latest")` MCP tool
 (bloom#599) re-signs fresh links for a run you already know about — from a prior
-`list_existing_analyses` call, or a tool response from a now-expired session.
-Three things worth knowing before you reach for it:
+`list_existing_analyses` call, or a tool response from a now-expired session —
+for the run's per-output `output_links`, and also returns that run's own
+`params` (the exact tool-call kwargs it was committed with) and
+`based_on_version` (bloom#600, reworked per bloom#622 review — see
+add-bloommcp-manifest-download-link's design.md Decision 5). Five things worth
+knowing before you reach for it:
 
 - **It must be called by name for one already-known run** — it is not a browsing
   or discovery feature. There is still no way to list or browse every historical
