@@ -410,6 +410,20 @@ def fit_is_trustworthy(goodness_of_fit: Optional[dict]) -> Optional[bool]:
 _CLEANED_TOOL_CLASSES_BY_PRIORITY = (QC_TOOL_CLASS, OUTLIERS_TOOL_CLASS)
 
 
+def _explicit_version_not_found_message(stem: str, version: str) -> str:
+    """The fixed not-found message for an explicit `v<N>` miss.
+
+    Single-sourced so `_resolve_one_class` and `_resolve_one_class_explicit_version`
+    can never drift, and so the latter can recognize "this class simply doesn't
+    have that id" (a soft miss it may fall through) apart from any other error
+    string (a genuine infra failure, which always takes priority).
+    """
+    return (
+        f"Version {version!r} not found for experiment '{stem}'. "
+        f"Use list_existing_analyses to see available versions."
+    )
+
+
 def _resolve_one_class(
     stem: str,
     version: str,
@@ -467,14 +481,7 @@ def _resolve_one_class(
     if entry is None:
         if version == "latest":
             return None, None, None
-        return (
-            None,
-            None,
-            (
-                f"Version {version!r} not found for experiment '{stem}'. "
-                f"Use list_existing_analyses to see available versions."
-            ),
-        )
+        return None, None, _explicit_version_not_found_message(stem, version)
 
     # From here on `entry` names a real, committed version — any failure to
     # resolve it is a hard error, never a soft miss, regardless of `version`.
@@ -518,6 +525,78 @@ def _resolve_one_class(
     return tmp, f"{entry.id}_cleaned", None
 
 
+def _resolve_one_class_explicit_version(
+    stem: str, version: str
+) -> tuple[Optional[Path], Optional[str], Optional[str]]:
+    """Resolve an explicit `v<N>` version, checking **both** `qc` and `outliers`.
+
+    Each tool class has its own independently-numbered `v<N>` sequence (a
+    `create_run` call allocates the next id within its own class's manifest,
+    per `ResultStore`), so a bare version id given by a caller is not, on its
+    own, enough to say which class it names — and `list_existing_analyses`
+    lists them separately per class, which is exactly where a caller would
+    have seen the id in the first place. Checking `qc` alone (as this function
+    did before the #644 PR review) would silently resolve an unrelated,
+    differently-content `qc`-class entry of the same id instead of the
+    `outliers`-class entry the caller actually meant — a real
+    silently-wrong-dataset hazard, not merely a missing-coverage question.
+
+    - Exactly one class has a matching entry: resolve it (the `outliers` class
+      gets the same `f"outliers_{entry.id}_cleaned"` qualified label
+      `version="latest"` already uses; `qc` keeps the unqualified label).
+    - **Both** classes have a matching entry: refuse as an unresolvable
+      ambiguity — never silently pick one.
+    - **Neither** does: a not-found error naming both classes checked. A
+      genuine infra failure in either class (schema error, missing output key,
+      unlocatable version directory, failed download) always takes priority
+      over a plain not-found miss in the other — never masked by it.
+    """
+    results = {
+        tool_class: _resolve_one_class(stem, version, tool_class)
+        for tool_class in _CLEANED_TOOL_CLASSES_BY_PRIORITY
+    }
+
+    found = {
+        tool_class: (path, label)
+        for tool_class, (path, label, _error) in results.items()
+        if path is not None
+    }
+    if len(found) > 1:
+        classes = " and ".join(f"'{c}'" for c in sorted(found))
+        return (
+            None,
+            None,
+            (
+                f"Version {version!r} is ambiguous for experiment '{stem}': it "
+                f"exists independently in more than one tool class ({classes}). "
+                "Use list_existing_analyses to see which one you mean, or pin "
+                "'latest'/'latest_qc' instead if either of those is what you "
+                "actually want."
+            ),
+        )
+    if found:
+        [(tool_class, (path, label))] = found.items()
+        if tool_class != QC_TOOL_CLASS:
+            label = f"{tool_class}_{label}"
+        return path, label, None
+
+    not_found = _explicit_version_not_found_message(stem, version)
+    infra_errors = [
+        error for _path, _label, error in results.values() if error != not_found
+    ]
+    if infra_errors:
+        return None, None, infra_errors[0]
+    return (
+        None,
+        None,
+        (
+            f"Version {version!r} not found for experiment '{stem}' in either "
+            f"the {' or '.join(repr(c) for c in _CLEANED_TOOL_CLASSES_BY_PRIORITY)} "
+            "class. Use list_existing_analyses to see available versions."
+        ),
+    )
+
+
 def _resolve_versioned_cleaned(
     o_dir: Path,
     stem: str,
@@ -544,11 +623,18 @@ def _resolve_versioned_cleaned(
         `outliers` version, with the unqualified label — this is what
         `remove_outliers` reads as its trimming input, so a fresh `qc_clean`
         is always visible to it regardless of any prior trim.
-      - An explicit `"v<N>"` resolves the `qc` class only, unqualified label —
-        unchanged from before this function checked more than one class (no
-        shipped caller currently passes an explicit cleaned-tier version, so
-        resolving a pin across two independently-numbered class sequences is
-        not yet a reachable question).
+      - An explicit `"v<N>"` checks **both** `qc` and `outliers` classes — each
+        has its own independently-numbered `v<N>` sequence (`list_existing_analyses`
+        lists them separately, per tool class), so a version id a caller saw
+        listed under `outliers` may coincide with an unrelated, differently-content
+        `qc`-class entry of the same id. Resolving against `qc` alone (as this
+        function did before #644's review) would silently hand back the wrong,
+        untrimmed dataset instead of erroring. If exactly one class has a
+        matching entry, it resolves (the `outliers` class gets the same
+        `f"outliers_{entry.id}_cleaned"` qualified label `"latest"` uses); if
+        **both** classes have a matching entry, that is refused as an
+        unresolvable ambiguity — never silently guessed; if **neither** does,
+        a not-found error names both classes checked.
       - `"raw"` is handled by the caller and never reaches this function.
 
     A checked class with **no entry at all** is a soft miss (continues to the
@@ -573,7 +659,7 @@ def _resolve_versioned_cleaned(
         return _resolve_one_class(stem, "latest", "qc")
 
     if version != "latest":
-        return _resolve_one_class(stem, version, "qc")
+        return _resolve_one_class_explicit_version(stem, version)
 
     for tool_class in reversed(_CLEANED_TOOL_CLASSES_BY_PRIORITY):
         path, label, error = _resolve_one_class(stem, "latest", tool_class)
