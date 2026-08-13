@@ -164,6 +164,45 @@ def test_list_empty_message(monkeypatch):
     assert "No datasets found" in res.output
 
 
+def test_list_surfaces_api_error(monkeypatch):
+    """A failed query is a message, not a traceback (#497).
+
+    The guard this covers arrived incidentally in an unrelated change, so without a test
+    nothing stops it being refactored away again — which is how it shipped missing.
+    """
+    _patch_authed(monkeypatch)
+
+    def _boom(client, experiment_id=None):
+        raise _api_error("permission denied for table cyl_datasets", code="42501")
+
+    monkeypatch.setattr(ds, "fetch_datasets", _boom)
+
+    res = CliRunner().invoke(cli, ["cyl", "datasets", "list"])
+
+    assert res.exit_code != 0
+    assert "permission denied for table cyl_datasets" in res.output
+    assert "Traceback" not in res.output
+
+
+def test_list_api_error_without_a_message_still_says_something(monkeypatch):
+    """`APIError.message` is None when the body has no "message" key; falling through to
+    str(exc) keeps the diagnostic instead of printing "Error: None"."""
+    from postgrest import APIError
+
+    _patch_authed(monkeypatch)
+
+    def _boom(client, experiment_id=None):
+        raise APIError({"code": "42P01", "details": "relation does not exist"})
+
+    monkeypatch.setattr(ds, "fetch_datasets", _boom)
+
+    res = CliRunner().invoke(cli, ["cyl", "datasets", "list"])
+
+    assert res.exit_code != 0
+    assert "None" not in res.output
+    assert "42P01" in res.output or "relation does not exist" in res.output
+
+
 def test_list_passes_experiment_filter(monkeypatch):
     _patch_authed(monkeypatch)
     captured = {}
