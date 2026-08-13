@@ -121,7 +121,7 @@ class StoredRun:
     output_links: dict[str, "OutputLink"] = field(default_factory=dict)
     # The resolved run's own recorded `params` (raw tool-call kwargs) and
     # `based_on_version` (bloom#600, reworked on bloom#622 review — see
-    # design.md Decision 5). Populated only by `get_run`/`get_download_links`,
+    # add-bloommcp-manifest-download-link's design.md Decision 5). Populated only by `get_run`/`get_download_links`,
     # each of which resolve exactly *one* run by `run_ref`: `commit` and
     # `list_runs` (and `from_version_entry`, which all three use) leave these
     # at their defaults (`{}`/`""`). This is deliberate, not an oversight —
@@ -211,7 +211,18 @@ class ResultStore(Protocol):
         tool_class: str,
         run_ref: str = "latest",
     ) -> StoredRun:
-        """Resolve a run by reference; ``"latest"`` resolves the most recent."""
+        """Resolve a run by reference; ``"latest"`` resolves the most recent.
+
+        Unlike ``list_runs``, the returned :class:`StoredRun` carries that
+        resolved run's own ``params`` (its exact recorded tool-call kwargs)
+        and ``based_on_version`` (bloom#600, reworked per bloom#622 review —
+        see add-bloommcp-manifest-download-link's design.md Decision 5). This is the only place either field is
+        populated: ``commit`` and ``list_runs`` both build their
+        :class:`StoredRun`\\ s via ``StoredRun.from_version_entry``, which
+        leaves ``params``/``based_on_version`` at their dataclass defaults
+        (``{}``/``""``) — never another run's values, only the one this
+        call resolves.
+        """
         ...
 
     def get_download_links(
@@ -237,7 +248,7 @@ class ResultStore(Protocol):
         never a partially-populated ``output_links``.
 
         Also carries ``params``/``based_on_version`` for the resolved run
-        (bloom#600, reworked per bloom#622 review — see design.md Decision 5)
+        (bloom#600, reworked per bloom#622 review — see add-bloommcp-manifest-download-link's design.md Decision 5)
         via ``get_run``, which this method calls internally: a caller who
         already knows one run's ``run_ref`` can inspect that run's own exact
         params and lineage without direct Supabase Storage/admin access,

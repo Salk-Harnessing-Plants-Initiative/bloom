@@ -209,7 +209,8 @@ def test_output_links_empty_for_get_run_and_list_runs_parity(kind, stores):
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
 def test_params_populated_only_by_get_run_not_commit_or_list_runs_parity(kind, stores):
-    """bloom#600, reworked per bloom#622 review (see design.md Decision 5):
+    """bloom#600, reworked per bloom#622 review (see
+    add-bloommcp-manifest-download-link's design.md Decision 5):
     params/based_on_version are populated only by get_run (and therefore by
     get_download_links, which calls it internally) -- commit's own return
     value and list_runs both leave them at their StoredRun defaults
@@ -330,8 +331,19 @@ def test_get_download_links_legacy_run_with_no_keys_yields_no_links_parity(
     output_links == {} rather than raising -- nothing to sign or size."""
     store = stores[kind]
     if kind == "fake":
+        # Explicit params/based_on_version matching _prov()'s values exactly
+        # (params={"a": 1}, based_on_version="raw") so the assertion below
+        # can check real equality against the supabase branch's genuine
+        # Provenance-derived entry, not just "some dict" -- a broken
+        # get_run/_provenance lookup on the fake adapter would otherwise
+        # pass unnoticed (PR #622 review finding).
         store.seed_v2_run(
-            "exp.csv", "qc", tool="qc_clean", outputs={"cleaned": "_cleaned.csv"}
+            "exp.csv",
+            "qc",
+            tool="qc_clean",
+            outputs={"cleaned": "_cleaned.csv"},
+            params={"a": 1},
+            based_on_version="raw",
         )
     else:
         # A real v2 manifest entry, mirroring the fixture-based v2-backcompat
@@ -363,13 +375,11 @@ def test_get_download_links_legacy_run_with_no_keys_yields_no_links_parity(
     # params/based_on_version are never gated on output_keys being
     # non-empty -- they were part of the manifest schema since v2, present
     # regardless of whether per-artifact keys were ever recorded for this
-    # run. Content isn't asserted for exact equality here (the fake's
-    # seed_v2_run stub and the supabase branch's real Provenance-derived
-    # entry aren't constructed to match each other's specific values) --
-    # only that both backends return the correctly-typed fields, not a
-    # missing/None value, for a legacy run.
-    assert isinstance(resolved.params, dict)
-    assert isinstance(resolved.based_on_version, str)
+    # run. Real-value equality on both backends (not just isinstance checks)
+    # -- a broken provenance lookup on either adapter would otherwise pass
+    # unnoticed (PR #622 review finding).
+    assert resolved.params == {"a": 1}
+    assert resolved.based_on_version == "raw"
 
 
 @pytest.mark.parametrize("kind", ["fake", "supabase"])
@@ -473,10 +483,11 @@ def test_get_download_links_multi_output_partial_failure_aborts_whole_call_parit
 
 
 def test_fake_get_download_links_never_calls_storage_backend(monkeypatch):
-    """design.md Decision 6 (outputs): FakeResultStore.get_download_links
-    never calls anything on StorageBackend for any run it recorded itself --
-    it has its own private size bookkeeping for outputs, and its
-    params/based_on_version come from an in-memory side table (Decision 5,
+    """add-bloommcp-get-download-links's design.md Decision 6 (outputs):
+    FakeResultStore.get_download_links never calls anything on StorageBackend
+    for any run it recorded itself -- it has its own private size bookkeeping
+    for outputs, and its params/based_on_version come from an in-memory side
+    table (add-bloommcp-manifest-download-link's design.md Decision 5,
     bloom#622), not a live call. Specific to FakeResultStore (the real
     adapter's equivalent guarantee is instead "makes exactly one live call
     per output," covered by the parity tests above)."""

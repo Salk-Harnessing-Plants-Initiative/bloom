@@ -213,6 +213,64 @@ predates discovering the file can't be scoped to one run. `params`/
 run's provenance... exact params... everything recorded in the manifest [for
 that run]") without the file-level exposure a literal download link would carry.
 
+### Decision 6 (this change's design.md) — enumerate-then-fetch can still reconstruct every run's params; accepted, not narrowed
+
+**Found in PR #622 review.** Decision 5 above scopes each individual `get_download_links`
+call to exactly one run — a real, load-bearing guarantee: no single call can ever return
+another run's `params`. But `list_existing_analyses` (unauthenticated relative to any
+per-experiment ACL — see below — and always-included, per `ALWAYS_INCLUDE_MCP_TOOLS`) already
+lists every historical `run_ref` for an experiment, across every `tool_class`, with no opt-in
+required. A caller who enumerates those refs and calls `get_download_links` once per ref
+reconstructs the same "every version's raw `params`" corpus the `manifest_url` design was
+rejected in Decision 5 for exposing in a single call — just spread across N calls instead of
+one. `params` (and, after this change, `based_on_version`) is genuinely new MCP-reachable
+surface: neither was reachable through any tool, individually or in aggregate, before this
+change.
+
+**Decision: accept, do not narrow or rate-limit — documented here and in
+`storage-backends.md`.** Three reasons, each grounded in what this codebase already does today,
+not merely asserted:
+
+- **This composition is the codebase's own established, accepted pattern for this tool family
+  — not a new one this change introduces.** `add-bloommcp-get-download-links`'s own design.md
+  (#599) frames `list_existing_analyses` surfacing every `run_ref`, then a caller fetching
+  `get_download_links` per ref, as the *intended* usage (`design.md`'s Goals section: "a caller
+  who already knows `(experiment, tool_class, run_ref)` — e.g. because `list_existing_analyses`
+  just showed it... can get a fresh, real... download link... for each of that run's outputs");
+  its only stated Non-Goal is a *single-call* "file explorer" (`Non-Goal: browsing across
+  runs/experiments`), not enumeration-plus-per-ref-fetch. That composition, looped across every
+  ref, already reconstructs every historical run's **actual output data** — the real, uploaded
+  CSV/plot bytes, via `output_links` — which is a strictly *larger* disclosure than `params`
+  metadata about how that data was produced. If the enumerate-then-loop shape was acceptable for
+  the real data itself when #599 shipped, it is not a new category of risk for `params` now.
+- **`params` is not more reachable, in aggregate, than data the same composition already
+  exposes.** A caller with the access to run this enumerate-then-fetch loop at all already has,
+  through the exact same loop, the genotype/treatment values themselves (the real CSV content
+  `output_links` points at) — not just parameter *names* describing how they were filtered or
+  thresholded. `params` narrows what's knowable about *how* an analysis was configured; it does
+  not open a door to data that a caller pursuing this same composition couldn't already open
+  wider.
+- **No experiment-level authorization exists in bloommcp to narrow against.** Both mitigations
+  the review posed — rate-limiting or scope-narrowing — would need somewhere to attach: a
+  per-caller notion of which experiments/runs they may see. bloommcp's caller-identity layer
+  (#406) verifies *who* is calling for usage tracking, but does not gate *which experiments* a
+  verified caller may read — every authenticated caller already sees every experiment via
+  `list_existing_analyses`/`output_links` today. Rate-limiting a single field's aggregate
+  reachability without addressing that broader, pre-existing single-tenant trust model would add
+  real complexity (bloommcp has no MCP-tool rate-limiting infrastructure of any kind today) for a
+  boundary the rest of the tool surface doesn't enforce either.
+
+**Not accepted blindly, and revisit if the premise changes:** this reasoning depends on the
+single-tenant, no-per-experiment-ACL model documented in `openspec/project.md`. bloommcp began
+accepting external OAuth-authenticated MCP clients in the same commit range as this change (#613)
+— a caller population change already flagged once in this change's own history (the source_path
+discussion superseded by this decision). If bloommcp ever grows per-experiment or per-caller
+authorization, this decision — and the identical, older acceptance for `output_links` it leans
+on — should both be revisited together, not `params` alone in isolation.
+
+See task 7 in `tasks.md` for the test added to make this enumerate-then-fetch boundary explicit
+rather than requiring cross-file verification (review Suggestion).
+
 ## Risks / Trade-offs
 
 - **Superseded:** originally depended on #599 (PR #611) merging first. #611 has since merged
@@ -224,22 +282,29 @@ that run]") without the file-level exposure a literal download link would carry.
   (not yet in `openspec/specs/`) — whoever archives any of `add-bloommcp-signed-url-download`,
   `add-bloommcp-signed-url-key-scoping`, `add-bloommcp-get-download-links`, and this change
   will need to fold all four deltas together, archiving this one last.
-- **Superseded by Decision 5 (PR #622):** `manifest_url` made `ExperimentBlock.source_path`
-  MCP-reachable for the first time, accepted per Decision 4 as a non-secret path string. This
-  is now moot — `manifest_url` (the signed link) no longer exists, so `source_path` is not
-  MCP-reachable through this feature at all; Decision 4 is left above unmodified as a record of
-  what was evaluated at the time.
-- **Superseded by Decision 5 (PR #622):** a legacy (v2) manifest's `manifest_url` would have
-  resolved to a schema-thin document (missing v3-only `seed`/`agent`/`environment`/per-artifact
-  `output_sha256`/`output_keys`). Moot for the same reason — `params`/`based_on_version` (what
-  this feature returns now) were part of the schema since v2, so there is no thinness gap for
-  them to have.
+- **Superseded by this change's design.md Decision 5 (PR #622):** `manifest_url` made
+  `ExperimentBlock.source_path` MCP-reachable for the first time, accepted per Decision 4 as a
+  non-secret path string. This is now moot — `manifest_url` (the signed link) no longer exists,
+  so `source_path` is not MCP-reachable through this feature at all; Decision 4 is left above
+  unmodified as a record of what was evaluated at the time.
+- **Superseded by this change's design.md Decision 5 (PR #622):** a legacy (v2) manifest's
+  `manifest_url` would have resolved to a schema-thin document (missing v3-only
+  `seed`/`agent`/`environment`/per-artifact `output_sha256`/`output_keys`). Moot for the same
+  reason — `params`/`based_on_version` (what this feature returns now) were part of the schema
+  since v2, so there is no thinness gap for them to have.
 - **`params`/`based_on_version` are exposed for exactly the resolved run, never any other.**
-  This is the property Decision 5 exists to guarantee, not a residual risk — called out here so
-  a future change to `get_run`/`from_version_entry` is reviewed against it: attaching these
-  fields inside `from_version_entry` itself (rather than only in `get_run`) would silently
-  reintroduce the same class of cross-run disclosure through `list_runs`/`list_existing_analyses`
-  this decision was written to close.
+  This is the property this change's design.md Decision 5 exists to guarantee, not a residual
+  risk — called out here so a future change to `get_run`/`from_version_entry` is reviewed
+  against it: attaching these fields inside `from_version_entry` itself (rather than only in
+  `get_run`) would silently reintroduce the same class of cross-run disclosure through
+  `list_runs`/`list_existing_analyses` this decision was written to close.
+- **`list_existing_analyses` + looped `get_download_links` can still reconstruct every run's
+  `params` for an experiment, across N calls instead of one.** Explicitly evaluated and accepted
+  per this change's design.md Decision 6 (PR #622 review) — not narrowed or rate-limited, since
+  it extends an already-established, already-accepted composition (the same one #599's own
+  `output_links` already permits, for the actual underlying data) rather than crossing a new
+  trust boundary. Revisit alongside `output_links`' identical acceptance if bloommcp ever adds
+  per-experiment/per-caller authorization.
 
 ## Migration Plan
 

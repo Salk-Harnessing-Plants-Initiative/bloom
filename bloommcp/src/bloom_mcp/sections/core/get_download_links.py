@@ -44,7 +44,8 @@ def get_download_links(
 
     Also returns `params` (the exact tool-call kwargs the resolved run was
     committed with) and `based_on_version` (bloom#600, reworked per bloom#622
-    review — see design.md Decision 5), scoped to this one resolved run only.
+    review — see add-bloommcp-manifest-download-link's own design.md
+    Decision 5), scoped to this one resolved run only.
     An earlier version of this field returned a signed link to the run's
     shared `manifest.json` instead — dropped because that file is keyed only
     by `(experiment, tool_class)` and lists every run ever committed for that

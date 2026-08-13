@@ -119,12 +119,13 @@ class FakeResultStore:
         # performs (bloom#599). Purely internal bookkeeping — not on
         # `StoredRun`/any manifest shape — since this store never uploads
         # real bytes for a live `StorageBackend.get_object_size` call to
-        # meaningfully target; see design.md Decision 6.
+        # meaningfully target; see add-bloommcp-get-download-links's design.md
+        # Decision 6.
         self._output_sizes: dict[tuple[str, str, str], dict[str, int]] = {}
         # (experiment, tool_class, run_ref) -> (params, based_on_version),
         # captured at commit time from the same `entry` the real adapter
         # re-reads fresh from its manifest on every `get_run` call (bloom#600,
-        # reworked per bloom#622 review — see design.md Decision 5). Kept off
+        # reworked per bloom#622 review — see add-bloommcp-manifest-download-link's design.md Decision 5). Kept off
         # the `StoredRun` objects stored in `self._runs` themselves (unlike
         # `_output_sizes`, which backs a field every commit already carries)
         # specifically so `list_runs` — which returns those stored objects
@@ -368,7 +369,7 @@ class FakeResultStore:
                     f"No run {run_ref!r} for {tool_class}/{_stem(experiment)}."
                 )
         # params/based_on_version (bloom#600, reworked per bloom#622 review —
-        # see design.md Decision 5): looked up from the commit-time side
+        # see add-bloommcp-manifest-download-link's design.md Decision 5): looked up from the commit-time side
         # table, not stored on `stored` itself, so `list_runs` (which returns
         # these exact objects, unlike the real adapter's rebuild-on-read
         # `list_runs`) never carries another run's params. Absent for a run
@@ -505,6 +506,7 @@ class FakeResultStore:
                 outputs={},
                 output_keys={},
                 output_sha256={},
+                params={"interloper": True},
             )
             self._runs.setdefault(key, []).append(stored)
         elif visible_at == "pre_append":
@@ -521,6 +523,8 @@ class FakeResultStore:
         output_sha256: Optional[dict[str, str]] = None,
         sizes: Optional[dict[str, int]] = None,
         tool: str = "seeded",
+        params: Optional[dict] = None,
+        based_on_version: str = "raw",
     ) -> StoredRun:
         """Register a historical run with caller-supplied `output_keys`
         (bloom#599) — the only way to exercise `get_download_links`'s
@@ -528,7 +532,10 @@ class FakeResultStore:
         call path can ever produce one (every real key is derived from this
         same run's own `key_for` closure). `output_sha256`/`sizes` default to
         a placeholder per output name when omitted, since most callers of
-        this helper care only about the `output_keys` shape.
+        this helper care only about the `output_keys` shape. `params`
+        defaults to `{}` (a caller who cares about exact `params`/
+        `based_on_version` content, e.g. for a get_run/get_download_links
+        parity assertion, should pass real values explicitly).
         """
         key = (experiment, tool_class)
         existing = self._runs.get(key, [])
@@ -545,17 +552,31 @@ class FakeResultStore:
             outputs={name: name for name in output_keys},
             output_keys=output_keys,
             output_sha256=output_sha256,
+            params=params,
+            based_on_version=based_on_version,
         )
         self._runs.setdefault(key, []).append(stored)
         self._output_sizes[(experiment, tool_class, version_id)] = dict(sizes)
         return stored
 
     def seed_v2_run(
-        self, experiment: str, tool_class: str, *, tool: str, outputs: dict[str, str]
+        self,
+        experiment: str,
+        tool_class: str,
+        *,
+        tool: str,
+        outputs: dict[str, str],
+        params: Optional[dict] = None,
+        based_on_version: str = "raw",
     ) -> StoredRun:
         """Register a v2-shaped historical run: no `seed`/`agent`/
         `output_sha256`/`output_keys`, matching the checked-in
         `manifest_v2.json` fixture's shape — schema evolution, not a bug.
+        `params`/`based_on_version` default to `{}`/`"raw"` since these two
+        fields were part of the manifest schema since v2 (unlike the v3-only
+        fields this helper deliberately omits) — a caller asserting the
+        "legacy run still gets its own provenance" behavior should pass real
+        values explicitly to get a meaningful (non-default) assertion.
         """
         key = (experiment, tool_class)
         existing = self._runs.get(key, [])
@@ -569,6 +590,8 @@ class FakeResultStore:
             outputs=outputs,
             output_keys={},
             output_sha256={},
+            params=params,
+            based_on_version=based_on_version,
         )
         self._runs.setdefault(key, []).append(stored)
         return stored
@@ -584,8 +607,20 @@ class FakeResultStore:
         outputs: dict[str, str],
         output_keys: dict[str, str],
         output_sha256: dict[str, str],
+        params: Optional[dict] = None,
+        based_on_version: str = "raw",
     ) -> StoredRun:
         prefix = f"{self._output_root}/{tool_class}_{_stem(experiment)}/"
+        # params/based_on_version (bloom#622 review fix) are registered into
+        # the same commit-time side table real `commit()` populates, not
+        # baked onto the returned StoredRun itself -- so a seeded run's
+        # get_run resolution exercises the same lookup path a genuinely
+        # committed run takes, rather than a shortcut that would let a
+        # broken provenance lookup pass unnoticed.
+        self._provenance[(experiment, tool_class, version_id)] = (
+            dict(params) if params is not None else {},
+            based_on_version,
+        )
         return StoredRun(
             run_ref=version_id,
             tool=tool,

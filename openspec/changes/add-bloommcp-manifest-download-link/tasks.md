@@ -214,3 +214,67 @@
       updated the Context/Risks (design.md) and Sequencing (proposal.md) sections to record the
       merge and mark the old sequencing constraint superseded, rather than silently deleting the
       historical narrative.
+
+## 7. Post-PR review round 2 (PR #622, 5-lens review of the rework itself)
+
+- [x] 7.0 **Note:** PR description was stale relative to the actual diff (still described
+      shipping `manifest_url`, though the diff had already replaced it with scoped
+      `params`/`based_on_version` mid-review). Fixed by editing the GitHub PR description
+      directly (not an OpenSpec doc) to describe the shipped design; see the PR itself for the
+      current text.
+- [x] 7.0b Branch was reported behind `staging` (`#611` — already merged per task 6.5 — is a
+      dependency of a *different*, unrelated `#646` fix that landed on `staging` since). Rebased
+      onto `origin/staging`; no conflicts (the intervening commits touched an unrelated OpenSpec
+      change and web/deploy files, none overlapping this change's files).
+- [x] 7.1 **Blocking:** `list_existing_analyses` (unauthenticated relative to any per-experiment
+      permission — bloommcp has none — and always-included) already enumerates every historical
+      `run_ref` for an experiment. Looping `get_download_links` once per enumerated ref
+      reconstructs the same "every run's raw `params`" corpus the `manifest_url` design was
+      rejected (Decision 5) for exposing in a single call — just spread across N calls. `params`
+      is genuinely new MCP-reachable surface (individually and in aggregate) introduced by this
+      change. Decision: **accept, do not narrow or rate-limit** — added design.md Decision 6 with
+      the full reasoning (this composition already applies to `output_links`, the actual
+      analysis data, since `#599`'s own design.md frames enumerate-then-fetch as the intended
+      usage; `params` metadata doesn't cross a new trust boundary riding the same, already-wider
+      composition; bloommcp has no per-experiment authorization to narrow against, and no
+      rate-limiting infrastructure to attach a mitigation to). Added a corresponding
+      `storage-backends.md` bullet and a `tasks.md`-cited test (7.4) making the boundary
+      explicit. Revisit alongside `output_links`'s identical acceptance if bloommcp ever adds
+      per-experiment/per-caller authorization.
+- [x] 7.2 **Important:** `ResultStore.get_run`'s Protocol docstring (`ports.py`) still read
+      "Resolve a run by reference..." with no mention that it now returns populated
+      `params`/`based_on_version` — both concrete adapters were correct, but a reader of the
+      Protocol alone wouldn't know. Fixed: docstring now states this explicitly, including that
+      `commit`/`list_runs` (via `from_version_entry`) leave the two fields at their defaults.
+- [x] 7.3 **Important:** `FakeResultStore`'s seed helpers (`seed_run_with_keys`, `seed_v2_run`,
+      `seed_collision`) didn't populate `params`/`based_on_version`, so the parity test for "a
+      legacy run still gets its own provenance" only asserted `isinstance(dict)`/`isinstance(str)`
+      — it would have passed even if the fake adapter's provenance lookup silently broke (e.g.
+      always returning `{}`/`""`). Fixed: all three helpers (via a shared `_stub_stored_run`)
+      now accept optional `params`/`based_on_version` and register them into the same
+      `_provenance` side table `commit()` populates — a seeded run's `get_run` resolution now
+      exercises the identical lookup path a genuinely committed run takes, not a shortcut.
+      Updated `test_get_download_links_legacy_run_with_no_keys_yields_no_links_parity`
+      (`test_store_parity.py`) and `test_legacy_run_response_still_carries_its_own_params`
+      (`test_get_download_links_tool.py`) to pass explicit values and assert real equality
+      (`{"a": 1}`/`"raw"` matching `_prov()`'s real values for the parity test; `{"legacy":
+      True}`/`"raw"` for the tool test) instead of type-only checks.
+- [x] 7.4 **Suggestion:** added
+      `test_enumerate_via_list_existing_analyses_then_loop_reconstructs_every_runs_params`
+      (`test_get_download_links_tool.py`) — commits 3 runs with distinct `params`, enumerates
+      their `run_ref`s via `list_existing_analyses`, loops `get_download_links` per ref, and
+      asserts every run's `params` is recoverable in aggregate. Makes the "scoped per call, not
+      per experiment" boundary explicit and regression-visible rather than requiring cross-file
+      verification against design.md prose alone.
+- [x] 7.5 **Suggestion:** "Decision 5" (this change) and `#599`'s own design.md also has a
+      "Decision 5" (`get_download_links is not a foundational tool`) — bare `design.md Decision
+      5`/`Decision 6` cross-references in code comments, docstrings, and `storage-backends.md`
+      could be confused with the wrong change's decision. Fixed: every such reference in touched
+      files now names the change explicitly (`add-bloommcp-manifest-download-link's design.md
+      Decision 5`, `add-bloommcp-get-download-links's design.md Decision 6`). References from
+      *within* this change's own `proposal.md`/`tasks.md` to their sibling `design.md` are left
+      unqualified — unambiguous by directory context, unlike a shared code file or doc a reader
+      might reach from anywhere.
+- [x] 7.6 Full `bloommcp` suite re-run green after all of the above (65 tests in the two directly
+      affected files, up from 64 — the new 7.4 test); `black@26.3.1`/`ruff@0.9.9` clean on every
+      touched file; `openspec validate add-bloommcp-manifest-download-link --strict` passes.

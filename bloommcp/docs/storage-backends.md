@@ -62,8 +62,9 @@ The `get_download_links(experiment, tool_class, run_ref="latest")` MCP tool
 `list_existing_analyses` call, or a tool response from a now-expired session —
 for the run's per-output `output_links`, and also returns that run's own
 `params` (the exact tool-call kwargs it was committed with) and
-`based_on_version` (bloom#600, reworked per bloom#622 review — see that change's
-design.md Decision 5). Four things worth knowing before you reach for it:
+`based_on_version` (bloom#600, reworked per bloom#622 review — see
+add-bloommcp-manifest-download-link's design.md Decision 5). Five things worth
+knowing before you reach for it:
 
 - **It must be called by name for one already-known run** — it is not a browsing
   or discovery feature. There is still no way to list or browse every historical
@@ -88,6 +89,16 @@ design.md Decision 5). Four things worth knowing before you reach for it:
   could never be scoped to one `run_ref`, so knowing any single run's reference
   would have unlocked every other run's data too. Direct Supabase Storage/admin
   access remains the only way to read a `manifest.json` in full.
+- **A single call is scoped to one run — but `list_existing_analyses` already
+  enumerates every historical `run_ref` for an experiment, unauthenticated
+  relative to any per-experiment permission (bloommcp has none) and always
+  included.** A caller who loops `get_download_links` once per enumerated ref
+  can still reconstruct every run's `params` for that experiment, one call at a
+  time. This is accepted, not narrowed or rate-limited — it extends the same
+  enumerate-then-fetch composition this tool family already permits for the
+  actual underlying output data via `output_links` (accepted since `#599`); see
+  add-bloommcp-manifest-download-link's design.md Decision 6 for the full
+  reasoning.
 
 Unlike the per-tool `output_links` above, `get_download_links`'s `size_bytes` is
 resolved via a live storage lookup on every call — nothing about a run's size is
