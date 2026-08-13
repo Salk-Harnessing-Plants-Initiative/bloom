@@ -7,6 +7,8 @@ flight at once, and cleanup of temp files.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from test_download_metadata import SCAN
 from test_download_session_resume import _Client, _images
@@ -229,6 +231,7 @@ def test_a_stray_temp_from_a_killed_run_is_swept(tmp_path, monkeypatch):
     frame_dir.mkdir(parents=True)
     orphan = frame_dir / ".dl-abc123.tmp"
     orphan.write_bytes(b"half a frame")
+    os.utime(orphan, (0, 0))  # left by a run that is long gone, not one still writing
 
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(1))
     dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
@@ -241,6 +244,7 @@ def test_the_sweep_leaves_real_frames_alone(tmp_path):
     frame_dir.mkdir(parents=True)
     (frame_dir / "0.png").write_bytes(b"real")
     (frame_dir / ".dl-x.tmp").write_bytes(b"orphan")
+    os.utime(frame_dir / ".dl-x.tmp", (0, 0))
 
     assert storage.sweep_orphan_temps(tmp_path) == 1
     assert (frame_dir / "0.png").exists()
@@ -248,6 +252,31 @@ def test_the_sweep_leaves_real_frames_alone(tmp_path):
 
 def test_the_sweep_is_a_no_op_on_a_fresh_output_dir(tmp_path):
     assert storage.sweep_orphan_temps(tmp_path) == 0
+
+
+def test_the_sweep_leaves_a_second_run_s_live_temps_alone(tmp_path):
+    """A temp cannot be told from a live one by name, and the sweep runs at the start of
+    every download — so without an age guard, starting a second run into the same directory
+    deletes the first run's in-flight writes and fails its renames."""
+    (tmp_path / "images").mkdir()
+    in_flight = tmp_path / "images" / ".dl-inflight.tmp"
+    in_flight.write_bytes(b"another run is writing this right now")
+
+    assert storage.sweep_orphan_temps(tmp_path) == 0
+    assert in_flight.exists()
+
+
+def test_the_probe_file_is_named_so_the_sweep_can_collect_it(tmp_path):
+    """`ensure_writable` writes a probe; a hard kill in that window leaves it behind."""
+    dl.ensure_writable(tmp_path / "out")
+    probe = next((tmp_path / "out").glob(".dl-probe-*.tmp"), None) or (
+        tmp_path / "out" / ".dl-probe-deadbeef.tmp"
+    )
+    probe.write_bytes(b"bloomctl write test")
+    os.utime(probe, (0, 0))
+
+    assert storage.sweep_orphan_temps(tmp_path / "out") == 1
+    assert not probe.exists()
 
 
 # --- malformed rows ---------------------------------------------------------
