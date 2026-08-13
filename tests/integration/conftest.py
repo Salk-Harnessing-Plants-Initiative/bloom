@@ -38,6 +38,8 @@ _env = _load_env(".env.prod") or _load_env(".env.ci") or _load_env(".env.dev")
 BASE_URL = os.environ.get("TEST_BASE_URL", "http://localhost")
 ANON_KEY = os.environ.get("ANON_KEY", _env.get("ANON_KEY", ""))
 SERVICE_ROLE_KEY = os.environ.get("SERVICE_ROLE_KEY", _env.get("SERVICE_ROLE_KEY", ""))
+# `null` and `[]` are the compose defaults for an unprovisioned stack, not a JWKS.
+JWT_JWKS = os.environ.get("JWT_JWKS", _env.get("JWT_JWKS", "")).strip()
 
 
 @pytest.fixture
@@ -55,13 +57,31 @@ def service_role_key():
     return SERVICE_ROLE_KEY
 
 
-def api_request(path: str, api_key: str = None, method: str = "GET", data: dict = None) -> tuple[int, dict | str]:
-    """Make an HTTP request to the stack via nginx."""
+@pytest.fixture
+def jwks_configured() -> bool:
+    """Whether this stack signs sessions asymmetrically (ES256) or with HS256."""
+    return bool(JWT_JWKS) and JWT_JWKS not in ("null", "[]")
+
+
+def api_request(
+    path: str,
+    api_key: str = None,
+    method: str = "GET",
+    data: dict = None,
+    bearer: str = None,
+) -> tuple[int, dict | str]:
+    """Make an HTTP request to the stack via nginx.
+
+    `bearer` sends an end-user session token while `api_key` stays the gateway
+    credential — the split a logged-in browser request actually makes.
+    """
     url = f"{BASE_URL}{path}"
     headers = {}
     if api_key:
         headers["apikey"] = api_key
         headers["Authorization"] = f"Bearer {api_key}"
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
 
     body = None
     if data:
