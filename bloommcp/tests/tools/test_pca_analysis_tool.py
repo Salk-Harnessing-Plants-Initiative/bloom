@@ -220,6 +220,29 @@ def test_degenerate_fit_is_structured_without_leaking(injected_ports, monkeypatc
     assert store.list_runs(_EXPERIMENT, "pca") == []  # nothing persisted
 
 
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: pca_analysis's declared errors=(ExperimentReadError,) swallowed a CommitFailedError/
+# ManifestReadError from store.create_run()/commit() into a generic internal_error ref) ──
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "pca")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "commit failed for pca" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "pca")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
 def test_real_delegate_degenerate_selection_is_assumption_violated(injected_ports):
     """The REAL delegate raises ValueError on a constant/degenerate selection; it must
     surface as a self-correctable assumption_violated, not the contract's internal_error.

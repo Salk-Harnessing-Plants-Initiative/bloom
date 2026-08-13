@@ -631,6 +631,31 @@ def test_undeclared_delegate_raise_is_scrubbed(injected_ports, monkeypatch):
     assert "secret" not in msg and "/var" not in msg and "db.internal" not in msg
 
 
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: remove_outliers's declared errors=(ExperimentReadError,) swallowed a
+# CommitFailedError/ManifestReadError from store.create_run()/commit() into a generic
+# internal_error ref) ── method="isolation_forest" because turface_19's mahalanobis
+# default is gated as an untrustworthy fit (#419) before create_run is ever reached.
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "outliers")
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="isolation_forest")
+    assert exc.value.code == "tool_error"
+    assert "commit failed for outliers" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "outliers")
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="isolation_forest")
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
 # ── 3.9 method-surface validation + isolation_forest happy path ─────────────
 
 

@@ -293,6 +293,30 @@ def test_raw_only_experiment_is_rejected_with_qc_clean_remedy():
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: descriptive_stats's declared errors=(ExperimentReadError,) swallowed a
+# CommitFailedError/ManifestReadError from store.create_run()/commit() into a generic
+# internal_error ref) ──
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "stats")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "commit failed for stats" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "stats")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
 # ── 3.6 trait-selection validation ───────────────────────────────────────────
 
 

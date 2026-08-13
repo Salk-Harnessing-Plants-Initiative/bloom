@@ -550,6 +550,29 @@ def test_non_finite_embedding_is_assumption_violated_before_persistence(
     assert store.list_runs(_EXPERIMENT, "umap") == []  # no orphaned staging dir either
 
 
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: umap_analysis's declared errors=(ExperimentReadError,) swallowed a CommitFailedError/
+# ManifestReadError from store.create_run()/commit() into a generic internal_error ref) ──
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "umap")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "commit failed for umap" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "umap")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
 # ── require_clean consumption ────────────────────────────────────────────────
 
 
