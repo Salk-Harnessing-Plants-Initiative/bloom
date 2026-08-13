@@ -27,7 +27,12 @@ from bloom_mcp.manifest import (
     version_dir_name,
     write_manifest,
 )
-from bloom_mcp.storage_backend import active_backend_name
+from bloom_mcp.storage_backend import (
+    LocalStorageBackend,
+    active_backend,
+    active_backend_name,
+    is_local_backend,
+)
 
 from ._artifacts import (
     SIGNED_URL_EXPIRES_SECONDS,
@@ -43,6 +48,7 @@ from .ports import (
     CorruptRunLinksError,
     ManifestIncompatibleError,
     ManifestReadError,
+    OutputFileMissingError,
     RunHandle,
     RunNotFoundError,
     RunStateError,
@@ -89,6 +95,22 @@ def _commit_lock(output_root: str, experiment: str, tool_class: str) -> KeyedLoc
     # in the shared registry — the two must never contend on each other's
     # locks even if given identical (output_root, experiment, tool_class).
     return KeyedLock(("supabase", output_root, experiment, tool_class))
+
+
+def _active_local_backend() -> Optional[LocalStorageBackend]:
+    """The active `LocalStorageBackend` if local mode is selected, else `None`.
+
+    `commit()` and `get_download_links()` each need the identical
+    `is_local_backend()` branch (build a path_for from this backend's own
+    traversal-guarded `resolve_path` vs. an url_for from `create_signed_url`)
+    — shared here so the two stay in sync rather than each re-deriving the
+    same isinstance-checked lookup independently.
+    """
+    if not is_local_backend():
+        return None
+    backend = active_backend()
+    assert isinstance(backend, LocalStorageBackend)
+    return backend
 
 
 def _guarded_manifest_read(adir: AnalysisDir, read: Callable[[], T]) -> T:
@@ -254,21 +276,35 @@ class SupabaseResultStore:
                 # Sign each just-uploaded key before the manifest is written —
                 # a signing failure (bloom#581 Decision 5) leaves `latest`
                 # un-advanced exactly like an upload failure, via the same
-                # except/cleanup block below.
-                output_links = build_output_links(
-                    output_keys,
-                    output_sha256,
-                    output_size_bytes,
-                    url_for=lambda key: _sc.create_signed_url(
-                        key, SIGNED_URL_EXPIRES_SECONDS
-                    ),
-                    # key_for("") is the same closure every real key above was
-                    # built from — reusing it (rather than a second, separately
-                    # written `adir.key(f"{version_dir}/")` template) means the
-                    # expected prefix and the actual keys structurally cannot
-                    # drift apart from a future refactor of key_for/AnalysisDir.
-                    expected_prefix=key_for(""),
-                )
+                # except/cleanup block below. The local backend has nothing to
+                # sign or serve: the caller already has direct filesystem
+                # access to a file bloommcp just wrote (#642 follow-up), so
+                # output_links carries the resolved absolute path instead.
+                #
+                # key_for("") is the same closure every real key above was
+                # built from — reusing it (rather than a second, separately
+                # written `adir.key(f"{version_dir}/")` template) means the
+                # expected prefix and the actual keys structurally cannot
+                # drift apart from a future refactor of key_for/AnalysisDir.
+                local = _active_local_backend()
+                if local is not None:
+                    output_links = build_output_links(
+                        output_keys,
+                        output_sha256,
+                        output_size_bytes,
+                        path_for=lambda key: str(local.resolve_path(key)),
+                        expected_prefix=key_for(""),
+                    )
+                else:
+                    output_links = build_output_links(
+                        output_keys,
+                        output_sha256,
+                        output_size_bytes,
+                        url_for=lambda key: _sc.create_signed_url(
+                            key, SIGNED_URL_EXPIRES_SECONDS
+                        ),
+                        expected_prefix=key_for(""),
+                    )
 
                 prov = state.provenance.model_copy(
                     update={
@@ -454,15 +490,32 @@ class SupabaseResultStore:
         adir = AnalysisDir(self._output_root, experiment, tool_class)
         expected_prefix = adir.key(f"{stored.version_dir}/")
         try:
-            output_links = build_download_links(
-                stored.output_keys,
-                stored.output_sha256,
-                url_for=lambda key: _sc.create_signed_url(
-                    key, SIGNED_URL_EXPIRES_SECONDS
-                ),
-                size_for=_sc.get_object_size,
-                expected_prefix=expected_prefix,
-            )
+            # Mirrors commit()'s own local-backend branch (#642 follow-up):
+            # the local backend has nothing to sign or serve —
+            # create_signed_url would just raise without BLOOM_STORAGE_URL —
+            # so this re-fetch surfaces the same direct filesystem path
+            # instead. size_for stays _sc.get_object_size in both branches:
+            # it already dispatches through active_backend(), so it works
+            # unchanged for the local backend too.
+            local = _active_local_backend()
+            if local is not None:
+                output_links = build_download_links(
+                    stored.output_keys,
+                    stored.output_sha256,
+                    path_for=lambda key: str(local.resolve_path(key)),
+                    size_for=_sc.get_object_size,
+                    expected_prefix=expected_prefix,
+                )
+            else:
+                output_links = build_download_links(
+                    stored.output_keys,
+                    stored.output_sha256,
+                    url_for=lambda key: _sc.create_signed_url(
+                        key, SIGNED_URL_EXPIRES_SECONDS
+                    ),
+                    size_for=_sc.get_object_size,
+                    expected_prefix=expected_prefix,
+                )
         except CorruptRunLinksError as exc:
             # The raw message embeds the offending (possibly cross-experiment)
             # storage key — full detail server-side only, never in the
@@ -477,5 +530,23 @@ class SupabaseResultStore:
             raise CorruptRunLinksError(
                 f"get_download_links found corrupt link data for "
                 f"{tool_class}/{adir.stem} (structural bug — see server logs)"
+            ) from exc
+        except OutputFileMissingError as exc:
+            # Mirrors the CorruptRunLinksError handling above: the raw
+            # message embeds the storage key of a committed output that was
+            # deleted/moved out-of-band since commit — full detail
+            # server-side only, never in the caller-facing message (PR #643
+            # review finding: this used to fall through to the tool
+            # wrapper's generic exception handler, which only scrubs
+            # credential-shaped substrings, not storage keys).
+            logger.exception(
+                "get_download_links found a missing local output file for %s/%s %s",
+                tool_class,
+                adir.stem,
+                stored.run_ref,
+            )
+            raise OutputFileMissingError(
+                f"get_download_links found a missing output file for "
+                f"{tool_class}/{adir.stem} (see server logs)"
             ) from exc
         return replace(stored, output_links=output_links)

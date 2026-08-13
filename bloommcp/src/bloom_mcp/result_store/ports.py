@@ -47,6 +47,21 @@ class CorruptRunLinksError(ResultStoreError):
     """
 
 
+class OutputFileMissingError(ResultStoreError):
+    """A resolved local-backend output path has no file on disk (#642 follow-up).
+
+    Raised by :meth:`ResultStore.get_download_links`'s ``build_download_links``
+    call when a previously-committed output was deleted or moved out-of-band
+    after commit — an environment/filesystem change, never a caller-input
+    condition, and structurally distinct from :class:`CorruptRunLinksError`
+    (a manifest-key-scope mismatch): the key here is exactly where the
+    manifest says it should be, but nothing is there anymore. The raw message
+    embeds the offending storage key — full detail server-side only;
+    ``get_download_links`` catches this and raises a redacted message to the
+    caller, mirroring its existing ``CorruptRunLinksError`` handling.
+    """
+
+
 class RunStateError(ResultStoreError):
     """A run handle was misused — committed twice, or never created here."""
 

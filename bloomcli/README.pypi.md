@@ -4,17 +4,20 @@ Command-line tool for the **Bloom Database** (Salk Harnessing Plants Initiative)
 
 ## Install
 
-`bloomctl` is on PyPI as **`bloomctl`**. Current releases are pre-releases (`0.1.0aN`), so opt in:
+Releases are still pre-releases (`0.1.0aN`), so install by **asking for the version by name**:
 
 ```bash
-uv tool install bloomctl --prerelease=allow    # isolated CLI tool (recommended)
-uvx --prerelease=allow bloomctl --help         # one-off, no install
-pip install --pre bloomctl                     # into the active environment
+uv tool install "bloomctl==0.1.0a5"    # isolated CLI tool (recommended)
+uvx bloomctl@0.1.0a5 --help            # one-off, no install
+pip install "bloomctl==0.1.0a5"        # into the active environment
 ```
 
 ```bash
 bloomctl --version
 ```
+
+> **Don't add `--pre` or `--prerelease=allow`.** Those flags aren't specific to `bloomctl` —
+> they let *every* dependency install an unfinished dev version too.
 
 ## Quickstart for Cylinder Image Downloads
 
@@ -32,9 +35,17 @@ bloomctl cyl download ./out --experiment-name "drought 2024"
 
 That writes `./out/scans.csv` (metadata) and the per-frame images.
 
-Every command takes `-p/--profile` to target a different login (default `prod`), and
+**Downloads run 8 frames at a time.** On a fast connection you can raise that:
 
-the `list` commands take `--output csv|json` for machine-readable output.
+```bash
+bloomctl cyl download ./out --experiment-id 42 --workers 16    # up to 64
+```
+
+**If a download stops part-way, run the same command again.** It keeps whatever is already on
+disk and fetches only what is missing, so nothing is downloaded twice.
+
+Every command takes `-p/--profile` to target a different login (default `prod`), and the `list`
+commands take `--output csv|json` for machine-readable output.
 
 ## Commands
 
@@ -58,6 +69,37 @@ the `list` commands take `--output csv|json` for machine-readable output.
 | `cyl datasets create`                                       | Create a trait dataset*(needs write access)*                        |
 
 Run `bloomctl <command> --help` for the full options of any command.
+
+## The download log
+
+Every `cyl download` writes `download_log.txt` next to `scans.csv`, with one line per frame and
+a summary at the bottom. It is the file to send us if something looks wrong.
+
+```
+OK   scan=1 frame=0 cyl-images/0.png
+SKIP scan=1 frame=1 cyl-images/1.png
+FAIL scan=1 frame=3 cyl-images/3.png  error=[Errno 28] No space left on device
+UNLISTED scan=5 (frame count unknown)  error=...
+NOFRAMES scan=7 (no images recorded for this scan)
+
+Summary: 3/8 frames present (3 downloaded this run, 0 already on disk), 5 failed
+```
+
+| Status     | What it means                                                                     |
+| ---------- | --------------------------------------------------------------------------------- |
+| `OK`       | Downloaded during this run                                                        |
+| `SKIP`     | Already on disk, so it was not fetched again — this is a resumed run working       |
+| `FAIL`     | This frame is missing; `error=` says why                                          |
+| `UNLISTED` | The scan's frame list could not be fetched, so an **unknown** number is missing    |
+| `NOFRAMES` | The scan has no images recorded in Bloom — nothing to download, not a failure      |
+
+A log full of `SKIP` is normal: it means every frame was already on disk from an earlier run.
+
+`UNLISTED` is the one to look out for. A `FAIL` is a single missing frame, but an `UNLISTED`
+scan means we do not know how many of its frames are missing — which is why a run can report
+all its frames present and still be incomplete. Re-running picks up both.
+
+The summary line ends with the reason when the run stopped for one, such as the disk filling up.
 
 ## Run as a container
 
@@ -84,6 +126,13 @@ Tags: `:staging` (latest staging build) · `:<version>` (matches the PyPI releas
   rather than guess. For scripting, pass the typed value/id and use `--output json`.
 - **Read vs write** — browsing/downloading works for any account; the write commands
   (`ingest-result`, `datasets create`) need an account with write access.
+- **`-n/--workers`** — how many frames `cyl download` fetches at once. Default `8`, maximum `64`,
+  `1` for one at a time. Large experiments run tens of thousands of frames, and this is what
+  makes them quick. More is not always better: if the server starts refusing requests you will
+  see frames fail, and the fix is a lower number, not a higher one.
+- **Resuming** — a download that stops for any reason (interrupted, connection dropped, failed
+  frames) picks up where it left off when you re-run the same command in the same directory.
+  Frames already on disk are skipped. One experiment per output directory.
 
 ## Documentation
 

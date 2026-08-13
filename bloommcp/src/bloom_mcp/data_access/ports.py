@@ -48,6 +48,17 @@ class AmbiguousSourceSelectionError(ExperimentReadError):
     """Both ``source_id`` and ``run_id`` were given; the DB read surface rejects that."""
 
 
+class SourcePinningUnsupportedError(ExperimentReadError):
+    """A non-``None`` ``source_id``/``run_id`` was given to an adapter with no source concept.
+
+    Distinct from :class:`AmbiguousSourceSelectionError` (a pin that could apply
+    but conflicts with another pin) and :class:`SourcePinNotFoundError` (a pin
+    that could apply but matches nothing) — this adapter (:class:`LocalReader`,
+    :class:`FakeReader`) has no source-versioned substrate at all, so any
+    non-``None`` pin is rejected outright rather than silently ignored.
+    """
+
+
 class AmbiguousSampleIdentityError(ExperimentReadError):
     """A pivoted frame would carry a ``sample_id`` shared by more than one plant."""
 
@@ -93,6 +104,16 @@ class ExperimentFrame:
     frame's data never touched the DB at all, and even for a raw read, a fresh
     re-resolution at commit time can race ahead of what this frame's data
     actually is (see ``ResultStore.create_run``'s ``source`` parameter).
+
+    ``available_source_count`` is the number of distinct sources ``list_sources``
+    would return for this experiment, captured from the SAME resolution
+    ``load_experiment`` already performed to produce ``resolved_source`` — never
+    a fresh, independent ``list_sources`` call. A caller that wants to tell an
+    agent "there was more than one source to choose from" should read this
+    field rather than re-querying: a second call would be both a redundant DB
+    round-trip and a TOCTOU window (the count could change between the two
+    reads). ``None`` for a cleaned-tier read or an adapter with no source
+    concept, same as ``resolved_source``.
     """
 
     df: pd.DataFrame
@@ -103,6 +124,7 @@ class ExperimentFrame:
     sample_id_col: Optional[str]
     source: str
     resolved_source: Optional["SourceInfo"] = None
+    available_source_count: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +151,8 @@ class ExperimentReader(Protocol):
         *,
         version: str = "latest",
         require_clean: bool = False,
+        source_id: Optional[int] = None,
+        run_id: Optional[str] = None,
     ) -> ExperimentFrame:
         """Resolve ``name`` to an :class:`ExperimentFrame`.
 
@@ -136,11 +160,26 @@ class ExperimentReader(Protocol):
         plain clean whenever one exists for the experiment), ``"latest_qc"``
         (the plain-clean tier specifically, ignoring any trim — what
         ``remove_outliers`` reads as its trimming input), ``"raw"``, or an
-        explicit ``"v<N>"`` (qc-class only). An explicit-version miss raises
+        explicit ``"v<N>"``. An explicit version checks every cleaned tool
+        class (``qc`` and ``outliers`` each have their own independently-numbered
+        ``v<N>`` sequence): it resolves whichever single class has that id,
+        refuses as ambiguous if more than one does, and reports not-found if
+        none does — never silently prefers ``qc`` the way an earlier revision of
+        this adapter did (bloom#644). An explicit-version miss raises
         :class:`ExperimentNotFoundError`; a ``"latest"``/``"latest_qc"`` miss
         falls through the resolution order to the raw input.
         ``require_clean=True`` raises :class:`CleanedVersionRequiredError` when
         no cleaned version exists.
+
+        ``source_id``/``run_id`` optionally pin which raw DB source/pipeline-run
+        backs the read — meaningful only against the raw tier. Every adapter
+        MUST accept both kwargs: an adapter backed by a source-versioned
+        substrate (see :class:`SourceSelectable`) honors a non-``None`` pin, or
+        raises :class:`AmbiguousSourceSelectionError` when both are given, or
+        :class:`SourcePinNotFoundError` when a pin matches nothing. An adapter
+        with no source concept MUST raise :class:`SourcePinningUnsupportedError`
+        immediately when either is non-``None``, rather than silently ignoring
+        the pin.
         """
         ...
 

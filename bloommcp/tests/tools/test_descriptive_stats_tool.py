@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -755,3 +756,31 @@ def test_cylinder_scale_stats_match_golden_for_every_trait(fake_supabase_storage
         assert row["cv"] == pytest.approx(golden["cv"], rel=1e-6, abs=1e-6), trait
         assert row["skewness"] == pytest.approx(golden["skewness"], abs=1e-6), trait
         assert row["kurtosis"] == pytest.approx(golden["kurtosis"], abs=1e-6), trait
+
+
+# ── explicit cleaned-version selector (#626) ────────────────────────────────
+
+
+def test_version_field_exists():
+    assert "version" in DescriptiveStatsParams.model_fields
+
+
+def test_omitting_version_preserves_todays_exact_call(injected_ports):
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run()
+
+    reader.load_experiment.assert_called_once_with(_EXPERIMENT, require_clean=True)
+
+
+def test_explicit_version_is_passed_through(injected_ports):
+    reader, _store = injected_ports
+    reader.add_cleaned_version(_EXPERIMENT, "v2", _cleaned_df(), make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version="v2")
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="v2"
+    )

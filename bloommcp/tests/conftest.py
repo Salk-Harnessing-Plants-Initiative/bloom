@@ -32,11 +32,19 @@ os.environ.setdefault("BLOOM_PLOTS_URL", "http://localhost/plots")
 # fakes that boundary in memory so SupabaseReader / SupabaseResultStore run with
 # no live Supabase and no `supabase.create_client` call.
 
+import dataclasses  # noqa: E402
 import json  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
 import pytest  # noqa: E402
+
+from bloom_mcp.data_access import (  # noqa: E402
+    AmbiguousSourceSelectionError,
+    FakeReader,
+    SourceInfo,
+    SourcePinNotFoundError,
+)
 
 
 class _InMemoryObjectStore:
@@ -270,6 +278,156 @@ def fake_supabase_db(monkeypatch):
     monkeypatch.setattr(_sc, "call_rpc", fake.call_rpc)
     monkeypatch.setattr(_sc, "get_postgrest_client", fake.get_postgrest_client)
     return fake
+
+
+def _seed_multi_source_experiment(
+    fake_supabase_db,
+    experiment_id: int,
+    source_ids: list,
+    *,
+    name: str = "multi-source exp",
+) -> int:
+    """Seed one experiment with a distinct plant+trait row per ``source_id``,
+    plus a matching ``seed_sources`` entry for each (#626).
+
+    Most existing fixtures (e.g. ``_seed_two_plant_experiment`` in
+    ``test_supabase_reader.py``) seed a single source; tool-layer tests for
+    source discovery/pinning (``core_list_experiment_sources``, ``qc_clean``'s
+    advisory note) need >1 *real* source against the monkeypatched
+    ``SupabaseReader`` boundary — ``FakeReader`` deliberately has no source
+    concept at all (see ``test_fake_reader_is_not_source_selectable``), so it
+    cannot stand in for this.
+    """
+    fake_supabase_db.seed_experiment(experiment_id, name)
+    rows = []
+    sources = []
+    for i, source_id in enumerate(source_ids, start=1):
+        rows.append(
+            {
+                "scan_id": 1000 + i,
+                "date_scanned": "2026-07-01",
+                "plant_age_days": 10,
+                "wave_number": 1,
+                "plant_id": i,
+                "germ_day": 0,
+                "plant_qr_code": f"QR{i}",
+                "accession_name": f"acc-{i}",
+                "trait_name": "root_length",
+                "source_id": source_id,
+                "trait_value": float(i),
+            }
+        )
+        sources.append(
+            {
+                "source_id": source_id,
+                "source_name": f"run-{source_id}",
+                "pipeline_run_id": f"p{source_id}",
+            }
+        )
+    fake_supabase_db.seed_traits(experiment_id, rows)
+    fake_supabase_db.seed_sources(experiment_id, sources)
+    return experiment_id
+
+
+@pytest.fixture
+def seed_multi_source_experiment():
+    """Factory fixture: ``seed_multi_source_experiment(fake_supabase_db, 42, [9, 10])``.
+
+    A fixture (rather than a plain importable helper) so every test module
+    under ``tests/`` can use it with no cross-module import — this package
+    has no top-level ``tests/__init__.py``, so ``from tests.conftest import
+    ...`` does not resolve.
+    """
+    return _seed_multi_source_experiment
+
+
+class _MultiSourceFakeReader(FakeReader):
+    """Test-only double: ``FakeReader`` + a bolted-on ``SourceSelectable`` surface.
+
+    Local to the test tree only — the *shared* ``FakeReader`` class must stay
+    non-``SourceSelectable`` (``test_fake_reader_is_not_source_selectable`` in
+    ``test_supabase_reader.py`` locks that in). Exercises source-pin/source_note
+    logic (``qc_clean``, ``qc_inspect``, ``load_experiment_data``,
+    ``_ports.load_frame``) without needing a full DB-shaped ``SupabaseReader``
+    fixture (see ``seed_multi_source_experiment`` above for that heavier path).
+
+    Was duplicated near-verbatim across ``test_qc_clean_tool.py``,
+    ``test_qc_inspect_tool.py``, and ``test_ports.py`` before being
+    consolidated here (#626 PR review).
+    """
+
+    def __init__(self, source_ids, *, resolve_when_unpinned: bool = True):
+        super().__init__()
+        self._sources = [
+            SourceInfo(
+                source_id=sid, source_name=f"run-{sid}", pipeline_run_id=f"p{sid}"
+            )
+            for sid in source_ids
+        ]
+        # test_ports.py's raw-tier-forcing scenario needs an UNPINNED call to leave
+        # the cleaned-version resolution alone (no source touched) so it can prove
+        # version="latest" resolves the cleaned version today; every other caller
+        # needs an unpinned call to resolve "latest" so source_note /
+        # available_source_count populate the same way SupabaseReader's do.
+        self._resolve_when_unpinned = resolve_when_unpinned
+
+    def list_sources(self, name):
+        return list(self._sources)
+
+    def resolve_source(self, name, *, source_id=None, run_id=None):
+        if source_id is not None and run_id is not None:
+            raise AmbiguousSourceSelectionError("both source_id and run_id given")
+        if source_id is not None:
+            for s in self._sources:
+                if s.source_id == source_id:
+                    return s
+            raise SourcePinNotFoundError(f"no source_id={source_id}")
+        if run_id is not None:
+            for s in self._sources:
+                if s.pipeline_run_id == run_id:
+                    return s
+            raise SourcePinNotFoundError(f"no run_id={run_id}")
+        # max by source_id, not constructor order -- matches SupabaseReader's own
+        # unpinned resolution exactly (the experiment-wide max source_id), so a
+        # caller constructing sources out of ascending order still gets the same
+        # semantics the real adapter would (PR #644 review: this was latent,
+        # masked only by every existing caller happening to pass ascending ids).
+        return max(self._sources, key=lambda s: s.source_id) if self._sources else None
+
+    def load_experiment(
+        self,
+        name,
+        *,
+        version="latest",
+        require_clean=False,
+        source_id=None,
+        run_id=None,
+    ):
+        if source_id is not None or run_id is not None or self._resolve_when_unpinned:
+            resolved = self.resolve_source(name, source_id=source_id, run_id=run_id)
+        else:
+            resolved = None
+        frame = super().load_experiment(
+            name, version=version, require_clean=require_clean
+        )
+        if resolved is not None:
+            frame = dataclasses.replace(
+                frame,
+                resolved_source=resolved,
+                available_source_count=len(self._sources),
+            )
+        return frame
+
+
+@pytest.fixture
+def make_multi_source_fake_reader():
+    """Factory fixture: ``make_multi_source_fake_reader([9, 10, 11])`` ->
+    a ``_MultiSourceFakeReader`` instance. See that class's docstring.
+
+    A fixture (rather than a plain importable class) for the same reason as
+    ``seed_multi_source_experiment`` above — no top-level ``tests/__init__.py``.
+    """
+    return _MultiSourceFakeReader
 
 
 # --- In-memory RPC boundary (bloommcp_usage / call_rpc) -----------------------
