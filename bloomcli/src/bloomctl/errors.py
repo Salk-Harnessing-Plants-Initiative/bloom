@@ -23,6 +23,11 @@ LOG_NAME = "errors.log"
 # gets pasted into by mistake, and no traceback is worth reading for the value of either.
 SECRET_OPTIONS = ("--password", "--anon-key")
 
+# Options whose value is a URL. A URL can carry credentials (`https://user:pass@host`), so
+# the userinfo is stripped — but only that. Which server a command was pointed at is often
+# the most useful line in the log, so redacting the whole value would cost more than it saves.
+URL_OPTIONS = ("--api-url", "--server")
+
 # Keep the file from growing without bound on a machine that hits errors often. Big enough to
 # hold the last several failures, small enough to paste into a message. Rotation keeps one
 # previous log beside it, so the pair costs twice this on disk.
@@ -94,19 +99,40 @@ def _is_network_error(exc: BaseException) -> bool:
         return False
 
 
+def strip_userinfo(url: str) -> str:
+    """``https://user:pass@host/x`` -> ``https://host/x``; anything else is unchanged."""
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    authority, slash, tail = rest.partition("/")
+    if "@" not in authority:
+        return url
+    return f"{scheme}://{authority.rpartition('@')[2]}{slash}{tail}"
+
+
 def redact(argv: list[str]) -> list[str]:
-    """Blank out the value of any secret option, so the log is safe to pass on."""
+    """Blank out the value of any secret option and strip credentials out of URL options, so
+    the log is safe to pass on."""
     safe: list[str] = []
-    hide_next = False
+    pending = ""
     for arg in argv:
-        if hide_next:
-            safe.append("***")
-            hide_next = False
-        elif arg in SECRET_OPTIONS:
+        if pending:
+            safe.append("***" if pending == "secret" else strip_userinfo(arg))
+            pending = ""
+            continue
+        if arg in SECRET_OPTIONS:
+            pending = "secret"
             safe.append(arg)
-            hide_next = True
-        elif arg.split("=", 1)[0] in SECRET_OPTIONS:
-            safe.append(f"{arg.split('=', 1)[0]}=***")
+            continue
+        if arg in URL_OPTIONS:
+            pending = "url"
+            safe.append(arg)
+            continue
+        name, eq, value = arg.partition("=")
+        if eq and name in SECRET_OPTIONS:
+            safe.append(f"{name}=***")
+        elif eq and name in URL_OPTIONS:
+            safe.append(f"{name}={strip_userinfo(value)}")
         else:
             safe.append(arg)
     return safe

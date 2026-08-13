@@ -130,6 +130,13 @@ def test_nothing_but_the_upload_runs_in_the_job_holding_the_credential():
     allowed = {"sha256sum -c dist.sha256", "uv publish --trusted-publishing always"}
     runs = [str(s.get("run", "")) for s in publish["steps"] if s.get("run")]
     assert set(runs) <= allowed, f"unexpected step in the credentialed job: {runs}"
+
+    # Allowlisted by `uses:` as well. Checking only `run:` steps would let an action be
+    # added beside `id-token: write` — arbitrary code next to the credential, which is the
+    # one thing this job's existence is meant to prevent.
+    allowed_actions = {"astral-sh/setup-uv", "actions/download-artifact"}
+    actions = [str(s["uses"]).split("@")[0] for s in publish["steps"] if s.get("uses")]
+    assert set(actions) <= allowed_actions, f"unexpected action in the credentialed job: {actions}"
     for forbidden in ("uv build", "twine", "--prerelease=allow", "import_smoke", "--with"):
         assert forbidden not in _steps_text(publish)
 

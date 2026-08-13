@@ -26,6 +26,11 @@ _EXPIRED_HINT = "expired session (storage reports an unauthenticated caller as a
 # moment rather than an immediate second request from every worker.
 RETRY_DELAY_SECONDS = 0.5
 
+# How long a temp file must have sat untouched before a sweep treats it as abandoned. Well
+# past any single frame or metadata write, so a run still working in the same directory keeps
+# its in-flight files.
+ORPHAN_MIN_AGE_SECONDS = 3600
+
 
 class StorageError(RuntimeError):
     """A storage request failed, after any retry."""
@@ -151,12 +156,25 @@ def sweep_orphan_temps(out_dir: Path) -> int:
     Swept from the output root down, not just `images/`: `scans.csv` and `download_log.txt`
     are written the same atomic way and leave their temp file beside themselves, so a sweep
     of the frames alone would leave those two behind for good.
+
+    Only temps older than `ORPHAN_MIN_AGE_SECONDS` are taken. A temp file cannot be told
+    apart from a live one by name, so a second run started into the same directory would
+    otherwise delete the first run's in-flight writes and fail its renames. Nothing legitimate
+    holds a temp open for that long — each one is a single frame or metadata file — so an age
+    this far past a write is a run that is gone. A lock would let this drop the heuristic;
+    #658 tracks that.
     """
     root = Path(out_dir)
     if not root.exists():
         return 0
+    cutoff = time.time() - ORPHAN_MIN_AGE_SECONDS
     removed = 0
     for tmp in root.rglob(".dl-*.tmp"):
+        try:
+            if tmp.stat().st_mtime > cutoff:
+                continue  # young enough that another run may still be writing it
+        except OSError:
+            continue
         _unlink_quietly(str(tmp))
         removed += 1
     return removed

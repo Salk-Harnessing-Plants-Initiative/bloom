@@ -411,6 +411,21 @@ def test_the_profile_flag_is_not_mistaken_for_a_secret():
     assert errors.redact(argv) == argv
 
 
+def test_credentials_in_a_url_option_are_stripped_but_the_host_is_kept():
+    """A URL can carry a password. The host is what makes the log worth reading, so only the
+    userinfo goes."""
+    argv = ["bloomctl", "login", "--api-url", "https://user:pw@bloom.salk.edu/api"]
+
+    assert errors.redact(argv) == ["bloomctl", "login", "--api-url", "https://bloom.salk.edu/api"]
+    assert errors.redact(["--server=https://u:p@host:8443"]) == ["--server=https://host:8443"]
+
+
+def test_an_ordinary_url_survives_redaction_unchanged():
+    argv = ["bloomctl", "login", "--api-url", "https://staging.bloom.salk.edu:8443/api"]
+
+    assert errors.redact(argv) == argv
+
+
 def test_the_log_is_not_readable_by_others(tmp_path):
     """It sits beside the credentials, which the same package deliberately writes 0600."""
     log = tmp_path / "bloom" / "errors.log"

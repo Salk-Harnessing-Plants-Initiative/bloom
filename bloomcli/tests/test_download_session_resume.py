@@ -9,6 +9,7 @@ held for the whole run stops working the moment that token is replaced.
 from __future__ import annotations
 
 import errno
+import os
 import stat
 from pathlib import Path
 
@@ -529,6 +530,8 @@ def test_the_sweep_reaches_temp_files_outside_the_images_tree(tmp_path):
     beside_the_csv = tmp_path / ".dl-cafebabe.tmp"
     beside_a_frame.write_bytes(b"half a frame")
     beside_the_csv.write_bytes(b"half a scans.csv")
+    for old in (beside_a_frame, beside_the_csv):
+        os.utime(old, (0, 0))  # abandoned, not in flight
 
     removed = storage.sweep_orphan_temps(tmp_path)
 

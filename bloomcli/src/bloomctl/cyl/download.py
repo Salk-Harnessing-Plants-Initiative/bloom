@@ -158,7 +158,8 @@ def ensure_writable(out_dir: Path) -> None:
             f"correctly, and if it is on a removable or network drive, that it is mounted. "
             f"Only the last directory is created for you."
         )
-    probe = path / f".bloomctl-probe-{uuid4().hex}"
+    # Named like the other temps so `sweep_orphan_temps` collects one left by a hard kill.
+    probe = path / f".dl-probe-{uuid4().hex}.tmp"
     try:
         path.mkdir(exist_ok=True)
         probe.write_bytes(b"bloomctl write test")  # bytes, so a full disk fails here too
