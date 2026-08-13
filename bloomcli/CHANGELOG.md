@@ -8,7 +8,7 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
-## [0.1.0a5] - 2026-08-08 — cylinder download reliability
+## [0.1.0a5] - 2026-08-13 — cylinder download reliability
 
 ### Fixed
 
@@ -35,10 +35,16 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   ones sitting complete on disk — in the log we ask people to send us.
 - The sweep for temp files left by a killed run now covers the whole output directory.
   `scans.csv` and `download_log.txt` are written atomically too and leave their temp file
-  beside themselves, where a sweep of `images/` alone never reached it.
+  beside themselves, where a sweep of `images/` alone never reached it. It takes only temps
+  left untouched for an hour: a temp cannot be told from a live one by name, and the sweep
+  runs at the start of every download, so a second run started into the same directory used
+  to delete the first one's in-flight writes and fail its renames.
 - A failed write names the file that was asked for. It reported the temp file it writes
   through, so a full disk pointed at a `.dl-*.tmp` the user never chose and which had already
   been deleted — on screen, and in the `error=` field of every `FAIL` line in the download log.
+- A disk that fills while `scans.csv` or the manifest is being written now says so and what to
+  do about it, rather than ending the run as an unhandled error. The output directory is
+  probed before the metadata queries run, but the disk can fill in the time between.
 - Failures that no command anticipated are reported as one line rather than a stack trace.
 
 ### Changed
@@ -54,7 +60,11 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   remaining. Failures that arrived since the last line are marked `(+N)`, so the marker
   disappearing means they have stopped, and the first failure says that re-running resumes.
 - `~/.bloom/errors.log` records the traceback behind an unexpected failure. Written `0600`
-  alongside the credentials, with the values of `--password` and `--anon-key` redacted. Capped
+  alongside the credentials, with the values of `--password` and `--anon-key` redacted and any
+  credentials stripped out of `--api-url`/`--server` — the host is kept, since which server a
+  command was pointed at is worth reading. Opened so that a symlink left at that path is
+  refused rather than written through, which on a shared machine would otherwise let another
+  local user choose the file a traceback lands in. Capped
   at 256KB: once past it the log is renamed to `errors.log.1` and a fresh one started, keeping
   the filled log whole rather than discarding half of it, and leaving nothing for a second
   `bloomctl` failing at the same moment to overwrite.
