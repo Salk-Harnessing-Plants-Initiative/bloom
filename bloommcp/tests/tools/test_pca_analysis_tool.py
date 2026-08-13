@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import sleap_roots_analyze
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
@@ -595,6 +596,96 @@ def test_include_plots_false_with_plots_param_is_silently_ignored(injected_ports
     assert set(result.outputs) == {"loadings.csv", "scores.csv", "pca_result.json"}
 
 
+# ── plot_alpha style kwarg (#662) ────────────────────────────────────────────
+
+
+def test_plot_alpha_forwarded_to_create_pca_biplot(injected_ports, monkeypatch):
+    """Patches the real defining module, not ``pca_analysis_tool`` — the plotter is
+    imported function-locally inside ``_pca_plot_calls`` and is never a
+    ``pca_analysis_tool`` module attribute (see design.md)."""
+    captured = {}
+    real = sleap_roots_analyze.create_pca_biplot
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_pca_biplot", _spy)
+    _run(include_plots=True, plots=["create_pca_biplot"], plot_alpha=0.3)
+    assert captured["alpha"] == 0.3
+
+
+def test_unset_plot_alpha_is_omitted_not_passed_as_none(injected_ports, monkeypatch):
+    captured = {}
+    real = sleap_roots_analyze.create_pca_biplot
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_pca_biplot", _spy)
+    _run(include_plots=True, plots=["create_pca_biplot"])
+    assert "alpha" not in captured
+
+
+@pytest.mark.parametrize(
+    "plotter_name",
+    [
+        "create_pca_scree_plot",
+        "create_feature_contribution_plot",
+        "create_feature_contribution_heatmap",
+    ],
+)
+def test_plot_alpha_has_no_effect_on_other_plot_keys(
+    injected_ports, monkeypatch, plotter_name
+):
+    captured = {}
+    real = getattr(sleap_roots_analyze, plotter_name)
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, plotter_name, _spy)
+    _run(include_plots=True, plots=None, plot_alpha=0.3)
+    assert "alpha" not in captured
+
+
+def test_plot_alpha_ignored_when_include_plots_false(injected_ports):
+    result = _run(include_plots=False, plot_alpha=0.3)
+    assert not any(k.endswith(".png") for k in result.outputs)
+
+
+@pytest.mark.parametrize("include_plots", [True, False])
+@pytest.mark.parametrize("value", [1.5, -0.1])
+def test_out_of_range_plot_alpha_is_invalid_input_regardless_of_include_plots(
+    injected_ports, value, include_plots
+):
+    with pytest.raises(BloomMCPError) as exc:
+        pca_analysis(
+            {
+                "experiment": _EXPERIMENT,
+                "include_plots": include_plots,
+                "plot_alpha": value,
+            }
+        )
+    assert exc.value.code == "invalid_input"
+
+
+@pytest.mark.parametrize("alpha", [0.0, 1.0])
+def test_plot_alpha_boundary_values_accepted(injected_ports, monkeypatch, alpha):
+    captured = {}
+    real = sleap_roots_analyze.create_pca_biplot
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_pca_biplot", _spy)
+    _run(include_plots=True, plots=["create_pca_biplot"], plot_alpha=alpha)
+    assert captured["alpha"] == alpha
+
+
 def test_all_four_plots_png_round_trip(injected_ports, monkeypatch):
     """10.6 — include_plots=True, plots=None → four PNGs with valid magic bytes."""
     _reader, store = injected_ports
@@ -652,7 +743,8 @@ def test_figure_cleanup_get_fignums_empty_on_partial_plotter_failure(
 ):
     """10.8c — regression: the SECOND of several requested plotters raising mid-generation
     must not leak the figure(s) already produced by earlier successful plotters. Exercises
-    the tool's real try/finally nesting end-to-end (not just the _plots unit helpers)."""
+    the tool's real try/finally nesting end-to-end (not just the _plots unit helpers).
+    """
     import matplotlib.pyplot as plt
 
     real = pca_analysis_tool._pca_plot_calls
@@ -660,8 +752,8 @@ def test_figure_cleanup_get_fignums_empty_on_partial_plotter_failure(
     def _boom(*a, **k):
         raise RuntimeError("second plotter blew up")
 
-    def _patched(result_dict, pca, frame, threshold):
-        calls = real(result_dict, pca, frame, threshold)
+    def _patched(result_dict, pca, frame, threshold, **kwargs):
+        calls = real(result_dict, pca, frame, threshold, **kwargs)
         calls["create_pca_biplot"] = _boom
         return calls
 
