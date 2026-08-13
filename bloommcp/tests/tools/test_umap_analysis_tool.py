@@ -877,6 +877,56 @@ def test_plot_outputs_included_in_schema_round_trip(injected_ports):
     assert "create_umap_single_trait.png" in again.outputs
 
 
+# ── Font-style override (#661) ───────────────────────────────────────────────
+
+
+def test_plot_font_family_and_size_forwarded_and_applied(injected_ports, monkeypatch):
+    """plot_font_family/plot_font_size flow from UMAPAnalysisParams through
+    generate_figures and are applied to the generated figure before it's saved."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    captured = {}
+
+    def _fake_calls(result_dict, frame, trait_cols):
+        def _make():
+            fig, ax = plt.subplots()
+            ax.set_title("t")
+            ax.set_xlabel("x")
+            captured["fig"] = fig
+            return fig
+
+        return {"create_umap_single_trait": _make}
+
+    monkeypatch.setattr(umap_analysis_tool, "_umap_plot_calls", _fake_calls)
+
+    _run(
+        include_plots=True,
+        plots=["create_umap_single_trait"],
+        plot_font_family="serif",
+        plot_font_size=22,
+    )
+
+    fig = captured["fig"]
+    assert fig.axes[0].title.get_fontfamily() == ["serif"]
+    assert fig.axes[0].title.get_fontsize() == 22
+
+
+def test_plot_font_size_non_positive_is_invalid_input(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        umap_analysis({"experiment": _EXPERIMENT, "plot_font_size": -1})
+    assert exc.value.code == "invalid_input"
+    assert store.list_runs(_EXPERIMENT, "umap") == []
+
+
+def test_plot_font_fields_ignored_when_include_plots_false(injected_ports):
+    result = _run(include_plots=False, plot_font_family="serif", plot_font_size=22)
+    assert not any(k.endswith(".png") for k in result.outputs)
+
+
 # ── explicit cleaned-version selector (#626) ────────────────────────────────
 
 

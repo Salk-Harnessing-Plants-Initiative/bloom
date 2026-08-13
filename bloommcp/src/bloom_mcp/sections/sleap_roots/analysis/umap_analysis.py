@@ -49,6 +49,12 @@ needs a ``pca_results`` dict to rank trait contributions; this tool computes tha
 internal, **non-persisted** call to ``perform_pca_analysis`` over the exact same
 certified-clean trait selection already used for the UMAP embedding (see design.md's
 Decision #3 — no second versioned run is created for it).
+
+**Optional font-style override (#661).** ``plot_font_family``/``plot_font_size`` are
+forwarded into ``_plots.generate_figures`` — the same shared helper call above — which
+applies them uniformly to every generated figure's title, axis labels, tick labels, and
+legend text/title before it is persisted. Both default to ``None`` (no override) and are
+ignored when ``include_plots=False``.
 """
 
 from __future__ import annotations
@@ -156,6 +162,20 @@ class UMAPAnalysisParams(BaseModel):
         description="Subset of plot keys to generate; omit (None) to generate both "
         "available plots when include_plots=True. Ignored when include_plots=False. "
         "Valid keys: create_umap_single_trait, create_umap_colored_by_top_traits.",
+    )
+    plot_font_family: str | None = Field(
+        default=None,
+        description="Font family override (e.g. 'serif', 'DejaVu Sans') applied to every "
+        "text element (title, axis labels, tick labels, legend text/title) on each "
+        "generated plot. Omit for each plot's default matplotlib styling. Ignored when "
+        "include_plots=False.",
+    )
+    plot_font_size: float | None = Field(
+        default=None,
+        gt=0,
+        description="Font size (points) override applied to every text element on each "
+        "generated plot. Omit for each plot's default size. Ignored when "
+        "include_plots=False.",
     )
     user_label: str | None = Field(
         default=None,
@@ -394,7 +414,12 @@ def umap_analysis(
                 if params.plots is not None
                 else list(_UMAP_CATALOG_KEYS)
             )
-            generate_figures({k: calls[k] for k in keys_to_generate}, figures)
+            generate_figures(
+                {k: calls[k] for k in keys_to_generate},
+                figures,
+                font_family=params.plot_font_family,
+                font_size=params.plot_font_size,
+            )
 
         with snapshot_frame(frame.df) as source_snapshot:
             run = store.create_run(
