@@ -15,8 +15,10 @@ drew the figure.
 - **ADD** `apply_font_style(fig, *, font_family=None, font_size=None)` to
   `bloom_mcp/tools/_plots.py` — a tool-agnostic post-processing step that walks every
   `Axes` in `fig.axes` and overrides the font family and/or size of its title, x-axis label,
-  y-axis label, tick labels, and legend text (when a legend is present). A no-op — touching
-  no attribute of `fig` at all — when both `font_family` and `font_size` are `None`.
+  y-axis label, tick labels, and legend text and title (when a legend is present — e.g.
+  `create_pca_biplot`'s genotype legend, which sets an explicit title via
+  `ax.legend(title=...)`). A no-op — touching no attribute of `fig` at all — when both
+  `font_family` and `font_size` are `None`.
 - **MODIFY** `generate_figures` to accept optional `font_family: str | None` and
   `font_size: float | None` keyword args and call `apply_font_style` on each figure
   immediately after it is produced, before recording it into the caller's `figures` dict.

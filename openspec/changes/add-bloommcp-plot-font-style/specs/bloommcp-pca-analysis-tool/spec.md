@@ -5,8 +5,8 @@
 The `pca_analysis` tool input SHALL accept `plot_font_family: Optional[str] = None` and
 `plot_font_size: Optional[float] = None` in `PCAAnalysisParams`. When `include_plots` is
 `True`, either value SHALL be applied uniformly to every generated figure's title, axis
-labels, tick labels, and legend text (via the shared `bloom_mcp.tools._plots` figure-
-generation path) — no per-plot or per-text-element styling. When both are `None` (the
+labels, tick labels, and legend text and title (via the shared `bloom_mcp.tools._plots`
+figure-generation path) — no per-plot or per-text-element styling. When both are `None` (the
 default), every generated plot keeps its plotter's default matplotlib styling, unchanged from
 pre-existing behavior. `plot_font_size` SHALL be rejected as `invalid_input` when not strictly
 positive. Both fields SHALL be silently ignored (no error) when `include_plots=False`,
@@ -22,14 +22,14 @@ matching the existing ignore policy for `plots`.
 #### Scenario: A font family override is applied to every generated figure
 
 - **WHEN** `pca_analysis` is called with `include_plots=True` and `plot_font_family="serif"`
-- **THEN** every generated figure's title, axis labels, tick labels, and legend text (when
-  present) have their font family set to `"serif"`
+- **THEN** every generated figure's title, axis labels, tick labels, and legend text and
+  title (when a legend is present) have their font family set to `"serif"`
 
 #### Scenario: A font size override is applied to every generated figure
 
 - **WHEN** `pca_analysis` is called with `include_plots=True` and `plot_font_size=22`
-- **THEN** every generated figure's title, axis labels, tick labels, and legend text (when
-  present) have their font size set to `22`
+- **THEN** every generated figure's title, axis labels, tick labels, and legend text and
+  title (when a legend is present) have their font size set to `22`
 
 #### Scenario: Both overrides apply together
 
@@ -79,6 +79,22 @@ dispatch/error-propagation contract using non-`Figure` return values.
   tick labels, and a legend
 - **THEN** the font family and/or size is applied to all of: the title, the x-axis label,
   the y-axis label, every tick label, and every legend text entry
+
+#### Scenario: apply_font_style covers the legend's own title, not just its entries
+
+- **WHEN** `apply_font_style` is called on a `Figure` whose `Axes` has a legend created with
+  an explicit title (e.g. `ax.legend(title="Genotype")`, the same call shape
+  `create_pca_biplot` uses)
+- **THEN** the legend title's font family and/or size is overridden in addition to its
+  individual entry labels — not skipped
+
+#### Scenario: apply_font_style covers every Axes on a figure with more than one
+
+- **WHEN** `apply_font_style` is called on a `Figure` with more than one `Axes` (e.g. a
+  heatmap-plus-colorbar figure like `create_feature_contribution_heatmap` produces, where the
+  colorbar occupies its own `Axes` alongside the main heatmap `Axes`)
+- **THEN** the font family and/or size is applied to every `Axes` in `fig.axes`, not just the
+  first
 
 #### Scenario: apply_font_style skips axes with no legend
 

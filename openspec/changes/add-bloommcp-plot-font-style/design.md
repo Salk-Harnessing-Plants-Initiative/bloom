@@ -33,8 +33,9 @@ per-figure post-processing for two reasons:
    text created with default styling; the tools call `matplotlib.use("Agg")` and then
    dispatch to lazily-imported catalog plotters (`_pca_plot_calls`/`_umap_plot_calls`) whose
    internals are opaque to this change. Post-processing every `Text` object on the already-
-   built `Figure` (title, axis labels, tick labels, legend) is deterministic regardless of how
-   the plotter built it, and requires no coordination with `sleap_roots_analyze` internals.
+   built `Figure` (title, axis labels, tick labels, legend text and title) is deterministic
+   regardless of how the plotter built it, and requires no coordination with
+   `sleap_roots_analyze` internals.
 
 ### Applied inside `generate_figures`, immediately after each figure is produced
 
@@ -88,6 +89,7 @@ def apply_font_style(
         legend = ax.get_legend()
         if legend is not None:
             texts.extend(legend.get_texts())
+            texts.append(legend.get_title())
         for text in texts:
             if font_family is not None:
                 text.set_fontfamily(font_family)
@@ -96,12 +98,28 @@ def apply_font_style(
 ```
 
 Covers every text element the issue names as examples (tick labels, titles, axis labels) plus
-legend text, since several catalog plots (e.g. `create_pca_biplot`,
-`create_umap_colored_by_top_traits`) render a legend and leaving it at the old font/size while
-everything else changes would look inconsistent. `ax.get_legend()` returns `None` when the
-axes has no legend — skipped rather than erroring. Iterating `fig.axes` (not just
-`fig.gca()`) covers every subplot on multi-axes figures (e.g. `create_feature_contribution_heatmap`'s
-scree + heatmap panels) uniformly.
+legend text and the legend's own title, since at least one catalog plot (`create_pca_biplot`)
+renders a legend and leaving it at the old font/size while everything else changes would look
+inconsistent. (The two UMAP catalog plots use colorbars, not `ax.legend()`, for their
+trait-value coloring — `apply_font_style` still reaches a colorbar's own axis label via the
+`fig.axes` iteration below, just not via the legend branch.) `ax.get_legend()` returns `None`
+when the
+axes has no legend — skipped rather than erroring. `legend.get_title()` is unconditionally
+safe to include once a legend exists: matplotlib always attaches a `Text` instance for the
+legend title (empty string when no `title=` was passed to `ax.legend(...)`), so no further
+None-check is needed — verified directly against the installed matplotlib. This matters
+concretely, not just hypothetically: `create_pca_biplot` calls
+`ax.legend(title=color_by, ...)` (`sleap_roots_analyze.visualization`), so the biplot's
+genotype legend has a real title whose font would otherwise silently keep the old
+style while every other text element on the same figure changed. Iterating `fig.axes` (not
+just `fig.gca()`) covers every `Axes` a figure carries — not only side-by-side subplots, but
+also the extra `Axes` a colorbar occupies on the same figure. Concretely (verified against the
+installed `seaborn`/`matplotlib`): `create_feature_contribution_heatmap` (called by
+`pca_analysis` with `plot_type="loadings"`, always a single `Figure`, never the tuple-returning
+`"both"` mode) draws via `sns.heatmap(..., cbar_kws={"label": ...})`, which places its
+colorbar on a second `Axes` matplotlib appends to the same figure — `len(fig.axes) == 2` for
+this call, not 1. Iterating `fig.axes` (not just `fig.gca()`) reaches the colorbar's own
+y-axis label too, not only the main heatmap panel.
 
 ### `font_family` is not validated against installed fonts
 
