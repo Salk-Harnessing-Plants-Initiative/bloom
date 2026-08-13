@@ -111,6 +111,39 @@ def test_a_failed_csv_write_leaves_the_previous_csv_intact(tmp_path, monkeypatch
     assert not list(tmp_path.glob(".dl-*.tmp")), "no temp file left behind"
 
 
+def test_a_full_disk_writing_scans_csv_names_the_file_and_says_what_to_do(tmp_path, monkeypatch):
+    """`ensure_writable` probes before the metadata queries, so the disk can fill in between.
+
+    Unguarded, this reaches the user as the generic unexpected-failure line and the tailored
+    "free some space" advice the probe would have given is lost.
+    """
+    import errno
+
+    monkeypatch.setattr(
+        "bloomctl.credentials.load_credentials",
+        lambda *a, **k: Credentials("https://x/api", "KEY", "u@s.edu", "pw"),
+    )
+    monkeypatch.setattr(auth, "make_authed_client", lambda creds: object())
+    monkeypatch.setattr(dl, "fetch_scans", lambda *a, **k: [SCAN])
+    monkeypatch.setattr(dl, "fetch_genotypes", lambda c, ids: {42: "Spring-32"})
+
+    def _full_disk(path, data):
+        raise OSError(errno.ENOSPC, "No space left on device", str(path))
+
+    monkeypatch.setattr(dl, "atomic_write_bytes", _full_disk)
+
+    out = tmp_path / "out"
+    result = CliRunner().invoke(
+        cli, ["cyl", "download", str(out), "--experiment_id", "17957", "--meta_only"]
+    )
+
+    assert result.exit_code != 0
+    assert "scans.csv" in result.output, "the file asked for, not the temp file"
+    assert "No space left on device" in result.output
+    assert "Free some space" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_meta_only_writes_csv_and_skips_images(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "bloomctl.credentials.load_credentials",

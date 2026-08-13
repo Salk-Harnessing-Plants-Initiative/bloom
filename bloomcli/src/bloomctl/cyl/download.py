@@ -130,6 +130,16 @@ def build_scan_row(scan: dict[str, Any], genotype: str | None) -> dict[str, Any]
     return row
 
 
+def write_failed(path: Path, exc: OSError) -> click.ClickException:
+    """The message for a failed write, with advice matched to why it failed."""
+    advice = (
+        "Free some space, or download somewhere else."
+        if exc.errno in OUT_OF_SPACE
+        else "Check the path is spelled correctly and that you have permission to write there."
+    )
+    return click.ClickException(f"cannot write to {path}: {exc.strerror or exc}. {advice}")
+
+
 def ensure_writable(out_dir: Path) -> None:
     """Create ``out_dir`` and fail now if nothing can be written to it.
 
@@ -155,12 +165,7 @@ def ensure_writable(out_dir: Path) -> None:
     except OSError as exc:
         # A full disk is not a typo, and telling someone to check their spelling when the
         # disk is full sends them off after the wrong thing entirely.
-        advice = (
-            "Free some space, or download somewhere else."
-            if exc.errno in OUT_OF_SPACE
-            else "Check the path is spelled correctly and that you have permission to write there."
-        )
-        raise click.ClickException(f"cannot write to {path}: {exc.strerror or exc}. {advice}") from exc
+        raise write_failed(path, exc) from exc
     finally:
         try:
             probe.unlink()
@@ -1033,8 +1038,12 @@ def download(
         )
 
     csv_path = out / "scans.csv"
-    write_scans_csv(rows, csv_path)
-    write_manifest(out, selector)
+    # The writability probe ran before the metadata queries; the disk can fill in between.
+    try:
+        write_scans_csv(rows, csv_path)
+        write_manifest(out, selector)
+    except OSError as exc:
+        raise write_failed(Path(exc.filename or csv_path), exc) from exc
     click.echo(f"Wrote {len(rows)} scans -> {csv_path}")
 
     if meta_only:

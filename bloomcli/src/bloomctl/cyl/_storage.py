@@ -167,7 +167,8 @@ def already_downloaded(path: Path) -> bool:
 
     All this can say is that the file isn't empty. It won't catch one left truncated by
     `0.1.0a3`, which wrote frames without the temp-file step — download those afresh into
-    a new directory.
+    a new directory. `cyl_images` records no length to check against; #657 tracks adding
+    one at upload, as `gravi_images` already does.
     """
     if not path.is_file():
         return False

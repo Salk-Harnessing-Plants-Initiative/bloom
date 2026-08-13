@@ -140,7 +140,7 @@ def test_recording_never_raises_when_rendering_the_traceback_fails(tmp_path, mon
 
 
 def test_nothing_is_reported_when_the_log_was_created_but_never_written(tmp_path, monkeypatch):
-    """`touch` succeeding is not the same as the traceback landing.
+    """Opening the file is not the same as the traceback landing.
 
     Reporting on the file existing would send someone to an empty log.
     """
@@ -149,7 +149,7 @@ def test_nothing_is_reported_when_the_log_was_created_but_never_written(tmp_path
     def _fail(*args, **kwargs):
         raise OSError(errno.EACCES, "Permission denied")
 
-    monkeypatch.setattr(Path, "chmod", _fail)  # after touch has created the file
+    monkeypatch.setattr(errors.os, "fchmod", _fail)  # after O_CREAT has made the file
 
     returned = errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log)
 
@@ -431,6 +431,21 @@ def test_a_log_left_readable_by_an_earlier_version_is_tightened(tmp_path):
     errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log)
 
     assert stat.S_IMODE(log.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW is POSIX-only")
+def test_a_symlink_left_at_the_log_path_is_refused(tmp_path):
+    """The log's name is predictable and it sits in a shared home; following a symlink there
+    would let another local user pick the file a traceback lands in."""
+    target = tmp_path / "someone-elses-file"
+    target.write_text("untouched\n")
+    log = tmp_path / "errors.log"
+    log.symlink_to(target)
+
+    written = errors.record(_raise(ValueError("boom")), ["bloomctl"], path=log)
+
+    assert written is None
+    assert target.read_text() == "untouched\n"
 
 
 def test_the_console_script_points_at_the_handler_not_the_bare_cli():

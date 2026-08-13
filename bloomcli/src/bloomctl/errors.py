@@ -122,6 +122,11 @@ def record(
     `chmod` only toggles the read-only bit, so the log is no more private there than any other
     file in the profile.
 
+    Opened with `O_NOFOLLOW`, so a symlink left at this path is refused rather than followed.
+    On a shared machine the log's name is predictable and the traceback carries the failing
+    command, so following one would hand another local user a file they chose to be written.
+    `O_NOFOLLOW` does not exist on Windows, where this falls back to an ordinary open.
+
     Raises nothing of its own: this runs while already handling a failure, so every step is
     inside the guard, and the guard is `Exception` rather than `OSError`. Writing the log is
     not the only thing here that can fail — rendering a traceback runs `repr()` on values
@@ -146,11 +151,19 @@ def record(
             # grow the log without bound, one failure at a time, for as long as whatever
             # stopped the rotation persists.
             return None
-        log.touch(mode=0o600)
-        log.chmod(0o600)  # tighten a log left readable by an earlier version
-        # errors="replace" so an undecodable path costs a few question marks in the command
-        # line rather than the traceback it was written to preserve.
-        with log.open("a", encoding="utf-8", errors="replace") as fh:
+        # O_NOFOLLOW: refuse a symlink planted at this path rather than write through it.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(log, flags, 0o600)
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)  # tighten a log left readable by an earlier version
+            # errors="replace" so an undecodable path costs a few question marks in the command
+            # line rather than the traceback it was written to preserve.
+            fh = os.fdopen(fd, "a", encoding="utf-8", errors="replace")
+        except BaseException:
+            os.close(fd)
+            raise
+        with fh:
             fh.write(body)
     except Exception:
         return None  # nothing more can be done; the message on screen is what the user gets
