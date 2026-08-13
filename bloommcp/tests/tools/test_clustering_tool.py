@@ -20,6 +20,8 @@ import json
 import math
 from pathlib import Path
 
+from unittest.mock import MagicMock
+
 import pandas as pd
 import pytest
 
@@ -315,9 +317,9 @@ def test_gmm_autoselect_bic_aic_reflect_the_selected_model(injected_ports, monke
     idx = result.n_clusters - 1
     # On this dataset auto-select collapses to n=1 out of the default max_components=5
     # candidates — making the negative assertion unconditional (selected ≠ last candidate).
-    assert (
-        result.n_clusters == 1
-    ), f"expected auto-collapse to n=1, got {result.n_clusters}"
+    assert result.n_clusters == 1, (
+        f"expected auto-collapse to n=1, got {result.n_clusters}"
+    )
     assert len(d["bic_scores"]) == 5  # default max_components=5
     # Corrected values == the selected candidate's per-candidate scores.
     assert result.bic == pytest.approx(d["bic_scores"][idx], abs=_TOL)
@@ -913,3 +915,33 @@ def test_hierarchical_degenerate_fit_does_not_leak_backend_internals(
     # The raw exception text (file paths, scipy internals) must not appear.
     for fragment in ("site-packages", "hierarchy.py", "internal detail"):
         assert fragment not in exc.value.message
+
+
+# ── explicit cleaned-version selector (#626) ────────────────────────────────
+
+
+def test_version_field_exists():
+    assert "version" in ClusteringParams.model_fields
+
+
+def test_omitting_version_preserves_todays_exact_call(injected_ports):
+    """Spy on load_experiment: the omitted-field case must match today's
+    exact call args, not just produce an equivalent result."""
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run()
+
+    reader.load_experiment.assert_called_once_with(_EXPERIMENT, require_clean=True)
+
+
+def test_explicit_version_is_passed_through(injected_ports):
+    reader, _store = injected_ports
+    reader.add_cleaned_version(_EXPERIMENT, "v2", _final_df(), make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version="v2")
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="v2"
+    )

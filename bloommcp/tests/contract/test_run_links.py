@@ -61,7 +61,42 @@ def test_output_link_importable_and_in_all():
 
 
 def test_output_link_field_set():
-    assert set(OutputLink.model_fields.keys()) == {"key", "url", "sha256", "size_bytes"}
+    assert set(OutputLink.model_fields.keys()) == {
+        "key",
+        "url",
+        "path",
+        "sha256",
+        "size_bytes",
+    }
+
+
+def test_output_link_rejects_neither_url_nor_path():
+    with pytest.raises(ValidationError):
+        OutputLink(key="k", sha256="abc", size_bytes=0)
+
+
+def test_output_link_rejects_both_url_and_path():
+    with pytest.raises(ValidationError):
+        OutputLink(key="k", url="http://x", path="/tmp/x", sha256="abc", size_bytes=0)
+
+
+def test_output_link_rejects_empty_string_url_with_no_path():
+    """An empty string is falsy, not a usable URL — must be rejected the same
+    as `url=None`, not treated as "url is set" just because it's non-`None`
+    (PR #643 review finding)."""
+    with pytest.raises(ValidationError):
+        OutputLink(key="k", url="", path=None, sha256="abc", size_bytes=0)
+
+
+def test_output_link_rejects_empty_string_path_with_no_url():
+    with pytest.raises(ValidationError):
+        OutputLink(key="k", url=None, path="", sha256="abc", size_bytes=0)
+
+
+def test_output_link_accepts_path_only():
+    link = OutputLink(key="k", path="/tmp/x", sha256="abc", size_bytes=0)
+    assert link.url is None
+    assert link.path == "/tmp/x"
 
 
 def test_output_link_rejects_negative_size_bytes():
@@ -240,6 +275,6 @@ def test_remove_outliers_result_run_link_fields_appear_first_in_model_dump():
     keys = list(result.model_dump().keys())
     run_link_positions = [keys.index(f) for f in _EXPECTED_FIELDS]
     tool_specific_positions = [keys.index("experiment"), keys.index("n_outliers")]
-    assert max(run_link_positions) < min(
-        tool_specific_positions
-    ), "RunLinks fields must precede tool-specific fields in model_dump() key order"
+    assert max(run_link_positions) < min(tool_specific_positions), (
+        "RunLinks fields must precede tool-specific fields in model_dump() key order"
+    )
