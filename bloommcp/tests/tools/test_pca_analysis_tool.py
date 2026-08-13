@@ -18,6 +18,7 @@ import asyncio
 import io
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -690,3 +691,31 @@ def test_plot_outputs_included_in_schema_round_trip(injected_ports):
     result = _run(include_plots=True, plots=["create_pca_scree_plot"])
     again = PCAAnalysisResult.model_validate(json.loads(result.model_dump_json()))
     assert "create_pca_scree_plot.png" in again.outputs
+
+
+# ── explicit cleaned-version selector (#626) ────────────────────────────────
+
+
+def test_version_field_exists():
+    assert "version" in PCAAnalysisParams.model_fields
+
+
+def test_omitting_version_preserves_todays_exact_call(injected_ports):
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run()
+
+    reader.load_experiment.assert_called_once_with(_EXPERIMENT, require_clean=True)
+
+
+def test_explicit_version_is_passed_through(injected_ports):
+    reader, _store = injected_ports
+    reader.add_cleaned_version(_EXPERIMENT, "v2", _final_df(), make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version="v2")
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="v2"
+    )

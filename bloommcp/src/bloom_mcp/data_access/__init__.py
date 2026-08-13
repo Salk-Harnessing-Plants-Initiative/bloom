@@ -16,6 +16,7 @@ from .ports import (
     MultipleScansPerPlantError,
     RawSourced,
     SourceInfo,
+    SourcePinningUnsupportedError,
     SourcePinNotFoundError,
     SourceSelectable,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "MultipleScansPerPlantError",
     "RawSourced",
     "SourceInfo",
+    "SourcePinningUnsupportedError",
     "SourcePinNotFoundError",
     "SourceSelectable",
     "SupabaseReader",

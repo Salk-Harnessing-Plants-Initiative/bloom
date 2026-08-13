@@ -1230,6 +1230,127 @@ def test_latest_does_not_log_when_resolved_trim_is_current(
     )
 
 
+# ─── 5b-2. explicit version="v<N>" checks BOTH qc and outliers (#644 review) ──
+#
+# Before this fix, an explicit version resolved against the `qc` class only.
+# `list_existing_analyses` lists `qc`/`outliers` versions separately, each with
+# its own independently-numbered `v<N>` sequence — a caller pinning an id seen
+# under `outliers` could silently get an unrelated `qc`-class entry of the same
+# id instead (the wrong, untrimmed dataset) rather than an error.
+
+
+def test_explicit_version_resolves_qc_when_only_qc_has_that_id(
+    local_manifest_backend,
+):
+    """No behavior change for the overwhelmingly common case: only `qc` has the
+    pinned id — resolves it, unqualified label, exactly as before this fix."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "v1")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"a,b\n1,2\n"
+    assert label == "v1_cleaned"
+
+
+def test_explicit_version_resolves_outliers_when_only_outliers_has_that_id(
+    local_manifest_backend,
+):
+    """A version id that exists ONLY under `outliers` (not `qc`) now resolves
+    instead of hard-erroring not-found — closing a real coverage gap, not just
+    the ambiguity hazard: `list_existing_analyses` can list a version this
+    function previously could never pin by id at all."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:00Z",
+        b"trim,ok\n1,1\n",
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "v1")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"trim,ok\n1,1\n"
+    assert label == "outliers_v1_cleaned"
+
+
+def test_explicit_version_collision_across_classes_is_ambiguous_not_silently_qc(
+    local_manifest_backend,
+):
+    """The actual #644-review repro: `qc` and `outliers` each independently have
+    their own 'v1' with DIFFERENT content. Pinning 'v1' must refuse as
+    ambiguous — silently returning `qc`'s content here would be exactly the
+    "caller pins the outliers-class id they saw in list_existing_analyses and
+    silently gets the wrong, untrimmed dataset" bug the review flagged."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "qc",
+        "v1",
+        "2026-07-06T00:00:00Z",
+        b"untrimmed\n9\n",
+    )
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:01Z",
+        b"trim,ok\n1,1\n",
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "v1")
+    assert path is None
+    assert label is None
+    assert err is not None
+    assert "ambiguous" in err.lower()
+    assert "'qc'" in err and "'outliers'" in err
+
+
+def test_explicit_version_not_found_in_either_class(local_manifest_backend):
+    """Neither class has the pinned id — a clear not-found error naming both
+    classes checked, not just `qc` (previously the only class ever checked)."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "v9")
+    assert path is None
+    assert label is None
+    assert err is not None
+    assert "not found" in err.lower()
+    assert "'qc'" in err and "'outliers'" in err
+
+
+def test_explicit_version_infra_error_takes_priority_over_not_found_elsewhere(
+    local_manifest_backend,
+):
+    """`outliers` fails schema validation while `qc` simply has no matching id —
+    the genuine infra failure must surface, not be masked by the other class's
+    plain not-found miss."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v2", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    write_invalid_schema_manifest("exp", "outliers")
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "v1")
+    assert path is None
+    assert label is None
+    assert err is not None and "manifest schema error for 'exp'" in err
+
+
 # ─── 5c. bloom#585 — shared `trim_staleness` primitive ────────────────────────
 
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -835,12 +836,12 @@ def test_source_csv_content_addresses_both_inputs(injected_ports):
         return stored.output_sha256["correlations.csv"]
 
     baseline = _hash_for(None, None)
-    assert (
-        _hash_for(999.0, None) != baseline
-    ), "experiment_1 alone should change the hash"
-    assert (
-        _hash_for(None, 999.0) != baseline
-    ), "experiment_2 alone should change the hash"
+    assert _hash_for(999.0, None) != baseline, (
+        "experiment_1 alone should change the hash"
+    )
+    assert _hash_for(None, 999.0) != baseline, (
+        "experiment_2 alone should change the hash"
+    )
 
 
 def test_genotype_means_artifacts_persisted(injected_ports):
@@ -1004,3 +1005,90 @@ def test_reproduces_golden_correlation_unfiltered(monkeypatch):
         assert bool(corr_csv["significant"].iloc[0]) == g["significant"]
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+# ── explicit per-experiment cleaned-version selectors (#626) ────────────────
+
+
+def test_version_1_and_version_2_fields_exist():
+    assert "version_1" in CrossExperimentCorrelationsParams.model_fields
+    assert "version_2" in CrossExperimentCorrelationsParams.model_fields
+
+
+def test_omitting_both_versions_preserves_todays_exact_calls(injected_ports):
+    """Spy on load_experiment directly (not the _load_cleaned helper wholesale)
+    so a forgot-to-forward bug inside _load_cleaned's own new version param
+    would still be caught."""
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run()
+
+    assert reader.load_experiment.call_args_list == [
+        ((_EXP_1,), {"require_clean": True}),
+        ((_EXP_2,), {"require_clean": True}),
+    ]
+
+
+def test_version_1_alone_only_changes_experiment_1s_call(injected_ports):
+    reader, _store = injected_ports
+    df1, _df2 = _correlated_pair()
+    reader.add_cleaned_version(_EXP_1, "v2", df1, make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version_1="v2")
+
+    assert reader.load_experiment.call_args_list == [
+        ((_EXP_1,), {"require_clean": True, "version": "v2"}),
+        ((_EXP_2,), {"require_clean": True}),
+    ]
+
+
+def test_version_2_alone_only_changes_experiment_2s_call(injected_ports):
+    reader, _store = injected_ports
+    _df1, df2 = _correlated_pair()
+    reader.add_cleaned_version(_EXP_2, "v2", df2, make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version_2="v2")
+
+    assert reader.load_experiment.call_args_list == [
+        ((_EXP_1,), {"require_clean": True}),
+        ((_EXP_2,), {"require_clean": True, "version": "v2"}),
+    ]
+
+
+def test_version_1_and_version_2_both_pinned_to_different_real_values(
+    injected_ports,
+):
+    """The case that matters most, per PR #644 review: version_1 and version_2
+    pinned SIMULTANEOUSLY (not "one set, other omitted" — the only combination
+    the two tests above prove). Proves the "independently selectable" guarantee
+    with something stronger than call-arg introspection alone: each experiment's
+    own distinct pin actually reaches its own read (source_1/source_2 in the
+    result reflect the pinned version each experiment was read from), so a bug
+    that swapped which pin went to which experiment, or dropped one pin while
+    honoring the other, would be caught."""
+    reader, _store = injected_ports
+    df1, df2 = _correlated_pair()
+    # Distinct v2 content per experiment (not just re-registering v1's df under a
+    # new id) so experiment_1's and experiment_2's pinned reads are independently
+    # verifiable from their own genotype-mean values, not merely same-shaped data.
+    df1_v2 = df1.copy()
+    df1_v2["TraitA1"] = df1_v2["TraitA1"] * 10
+    df2_v2 = df2.copy()
+    df2_v2["TraitB1"] = df2_v2["TraitB1"] * 10
+    reader.add_cleaned_version(_EXP_1, "v2", df1_v2, make_latest=False)
+    reader.add_cleaned_version(_EXP_2, "v2", df2_v2, make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    result = _run(version_1="v2", version_2="v2")
+
+    assert reader.load_experiment.call_args_list == [
+        ((_EXP_1,), {"require_clean": True, "version": "v2"}),
+        ((_EXP_2,), {"require_clean": True, "version": "v2"}),
+    ]
+    # Both experiments' reads actually resolved the pinned version, not v1 (the
+    # make_latest=True default) or each other's pin.
+    assert result.source_1 == "v2_cleaned"
+    assert result.source_2 == "v2_cleaned"

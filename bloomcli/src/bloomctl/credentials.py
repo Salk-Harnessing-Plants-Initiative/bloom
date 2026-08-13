@@ -9,7 +9,7 @@ BLOOM_ANON_KEY.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -22,10 +22,14 @@ _CRED_RE = re.compile(r"^credentials(?:\.(.+))?\.txt$")
 
 @dataclass(frozen=True)
 class Credentials:
+    # The two secret fields are kept out of `repr` so they cannot ride a traceback into
+    # `~/.bloom/errors.log`, which users are told to send us. A dataclass renders every field
+    # by default, so an exception carrying one of these anywhere in its chain would print
+    # the password in full.
     api_url: str
-    anon_key: str
+    anon_key: str = field(repr=False)
     email: str
-    password: str
+    password: str = field(repr=False)
 
 
 def default_config_dir() -> Path:
