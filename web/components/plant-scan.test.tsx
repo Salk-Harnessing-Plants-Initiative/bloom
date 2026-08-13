@@ -6,19 +6,30 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 
 import PlantScan from "./plant-scan";
 
-// Images sign; videos don't (most scans have none), matching the common case.
+// Images always sign. Videos sign for scan 5 only — a mock where no scan has a video
+// cannot tell whether the URL is dropped when the scan changes.
 vi.mock("@/lib/supabase/client", () => ({
   createClientSupabaseClient: () => ({
     storage: {
       from: (bucket: string) => ({
-        createSignedUrl: async (path: string) =>
-          bucket === "images"
-            ? { data: { signedUrl: `https://signed.test/${path}` } }
-            : { data: null },
+        createSignedUrl: async (path: string) => {
+          if (bucket === "images") {
+            return { data: { signedUrl: `https://signed.test/${path}` } };
+          }
+          return path === "cyl-videos/5.mp4"
+            ? { data: { signedUrl: "https://signed.test/cyl-videos/5.mp4" } }
+            : { data: null };
+        },
       }),
     },
   }),
@@ -67,6 +78,30 @@ describe("PlantScan across a scan change", () => {
 
     await screen.findByText("Unable to retrieve scan image.");
     expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("shows the video link only for a scan that has one", async () => {
+    // The suite had no video coverage at all: the mock signed no videos, so `videoUrl` was
+    // always null. Scan 5 has one here and scan 6 does not.
+    // `imageIsLoaded` gates the link and jsdom never fires load on its own.
+    const { container, rerender } = render(
+      <PlantScan scan={scanWith(5, ["a.png"])} />
+    );
+    await waitFor(() => expect(container.querySelector("img")).not.toBeNull());
+    fireEvent.load(container.querySelector("img")!);
+    await screen.findByLabelText("Open scan video");
+
+    rerender(<PlantScan scan={scanWith(6, ["b.png"])} />);
+    await waitFor(() =>
+      expect(container.querySelector("img")?.getAttribute("src")).toBe(
+        "https://signed.test/b.png"
+      )
+    );
+    fireEvent.load(container.querySelector("img")!);
+
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Open scan video")).toBeNull()
+    );
   });
 
   it("swaps to the next scan's image rather than leaving the old one", async () => {

@@ -97,6 +97,20 @@ export function frameGapNote(frames: ScanFrame[]): string | null {
   } missing from this rotation — the frames shown are not consecutive.`;
 }
 
+// Everything the viewer would warn about, as one line, or null when the scan looks whole.
+// Shared so the frame viewer and the generate button cannot disagree about completeness.
+export function completenessWarning(
+  images: ScanFrame[] | null | undefined
+): string | null {
+  const frames = orderedFrames(images);
+  const notes = [
+    missingFrameNote(frames.length, images?.length ?? 0),
+    frameGapNote(images ?? []),
+  ].filter((note): note is string => note !== null);
+
+  return notes.length > 0 ? notes.join(" ") : null;
+}
+
 // A signed URL we can actually put in an href/src, or null. Signing helpers
 // report failure as an empty string, which passes a `!== null` guard and lands
 // in the DOM as `src=""` / `href=""` — the browser then resolves that against

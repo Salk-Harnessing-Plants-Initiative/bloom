@@ -14,6 +14,7 @@ import io
 import logging
 import os
 import tempfile
+import threading
 
 import numpy as np
 from PIL import Image
@@ -87,6 +88,31 @@ def get_scan_images(client, scan_id: int, limit: int = MAX_IMAGES) -> list[dict]
         .data
         or []
     )
+
+
+# Deciding whether to keep the stored video and then uploading is a read-modify-write on an
+# unversioned object. Process-local, which is how this runs: one uvicorn worker, sync route.
+_scan_locks: dict[int, threading.Lock] = {}
+_scan_locks_guard = threading.Lock()
+
+
+def _scan_lock(scan_id: int) -> threading.Lock:
+    """The lock for one scan, created on first use."""
+    with _scan_locks_guard:
+        return _scan_locks.setdefault(scan_id, threading.Lock())
+
+
+def _stored_video_exists(vids, key: str) -> bool:
+    """Whether an object is stored at ``key``; an unclear answer counts as yes."""
+    try:
+        vids.create_signed_url(key, DOWNLOAD_URL_TTL)
+        return True
+    except Exception as exc:
+        message = str(exc).lower()
+        if "not found" in message or "not_found" in message or "does not exist" in message:
+            return False
+        logger.warning("could not check for a stored video at %s: %s", key, exc)
+        return True
 
 
 def _recorded_frames(client, scan_id: int):
@@ -214,6 +240,15 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
             scan_id, vids, key, prior_frames, frames_expected, truncated, regenerated=False
         )
 
+    # No recorded count to compare against, so the stored video is kept rather than risked.
+    if prior_frames is None and _stored_video_exists(vids, key):
+        logger.warning(
+            "scan %s: a video is stored with no recorded frame count; keeping it", scan_id
+        )
+        return _result(
+            scan_id, vids, key, frames_written, frames_expected, truncated, regenerated=False
+        )
+
     vids.upload(key, video_bytes, {"content-type": "video/mp4", "upsert": "true"})
     return _result(
         scan_id, vids, key, frames_written, frames_expected, truncated, regenerated=True
@@ -266,10 +301,12 @@ def generate_experiment_scan_video(experiment_id: int, scan_id: int) -> dict:
             status_code=404,
             detail=f"Scan {scan_id} not found in experiment {experiment_id}",
         )
-    result = generate_scan_video(client, scan_id)
-    result["scan_id"] = scan_id
-    # Only (re)record when we actually wrote a new video — a kept-existing result
-    # must not overwrite the recorded frame count with a lower one.
-    if result.get("regenerated", True):
-        _record_video(client, scan_id, result)
+    # Held across the encode and the record so two requests for one scan cannot interleave.
+    with _scan_lock(scan_id):
+        result = generate_scan_video(client, scan_id)
+        result["scan_id"] = scan_id
+        # Only (re)record when we actually wrote a new video — a kept-existing result
+        # must not overwrite the recorded frame count with a lower one.
+        if result.get("regenerated", True):
+            _record_video(client, scan_id, result)
     return result

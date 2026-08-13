@@ -13,6 +13,7 @@ import {
 // is the thing this component exists to avoid.
 type Status =
   | "idle"
+  | "confirming"
   | "generating"
   | "done"
   | "pending"
@@ -28,12 +29,15 @@ export default function ScanVideoButton({
   experimentId,
   scanId,
   initialVideoUrl = null,
+  completenessWarning = null,
 }: {
   experimentId: number;
   scanId: number;
   // The video already stored for this scan, resolved by the page. Kept in state
   // so a generate updates it here rather than refetching the whole page.
   initialVideoUrl?: string | null;
+  // What the frame viewer says about this scan when it looks partial.
+  completenessWarning?: string | null;
 }) {
   const [status, setStatus] = useState<Status>("idle");
   const [videoUrl, setVideoUrl] = useState<string | null>(initialVideoUrl);
@@ -42,6 +46,20 @@ export default function ScanVideoButton({
 
   const endpoint = `/api/cyl/experiments/${experimentId}/scans/${scanId}/video`;
   const busy = status === "generating" || status === "pending";
+
+  // Neither is refused, but neither should happen on a single stray click.
+  const replacing = Boolean(videoUrl);
+  const needsConfirm = replacing || Boolean(completenessWarning);
+
+  function requestGenerate() {
+    if (busy) return;
+    if (needsConfirm && status !== "confirming") {
+      setMessage("");
+      setStatus("confirming");
+      return;
+    }
+    generate();
+  }
 
   // The stored video's URL, or "" if there isn't one / we couldn't tell.
   async function storedVideoUrl(): Promise<string> {
@@ -176,11 +194,9 @@ export default function ScanVideoButton({
 
   return (
     <div className="mt-4">
-      {/* A stored video is final — there is no regenerate path. Upstream
-          overwrites the scan's video in place and the bucket has no
-          versioning, so offering to replace one is offering to destroy it. */}
+      {/* Replacing a stored video is allowed; upstream keeps whichever encode has more frames. */}
       <div className="flex items-center gap-3">
-        {videoUrl ? (
+        {videoUrl && (
           <a
             href={videoUrl}
             target="_blank"
@@ -189,10 +205,11 @@ export default function ScanVideoButton({
           >
             Open video
           </a>
-        ) : status === "stalled" ? null : (
+        )}
+        {status === "stalled" || status === "confirming" ? null : (
           <button
             type="button"
-            onClick={generate}
+            onClick={requestGenerate}
             disabled={busy}
             className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white"
           >
@@ -200,10 +217,40 @@ export default function ScanVideoButton({
               ? "Generating video…"
               : status === "pending"
                 ? "Still encoding…"
-                : "Generate video"}
+                : replacing
+                  ? "Regenerate video"
+                  : "Generate video"}
           </button>
         )}
       </div>
+
+      {status === "confirming" && (
+        <div className="mt-2 max-w-sm rounded-md border border-amber-300 bg-amber-50 p-3">
+          <p className="text-sm text-stone-700">
+            {completenessWarning
+              ? `${completenessWarning} A video made now will be missing those angles.`
+              : "This scan already has a video."}
+            {replacing &&
+              " The stored video is only replaced if this encode captures more frames."}
+          </p>
+          <div className="mt-2 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={generate}
+              className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-100"
+            >
+              {replacing ? "Regenerate anyway" : "Generate anyway"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatus("idle")}
+              className="text-sm text-stone-600 underline hover:text-stone-800"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Encoding a full rotation is slow and runs synchronously upstream — say
           so, rather than leaving a disabled button looking stuck. The bar is

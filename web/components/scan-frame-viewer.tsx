@@ -41,11 +41,18 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   // Keyed on the scan id, not the object: a refetch that returns the same scan
   // must not look like a different one, or it would reset the reader's frame.
   const scanId = scan?.id;
-  const frames = useMemo(
-    () => orderedFrames(scan?.cyl_images),
+  // The recorded rows are captured with the frames, not read live: the two are compared
+  // against each other, so a message built from one fresh number and one stale one could
+  // report a shortfall that matches neither.
+  const snapshot = useMemo(
+    () => {
+      const images = scan?.cyl_images ?? [];
+      return { frames: orderedFrames(images), recorded: images.length };
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [scanId]
   );
+  const frames = snapshot.frames;
   const total = frames.length;
 
   // Clamp on read, so a stale index can never point past the end even for the
@@ -91,7 +98,7 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   // in the frame numbers themselves. `frameGapNote` gets every recorded frame,
   // not the renderable ones — otherwise a row dropped for a missing object_path
   // is counted once here and again as a gap, reading as two separate problems.
-  const recorded = scan?.cyl_images?.length ?? 0;
+  const recorded = snapshot.recorded;
   const shortfall = missingFrameNote(total, recorded);
   const gap = frameGapNote(scan?.cyl_images ?? []);
 

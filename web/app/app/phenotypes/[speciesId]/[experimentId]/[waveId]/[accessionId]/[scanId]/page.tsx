@@ -7,6 +7,7 @@ import {
 import PlantImage from "@/components/plant-image";
 import ScanFrameViewer from "@/components/scan-frame-viewer";
 import ScanVideoButton from "@/components/scan-video-button";
+import { completenessWarning } from "@/components/plant-scan.helpers";
 import { getStoredScanVideoUrl } from "@/lib/supabase/scan-video";
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
@@ -90,6 +91,7 @@ export default async function Image({
             experimentId={Number(experimentId)}
             scanId={scan.id}
             initialVideoUrl={videoUrl}
+            completenessWarning={completenessWarning(scan.cyl_images)}
           />
         )}
       </div>

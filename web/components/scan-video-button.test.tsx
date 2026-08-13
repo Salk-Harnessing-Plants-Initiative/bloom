@@ -39,6 +39,12 @@ async function clickGenerate() {
   });
 }
 
+async function click(name: string) {
+  await act(async () => {
+    screen.getByRole("button", { name }).click();
+  });
+}
+
 describe("ScanVideoButton after a 504", () => {
   it("recovers on its own once the encode lands", async () => {
     const fetchMock = vi
@@ -215,13 +221,71 @@ describe("ScanVideoButton on a 409", () => {
 });
 
 describe("ScanVideoButton when a video already exists", () => {
-  it("offers only the link — a stored video is never regenerated", () => {
+  it("offers the stored video and a regenerate, for once more frames have landed", () => {
     render(
       <ScanVideoButton experimentId={1} scanId={5} initialVideoUrl={VIDEO_URL} />
     );
 
     expect(screen.getByRole("link", { name: "Open video" })).toBeTruthy();
-    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByRole("button", { name: "Regenerate video" })).toBeTruthy();
+  });
+
+  it("does not start the encode on the first click", async () => {
+    // Upstream writes the same object, and the frames available now are not necessarily
+    // the frames the stored video holds — so replacing one is not a one-click action.
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ScanVideoButton experimentId={1} scanId={5} initialVideoUrl={VIDEO_URL} />
+    );
+    await click("Regenerate video");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Regenerate anyway" })).toBeTruthy();
+  });
+});
+
+describe("ScanVideoButton on a scan the page is calling incomplete", () => {
+  const WARNING = "Showing 40 of 72 frames — 32 not available.";
+
+  it("asks first, quoting what the viewer says", async () => {
+    // The button and the frame viewer render as unrelated siblings, so nothing else stops
+    // a user encoding a rotation the page is simultaneously flagging as partial.
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ScanVideoButton experimentId={1} scanId={5} completenessWarning={WARNING} />
+    );
+    await click("Generate video");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Showing 40 of 72 frames");
+  });
+
+  it("encodes once confirmed", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ download_url: VIDEO_URL }, 200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ScanVideoButton experimentId={1} scanId={5} completenessWarning={WARNING} />
+    );
+    await click("Generate video");
+    await click("Generate anyway");
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
+  });
+
+  it("goes straight to encoding when the scan looks whole", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ download_url: VIDEO_URL }, 200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    expect(fetchMock).toHaveBeenCalled();
   });
 });
 

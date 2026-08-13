@@ -2,6 +2,8 @@
 storage, or supabase client needed — a fake fluent client is used)."""
 
 import io
+import threading
+import time
 
 import pytest
 from fastapi import HTTPException
@@ -247,18 +249,25 @@ class _GenBucket:
 
     def upload(self, *a, **k):
         self._outer.uploads += 1
+        self._outer.stored = True
 
     def create_signed_url(self, *a, **k):
+        # Storage answers for a missing object with an error, not an empty result — which
+        # is what makes signing usable as an existence check.
+        if not self._outer.stored:
+            raise RuntimeError("Object not found")
         return "http://signed"
 
 
 class _GenClient:
     """Table (cyl_images + cyl_scan_videos) + storage, for full generate runs."""
 
-    def __init__(self, images, recorded_frames=None):
+    def __init__(self, images, recorded_frames=None, stored=None):
         self._images = images
         self._recorded = [] if recorded_frames is None else [{"frames": recorded_frames}]
         self.uploads = 0
+        # Whether an object sits at this scan's video key. A recorded count implies one.
+        self.stored = recorded_frames is not None if stored is None else stored
 
     def table(self, name):
         if name == "cyl_images":
@@ -317,6 +326,63 @@ def test_generate_scan_video_flags_truncation(monkeypatch):
     assert result["truncated"] is True
     assert result["frames_expected"] == video.MAX_IMAGES
     assert result["frames"] == video.MAX_IMAGES
+
+
+def test_two_requests_for_one_scan_do_not_overlap(monkeypatch):
+    """Without the lock both read "nothing recorded" and the loser's video wins."""
+    monkeypatch.setattr(video, "scan_in_experiment", lambda *a, **k: True)
+    monkeypatch.setattr(video, "app_client", lambda: object())
+    monkeypatch.setattr(video, "_record_video", lambda *a, **k: None)
+
+    inside = 0
+    overlapped = False
+
+    def _slow(_client, scan_id):
+        nonlocal inside, overlapped
+        inside += 1
+        if inside > 1:
+            overlapped = True
+        time.sleep(0.05)
+        inside -= 1
+        return {"regenerated": False}
+
+    monkeypatch.setattr(video, "generate_scan_video", _slow)
+
+    threads = [
+        threading.Thread(target=video.generate_experiment_scan_video, args=(1, 5))
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert overlapped is False
+
+
+def test_two_scans_still_encode_in_parallel(monkeypatch):
+    assert video._scan_lock(1) is not video._scan_lock(2)
+    assert video._scan_lock(1) is video._scan_lock(1)
+
+
+def test_generate_scan_video_keeps_a_stored_video_it_cannot_compare(monkeypatch):
+    """A video predating `cyl_scan_videos` has no recorded count, so it is kept."""
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
+    client = _GenClient(images, recorded_frames=None, stored=True)
+
+    result = video.generate_scan_video(client, 5)
+
+    assert result["regenerated"] is False
+    assert client.uploads == 0
+
+
+def test_a_failed_existence_check_counts_as_stored():
+    class _Unreachable:
+        def create_signed_url(self, *a, **k):
+            raise RuntimeError("storage gateway timed out")
+
+    assert video._stored_video_exists(_Unreachable(), "cyl-videos/5.mp4") is True
 
 
 def test_generate_scan_video_keeps_better_existing(monkeypatch):

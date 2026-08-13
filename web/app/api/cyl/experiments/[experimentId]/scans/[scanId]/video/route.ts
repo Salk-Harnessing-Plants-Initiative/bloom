@@ -115,22 +115,10 @@ export async function POST(
     );
   }
 
-  // A stored video is final. Upstream overwrites `cyl-videos/{scan_id}.mp4`
-  // in place, the bucket has no versioning, and videos predating
-  // `cyl_scan_videos` carry no frame count for upstream's anti-degradation
-  // check to compare against — so a regenerate could silently replace a
-  // complete rotation with a worse one, with no undo. A lookup that failed is
-  // therefore refused too: only a confirmed absence may proceed.
+  // Regenerating is how a partial video gets fixed once the rest of the frames land, so an
+  // existing video does not block the request — upstream compares frame counts and keeps the
+  // better encode. `unknown` still stops here: storage itself is not answering.
   const stored = await getStoredScanVideo(scan);
-  if (stored.status === "present") {
-    return NextResponse.json(
-      {
-        detail:
-          "This scan already has a video. Open the stored one — existing videos are not regenerated.",
-      },
-      { status: 409 }
-    );
-  }
   if (stored.status === "unknown") {
     return NextResponse.json(
       {
