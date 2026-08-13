@@ -189,9 +189,11 @@ class IdentityMiddleware:
     Verification only does real work when the header is present, so a Docker
     healthcheck hitting ``/health`` never touches ``JWT_SECRET`` or PyJWT.
     Usage recording (see module docstring for why it lives here, not in
-    tool-dispatch code) is skipped for `/health`, and is non-blocking
-    (`bloom_mcp.usage.record_usage_async`) — it never adds latency to the
-    request it's attributed to.
+    tool-dispatch code) is skipped for `/health` and for the `local` storage
+    backend (bloom#641 — there is no Supabase to record against in fully-local
+    mode, so it's skipped outright rather than attempted and failed every
+    request), and is non-blocking (`bloom_mcp.usage.record_usage_async`) — it
+    never adds latency to the request it's attributed to.
 
     Recording happens **after** the wrapped app responds, gated on the
     response not being a `401` — not before, and not unconditionally. This
@@ -249,12 +251,17 @@ class IdentityMiddleware:
         await self.app(scope, receive, _send if should_record else send)
 
         if should_record and response_status.get("status") != 401:
+            from bloom_mcp.storage_backend import is_local_backend
             from bloom_mcp.usage import record_usage_async
 
-            record_usage_async(
-                identity or _oauth_subject_from_scope(scope) or ANONYMOUS,
-                _action_from_path(path),
-            )
+            # Fully-local mode has no Supabase to record usage against at all —
+            # skip it outright rather than attempting (and always failing) the
+            # RPC (bloom#641).
+            if not is_local_backend():
+                record_usage_async(
+                    identity or _oauth_subject_from_scope(scope) or ANONYMOUS,
+                    _action_from_path(path),
+                )
 
 
 async def _json_response(scope, receive, send, *, status: int, error: str) -> None:
