@@ -78,6 +78,7 @@ from sleap_roots_analyze import calculate_trait_statistics
 
 from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
 from bloom_mcp.data_access import CleanedVersionRequiredError, ExperimentReadError
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import snapshot_frame
 from bloom_mcp.tools._qc_shared import _finite_or_none, _validate_trait_subset
@@ -194,7 +195,7 @@ class DescriptiveStatsResult(RunLinks):
 @as_mcp_tool(
     input_model=DescriptiveStatsParams,
     output_model=DescriptiveStatsResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def descriptive_stats(
     params: DescriptiveStatsParams, *, provenance: Provenance

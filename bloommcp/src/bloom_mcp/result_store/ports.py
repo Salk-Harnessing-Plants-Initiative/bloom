@@ -22,7 +22,15 @@ if TYPE_CHECKING:  # avoid an import cycle; only used for typing
 
 
 class ResultStoreError(Exception):
-    """Base for write-port failures, with a caller-safe message."""
+    """Base for write-port failures, with a caller-safe message.
+
+    Mirrors :class:`bloom_mcp.data_access.ExperimentReadError`'s contract on the write
+    side: adapters MUST NOT leak a filesystem path, bucket name, host, credential, or raw
+    storage traceback in the message — only a redacted, actionable summary. A tool that
+    declares one of these subtypes in its ``@as_mcp_tool(errors=...)`` tuple passes the
+    message straight through to the calling agent (see ``contract/errors.py``'s
+    ``from_exception``), so this obligation is load-bearing, not advisory.
+    """
 
 
 class RunNotFoundError(ResultStoreError):

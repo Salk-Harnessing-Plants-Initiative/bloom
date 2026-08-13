@@ -75,6 +75,7 @@ from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.data_access.columns import resolve_columns, run_input_validation
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, QC_TOOL_CLASS
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._inline_input import compute_input_sha256, parse_inline_csv_frame
 from bloom_mcp.tools._qc_shared import (
@@ -277,7 +278,7 @@ class QCCleanResult(BaseModel):
 @as_mcp_tool(
     input_model=QCCleanParams,
     output_model=QCCleanResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     """Clean ``experiment`` (or inline ``csv_content``) via analyze's
