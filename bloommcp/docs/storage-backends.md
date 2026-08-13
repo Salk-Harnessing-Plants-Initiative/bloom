@@ -270,8 +270,8 @@ and is blind to the other's versions. **Pick one backend per experiment and keep
 it stable** for the life of that experiment's analysis history.
 
 This can't be _prevented_ from purely local information — the `local` backend
-runs fully offline and has no way to check whether `supabase` already has
-history for an experiment (and vice versa) without contacting it, which would
+never contacts `supabase` and has no way to check whether `supabase` already
+has history for an experiment (and vice versa) without doing so, which would
 defeat the point. It is made **observable** instead (#395):
 
 - Every `manifest.json` records a `storage_backend` field naming whichever
