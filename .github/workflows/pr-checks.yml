@@ -678,6 +678,28 @@ jobs:
           echo "LANGCHAIN_POSTGRES_URL=postgresql://supabase_admin:${{ secrets.CI_POSTGRES_PASSWORD }}@db-prod:5432/postgres" >> .env.ci
           echo "BLOOM_AGENT_KEY=${{ secrets.CI_BLOOM_AGENT_KEY }}" >> .env.ci
 
+      # #646 was invisible to CI because CI never provisioned an asymmetric pair:
+      # GoTrue signed HS256, so no job ever produced the ES256 token Storage
+      # refused, and the stack booted identically whether the JWKS reached the
+      # verifiers or not. Mint a per-run pair with the same script operators use
+      # so the stack runs in the staging/prod shape and
+      # tests/integration/test_es256_token_verification.py exercises the real
+      # verification path. Generated per run, never stored — it is a CI-only key.
+      - name: Provision asymmetric JWT keys (ES256)
+        env:
+          JWT_SECRET: ${{ secrets.CI_JWT_SECRET }}
+        run: |
+          GENERATED=$(uv run --with cryptography python scripts/generate_jwt_keys.py)
+          JWT_KEYS=$(printf '%s\n' "$GENERATED" | grep '^JWT_KEYS=' | cut -d= -f2-)
+          JWT_JWKS=$(printf '%s\n' "$GENERATED" | grep '^JWT_JWKS=' | cut -d= -f2-)
+          # Both embed JWT_SECRET as a symmetric JWK — secrets, not public keys.
+          echo "::add-mask::$JWT_KEYS"
+          echo "::add-mask::$JWT_JWKS"
+          : "${JWT_KEYS:?generate_jwt_keys.py emitted no JWT_KEYS}"
+          : "${JWT_JWKS:?generate_jwt_keys.py emitted no JWT_JWKS}"
+          echo "JWT_KEYS=$JWT_KEYS" >> .env.ci
+          echo "JWT_JWKS=$JWT_JWKS" >> .env.ci
+
       - name: Create MinIO data directory
         run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci
 
