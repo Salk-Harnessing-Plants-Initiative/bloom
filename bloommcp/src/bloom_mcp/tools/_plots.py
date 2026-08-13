@@ -60,9 +60,43 @@ def validate_plot_keys(requested: list[str] | None, valid_keys: set[str]) -> Non
         )
 
 
+def apply_font_style(
+    fig: "Figure",
+    *,
+    font_family: str | None = None,
+    font_size: float | None = None,
+) -> None:
+    """Override the font family/size of every text element on ``fig``.
+
+    Walks every ``Axes`` in ``fig.axes`` and applies the override to its title, x-axis
+    label, y-axis label, tick labels, and — when a legend is present — every legend entry
+    and the legend's own title. A no-op that touches no attribute of ``fig`` when both
+    ``font_family`` and ``font_size`` are ``None`` (the default), so passing a non-``Figure``
+    object is safe as long as neither override is requested.
+    """
+    if font_family is None and font_size is None:
+        return
+    for ax in fig.axes:
+        texts = [ax.title, ax.xaxis.label, ax.yaxis.label]
+        texts.extend(ax.get_xticklabels())
+        texts.extend(ax.get_yticklabels())
+        legend = ax.get_legend()
+        if legend is not None:
+            texts.extend(legend.get_texts())
+            texts.append(legend.get_title())
+        for text in texts:
+            if font_family is not None:
+                text.set_fontfamily(font_family)
+            if font_size is not None:
+                text.set_fontsize(font_size)
+
+
 def generate_figures(
     resolved_calls: dict[str, "Callable[[], Figure]"],
     figures: "dict[str, Figure]",
+    *,
+    font_family: str | None = None,
+    font_size: float | None = None,
 ) -> None:
     """Call each zero-arg plotter callable, recording each result into ``figures``.
 
@@ -70,9 +104,15 @@ def generate_figures(
     comprehension — so a mid-generation exception still leaves every
     already-successful figure in the caller's dict for ``close_figures`` to
     reach in ``finally``. The caller passes the same dict it later closes.
+
+    ``font_family``/``font_size`` (both default ``None``) are applied via
+    ``apply_font_style`` to each figure immediately after it is produced, before it is
+    recorded into ``figures`` — a no-op when both are ``None``.
     """
     for key, fn in resolved_calls.items():
-        figures[key] = fn()
+        fig = fn()
+        apply_font_style(fig, font_family=font_family, font_size=font_size)
+        figures[key] = fig
 
 
 def close_figures(figures: "dict[str, Figure]") -> None:

@@ -10,7 +10,12 @@ from __future__ import annotations
 import pytest
 
 from bloom_mcp.contract import BloomMCPError
-from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
+from bloom_mcp.tools._plots import (
+    apply_font_style,
+    close_figures,
+    generate_figures,
+    validate_plot_keys,
+)
 
 _VALID = {"key_a", "key_b", "key_c"}
 
@@ -140,3 +145,134 @@ def test_close_figures_clears_open_figures():
     assert fig.number in plt.get_fignums()
     close_figures({"k": fig})
     assert fig.number not in plt.get_fignums()
+
+
+# ── apply_font_style ─────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _close_figures_opened_directly_via_pyplot():
+    """These tests build figures via ``plt.subplots()`` directly (not through the tool's
+    own ``close_figures`` cleanup path), so close whatever's left afterward — otherwise
+    they'd leak into ``matplotlib.pyplot``'s global figure registry and fail unrelated
+    ``plt.get_fignums() == []`` assertions in other test modules run in the same session.
+    """
+    yield
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+
+
+def _styled_figure():
+    """A real Figure with a title, x/y labels, tick labels, and a titled legend —
+    matching create_pca_biplot's real ``ax.legend(title=color_by, ...)`` call shape."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    ax.plot([1, 2, 3], [1, 2, 3], label="series")
+    ax.set_title("a title")
+    ax.set_xlabel("x label")
+    ax.set_ylabel("y label")
+    ax.legend(title="Genotype")
+    return fig
+
+
+def _all_texts(fig):
+    ax = fig.axes[0]
+    texts = [ax.title, ax.xaxis.label, ax.yaxis.label]
+    texts.extend(ax.get_xticklabels())
+    texts.extend(ax.get_yticklabels())
+    legend = ax.get_legend()
+    texts.extend(legend.get_texts())
+    texts.append(legend.get_title())
+    return texts
+
+
+def test_apply_font_style_noop_when_both_none():
+    apply_font_style(object(), font_family=None, font_size=None)  # no exception
+
+
+def test_apply_font_style_sets_font_family_on_title_labels_ticks_and_legend():
+    fig = _styled_figure()
+    apply_font_style(fig, font_family="serif")
+    for text in _all_texts(fig):
+        assert text.get_fontfamily() == ["serif"], text.get_text()
+
+
+def test_apply_font_style_sets_font_size():
+    fig = _styled_figure()
+    apply_font_style(fig, font_size=22)
+    for text in _all_texts(fig):
+        assert text.get_fontsize() == 22, text.get_text()
+
+
+def test_apply_font_style_family_only_leaves_size_unchanged():
+    fig = _styled_figure()
+    default_size = fig.axes[0].title.get_fontsize()
+    apply_font_style(fig, font_family="serif")
+    assert fig.axes[0].title.get_fontsize() == default_size
+
+
+def test_apply_font_style_size_only_leaves_family_unchanged():
+    fig = _styled_figure()
+    default_family = fig.axes[0].title.get_fontfamily()
+    apply_font_style(fig, font_size=22)
+    assert fig.axes[0].title.get_fontfamily() == default_family
+
+
+def test_apply_font_style_skips_axes_without_a_legend():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    ax.set_title("no legend here")
+    apply_font_style(fig, font_family="serif")  # no exception
+    assert ax.title.get_fontfamily() == ["serif"]
+
+
+def test_apply_font_style_covers_legend_title_not_just_entries():
+    """Regression: create_pca_biplot's ax.legend(title=color_by, ...) gives the legend a
+    real title distinct from its entry labels — both must be styled, not just the entries.
+    """
+    fig = _styled_figure()
+    legend = fig.axes[0].get_legend()
+    apply_font_style(fig, font_family="serif", font_size=22)
+    assert legend.get_title().get_fontfamily() == ["serif"]
+    assert legend.get_title().get_fontsize() == 22
+
+
+def test_apply_font_style_applies_to_every_axes_on_a_multi_axes_figure():
+    """Regression: iterating fig.axes (not fig.gca()) must reach every Axes a figure
+    carries — e.g. create_feature_contribution_heatmap's seaborn colorbar Axes."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, (ax1, ax2) = plt.subplots(1, 2)
+    ax1.set_title("first")
+    ax2.set_title("second")
+    apply_font_style(fig, font_family="serif")
+    assert ax1.title.get_fontfamily() == ["serif"]
+    assert ax2.title.get_fontfamily() == ["serif"]
+
+
+def test_generate_figures_forwards_font_kwargs_to_each_figure():
+    figures: dict = {}
+    generate_figures(
+        {"a": _styled_figure, "b": _styled_figure},
+        figures,
+        font_family="serif",
+        font_size=18,
+    )
+    for fig in figures.values():
+        assert fig.axes[0].title.get_fontfamily() == ["serif"]
+        assert fig.axes[0].title.get_fontsize() == 18
