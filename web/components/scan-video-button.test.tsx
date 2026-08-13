@@ -10,7 +10,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 
 import ScanVideoButton from "./scan-video-button";
 
@@ -28,8 +34,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  cleanup();
+  // Real timers before `cleanup`: unmounting runs effect teardown, and doing that while
+  // fake timers are still installed leaves trees behind. A leaked tree is another test's
+  // button in the document, which is what `screen` queries.
   vi.useRealTimers();
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -225,12 +234,15 @@ describe("ScanVideoButton when a video already exists", () => {
     // Upstream can only refuse a worse encode when `cyl_scan_videos` records the stored
     // video's frame count, and it records none in prod. Until that is backfilled, replacing
     // one is unguardable, so the product does not offer it.
-    render(
+    //
+    // Queried through this render's own container, not `screen`: an absence assertion over
+    // the whole document passes or fails on what other tests left behind.
+    const { container } = render(
       <ScanVideoButton experimentId={1} scanId={5} initialVideoUrl={VIDEO_URL} />
     );
 
-    expect(screen.getByRole("link", { name: "Open video" })).toBeTruthy();
-    expect(screen.queryByRole("button")).toBeNull();
+    expect(within(container).getByRole("link", { name: "Open video" })).toBeTruthy();
+    expect(within(container).queryByRole("button")).toBeNull();
   });
 });
 
