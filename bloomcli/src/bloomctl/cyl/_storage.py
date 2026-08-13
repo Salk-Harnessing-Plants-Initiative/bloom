@@ -26,6 +26,11 @@ _EXPIRED_HINT = "expired session (storage reports an unauthenticated caller as a
 # moment rather than an immediate second request from every worker.
 RETRY_DELAY_SECONDS = 0.5
 
+# How long a temp file must have sat untouched before a sweep treats it as abandoned. Well
+# past any single frame or metadata write, so a run still working in the same directory keeps
+# its in-flight files.
+ORPHAN_MIN_AGE_SECONDS = 3600
+
 
 class StorageError(RuntimeError):
     """A storage request failed, after any retry."""
@@ -133,6 +138,10 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     try:
         tmp.write_bytes(data)
         os.replace(tmp, path)
+    except OSError as exc:
+        _unlink_quietly(str(tmp))
+        # Report the file asked for, not the temp file, which is deleted by now.
+        raise OSError(exc.errno, exc.strerror, str(path)) from exc
     except BaseException:
         _unlink_quietly(str(tmp))
         raise
@@ -143,27 +152,42 @@ def sweep_orphan_temps(out_dir: Path) -> int:
 
     A normal failure cleans up after itself, but a hard kill or a power cut doesn't get
     the chance.
+
+    Swept from the output root down, not just `images/`: `scans.csv` and `download_log.txt`
+    are written the same atomic way and leave their temp file beside themselves, so a sweep
+    of the frames alone would leave those two behind for good.
+
+    Only temps older than `ORPHAN_MIN_AGE_SECONDS` are taken. A temp file cannot be told
+    apart from a live one by name, so a second run started into the same directory would
+    otherwise delete the first run's in-flight writes and fail its renames. Nothing legitimate
+    holds a temp open for that long — each one is a single frame or metadata file — so an age
+    this far past a write is a run that is gone. A lock would let this drop the heuristic;
+    #658 tracks that.
     """
-    images_root = Path(out_dir) / "images"
-    if not images_root.exists():
+    root = Path(out_dir)
+    if not root.exists():
         return 0
+    cutoff = time.time() - ORPHAN_MIN_AGE_SECONDS
     removed = 0
-    for tmp in images_root.rglob(".dl-*.tmp"):
+    for tmp in root.rglob(".dl-*.tmp"):
+        try:
+            if tmp.stat().st_mtime > cutoff:
+                continue  # young enough that another run may still be writing it
+        except OSError:
+            continue
         _unlink_quietly(str(tmp))
         removed += 1
     return removed
 
 
-def already_downloaded(path: Path, expected_size: int | None = None) -> bool:
+def already_downloaded(path: Path) -> bool:
     """True if ``path`` already holds this frame, so a resumed run can skip fetching it.
 
-    Given ``expected_size`` this is a real completeness check. Without it, all that can be
-    said is that the file isn't empty — which won't catch a file truncated by a version of
-    bloomctl that wrote frames without the temp-file step.
+    All this can say is that the file isn't empty. It won't catch one left truncated by
+    `0.1.0a3`, which wrote frames without the temp-file step — download those afresh into
+    a new directory. `cyl_images` records no length to check against; #657 tracks adding
+    one at upload, as `gravi_images` already does.
     """
     if not path.is_file():
         return False
-    size = path.stat().st_size
-    if expected_size is not None:
-        return size == expected_size
-    return size > 0
+    return path.stat().st_size > 0

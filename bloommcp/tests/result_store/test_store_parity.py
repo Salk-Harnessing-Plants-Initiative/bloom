@@ -102,7 +102,7 @@ def _inject_wrong_expected_prefix(kind, monkeypatch):
             output_keys,
             output_sha256,
             output_size_bytes,
-            url_for,
+            url_for=url_for,
             expected_prefix="bloommcp_output/qc_someone_else/v1/",
         )
 
