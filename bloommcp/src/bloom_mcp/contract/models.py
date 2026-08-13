@@ -40,7 +40,11 @@ class OutputLink(BaseModel):
 
     @model_validator(mode="after")
     def _exactly_one_of_url_or_path(self) -> "OutputLink":
-        if (self.url is None) == (self.path is None):
+        # Falsiness, not `is None`-ness: a URL or path is never legitimately
+        # an empty string, so `url=""` must count as "not set" the same as
+        # `url=None` — else `OutputLink(url="", path=None)` would pass this
+        # guard despite carrying neither a usable URL nor a usable path.
+        if bool(self.url) == bool(self.path):
             raise ValueError("exactly one of url or path must be set")
         return self
 

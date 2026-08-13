@@ -550,6 +550,18 @@ def test_local_store_roundtrip_matches_contract(monkeypatch, tmp_path):
     assert relink.url is None
     assert relink.size_bytes == len(b"data")
 
+    # #643 review finding: a deleted/moved committed output must not leak its
+    # raw storage key to the caller — get_download_links redacts this the
+    # same way it already redacts a scope-mismatched key (CorruptRunLinksError).
+    Path(link.path).unlink()
+    from bloom_mcp.result_store import OutputFileMissingError
+
+    with pytest.raises(OutputFileMissingError) as exc_info:
+        store.get_download_links("exp.csv", "qc", "latest")
+    msg = str(exc_info.value)
+    assert stored.output_keys["cleaned"] not in msg
+    assert "see server logs" in msg
+
 
 def test_default_path_writes_no_local_files(
     fake_supabase_storage, monkeypatch, tmp_path
@@ -1438,6 +1450,40 @@ def test_validate_storage_backend_output_subfolder_blocked_by_file(
         sb.validate_storage_backend()
 
 
+def test_validate_storage_backend_rejects_relative_local_root(monkeypatch, tmp_path):
+    """A relative BLOOM_LOCAL_ROOT resolves against the process's CWD — a
+    restart from a different CWD would silently point at a different
+    directory, making prior on-disk results unretrievable with no error at
+    all. Caught at boot instead, before any mkdir."""
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", "relative/local/root")
+    monkeypatch.chdir(tmp_path)
+    sb.reset_backend_for_tests()
+    with pytest.raises(RuntimeError, match="not an absolute path"):
+        sb.validate_storage_backend()
+    assert not (tmp_path / "relative").exists()  # fails before any mkdir
+
+
+def test_validate_storage_backend_rejects_relative_explicit_override(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", "relative/output/root")
+    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
+    sb.reset_backend_for_tests()
+    with pytest.raises(RuntimeError, match="not an absolute path"):
+        sb.validate_storage_backend()
+
+
+def test_validate_storage_backend_accepts_absolute_local_root(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    sb.reset_backend_for_tests()
+    sb.validate_storage_backend()  # must not raise
+
+
 # ─── 5d. bloom#593 — shared `fit_is_trustworthy` primitive ────────────────────
 # Promoted from `remove_outliers.py`'s private `_fit_is_trustworthy`/
 # `_UNTRUSTWORTHY_FIT` (#419) so `remove_outliers`'s live gate and
@@ -1777,11 +1823,6 @@ def test_self_serve_base_url_defaults_to_localhost_8811(monkeypatch):
 def test_self_serve_base_url_prefers_public_url(monkeypatch):
     monkeypatch.setenv("BLOOMMCP_PUBLIC_URL", "https://example.internal/")
     assert sb.self_serve_base_url() == "https://example.internal"
-
-
-def test_local_output_root_matches_resolve_local_root(monkeypatch, tmp_path):
-    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
-    assert sb.local_output_root() == sb._resolve_local_root()
 
 
 def test_create_signed_url_performs_no_ownership_check(monkeypatch):

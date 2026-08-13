@@ -80,6 +80,19 @@ def test_output_link_rejects_both_url_and_path():
         OutputLink(key="k", url="http://x", path="/tmp/x", sha256="abc", size_bytes=0)
 
 
+def test_output_link_rejects_empty_string_url_with_no_path():
+    """An empty string is falsy, not a usable URL — must be rejected the same
+    as `url=None`, not treated as "url is set" just because it's non-`None`
+    (PR #643 review finding)."""
+    with pytest.raises(ValidationError):
+        OutputLink(key="k", url="", path=None, sha256="abc", size_bytes=0)
+
+
+def test_output_link_rejects_empty_string_path_with_no_url():
+    with pytest.raises(ValidationError):
+        OutputLink(key="k", url=None, path="", sha256="abc", size_bytes=0)
+
+
 def test_output_link_accepts_path_only():
     link = OutputLink(key="k", path="/tmp/x", sha256="abc", size_bytes=0)
     assert link.url is None

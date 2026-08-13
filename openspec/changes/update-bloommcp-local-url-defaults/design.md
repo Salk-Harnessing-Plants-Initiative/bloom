@@ -92,9 +92,11 @@ follow-up — user-confirmed).
   ask for (confirmed with the user — see conversation). So:
 
   - `SupabaseResultStore.commit()` branches on `is_local_backend()`: local backend calls
-    `build_output_links(..., path_for=lambda key: str(local_output_root() / key))`; every other
-    case (including the granular explicit-override tier) keeps
-    `url_for=lambda key: _sc.create_signed_url(...)`, unchanged.
+    `build_output_links(..., path_for=lambda key: str(backend.resolve_path(key)))`, where
+    `backend` is the active `LocalStorageBackend` (`storage_backend.active_backend()`); every
+    other case (including the granular explicit-override tier) keeps
+    `url_for=lambda key: _sc.create_signed_url(...)`, unchanged. `get_download_links()` mirrors
+    this same branch for the read path — see Decision 5's revision below.
   - `_resolve_plots_url()` keeps its self-serve default under the `BLOOM_LOCAL_ROOT` tier
     (Decision 1), unchanged from the original proposal.
   - `LocalStorageBackend.create_signed_url` itself is **unchanged** from its still-unarchived
@@ -133,14 +135,21 @@ follow-up — user-confirmed).
     itself independently callable (as existing tests already do, e.g. `test_sections_scaffold.py`)
     without requiring that ordering.
 
-- **Decision 5 — `local_output_root()` stays public, repurposed from "what `/output` mounts" to
-  "what `commit()` joins a key against."** The function itself (a thin wrapper over the private
-  `_resolve_local_root()`) is unchanged; only its caller changed — `server.py`'s `build_app()` no
-  longer calls it (the `/output` mount is gone), `result_store/supabase_store.py`'s `commit()`
-  now does, joining it with each output key (`root / key`) to produce the path
-  `OutputLink.path` carries. This keeps the mounted-content-equals-storage-backend-content
-  invariant the original design wanted, just applied to path construction instead of HTTP
-  serving.
+- **Decision 5 (revised post-PR-review) — path construction routes through
+  `LocalStorageBackend.resolve_path()`, not a raw `local_output_root() / key` join; the
+  `local_output_root()` accessor itself is removed.** The original version of this decision kept
+  a public `local_output_root()` (a thin wrapper over `_resolve_local_root()`) and had `commit()`
+  join it with each key via plain `Path` division — safe only because `validate_outputs()` already
+  rejects a traversal-shaped key upstream, not because the join itself was guarded. A PR review
+  round caught this as a duplicated, unguarded second path-resolution mechanism running alongside
+  `LocalStorageBackend._resolve()`'s existing traversal guard (rejects `..`, a leading `/`,
+  backslashes, and checks containment) — the kind of guard that would silently reopen traversal
+  risk if `validate_outputs()`'s upstream guarantee ever weakened. Fixed by adding a public
+  `LocalStorageBackend.resolve_path(key)` (delegating to the existing private `_resolve()`) and
+  having both `commit()` and `get_download_links()` call `storage_backend.active_backend().
+  resolve_path(key)` instead. `local_output_root()` became dead code once its one production
+  caller switched — removed, along with its own self-test, rather than left as an unused public
+  accessor with no caller; nothing outside this change's own tests referenced it.
 
 - **Decision 6 — `OutputLink.url` becomes `Optional[str]`; a new `Optional[str] path` field is
   added; `build_output_links` takes `path_for` as an alternative to `url_for`, requiring exactly

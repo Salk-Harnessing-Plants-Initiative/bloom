@@ -48,6 +48,7 @@ from .ports import (
     CorruptRunLinksError,
     ManifestIncompatibleError,
     ManifestReadError,
+    OutputFileMissingError,
     RunHandle,
     RunNotFoundError,
     RunStateError,
@@ -94,6 +95,22 @@ def _commit_lock(output_root: str, experiment: str, tool_class: str) -> KeyedLoc
     # in the shared registry — the two must never contend on each other's
     # locks even if given identical (output_root, experiment, tool_class).
     return KeyedLock(("supabase", output_root, experiment, tool_class))
+
+
+def _active_local_backend() -> Optional[LocalStorageBackend]:
+    """The active `LocalStorageBackend` if local mode is selected, else `None`.
+
+    `commit()` and `get_download_links()` each need the identical
+    `is_local_backend()` branch (build a path_for from this backend's own
+    traversal-guarded `resolve_path` vs. an url_for from `create_signed_url`)
+    — shared here so the two stay in sync rather than each re-deriving the
+    same isinstance-checked lookup independently.
+    """
+    if not is_local_backend():
+        return None
+    backend = active_backend()
+    assert isinstance(backend, LocalStorageBackend)
+    return backend
 
 
 def _guarded_manifest_read(adir: AnalysisDir, read: Callable[[], T]) -> T:
@@ -269,14 +286,13 @@ class SupabaseResultStore:
                 # written `adir.key(f"{version_dir}/")` template) means the
                 # expected prefix and the actual keys structurally cannot
                 # drift apart from a future refactor of key_for/AnalysisDir.
-                if is_local_backend():
-                    backend = active_backend()
-                    assert isinstance(backend, LocalStorageBackend)
+                local = _active_local_backend()
+                if local is not None:
                     output_links = build_output_links(
                         output_keys,
                         output_sha256,
                         output_size_bytes,
-                        path_for=lambda key: str(backend.resolve_path(key)),
+                        path_for=lambda key: str(local.resolve_path(key)),
                         expected_prefix=key_for(""),
                     )
                 else:
@@ -464,20 +480,19 @@ class SupabaseResultStore:
         adir = AnalysisDir(self._output_root, experiment, tool_class)
         expected_prefix = adir.key(f"{stored.version_dir}/")
         try:
-            # Mirrors commit()'s own is_local_backend() branch (#642
-            # follow-up): the local backend has nothing to sign or serve —
+            # Mirrors commit()'s own local-backend branch (#642 follow-up):
+            # the local backend has nothing to sign or serve —
             # create_signed_url would just raise without BLOOM_STORAGE_URL —
             # so this re-fetch surfaces the same direct filesystem path
             # instead. size_for stays _sc.get_object_size in both branches:
             # it already dispatches through active_backend(), so it works
             # unchanged for the local backend too.
-            if is_local_backend():
-                backend = active_backend()
-                assert isinstance(backend, LocalStorageBackend)
+            local = _active_local_backend()
+            if local is not None:
                 output_links = build_download_links(
                     stored.output_keys,
                     stored.output_sha256,
-                    path_for=lambda key: str(backend.resolve_path(key)),
+                    path_for=lambda key: str(local.resolve_path(key)),
                     size_for=_sc.get_object_size,
                     expected_prefix=expected_prefix,
                 )
@@ -505,5 +520,23 @@ class SupabaseResultStore:
             raise CorruptRunLinksError(
                 f"get_download_links found corrupt link data for "
                 f"{tool_class}/{adir.stem} (structural bug — see server logs)"
+            ) from exc
+        except OutputFileMissingError as exc:
+            # Mirrors the CorruptRunLinksError handling above: the raw
+            # message embeds the storage key of a committed output that was
+            # deleted/moved out-of-band since commit — full detail
+            # server-side only, never in the caller-facing message (PR #643
+            # review finding: this used to fall through to the tool
+            # wrapper's generic exception handler, which only scrubs
+            # credential-shaped substrings, not storage keys).
+            logger.exception(
+                "get_download_links found a missing local output file for %s/%s %s",
+                tool_class,
+                adir.stem,
+                stored.run_ref,
+            )
+            raise OutputFileMissingError(
+                f"get_download_links found a missing output file for "
+                f"{tool_class}/{adir.stem} (see server logs)"
             ) from exc
         return replace(stored, output_links=output_links)

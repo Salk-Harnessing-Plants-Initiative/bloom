@@ -17,7 +17,7 @@ from typing import Callable, Optional
 
 from bloom_mcp.contract.models import OutputLink
 
-from .ports import CorruptRunLinksError
+from .ports import CorruptRunLinksError, OutputFileMissingError
 
 # Signed-URL expiry (bloom#581) — a fixed constant, not a per-call parameter or
 # env var: the issue's own framing is "a real short-lived signed URL," and an
@@ -206,7 +206,17 @@ def build_download_links(
         if url_for and not url:
             raise ValueError(f"url_for returned no usable URL for key {key!r}")
         if path_for and not Path(path).is_file():
-            raise ValueError(f"path_for returned a non-existent path for key {key!r}")
+            # Unlike build_output_links's identical-looking check (a
+            # structural bug, since the file was written moments earlier
+            # under the same commit() lock), a missing file here is a
+            # plausible operational reality — deleted or moved out-of-band
+            # since commit. A dedicated type (not a bare ValueError) so
+            # get_download_links can redact it the same way it already
+            # redacts CorruptRunLinksError, instead of the raw key reaching
+            # the caller via a generic exception handler.
+            raise OutputFileMissingError(
+                f"path_for returned a non-existent path for key {key!r}"
+            )
         links[name] = OutputLink(
             key=key,
             url=url,

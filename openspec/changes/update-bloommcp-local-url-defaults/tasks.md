@@ -125,3 +125,63 @@ path_for=None)` — both keyword-only, exactly one required
 - [x] Updated PR #643's description to reflect the revised design, noting that this supersedes
       the `/output`-self-serve mechanism from the branch's earlier commits per the issue's
       follow-up comment.
+
+## C. Post-PR-review fixes (two rounds, landed as additional commits on the same branch/PR)
+
+### C1. Round 1 — a staging merge introduced a module-level `SyntaxError`
+
+- [x] Fixed `build_output_links` (`result_store/_artifacts.py`): the staging merge had spliced
+      B3's new loop body onto an unrelated staging commit's old dict-comprehension tail
+      (`for name in output_keys }`), dropping `return links` entirely — the whole `bloom_mcp`
+      package failed to import. Removed the dead lines, added the missing `return links`.
+- [x] `get_download_links` (`SupabaseResultStore`) had no local-backend branch at all — it always
+      called `create_signed_url`, which raises without `BLOOM_STORAGE_URL`, silently breaking the
+      re-sign tool for local-mode users on the exact 2-env-var setup this change advertises.
+      Fixed: `build_download_links` gained the same `path_for` alternative `build_output_links`
+      already had; `get_download_links` branches on the local backend identically to `commit()`.
+- [x] `OutputLink`'s "exactly one of url/path" invariant gained a real Pydantic `model_validator`
+      (was previously enforced only by `build_output_links`'s own runtime guard).
+- [x] `path_for` (in `commit()`) was a raw `root / key` join, not routed through
+      `LocalStorageBackend`'s own traversal guard — added a public `resolve_path()` method
+      (delegating to the existing private `_resolve()`) and switched `commit()` to call it.
+- [x] Added an existence check on the `path_for` branch (mirroring the `url_for` branch's
+      "returned nothing usable" guard) in both `build_output_links` and `build_download_links`.
+- [x] Fixed 3 tests in `test_storage_backend.py` that had been spliced into the middle of
+      `test_storage_backend_protocol_includes_create_signed_url`, orphaning that test's own last
+      two assertions onto the wrong test name.
+- [x] Added `/output`-mount-absent regression tests (both backends); expanded design.md's risk
+      analysis to name same-host/different-container and human-mediated (Slack/issue paste) path
+      exposure, distinct from the "different machine" case it already covered.
+- [x] Full suite green (1194 passed, 29 skipped) against the actual pushed HEAD.
+
+### C2. Round 2 — 5-lens review of round 1's own fix
+
+- [x] Round 1 switched `commit()`'s `path_for` to `LocalStorageBackend.resolve_path()` but left
+      design.md/spec.md/proposal.md still describing the now-dead `local_output_root()` (its one
+      production caller had just been swapped out). Removed `local_output_root()` entirely (dead
+      code — referenced only by its own self-test) and updated design.md's Decision 5,
+      proposal.md, and `bloommcp-result-store`'s spec.md to describe `resolve_path()` as the real
+      mechanism.
+- [x] A relative `BLOOM_LOCAL_ROOT`/`BLOOM_STORAGE_LOCAL_ROOT` resolved against the process's CWD
+      at first use, with no validation — a restart from a different CWD would silently target a
+      different absolute directory, making previously-committed outputs unretrievable with no
+      error. Added an absolute-path check to `validate_storage_backend()`, failing fast at boot.
+- [x] `get_download_links`'s new `path_for` existence-check (round 1's own addition) leaked the
+      raw storage key to the caller when a committed output was deleted/moved out-of-band — it
+      fell through to the tool wrapper's generic exception handler (`safe_error_text`, which only
+      scrubs credential-shaped substrings), bypassing the redaction convention
+      `CorruptRunLinksError`/`KeyScopeGuardError` already establish. Added `OutputFileMissingError`
+      (`result_store/ports.py`); `build_download_links` raises it instead of a bare `ValueError`;
+      `get_download_links` catches it and raises a redacted message, logging full detail
+      server-side, mirroring its existing `CorruptRunLinksError` handling.
+- [x] `commit()`/`get_download_links()` each independently re-derived the same
+      "`is_local_backend()` → `active_backend()` → `isinstance`-assert" sequence. Added
+      `_active_local_backend()` (`supabase_store.py`) so both share one implementation.
+- [x] `OutputLink._exactly_one_of_url_or_path` checked `is None` rather than falsiness —
+      `OutputLink(url="", path=None)` would have passed despite carrying no usable URL. Tightened
+      to a `bool()` check on both sides.
+- [x] Removed a stale `BLOOM_STORAGE_URL` setenv from
+      `test_fully_local_qc_clean_to_pca_no_supabase` (`test_local_mode.py`) — dead since round 1's
+      local-backend `get_download_links` fix, and contradicted the test's own nearby comment.
+- [x] Full suite green against the actual pushed HEAD; pinned ruff/black clean on every changed
+      file.

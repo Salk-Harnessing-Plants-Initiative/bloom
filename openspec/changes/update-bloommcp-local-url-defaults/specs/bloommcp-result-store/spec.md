@@ -10,8 +10,8 @@ Exactly one of `url`/`path` SHALL be populated, never both and never neither: fo
 except the local backend, `url` SHALL be a signed/served URL from the active `StorageBackend`'s
 `create_signed_url`, and `path` SHALL be `None`; for the local backend (`BLOOM_STORAGE_BACKEND=
 local`), `commit` SHALL NOT call `create_signed_url` at all — `path` SHALL instead be the
-resolved absolute filesystem path (`storage_backend.local_output_root()` joined with the key),
-and `url` SHALL be `None`. This holds for every local-backend configuration (the granular
+resolved absolute filesystem path (the active `LocalStorageBackend`'s own traversal-guarded
+`resolve_path(key)`, via `storage_backend.active_backend()`), and `url` SHALL be `None`. This holds for every local-backend configuration (the granular
 explicit-override tier included), not only the `BLOOM_LOCAL_ROOT` tier. This field SHALL be
 populated only by `commit` — `get_run` and `list_runs` SHALL return `output_links` as an empty
 dict (including when the resolved run was recorded before this capability existed, e.g. a legacy
@@ -55,7 +55,7 @@ always synthesizes a `url` exactly as before, regardless of the selected backend
   `commit(run, outputs)` with `BLOOM_STORAGE_BACKEND=local`
 - **THEN** the returned `StoredRun.output_links` has one entry per `outputs` entry, each
   carrying a `None` `url` and a non-empty `path` equal to
-  `str(storage_backend.local_output_root() / key)` for that output's key, and
+  `str(storage_backend.active_backend().resolve_path(key))` for that output's key, and
   `create_signed_url` is never called
 
 #### Scenario: get_run and list_runs do not carry signed links or paths

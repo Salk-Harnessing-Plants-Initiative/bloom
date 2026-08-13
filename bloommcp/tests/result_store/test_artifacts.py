@@ -15,6 +15,7 @@ import pytest
 from bloom_mcp.result_store._artifacts import (
     CorruptRunLinksError,
     KeyScopeGuardError,
+    OutputFileMissingError,
     build_download_links,
     build_output_links,
 )
@@ -225,7 +226,7 @@ def test_download_links_path_for_populates_path_and_leaves_url_none(tmp_path):
 
 
 def test_download_links_path_for_returning_a_missing_path_raises():
-    with pytest.raises(ValueError, match="non-existent path"):
+    with pytest.raises(OutputFileMissingError, match="non-existent path"):
         build_download_links(
             {"cleaned": f"{_PREFIX}_cleaned.csv"},
             {"cleaned": "sha-cleaned"},

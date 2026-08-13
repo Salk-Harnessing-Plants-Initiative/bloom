@@ -14,10 +14,12 @@ comment redirected outputs to a direct-path model instead — see design.md's "R
 - `bloom_mcp.result_store._artifacts.build_output_links` and `bloom_mcp.contract.models.OutputLink`
   SHALL support a `path_for` alternative to `url_for`: `OutputLink` gains an `Optional[str] path`
   field alongside a now-`Optional[str] url`; exactly one of the two is populated per link.
-- `SupabaseResultStore.commit()` SHALL use `path_for` (never `url_for`/`create_signed_url`) for
-  every output link when `BLOOM_STORAGE_BACKEND=local`, resolving each key to its absolute
-  filesystem path under `storage_backend.local_output_root()`. The default (Supabase) backend is
-  unaffected — it continues to use `url_for`/`create_signed_url` exactly as before.
+- `SupabaseResultStore.commit()` and `get_download_links()` SHALL use `path_for` (never
+  `url_for`/`create_signed_url`) for every output link when `BLOOM_STORAGE_BACKEND=local`,
+  resolving each key to its absolute filesystem path via the active `LocalStorageBackend`'s own
+  traversal-guarded `resolve_path(key)` (`storage_backend.active_backend()`). The default
+  (Supabase) backend is unaffected — it continues to use `url_for`/`create_signed_url` exactly as
+  before.
   `LocalStorageBackend.create_signed_url` is unchanged (still requires `BLOOM_STORAGE_URL`,
   raising when unset) — it is simply no longer called by this pipeline; it remains available only
   for an operator who deliberately wants a real served URL from their own external server.

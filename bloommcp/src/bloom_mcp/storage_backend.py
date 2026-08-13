@@ -548,20 +548,6 @@ def self_serve_base_url() -> str:
     )
 
 
-def local_output_root() -> Path:
-    """Public accessor for the local backend's resolved output root (#642).
-
-    Thin wrapper over :func:`_resolve_local_root` so ``server.build_app()`` can
-    mount exactly the directory :class:`LocalStorageBackend` itself writes to
-    and reads from, without reaching into a private name. Calls ``.resolve()``
-    (unlike ``_resolve_local_root`` itself, whose unresolved return value
-    ``validate_storage_backend`` depends on to detect an empty/unset root) so
-    a relative ``BLOOM_LOCAL_ROOT``/``BLOOM_STORAGE_LOCAL_ROOT`` still yields
-    the absolute path this function's own docstring promises.
-    """
-    return _resolve_local_root().resolve()
-
-
 def _resolve_local_root() -> Path:
     """The local root for the ``local`` backend.
 
@@ -695,6 +681,22 @@ def validate_storage_backend() -> None:
         raise _unrecognized_backend_error(name)
     if name == "local":
         root = _resolve_local_root()
+        # A relative BLOOM_LOCAL_ROOT/BLOOM_STORAGE_LOCAL_ROOT/BLOOM_OUTPUT_DIR
+        # resolves against whatever the process's CWD happens to be at first
+        # use (LocalStorageBackend.__init__'s own .resolve() call) — silently
+        # different across a restart with a different CWD, making a prior
+        # run's committed outputs unretrievable with no error at all. Checked
+        # here (root.parts guards the genuinely-empty/unset case, which the
+        # more specific "neither ... is set" message below already covers)
+        # so misconfiguration fails loudly at boot instead of resolving to a
+        # different directory next time.
+        if root.parts and not root.is_absolute():
+            raise RuntimeError(
+                f"BLOOM_STORAGE_BACKEND=local root {str(root)!r} is not an "
+                f"absolute path; set BLOOM_LOCAL_ROOT/BLOOM_STORAGE_LOCAL_ROOT/"
+                f"BLOOM_OUTPUT_DIR to an absolute path so it does not silently "
+                f"depend on the process's current working directory."
+            )
         explicit = os.environ.get("BLOOM_STORAGE_LOCAL_ROOT")
         derived_from_local_root = not explicit and bool(
             os.environ.get("BLOOM_LOCAL_ROOT")
