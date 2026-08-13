@@ -36,6 +36,12 @@ all four) and persists them as additional ``*.png`` entries in the existing
 ``include_plots=False`` path. Figure construction is delegated entirely to
 ``bloom_mcp.tools._plots`` (validate/generate/close), which is tool-agnostic and
 meant to be reused verbatim by the upcoming UMAP tool (#425).
+
+**Optional font-style override (#661).** ``plot_font_family``/``plot_font_size`` are
+forwarded into ``_plots.generate_figures``, which applies them uniformly to every
+generated figure's title, axis labels, tick labels, and legend text/title before it is
+persisted. Both default to ``None`` (no override, identical to pre-#661 styling) and are
+ignored when ``include_plots=False``.
 """
 
 from __future__ import annotations
@@ -125,6 +131,20 @@ class PCAAnalysisParams(BaseModel):
         "available plots when include_plots=True. Ignored when include_plots=False. "
         "Valid keys: create_pca_scree_plot, create_pca_biplot, "
         "create_feature_contribution_plot, create_feature_contribution_heatmap.",
+    )
+    plot_font_family: str | None = Field(
+        default=None,
+        description="Font family override (e.g. 'serif', 'DejaVu Sans') applied to every "
+        "text element (title, axis labels, tick labels, legend text/title) on each "
+        "generated plot. Omit for each plot's default matplotlib styling. Ignored when "
+        "include_plots=False.",
+    )
+    plot_font_size: float | None = Field(
+        default=None,
+        gt=0,
+        description="Font size (points) override applied to every text element on each "
+        "generated plot. Omit for each plot's default size. Ignored when "
+        "include_plots=False.",
     )
     user_label: str | None = Field(
         default=None,
@@ -345,7 +365,12 @@ def pca_analysis(
                 if params.plots is not None
                 else list(_PCA_CATALOG_KEYS)
             )
-            generate_figures({k: calls[k] for k in keys_to_generate}, figures)
+            generate_figures(
+                {k: calls[k] for k in keys_to_generate},
+                figures,
+                font_family=params.plot_font_family,
+                font_size=params.plot_font_size,
+            )
 
         with snapshot_frame(frame.df) as source_snapshot:
             run = store.create_run(

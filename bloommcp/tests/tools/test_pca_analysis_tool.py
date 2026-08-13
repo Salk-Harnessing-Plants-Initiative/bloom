@@ -653,7 +653,8 @@ def test_figure_cleanup_get_fignums_empty_on_partial_plotter_failure(
 ):
     """10.8c — regression: the SECOND of several requested plotters raising mid-generation
     must not leak the figure(s) already produced by earlier successful plotters. Exercises
-    the tool's real try/finally nesting end-to-end (not just the _plots unit helpers)."""
+    the tool's real try/finally nesting end-to-end (not just the _plots unit helpers).
+    """
     import matplotlib.pyplot as plt
 
     real = pca_analysis_tool._pca_plot_calls
@@ -691,6 +692,63 @@ def test_plot_outputs_included_in_schema_round_trip(injected_ports):
     result = _run(include_plots=True, plots=["create_pca_scree_plot"])
     again = PCAAnalysisResult.model_validate(json.loads(result.model_dump_json()))
     assert "create_pca_scree_plot.png" in again.outputs
+
+
+# ── Font-style override (#661) ───────────────────────────────────────────────
+
+
+def test_plot_font_family_and_size_forwarded_and_applied(injected_ports, monkeypatch):
+    """plot_font_family/plot_font_size flow from PCAAnalysisParams through
+    generate_figures and are applied to the generated figure before it's saved."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    captured = {}
+
+    def _fake_calls(result_dict, pca, frame, threshold):
+        def _make():
+            fig, ax = plt.subplots()
+            ax.set_title("t")
+            ax.set_xlabel("x")
+            captured["fig"] = fig
+            return fig
+
+        return {"create_pca_scree_plot": _make}
+
+    monkeypatch.setattr(pca_analysis_tool, "_pca_plot_calls", _fake_calls)
+
+    _run(
+        include_plots=True,
+        plots=["create_pca_scree_plot"],
+        plot_font_family="serif",
+        plot_font_size=22,
+    )
+
+    fig = captured["fig"]
+    assert fig.axes[0].title.get_fontfamily() == ["serif"]
+    assert fig.axes[0].title.get_fontsize() == 22
+
+
+def test_plot_font_size_non_positive_is_invalid_input(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        pca_analysis(
+            {
+                "experiment": _EXPERIMENT,
+                "trait_columns": _TRAITS,
+                "plot_font_size": 0,
+            }
+        )
+    assert exc.value.code == "invalid_input"
+    assert store.list_runs(_EXPERIMENT, "pca") == []
+
+
+def test_plot_font_fields_ignored_when_include_plots_false(injected_ports):
+    result = _run(include_plots=False, plot_font_family="serif", plot_font_size=22)
+    assert not any(k.endswith(".png") for k in result.outputs)
+    assert set(result.outputs) == {"loadings.csv", "scores.csv", "pca_result.json"}
 
 
 # ── explicit cleaned-version selector (#626) ────────────────────────────────
