@@ -24,14 +24,17 @@ verification. It matters because Evelyn has a demo Tuesday and wants to run bloo
 staging through Claude Desktop; confirming this works — or confirming it doesn't, with enough lead
 time to fall back to the existing Claude Code + `BLOOMMCP_API_KEY` path
 ([connecting-claude-code.md](../../../bloommcp/docs/connecting-claude-code.md), which already
-works today) — is the point. **Timing note, updated while revising this proposal:** #620 was filed
-2026-08-06 (a Thursday) referencing that Tuesday, 2026-08-11. As of this revision it is
-2026-08-12 — one day past it — and #620 still has zero comments: no run write-up, no go/no-go call
-posted. Whether the demo already happened without this verification ever running, or this has
-simply slipped unnoticed, is not answerable from the repo alone. Whoever runs this needs to treat
-it as **overdue**, not merely immediate — run it now regardless, and say plainly in the eventual
-notification (tasks.md 4.5) that the result is arriving after the referenced date, not before it.
-The fallback (below) should still be sanity-checked first, since there's no more lead time to
+works today) — is the point. **Timing note:** #620 was filed 2026-08-06 (a Thursday) referencing
+that Tuesday, 2026-08-11. **Do not trust any specific day-count written into this proposal** — every
+day it sits unexecuted makes a hardcoded figure wrong by one more day (an earlier revision already
+said "one day past" when it was actually two). Compute the actual gap from 2026-08-11 to today
+before running this, and check #620's current comment count: as of this proposal's last edit it
+still had zero comments (no run write-up, no go/no-go call posted), but that too can go stale.
+Whether the demo already happened without this verification ever running, or this has simply
+slipped unnoticed, is not answerable from the repo alone. Whoever runs this needs to treat it as
+**overdue**, not merely immediate — run it now regardless, and state the actual computed day-count
+plainly in the eventual notification (tasks.md 4.5), not whatever number appears elsewhere in this
+document. The fallback (below) should still be sanity-checked first, since there's no more lead time to
 recover if it turns out to be broken too, whatever the calendar says at that point.
 
 This change does **not** attempt to resolve [#616](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/616)
@@ -78,10 +81,10 @@ for different reasons, not both in both.
 - Clean up every piece of state the run itself creates on shared staging — each registered OAuth
   client, the test login session, and the disposable user account (`auth.users` row) itself —
   regardless of whether the run succeeds, fails, or is aborted partway.
-- Redact credentials (bearer tokens, authorization codes, `client_secret`, session cookies, PKCE
-  `code_verifier`/`state`) from anything recorded in the write-up below, and independently re-check
-  the draft for these patterns immediately before posting — this repository is public and posting
-  is not reversible.
+- Redact credentials (bearer tokens, refresh tokens, authorization codes, `client_secret`, session
+  cookies, PKCE `code_verifier`/`state`) from anything recorded in the write-up below, and
+  independently re-check the draft for these patterns immediately before posting — this repository
+  is public and posting is not reversible.
 - Record a go/no-go recommendation for Tuesday's demo: either this path is confirmed working, or
   the fallback (Claude Code + `BLOOMMCP_API_KEY` against staging) is confirmed as the path to use
   instead.
@@ -123,6 +126,15 @@ for different reasons, not both in both.
   unauthenticated discovery/reachability pre-check (scriptable, no browser needed); drafting the
   write-up, follow-up issues, and the `.env.staging.defaults` comment fix once a human supplies the
   real results; and opening the PR for this proposal itself.
-- Refs: #620 (this issue, closes), #613 (merged, ships the OAuth flow this verifies), #616 (related;
-  does not block this change proceeding, though its Readiness section's language is broader than an
-  earlier draft of this proposal characterized it — see Why).
+- **Archival note:** this change's spec captures the criteria a completed verification is judged
+  against, not an ongoing system capability — once tasks.md is executed and the result is recorded
+  (task 4.1), this proposal archives as a historical record of that one-time run, the same as any
+  other merged change; no future code depends on the `bloommcp-oauth-staging-verification` spec
+  remaining "current."
+- Refs: #620 (this issue — **do not use a "Closes" keyword**; this PR targets `staging`, not `main`,
+  so an auto-close won't fire on this merge, but the keyword would still auto-close #620 the moment
+  `staging` is later promoted to `main`, regardless of whether tasks.md has actually been executed by
+  then — close #620 manually, from task 4.3's recorded go/no-go result), #613 (merged, ships the
+  OAuth flow this verifies), #616 (related; does not block this change proceeding, though its
+  Readiness section's language is broader than an earlier draft of this proposal characterized it —
+  see Why).

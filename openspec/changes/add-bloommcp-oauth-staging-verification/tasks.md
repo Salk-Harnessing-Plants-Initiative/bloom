@@ -1,13 +1,20 @@
-**Timing note:** #620 was filed 2026-08-06 referencing "demo Tuesday" (2026-08-11). As of this
-revision it is 2026-08-12 — one day past that date — and #620 has zero comments: no run write-up,
-no go/no-go call. Whether the demo already happened without this verification ever running, or
-this has simply slipped unnoticed, cannot be determined from the repo alone. Treat this as
-**overdue**, not "today is the day": run it immediately regardless, and task 4.5's notification
-must say plainly that the recommendation is arriving after, not before, the date the issue itself
-referenced. Section 0 exists specifically so the fallback is known-good before time is spent on
-anything else.
+**Timing note:** #620 was filed 2026-08-06 referencing "demo Tuesday" (2026-08-11). **Do not trust
+any specific day-count written into this document** — it goes stale by one more day every day this
+sits unexecuted (an earlier revision already said "one day past" when it was actually two). Before
+running this, compute the actual gap between today and 2026-08-11, and re-check #620's current
+comment count rather than assuming it still has none. Whether the demo already happened without
+this verification ever running, or this has simply slipped unnoticed, cannot be determined from the
+repo alone. Treat this as **overdue**, not "today is the day": run it immediately regardless, and
+task 4.5's notification must state the actual computed day-count plainly — arriving after, not
+before, the date the issue itself referenced. Section 0 exists specifically so the fallback is
+known-good before time is spent on anything else.
 
 ## 0. Confirm the fallback first
+
+- [ ] 0.0 Before anything else, re-check #620 itself for any new comments, a posted go/no-go, or a
+      note that the demo already happened — this document's own claim about #620's comment count
+      decays the moment it's written. If #620 already has a result posted, stop here; re-running
+      this is redundant, not thorough.
 
 - [ ] 0.1 Before touching the OAuth flow at all, sanity-check that the existing fallback (Claude
       Code + `BLOOMMCP_API_KEY` against staging, per
@@ -35,11 +42,13 @@ anything else.
       screen itself works (see design.md Decision 2); it exists to fail fast on a network/deploy
       problem before spending the more expensive manual steps in Section 2 on it. **If this hangs
       instead of returning a response, suspect Salk wifi/VPN first** (per
-      `connecting-claude-code.md`'s own warning that an unreachable host looks like a hang, not a
-      clean error) — reconfirm connectivity before treating it as a server-side failure.
+      `connecting-claude-code.md`'s own warning that an unreachable host "looks like a hang, not a
+      clean failure") — reconfirm connectivity before treating it as a server-side failure.
 - [ ] 1.3 Set up a disposable, clearly-labeled test identity for the login/consent step — sign up
-      via bloom-web on staging with an address like `oauth-verify-620+<yyyymmdd>-a1@<your-domain>`
-      (the `-a1` attempt suffix matters: if this run aborts and is re-attempted the same day,
+      via bloom-web on staging with an address like `oauth-verify-620+<yyyymmdd>-a1@salk.edu`
+      (`@salk.edu` because `LoginForm.tsx`'s signup form hardcodes that domain suffix — there is no
+      domain field to choose a different one; the `-a1` attempt suffix matters: if this run aborts
+      and is re-attempted the same day,
       increment it to `-a2`, etc., so 4.6's cleanup and the 4.1 write-up can tell which attempt's
       state belongs to which signup instead of colliding on an identical address); do not use a
       real Salk/SSO account. Plus-addressing survives client-side (`LoginForm.tsx`'s
@@ -68,18 +77,23 @@ anything else.
       dynamic registration creates the `oauth_clients` row before login even happens, so `client_id`
       is the actual lookup key task 4.6 uses to delete it, not the disposable identity from 1.3
       (that identity is unrelated to which client got registered). Carry these `client_id` values
-      into the task 4.1 write-up even if the run later fails or aborts.
+      into the task 4.1 write-up even if the run later fails or aborts. **The `201` response body
+      also commonly contains `client_secret` and/or `registration_access_token` (RFC 7591) alongside
+      `client_id` — redact both before recording the response, not only `client_id` itself.**
 - [ ] 2.2 Once authenticated, issue exactly one **read-only** tool call —
       `list_available_experiments` — against staging through this connection and confirm it returns
       real staging data, not an auth error. **Do not call `remove_outliers`, `qc_clean`, or any tool
       that persists a run against a real experiment** (anything calling `ResultStore.commit()`) —
       this would leave a fake analysis run on real experiment data indistinguishable from a genuine
-      one.
+      one. As a quick negative-path check, also issue one call with the bearer token truncated or
+      otherwise corrupted and confirm it is rejected (not silently accepted) before moving on.
 - [ ] 2.3 Decode the access token's JWT header from task 2.1 locally (do not paste the raw token
-      anywhere — see task 2.4) and record its `alg`. Cross-check bloommcp's server logs at the run's
-      timestamp for whether `SupabaseOAuthVerifier` accepted it via the JWKS/ES256 path or the
-      `JWT_SECRET`/HS256 fallback (`bloommcp/src/bloom_mcp/auth.py`). This is the concrete evidence
-      for whether staging currently signs ES256 — task 1.1's env-var check alone can't answer that.
+      anywhere — see task 2.4) and record its `alg`. **This decoded `alg` is the only reliable
+      evidence for whether staging signs ES256 or falls back to HS256 — `SupabaseOAuthVerifier`
+      (`bloommcp/src/bloom_mcp/auth.py`) does not log anything on a successful verification via
+      either path, only on rejection, so there is nothing to cross-check in the server logs for a
+      token that was accepted.** Task 1.1's env-var check tells you what staging is configured to
+      do; this task's decoded `alg` is the only way to confirm what it actually did.
 - [ ] 2.4 If any step fails, capture the request/response detail needed to file a follow-up issue
       (status code, error body, which step) — don't just note "it failed." **Redact `client_secret`,
       bearer tokens, authorization codes, refresh tokens, session cookies, and PKCE `code_verifier`/
@@ -95,12 +109,20 @@ anything else.
 
 ## 3. Claude Desktop cached-token check
 
+**Before either step below:** the same incognito/clean-profile requirement from task 1.3 applies
+here too. Claude Desktop's `mcp-remote` bridge opens the OS default browser, not a chosen private
+window — if a fresh login is triggered in Section 3 and that default browser already has a real
+Salk/bloom-web session active, consent could complete silently under that real account instead of
+the disposable one from 1.3, with no error to signal it. Confirm no existing bloom-web session is
+active in the default browser (or close it) before task 3.1.
+
 - [ ] 3.1 With a token already cached under `~/.mcp-auth/` from task 2, configure Claude Desktop to
       use the same staging `mcp-remote` bridge and confirm whether it reuses that cached token
       without a fresh browser login.
 - [ ] 3.2 Restart Claude Desktop and repeat the check — confirm whether the cached token survives an
       application restart or Desktop re-prompts for login on relaunch. Record Desktop's version/OS
-      and whether a browser window opened on restart.
+      and whether a browser window opened on restart. If a fresh login is triggered, re-confirm the
+      default browser has no active real session before completing it (see above).
 
 ## 4. Record results and decide
 
@@ -117,9 +139,9 @@ staging state, it's a reason to say so explicitly in the write-up.
       and every `client_id` registered (2.1, 2.5), whether any staging state was left behind and
       cleaned up (4.6), and whether the `.env.staging.defaults` comment was accurate or stale.
       **Before posting:** grep the draft for `secret`, `Bearer `, `access_token`, `refresh_token`,
-      `code_verifier`, and `state=` as an independent check that 2.4's redaction actually caught
-      everything — this is a public repo and a missed secret can't be un-posted after the fact; one
-      remembered pass during drafting is not enough for something irreversible.
+      `id_token`, `code_verifier`, and `state=` as an independent check that 2.4's redaction actually
+      caught everything — this is a public repo and a missed secret can't be un-posted after the
+      fact; one remembered pass during drafting is not enough for something irreversible.
 - [ ] 4.2 File a follow-up GitHub issue for any failed step, with enough detail to act on without
       re-running the flow (per Requirement: mcp-remote OAuth flow verified end-to-end against
       staging).
@@ -152,5 +174,12 @@ staging state, it's a reason to say so explicitly in the write-up.
          disposable identity that never gets deleted pollutes the user list exactly as much as a
          real account would:
          `DELETE FROM auth.users WHERE email = '<disposable email from 1.3>';`
-      Record in the 4.1 write-up that all three were run, or which ones couldn't be (per the
-      abort-safe note above) and why.
+      **Reconciliation check:** the 3-attempt retry cap in task 2.1 is a bookkeeping convention, not
+      a server-side limit — nothing stops an aborted-and-restarted attempt from creating a
+      registration whose `client_id` wasn't captured in the log above. Before considering cleanup
+      complete, also run
+      `SELECT client_id, client_name, created_at FROM auth.oauth_clients WHERE created_at >= '<run
+      start timestamp>';` and delete any row this run created that isn't already accounted for by a
+      recorded `client_id`.
+      Record in the 4.1 write-up that all three were run (plus the reconciliation check), or which
+      ones couldn't be (per the abort-safe note above) and why.

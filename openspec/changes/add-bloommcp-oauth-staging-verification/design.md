@@ -2,10 +2,13 @@
 
 This is a manual verification task against a live, security-relevant auth flow (OAuth 2.1 login,
 #613) on a shared staging deployment, with a hard external deadline (Evelyn's demo Tuesday). #620
-was filed 2026-08-06 referencing that Tuesday, which is 2026-08-11. As of this revision it is
-2026-08-12 — one day past it — and #620 still has zero comments: no run write-up, no go/no-go call
-posted. Whether the demo already happened without this verification, or this has simply slipped
-unnoticed, isn't answerable from the repo alone. This is now **overdue**, not merely urgent — it
+was filed 2026-08-06 referencing that Tuesday, which is 2026-08-11. **Do not trust any specific
+day-count written into this document** — it decays by one more day every day this sits unexecuted
+(an earlier revision already said "one day past" when it was actually two); compute the real gap
+from 2026-08-11 before treating this as merely urgent rather than overdue. #620's comment count
+should also be re-checked at execution time, not assumed from this document. Whether the demo
+already happened without this verification, or this has simply slipped unnoticed, isn't answerable
+from the repo alone. This is now **overdue**, not merely urgent — it
 warrants a short design.md for two reasons: the run touches real staging infrastructure (a mis-run
 could leave stray OAuth client registrations, an undeleted test user, or confusing log noise on a
 shared stack), and the go/no-go call for the demo needs written criteria decided _before_ the run,
@@ -72,8 +75,9 @@ comments, follow-up issues) is world-readable — see the redaction decision bel
   abort-safe — mandatory even if the run stops partway, using whatever identifiers were captured up
   to that point, not only on a clean finish.
 - **Decision: redact credentials from every written record, and check the redaction independently
-  before posting.** Bearer tokens, authorization codes, `client_secret` values, session cookies, and
-  PKCE `code_verifier`/`state` values all appear in real responses or browser network captures
+  before posting.** Bearer tokens, refresh tokens, authorization codes, `client_secret` values,
+  session cookies, and PKCE `code_verifier`/`state` values all appear in real responses or browser
+  network captures
   during this flow. Given this repository is public (see Context), every task that instructs
   capturing request/response detail also instructs redacting those fields — status codes and error
   bodies are useful evidence; raw secrets are not needed to make the record useful and must not be

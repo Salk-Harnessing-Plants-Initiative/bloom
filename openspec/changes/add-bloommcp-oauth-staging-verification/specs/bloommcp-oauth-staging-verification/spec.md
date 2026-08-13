@@ -33,8 +33,9 @@ recorded.
 
 - **WHEN** request/response detail from any step (registration, consent, token exchange) is
   recorded for the write-up or a follow-up issue
-- **THEN** bearer tokens, authorization codes, `client_secret` values, session cookies, and PKCE
-  `code_verifier`/`state` values are replaced with `[REDACTED]` before being recorded, and the
+- **THEN** bearer tokens, refresh tokens, authorization codes, `client_secret` values, session
+  cookies, and PKCE `code_verifier`/`state` values are replaced with `[REDACTED]` before being
+  recorded, and the
   draft is independently re-checked for these patterns immediately before posting — this
   repository is public and posting is not reversible
 
