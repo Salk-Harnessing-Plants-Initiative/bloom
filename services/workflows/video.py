@@ -230,12 +230,14 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
     key = f"{VIDEO_PATH_PREFIX}/{scan_id}.mp4"
     vids = client.storage.from_(VIDEOS_BUCKET)
 
-    # Don't let a re-run degrade the canonical asset: if a video with more frames
-    # is already recorded, keep it instead of overwriting with a worse one.
+    # Only a strictly better encode replaces the canonical asset. A tie keeps the stored
+    # video: the same frame count is not the same frames — rows that finished uploading and
+    # rows that became unreadable cancel out — and overwriting an unversioned object on a
+    # request anyone signed in can make needs a reason beyond "no worse".
     prior_frames = _recorded_frames(client, scan_id)
-    if prior_frames is not None and frames_written < prior_frames:
+    if prior_frames is not None and frames_written <= prior_frames:
         logger.warning(
-            "scan %s: new encode has %s frames < recorded %s; keeping the existing video",
+            "scan %s: new encode has %s frames, recorded %s; keeping the existing video",
             scan_id, frames_written, prior_frames,
         )
         return _result(

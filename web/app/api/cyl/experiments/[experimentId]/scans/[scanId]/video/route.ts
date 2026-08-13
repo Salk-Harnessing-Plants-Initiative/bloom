@@ -115,11 +115,14 @@ export async function POST(
     );
   }
 
-  // A stored video is final for now. Upstream overwrites `cyl-videos/{scan_id}.mp4` in place
-  // on an unversioned bucket, and it can only refuse a worse encode when `cyl_scan_videos`
-  // records how many frames the stored one has — which it does for no video in prod today.
-  // Replacing one is therefore unguardable until that table is backfilled; regeneration lands
-  // with it. A lookup that failed is refused too: only a confirmed absence may proceed.
+  // The product does not offer replacing a stored video: `cyl_scan_videos` records a frame
+  // count for no video in prod, so a better encode cannot be told from a worse one, and the
+  // object is overwritten in place on an unversioned bucket. Regeneration lands with the
+  // backfill that makes the comparison possible.
+  //
+  // This refusal covers the browser path only — the service is also reachable directly, and
+  // keeps a stored video on its own account there. A lookup that failed is refused too:
+  // only a confirmed absence may proceed.
   const stored = await getStoredScanVideo(scan);
   if (stored.status === "present") {
     return NextResponse.json(

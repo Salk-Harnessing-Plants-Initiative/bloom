@@ -385,6 +385,23 @@ def test_a_failed_existence_check_counts_as_stored():
     assert video._stored_video_exists(_Unreachable(), "cyl-videos/5.mp4") is True
 
 
+def test_generate_scan_video_keeps_an_equal_existing(monkeypatch):
+    """A tie is not an improvement, and the request is one any signed-in user can make.
+
+    Equal counts do not mean equal frames: a row that finished uploading and a row that
+    became unreadable cancel out, so the same number can describe a different rotation.
+    Overwriting is in-place on a bucket with no versioning, so there is no way back.
+    """
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
+    client = _GenClient(images, recorded_frames=3)
+
+    result = video.generate_scan_video(client, 5)
+
+    assert result["regenerated"] is False
+    assert client.uploads == 0
+
+
 def test_generate_scan_video_keeps_better_existing(monkeypatch):
     # A prior video has 72 frames; this run manages only 1 -> keep the old one.
     monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
