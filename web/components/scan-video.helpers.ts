@@ -64,8 +64,12 @@ export function videoErrorMessage(
 export function videoResultSummary(result: ScanVideoResult): string {
   const { frames, frames_expected, truncated, regenerated } = result;
 
+  // Nothing was written this run, so there is no frame count to report — `frames` here
+  // describes the stored video or the discarded encode depending on which upstream branch
+  // refused, and the response does not say which. The button is not offered for a scan
+  // that already has a video, so this is only the storage-probe race.
   if (!regenerated) {
-    return `Kept the existing video (${frames} frames) — it had at least as many frames as this run.`;
+    return "This scan already has a video — the stored one was kept.";
   }
 
   const parts: string[] = [];

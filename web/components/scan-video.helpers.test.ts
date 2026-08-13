@@ -147,21 +147,24 @@ describe("videoResultSummary", () => {
     expect(summary).toContain("more than 72 frames");
   });
 
-  it("says when the existing video was kept instead of overwritten", () => {
+  it("says the stored video was kept, without claiming a re-encode", () => {
     const summary = videoResultSummary(
       result({ regenerated: false, frames: 72 })
     );
 
-    expect(summary).toContain("Kept the existing video (72 frames)");
+    expect(summary).toContain("already has a video");
     expect(summary).not.toContain("Encoded");
   });
 
-  it("does not claim a re-encode when nothing was written", () => {
-    // A kept-existing result carries the *recorded* frame count, not this run's.
+  it("quotes no frame count when nothing was written", () => {
+    // `frames` on a kept result is the stored video's count on one upstream branch and the
+    // discarded encode's on the other, and the response does not say which. Quoting it
+    // states a number for a video the caller did not get.
     const summary = videoResultSummary(
       result({ regenerated: false, frames: 72, frames_expected: 60 })
     );
 
-    expect(summary).toContain("Kept the existing video");
+    expect(summary).not.toContain("72");
+    expect(summary).not.toContain("60");
   });
 });
