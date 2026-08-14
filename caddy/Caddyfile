@@ -65,36 +65,17 @@
 		dns_challenge_override_domain _acme-challenge.bloom-acme.talmolab.org
 	}
 
-	# -------------------
-	# Security headers — every hostname in this block
-	# -------------------
-	# Set once at site level, ahead of the per-host matchers, so the main
-	# application, Studio and the MinIO console all inherit them. Inert for
-	# non-browser callers (bloomctl, MCP clients, SDKs) — they ignore response
-	# headers, and the Content-Type sent is unchanged.
-	#
-	# MinIO's console already emits nosniff, X-Frame-Options and
-	# Referrer-Policy itself, so those arrive twice on that hostname. The
-	# values are identical, so the policy a browser applies is the same.
-	#
-	# HSTS and CSP script-src are deliberately absent. HSTS is cached by
-	# browsers for its max-age and cannot be withdrawn server-side, so it
-	# lands deliberately rather than incidentally. A CSP script-src needs
-	# Next.js nonces to block anything — with `unsafe-inline` it would not
-	# stop an injected handler. frame-ancestors has neither constraint, so
-	# it ships here.
+	# Security headers — set once here so every hostname below inherits them.
+	# HSTS is deliberately absent: browsers cache it for its full max-age and
+	# it cannot be withdrawn server-side.
 	header {
-		# Never MIME-sniff past a declared Content-Type.
 		X-Content-Type-Options nosniff
-		# Refuse inbound framing (clickjacking). Bloom frames OrthoBrowser,
-		# but nothing frames Bloom; both directives govern the latter only.
 		# frame-ancestors is the standards-track form; XFO covers older clients.
 		X-Frame-Options DENY
 		Content-Security-Policy "frame-ancestors 'none'"
-		# Cross-origin navigations leak the origin, never experiment paths.
 		Referrer-Policy strict-origin-when-cross-origin
-		# fullscreen is omitted deliberately — its default (self) is what keeps
-		# the OrthoBrowser iframe's allowFullScreen working.
+		# fullscreen omitted on purpose — its default (self) keeps the
+		# OrthoBrowser iframe's allowFullScreen working.
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 	}
 
