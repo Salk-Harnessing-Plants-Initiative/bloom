@@ -8,7 +8,12 @@ exception and logs a warning. Generation returns 200 with a playable video and r
 nothing. That is exactly how the table came to hold no rows against 84,748 stored videos, and
 a pattern match over a `.sql` file cannot catch it happening again.
 
-So these exercise the function against a real database, as the roles that call it.
+So these exercise the function against a real database, as the service that calls it.
+
+Which roles may *not* call it is asserted in tests/unit/test_cyl_scan_videos_grants.py,
+against the migration's REVOKE. Checking it here meant becoming each role and calling the
+function to be refused — which crashed the server in CI and took eight unrelated tests
+down with it, so it is not worth doing that way.
 
 LOCAL ONLY: `pg_conn` connects to 127.0.0.1 on POSTGRES_HOST_PORT as a BYPASSRLS superuser and
 every test rolls back. Role behaviour is exercised with `SET LOCAL ROLE`. Runs in CI's
@@ -112,18 +117,6 @@ def test_the_scan_id_of_an_existing_row_is_never_rewritten(pg_conn):
 
         assert _row(cur, first) == ("cyl-videos/a.mp4", 10)
         assert _row(cur, second) == ("cyl-videos/b.mp4", 20)
-    pg_conn.rollback()
-
-
-@pytest.mark.parametrize("role", ["anon", "authenticated", "service_role"])
-def test_untrusted_roles_cannot_record_a_video(pg_conn, role):
-    """It is SECURITY DEFINER on a table these roles cannot write, and it is reachable at
-    /rest/v1/rpc — so EXECUTE has to be revoked, not merely unused."""
-    with pg_conn.cursor() as cur:
-        scan_id = _seed_scan(cur)
-        cur.execute(f"SET LOCAL ROLE {role}")
-        with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            cur.execute(f"SELECT {RPC}(%s, %s, %s)", (scan_id, "cyl-videos/x.mp4", 1))
     pg_conn.rollback()
 
 
