@@ -73,10 +73,19 @@ GRANT SELECT ON public.cyl_video_jobs TO bloom_user, bloom_writer, bloom_admin;
 REVOKE INSERT, UPDATE, DELETE ON public.cyl_video_jobs
   FROM bloom_user, bloom_writer, bloom_admin;
 
--- The definer role owns the data these wrappers manage.
+-- The wrappers run as bloom_video_queue_owner, which is neither the table owner nor
+-- BYPASSRLS, so RLS applies to it and a grant alone leaves every statement filtered to
+-- nothing. It needs its own policy on each table the wrappers touch.
 GRANT SELECT, INSERT, UPDATE ON public.cyl_video_jobs TO bloom_video_queue_owner;
+DROP POLICY IF EXISTS cyl_video_jobs_definer ON public.cyl_video_jobs;
+CREATE POLICY cyl_video_jobs_definer ON public.cyl_video_jobs
+  FOR ALL TO bloom_video_queue_owner USING (true) WITH CHECK (true);
+
+-- enqueue reads this to skip a scan that already has a video.
 GRANT SELECT ON public.cyl_scan_videos TO bloom_video_queue_owner;
-GRANT SELECT ON public.cyl_scans, public.cyl_experiments TO bloom_video_queue_owner;
+DROP POLICY IF EXISTS cyl_scan_videos_queue_definer ON public.cyl_scan_videos;
+CREATE POLICY cyl_scan_videos_queue_definer ON public.cyl_scan_videos
+  FOR SELECT TO bloom_video_queue_owner USING (true);
 
 -- 4. Wrapper functions -----------------------------------------------------
 -- SECURITY DEFINER so they run as bloom_video_queue_owner (which can reach pgmq);

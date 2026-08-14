@@ -372,6 +372,68 @@ def test_the_definer_role_is_not_a_superuser_and_cannot_log_in(pg_conn):
         assert row == (False, False, False)
 
 
+def test_the_definer_role_can_write_its_own_table(pg_conn):
+    # The wrappers run as this role. It is neither the table owner nor BYPASSRLS, so a
+    # GRANT alone is not enough — without a policy every wrapper is silently a no-op.
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id, experiment_id = _seed(cur)
+            cur.execute("SAVEPOINT definer")
+            cur.execute(f"SET LOCAL ROLE {DEFINER_ROLE}")
+            cur.execute(
+                "INSERT INTO public.cyl_video_jobs (scan_id, experiment_id) "
+                "VALUES (%s, %s) RETURNING id",
+                (scan_id, experiment_id),
+            )
+            job_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE public.cyl_video_jobs SET status = 'processing' WHERE id = %s",
+                (job_id,),
+            )
+            assert cur.rowcount == 1, "definer role cannot update its own table"
+            cur.execute(
+                "SELECT count(*) FROM public.cyl_video_jobs WHERE id = %s", (job_id,)
+            )
+            assert cur.fetchone()[0] == 1, "definer role cannot read its own table"
+            cur.execute("ROLLBACK TO SAVEPOINT definer")
+    finally:
+        pg_conn.rollback()
+
+
+def test_the_definer_role_can_read_cyl_scan_videos(pg_conn):
+    # enqueue's "skip a scan that already has a video" check reads this table. Without a
+    # policy the check fails open and every scan is re-rendered.
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id = _new_scan(cur)
+            cur.execute(
+                "INSERT INTO public.cyl_scan_videos (scan_id, path, frames) "
+                "VALUES (%s, %s, %s)",
+                (scan_id, f"cyl-videos/{scan_id}.mp4", 72),
+            )
+            cur.execute("SAVEPOINT definer")
+            cur.execute(f"SET LOCAL ROLE {DEFINER_ROLE}")
+            cur.execute(
+                "SELECT count(*) FROM public.cyl_scan_videos WHERE scan_id = %s", (scan_id,)
+            )
+            assert cur.fetchone()[0] == 1, "definer role cannot see existing videos"
+            cur.execute("ROLLBACK TO SAVEPOINT definer")
+    finally:
+        pg_conn.rollback()
+
+
+@pytest.mark.parametrize("table", ["cyl_video_jobs", "cyl_scan_videos"])
+def test_force_row_level_security_stays_off(pg_conn, table):
+    # FORCE RLS would apply policies to the table owner too, which is the one thing that
+    # could re-break the definer path after it is fixed.
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT relforcerowsecurity FROM pg_class WHERE oid = %s::regclass",
+            (f"public.{table}",),
+        )
+        assert cur.fetchone()[0] is False
+
+
 def test_the_definer_role_is_not_reachable_from_a_jwt(pg_conn):
     # authenticator is the role PostgREST switches from, so anything granted to it is
     # assumable via a JWT role claim. The definer identity must not be.
