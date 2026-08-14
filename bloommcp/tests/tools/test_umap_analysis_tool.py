@@ -944,3 +944,25 @@ def test_explicit_version_is_passed_through(injected_ports):
     reader.load_experiment.assert_called_once_with(
         _EXPERIMENT, require_clean=True, version="v2"
     )
+
+
+# ── discoverable via list_existing_analyses (bloom#669) ─────────────────────
+
+
+def test_discoverable_via_list_existing_analyses(injected_ports):
+    """Live discoverability, mirroring the same pattern
+    remove_outliers/cross_experiment_correlations use for their own registered class."""
+    from bloom_mcp.sections.core import (
+        list_existing_analyses as list_existing_analyses_mod,
+    )
+
+    list_existing_analyses_mod._RESPONSE_CACHE.clear()
+    try:
+        _run()
+        response = json.loads(
+            list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+        )
+    finally:
+        list_existing_analyses_mod._RESPONSE_CACHE.clear()
+
+    assert "umap" in response["analyses"]

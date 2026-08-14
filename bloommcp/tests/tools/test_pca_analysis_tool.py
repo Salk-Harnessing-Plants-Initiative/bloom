@@ -694,7 +694,8 @@ def test_figure_cleanup_get_fignums_empty_on_partial_plotter_failure(
 ):
     """10.8c — regression: the SECOND of several requested plotters raising mid-generation
     must not leak the figure(s) already produced by earlier successful plotters. Exercises
-    the tool's real try/finally nesting end-to-end (not just the _plots unit helpers)."""
+    the tool's real try/finally nesting end-to-end (not just the _plots unit helpers).
+    """
     import matplotlib.pyplot as plt
 
     real = pca_analysis_tool._pca_plot_calls
@@ -760,3 +761,25 @@ def test_explicit_version_is_passed_through(injected_ports):
     reader.load_experiment.assert_called_once_with(
         _EXPERIMENT, require_clean=True, version="v2"
     )
+
+
+# ── discoverable via list_existing_analyses (bloom#669) ─────────────────────
+
+
+def test_discoverable_via_list_existing_analyses(injected_ports):
+    """Live discoverability, mirroring the same pattern
+    remove_outliers/cross_experiment_correlations use for their own registered class."""
+    from bloom_mcp.sections.core import (
+        list_existing_analyses as list_existing_analyses_mod,
+    )
+
+    list_existing_analyses_mod._RESPONSE_CACHE.clear()
+    try:
+        _run()
+        response = json.loads(
+            list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+        )
+    finally:
+        list_existing_analyses_mod._RESPONSE_CACHE.clear()
+
+    assert "pca" in response["analyses"]

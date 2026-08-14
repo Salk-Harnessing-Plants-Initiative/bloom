@@ -175,6 +175,20 @@ def test_trim_staleness_failure_is_reported_not_raised(injected_ports, monkeypat
     assert "analyses" in response
 
 
+def test_pca_umap_qc_inspect_registered_in_discovery_and_canonical_registries():
+    """bloom#669: `TOOL_CLASSES`/`CANONICAL_TOOL_CLASSES` never included `"pca"`, `"umap"`,
+    or `"qc_inspect"` — the tool_class values `pca_analysis`/`umap_analysis`/`qc_inspect`
+    actually persist their runs under — so the aggregation loop structurally never called
+    `store.list_runs(experiment, ...)` for any of the 3. Mirrors
+    test_remove_outliers_tool.py::test_outliers_class_registered_in_discovery_and_canonical_registries's
+    existing pattern for `"outliers"`."""
+    from bloom_mcp.manifest import CANONICAL_TOOL_CLASSES
+
+    for tool_class in ("pca", "umap", "qc_inspect"):
+        assert tool_class in list_existing_analyses_mod.TOOL_CLASSES
+        assert tool_class in CANONICAL_TOOL_CLASSES
+
+
 def test_no_storage_backend_configured_is_reported_not_raised(injected_ports):
     """This repo's actual test-suite default (`conftest.py` scrubs
     `SUPABASE_URL`/`BLOOM_AGENT_KEY`, and no test here sets

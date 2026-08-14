@@ -29,6 +29,13 @@ from .versioning import next_version_id, slugify, version_dir_name
 # (the producers, `qc_clean.py`/`remove_outliers.py`, do too) rather than
 # re-typing the literal — see `list_existing_analyses.TOOL_CLASSES` for the
 # same convention and its rationale (#420).
+#
+# This tuple SHALL remain a superset of `list_existing_analyses.TOOL_CLASSES` —
+# every tool class that discovery loop iterates must also appear here. `pca`,
+# `umap`, `qc_inspect` are added as plain re-typed literals rather than
+# imported constants: each producer's own `_TOOL_CLASS` (`pca_analysis.py`,
+# `umap_analysis.py`, `qc_inspect.py`) is private/unexported, so this file
+# can't import it the way it does for `qc`/`outliers` above (bloom#669).
 CANONICAL_TOOL_CLASSES: tuple[str, ...] = (
     QC_TOOL_CLASS,
     "stats",
@@ -40,6 +47,9 @@ CANONICAL_TOOL_CLASSES: tuple[str, ...] = (
     "correlation",
     "heritability",
     "anova",
+    "pca",
+    "umap",
+    "qc_inspect",
 )
 
 __all__ = [

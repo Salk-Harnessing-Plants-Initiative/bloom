@@ -30,6 +30,13 @@ from bloom_mcp.tools import _ports
 # (the producers, `qc_clean.py`/`remove_outliers.py`, do too) rather than
 # re-typing the literal — a typo here would silently hide trimmed runs from
 # this tool's output, exactly the drift class #420 is about.
+#
+# `pca`, `umap`, `qc_inspect` are added as plain re-typed literals, not
+# imported single-sourced constants like `QC_TOOL_CLASS`/`OUTLIERS_TOOL_CLASS`
+# above: each producer's own `_TOOL_CLASS` (`pca_analysis.py`, `umap_analysis.py`,
+# `qc_inspect.py`) is private/unexported, so this file can't import it today
+# (bloom#669 — these 3 were previously missing entirely, so no run history or
+# `list_runs` failure for any of them was ever discoverable via this tool).
 TOOL_CLASSES = (
     QC_TOOL_CLASS,
     "stats",
@@ -39,6 +46,9 @@ TOOL_CLASSES = (
     OUTLIERS_TOOL_CLASS,
     "viz",
     "correlation",
+    "pca",
+    "umap",
+    "qc_inspect",
 )
 
 # Tiny per-experiment response cache. Each list_existing_analyses call walks
