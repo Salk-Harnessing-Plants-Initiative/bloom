@@ -385,6 +385,23 @@ def test_a_failed_existence_check_counts_as_stored():
     assert video._stored_video_exists(_Unreachable(), "cyl-videos/5.mp4") is True
 
 
+def test_generate_scan_video_replaces_a_recorded_video_whose_object_is_gone(monkeypatch):
+    """A row says a video was stored once, not that it still is.
+
+    Trusting the row here would sign a key with nothing behind it, which raises — failing the
+    request after the encode had already been paid for, and leaving the scan permanently
+    unable to produce a video.
+    """
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
+    client = _GenClient(images, recorded_frames=3, stored=False)
+
+    result = video.generate_scan_video(client, 5)
+
+    assert result["regenerated"] is True
+    assert client.uploads == 1
+
+
 def test_generate_scan_video_keeps_an_equal_existing(monkeypatch):
     """A tie is not an improvement, and the request is one any signed-in user can make.
 

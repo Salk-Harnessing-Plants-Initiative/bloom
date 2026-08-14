@@ -115,10 +115,10 @@ export async function POST(
     );
   }
 
-  // The product does not offer replacing a stored video: `cyl_scan_videos` records a frame
-  // count for no video in prod, so a better encode cannot be told from a worse one, and the
-  // object is overwritten in place on an unversioned bucket. Regeneration lands with the
-  // backfill that makes the comparison possible.
+  // The product does not offer replacing a stored video. The object is overwritten in place on
+  // a bucket with no versioning, and the recorded frame counts a comparison would rest on are
+  // derived from `cyl_images` rather than measured from the files — an upper bound on what is
+  // in them. Regeneration follows measuring those counts, not this change.
   //
   // This refusal covers the browser path only — the service is also reachable directly, and
   // keeps a stored video on its own account there. A lookup that failed is refused too:

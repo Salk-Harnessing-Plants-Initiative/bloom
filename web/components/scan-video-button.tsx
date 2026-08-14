@@ -48,8 +48,8 @@ export default function ScanVideoButton({
   const busy = status === "generating" || status === "pending";
 
   // A partial scan may be all there will ever be, so this is a confirmation rather than a
-  // refusal — but the video it produces is the one everyone sees, and a stored video cannot
-  // be replaced until `cyl_scan_videos` records frame counts to compare against.
+  // refusal — but the video it produces is the one everyone sees, and the product offers no
+  // way to replace it.
   function requestGenerate() {
     if (busy) return;
     if (completenessWarning && status !== "confirming") {
@@ -193,8 +193,8 @@ export default function ScanVideoButton({
 
   return (
     <div className="mt-4">
-      {/* A stored video is final until `cyl_scan_videos` records the frame counts an
-          overwrite would have to be checked against. */}
+      {/* A stored video is final: replacing one is not offered, so a scan that has one gets
+          the link and nothing else. */}
       <div className="flex items-center gap-3">
         {videoUrl ? (
           <a

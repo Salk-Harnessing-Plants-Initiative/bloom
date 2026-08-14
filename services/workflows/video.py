@@ -235,7 +235,14 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
     # rows that became unreadable cancel out — and overwriting an unversioned object on a
     # request anyone signed in can make needs a reason beyond "no worse".
     prior_frames = _recorded_frames(client, scan_id)
-    if prior_frames is not None and frames_written <= prior_frames:
+    # The object is checked, not assumed: a row says a video was stored once, not that it is
+    # still there. Signing a key with nothing behind it raises, which would fail the request
+    # after the encode had already been paid for.
+    if (
+        prior_frames is not None
+        and frames_written <= prior_frames
+        and _stored_video_exists(vids, key)
+    ):
         logger.warning(
             "scan %s: new encode has %s frames, recorded %s; keeping the existing video",
             scan_id, frames_written, prior_frames,
