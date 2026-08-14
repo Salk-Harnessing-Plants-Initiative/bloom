@@ -125,3 +125,7 @@
 - [ ] 9.2 After merge: bump to a real first version via `version-bloommcp.yml`, add its
       `CHANGELOG.md` entry, and cut a GitHub Release tagged `bloommcp-v0.1.0a1` to trigger the
       first real publish.
+
+## PR
+
+- https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/681
