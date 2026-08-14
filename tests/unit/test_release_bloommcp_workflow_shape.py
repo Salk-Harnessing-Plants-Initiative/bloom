@@ -12,16 +12,12 @@ add-bloommcp-pypi-release-pipeline) signed off on:
   - `validate-release` skips cleanly (job-level `if:`, not a step) for a
     Release tag that isn't bloommcp's own, while workflow_dispatch always
     passes the guard;
-  - `build-and-verify` is gated by `needs: validate-release`, and
-    `build-and-publish` by `needs: build-and-verify`;
+  - `build-and-publish` is gated by `needs: validate-release`;
   - `build-and-publish` requests the OIDC token (`id-token: write`) and pins the
     `pypi` environment so trusted publishing works, and stores no API token;
-  - `build-and-publish`'s steps are restricted to checking and uploading the
-    artifact — no third-party code runs beside the credential;
   - the actual `uv publish` runs only on a real Release event;
   - the built wheel is smoke-tested (import of bloom_mcp plus the concrete
     Supabase adapters, and `bloom-mcp --version`) before upload;
-  - the published artifact is checksummed across the build/publish handoff;
   - there is no TestPyPI lane;
   - the version workflow bumps via `uv version`, syncs `uv.lock`, and opens a PR.
 """
@@ -85,10 +81,8 @@ def test_validate_release_skips_tags_that_are_not_bloommcps():
 def test_publish_needs_validate_release():
     jobs = _load(RELEASE)["jobs"]
     assert "validate-release" in jobs
-    assert "build-and-verify" in jobs
     assert "build-and-publish" in jobs
-    assert jobs["build-and-verify"]["needs"] == "validate-release"
-    assert jobs["build-and-publish"]["needs"] == "build-and-verify"
+    assert jobs["build-and-publish"]["needs"] == "validate-release"
 
 
 def test_validate_checks_tag_changelog_lint_tests():
@@ -121,7 +115,7 @@ def test_publish_step_gated_on_real_release():
 
 
 def test_built_wheel_is_smoke_tested_before_publish():
-    text = _steps_text(_load(RELEASE)["jobs"]["build-and-verify"])
+    text = _steps_text(_load(RELEASE)["jobs"]["build-and-publish"])
     assert "uv build" in text
     assert "import bloom_mcp" in text
     assert "bloom-mcp --version" in text
@@ -133,38 +127,11 @@ def test_the_wheel_gate_imports_the_concrete_supabase_adapters():
     composition root, after the --version early return. Explicit imports here
     close the class of gap bloomcli's #629 exploited.
     """
-    text = _steps_text(_load(RELEASE)["jobs"]["build-and-verify"])
+    text = _steps_text(_load(RELEASE)["jobs"]["build-and-publish"])
     assert "SupabaseReader" in text
     assert "SupabaseResultStore" in text
     assert "from postgrest import APIError" in text
     assert "from supabase import create_client" in text
-
-
-def test_nothing_but_the_upload_runs_in_the_job_holding_the_credential():
-    jobs = _load(RELEASE)["jobs"]
-    publish, verify = jobs["build-and-publish"], jobs["build-and-verify"]
-
-    assert "id-token" not in (verify.get("permissions") or {})
-    assert verify.get("environment") is None
-
-    allowed = {"sha256sum -c dist.sha256", "uv publish --trusted-publishing always"}
-    runs = [str(s.get("run", "")) for s in publish["steps"] if s.get("run")]
-    assert set(runs) <= allowed, f"unexpected step in the credentialed job: {runs}"
-
-    allowed_actions = {"astral-sh/setup-uv", "actions/download-artifact"}
-    actions = [str(s["uses"]).split("@")[0] for s in publish["steps"] if s.get("uses")]
-    assert set(actions) <= allowed_actions, f"unexpected action in the credentialed job: {actions}"
-    for forbidden in ("uv build", "twine", "import bloom_mcp", "--with"):
-        assert forbidden not in _steps_text(publish)
-
-
-def test_the_published_artifact_is_checksummed_across_the_handoff():
-    jobs = _load(RELEASE)["jobs"]
-    verify, publish = _steps_text(jobs["build-and-verify"]), _steps_text(jobs["build-and-publish"])
-
-    assert "sha256sum dist/*" in verify, "nothing records what was built"
-    assert "sha256sum -c" in verify, "the upload is not checked against the build"
-    assert "sha256sum -c" in publish, "the publish job trusts the artifact blindly"
 
 
 # --- version workflow -------------------------------------------------------

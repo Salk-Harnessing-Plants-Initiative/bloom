@@ -47,20 +47,16 @@ and are marked as a pre-release on GitHub.
 2. Add a `## [X.Y.Z] - YYYY-MM-DD` entry to `bloommcp/CHANGELOG.md`.
 3. Create a **GitHub Release** whose tag is `bloommcp-vX.Y.Z` (this is the only accepted
    tag form — see "Tag scoping" below). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.
-4. Publishing the Release runs `release-bloommcp.yml`, in three jobs:
-   - `validate-release`: skipped entirely unless the tag starts with `bloommcp-`; otherwise
-     validates tag ↔ version match, changelog entry exists, lint + tests.
-   - `build-and-verify`: `uv build`, records the artifact's checksum, `twine check`s it, then
-     imports `bloom_mcp` and its `tools`/`manifest`/`server` submodules plus the concrete
-     Supabase-backed adapters (`bloom_mcp.data_access.SupabaseReader`,
-     `bloom_mcp.result_store.SupabaseResultStore`) and their `postgrest`/`supabase` transitive
-     imports — not just `bloom_mcp.server.build_app()`, which alone doesn't reach those
-     adapters (see the `add-bloommcp-pypi-release-pipeline` OpenSpec change's `design.md` for
-     why) — and runs `bloom-mcp --version`, all from an isolated environment. This job holds
-     no PyPI credential.
-   - `build-and-publish`: re-verifies the artifact's checksum and runs `uv publish`. Nothing
-     else runs in this job — it holds the PyPI credential, so no package code executes
-     beside it.
+4. Publishing the Release runs `release-bloommcp.yml`:
+   - `validate-release`: skipped entirely unless the tag starts with `bloommcp-`;
+     otherwise validates tag ↔ version match, changelog entry exists, lint + tests.
+   - `build-and-publish`: `uv build`, `twine check`, imports `bloom_mcp` and its
+     `tools`/`manifest`/`server` submodules plus the concrete Supabase-backed adapters
+     (`bloom_mcp.data_access.SupabaseReader`, `bloom_mcp.result_store.SupabaseResultStore`)
+     and their `postgrest`/`supabase` transitive imports — not just
+     `bloom_mcp.server.build_app()`, which alone doesn't reach those adapters (see the
+     `add-bloommcp-pypi-release-pipeline` OpenSpec change's `design.md` for why) — runs
+     `bloom-mcp --version`, then `uv publish`.
 5. Verify on PyPI:
 
    ```bash
@@ -72,11 +68,11 @@ and are marked as a pre-release on GitHub.
    print('ok', bloom_mcp.__version__)"
    ```
 
-   Naming the exact version resolves the same dependency set a real installer gets — see
-   `design.md`'s reasoning for why bloommcp (unlike `bloomctl`) doesn't need a second
-   `--prerelease=allow` pass: its only pre-release-floored direct dependencies
-   (`sleap-roots-analyze`, `sleap-roots-contracts`) already resolve to their pre-release
-   versions under a normal, exact-version install.
+   Naming the exact version resolves the same dependency set a real installer gets —
+   bloommcp's only pre-release-floored direct dependencies (`sleap-roots-analyze`,
+   `sleap-roots-contracts`) already resolve to their pre-release versions under a normal,
+   exact-version install (no `--prerelease=allow` needed, since the rest of bloommcp's
+   dependencies are stable-versioned).
 
 ### Tag scoping
 

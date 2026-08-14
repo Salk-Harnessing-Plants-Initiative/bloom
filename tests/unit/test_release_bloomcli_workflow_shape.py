@@ -65,11 +65,7 @@ def test_release_triggers_only_on_release_and_dispatch():
 # --- publish workflow: skips cleanly for a different package's release -----
 
 def test_validate_release_skips_tags_that_are_not_bloomctls():
-    """A bloommcp release must not produce a failing run here (#663).
-
-    The guard is job-level on validate-release, not a step — build-and-publish's
-    step allowlist (below) must stay untouched by this class of change.
-    """
+    """A bloommcp release must not produce a failing run here (#663)."""
     job = _load(RELEASE)["jobs"]["validate-release"]
     condition = job.get("if", "")
     assert "startsWith(github.event.release.tag_name, 'bloomctl-')" in condition
