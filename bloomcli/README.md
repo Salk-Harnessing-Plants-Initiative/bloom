@@ -414,8 +414,8 @@ bloomctl cyl batch-download-for-predict <out_dir>
 - Exactly one of `--scan-ids-file` (a JSON array of integer scan_ids, read from
   a path or stdin when the value is `-`) or `--scan-ids` (a comma-separated
   list, for ad hoc manual use) is required.
-- Stages every scan*id into `<out_dir>/scan*<scan_id>/`, identical to what
-`download-for-predict` writes for one scan.
+- Stages every `scan_id` into `<out_dir>/scan_<scan_id>/`, identical to what
+  `download-for-predict` writes for one scan.
 - **Isolates per-scan failures** — one bad scan (not found, no frames, a
   metadata-resolution failure, a partial frame-download failure, or lock
   contention with another live invocation) is recorded and reported, but does

@@ -11,6 +11,7 @@ import csv
 
 import pytest
 
+import bloomctl._download as shared_dl
 import bloomctl.plate.download as pd
 
 SCAN = {
@@ -291,18 +292,23 @@ def test_selector_records_every_filter():
     }
 
 
+def _recorded(**options):
+    """A manifest as a previous plate run would have left it: the selection, stamped."""
+    return {shared_dl.INSTRUMENT_KEY: pd.INSTRUMENT, **pd.download_selector(**options)}
+
+
 def test_resolving_a_name_to_an_id_is_the_same_selection():
     # Selecting by --experiment-name on one run and --experiment-id on the next must resume,
     # so the selector records the resolved id and never the typed name.
-    by_name = pd.download_selector(experiment_id=12, scan_id=None, limit=100)
+    by_name = _recorded(experiment_id=12, scan_id=None, limit=100)
     by_id = pd.download_selector(experiment_id=12, scan_id=None, limit=100)
-    assert pd.describe_manifest_mismatch(by_name, by_id) == ""
+    assert pd.describe_manifest_mismatch(by_name, by_id, instrument=pd.INSTRUMENT) == ""
 
 
 def test_a_different_filter_is_reported_field_by_field():
-    first = pd.download_selector(experiment_id=12, wave_number=3)
+    first = _recorded(experiment_id=12, wave_number=3)
     second = pd.download_selector(experiment_id=12, wave_number=4)
-    mismatch = pd.describe_manifest_mismatch(first, second)
+    mismatch = pd.describe_manifest_mismatch(first, second, instrument=pd.INSTRUMENT)
     assert "wave_number" in mismatch and "3" in mismatch and "4" in mismatch
 
 

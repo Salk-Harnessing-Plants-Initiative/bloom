@@ -16,6 +16,7 @@ from test_download_session_resume import _Client, _images
 import bloomctl._download as shared_dl
 import bloomctl._storage as storage
 import bloomctl.cyl.download as dl
+import bloomctl.plate.download as plate_dl
 
 SCAN_B = {**SCAN, "scan_id": 2, "qr_code": "QR-2"}
 
@@ -554,14 +555,14 @@ def test_selecting_by_name_then_by_id_is_the_same_download():
                                    plant_age_min=0, plant_age_max=1000, limit=100000)
     by_id = dl.download_selector(experiment_id=42, scan_id=None, plant_qr_code=None,
                                  plant_age_min=0, plant_age_max=1000, limit=100000)
-    assert dl.describe_manifest_mismatch(by_name, by_id) == ""
+    assert dl.describe_manifest_mismatch(by_name, by_id, instrument=dl.INSTRUMENT) == ""
 
 
 def test_an_empty_directory_needs_no_manifest(tmp_path):
     """Every first download starts here, so this must not be treated as suspicious."""
     assert not dl.holds_an_unidentified_download(tmp_path)
     assert dl.read_manifest(tmp_path) is None
-    assert dl.describe_manifest_mismatch(None, {"experiment_id": 1}) == ""
+    assert dl.describe_manifest_mismatch(None, {"experiment_id": 1}, instrument="cyl") == ""
 
 
 def test_a_directory_with_images_but_no_manifest_is_refused(tmp_path):
@@ -575,6 +576,50 @@ def test_a_corrupt_manifest_is_treated_as_missing(tmp_path):
     (tmp_path / "images").mkdir()
     (tmp_path / dl.MANIFEST_NAME).write_text("not json", encoding="utf-8")
     assert dl.holds_an_unidentified_download(tmp_path)
+
+
+def test_the_manifest_records_which_instrument_wrote_it(tmp_path):
+    shared_dl.write_manifest(tmp_path, {"experiment_id": 12}, instrument=dl.INSTRUMENT)
+    assert shared_dl.read_manifest(tmp_path)[shared_dl.INSTRUMENT_KEY] == "cyl"
+
+
+def test_two_instruments_are_a_mismatch_even_when_every_shared_key_agrees(tmp_path):
+    """The selectors don't overlap, so absent keys read as equal and both ids are just 12.
+
+    Without the instrument the two look like one download, and the second run resumes into the
+    first one's tree — overwriting its log and leaving two instruments' images under one root.
+    """
+    cyl_selector = dl.download_selector(experiment_id=12, scan_id=None, plant_qr_code=None,
+                                        plant_age_min=0, plant_age_max=1000, limit=100000)
+    shared_dl.write_manifest(tmp_path, cyl_selector, instrument=dl.INSTRUMENT)
+    recorded = shared_dl.read_manifest(tmp_path)
+
+    plate_selector = plate_dl.download_selector(experiment_id=12, scan_id=None, plate_id=None,
+                                                wave_number=None, session_id=None, limit=100000)
+    assert all(recorded.get(key) == value for key, value in plate_selector.items())
+
+    mismatch = shared_dl.describe_manifest_mismatch(
+        recorded, plate_selector, instrument=plate_dl.INSTRUMENT
+    )
+    assert "instrument" in mismatch and "cyl" in mismatch and "plate" in mismatch
+
+
+def test_a_manifest_from_before_the_instrument_was_recorded_is_a_cyl_download(tmp_path):
+    """0.1.0a5 directories carry no instrument. They must still resume under cyl, and must
+    still refuse plate — reading them as neither would strand every one in the wild."""
+    unstamped = {"experiment_id": 12, "scan_id": None, "plant_qr_code": None,
+                 "plant_age_min": 0, "plant_age_max": 1000, "limit": 100000}
+    assert shared_dl.INSTRUMENT_KEY not in unstamped
+
+    assert shared_dl.describe_manifest_mismatch(
+        unstamped, dict(unstamped), instrument=dl.INSTRUMENT
+    ) == ""
+
+    plate_selector = plate_dl.download_selector(experiment_id=12, scan_id=None, plate_id=None,
+                                                wave_number=None, session_id=None, limit=100000)
+    assert "instrument" in shared_dl.describe_manifest_mismatch(
+        unstamped, plate_selector, instrument=plate_dl.INSTRUMENT
+    )
 
 
 def test_the_cli_refuses_a_directory_whose_manifest_went_missing(tmp_path, monkeypatch):

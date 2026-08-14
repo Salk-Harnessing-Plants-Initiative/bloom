@@ -101,6 +101,12 @@ def contained_dest(out_dir: Path, relative: str) -> Path:
 # can tell whether the frames already there belong to what it is about to download.
 MANIFEST_NAME = ".bloomctl-download.json"
 
+# Which command wrote the manifest, recorded alongside the selection rather than inside it.
+INSTRUMENT_KEY = "instrument"
+
+# Manifests written before the instrument was recorded can only have come from `cyl download`.
+UNSTAMPED_INSTRUMENT = "cyl"
+
 
 def read_manifest(out_dir: Path) -> dict[str, Any] | None:
     """The selector recorded in ``out_dir``, or None if there isn't a readable one."""
@@ -112,10 +118,11 @@ def read_manifest(out_dir: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def write_manifest(out_dir: Path, identity: dict[str, Any]) -> None:
+def write_manifest(out_dir: Path, identity: dict[str, Any], *, instrument: str) -> None:
     """Record what this directory holds, so a later run can check before resuming into it."""
     path = Path(out_dir) / MANIFEST_NAME
-    body = json.dumps(identity, indent=2, sort_keys=True, default=str) + "\n"
+    stamped = {INSTRUMENT_KEY: instrument, **identity}
+    body = json.dumps(stamped, indent=2, sort_keys=True, default=str) + "\n"
     atomic_write_bytes(path, body.encode("utf-8"))
 
 
@@ -139,15 +146,25 @@ def holds_an_unidentified_download(out_dir: Path) -> bool:
     return (Path(out_dir) / "images").exists() and read_manifest(out_dir) is None
 
 
-def describe_manifest_mismatch(existing: dict[str, Any] | None, selector: dict[str, Any]) -> str:
+def describe_manifest_mismatch(
+    existing: dict[str, Any] | None, selector: dict[str, Any], *, instrument: str
+) -> str:
     """List how this run's selection differs from the one the directory holds, or "" if it matches.
 
     One selection per directory. Re-running the same command resumes; downloading a different
     selection here would leave two sets of images in one tree with a `scans.csv` describing
     only the newer one.
+
+    The instrument is compared first and on its own, because two instruments' selectors do not
+    overlap: a manifest written by one carries none of the other's keys, so every key the
+    incoming run knows about reads as absent and the two downloads look identical. Their ids
+    are separate sequences too, so the same number means different rows.
     """
     if existing is None:
         return ""
+    was = existing.get(INSTRUMENT_KEY, UNSTAMPED_INSTRUMENT)
+    if was != instrument:
+        return f"{INSTRUMENT_KEY} was {was!r}, now {instrument!r}"
     return "; ".join(
         f"{key} was {existing.get(key)!r}, now {value!r}"
         for key, value in selector.items()

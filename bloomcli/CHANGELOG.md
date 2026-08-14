@@ -182,9 +182,9 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
-- `bloomctl cyl download` can select the experiment by name: `--experiment-name
-"<text>"` resolves a single experiment by a case-insensitive substring match on its
-  name, then downloads it; `--species` narrows an ambiguous name. The match runs
+- `bloomctl cyl download` can select the experiment by name:
+  `--experiment-name "<text>"` resolves a single experiment by a case-insensitive substring
+  match on its name, then downloads it; `--species` narrows an ambiguous name. The match runs
   server-side via the new `cyl_experiment_search` RPC (a `SECURITY INVOKER` function
   taking the query as a bound parameter, trigram-indexed so it scales), so the CLI
   never fetches the whole table and the query can't alter the SQL. The typed

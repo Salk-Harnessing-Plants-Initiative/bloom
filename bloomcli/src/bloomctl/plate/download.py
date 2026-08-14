@@ -61,6 +61,9 @@ DEFAULT_EXTENSION = "jpg"
 # repetition is a capture in time, not a rotation frame.
 NOUN = "capture"
 
+# Stamped into the manifest so a plate download cannot resume into a cylinder directory.
+INSTRUMENT = "plate"
+
 __all__ = [
     "CollidingFrames",
     "DownloadResult",
@@ -700,7 +703,7 @@ def download(
             f"in one directory. Download into a new directory instead."
         )
 
-    mismatch = describe_manifest_mismatch(read_manifest(out), selector)
+    mismatch = describe_manifest_mismatch(read_manifest(out), selector, instrument=INSTRUMENT)
     if mismatch:
         raise click.ClickException(
             f"{out} already holds a different download ({mismatch}). Give each selection its "
@@ -711,7 +714,7 @@ def download(
     # The writability probe ran before the metadata queries; the disk can fill in between.
     try:
         write_plates_csv(rows, csv_path)
-        write_manifest(out, selector)
+        write_manifest(out, selector, instrument=INSTRUMENT)
     except OSError as exc:
         raise write_failed(Path(exc.filename or csv_path), exc) from exc
     click.echo(f"Wrote {len(rows)} scans -> {csv_path}")
