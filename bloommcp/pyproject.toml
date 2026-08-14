@@ -1,6 +1,6 @@
 [project]
 name = "bloommcp"
-version = "0.1.0"
+version = "0.1.0a1"
 description = "Bloom MCP server exposing SLEAP root-trait analysis tools over the Model Context Protocol"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -63,6 +63,11 @@ dependencies = [
     "h2>=4.4.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/tree/main/bloommcp"
+Repository = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom"
+Changelog = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/main/bloommcp/CHANGELOG.md"
+
 [project.scripts]
 bloom-mcp = "bloom_mcp.server:main"
 
@@ -97,4 +102,3 @@ markers = [
     "live_smoke: needs the real running dev stack (Docker Compose + Supabase + MinIO); excluded from python-audit's per-PR run; the CI-safe subset runs in dev-stack-smoke, the full set via /pre-merge",
     "live_smoke_slow: live_smoke tests whose delegate is numerically ill-conditioned at scale (rank-deficient covariance, per-trait MixedLM fits); always also carries live_smoke; excluded from dev-stack-smoke, runs only via /pre-merge",
 ]
-
