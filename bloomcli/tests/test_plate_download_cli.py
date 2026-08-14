@@ -262,6 +262,53 @@ def test_no_sections_file_when_no_scan_has_metadata(tmp_path, monkeypatch):
     assert not (out / "plate_sections.csv").exists()
 
 
+def test_a_server_error_on_the_scan_query_is_a_message_not_a_traceback(tmp_path, monkeypatch):
+    """Permission denied, a gateway blip, an unapplied migration — all arrive as an APIError.
+
+    Unhandled, the user gets a Python stack with the useful sentence buried in it.
+    """
+    from postgrest import APIError
+
+    _signed_in(monkeypatch)
+
+    def _boom(*a, **k):
+        raise APIError({"message": "permission denied for view gravi_scans_extended"})
+
+    monkeypatch.setattr(pd, "fetch_plate_scans", _boom)
+
+    result = _run(str(tmp_path / "out"), "--experiment-id", "12")
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert "permission denied" in result.output
+    assert "the scans for this experiment" in result.output
+
+
+def test_a_failed_section_query_says_the_csv_is_already_written(tmp_path, monkeypatch):
+    """This query runs after plates.csv and the manifest are on disk.
+
+    Without saying so, the user is left with a directory that looks like a valid partial
+    download and no idea which half of it is real.
+    """
+    from postgrest import APIError
+
+    _signed_in(monkeypatch)
+    _one_scan(monkeypatch)  # everything before the section query succeeds
+
+    def _boom(*a, **k):
+        raise APIError({"message": "gateway timeout"})
+
+    monkeypatch.setattr(pd, "fetch_plate_sections", _boom)
+    out = tmp_path / "out"
+
+    result = _run(str(out), "--experiment-id", "12", "--meta-only")
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert "plates.csv is already written" in result.output
+    assert (out / "plates.csv").exists(), "the CSV it mentions really is there"
+
+
 def test_empty_selection_names_the_filters(tmp_path, monkeypatch):
     _signed_in(monkeypatch)
     monkeypatch.setattr(pd, "fetch_plate_scans", lambda *a, **k: [])

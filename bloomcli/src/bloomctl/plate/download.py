@@ -239,6 +239,22 @@ def download_selector(**options: Any) -> dict[str, Any]:
 
 # --- supabase / storage I/O -------------------------------------------------
 
+def _queried(what: str, call: Callable[[], Any]) -> Any:
+    """Run one metadata query, turning a server error into something a scientist can act on.
+
+    Permission denied, a gateway blip, an unapplied migration — all of them arrive as an
+    APIError, and unhandled they reach the user as a Python traceback with the useful sentence
+    buried in it. `what` names the query so the message says which one failed.
+    """
+    from postgrest import APIError
+
+    try:
+        return call()
+    except APIError as exc:
+        detail = getattr(exc, "message", None) or str(exc)
+        raise click.ClickException(f"Could not read {what} from Bloom: {detail}") from exc
+
+
 def fetch_plate_scans(
     client: Any,
     experiment_id: int,
@@ -625,18 +641,21 @@ def download(
         click.echo(f"Matched: {outcome.match.label} (id {experiment_id})", err=True)
 
     if scan_id is not None:
-        scan = fetch_plate_scan(client, scan_id)
+        scan = _queried("this scan", lambda: fetch_plate_scan(client, scan_id))
         if scan is None:
             raise click.ClickException(f"Scan {scan_id} not found.")
         scans = [scan]
     else:
-        scans = fetch_plate_scans(
-            client,
-            experiment_id,
-            plate_id=plate_id,
-            wave_number=wave_number,
-            session_id=session_id,
-            limit=limit,
+        scans = _queried(
+            "the scans for this experiment",
+            lambda: fetch_plate_scans(
+                client,
+                experiment_id,
+                plate_id=plate_id,
+                wave_number=wave_number,
+                session_id=session_id,
+                limit=limit,
+            ),
         )
 
     if not scans:
@@ -645,7 +664,10 @@ def download(
             "--plate-id / --wave-number / --session-id filters."
         )
 
-    images = fetch_plate_images(client, [s.get("scan_id") for s in scans])
+    images = _queried(
+        "the image rows for these scans",
+        lambda: fetch_plate_images(client, [s.get("scan_id") for s in scans]),
+    )
     rows = [build_plate_row(s, images.get(s.get("scan_id"))) for s in scans]
 
     out = Path(out_dir)
@@ -677,7 +699,10 @@ def download(
     click.echo(f"Wrote {len(rows)} scans -> {csv_path}")
 
     sections = build_section_rows(
-        fetch_plate_sections(client, [s.get("metadata_id") for s in scans])
+        _queried(
+            "the plate section metadata (plates.csv is already written)",
+            lambda: fetch_plate_sections(client, [s.get("metadata_id") for s in scans]),
+        )
     )
     if sections:
         sections_path = out / "plate_sections.csv"
