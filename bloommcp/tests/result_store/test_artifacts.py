@@ -12,7 +12,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from bloom_mcp.result_store._artifacts import KeyScopeGuardError, build_output_links
+from bloom_mcp.result_store._artifacts import (
+    CorruptRunLinksError,
+    KeyScopeGuardError,
+    OutputFileMissingError,
+    build_download_links,
+    build_output_links,
+)
 
 _PREFIX = "bloommcp_output/qc_experiment/v1/"
 
@@ -107,3 +113,159 @@ def test_empty_expected_prefix_is_rejected_not_treated_as_match_everything():
 
 def test_empty_output_keys_does_not_crash():
     assert _links({}) == {}
+
+
+# ── path_for: local backend surfaces a direct path, not a URL (#642 follow-up) ──
+
+
+def test_path_for_populates_path_and_leaves_url_none(tmp_path):
+    output_keys = {"cleaned": f"{_PREFIX}_cleaned.csv"}
+    output_sha256 = {"cleaned": "sha-cleaned"}
+    output_size_bytes = {"cleaned": 9}
+    resolved = tmp_path / f"{_PREFIX}_cleaned.csv"
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_bytes(b"cleaned-!")
+    links = build_output_links(
+        output_keys,
+        output_sha256,
+        output_size_bytes,
+        path_for=lambda key: str(tmp_path / key),
+        expected_prefix=_PREFIX,
+    )
+    assert links["cleaned"].path == str(resolved)
+    assert links["cleaned"].url is None
+    assert links["cleaned"].key == f"{_PREFIX}_cleaned.csv"
+    assert links["cleaned"].sha256 == "sha-cleaned"
+    assert links["cleaned"].size_bytes == 9
+
+
+def test_path_for_returning_a_missing_path_raises():
+    with pytest.raises(ValueError, match="non-existent path"):
+        build_output_links(
+            {"cleaned": f"{_PREFIX}_cleaned.csv"},
+            {"cleaned": "sha-cleaned"},
+            {"cleaned": 9},
+            path_for=lambda key: "/does/not/exist",
+            expected_prefix=_PREFIX,
+        )
+
+
+def test_url_for_leaves_path_none():
+    links = _links({"cleaned": f"{_PREFIX}_cleaned.csv"})
+    assert links["cleaned"].url == f"fake://signed/{_PREFIX}_cleaned.csv"
+    assert links["cleaned"].path is None
+
+
+def test_neither_url_for_nor_path_for_raises():
+    with pytest.raises(ValueError, match="exactly one"):
+        build_output_links(
+            {"cleaned": f"{_PREFIX}_cleaned.csv"},
+            {"cleaned": "sha"},
+            {"cleaned": 1},
+            expected_prefix=_PREFIX,
+        )
+
+
+def test_both_url_for_and_path_for_raises():
+    with pytest.raises(ValueError, match="exactly one"):
+        build_output_links(
+            {"cleaned": f"{_PREFIX}_cleaned.csv"},
+            {"cleaned": "sha"},
+            {"cleaned": 1},
+            url_for=lambda key: f"fake://signed/{key}",
+            path_for=lambda key: f"/root/{key}",
+            expected_prefix=_PREFIX,
+        )
+
+
+def test_path_for_key_scope_guard_still_applies():
+    """The #598 key-scoping guard runs before either closure is called —
+    confirm it still gates the path_for branch, not just url_for."""
+    path_for = MagicMock(side_effect=lambda key: f"/root/{key}")
+    with pytest.raises(KeyScopeGuardError):
+        build_output_links(
+            {"cleaned": "bloommcp_output/qc_someone_else/v1/_cleaned.csv"},
+            {"cleaned": "sha"},
+            {"cleaned": 1},
+            path_for=path_for,
+            expected_prefix=_PREFIX,
+        )
+    path_for.assert_not_called()
+
+
+# ── build_download_links: read-path twin of build_output_links (#642 follow-up) ──
+
+
+def test_download_links_url_for_populates_url_and_leaves_path_none():
+    links = build_download_links(
+        {"cleaned": f"{_PREFIX}_cleaned.csv"},
+        {"cleaned": "sha-cleaned"},
+        url_for=lambda key: f"fake://signed/{key}",
+        size_for=lambda key: 9,
+        expected_prefix=_PREFIX,
+    )
+    assert links["cleaned"].url == f"fake://signed/{_PREFIX}_cleaned.csv"
+    assert links["cleaned"].path is None
+    assert links["cleaned"].size_bytes == 9
+
+
+def test_download_links_path_for_populates_path_and_leaves_url_none(tmp_path):
+    resolved = tmp_path / f"{_PREFIX}_cleaned.csv"
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_bytes(b"cleaned-!")
+    links = build_download_links(
+        {"cleaned": f"{_PREFIX}_cleaned.csv"},
+        {"cleaned": "sha-cleaned"},
+        path_for=lambda key: str(tmp_path / key),
+        size_for=lambda key: 9,
+        expected_prefix=_PREFIX,
+    )
+    assert links["cleaned"].path == str(resolved)
+    assert links["cleaned"].url is None
+    assert links["cleaned"].size_bytes == 9
+
+
+def test_download_links_path_for_returning_a_missing_path_raises():
+    with pytest.raises(OutputFileMissingError, match="non-existent path"):
+        build_download_links(
+            {"cleaned": f"{_PREFIX}_cleaned.csv"},
+            {"cleaned": "sha-cleaned"},
+            path_for=lambda key: "/does/not/exist",
+            size_for=lambda key: 9,
+            expected_prefix=_PREFIX,
+        )
+
+
+def test_download_links_neither_url_for_nor_path_for_raises():
+    with pytest.raises(ValueError, match="exactly one"):
+        build_download_links(
+            {"cleaned": f"{_PREFIX}_cleaned.csv"},
+            {"cleaned": "sha"},
+            size_for=lambda key: 1,
+            expected_prefix=_PREFIX,
+        )
+
+
+def test_download_links_both_url_for_and_path_for_raises():
+    with pytest.raises(ValueError, match="exactly one"):
+        build_download_links(
+            {"cleaned": f"{_PREFIX}_cleaned.csv"},
+            {"cleaned": "sha"},
+            url_for=lambda key: f"fake://signed/{key}",
+            path_for=lambda key: f"/root/{key}",
+            size_for=lambda key: 1,
+            expected_prefix=_PREFIX,
+        )
+
+
+def test_download_links_path_for_key_scope_guard_still_applies():
+    path_for = MagicMock(side_effect=lambda key: f"/root/{key}")
+    with pytest.raises(CorruptRunLinksError):
+        build_download_links(
+            {"cleaned": "bloommcp_output/qc_someone_else/v1/_cleaned.csv"},
+            {"cleaned": "sha"},
+            path_for=path_for,
+            size_for=lambda key: 1,
+            expected_prefix=_PREFIX,
+        )
+    path_for.assert_not_called()

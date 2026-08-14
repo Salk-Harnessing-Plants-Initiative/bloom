@@ -66,6 +66,7 @@ from bloom_mcp.data_access import (
     ExperimentFrame,
     ExperimentReadError,
 )
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import _build_output_frame, snapshot_frame
 from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
@@ -101,6 +102,12 @@ class UMAPAnalysisParams(BaseModel):
         "produced by qc_clean; umap_analysis consumes it (require_clean). Resolves the most "
         "recent outlier trim when one exists for the experiment, not merely the most "
         "recent clean.",
+    )
+    version: str | None = Field(
+        default=None,
+        description="Pin the analysis to a specific committed cleaned version "
+        "(e.g. 'v2'; see list_existing_analyses). Omit to use the latest "
+        "cleaned version, same as today.",
     )
     trait_columns: list[str] | None = Field(
         default=None,
@@ -242,7 +249,7 @@ def _umap_plot_calls(
 @as_mcp_tool(
     input_model=UMAPAnalysisParams,
     output_model=UMAPAnalysisResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def umap_analysis(
     params: UMAPAnalysisParams, *, random_state: int, provenance: Provenance
@@ -254,8 +261,13 @@ def umap_analysis(
     # Consumer: require a cleaned version. A missing one is a precondition failure with a
     # concrete remedy — caught here so it carries "run qc_clean first" rather than the
     # contract's generic tool_error message for the declared read error.
+    # #626: an explicit version selector is opt-in; omitting it makes this call
+    # identical to before this change (no version kwarg -> Protocol default "latest").
+    version_kwargs = {} if params.version is None else {"version": params.version}
     try:
-        frame = reader.load_experiment(params.experiment, require_clean=True)
+        frame = reader.load_experiment(
+            params.experiment, require_clean=True, **version_kwargs
+        )
     except CleanedVersionRequiredError:
         raise BloomMCPError(
             code="tool_error",

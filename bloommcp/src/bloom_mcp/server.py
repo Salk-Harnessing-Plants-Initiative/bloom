@@ -43,6 +43,7 @@ from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount
+from starlette.staticfiles import StaticFiles
 
 # Env validation is lazy (see supabase_client / experiment_utils validate_env):
 # importing this module no longer requires Supabase or the BLOOM_*_DIR env, so
@@ -114,6 +115,23 @@ def build_app() -> Starlette:
     FastMCP's own per-section `BLOOMMCP_API_KEY` bearer check (wired via
     `auth=` on each `FastMCP` instance, inside each `Mount`) — the two checks
     are independent; see openspec add-bloommcp-caller-identity design.md.
+
+    In fully-local mode (`BLOOM_STORAGE_BACKEND=local`), also mounts `/plots`
+    as `StaticFiles`, serving the local plots root the plotting tools
+    themselves write to — so a served URL built from either
+    `storage_backend.self_serve_base_url()`'s default or an explicit
+    `BLOOM_PLOTS_URL` pointing at this same address actually resolves
+    standalone, with no docker-compose. Unauthenticated beyond
+    `IdentityMiddleware`'s optional identity check (matching `/health`'s
+    precedent) — see openspec update-bloommcp-local-url-defaults design.md
+    Decision 3. Absent entirely on the default (Supabase) backend.
+
+    No analogous `/output` mount: analysis outputs' `output_links` surface a
+    direct resolved filesystem path for the local backend instead of a served
+    URL (`result_store/_artifacts.py`'s `path_for`) — the caller already has
+    direct filesystem access to a file bloommcp just wrote, so there is
+    nothing to self-serve over HTTP for outputs (see the GitHub issue #642
+    follow-up discussion linked from `update-bloommcp-local-url-defaults`).
     """
     combined_app = mcp.http_app(path="/mcp")
     section_apps = {
@@ -123,6 +141,19 @@ def build_app() -> Starlette:
     # Section paths first (more specific); combined at root last so /mcp and
     # /health fall through to it.
     routes = [Mount(f"/{name}", app=app) for name, app in section_apps.items()]
+
+    from bloom_mcp.experiment_utils import PLOTS_DIR
+    from bloom_mcp.storage_backend import is_local_backend
+
+    if is_local_backend():
+        routes.append(
+            Mount(
+                "/plots",
+                app=StaticFiles(directory=str(PLOTS_DIR), check_dir=False),
+                name="local-plots",
+            )
+        )
+
     routes.append(Mount("/", app=combined_app))
 
     lifespans = [combined_app.lifespan, *(a.lifespan for a in section_apps.values())]

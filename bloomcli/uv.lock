@@ -26,7 +26,7 @@ wheels = [
 
 [[package]]
 name = "bloomctl"
-version = "0.1.0a4"
+version = "0.1.0a5"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -49,12 +49,12 @@ requires-dist = [
     { name = "click", specifier = ">=8.2" },
     { name = "cryptography", specifier = ">=50.0.0" },
     { name = "h2", specifier = ">=4.4.1" },
-    { name = "httpx", specifier = ">=0.27" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "rich", specifier = ">=13.0" },
     { name = "sleap-roots-contracts", specifier = ">=0.1.0a7" },
-    { name = "supabase", specifier = ">=2.0.0" },
+    { name = "supabase", specifier = ">=2.0.0,<3" },
 ]
 provides-extras = ["test"]
 

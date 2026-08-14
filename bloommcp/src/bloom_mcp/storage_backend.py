@@ -351,6 +351,17 @@ class LocalStorageBackend:
             raise ValueError(f"storage key {key!r} escapes the local root")
         return target
 
+    def resolve_path(self, key: str) -> Path:
+        """Public entry point for resolving ``key`` under this backend's root.
+
+        Routes through the same :meth:`_resolve` traversal guard every I/O
+        method here already uses (#642 follow-up) — a caller that needs the
+        on-disk path for a key (e.g. ``OutputLink.path``) must not hand-roll a
+        second, unguarded ``root / key`` join that could silently reopen the
+        traversal risk :meth:`_resolve` already closes.
+        """
+        return self._resolve(key)
+
     def _atomic_write(self, target: Path, data: bytes, *, key: str) -> None:
         """Write ``data`` to ``target`` atomically on POSIX.
 
@@ -465,7 +476,11 @@ class LocalStorageBackend:
         # expires_in is accepted for Protocol parity with the Supabase adapter
         # and ignored — this is an opt-in dev feature with no real credential/
         # expiry enforcement (see the class docstring's Windows-atomicity caveat
-        # for the same rhetorical shape).
+        # for the same rhetorical shape). Not called by the local backend's own
+        # output_links pipeline (#642 follow-up) — commit() surfaces a direct
+        # filesystem path instead (see result_store/_artifacts.py's `path_for`)
+        # — this remains only for an operator who has deliberately stood up
+        # their own external server and wants a real served URL.
         del expires_in
         base = os.environ.get("BLOOM_STORAGE_URL")
         if not base:
@@ -517,6 +532,20 @@ def is_local_backend() -> bool:
     stay coupled (no local-raw / Supabase-cleaned split lineage).
     """
     return _selected_backend_name() == "local"
+
+
+def self_serve_base_url() -> str:
+    """bloommcp's own address, for defaulting local-mode served URLs (#642).
+
+    ``BLOOMMCP_PUBLIC_URL`` when set (the same var already used for OAuth
+    discovery in ``bloom_mcp.auth`` — reused here rather than adding a second
+    "how do I reach myself" var); otherwise the hardcoded ``http://localhost:8811``,
+    since the server's bind port is itself hardcoded (``server.main()``) and no
+    env var configures it.
+    """
+    return (os.environ.get("BLOOMMCP_PUBLIC_URL") or "http://localhost:8811").rstrip(
+        "/"
+    )
 
 
 def _resolve_local_root() -> Path:
@@ -652,6 +681,22 @@ def validate_storage_backend() -> None:
         raise _unrecognized_backend_error(name)
     if name == "local":
         root = _resolve_local_root()
+        # A relative BLOOM_LOCAL_ROOT/BLOOM_STORAGE_LOCAL_ROOT/BLOOM_OUTPUT_DIR
+        # resolves against whatever the process's CWD happens to be at first
+        # use (LocalStorageBackend.__init__'s own .resolve() call) — silently
+        # different across a restart with a different CWD, making a prior
+        # run's committed outputs unretrievable with no error at all. Checked
+        # here (root.parts guards the genuinely-empty/unset case, which the
+        # more specific "neither ... is set" message below already covers)
+        # so misconfiguration fails loudly at boot instead of resolving to a
+        # different directory next time.
+        if root.parts and not root.is_absolute():
+            raise RuntimeError(
+                f"BLOOM_STORAGE_BACKEND=local root {str(root)!r} is not an "
+                f"absolute path; set BLOOM_LOCAL_ROOT/BLOOM_STORAGE_LOCAL_ROOT/"
+                f"BLOOM_OUTPUT_DIR to an absolute path so it does not silently "
+                f"depend on the process's current working directory."
+            )
         explicit = os.environ.get("BLOOM_STORAGE_LOCAL_ROOT")
         derived_from_local_root = not explicit and bool(
             os.environ.get("BLOOM_LOCAL_ROOT")

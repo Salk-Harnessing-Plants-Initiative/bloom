@@ -20,12 +20,14 @@ import json
 import math
 from pathlib import Path
 
+from unittest.mock import MagicMock
+
 import pandas as pd
 import pytest
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
-from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.result_store import FakeResultStore, RunStateError, SupabaseResultStore
 from bloom_mcp.tools import _ports
 from bloom_mcp.sections.sleap_roots.analysis import clustering as clustering_tool
 from bloom_mcp.sections.sleap_roots.analysis.clustering import (
@@ -315,9 +317,9 @@ def test_gmm_autoselect_bic_aic_reflect_the_selected_model(injected_ports, monke
     idx = result.n_clusters - 1
     # On this dataset auto-select collapses to n=1 out of the default max_components=5
     # candidates — making the negative assertion unconditional (selected ≠ last candidate).
-    assert (
-        result.n_clusters == 1
-    ), f"expected auto-collapse to n=1, got {result.n_clusters}"
+    assert result.n_clusters == 1, (
+        f"expected auto-collapse to n=1, got {result.n_clusters}"
+    )
     assert len(d["bic_scores"]) == 5  # default max_components=5
     # Corrected values == the selected candidate's per-candidate scores.
     assert result.bic == pytest.approx(d["bic_scores"][idx], abs=_TOL)
@@ -468,6 +470,47 @@ def test_degenerate_fit_does_not_leak_backend_internals(injected_ports, monkeypa
     msg = f"{exc.value.message} {exc.value.remedy}"
     assert "/var" not in msg and "db.internal" not in msg
     assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: clustering's declared errors=(ExperimentReadError,) swallowed a CommitFailedError/
+# ManifestReadError from store.create_run()/commit() into a generic internal_error ref) ──
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "clustering")
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="kmeans", n_clusters=3)
+    assert exc.value.code == "tool_error"
+    assert "commit failed for clustering" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "clustering")
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="kmeans", n_clusters=3)
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
+def test_run_state_error_from_commit_still_maps_to_internal_error(
+    injected_ports, monkeypatch
+):
+    """RunStateError (a handle-misuse/wiring bug, never triggerable via tool input) must
+    stay internal_error even after declaring CommitFailedError/ManifestReadError — proves
+    the errors= tuple wasn't accidentally widened to the full ResultStoreError base
+    (design.md Decision 1; #660 review: only qc_inspect had this test)."""
+    _reader, store = injected_ports
+
+    def _boom(run, outputs):
+        raise RunStateError("commit() on an unknown or already-committed run")
+
+    monkeypatch.setattr(store, "commit", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="kmeans", n_clusters=3)
+    assert exc.value.code == "internal_error"
 
 
 # ── 3.10 non-finite guard ───────────────────────────────────────────────────
@@ -913,3 +956,33 @@ def test_hierarchical_degenerate_fit_does_not_leak_backend_internals(
     # The raw exception text (file paths, scipy internals) must not appear.
     for fragment in ("site-packages", "hierarchy.py", "internal detail"):
         assert fragment not in exc.value.message
+
+
+# ── explicit cleaned-version selector (#626) ────────────────────────────────
+
+
+def test_version_field_exists():
+    assert "version" in ClusteringParams.model_fields
+
+
+def test_omitting_version_preserves_todays_exact_call(injected_ports):
+    """Spy on load_experiment: the omitted-field case must match today's
+    exact call args, not just produce an equivalent result."""
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run()
+
+    reader.load_experiment.assert_called_once_with(_EXPERIMENT, require_clean=True)
+
+
+def test_explicit_version_is_passed_through(injected_ports):
+    reader, _store = injected_ports
+    reader.add_cleaned_version(_EXPERIMENT, "v2", _final_df(), make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version="v2")
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="v2"
+    )

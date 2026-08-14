@@ -209,6 +209,38 @@ def test_health_path_is_not_recorded(monkeypatch, recorded_usage):
     assert recorded_usage == []
 
 
+# ── Local backend skips usage telemetry entirely (bloom#641) ───────────────
+# In fully-local mode there is no Supabase to record usage against at all —
+# `record_usage_async` must never even be attempted, not attempted-and-fail.
+
+
+def test_local_backend_skips_usage_recording(monkeypatch, recorded_usage):
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    downstream = _DummyApp()
+    client = TestClient(IdentityMiddleware(downstream))
+    resp = client.get("/anything")
+    assert resp.status_code == 200
+    assert downstream.called == 1
+    assert recorded_usage == []
+
+
+def test_supabase_backend_still_records_usage(monkeypatch, recorded_usage):
+    """A regression guard for the fix above: gating on the local backend must
+    not accidentally also gate out the default `supabase` backend. Sets
+    `BLOOM_STORAGE_BACKEND` explicitly rather than leaving it unset, so an
+    incorrect gate like `if not os.environ.get("BLOOM_STORAGE_BACKEND")`
+    (which would also happen to pass every other test in this file, since
+    they all run with the var unset) can't slip through."""
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "supabase")
+    downstream = _DummyApp()
+    client = TestClient(IdentityMiddleware(downstream))
+    resp = client.get("/anything")
+    assert resp.status_code == 200
+    assert recorded_usage == [("anonymous", "combined")]
+
+
 # ── OAuth AccessToken fallback (add-bloommcp-oauth-usage-attribution) ───────
 # A second identity source, consulted only when no X-Bloom-Identity header
 # resolved one. `_DummyApp(user=...)` simulates what Starlette's real
@@ -278,6 +310,7 @@ def test_identity_header_takes_precedence_over_a_simultaneous_oauth_subject(
         ("/sleap_roots/mcp", "sleap_roots"),
         ("/phenotyping_segmentation/mcp", "phenotyping_segmentation"),
         ("/not-a-real-section/mcp", "combined"),
+        ("/plots/k", "combined"),  # local-mode static mount (#642)
     ],
 )
 def test_action_from_path(path, expected):

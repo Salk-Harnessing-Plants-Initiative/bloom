@@ -1,9 +1,8 @@
 [project]
 name = "bloomctl"
-version = "0.1.0a4"
+version = "0.1.0a5"
 description = "Bloom command-line tool for Bloom Database"
-# PyPI project page renders README.pypi.md (a lean user-facing landing page);
-# README.md is the fuller in-repo doc.
+# The PyPI landing page. README.md is the fuller in-repo doc.
 readme = "README.pypi.md"
 requires-python = ">=3.11"
 license = "BSD-2-Clause"
@@ -14,27 +13,20 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "click>=8.2",  # CliRunner separates stdout/stderr (tests assert on .stderr)
+    "click>=8.2",  # 8.2 splits stdout from stderr, which the tests assert on
     "rich>=13.0",
-    # /client-info bootstrap fetch (login).
-    "httpx>=0.27",
-    # Supabase PostgREST + Storage client (auth, metadata query, image signing).
-    "supabase>=2.0.0",
+    # Both upper bounds are load-bearing: httpx 1.0 and supabase 3.0 each remove
+    # something we import, so a --pre install picks them up and nothing runs (#629).
+    # Lifted once those ship stable (#645).
+    "httpx>=0.27,<1.0",
+    "supabase>=2.0.0,<3",
     "python-dotenv>=1.0.0",
-    # Security floor for the supabase auth/JWT transitive dep, per repo convention
-    # (open floor past the upstream CVE fix; see bloommcp/pyproject.toml).
-    # Bumped past CVE-2026-69247 (fixed in 50.0.0), disclosed 2026-08-03.
-    "cryptography>=50.0.0",
-    # ResultEnvelope model for `cyl ingest` fail-fast validation, (a5+)
-    # PredictionArtifact/PredictionManifest for `cyl ingest-result
-    # --predictions-dir` blob construction (bloom #407), and (a7+) RunManifest/
-    # RUN_MANIFEST_FILENAME for `cyl batch-download-for-predict`'s manifest
-    # write (bloom #653). No [pandas] extra — only the pydantic models are
-    # needed (pydantic already present transitively via supabase->postgrest).
+    # Floors, not caps: a cap here would only keep the next security fix out.
+    "cryptography>=50.0.0",  # CVE-2026-69247
+    # a5+: pydantic models for `cyl ingest`. a7+: RunManifest/RUN_MANIFEST_FILENAME for
+    # `cyl batch-download-for-predict`'s manifest write (#653).
     "sleap-roots-contracts>=0.1.0a7",
-    # Security floor for h2, transitive via httpx[http2]: CVE-2026-71554
-    # (fixed in 4.4.1), disclosed 2026-08-06. Open floor per repo convention.
-    "h2>=4.4.1",
+    "h2>=4.4.1",  # CVE-2026-71554
 ]
 
 [project.urls]
@@ -43,11 +35,10 @@ Repository = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom"
 Changelog = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/main/bloomcli/CHANGELOG.md"
 
 [project.scripts]
-bloomctl = "bloomctl.cli:cli"
+# errors:main wraps cli so an unhandled failure is a message, not a stack trace.
+bloomctl = "bloomctl.errors:main"
 
-# Test stack lives in the `test` extra (not a dev dependency-group) so CI invokes
-# it as `uv run --extra test pytest` — the repo-wide convention enforced by
-# tests/unit/test_ci_workflow_uv_conventions.py.
+# An extra, not a dependency-group, so CI runs `uv run --extra test pytest`.
 [project.optional-dependencies]
 test = [
     "pytest>=8.3",
@@ -68,15 +59,10 @@ markers = [
     "integration: requires live staging credentials (env-gated; self-skips when absent)",
 ]
 
-# Lint config lives here (matching bloommcp); CI runs ruff via `uvx ruff`
-# pinned to the repo's .pre-commit-config.yaml version, so ruff is not a
-# project dependency.
 [tool.ruff]
 target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
-# Line length is owned by the formatter (black), per ruff's guidance for
-# formatter-managed projects — so E501 is not linted here.
-ignore = ["E501"]
+ignore = ["E501"]  # the formatter owns line length
