@@ -19,10 +19,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS = REPO_ROOT / "supabase" / "migrations"
 
+# The column list is optional on purpose: `GRANT UPDATE ON ...` with no columns makes every
+# column updatable, scan_id included, so a pattern that only matched column-scoped grants
+# would miss the broadest possible version of the thing these tests forbid.
 GRANT = re.compile(
-    r"GRANT\s+(INSERT|UPDATE)\s*\(([^)]*)\)\s+ON\s+public\.cyl_scan_videos",
+    r"GRANT\s+(INSERT|UPDATE)\s*(?:\(([^)]*)\))?\s+ON\s+(?:TABLE\s+)?public\.cyl_scan_videos",
     re.IGNORECASE,
 )
+ALL_COLUMNS = {"scan_id", "path", "frames"}
 
 
 def _migration_text() -> str:
@@ -32,10 +36,15 @@ def _migration_text() -> str:
 
 
 def _granted_columns() -> dict[str, set[str]]:
-    """Columns granted for INSERT and for UPDATE, across every migration."""
+    """Columns granted for INSERT and for UPDATE, across every migration.
+
+    A grant with no column list reaches every column, so it counts as all of them.
+    """
     granted: dict[str, set[str]] = {"insert": set(), "update": set()}
     for verb, columns in GRANT.findall(_migration_text()):
-        granted[verb.lower()] |= {c.strip() for c in columns.split(",")}
+        granted[verb.lower()] |= (
+            {c.strip() for c in columns.split(",")} if columns.strip() else ALL_COLUMNS
+        )
     return granted
 
 

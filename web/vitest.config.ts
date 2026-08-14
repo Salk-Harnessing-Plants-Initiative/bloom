@@ -6,11 +6,10 @@ import tsconfigPaths from "vite-tsconfig-paths";
  * Vitest config for the web/ workspace.
  *
  * - environment: node — these are pure data-shaping / utility tests; nothing
- *   needs jsdom by default. Per-file `// @vitest-environment jsdom` directive
- *   overrides this for the route-handler and React-component tests added by
- *   openspec/changes/add-ghcr-image-publishing (e.g. app/api/config/route.test.ts
- *   and lib/config/use-public-config.test.tsx) without flipping the workspace
- *   default.
+ *   needs jsdom by default. A per-file `// @vitest-environment jsdom` directive
+ *   overrides this for the route-handler and React-component tests (the
+ *   runtime-config suites and the scan viewer/video components) without
+ *   flipping the workspace default.
  * - tsconfigPaths plugin resolves `@/…` imports from web/tsconfig.json so test
  *   files can use the same path aliases as the rest of the codebase.
  * - include defaults to colocated `*.test.ts` / `*.test.tsx` files under
@@ -28,9 +27,8 @@ import tsconfigPaths from "vite-tsconfig-paths";
  *   (not the default `threads` pool which shares state via worker_threads).
  *   Existing colocated tests (lib/queries/*.test.ts,
  *   components/.../format-times.test.ts) don't mutate process.env, so
- *   the switch is safe and the new openspec tests need the cross-file
- *   isolation. See openspec/changes/add-ghcr-image-publishing
- *   tasks.md §1.2.
+ *   the switch is safe, and the runtime-config tests need the cross-file
+ *   isolation.
  * - exclude adds lib/**\/__fixtures__/** so helper modules like
  *   lib/config/__fixtures__/jwt.ts aren't auto-discovered as tests.
  */

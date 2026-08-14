@@ -3,9 +3,13 @@
  *
  * The workflows API requires a Supabase user JWT and is reachable in-cluster at
  * `workflows:5100` (both services sit on `supanet` in dev and prod). Proxying
- * here rather than calling it from the browser keeps the service off the public
- * origin, keeps the access token out of client JS, and avoids adding a
- * `NEXT_PUBLIC_*` key just to name a backend.
+ * here rather than calling it from the browser keeps the access token out of
+ * client JS and avoids adding a `NEXT_PUBLIC_*` key just to name a backend.
+ *
+ * It is not a security boundary: Caddy also publishes the service at
+ * `/workflows/*`, so everything below — the 409, the detail suppression — is
+ * about what this app does, not about what the service permits. Authorization
+ * lives upstream (`require_supabase_user`, then `scan_in_experiment`).
  *
  * Generation is synchronous upstream — encoding a full rotation takes a while,
  * so callers should expect this request to stay open.

@@ -394,12 +394,68 @@ def test_generate_scan_video_keeps_a_stored_video_it_cannot_compare(monkeypatch)
     assert client.uploads == 0
 
 
-def test_a_failed_existence_check_counts_as_stored():
+def test_an_unclear_existence_check_is_neither_yes_nor_no():
     class _Unreachable:
         def create_signed_url(self, *a, **k):
             raise RuntimeError("storage gateway timed out")
 
-    assert video._stored_video_exists(_Unreachable(), "cyl-videos/5.mp4") is True
+    assert video._stored_video_exists(_Unreachable(), "cyl-videos/5.mp4") is None
+
+
+def test_an_unclear_existence_check_does_not_discard_the_encode(monkeypatch):
+    """Keeping on an unclear probe drops a finished encode and then raises on the same key.
+
+    `_result` signs the very key the probe just failed to sign, and nothing catches that —
+    so the caller pays for the whole encode and gets a bare 500. An unclear answer is not
+    evidence that a better video is stored, so the new encode is uploaded instead.
+    """
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
+    client = _GenClient(images, recorded_frames=3)
+
+    # Every signing attempt fails for a reason that is not "missing".
+    def _blip(self, *a, **k):
+        raise RuntimeError("storage gateway timed out")
+
+    monkeypatch.setattr(_GenBucket, "create_signed_url", _blip)
+
+    with pytest.raises(Exception) as excinfo:
+        video.generate_scan_video(client, 5)
+
+    # It still fails — the URL genuinely cannot be signed — but only after uploading, so the
+    # encode is not lost and the next request finds the video rather than re-encoding it.
+    assert client.uploads == 1
+    assert "timed out" in str(excinfo.value)
+
+
+def test_a_kept_video_with_no_row_is_recorded_without_a_count(monkeypatch):
+    """A stored video nothing records can never be compared against, so it is pinned here.
+
+    The keep branch returns regenerated=False, which normally suppresses the record write —
+    and the row it would have written is the only thing that lets a later run evaluate this
+    scan at all. Recording the path with a null count claims nothing and breaks the loop.
+    """
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    monkeypatch.setattr(video, "scan_in_experiment", lambda *a, **k: True)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
+    client = _GenClient(images, recorded_frames=None, stored=True)
+    monkeypatch.setattr(video, "app_client", lambda: client)
+
+    recorded: dict = {}
+    monkeypatch.setattr(
+        video, "_record_video", lambda c, s, r: recorded.update(scan=s, result=r)
+    )
+
+    result = video.generate_experiment_scan_video(1, 5)
+
+    assert result["regenerated"] is False
+    assert client.uploads == 0
+    assert recorded["scan"] == 5
+    assert recorded["result"]["frames"] is None
+    assert recorded["result"]["path"] == "cyl-videos/5.mp4"
+    # The response still carries a number, because the client's shape guard demands one.
+    assert isinstance(result["frames"], int)
+    assert "stored_frames_unknown" not in result
 
 
 def test_generate_scan_video_replaces_a_recorded_video_whose_object_is_gone(monkeypatch):

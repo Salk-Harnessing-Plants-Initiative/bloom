@@ -7,7 +7,7 @@ and storage policies bound what this can touch.
 Flow: validate scan ∈ experiment (cyl_scans_extended) -> read scan images
 (cyl_images) -> download each frame from the images bucket -> decimate -> encode
 H.264 with VideoWriter -> upload MP4 to the videos bucket -> signed URL ->
-(optional) insert a record row.
+record the row through the record_cyl_scan_video wrapper.
 """
 
 import io
@@ -39,7 +39,8 @@ VIDEOS_BUCKET = os.environ.get("WORKFLOWS_VIDEOS_BUCKET", "videos")
 # Path within the videos bucket — must match what Bloom web plays
 # (web/components/plant-scan.tsx -> videos/cyl-videos/{scan_id}.mp4).
 VIDEO_PATH_PREFIX = "cyl-videos"
-# Record table linking scan_id -> stored video path (upserted per scan).
+# Record table linking scan_id -> stored video path (one row per scan, written
+# through the record_cyl_scan_video wrapper — never upserted; see _record_video).
 VIDEO_TABLE = os.environ.get("WORKFLOWS_VIDEO_TABLE", "cyl_scan_videos")
 
 # Signed URLs come back pointing at the internal gateway (SUPABASE_URL, e.g.
@@ -104,8 +105,14 @@ def _scan_lock(scan_id: int) -> threading.Lock:
         return _scan_locks.setdefault(scan_id, threading.Lock())
 
 
-def _stored_video_exists(vids, key: str) -> bool:
-    """Whether an object is stored at ``key``; an unclear answer counts as yes."""
+def _stored_video_exists(vids, key: str) -> bool | None:
+    """Whether an object is stored at ``key``, or None when storage could not say.
+
+    None is not "no": it means the same call that keeps the stored video would also be the
+    one to sign its URL, and it just failed. Keeping on an unclear answer discards the encode
+    and then raises on that same key — so callers upload instead, which is safe. An unclear
+    probe is not evidence that a better video is already there.
+    """
     try:
         vids.create_signed_url(key, DOWNLOAD_URL_TTL)
         return True
@@ -114,7 +121,7 @@ def _stored_video_exists(vids, key: str) -> bool:
         if "not found" in message or "not_found" in message or "does not exist" in message:
             return False
         logger.warning("could not check for a stored video at %s: %s", key, exc)
-        return True
+        return None
 
 
 def _recorded_frames(client, scan_id: int):
@@ -241,7 +248,7 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
     if (
         prior_frames is not None
         and frames_written <= prior_frames
-        and _stored_video_exists(vids, key)
+        and _stored_video_exists(vids, key) is True
     ):
         logger.warning(
             "scan %s: new encode has %s frames, recorded %s; keeping the existing video",
@@ -252,13 +259,20 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
         )
 
     # No recorded count to compare against, so the stored video is kept rather than risked.
-    if prior_frames is None and _stored_video_exists(vids, key):
+    # The row is written on the way out (see _record_kept_video): a video nothing records is
+    # a video nothing can ever compare against, which would pin the scan here permanently.
+    if prior_frames is None and _stored_video_exists(vids, key) is True:
         logger.warning(
             "scan %s: a video is stored with no recorded frame count; keeping it", scan_id
         )
-        return _result(
+        kept = _result(
             scan_id, vids, key, frames_written, frames_expected, truncated, regenerated=False
         )
+        # The response keeps a numeric `frames` because the client's shape guard requires one
+        # (the web summary suppresses it when regenerated is false). The row must not: nobody
+        # measured the stored file, so it is recorded with no count.
+        kept["stored_frames_unknown"] = True
+        return kept
 
     vids.upload(key, video_bytes, {"content-type": "video/mp4", "upsert": "true"})
     return _result(
@@ -326,7 +340,11 @@ def generate_experiment_scan_video(experiment_id: int, scan_id: int) -> dict:
         result = generate_scan_video(client, scan_id)
         result["scan_id"] = scan_id
         # Only (re)record when we actually wrote a new video — a kept-existing result
-        # must not overwrite the recorded frame count with a lower one.
-        if result.get("regenerated", True):
+        # must not overwrite the recorded frame count with a lower one. The one exception
+        # is a kept video that had no row at all: recording the path with no count claims
+        # nothing, and without it the scan can never leave that branch.
+        if result.pop("stored_frames_unknown", False):
+            _record_video(client, scan_id, {**result, "frames": None})
+        elif result.get("regenerated", True):
             _record_video(client, scan_id, result)
     return result
