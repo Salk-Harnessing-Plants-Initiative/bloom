@@ -153,8 +153,52 @@ def test_trim_is_stale_and_an_unrelated_tool_class_error_both_survive_together(
     )
 
     assert response["trim_is_stale"] is False
-    assert any(e.startswith("qc: ") for e in response["errors"])
+    assert any(e.startswith("qc_clean: ") for e in response["errors"])
     assert len(response["errors"]) == len(list_existing_analyses_mod.TOOL_CLASSES)
+
+
+def test_tool_class_error_entry_is_redacted(injected_ports, monkeypatch):
+    """bloom#664 item 1: the per-tool_class loop must scrub `list_runs` failures
+    with `safe_error_text`, mirroring the `trim_staleness` sibling branch below
+    it in the same function and `get_download_links.py`'s equivalent handling —
+    not rely on `_guarded_manifest_read`'s current callers pre-redacting for it
+    implicitly (#660 design.md Decision 3)."""
+    _reader, store = injected_ports
+
+    def _boom(_experiment, _tool_class):
+        raise RuntimeError("apikey=sk-secret123 leaked from store")
+
+    monkeypatch.setattr(store, "list_runs", _boom)
+
+    response = json.loads(
+        list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+    )
+
+    assert response["errors"]
+    for entry in response["errors"]:
+        assert "sk-secret123" not in entry
+    assert any("apikey=<redacted>" in e for e in response["errors"])
+
+
+def test_tool_class_error_entry_uses_public_tool_name(injected_ports, monkeypatch):
+    """bloom#664 item 3: the aggregated error entry must be labeled with the
+    public tool name an agent actually invoked (e.g. `descriptive_stats`), not
+    the internal `tool_class` string (`stats`) — with an unmapped legacy
+    `tool_class` (`dimred`) falling back to itself rather than being dropped."""
+    _reader, store = injected_ports
+
+    def _boom(_experiment, _tool_class):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(store, "list_runs", _boom)
+
+    response = json.loads(
+        list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+    )
+
+    assert any(e.startswith("descriptive_stats: ") for e in response["errors"])
+    assert not any(e.startswith("stats: ") for e in response["errors"])
+    assert any(e.startswith("dimred: ") for e in response["errors"])
 
 
 def test_trim_staleness_failure_is_reported_not_raised(injected_ports, monkeypatch):
