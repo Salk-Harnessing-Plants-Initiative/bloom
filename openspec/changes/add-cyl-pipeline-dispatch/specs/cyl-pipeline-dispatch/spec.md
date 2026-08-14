@@ -76,17 +76,19 @@ for that batch, not retried within the same claim.
 ### Requirement: Every submitted Workflow carries mandatory attribution labels
 
 The worker SHALL stamp every submitted Workflow, at minimum, with `submitted-by: bloom-pipeline`,
-`pipeline-run-id: <the batch's run id>`, and `batch-index: <the batch's index>` — a submission that
-would omit these labels SHALL NOT be sent. This is a hard requirement (2026-08-06 cluster-admin
-feedback), not best-effort: because submission goes directly to the Kubernetes API rather than through
-Argo Server or the `argo` CLI, the submitted `Workflow` object receives none of Argo's automatic
-`creator` labeling.
+`pipeline-run-id: <the batch's run id>`, `batch-index: <the batch's index>`, and
+`environment: <WORKFLOWS_K8S_ENV_LABEL>` — a submission that would omit these labels SHALL NOT be sent.
+This is a hard requirement (2026-08-06 cluster-admin feedback for the first three; the `environment`
+label was added on PR review once `WORKFLOWS_K8S_NAMESPACE` was confirmed shared between prod and
+staging — see design.md's "environment label" decision), not best-effort: because submission goes
+directly to the Kubernetes API rather than through Argo Server or the `argo` CLI, the submitted
+`Workflow` object receives none of Argo's automatic `creator` labeling.
 
 #### Scenario: Labels are present on every submission regardless of batch size
 
 - **WHEN** any batch (one scan or many) is submitted
-- **THEN** the submitted Workflow's `metadata.labels` includes `submitted-by`, `pipeline-run-id`, and
-  `batch-index`, with correct values for that specific batch
+- **THEN** the submitted Workflow's `metadata.labels` includes `submitted-by`, `pipeline-run-id`,
+  `batch-index`, and `environment`, with correct values for that specific batch and deployment
 
 ### Requirement: Every submitted Workflow carries a `ttlStrategy` for auto-cleanup
 

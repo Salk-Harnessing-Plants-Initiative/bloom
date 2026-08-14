@@ -142,6 +142,17 @@ therefore stamps `submitted-by: bloom-pipeline`, `pipeline-run-id: <run_id>`, `b
 the POST — not added opportunistically after success. Live-validated: labels supplied on the test
 Workflow's `metadata.labels` persisted unchanged through creation and through the run to `Succeeded`.
 
+### Decision: a fourth `environment` label, added on PR review
+
+Found on review, after the namespace-hardcoded decision above was already made: prod and staging both
+resolve to the identical `runai-busch-lab` namespace, and both `cyl_pipeline_runs.id` sequences start at
+1 independently — so `pipeline-run-id: 42` alone can't tell a future reconciliation sweep (the one the
+"successful-submission-recorded-as-failed" risk below already calls for) which database a given
+Workflow's run actually belongs to. Resolution: a fourth label, `environment: <WORKFLOWS_K8S_ENV_LABEL>`
+— a plain config value (default `"dev"`, never eagerly required) with the identical never-"missing"
+treatment as `NAMESPACE`/`TTL_SECONDS` above, given a real, distinct entry in each of
+`.env.prod.defaults` (`prod`) and `.env.staging.defaults` (`staging`).
+
 ### Decision: no direct `bloom_workflows` `UPDATE` grant — the wrapper functions write on its behalf
 
 An earlier draft of this proposal added a column-scoped `UPDATE` grant, reasoning that Phase 1's
@@ -263,7 +274,15 @@ killed-mid-POST worker can't know whether the K8s API actually received the subm
 signal landed, which is exactly the "successful-submission-recorded-as-failed" risk (see Risks) in
 miniature. Unlike PR #469's video worker (whose `stop_grace_period` needs ~150s for a real encode to
 finish), this worker's unit of work is a single HTTP POST, so a short grace period (on the order of the
-`httpx` request timeout, not minutes) is sufficient.
+`httpx` request timeout, not minutes) is sufficient — set to 30s in both compose files (`k8s_client.py`'s
+`httpx` timeout is 15s). Found on PR review: that 30s budget only actually holds if the
+`complete`/`fail` Supabase RPC that follows the K8s POST is itself bounded — supabase-py's un-overridden
+default (`postgrest_client_timeout`) is 120s, which alone would blow the whole grace period. Fixed by
+giving this service's own `supabase_client.py` an explicit `POSTGREST_TIMEOUT_SECONDS = 10` (unlike
+`bloommcp`'s own client, which deliberately keeps the 120s default for its unrelated large-experiment-
+fetch use case — see that module's own comment — this worker's RPCs are all single-batch, small,
+indexed operations with no comparable payload to protect), keeping the worst case comfortably under
+30s: 15s (POST) + 10s (RPC) = 25s.
 
 ### Decision: the worker retries its startup Supabase connection with backoff — a deliberate departure from PR #469
 
@@ -355,7 +374,14 @@ of this proposal's scope, but worth noting for whoever next touches that file.
   reusing the same labels the reconciliation-sweep risk above already designates for this purpose) is a
   meaningful `k8s_client.py`/`dispatch_worker.py` addition, not a one-line guard, and is deferred to the
   same future reconciliation work as the risk above rather than rushed in under review pressure.
-  Recorded here, explicitly, so it isn't lost or mistaken for "only crashes can cause this."
+  Recorded here, explicitly, so it isn't lost or mistaken for "only crashes can cause this." A future
+  reconciliation sweep would use the `environment` label (see decision above) alongside
+  `pipeline-run-id`/`batch-index` — without it, a sweep can't tell which database's `pipeline-run-id`
+  it's looking at, since prod and staging share both the namespace and the `run_id` sequence start.
+  Separately: the fix that closed the mechanical `KeyError` trigger routes a 2xx-but-unparseable-body
+  response into `fail_batch` — a real submission genuinely occurred, so this is itself a new, narrow
+  instance of the *other* "successful-submission-recorded-as-failed" risk above, not this one; it's an
+  intentional, accepted tradeoff (a clean, bounded failure mode beats an uncaught exception), not a gap.
 - **The real four-`WorkflowTemplate` DAG this phase submits was never itself live-tested against the
   real cluster — only a minimal placeholder was.** Found on PR review: the "Live validation" section
   above tested the REST resource path, credential, and JSON body shape using a single-step `busybox`

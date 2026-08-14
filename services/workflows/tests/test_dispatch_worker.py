@@ -74,12 +74,17 @@ def test_process_one_fails_batch_on_k8ssubmissionerror(monkeypatch):
 
 
 def test_process_one_swallows_a_failing_fail_batch_call_and_still_returns_true(
-    monkeypatch,
+    monkeypatch, caplog
 ):
     """If fail_batch's own RPC errors (transient network/DB issue), that must
     not escape process_one — it would bypass this batch's specific log
     context and hit run()'s generic "loop error, reconnecting" handler
-    instead, symmetric with how a failing complete_batch call is handled."""
+    instead, symmetric with how a failing complete_batch call is handled. The
+    fix's actual point (not just "doesn't crash") is that the run_id/
+    batch_index context is preserved in a batch-specific log line, not lost
+    to a generic handler — assert that log line fires, not just the return
+    value, which a regression that kept the try/except but dropped the
+    logger.error call (e.g. replaced with a bare pass) would still satisfy."""
     monkeypatch.setattr(worker, "claim_batch", lambda c: dict(_BATCH))
     monkeypatch.setattr(worker, "build_workflow_body", lambda *a: {})
 
@@ -93,7 +98,13 @@ def test_process_one_swallows_a_failing_fail_batch_call_and_still_returns_true(
 
     monkeypatch.setattr(worker, "fail_batch", fail_boom)
 
-    assert worker.process_one(object()) is True
+    with caplog.at_level("ERROR", logger="dispatch_worker"):
+        assert worker.process_one(object()) is True
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        "run 1 batch 0" in m and "fail RPC also errored" in m for m in messages
+    ), messages
 
 
 def test_process_one_does_not_fail_batch_on_k8sconfigerror(monkeypatch):

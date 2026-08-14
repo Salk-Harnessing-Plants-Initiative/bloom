@@ -21,9 +21,10 @@
 -- has no such state — a scan's status only ever moves to 'failed' (this phase)
 -- or later to 'predicted'/'written'/'reused' (a different phase). The
 -- equivalent settle-guard here is argo_workflow_name IS NULL: complete() only
--- ever sets it once (a second identical call is a no-op), and fail() never
--- touches a scan complete() already recorded — so a late/duplicate call in
--- either direction can't clobber a real outcome.
+-- ever sets it once (a second identical call is a no-op), fail() never
+-- touches a scan complete() already recorded, and complete() never touches a
+-- scan fail() already recorded (status != 'failed') — so a late/duplicate
+-- call in either direction can't clobber a real outcome.
 --
 -- Run-completion aggregation (cyl_pipeline_runs.status) happens in a shared
 -- private helper, _settle_cyl_pipeline_run, called by complete/fail and by
@@ -168,7 +169,8 @@ END;
 $$;
 
 -- complete: record the submitted workflow's name on every scan in the batch
--- (idempotent — a scan already recorded is left alone), delete the message,
+-- (idempotent — a scan already recorded, or already dead-lettered failed by a
+-- redelivered claim of the same message, is left alone), delete the message,
 -- and settle the run.
 CREATE OR REPLACE FUNCTION public.complete_cyl_pipeline_batch(
     p_run_id BIGINT,
@@ -188,7 +190,14 @@ BEGIN
     WHERE run_id = p_run_id
       AND batch_index = p_batch_index
       AND scan_id = ANY(p_scan_ids)
-      AND argo_workflow_name IS NULL;
+      AND argo_workflow_name IS NULL
+      -- A delayed complete() for a batch claim's own message that was
+      -- meanwhile dead-lettered (poison-message past max_reads) by a
+      -- different, later claimant must not resurrect it: recording
+      -- argo_workflow_name on an already-'failed' scan would produce a
+      -- self-contradictory row, and would look already-resolved to a future
+      -- reconciliation sweep that checks "failed in DB but a Workflow exists."
+      AND status != 'failed';
 
     PERFORM pgmq.delete('cyl_pipeline_dispatch', p_msg_id);
 

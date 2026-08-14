@@ -17,6 +17,19 @@ SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 APP_EMAIL = os.environ.get("WORKFLOWS_SUPABASE_EMAIL")
 APP_PASSWORD = os.environ.get("WORKFLOWS_SUPABASE_PASSWORD")
 
+# supabase-py defaults postgrest_client_timeout to 120s (postgrest/constants.py's
+# DEFAULT_POSTGREST_CLIENT_TIMEOUT), which the dispatch worker's
+# stop_grace_period (docker-compose.{dev,prod}.yml, 30s) doesn't actually cover
+# — a hung claim/complete/fail RPC could still be SIGKILLed mid-request. Unlike
+# bloommcp's own supabase_client.py (which deliberately keeps 120s because its
+# client also serves multi-million-row experiment fetches), every RPC this
+# worker calls (claim_cyl_pipeline_batch/complete_cyl_pipeline_batch/
+# fail_cyl_pipeline_batch) is a single-batch, small, indexed operation with no
+# comparable large-payload case to protect — 10s is a safe, generous bound for
+# it, comfortably under the 30s grace period alongside k8s_client's own 15s
+# httpx timeout.
+POSTGREST_TIMEOUT_SECONDS = 10
+
 
 def app_client():
     """Return a Supabase client signed in as the workflows app user."""
@@ -38,9 +51,13 @@ def app_client():
             detail=f"workflows service not configured: missing {', '.join(missing)}",
         )
 
-    from supabase import create_client
+    from supabase import ClientOptions, create_client
 
-    client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    client = create_client(
+        SUPABASE_URL,
+        SUPABASE_ANON_KEY,
+        options=ClientOptions(postgrest_client_timeout=POSTGREST_TIMEOUT_SECONDS),
+    )
     try:
         res = client.auth.sign_in_with_password(
             {"email": APP_EMAIL, "password": APP_PASSWORD}

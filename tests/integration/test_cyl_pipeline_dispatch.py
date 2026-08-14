@@ -730,6 +730,26 @@ def test_fail_does_not_clobber_a_completed_scan(pg_conn):
     pg_conn.rollback()
 
 
+def test_complete_does_not_clobber_a_failed_scan(pg_conn):
+    """Mirror of test_fail_does_not_clobber_a_completed_scan: a batch is
+    dead-lettered failed (e.g. by claim's own poison-message path after a
+    redelivery), then a delayed straggler complete() call for that same
+    message reports success. complete() must NOT resurrect an already-failed
+    scan by writing argo_workflow_name onto it — that would produce a
+    self-contradictory row (status='failed' with a real workflow name) that a
+    future reconciliation sweep checking argo_workflow_name IS NULL AND
+    status = 'failed' would misread as already resolved."""
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+        _fail(cur, run_id, 0, msg_id, scan_ids, "dead-lettered")
+        _complete(cur, run_id, 0, msg_id, scan_ids, "wf-straggler")
+
+        rows = _scan_rows(cur, run_id)
+        assert rows[0][1] == "failed"  # status untouched — stays failed
+        assert rows[0][2] is None  # the straggler's workflow name is not recorded
+    pg_conn.rollback()
+
+
 def test_complete_is_idempotent_on_redelivery(pg_conn):
     with pg_conn.cursor() as cur:
         run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
@@ -741,38 +761,84 @@ def test_complete_is_idempotent_on_redelivery(pg_conn):
     pg_conn.rollback()
 
 
-def test_settling_twice_does_not_advance_completed_at(pg_conn):
+def test_settling_twice_does_not_advance_completed_at(pg_conn, pg_conninfo):
     """A redelivery-driven duplicate complete() call for an already-settled run
     (every scan already terminal) must not push completed_at forward again —
     it's a scientific-traceability timestamp for when the run actually finished,
-    not for when it was last (redundantly) re-settled."""
+    not for when it was last (redundantly) re-settled. Each complete() call runs
+    in its own committed, independent connection (not pg_conn's single open
+    transaction) — completed_at = now() is fixed at transaction START in
+    Postgres, so two calls sharing one transaction would trivially return the
+    same value regardless of whether the AND completed_at IS NULL guard exists;
+    only genuinely separate transactions can distinguish the fix from its
+    absence."""
+    import time
+
     with pg_conn.cursor() as cur:
         run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
-        _complete(cur, run_id, 0, msg_id, scan_ids, "wf-abc")
-        first_completed_at = _run_completed_at(cur, run_id)
+    pg_conn.commit()  # visible to the two independent connections below
+
+    try:
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET ROLE bloom_workflows")
+                cur.execute(
+                    f"SELECT {COMPLETE_FN}(%s, %s, %s, %s, %s)",
+                    (run_id, 0, msg_id, scan_ids, "wf-abc"),
+                )
+                cur.execute("RESET ROLE")
+
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT completed_at FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
+                first_completed_at = cur.fetchone()[0]
         assert first_completed_at is not None
 
-        _complete(cur, run_id, 0, msg_id, scan_ids, "wf-abc")  # redelivery replay
-        assert _run_completed_at(cur, run_id) == first_completed_at
-    pg_conn.rollback()
+        time.sleep(0.05)  # guarantee a distinguishable now() if the guard were absent
+
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET ROLE bloom_workflows")
+                cur.execute(  # redelivery replay, a genuinely separate transaction
+                    f"SELECT {COMPLETE_FN}(%s, %s, %s, %s, %s)",
+                    (run_id, 0, msg_id, scan_ids, "wf-abc"),
+                )
+                cur.execute("RESET ROLE")
+
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT completed_at FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
+                assert cur.fetchone()[0] == first_completed_at
+    finally:
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"DELETE FROM pgmq.q_{QUEUE} WHERE msg_id = %s", (msg_id,))
+                cur.execute(f"DELETE FROM pgmq.a_{QUEUE} WHERE msg_id = %s", (msg_id,))
+                cur.execute(f"DELETE FROM {SCANS_TABLE} WHERE run_id = %s", (run_id,))
+                cur.execute("DELETE FROM cyl_scans WHERE id = ANY(%s)", (scan_ids,))
+                cur.execute(f"DELETE FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
 
 
 def test_complete_does_not_touch_scans_from_a_different_batch_in_the_same_run(pg_conn):
     """Defense-in-depth: complete()/fail() filter on scan_id, run_id, AND
-    batch_index — not scan_id/run_id alone. Two batches sharing a run must never
-    let one batch's completion attribute a workflow name to the other's scans,
-    even though cyl_pipeline_run_scans' UNIQUE(run_id, scan_id) already makes
-    scan_ids disjoint across batches in practice."""
+    batch_index — not scan_id/run_id alone. Deliberately calls complete() with a
+    batch_index/scan_ids MISMATCH (batch B's index, batch A's scan_ids) — the
+    only way to actually exercise the batch_index guard, since two batches'
+    scan_ids are already disjoint by cyl_pipeline_run_scans' UNIQUE(run_id,
+    scan_id) and so could never distinguish "filtered by batch_index" from
+    "filtered by scan_id alone" if called with matching, non-mismatched args."""
     with pg_conn.cursor() as cur:
         run_id = _seed_run(cur)
         _, scan_ids_a, msg_a = _seed_batch(cur, 1, batch_index=0, run_id=run_id)
         _, scan_ids_b, msg_b = _seed_batch(cur, 1, batch_index=1, run_id=run_id)
 
-        _complete(cur, run_id, 0, msg_a, scan_ids_a, "wf-a")
+        # batch_index=1 (batch B's) paired with batch A's scan_ids/msg_id — must
+        # match nothing, since scan_ids_a's rows actually have batch_index=0.
+        _complete(cur, run_id, 1, msg_a, scan_ids_a, "wf-a")
 
         rows = {r[0]: r for r in _scan_rows(cur, run_id)}
-        assert rows[scan_ids_a[0]][2] == "wf-a"
-        assert rows[scan_ids_b[0]][2] is None  # batch 1 untouched by batch 0's complete
+        assert rows[scan_ids_a[0]][2] is None  # batch_index mismatch -> no update
+        assert rows[scan_ids_b[0]][2] is None  # untouched, as expected
     pg_conn.rollback()
 
 
