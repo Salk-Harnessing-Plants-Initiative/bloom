@@ -1,0 +1,324 @@
+"""Contract + oracle tests for the contract-wrapped ``plot_trait_boxplots`` tool (#466).
+
+Converges the tool onto ``@as_mcp_tool`` — Pydantic I/O, structured ``BloomMCPError``, one
+stamped ``Provenance``, versioned ``ResultStore`` persistence under its own tool class — mirroring
+``qc_inspect``'s read-only, pre-clean EDA pattern. A batched render (above
+``_viz_shared.TRAIT_BATCH_THRESHOLD`` traits) persists one committed output per page. Requires an
+auto-detected genotype column (no override parameter).
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from bloom_mcp.contract import BloomMCPError
+from bloom_mcp.data_access import FakeReader, SupabaseReader
+from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.tools import _ports
+from bloom_mcp.sections.sleap_roots.analysis import (
+    plot_trait_boxplots as plot_trait_boxplots_tool,
+)
+from bloom_mcp.sections.sleap_roots.analysis.plot_trait_boxplots import (
+    PlotTraitBoxplotsParams,
+    PlotTraitBoxplotsResult,
+    plot_trait_boxplots,
+)
+
+_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+_RAW = _FIXTURES / "turface_19_raw_data.csv"
+_EXPERIMENT = "turface_19_raw.csv"
+
+_DELEGATE_BATCH_SIZE = 16
+
+
+def _raw_df() -> pd.DataFrame:
+    return pd.read_csv(_RAW, encoding="utf-8")
+
+
+def _wide_df(n_traits: int) -> pd.DataFrame:
+    n_samples = 12
+    data = {"geno": [f"G{i % 3}" for i in range(n_samples)]}
+    for t in range(n_traits):
+        data[f"trait_{t}"] = [float(i + t) for i in range(n_samples)]
+    return pd.DataFrame(data)
+
+
+def _expected_pages(n_traits: int) -> int:
+    return -(-n_traits // _DELEGATE_BATCH_SIZE)
+
+
+@pytest.fixture
+def injected_ports():
+    reader = FakeReader()
+    store = FakeResultStore()
+    reader.add_experiment(_EXPERIMENT, _raw_df())
+    _ports.configure(reader=reader, store=store)
+    try:
+        yield reader, store
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def _run(**overrides) -> PlotTraitBoxplotsResult:
+    return plot_trait_boxplots(
+        PlotTraitBoxplotsParams(experiment=_EXPERIMENT, **overrides)
+    )
+
+
+# ── genotype-required guard ──────────────────────────────────────────────────
+
+
+def test_no_detectable_genotype_column_is_assumption_violated(monkeypatch):
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(8)],
+            "t1": [float(i) for i in range(8)],
+            "t2": [float(2 * i) for i in range(8)],
+        }
+    )
+    reader = FakeReader()
+    reader.add_experiment("no_geno.csv", df)
+    store = FakeResultStore()
+    _ports.configure(reader=reader, store=store)
+    calls = {"n": 0}
+    real = plot_trait_boxplots_tool.create_trait_boxplots_by_genotype
+
+    def _spy(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(
+        plot_trait_boxplots_tool, "create_trait_boxplots_by_genotype", _spy
+    )
+    try:
+        with pytest.raises(BloomMCPError) as exc:
+            plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="no_geno.csv"))
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    assert exc.value.code == "assumption_violated"
+    assert "no_geno.csv" in exc.value.message
+    assert calls["n"] == 0
+    assert store.list_runs("no_geno.csv", "trait_boxplots") == []
+
+
+# ── delegation pinning + batching boundary ──────────────────────────────────
+
+
+def test_delegates_unbatched_below_threshold(injected_ports, monkeypatch):
+    calls = {"n": 0}
+    real = plot_trait_boxplots_tool.create_trait_boxplots_by_genotype
+
+    def _spy(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(
+        plot_trait_boxplots_tool, "create_trait_boxplots_by_genotype", _spy
+    )
+    result = _run()
+    assert calls["n"] == 1
+    assert result.batched is False
+    assert result.n_pages == 1
+    assert result.genotype_column == "geno"
+
+
+def test_batches_above_threshold(monkeypatch):
+    wide_experiment = "wide.csv"
+    n_traits = 60
+    reader = FakeReader()
+    reader.add_experiment(wide_experiment, _wide_df(n_traits))
+    store = FakeResultStore()
+    _ports.configure(reader=reader, store=store)
+    try:
+        calls = {"n": 0}
+        real = plot_trait_boxplots_tool.create_trait_boxplots_by_genotype_batched
+
+        def _spy(*a, **k):
+            calls["n"] += 1
+            return real(*a, **k)
+
+        monkeypatch.setattr(
+            plot_trait_boxplots_tool, "create_trait_boxplots_by_genotype_batched", _spy
+        )
+        result = plot_trait_boxplots(
+            PlotTraitBoxplotsParams(experiment=wide_experiment)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert calls["n"] == 1
+    assert result.batched is True
+    expected = _expected_pages(n_traits)
+    assert result.n_pages == expected
+    assert len(result.outputs) == expected
+
+
+# ── tools/list presence ──────────────────────────────────────────────────────
+
+
+def test_appears_in_tools_list():
+    import asyncio
+
+    from fastmcp import Client
+
+    from bloom_mcp import server
+
+    async def _list():
+        async with Client(server.mcp) as client:
+            return await client.list_tools()
+
+    tools = {t.name: t for t in asyncio.run(_list())}
+    assert "sleap_roots_plot_trait_boxplots" in tools
+    assert tools["sleap_roots_plot_trait_boxplots"].inputSchema is not None
+
+
+# ── schema round-trip ────────────────────────────────────────────────────────
+
+
+def test_valid_input_output_round_trip(injected_ports):
+    result = _run()
+    again = PlotTraitBoxplotsResult.model_validate(json.loads(result.model_dump_json()))
+    assert again.n_traits_plotted == result.n_traits_plotted
+
+
+def test_missing_experiment_is_invalid_input():
+    with pytest.raises(BloomMCPError) as exc:
+        plot_trait_boxplots({})
+    assert exc.value.code == "invalid_input"
+
+
+def test_empty_trait_columns_is_invalid_input(injected_ports):
+    with pytest.raises(BloomMCPError) as exc:
+        _run(trait_columns=[])
+    assert exc.value.code == "invalid_input"
+
+
+def test_unknown_trait_column_is_invalid_input_naming_it(injected_ports):
+    with pytest.raises(BloomMCPError) as exc:
+        _run(trait_columns=["NoSuchTrait"])
+    assert exc.value.code == "invalid_input"
+    assert "NoSuchTrait" in exc.value.message
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "../../app/.env",
+        "/etc/passwd",
+        "sub/dir/x.csv",
+        "..\\..\\app\\.env",
+        "..",
+        ".",
+        "",
+    ],
+)
+def test_experiment_path_traversal_is_rejected_before_any_read(
+    injected_ports, monkeypatch, bad
+):
+    calls = {"n": 0}
+    real = plot_trait_boxplots_tool.create_trait_boxplots_by_genotype
+
+    def _spy(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(
+        plot_trait_boxplots_tool, "create_trait_boxplots_by_genotype", _spy
+    )
+    with pytest.raises(BloomMCPError) as exc:
+        plot_trait_boxplots(PlotTraitBoxplotsParams(experiment=bad))
+    assert exc.value.code == "invalid_input"
+    assert calls["n"] == 0
+
+
+# ── provenance + links ───────────────────────────────────────────────────────
+
+
+def test_provenance_stamped_seed_none_and_links_returned(injected_ports):
+    _reader, store = injected_ports
+    result = _run()
+
+    stored = store.get_run(_EXPERIMENT, "trait_boxplots", "latest")
+    assert stored.tool == "plot_trait_boxplots"
+    assert stored.seed is None
+
+    assert result.run_ref == stored.run_ref
+    assert set(result.output_links) == set(result.outputs)
+    for name, key in result.outputs.items():
+        link = result.output_links[name]
+        assert link.key == key
+        assert link.url
+        assert link.sha256 == stored.output_sha256[name]
+
+
+# ── no figure-handle leak + headless backend ────────────────────────────────
+
+
+def test_no_figure_handle_leak_and_agg_backend(injected_ports):
+    import matplotlib
+    import matplotlib.pyplot as plt
+
+    assert matplotlib.get_backend().lower() == "agg"
+    before = len(plt.get_fignums())
+    _run()
+    assert len(plt.get_fignums()) == before
+
+
+# ── error envelope ───────────────────────────────────────────────────────────
+
+
+def test_unresolvable_experiment_errors_with_no_run(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError):
+        plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="does_not_exist.csv"))
+    assert store.list_runs("does_not_exist.csv", "trait_boxplots") == []
+
+
+def test_delegate_raise_is_structured_without_leaking(injected_ports, monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("secret path /var/secrets/key and host db.internal")
+
+    monkeypatch.setattr(
+        plot_trait_boxplots_tool, "create_trait_boxplots_by_genotype", _boom
+    )
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    msg = f"{exc.value.message} {exc.value.remedy}"
+    assert "secret" not in msg and "/var" not in msg and "db.internal" not in msg
+
+
+def test_render_failure_cleans_staging_and_commits_nothing(injected_ports, monkeypatch):
+    _reader, store = injected_ports
+    captured = {}
+    real_create = store.create_run
+
+    def _spy_create(*a, **k):
+        run = real_create(*a, **k)
+        captured["staging_dir"] = run.staging_dir
+        return run
+
+    monkeypatch.setattr(store, "create_run", _spy_create)
+
+    def _boom(*a, **k):
+        raise RuntimeError("render failed after the run dir was created")
+
+    monkeypatch.setattr(
+        plot_trait_boxplots_tool, "create_trait_boxplots_by_genotype", _boom
+    )
+
+    with pytest.raises(BloomMCPError):
+        _run()
+    assert store.list_runs(_EXPERIMENT, "trait_boxplots") == []
+    assert not captured["staging_dir"].exists()
+
+
+def test_commit_failure_cleans_staging_and_commits_nothing(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "trait_boxplots")
+    with pytest.raises(BloomMCPError):
+        _run()
+    assert store.list_runs(_EXPERIMENT, "trait_boxplots") == []
