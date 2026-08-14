@@ -177,8 +177,8 @@ Pick **exactly one** target:
   - no match → a clear error.
 
 Other options: `--meta-only` (write `scans.csv`, skip images), `--plant-qr-code` (one plant),
-`--plant-age-min/--plant-age-max` (age window in days, default 0–1000), `--limit` (max scans,
-default 100000).
+`--plant-age-min/--plant-age-max` (age window in days, default 0–1000), `--limit` (sample at
+most this many scans, default 100000 — see below).
 
 ```bash
 # by id, or just by name
@@ -271,7 +271,12 @@ on _(species, name, system)_ — the same name really can exist on two GraviScan
 the rig the two rows would look identical.
 
 Narrowing options: `--plate-id` (one plate barcode), `--wave-number` (one wave), `--session-id`
-(one continuous run of cycles), `--limit` (max scans, default 100000).
+(one continuous run of cycles), `--limit` (sample at most this many scans, default 100000).
+
+`--limit` is for looking at a sample of an experiment before committing to the whole thing.
+It is not a way to export one in parts: the limit is part of what a directory records as its
+selection, so a sample and a full download belong in separate directories. Samples are taken
+in scan-id order, so the same limit gives the same captures every time.
 
 ```bash
 # a whole experiment, or just one plate from it

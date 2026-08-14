@@ -511,7 +511,11 @@ def download_images(
     type=int,
     default=100000,
     show_default=True,
-    help="Maximum number of scans to fetch.",
+    help=(
+        "Fetch at most this many scans — for looking at a sample of an experiment. "
+        "Not a way to export one in parts: each limit is its own selection, so a "
+        "sample and a full download need separate directories."
+    ),
 )
 @click.option(
     "-n",

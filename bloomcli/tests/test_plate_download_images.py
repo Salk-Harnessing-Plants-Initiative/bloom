@@ -114,6 +114,18 @@ def test_fetch_plate_scans_reads_the_extended_view():
     assert ("experiment_id", 12) in client.calls["eq"]
 
 
+def test_a_sample_is_the_same_sample_every_time():
+    """`--limit` is for looking at part of an experiment, so it has to be reproducible.
+
+    Without an ORDER BY the rows arrive in whatever order the plan produces. That is stable in
+    practice and was stable in testing, but it is incidental — and a sample that can quietly
+    differ between runs is one a scientist cannot compare against itself.
+    """
+    client = _TableClient([])
+    pd.fetch_plate_scans(client, 12, limit=50)
+    assert client.calls["order"] == "scan_id"
+
+
 def test_fetch_plate_scans_applies_every_filter():
     client = _TableClient([])
     pd.fetch_plate_scans(client, 12, plate_id="P1", wave_number=3, session_id=88, limit=50)

@@ -248,7 +248,12 @@ def fetch_plate_scans(
     session_id: int | None = None,
     limit: int = 100000,
 ) -> list[dict[str, Any]]:
-    """Query gravi_scans_extended for an experiment, narrowed by any supplied filter."""
+    """Query gravi_scans_extended for an experiment, narrowed by any supplied filter.
+
+    Ordered by scan_id so that `--limit` samples the same captures every time. Without it the
+    rows come back in whatever order the plan produces — stable in practice, but incidental,
+    and a sample nobody can reproduce is not much of a sample.
+    """
     query = client.table("gravi_scans_extended").select("*").eq("experiment_id", experiment_id)
     if plate_id is not None:
         query = query.eq("plate_id", plate_id)
@@ -256,7 +261,7 @@ def fetch_plate_scans(
         query = query.eq("wave_number", wave_number)
     if session_id is not None:
         query = query.eq("session_id", session_id)
-    return query.limit(limit).execute().data or []
+    return query.order("scan_id").limit(limit).execute().data or []
 
 
 def fetch_plate_scan(client: Any, scan_id: Any) -> dict[str, Any] | None:
@@ -536,7 +541,11 @@ def download_images(
     type=int,
     default=100000,
     show_default=True,
-    help="Maximum number of scans to fetch.",
+    help=(
+        "Fetch at most this many scans — for looking at a sample of an experiment. "
+        "Not a way to export one in parts: each limit is its own selection, so a "
+        "sample and a full download need separate directories."
+    ),
 )
 @click.option(
     "-n",
