@@ -8,6 +8,23 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Added
+
+- `bloomctl cyl batch-download-for-predict` now writes/merges a
+  `sleap_roots_contracts.RunManifest` (`run_manifest.json`) into `OUT_DIR` after every scan
+  in the invocation is processed, recording every usable (`ok` or `skipped`) `scan_key` — a
+  downstream consumer can read this to know which scans are safely usable, correct even
+  across multiple invocations sharing one `out_dir` (merges rather than overwrites).
+  `pipeline_run_id` is sourced from `ARGO_WORKFLOW_NAME` when set, or a generated
+  `local-<8 hex chars>` placeholder outside Argo. Bumped the `sleap-roots-contracts` floor to
+  `>=0.1.0a7` for `RunManifest`/`RUN_MANIFEST_FILENAME` (#653).
+- `bloomctl cyl batch-download-for-predict` now holds a per-scan lock (scoped to `out_dir/
+  .locks/{scan_key}.lock`) around each scan's skip-check through its sidecar write, and a
+  separate lock around the manifest read-merge-write — closing a race where two invocations
+  targeting the same scan_id could both pass the skip-check and clobber each other's writes
+  (#533). A stale lock (past `--lock-staleness-seconds`, default `900`, new option) is
+  reclaimed rather than permanently wedging the directory.
+
 ## [0.1.0a5] - 2026-08-13 — cylinder download reliability
 
 ### Fixed

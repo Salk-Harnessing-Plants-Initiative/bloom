@@ -324,7 +324,7 @@ per-batch pipeline's `download-all` Argo task.
 ```
 bloomctl cyl batch-download-for-predict <out_dir>
   (--scan-ids-file <scan_ids.json | -> | --scan-ids 1,2,3)
-  [-p/--profile PROFILE] [--json]
+  [-p/--profile PROFILE] [--json] [--lock-staleness-seconds N]
 ```
 
 - Exactly one of `--scan-ids-file` (a JSON array of integer scan_ids, read from
@@ -333,11 +333,26 @@ bloomctl cyl batch-download-for-predict <out_dir>
 - Stages every scan_id into `<out_dir>/scan_<scan_id>/`, identical to what
   `download-for-predict` writes for one scan.
 - **Isolates per-scan failures** — one bad scan (not found, no frames, a
-  metadata-resolution failure, a partial frame-download failure) is recorded
-  and reported, but does not abort the rest of the batch.
+  metadata-resolution failure, a partial frame-download failure, or lock
+  contention with another live invocation) is recorded and reported, but does
+  not abort the rest of the batch.
 - **Skips an already-staged scan** — if `<out_dir>/scan_<scan_id>/` already has
   a valid sidecar (parses, `scan_key` matches), that scan is reported
   `skipped` and not re-downloaded.
+- **Writes a `RunManifest`** — after every scan is processed, writes/merges a
+  `sleap_roots_contracts.RunManifest` into `<out_dir>/run_manifest.json`,
+  recording every usable (`ok` or `skipped`) `scan_key` this and any prior
+  invocation staged into this directory (`pipeline_run_id` from
+  `ARGO_WORKFLOW_NAME`, or a generated `local-<8 hex chars>` placeholder
+  outside Argo). A downstream consumer reads this to know which scans in
+  `<out_dir>` are safe to process.
+- **Locks against concurrent invocations** — a per-scan lock
+  (`<out_dir>/.locks/{scan_key}.lock`) guards each scan's skip-check through
+  its sidecar write, and a separate lock (`<out_dir>/.locks/manifest.lock`)
+  guards the manifest read-merge-write, so two invocations targeting the same
+  `out_dir` can't corrupt each other. `--lock-staleness-seconds` (default
+  `900`) controls how old an abandoned lock must be before it's reclaimed
+  rather than treated as still held.
 - `--json` prints one entry per scan_id (`scan_key`, `status`, `error`) as a
   JSON array; without it, a human-readable summary plus one line per failure.
 - **Exit code:** non-zero if any scan in the batch failed; zero if every scan
