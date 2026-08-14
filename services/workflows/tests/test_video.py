@@ -25,6 +25,14 @@ class _Query:
         self.recorded.setdefault("eq", []).append((key, val))
         return self
 
+    @property
+    def not_(self):
+        return self
+
+    def is_(self, column, value):
+        self.recorded.setdefault("not_is", []).append((column, value))
+        return self
+
     def order(self, *a, **k):
         return self
 
@@ -78,6 +86,19 @@ def test_get_scan_images_capped_at_max():
     c = _Client(result=[{"object_path": "a", "frame_number": 0}])
     video.get_scan_images(c, 5)
     assert c.q.recorded["limit"] == video.MAX_IMAGES == 72
+
+
+def test_get_scan_images_excludes_rows_with_no_object():
+    """Filtered in the query, not after it.
+
+    A row with no object cannot be encoded, so letting it through would spend a slot in the
+    cap and push a real image at the tail outside the window — a permanently short video for
+    a scan whose frames were all present. It would also make `frames_expected` count rows the
+    recorded count never counts, so comparing the two would mean nothing.
+    """
+    c = _Client(result=[{"object_path": "a", "frame_number": 0}])
+    video.get_scan_images(c, 5)
+    assert ("object_path", "null") in c.q.recorded["not_is"]
 
 
 def test_record_video_calls_the_wrapper_with_scan_and_path(monkeypatch):
@@ -253,6 +274,16 @@ class _GenQuery:
         return self
 
     def eq(self, *a, **k):
+        return self
+
+    @property
+    def not_(self):
+        return self
+
+    def is_(self, column, value):
+        # Mirrors `.not_.is_(column, "null")`: the rows the query would not return.
+        if value == "null":
+            self._rows = [r for r in self._rows if r.get(column) is not None]
         return self
 
     def order(self, *a, **k):
@@ -459,6 +490,28 @@ def test_an_unclear_existence_check_refuses_rather_than_keeping(monkeypatch):
 
     assert excinfo.value.status_code == 503
     assert client.uploads == 0
+
+
+def test_rows_with_no_object_do_not_spend_slots_in_the_cap(monkeypatch):
+    """Ten empty rows must not cost ten real angles.
+
+    The window is `MAX_IMAGES + 1` rows ordered by frame_number. If unencodable rows travelled
+    in it, a scan with images past them would encode short and — since a stored video is never
+    replaced — stay short permanently, despite every frame having been present.
+    """
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = (
+        [{"object_path": None, "frame_number": i} for i in range(10)]
+        + [{"object_path": f"o{i}", "frame_number": i} for i in range(10, 80)]
+    )
+    client = _GenClient(images)
+
+    result = video.generate_scan_video(client, 5)
+
+    # 70 real images, all inside the cap once the empty rows are excluded.
+    assert result["frames"] == 70
+    assert result["frames_expected"] == 70
+    assert result["truncated"] is False
 
 
 def test_exactly_at_the_cap_is_not_truncated(monkeypatch):

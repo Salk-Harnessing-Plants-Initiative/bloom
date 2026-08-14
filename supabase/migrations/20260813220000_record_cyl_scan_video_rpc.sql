@@ -26,7 +26,12 @@ AS $$
   INSERT INTO public.cyl_scan_videos (scan_id, path, frames)
   VALUES (p_scan_id, p_path, p_frames)
   ON CONFLICT (scan_id) DO UPDATE
-    SET path = EXCLUDED.path, frames = EXCLUDED.frames;
+    SET path = EXCLUDED.path,
+        -- A null count means "nobody measured this", which is strictly less than whatever is
+        -- already recorded — so it never overwrites one. The caller checks before writing a
+        -- null, but that check and the write are not one operation, and the queue worker runs
+        -- the same wrapper from another process: between them a real count can appear.
+        frames = COALESCE(EXCLUDED.frames, public.cyl_scan_videos.frames);
 $$;
 
 -- Supabase grants EXECUTE to PUBLIC and anon/authenticated by default, and this is reachable

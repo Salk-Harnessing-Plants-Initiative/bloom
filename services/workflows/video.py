@@ -79,11 +79,20 @@ def scan_in_experiment(client, experiment_id: int, scan_id: int) -> bool:
 
 
 def get_scan_images(client, scan_id: int, limit: int = MAX_IMAGES) -> list[dict]:
-    """A scan's images (object_path, frame_number), ordered, capped at `limit`."""
+    """A scan's encodable images (object_path, frame_number), ordered, capped at `limit`.
+
+    Rows without an object are excluded in the query rather than skipped later, for two
+    reasons. They would otherwise spend slots in the cap, pushing real images at the tail
+    outside the window and baking a permanently short video for a scan whose frames were all
+    there. And `frames_expected` would then count rows this can never encode, while the
+    recorded count only ever counts rows that have one — so the two would be measured
+    differently and the comparison between them would not mean anything.
+    """
     return (
         client.table("cyl_images")
         .select("object_path, frame_number")
         .eq("scan_id", scan_id)
+        .not_.is_("object_path", "null")
         .order("frame_number")
         .limit(limit)
         .execute()
