@@ -8,6 +8,7 @@ flight at once, and cleanup of temp files.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 from test_download_metadata import SCAN
@@ -268,16 +269,27 @@ def test_the_sweep_leaves_a_second_run_s_live_temps_alone(tmp_path):
     assert in_flight.exists()
 
 
-def test_the_probe_file_is_named_so_the_sweep_can_collect_it(tmp_path):
-    """`ensure_writable` writes a probe; a hard kill in that window leaves it behind."""
-    dl.ensure_writable(tmp_path / "out")
-    probe = next((tmp_path / "out").glob(".dl-probe-*.tmp"), None) or (
-        tmp_path / "out" / ".dl-probe-deadbeef.tmp"
-    )
-    probe.write_bytes(b"bloomctl write test")
+def test_the_probe_file_is_named_so_the_sweep_can_collect_it(tmp_path, monkeypatch):
+    """`ensure_writable` writes a probe; a hard kill in that window leaves it behind.
+
+    The probe's name and the sweep's glob are coupled with nothing enforcing it, so this has to
+    sweep the *real* probe. Naming one here instead would only ever exercise the sweep, and a
+    rename on either side would go unnoticed.
+
+    The kill is simulated by suppressing the unlink for the duration of the call, which is the
+    state a killed process leaves: the probe written, the cleanup never reached.
+    """
+    out = tmp_path / "out"
+    with monkeypatch.context() as killed:
+        killed.setattr(Path, "unlink", lambda self, **kwargs: None)
+        dl.ensure_writable(out)
+
+    left = list(out.iterdir())
+    assert len(left) == 1, f"expected ensure_writable to leave just its probe, found {left}"
+    probe = left[0]
     os.utime(probe, (0, 0))
 
-    assert storage.sweep_orphan_temps(tmp_path / "out") == 1
+    assert storage.sweep_orphan_temps(out) == 1
     assert not probe.exists()
 
 

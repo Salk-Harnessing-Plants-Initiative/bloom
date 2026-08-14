@@ -186,6 +186,19 @@ def test_absolute_looking_plate_id_stays_inside(tmp_path):
     assert tmp_path in dest.parents
 
 
+def test_containment_still_refuses_if_the_sanitiser_ever_regresses(tmp_path, monkeypatch):
+    """`safe_component` is what makes traversal impossible; this is the backstop behind it.
+
+    Every test above reaches `contained_dest` with the separators already stripped, so none of
+    them can tell whether the backstop is still there. `cyl` has the same test against its own
+    inline copy of the check; this one covers the shared `contained_dest` that plate calls.
+    """
+    monkeypatch.setattr(pd, "safe_component", lambda value: str(value))
+
+    with pytest.raises(ValueError, match="refusing to write outside"):
+        pd.image_dest(tmp_path, {**SCAN, "wave_number": "../../../../../../etc"}, IMAGE)
+
+
 # --------------------------------------------------------------------------- #
 # plates.csv
 # --------------------------------------------------------------------------- #
