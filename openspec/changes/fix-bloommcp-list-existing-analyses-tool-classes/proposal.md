@@ -77,11 +77,21 @@ No existing test (`bloommcp/tests/tools/test_list_existing_analyses_staleness.py
 - No change to `_TOOL_CLASS_TO_PUBLIC_NAME`, redaction, or error-labeling behavior in
   `list_existing_analyses.py` — that surface is #664's scope
   (`fix-bloommcp-error-redaction-followups`, PR #671), not yet merged as of this change and
-  independent of it. If #671 lands first, this change's diff will need to also extend that
-  lookup for `"pca"`/`"umap"`/`"qc_inspect"`'s public names
-  (`pca_analysis`/`umap_analysis`/`qc_inspect`) as a small follow-up rebase — noted here so
-  it isn't lost, not undertaken as part of this change while that lookup doesn't exist on
-  this branch.
+  independent of it. **Cross-PR tracking is bidirectional, not one-directional (bloom#673
+  review):**
+  - If #671 merges first: rebasing/merging this change (#669/PR #673) needs no action on
+    `_TOOL_CLASS_TO_PUBLIC_NAME` itself, but whoever does that merge should extend that
+    lookup with `"pca"` → `pca_analysis`, `"umap"` → `umap_analysis`,
+    `"qc_inspect"` → `qc_inspect` as a small follow-up in the same PR — otherwise a
+    `list_runs` failure for these 3 newly-discoverable classes will be labeled by its raw
+    `tool_class` string instead of its public tool name, inconsistent with every other live
+    entry in that lookup.
+  - If #669/PR #673 merges first (the more likely order given current CI state on each PR):
+    whoever later merges #671 must perform that same `_TOOL_CLASS_TO_PUBLIC_NAME` extension
+    as part of that PR, since `TOOL_CLASSES` will already include `"pca"`/`"umap"`/
+    `"qc_inspect"` by then — #671's diff as originally scoped predates this change and would
+    not include them. A comment has been left on PR #671 flagging this so the note isn't
+    lost to whichever PR merges second.
 - No change to `pca_analysis.py`/`umap_analysis.py`/`qc_inspect.py` themselves — each
   already commits its runs under the correct `tool_class` today; the gap is purely in what
   `list_existing_analyses`/`CANONICAL_TOOL_CLASSES` iterate.

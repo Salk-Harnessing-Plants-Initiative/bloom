@@ -33,9 +33,12 @@ from .versioning import next_version_id, slugify, version_dir_name
 # This tuple SHALL remain a superset of `list_existing_analyses.TOOL_CLASSES` —
 # every tool class that discovery loop iterates must also appear here. `pca`,
 # `umap`, `qc_inspect` are added as plain re-typed literals rather than
-# imported constants: each producer's own `_TOOL_CLASS` (`pca_analysis.py`,
-# `umap_analysis.py`, `qc_inspect.py`) is private/unexported, so this file
-# can't import it the way it does for `qc`/`outliers` above (bloom#669).
+# imported constants: `manifest` is foundational, versioned-run bookkeeping
+# infrastructure that `sections/sleap_roots/analysis`'s tools (where each
+# producer's own `_TOOL_CLASS` — `pca_analysis.py`, `umap_analysis.py`,
+# `qc_inspect.py` — is defined) depend on, not the reverse; importing from
+# there into here would invert that dependency direction, not merely cross a
+# naming convention (bloom#669).
 CANONICAL_TOOL_CLASSES: tuple[str, ...] = (
     QC_TOOL_CLASS,
     "stats",

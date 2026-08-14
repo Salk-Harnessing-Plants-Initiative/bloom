@@ -33,10 +33,17 @@ from bloom_mcp.tools import _ports
 #
 # `pca`, `umap`, `qc_inspect` are added as plain re-typed literals, not
 # imported single-sourced constants like `QC_TOOL_CLASS`/`OUTLIERS_TOOL_CLASS`
-# above: each producer's own `_TOOL_CLASS` (`pca_analysis.py`, `umap_analysis.py`,
-# `qc_inspect.py`) is private/unexported, so this file can't import it today
-# (bloom#669 — these 3 were previously missing entirely, so no run history or
-# `list_runs` failure for any of them was ever discoverable via this tool).
+# above: importing each producer's own `_TOOL_CLASS` (`pca_analysis.py`,
+# `umap_analysis.py`, `qc_inspect.py` in `sections/sleap_roots/analysis`) from
+# this file would invert the intended dependency direction between
+# `sections/core` (foundational, session-bootstrap tools this file belongs to)
+# and `sections/sleap_roots/analysis` (the granular analysis tools) — `core`
+# tools are meant to be usable before any analysis tool is even known to
+# exist, not to import from them (the same reasoning `fix-bloommcp-error-
+# redaction-followups/design.md` Decision 1 applies to its own tool_class ->
+# public-name lookup). bloom#669: these 3 were previously missing entirely, so
+# no run history or `list_runs` failure for any of them was ever discoverable
+# via this tool.
 TOOL_CLASSES = (
     QC_TOOL_CLASS,
     "stats",

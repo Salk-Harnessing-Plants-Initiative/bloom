@@ -32,29 +32,60 @@ each new test fails against current code before the implementation change, exact
       `bloommcp/src/bloom_mcp/sections/core/list_existing_analyses.py`, add `"pca"`,
       `"umap"`, `"qc_inspect"` to `TOOL_CLASSES`, and extend that tuple's comment with one
       sentence noting these 3 are plain re-typed literals (not imported single-sourced
-      constants like `QC_TOOL_CLASS`/`OUTLIERS_TOOL_CLASS`), since each producer's own
-      `_TOOL_CLASS` constant is private/unexported. In `bloommcp/src/bloom_mcp/manifest/__init__.py`,
-      add the same 3 entries to `CANONICAL_TOOL_CLASSES`, and extend that tuple's comment
-      with one sentence stating the superset-of-`list_existing_analyses.TOOL_CLASSES`
-      invariant explicitly (today only implied, never stated in-file). Confirm tasks
-      1.1–1.4's new tests now pass, and confirm
-      `test_trim_is_stale_and_an_unrelated_tool_class_error_both_survive_together` (which
-      asserts `len(response["errors"]) == len(list_existing_analyses_mod.TOOL_CLASSES)`)
-      still passes unmodified — its count-based assertion automatically extends to cover
-      the 3 new entries' error-aggregation path (a `list_runs` failure for any of them is
-      still reported in `errors`, not dropped) with no test change needed.
+      constants like `QC_TOOL_CLASS`/`OUTLIERS_TOOL_CLASS`), since importing each producer's
+      own `_TOOL_CLASS` constant would invert the intended dependency direction between
+      `sections/core` (foundational, session-bootstrap tools) and
+      `sections/sleap_roots/analysis` (the granular analysis tools) — the same reasoning
+      `fix-bloommcp-error-redaction-followups/design.md` Decision 1 applies to its own
+      lookup. In `bloommcp/src/bloom_mcp/manifest/__init__.py`, add the same 3 entries to
+      `CANONICAL_TOOL_CLASSES`, and extend that tuple's comment with one sentence stating
+      the superset-of-`list_existing_analyses.TOOL_CLASSES` invariant explicitly (today
+      only implied, never stated in-file). Confirm tasks 1.1–1.4's new tests now pass, and
+      confirm `test_trim_is_stale_and_an_unrelated_tool_class_error_both_survive_together`
+      (which asserts `len(response["errors"]) == len(list_existing_analyses_mod.TOOL_CLASSES)`)
+      still passes unmodified.
 
 ## 2. Spec validation
 
 - [x] 2.1 Run `openspec validate fix-bloommcp-list-existing-analyses-tool-classes --strict`
       and resolve any issues.
 
-## 3. Full verification
+## 3. PR review follow-ups (bloom#673 review)
 
-- [x] 3.1 From `bloommcp/`, run the same invocation CI uses
+A 5-agent adversarial review of PR #673 found the section-1 error-path claim above
+(`test_trim_is_stale_and_an_unrelated_tool_class_error_both_survive_together`
+"automatically extends" coverage) was a tautology — that test raises for every tool_class,
+so its count-based assertion passes regardless of whether `pca`/`umap`/`qc_inspect` are in
+the tuple at all. It also found the `CANONICAL_TOOL_CLASSES` superset invariant was only
+spot-tested for these 3 literals rather than generically enforced, the "private/unexported"
+comment wording was technically imprecise (the real constraint is the dependency-direction
+one, not name-mangling), and cross-PR tracking with #671 only covered one merge order.
+
+- [x] 3.1 Add `test_pca_umap_qc_inspect_list_runs_failure_is_individually_reported` to
+      `test_list_existing_analyses_staleness.py`: monkeypatch `store.list_runs` to raise
+      _only_ for `tool_class in {"pca", "umap", "qc_inspect"}` (returning `[]` for every
+      other class), and assert each of the 3 produces its own `errors` entry and
+      `len(errors) == 3` — proving the aggregation loop actually visits these 3 specifically,
+      not just that a vacuous raise-for-everything count happens to match tuple length.
+- [x] 3.2 Add `test_tool_classes_is_a_subset_of_canonical_tool_classes` to the same file:
+      `assert set(TOOL_CLASSES) <= set(CANONICAL_TOOL_CLASSES)` — enforces the superset
+      invariant generically, so a future entry added to one tuple but not the other fails
+      this test regardless of which literal it is.
+- [x] 3.3 Reword both new tuple comments (`list_existing_analyses.py`, `manifest/__init__.py`)
+      to state the actual constraint — importing a producer's `_TOOL_CLASS` would invert the
+      `sections/core`/`manifest` (foundational) vs. `sections/sleap_roots/analysis`
+      (granular tools) dependency direction — rather than the imprecise "private/unexported"
+      framing.
+- [x] 3.4 Update `proposal.md`'s Non-Goals to document cross-PR tracking with #671
+      bidirectionally (both merge orders), and leave a comment on PR #671 itself so the
+      `_TOOL_CLASS_TO_PUBLIC_NAME` follow-up isn't lost regardless of which PR merges second.
+
+## 4. Full verification
+
+- [x] 4.1 From `bloommcp/`, run the same invocation CI uses
       (`.github/workflows/pr-checks.yml`):
       `uv run --frozen --extra test pytest tests/ -m "not integration and not live_smoke" -v --tb=short`.
       Confirm no regressions.
-- [x] 3.2 Run `pre-commit run --files <touched files>` (bloommcp has no dedicated CI lint job
+- [x] 4.2 Run `pre-commit run --files <touched files>` (bloommcp has no dedicated CI lint job
       — ruff/black/gitleaks enforcement is via the root `.pre-commit-config.yaml` hooks
       only).
