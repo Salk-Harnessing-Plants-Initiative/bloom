@@ -29,7 +29,7 @@
 
 ## 4. Wrap up
 
-- [ ] 4.1 Open a PR referencing issue #590.
+- [x] 4.1 Open a PR referencing issue #590 (https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/675).
 - [ ] 4.2 After merge/deploy, archive this change (`openspec archive
       remove-bloommcp-unused-apt-deps --skip-specs --yes` is not applicable here since
       this change does add a spec — use the normal archive flow, updating
