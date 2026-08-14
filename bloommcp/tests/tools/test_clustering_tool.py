@@ -22,6 +22,7 @@ from pathlib import Path
 
 from unittest.mock import MagicMock
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -317,9 +318,9 @@ def test_gmm_autoselect_bic_aic_reflect_the_selected_model(injected_ports, monke
     idx = result.n_clusters - 1
     # On this dataset auto-select collapses to n=1 out of the default max_components=5
     # candidates — making the negative assertion unconditional (selected ≠ last candidate).
-    assert (
-        result.n_clusters == 1
-    ), f"expected auto-collapse to n=1, got {result.n_clusters}"
+    assert result.n_clusters == 1, (
+        f"expected auto-collapse to n=1, got {result.n_clusters}"
+    )
     assert len(d["bic_scores"]) == 5  # default max_components=5
     # Corrected values == the selected candidate's per-candidate scores.
     assert result.bic == pytest.approx(d["bic_scores"][idx], abs=_TOL)
@@ -1161,6 +1162,36 @@ def test_internal_pca_receives_same_trait_selection(injected_ports, monkeypatch)
     assert captured["columns"] == subset
 
 
+@pytest.mark.parametrize("standardize", [True, False])
+def test_internal_pca_receives_the_requested_standardize_flag(
+    injected_ports, monkeypatch, standardize
+):
+    """Blocking bug regression: the internal, non-persisted PCA call used for
+    create_cluster_scatter_pca must honor the same standardize the primary clustering
+    fit was given — otherwise the plotted projection is computed in a different
+    coordinate space than the one actually clustered, and the plot's geometry would
+    disagree with the real fit."""
+    captured: dict = {}
+    import sleap_roots_analyze
+
+    real = sleap_roots_analyze.perform_pca_analysis
+
+    def _spy(data, *a, **k):
+        captured["standardize"] = k.get("standardize")
+        return real(data, *a, **k)
+
+    monkeypatch.setattr(sleap_roots_analyze, "perform_pca_analysis", _spy)
+
+    _run(
+        method="kmeans",
+        n_clusters=3,
+        standardize=standardize,
+        include_plots=True,
+        plots=["create_cluster_scatter_pca"],
+    )
+    assert captured["standardize"] == standardize
+
+
 @pytest.mark.parametrize(
     "method_kwargs",
     [_METHOD_CALLS["kmeans"], _METHOD_CALLS["hierarchical"]],
@@ -1222,20 +1253,26 @@ def test_figure_cleanup_on_partial_plotter_failure_no_run_committed(
     def _boom(*a, **k):
         raise RuntimeError("second plotter blew up")
 
-    def _patched(result_dict, result, frame, trait_cols):
-        calls = real(result_dict, result, frame, trait_cols)
+    def _patched(result_dict, result, frame, trait_cols, *, standardize):
+        calls = real(result_dict, result, frame, trait_cols, standardize=standardize)
         calls["create_cluster_size_barplot"] = _boom
         return calls
 
     monkeypatch.setattr(clustering_tool, "_clustering_plot_calls", _patched)
 
-    with pytest.raises(BloomMCPError):
+    with pytest.raises(BloomMCPError) as exc:
         _run(
             method="kmeans",
             n_clusters=3,
             include_plots=True,
             plots=["create_cluster_scatter_pca", "create_cluster_size_barplot"],
         )
+    # An unwrapped RuntimeError from a plotter is not one of clustering's declared
+    # errors=(ExperimentReadError, CommitFailedError, ManifestReadError), so the
+    # contract envelope maps it to internal_error, not tool_error (BloomMCPError.
+    # from_exception) — spec.md previously claimed tool_error here; this pins the
+    # actual behavior.
+    assert exc.value.code == "internal_error"
     assert plt.get_fignums() == []
     assert store.list_runs(_EXPERIMENT, "clustering") == []
 
@@ -1277,3 +1314,84 @@ def test_create_cluster_size_barplot_on_gmm_single_component_collapse(injected_p
     )
     assert result.n_clusters == 1
     assert "create_cluster_size_barplot.png" in result.outputs
+
+
+def test_plots_ignored_list_with_include_plots_false_no_error(injected_ports):
+    """plots=[] with include_plots=False is not ambiguous (unlike plots=[] with
+    include_plots=True, which IS rejected) — the empty filter never applies."""
+    result = _run(method="kmeans", n_clusters=3, include_plots=False, plots=[])
+    assert not any(k.endswith(".png") for k in result.outputs)
+
+
+def test_internal_pca_linalg_error_is_assumption_violated(injected_ports, monkeypatch):
+    """numpy.linalg.LinAlgError (e.g. a singular matrix during PCA's eigendecomposition)
+    is a genuinely reachable failure mode distinct from ValueError — must be caught by
+    the same narrow, wrapped-function-derived exception tuple, not fall through as an
+    opaque internal_error."""
+    import sleap_roots_analyze
+
+    def _boom(*a, **k):
+        raise np.linalg.LinAlgError("SVD did not converge")
+
+    monkeypatch.setattr(sleap_roots_analyze, "perform_pca_analysis", _boom)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            method="kmeans",
+            n_clusters=3,
+            include_plots=True,
+            plots=["create_cluster_scatter_pca"],
+        )
+    assert exc.value.code == "assumption_violated"
+
+
+def test_commit_failure_after_pngs_staged_surfaces_as_tool_error(
+    injected_ports, monkeypatch
+):
+    """The PNGs this change adds are written into run.staging_dir BEFORE commit() is
+    called (same window pca_analysis/umap_analysis already have for their own PNGs) —
+    a commit failure in that window must still surface as a structured tool_error, and
+    the already-staged PNGs must be real (proving the failure happens genuinely after
+    staging, not before)."""
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "clustering")
+
+    staged_at_failure: dict[str, bytes] = {}
+    real_commit = store.commit
+
+    def _commit(run, outputs):
+        for name in outputs:
+            p = run.staging_dir / name
+            if p.suffix == ".png":
+                staged_at_failure[name] = p.read_bytes()
+        return real_commit(run, outputs)
+
+    monkeypatch.setattr(store, "commit", _commit)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            method="kmeans",
+            n_clusters=3,
+            include_plots=True,
+            plots=["create_cluster_scatter_pca"],
+        )
+    assert exc.value.code == "tool_error"
+    assert staged_at_failure  # the PNG really was written before commit() raised
+    for content in staged_at_failure.values():
+        assert content[:4] == b"\x89PNG"
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_single_trait_scatter_pca_degrades_gracefully_through_the_tool(injected_ports):
+    """design.md claims create_cluster_scatter_pca renders a placeholder figure (not a
+    raise) when the PCA projection has fewer than 2 components — e.g. a single-trait
+    selection. Proven here through this tool's own wrapping end-to-end, not just against
+    the upstream library directly."""
+    result = _run(
+        method="kmeans",
+        n_clusters=3,
+        trait_columns=_TRAITS[:1],
+        include_plots=True,
+        plots=["create_cluster_scatter_pca"],
+    )
+    assert "create_cluster_scatter_pca.png" in result.outputs

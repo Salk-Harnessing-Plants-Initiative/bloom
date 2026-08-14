@@ -157,12 +157,14 @@ the `include_plots=False` path never itself executes a fresh `import matplotlib`
 - **AND** all figures accumulated before the failure are closed in `finally`, and
   `matplotlib.pyplot.get_fignums()` returns an empty list
 
-#### Scenario: Plotter failure surfaces as tool_error with no run committed
+#### Scenario: An undeclared plotter failure surfaces as internal_error with no run committed
 
-- **WHEN** a plotter raises an unhandled exception during figure generation (before
-  `create_run`)
-- **THEN** the tool returns a `BloomMCPError` (mapped by the contract envelope) and no run is
-  committed
+- **WHEN** a plotter raises an exception not wrapped into a `BloomMCPError` by
+  `_clustering_plot_calls` (i.e. not one of the declared `errors=(ExperimentReadError,
+  CommitFailedError, ManifestReadError)`) during figure generation, before `create_run`
+- **THEN** the tool returns a `BloomMCPError` with code `internal_error` (the contract
+  envelope's fallback for any undeclared exception — see `BloomMCPError.from_exception`)
+  and no run is committed
 - **AND** all figures accumulated before the failure are closed in `finally`
 - **AND** the run count for `(experiment, "clustering")` in the `ResultStore` is unchanged
 

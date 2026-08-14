@@ -39,11 +39,28 @@ keys **are** present across all three methods' raw `result_dict`s (verified agai
 `perform_kmeans_clustering`, `perform_gmm_clustering`, and `hierarchical_cluster_labels`), so no
 further gap exists there.
 
+The call forwards `standardize=params.standardize` — the same flag the primary clustering fit
+was given — rather than the delegate's own default. Passing the default here instead would
+silently compute the projection in a different coordinate space than the one actually
+clustered, so the plot's geometry would disagree with the real fit (caught in PR review; see
+tasks.md § 4).
+
 If the internal PCA call fails (e.g. the certified-clean selection is degenerate for PCA even
-though it fit the requested clustering method), it is translated to `assumption_violated` with
-the same exception-tuple treatment (`ValueError, KeyError, RuntimeError, TypeError`) `umap_analysis`
-uses for its own internal PCA call — before `create_run`, so no run is committed. A caller who
-does not want this failure mode can omit `create_cluster_scatter_pca` from `plots`.
+though it fit the requested clustering method), it is translated to `assumption_violated`.
+**Revised in PR review**: the exception tuple is `(ValueError, numpy.linalg.LinAlgError)` — not
+`umap_analysis`'s wider `(ValueError, KeyError, RuntimeError, TypeError)`, which `_top_traits`
+justifies by *matching its own module's primary UMAP delegate call* (a symmetry argument that
+doesn't apply here, since this module's primary clustering delegates are caught with
+`(ValueError, RuntimeError)`, not that 4-tuple). `perform_pca_analysis`'s own docstring
+documents only `ValueError`; `pca_analysis.py`'s own call to the same function catches only
+`ValueError` too. `numpy.linalg.LinAlgError` is added on top as the one genuinely reachable
+non-`ValueError` failure mode (a singular matrix during eigendecomposition) that the narrower,
+derived-from-the-wrapped-function tuple would otherwise miss. This translation happens before
+`create_run`, so no run is committed. A caller who does not want this failure mode can omit
+`create_cluster_scatter_pca` from `plots`. A `logger.debug(...)` call precedes the translation
+(mirroring `umap_analysis`'s identical path) so a genuine upstream failure is distinguishable
+server-side from routine degenerate input — the original draft omitted this (module had no
+logger at all); also caught in PR review.
 
 The plotter itself degrades gracefully on a 1-feature selection (`X_pca.shape[1] < 2` renders an
 explanatory placeholder figure rather than raising) — no additional guard needed in bloommcp for

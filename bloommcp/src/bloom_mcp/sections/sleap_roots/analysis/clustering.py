@@ -55,6 +55,7 @@ claimed here.
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from pathlib import Path
 from typing import Literal
@@ -81,6 +82,8 @@ from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
 from bloom_mcp.tools._qc_shared import _finite_or_none, _validate_trait_subset
+
+logger = logging.getLogger(__name__)
 
 _TOOL_CLASS = "clustering"
 _LABELS_NAME = "labels.csv"
@@ -342,6 +345,8 @@ def _clustering_plot_calls(
     result: ClusterResult,
     frame: ExperimentFrame,
     trait_cols: list[str],
+    *,
+    standardize: bool,
 ) -> dict:
     """Return zero-arg callables for each catalog plot key, lazily importing plotters.
 
@@ -354,7 +359,12 @@ def _clustering_plot_calls(
     certified-clean trait selection already used for clustering — sidestepping the raw
     ``result_dict``'s ``data_processed`` key, which ``hierarchical_cluster_labels`` does
     not return (unlike ``perform_kmeans_clustering``/``perform_gmm_clustering``). This
-    keeps the catalog key usable identically for all three methods.
+    keeps the catalog key usable identically for all three methods. ``standardize`` is
+    forwarded from ``params.standardize`` so the plotted projection is computed in the
+    same coordinate space actually clustered — passing the delegate's own default here
+    instead would silently re-standardize (or fail to) a selection the caller explicitly
+    asked to cluster on raw (or standardized) values, making the plot geometry disagree
+    with the real fit.
     """
     from sleap_roots_analyze import (
         create_cluster_scatter_pca,
@@ -364,8 +374,16 @@ def _clustering_plot_calls(
 
     def _scatter_pca():
         try:
-            pca_result_dict = perform_pca_analysis(frame.df[trait_cols])
-        except (ValueError, KeyError, RuntimeError, TypeError):
+            pca_result_dict = perform_pca_analysis(
+                frame.df[trait_cols], standardize=standardize
+            )
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            logger.debug(
+                "internal perform_pca_analysis call for create_cluster_scatter_pca "
+                "failed, translating to assumption_violated: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             raise BloomMCPError(
                 code="assumption_violated",
                 message=(
@@ -605,11 +623,17 @@ def clustering(
 
             matplotlib.use("Agg")
             validate_plot_keys(params.plots, _CLUSTERING_CATALOG_KEYS)
-            calls = _clustering_plot_calls(result_dict, result, frame, trait_cols)
+            calls = _clustering_plot_calls(
+                result_dict,
+                result,
+                frame,
+                trait_cols,
+                standardize=params.standardize,
+            )
             keys_to_generate = (
                 list(params.plots)
                 if params.plots is not None
-                else list(_CLUSTERING_CATALOG_KEYS)
+                else sorted(_CLUSTERING_CATALOG_KEYS)
             )
             generate_figures({k: calls[k] for k in keys_to_generate}, figures)
 

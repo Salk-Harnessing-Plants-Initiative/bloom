@@ -109,3 +109,48 @@ No changes needed to `test_plots_helpers.py` — `_plots.py` is reused verbatim,
 - [x] 3.3 `cd bloommcp && uv run pytest tests/ -x` — full suite, no regressions
 - [x] 3.4 `cd bloommcp && uv run black --check src/ tests/` and `uv run ruff check src/
   tests/`
+
+## 4. PR review follow-up (5-lens subagent review of #668)
+
+- [x] 4.1 **Blocking**: forward `standardize=params.standardize` into the internal
+  `perform_pca_analysis` call (`_clustering_plot_calls` gained a keyword-only
+  `standardize` param) — previously the plotted PCA projection always standardized
+  regardless of what the caller requested for the actual clustering fit, so the plot's
+  geometry could disagree with the real fit. Regression test:
+  `test_internal_pca_receives_the_requested_standardize_flag` (parametrized True/False)
+- [x] 4.2 Narrow `_scatter_pca`'s exception tuple from the copy-pasted
+  `(ValueError, KeyError, RuntimeError, TypeError)` (borrowed from `umap_analysis`'s
+  differently-justified `_top_traits`) to `(ValueError, np.linalg.LinAlgError)` — derived
+  from what `perform_pca_analysis` actually raises (mirrors `pca_analysis`'s own narrower
+  catch of the same function), plus the one genuinely reachable non-`ValueError` failure
+  mode. Regression test: `test_internal_pca_linalg_error_is_assumption_violated`
+- [x] 4.3 Add a module-level `logger` (previously absent) and log before translating the
+  internal PCA failure to `assumption_violated`, mirroring `umap_analysis`'s identical
+  path — makes a genuine upstream failure distinguishable from routine degenerate input
+  server-side
+- [x] 4.4 Fix spec.md's "Plotter failure surfaces as tool_error" scenario — traced
+  `BloomMCPError.from_exception` against clustering's declared `errors=` tuple: an
+  undeclared plotter exception actually maps to `internal_error`, not `tool_error`.
+  Renamed the scenario and pinned the real code with
+  `test_figure_cleanup_on_partial_plotter_failure_no_run_committed`'s new `.code`
+  assertion
+- [x] 4.5 Add `test_commit_failure_after_pngs_staged_surfaces_as_tool_error` — proves the
+  already-staged PNGs are real bytes at the moment `store.commit` fails, and that no run
+  is committed
+- [x] 4.6 Add `test_single_trait_scatter_pca_degrades_gracefully_through_the_tool` —
+  proves design.md's graceful-degradation claim (a <2-component PCA projection renders a
+  placeholder figure, not a raise) through this tool's own wrapping, not just against the
+  upstream library directly
+- [x] 4.7 Add `test_plots_ignored_list_with_include_plots_false_no_error` — explicit
+  one-line coverage for `plots=[]` with `include_plots=False`
+- [x] 4.8 Deterministic plot-generation order: `keys_to_generate` now uses
+  `sorted(_CLUSTERING_CATALOG_KEYS)` instead of `list(frozenset(...))` (whose iteration
+  order depends on Python's randomized hash seed) when `plots=None`
+- [x] 4.9 Reverted an unrelated black-reformat hunk to a pre-existing assert in
+  `test_clustering_tool.py` that had leaked into the original diff — confirmed (against
+  `origin/staging` directly) it was pre-existing lint debt unrelated to this change, not
+  introduced by it, so left as-is rather than fixed here
+- Not fixed, deliberately out of scope (see PR discussion): `fig.savefig()`/`store.commit`
+  mid-loop tempdir orphaning is an architectural pattern inherited identically from
+  `pca_analysis`/`umap_analysis` — fixing it only here would create asymmetry with the
+  siblings; a proper fix is a separate cross-cutting change touching all three tools
