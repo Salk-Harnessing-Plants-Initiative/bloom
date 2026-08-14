@@ -43,18 +43,21 @@ _URL_RE = re.compile(r"https?://[^\s,]+")
 
 # Filenames as seeded into TRAITS_DIR -- distinct from the fixtures' on-disk names in
 # tests/fixtures/ so a smoke run never collides with a developer's own experiment files.
-# Still used by the 5 plot tools (plot_trait_histograms/_boxplots, plot_correlation_matrix,
-# plot_heritability_bar, plot_variance_decomposition): they call
+# Still used by the 2 remaining bare-mcp.tool() plot tools (plot_heritability_bar,
+# plot_variance_decomposition -- retiring into heritability_analysis per #462): they call
 # ``experiment_utils.load_experiment_data`` directly, a local-BLOOM_TRAITS_DIR raw tier
-# this PR's SupabaseReader rewrite (bloom#551) does not touch -- unlike the 7 granular
-# analysis tools below, which route through SupabaseReader's now DB-only raw tier.
+# this PR's SupabaseReader rewrite (bloom#551) does not touch -- unlike the 10 granular
+# analysis tools below (the 7 pre-existing ones + plot_trait_histograms/_boxplots/
+# plot_correlation_matrix, converged onto @as_mcp_tool + the ExperimentReader port in
+# #466), which route through SupabaseReader's now DB-only raw tier.
 FIXTURE_FILES: dict[str, str] = {
     "turface_19": "turface_19_raw_data.csv",
     "cylinder": "cylinder_raw_data.csv",
 }
 
-# The 7 granular analysis tools (qc_clean, qc_inspect, remove_outliers, pca_analysis,
-# clustering, descriptive_stats, umap_analysis) route through SupabaseReader, whose raw
+# The 10 granular analysis tools (qc_clean, qc_inspect, remove_outliers, pca_analysis,
+# clustering, descriptive_stats, umap_analysis, and — since #466 — plot_trait_histograms,
+# plot_trait_boxplots, plot_correlation_matrix) route through SupabaseReader, whose raw
 # tier is DB-only (bloom#551) -- a tool call needs a numeric experiment id, not a
 # filename. Each oracle fixture instead needs a REAL numeric experiment id that already
 # has trait rows in whatever Postgres this smoke run points at; seeding that data is not
@@ -131,12 +134,15 @@ def _call_tool_sync(tool_name: str, params: dict) -> Any:
 
 
 def _call_plot_tool_sync(tool_name: str, **kwargs: Any) -> str:
-    """Call one of the 5 plotting tools through the real running container.
+    """Call one of the 2 remaining bare-``mcp.tool()`` plotting tools
+    (``plot_heritability_bar``, ``plot_variance_decomposition``) through the real running
+    container.
 
-    Unlike the granular analysis tools, plot tools are plain functions taking flat
-    keyword arguments directly (``filename``, plus ``traits``/``threshold`` as
-    applicable) -- NOT wrapped under a ``params`` argument -- and return a plain
-    string summary, matching ``live_plot_tool_smoke.py``'s exact calling convention.
+    Unlike the granular analysis tools (which now include ``plot_trait_histograms``/
+    ``plot_trait_boxplots``/``plot_correlation_matrix`` since #466), these 2 are plain
+    functions taking flat keyword arguments directly (``filename``, plus ``traits``/
+    ``threshold`` as applicable) -- NOT wrapped under a ``params`` argument -- and return a
+    plain string summary, matching ``live_plot_tool_smoke.py``'s exact calling convention.
     """
     url, api_key = mcp_url_and_key()
 
@@ -207,10 +213,11 @@ def fixture_name(request) -> str:
 def seeded_experiment(fixture_name: str) -> str:
     """Seed ``fixture_name``'s raw CSV into the real bind-mounted TRAITS_DIR.
 
-    Returns the experiment filename the tool should be called with. Only for the 5
-    plot tools, which read via ``experiment_utils.load_experiment_data`` directly (a
-    local-BLOOM_TRAITS_DIR raw tier untouched by bloom#551) -- see ``db_experiment_id``
-    for the 7 granular analysis tools, which need a numeric id instead. Not cleaned up
+    Returns the experiment filename the tool should be called with. Only for the 2
+    remaining bare-``mcp.tool()`` plot tools, which read via
+    ``experiment_utils.load_experiment_data`` directly (a local-BLOOM_TRAITS_DIR raw tier
+    untouched by bloom#551) -- see ``db_experiment_id`` for the 10 granular analysis
+    tools, which need a numeric id instead. Not cleaned up
     after the test -- matching ``live_plot_tool_smoke.py``'s convention of leaving the
     seeded fixture in place (host-side bind-mounted scratch dir, gitignored, harmless
     to leave for the next run to overwrite).
@@ -227,10 +234,11 @@ def db_experiment_id(fixture_name: str) -> str:
     tool call should be called with.
 
     SupabaseReader's raw tier is DB-only (bloom#551): there is no local-CSV upload path
-    left for the 7 granular analysis tools (qc_clean, qc_inspect, remove_outliers,
-    pca_analysis, clustering, descriptive_stats, umap_analysis), so ``fixture_name``'s
-    oracle data must already exist as a real experiment with trait rows in whatever
-    Postgres this smoke run points at. Skips cleanly (not a hard failure) when the
+    left for the 10 granular analysis tools (qc_clean, qc_inspect, remove_outliers,
+    pca_analysis, clustering, descriptive_stats, umap_analysis, and — since #466 —
+    plot_trait_histograms, plot_trait_boxplots, plot_correlation_matrix), so
+    ``fixture_name``'s oracle data must already exist as a real experiment with trait rows
+    in whatever Postgres this smoke run points at. Skips cleanly (not a hard failure) when the
     matching env var is unset, since not every dev/CI environment has that DB seeding
     done yet.
     """
