@@ -613,6 +613,30 @@ def test_frames_lost_during_the_encode_fall_back_to_keeping(monkeypatch):
     assert client.uploads == 0
 
 
+def test_a_tie_after_the_gate_still_keeps_the_stored_video(monkeypatch):
+    """The boundary the pre-encode gate cannot reach: equal counts decided *after* encoding.
+
+    Nine rows against a recorded five clears the gate, so this encodes — and if four downloads
+    fail it lands on exactly five, a tie. The same frame count is not the same frames, so the
+    stored video is kept. Only `<=` gives that; `<` would overwrite.
+    """
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(9)]
+    client = _GenClient(images, recorded_frames=5, stored=True)
+
+    def _flaky(self, path):
+        if path in {"o0", "o1", "o2", "o3"}:
+            raise RuntimeError("storage read failed")
+        return _png_bytes()
+
+    monkeypatch.setattr(_GenBucket, "download", _flaky)
+
+    result = video.generate_scan_video(client, 5)
+
+    assert result["regenerated"] is False  # 5 encoded vs 5 recorded -> a tie, so keep
+    assert client.uploads == 0
+
+
 def test_a_strictly_better_encode_replaces_the_stored_video(monkeypatch):
     """The other half of the rule. Without it a scan is frozen on its worst encode forever."""
     monkeypatch.setattr(video, "VideoWriter", _FakeWriter)

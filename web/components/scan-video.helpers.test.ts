@@ -105,6 +105,15 @@ describe("videoErrorMessage", () => {
     );
   });
 
+  it("says a 503 changed nothing, rather than calling it a failure", () => {
+    // Upstream answers 503 when it could not confirm what is already stored, and declines
+    // rather than risk replacing it. Its own wording is suppressed by the proxy — a sibling
+    // 503 carries the internal gateway URL — so this is where the distinction survives.
+    const message = videoErrorMessage(503);
+    expect(message).toContain("nothing was changed");
+    expect(message).not.toBe("Video generation failed. Try again in a moment.");
+  });
+
   it("maps the statuses the endpoint actually returns", () => {
     expect(videoErrorMessage(401)).toBe("Sign in to generate a video.");
     expect(videoErrorMessage(403)).toBe("You do not have access to this scan.");

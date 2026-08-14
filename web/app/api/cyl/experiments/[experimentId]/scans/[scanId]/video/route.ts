@@ -34,6 +34,10 @@ const UPSTREAM_TIMEOUT_MS = 240_000;
 // carry the internal gateway URL and the names of the service account's env
 // keys. Only 404 says something the caller needs ("No images found for scan 5");
 // every other status falls back to the client's own wording.
+// Only 404. Upstream also answers 503 for its own refusals, whose wording would be worth
+// showing — but `require_supabase_user` returns 503 too, carrying the internal gateway URL in
+// its message, so the status alone cannot tell a safe detail from a leaky one. The client
+// words 503 for itself instead (`videoErrorMessage`).
 const DETAIL_PASSTHROUGH_STATUSES = new Set([404]);
 
 function callerSafeDetail(status: number, parsed: unknown): string | null {
