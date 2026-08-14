@@ -69,7 +69,6 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser()
 
   if (error) console.error('[Middleware] getUser() error:', error.message)
-  console.log('[Middleware] User →', user?.email || 'NO USER')
 
   // only redirect unauthenticated users on protected routes
   const path = request.nextUrl.pathname
@@ -86,7 +85,7 @@ export async function middleware(request: NextRequest) {
     path.startsWith('/api') // allow internal routes
 
   if (!user && !isPublic) {
-    console.log('[Middleware] Redirecting to /login')
+    // console.log('[Middleware] Redirecting to /login')
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)

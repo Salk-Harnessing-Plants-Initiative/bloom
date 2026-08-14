@@ -15,7 +15,7 @@ export default function Login() {
         method: 'GET',
       })
       const data = await images.json()
-      console.log(data)
+      // console.log(data)
       setImages(data)
     }
     getImages()

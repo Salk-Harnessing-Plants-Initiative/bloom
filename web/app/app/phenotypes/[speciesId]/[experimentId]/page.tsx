@@ -64,7 +64,7 @@ export default async function Experiment({
 }) {
   const { experimentId, speciesId } = await params;
   const experiment : any = await getExperimentWithPlants(Number(experimentId));
-  console.log("Experiment data:", experiment);
+  // console.log("Experiment data:", experiment);
   const experimentName = capitalizeFirstLetter(
     experiment?.name.replaceAll("-", " ") ?? ""
   );

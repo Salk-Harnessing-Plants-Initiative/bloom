@@ -45,7 +45,7 @@ function JBrowse() {
         setConfig(loadedConfig);
 
         setLoadingStatus("Initializing genome browser...");
-        console.log(loadedConfig);
+        // console.log(loadedConfig);
         const state = createViewState({
           config: loadedConfig,
         });

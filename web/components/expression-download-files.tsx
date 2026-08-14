@@ -94,7 +94,7 @@ export default function ExpressonDownloadFiles({ file_id, file_name }: { file_id
                     const batchJson = JSON.stringify(batchData) + ",";
                     blobParts.push(new Blob([batchJson], { type: "application/json" }));
 
-                    console.log(`Processed ${batchData.length} records, Total Blob Parts: ${blobParts.length}`);
+                    // console.log(`Processed ${batchData.length} records, Total Blob Parts: ${blobParts.length}`);
                     if (count) {
                         setProgress((processedCount / count) * 100);
                         // console.log("Percentage completed:"+(processedCount / count) * 100);

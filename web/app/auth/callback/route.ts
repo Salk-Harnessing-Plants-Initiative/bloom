@@ -7,21 +7,14 @@ export async function GET(request: Request) {
   // https://supabase.com/docs/guides/auth/auth-helpers/nextjs#managing-sign-in-with-code-exchange
   const requestUrl = new URL(request.url);
 
-  console.log(`requestUrl ${requestUrl}`);
 
   const code = requestUrl.searchParams.get("code");
 
-  // console.log(cookies())
 
   if (code) {
-    console.log(`code ${code}`);
     const supabase = await createServerSupabaseClient();
-    console.log("created supabase client");
     await supabase.auth.exchangeCodeForSession(code);
-    console.log("exchanged code for session");
   }
-
-  console.log(`requestUrl.origin ${requestUrl.origin}`);
 
   const host =
     request.headers.get("x-forwarded-host") ||

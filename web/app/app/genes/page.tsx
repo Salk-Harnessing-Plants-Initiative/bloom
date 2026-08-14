@@ -820,7 +820,7 @@ export default function Genes() {
 
   useEffect(()=>{
     if (newCandidateAdded) {
-      console.log( "New candidate added, fetching data again");
+      // console.log( "New candidate added, fetching data again");
       getGeneCandidates().then(
         (data) => setGeneCandidates(data)
       );
@@ -863,10 +863,8 @@ export default function Genes() {
   };
 
   const handleExperimentLogsOpen = (geneId: string) => {
-    console.log("Open Modal with "+geneId);
     setOpenCandidate(geneId);
     const selected = geneCandidates?.find(c => c.gene === geneId) || null;
-    // console.log("Selected Gene Candidate", selected);
     setCurrentGeneCandidate(selected);
   };
   

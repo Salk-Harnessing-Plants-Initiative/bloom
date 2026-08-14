@@ -116,7 +116,7 @@ const statusColors = {
   };
   
   useEffect(() => {
-    console.log(selectedGene," selectedGene");
+    // console.log(selectedGene," selectedGene");
     fetchStatusLogs();
   }, [selectedGene]);
 

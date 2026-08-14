@@ -152,7 +152,7 @@ export default function AddGeneCandidateModal({ modal_state, closeModal, setNewC
 
     const fetchCategoryOptions = async () => {
       const { data, error } = await supabase.rpc("get_unique_categories");
-      console.log(data);
+      // console.log(data);
 
       if (error) {
         console.error("Error fetching Categories:", error);

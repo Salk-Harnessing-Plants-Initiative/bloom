@@ -15,6 +15,10 @@ import styles from './consent.module.css'
 
 export const dynamic = 'force-dynamic'
 
+// The authorization_id is a live credential and it sits in this page's query
+// string, so same-origin subresource requests would carry it in Referer.
+export const metadata = { referrer: 'no-referrer' as const }
+
 export default async function ConsentPage({
   searchParams,
 }: {
