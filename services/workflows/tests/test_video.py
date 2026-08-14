@@ -52,6 +52,10 @@ class _Client:
         self.last_table = name
         return self.q
 
+    def rpc(self, name, params):
+        self.q.recorded["rpc"] = {"name": name, "params": params}
+        return self.q
+
 
 def test_scan_in_experiment_true():
     c = _Client(result=[{"scan_id": 5}])
@@ -71,21 +75,28 @@ def test_get_scan_images_capped_at_max():
     assert c.q.recorded["limit"] == video.MAX_IMAGES == 72
 
 
-def test_record_video_upserts_scan_and_path(monkeypatch):
+def test_record_video_goes_through_the_wrapper(monkeypatch):
+    """Not a client upsert: PostgREST's merge-duplicates writes every payload key, and
+    bloom_workflows may update path/frames but never scan_id — so the upsert was refused
+    outright and no video was ever recorded."""
     monkeypatch.setattr(video, "VIDEO_TABLE", "cyl_scan_videos")
     c = _Client()
     video._record_video(c, 5, {"path": "cyl-videos/5.mp4", "frames": 72})
-    up = c.q.recorded["upsert"]
-    assert up["payload"] == {"scan_id": 5, "path": "cyl-videos/5.mp4", "frames": 72}
-    assert up["on_conflict"] == "scan_id"
-    assert c.last_table == "cyl_scan_videos"
+    call = c.q.recorded["rpc"]
+    assert call["name"] == "record_cyl_scan_video"
+    assert call["params"] == {
+        "p_scan_id": 5,
+        "p_path": "cyl-videos/5.mp4",
+        "p_frames": 72,
+    }
+    assert "upsert" not in c.q.recorded, "the upsert is what could not write scan_id"
 
 
 def test_record_video_skipped_when_table_unset(monkeypatch):
     monkeypatch.setattr(video, "VIDEO_TABLE", None)
     c = _Client()
     video._record_video(c, 5, {"path": "cyl-videos/5.mp4", "frames": 72})
-    assert "upsert" not in c.q.recorded
+    assert "rpc" not in c.q.recorded
 
 
 # --- generate_scan_video failure paths (never upload a bad/absent video) -----
