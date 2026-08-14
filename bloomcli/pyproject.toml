@@ -23,7 +23,9 @@ dependencies = [
     "python-dotenv>=1.0.0",
     # Floors, not caps: a cap here would only keep the next security fix out.
     "cryptography>=50.0.0",  # CVE-2026-69247
-    "sleap-roots-contracts>=0.1.0a5",  # pydantic models for `cyl ingest`
+    # a5+: pydantic models for `cyl ingest`. a7+: RunManifest/RUN_MANIFEST_FILENAME for
+    # `cyl batch-download-for-predict`'s manifest write (#653).
+    "sleap-roots-contracts>=0.1.0a7",
     "h2>=4.4.1",  # CVE-2026-71554
 ]
 
