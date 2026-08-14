@@ -56,7 +56,7 @@ def test_plate_relative_dir_groups_by_wave_then_plate():
 def test_image_dest_names_the_file_by_cycle_and_capture():
     dest = pd.image_dest("/out", SCAN, IMAGE)
     assert dest.parent.as_posix().endswith("images/Wave3/PLATE-001")
-    assert dest.name == "c0_2026-05-27T14-03-11+00-00.jpg"
+    assert dest.name == "c0000_2026-05-27T14-03-11+00-00.jpg"
 
 
 def test_a_continuous_session_sorts_in_capture_order():
@@ -72,6 +72,33 @@ def test_a_continuous_session_sorts_in_capture_order():
     ]
     assert names == sorted(names)
     assert len(set(names)) == 3
+
+
+def test_capture_order_survives_a_session_longer_than_nine_cycles():
+    """The boundary a three-cycle test cannot see.
+
+    Unpadded, `c10` sorts between `c1` and `c2`, so every session of ten cycles or more —
+    which is to say every real continuous session — reads out of order in a directory
+    listing, in ffmpeg's glob, and in ImageJ's image sequence import. A gravitropic response
+    is monotonic, so the reordered series still looks like a smooth curve. It is the wrong
+    curve, and nothing about it looks wrong.
+    """
+    names = [
+        pd.image_dest(
+            "/out",
+            {
+                **SCAN,
+                "cycle_number": c,
+                # One cycle every ten minutes, so the instants stay ordered too.
+                "capture_date": f"2026-05-27T{14 + c // 6:02d}:{(c % 6) * 10:02d}:00+00:00",
+            },
+            IMAGE,
+        ).name
+        for c in range(24)
+    ]
+
+    assert names == sorted(names), "a directory listing no longer reads in capture order"
+    assert len(set(names)) == 24
 
 
 def test_single_mode_scan_has_no_cycle_prefix():

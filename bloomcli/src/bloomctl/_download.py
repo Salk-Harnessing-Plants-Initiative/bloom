@@ -264,13 +264,18 @@ def download_to(
     without being fetched — there is nowhere to put them, and a large experiment would otherwise
     pull hundreds of gigabytes only to throw them away. The few already in flight run to
     completion, so a little work carries on past the point the disk fills, bounded by the number
-    of workers.
+    of workers. An object already on disk is still reported as present once that happens.
     """
-    if stop is not None and stop.is_set():
-        return Fetched(False, False, "nowhere left to write — nothing further was downloaded")
     try:
+        # Asked before the stop check, not after: an object already on disk needs nothing
+        # written, so a resumed run that fills the disk part way through would otherwise
+        # report every object it had already fetched as missing.
         if already_downloaded(dest, expected_size):
             return Fetched(True, True, "")
+        if stop is not None and stop.is_set():
+            return Fetched(
+                False, False, "nowhere left to write — nothing further was downloaded"
+            )
         data = download_object(client, object_path, bucket=bucket)
         atomic_write_bytes(dest, data)
         note = ""

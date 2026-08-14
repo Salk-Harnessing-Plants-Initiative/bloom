@@ -7,10 +7,9 @@ file_size_bytes where cyl_images does not.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
-
-import os
 
 import pytest
 from test_plate_download_paths import SCAN
@@ -529,6 +528,41 @@ def test_disk_full_abandons_work_that_has_not_started(tmp_path, monkeypatch):
 
     assert result.failed == 20
     assert any("nowhere left to write" in f.error.lower() for f in result.frames)
+    # Carried out of the run, or the log cannot say why it stopped.
+    assert result.disk_full is True
+
+
+def test_captures_already_on_disk_are_still_present_once_the_disk_fills(tmp_path, monkeypatch):
+    """A resumed run that runs out of space must not report what it already has as missing.
+
+    The stop event is checked after the resume check, not before: an object already on disk
+    needs nothing written, so reporting it as failed would tell a scientist a whole
+    experiment was lost when half of it is sitting in the directory.
+    """
+    import bloomctl._download as shared
+
+    scans = [_scan(i, f"P{i}") for i in range(1, 5)]
+    images = {i: _image(i) for i in range(1, 5)}
+
+    # Scan 1 must be fetched and is what fills the disk. Scans 2-4 are already complete from
+    # an earlier run, and are reached *after* the stop event is set — which is the only order
+    # that tests anything: put them first and they are handled before the disk ever fills.
+    for i in (2, 3, 4):
+        dest = pd.image_dest(tmp_path, scans[i - 1], images[i])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"x" * images[i]["file_size_bytes"])
+
+    def _no_space(path, data):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(shared, "atomic_write_bytes", _no_space)
+
+    result = pd.download_images(_Client(), scans, images, tmp_path, workers=1)
+
+    present = {f.scan_id for f in result.frames if f.ok}
+    assert present == {2, 3, 4}, "captures already on disk were reported as failed"
+    assert result.skipped == 3
+    assert result.disk_full is True
 
 
 def test_an_expired_session_is_named_rather_than_a_missing_bucket(tmp_path):

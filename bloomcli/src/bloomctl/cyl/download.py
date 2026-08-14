@@ -33,21 +33,17 @@ from .._download import (
     DownloadResult,
     FrameResult,
     ProgressReporter,
-    contained_dest,
+    _path_key,
     describe_manifest_mismatch,
-    download_to,
     ensure_writable,
     fetch_all,
     filesystem_folds_case,
-    find_collisions,
     format_duration,
     format_progress,
     format_rate,
     holds_an_unidentified_download,
-    _path_key,
     read_manifest,
     safe_component,
-    selector_of,
     write_download_log,
     write_failed,
     write_manifest,
@@ -62,12 +58,7 @@ from .._storage import (
 from ..credentials import DEFAULT_PROFILE
 
 # Cylinder frames live in the `images` bucket. Passed explicitly on every fetch — the shared
-# storage helper has no default, so this can never be confused with another instrument's.
-# scans.csv schema: (output column, source key in a cyl_scans_extended row).
-# Order matches the legacy CLI's predict-container contract; `genotype` is
-# inserted after `accession_id`, and `scan_path` is derived (relative).
-# The bucket cyl frames live in. Named here rather than defaulted in _storage, so no
-# command can read another instrument's bucket by omission.
+# storage helper has no default, so no command can read another instrument's bucket by omission.
 IMAGES_BUCKET = "images"
 
 __all__ = [  # re-exported so callers and tests reach the mechanism through this module
@@ -84,27 +75,26 @@ __all__ = [  # re-exported so callers and tests reach the mechanism through this
     "RATE_WINDOW_SAMPLES",
     "RETRY_HINT",
     "atomic_write_bytes",
-    "contained_dest",
     "describe_manifest_mismatch",
     "download",
-    "download_to",
     "ensure_writable",
     "fetch_all",
     "filesystem_folds_case",
-    "find_collisions",
     "format_duration",
     "format_progress",
     "format_rate",
     "holds_an_unidentified_download",
     "read_manifest",
     "safe_component",
-    "selector_of",
     "write_download_log",
     "write_failed",
     "write_manifest",
 ]
 
 
+# scans.csv schema: (output column, source key in a cyl_scans_extended row).
+# Order matches the legacy CLI's predict-container contract; `genotype` is
+# inserted after `accession_id`, and `scan_path` is derived (relative).
 _COLUMNS: list[tuple[str, str | None]] = [
     ("scan_id", "scan_id"),
     ("plant_qr_code", "qr_code"),

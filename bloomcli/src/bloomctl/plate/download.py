@@ -16,6 +16,7 @@ contract is unit-testable without a live server.
 from __future__ import annotations
 
 import csv
+import io
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -33,6 +34,7 @@ from .._download import (
     contained_dest,
     describe_manifest_mismatch,
     download_to,
+    ensure_writable,
     fetch_all,
     find_collisions,
     holds_an_unidentified_download,
@@ -43,7 +45,7 @@ from .._download import (
     write_manifest,
 )
 from .._postgrest import fetch_in_batches
-from .._storage import sweep_orphan_temps
+from .._storage import atomic_write_bytes, sweep_orphan_temps
 from ..credentials import DEFAULT_PROFILE
 
 # Plate images live in their own bucket. Passed explicitly on every fetch — the shared storage
@@ -122,6 +124,13 @@ def capture_filename(scan: dict[str, Any], image: dict[str, Any]) -> str:
     `capture_date` alone is already unique per (experiment, plate) by
     idx_gravi_scans_natural_key. The cycle prefix is for readability and ordering, not
     uniqueness — and it is omitted for single-mode scans, which have no cycle.
+
+    The cycle is zero-padded because the prefix decides the sort: unpadded, `c10` sorts
+    between `c1` and `c2`, so a session of ten cycles or more reads out of order in a
+    directory listing, in ffmpeg's glob, and in ImageJ's image sequence import. A
+    gravitropic response is monotonic, so a reordered series still looks like a smooth
+    curve — it is just the wrong one, with nothing to show it. Four digits covers a
+    ten-minute cycle running for sixty-nine days.
     """
     ext = Path(image["object_path"]).suffix.lstrip(".") or DEFAULT_EXTENSION
     # Swap the timestamp's colons for dashes before sanitising: `safe_component` would map
@@ -129,7 +138,13 @@ def capture_filename(scan: dict[str, Any], image: dict[str, Any]) -> str:
     # a raw colon is not (on Windows it names an alternate data stream).
     stamp = safe_component(str(scan.get("capture_date")).replace(":", "-"))
     cycle = scan.get("cycle_number")
-    prefix = f"c{safe_component(cycle)}_" if cycle is not None else ""
+    if cycle is None:
+        prefix = ""
+    else:
+        try:
+            prefix = f"c{int(cycle):04d}_"
+        except (TypeError, ValueError):  # not a number: keep it, unpadded, over dropping it
+            prefix = f"c{safe_component(cycle)}_"
     return f"{prefix}{stamp}.{safe_component(ext)}"
 
 
@@ -170,12 +185,19 @@ def _relative_image_path(scan: dict[str, Any], image: dict[str, Any] | None) -> 
 
 
 def write_plates_csv(rows: list[dict[str, Any]], path: Path) -> None:
-    """Write rows to plates.csv with the fixed column order."""
+    """Write rows to plates.csv with the fixed column order.
+
+    Rendered in full before anything touches the file: this runs on every invocation,
+    including a re-run that resumes, so opening the existing plates.csv for writing would
+    empty it before the first row was written and a full disk would leave it that way —
+    the images intact, and the metadata that makes them interpretable gone.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
-        writer.writeheader()
-        writer.writerows(rows)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS, lineterminator="\r\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    atomic_write_bytes(path, buffer.getvalue().encode("utf-8"))
 
 
 def build_section_rows(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -184,12 +206,17 @@ def build_section_rows(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def write_sections_csv(rows: list[dict[str, Any]], path: Path) -> None:
-    """Write rows to plate_sections.csv with the fixed column order."""
+    """Write rows to plate_sections.csv with the fixed column order, atomically.
+
+    Same reasoning as plates.csv: it is rewritten on every run, so a failed write must not
+    be able to leave the previous run's copy truncated.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=SECTION_COLUMNS)
-        writer.writeheader()
-        writer.writerows(rows)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=SECTION_COLUMNS, lineterminator="\r\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    atomic_write_bytes(path, buffer.getvalue().encode("utf-8"))
 
 
 # Which options decide the selection a download directory holds. `experiment_id` is the
@@ -429,7 +456,7 @@ def download_images(
 
     outcomes = iter(fetched)
     frames = [slot if isinstance(slot, FrameResult) else next(outcomes) for slot in slots]
-    return DownloadResult(frames)
+    return DownloadResult(frames, disk_full=stop.is_set())
 
 
 # --- command ----------------------------------------------------------------
@@ -549,6 +576,9 @@ def download(
     if species and experiment_name is None:
         raise click.UsageError("--species only applies with --experiment-name.")
 
+    # Before signing in, so a bad path costs a second rather than the whole metadata phase.
+    ensure_writable(Path(out_dir))
+
     try:
         creds = load_credentials(profile)
     except (FileNotFoundError, ValueError) as exc:
@@ -664,12 +694,17 @@ def download(
         ) from exc
 
     log_path = out / "download_log.txt"
-    write_download_log(result, log_path, noun=NOUN)
+    # Counts first: on a full disk the log write is what fails, and the numbers matter more.
     click.echo(
-        f"{result.ok}/{result.total} captures present in {out / 'images'} "
-        f"({result.downloaded} downloaded this run, {result.skipped} already on disk)  "
-        f"(log: {log_path})"
+        f"{result.ok:,}/{result.total:,} captures present in {out / 'images'} "
+        f"({result.downloaded:,} downloaded this run, {result.skipped:,} already on disk)"
     )
+    try:
+        write_download_log(result, log_path, noun=NOUN)
+    except OSError as exc:
+        click.echo(f"Could not write {log_path.name}: {exc.strerror or exc}", err=True)
+    else:
+        click.echo(f"Log: {log_path}")
     if result.scans_without_frames:
         click.echo(
             f"Note: {result.scans_without_frames} scan(s) have no image recorded in Bloom, "
