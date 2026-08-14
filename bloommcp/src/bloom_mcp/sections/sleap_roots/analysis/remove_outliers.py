@@ -88,6 +88,7 @@ from bloom_mcp.data_access import (
     ExperimentFrame,
     ExperimentReadError,
 )
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import (
     CLEANED_CSV_NAME,
@@ -298,7 +299,7 @@ def _barcodes(report: dict) -> list[str]:
 @as_mcp_tool(
     input_model=RemoveOutliersParams,
     output_model=RemoveOutliersResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def remove_outliers(
     params: RemoveOutliersParams, *, random_state: int, provenance: Provenance

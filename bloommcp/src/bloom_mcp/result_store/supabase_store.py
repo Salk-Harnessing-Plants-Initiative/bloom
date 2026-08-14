@@ -147,7 +147,7 @@ def _guarded_manifest_read(adir: AnalysisDir, read: Callable[[], T]) -> T:
             exc_info=True,
         )
         raise ManifestIncompatibleError(
-            f"manifest schema for {adir.tool_class}/{adir.stem} is unsupported: {exc}"
+            f"manifest schema for {adir.tool_class}/{adir.stem} is unsupported"
         ) from exc
     except Exception as exc:
         logger.exception("manifest read failed for %s/%s", adir.tool_class, adir.stem)

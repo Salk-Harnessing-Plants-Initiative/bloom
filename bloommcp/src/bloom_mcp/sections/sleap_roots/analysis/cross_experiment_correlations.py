@@ -103,6 +103,7 @@ from bloom_mcp.data_access import (
     ExperimentFrame,
     ExperimentReadError,
 )
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import snapshot_frame
 from bloom_mcp.tools._qc_shared import _validate_experiment_name, _validate_trait_subset
@@ -475,7 +476,7 @@ def _combined_snapshot(
 @as_mcp_tool(
     input_model=CrossExperimentCorrelationsParams,
     output_model=CrossExperimentCorrelationsResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def cross_experiment_correlations(
     params: CrossExperimentCorrelationsParams, *, provenance: Provenance

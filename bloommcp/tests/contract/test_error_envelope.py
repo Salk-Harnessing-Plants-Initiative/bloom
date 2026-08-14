@@ -54,6 +54,32 @@ def test_undeclared_exception_does_not_leak_internal_detail():
     assert "ref:" in err.message  # correlation id for server-side lookup
 
 
+def test_declared_base_catches_a_subclass_instance_via_isinstance():
+    """A subclass of a declared exception is also treated as declared (isinstance match).
+
+    #640 follow-up: the fix for issue #640 declares `ManifestReadError` (not its
+    `ManifestIncompatibleError` subclass) on 8 analysis tools' `errors=` tuples, relying on
+    `isinstance`'s subclass-matching to cover both without enumerating every subtype —
+    mirroring how `ExperimentReadError`'s own subclasses are covered the same way.
+    `FakeResultStore.fail_next_read` can only simulate the generic `ManifestReadError` (its
+    own docstring says so — schema-incompatible manifests are a real-backend-only concern
+    the flat fake has no equivalent of), so no tool-level test exercises this path; proven
+    directly here instead against the real exception classes.
+    """
+    from bloom_mcp.result_store import (
+        CommitFailedError,
+        ManifestIncompatibleError,
+        ManifestReadError,
+    )
+
+    err = BloomMCPError.from_exception(
+        ManifestIncompatibleError("manifest schema too new"),
+        declared=(CommitFailedError, ManifestReadError),
+    )
+    assert err.code == "tool_error"
+    assert "manifest schema too new" in err.message
+
+
 def test_input_validation_does_not_leak_offending_values():
     """Input-validation errors surface field locations + types, never values."""
 

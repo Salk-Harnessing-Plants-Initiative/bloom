@@ -25,7 +25,7 @@ import pytest
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
-from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.result_store import FakeResultStore, RunStateError, SupabaseResultStore
 from bloom_mcp.tools import _ports
 from bloom_mcp.sections.sleap_roots.analysis import pca_analysis as pca_analysis_tool
 from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import (
@@ -218,6 +218,47 @@ def test_degenerate_fit_is_structured_without_leaking(injected_ports, monkeypatc
     msg = f"{exc.value.message} {exc.value.remedy}"
     assert "/var" not in msg and "db.internal" not in msg
     assert store.list_runs(_EXPERIMENT, "pca") == []  # nothing persisted
+
+
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: pca_analysis's declared errors=(ExperimentReadError,) swallowed a CommitFailedError/
+# ManifestReadError from store.create_run()/commit() into a generic internal_error ref) ──
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "pca")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "commit failed for pca" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "pca")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
+def test_run_state_error_from_commit_still_maps_to_internal_error(
+    injected_ports, monkeypatch
+):
+    """RunStateError (a handle-misuse/wiring bug, never triggerable via tool input) must
+    stay internal_error even after declaring CommitFailedError/ManifestReadError — proves
+    the errors= tuple wasn't accidentally widened to the full ResultStoreError base
+    (design.md Decision 1; #660 review: only qc_inspect had this test)."""
+    _reader, store = injected_ports
+
+    def _boom(run, outputs):
+        raise RunStateError("commit() on an unknown or already-committed run")
+
+    monkeypatch.setattr(store, "commit", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
 
 
 def test_real_delegate_degenerate_selection_is_assumption_violated(injected_ports):
