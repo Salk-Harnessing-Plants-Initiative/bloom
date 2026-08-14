@@ -46,6 +46,13 @@ and `compose-health-check` + `dev-stack-smoke` (which calls a real matplotlib-re
 MCP tool, `sleap_roots_plot_trait_histograms`, end-to-end) both run against that same
 build — so both architectures are validated before merge without adding a new CI job.
 
+**Accepted risk: no pixel-level rendering comparison.** Neither before nor after this
+change does the test suite do pixel/hash/snapshot comparison on generated plot PNGs
+(`test_viz_tools.py` and `live_plot_tool_smoke.py` only assert `.is_file()`). This change
+can't introduce a rendering regression either way, since matplotlib's manylinux wheels
+statically vendor their own FreeType/libpng regardless of wheel-vs-source — but the gap
+itself is a pre-existing, explicitly accepted risk rather than one this proposal closes.
+
 ## What Changes
 
 - Remove the `apt-get` block from `bloommcp/Dockerfile` (the `RUN apt-get update && ...`
