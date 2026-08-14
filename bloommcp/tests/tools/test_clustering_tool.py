@@ -317,9 +317,9 @@ def test_gmm_autoselect_bic_aic_reflect_the_selected_model(injected_ports, monke
     idx = result.n_clusters - 1
     # On this dataset auto-select collapses to n=1 out of the default max_components=5
     # candidates — making the negative assertion unconditional (selected ≠ last candidate).
-    assert result.n_clusters == 1, (
-        f"expected auto-collapse to n=1, got {result.n_clusters}"
-    )
+    assert (
+        result.n_clusters == 1
+    ), f"expected auto-collapse to n=1, got {result.n_clusters}"
     assert len(d["bic_scores"]) == 5  # default max_components=5
     # Corrected values == the selected candidate's per-candidate scores.
     assert result.bic == pytest.approx(d["bic_scores"][idx], abs=_TOL)
@@ -986,3 +986,294 @@ def test_explicit_version_is_passed_through(injected_ports):
     reader.load_experiment.assert_called_once_with(
         _EXPERIMENT, require_clean=True, version="v2"
     )
+
+
+# ── Plot generation (#601) ───────────────────────────────────────────────────
+
+_ALL_PLOT_KEYS = {"create_cluster_scatter_pca", "create_cluster_size_barplot"}
+
+# One representative call per method, used to parametrize the uniformity checks.
+_METHOD_CALLS = {
+    "kmeans": {"method": "kmeans", "n_clusters": 3},
+    "gmm": {"method": "gmm", "n_components": 3},
+    "hierarchical": {"method": "hierarchical", "n_clusters": 3},
+}
+
+
+def _capture_staged_bytes(store, monkeypatch) -> dict[str, bytes]:
+    """Read each staged PNG artifact's raw bytes at commit time."""
+    captured: dict[str, bytes] = {}
+    real_commit = store.commit
+
+    def _commit(run, outputs):
+        for name in outputs:
+            p = run.staging_dir / name
+            if p.suffix == ".png":
+                captured[name] = p.read_bytes()
+        return real_commit(run, outputs)
+
+    monkeypatch.setattr(store, "commit", _commit)
+    return captured
+
+
+@pytest.mark.parametrize("method_kwargs", _METHOD_CALLS.values(), ids=_METHOD_CALLS)
+def test_default_no_plots_outputs_unchanged(injected_ports, method_kwargs):
+    result = _run(**method_kwargs)
+    assert set(result.outputs) == {"labels.csv", "cluster_result.json"}
+    assert not any(k.endswith(".png") for k in result.outputs)
+
+
+def test_unknown_plot_key_invalid_input_no_run_committed(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        _run(include_plots=True, plots=["not_a_real_plot"])
+    assert exc.value.code == "invalid_input"
+    assert "not_a_real_plot" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_duplicate_plot_key_invalid_input_no_run_committed(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            include_plots=True,
+            plots=["create_cluster_scatter_pca", "create_cluster_scatter_pca"],
+        )
+    assert exc.value.code == "invalid_input"
+    assert "create_cluster_scatter_pca" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_empty_plots_list_is_invalid_input(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        _run(include_plots=True, plots=[])
+    assert exc.value.code == "invalid_input"
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_include_plots_false_with_plots_param_is_silently_ignored(injected_ports):
+    result = _run(include_plots=False, plots=["create_cluster_scatter_pca"])
+    assert not any(k.endswith(".png") for k in result.outputs)
+    assert set(result.outputs) == {"labels.csv", "cluster_result.json"}
+
+
+@pytest.mark.parametrize("method_kwargs", _METHOD_CALLS.values(), ids=_METHOD_CALLS)
+def test_both_plots_png_round_trip(injected_ports, monkeypatch, method_kwargs):
+    """include_plots=True, plots=None → both PNGs, for all three methods — including
+    hierarchical, whose raw result_dict carries no data_processed key (the central claim
+    this change relies on to make create_cluster_scatter_pca uniform across methods)."""
+    _reader, store = injected_ports
+    if method_kwargs["method"] == "hierarchical":
+        captured_dict: dict = {}
+        real = clustering_tool.hierarchical_cluster_labels
+
+        def _spy(data, **kwargs):
+            d = real(data, **kwargs)
+            captured_dict["result_dict"] = d
+            return d
+
+        monkeypatch.setattr(clustering_tool, "hierarchical_cluster_labels", _spy)
+
+    staged = _capture_staged_bytes(store, monkeypatch)
+    result = _run(include_plots=True, plots=None, **method_kwargs)
+
+    png_keys = {k for k in result.outputs if k.endswith(".png")}
+    assert png_keys == {f"{k}.png" for k in _ALL_PLOT_KEYS}
+    for key in png_keys:
+        assert key in staged, f"staged bytes missing for {key}"
+        assert staged[key][:4] == b"\x89PNG", f"{key} is not a valid PNG"
+
+    if method_kwargs["method"] == "hierarchical":
+        # Canary: documents *why* create_cluster_scatter_pca needs its own internal PCA
+        # call for this method, rather than incidentally passing.
+        assert "data_processed" not in captured_dict["result_dict"]
+
+
+def test_plots_subset_generates_only_requested(injected_ports, monkeypatch):
+    _reader, store = injected_ports
+    requested = ["create_cluster_size_barplot"]
+    staged = _capture_staged_bytes(store, monkeypatch)
+    result = _run(method="kmeans", n_clusters=3, include_plots=True, plots=requested)
+
+    png_keys = {k for k in result.outputs if k.endswith(".png")}
+    assert png_keys == {f"{k}.png" for k in requested}
+    assert set(result.outputs) == {"labels.csv", "cluster_result.json"} | png_keys
+    for key in png_keys:
+        assert staged[key][:4] == b"\x89PNG"
+
+
+def test_plotters_invoked_once_with_correct_args(injected_ports, monkeypatch):
+    """create_cluster_scatter_pca receives the raw result_dict + an internally-computed
+    pca_result; create_cluster_size_barplot receives the typed cluster_labels/n_clusters.
+    """
+    import sleap_roots_analyze
+
+    scatter_calls: list = []
+    bar_calls: list = []
+    real_scatter = sleap_roots_analyze.create_cluster_scatter_pca
+    real_bar = sleap_roots_analyze.create_cluster_size_barplot
+
+    def _spy_scatter(*args, **kwargs):
+        scatter_calls.append((args, kwargs))
+        return real_scatter(*args, **kwargs)
+
+    def _spy_bar(*args, **kwargs):
+        bar_calls.append((args, kwargs))
+        return real_bar(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_cluster_scatter_pca", _spy_scatter)
+    monkeypatch.setattr(sleap_roots_analyze, "create_cluster_size_barplot", _spy_bar)
+
+    result = _run(method="kmeans", n_clusters=3, include_plots=True, plots=None)
+
+    assert len(scatter_calls) == 1
+    assert len(bar_calls) == 1
+    bar_args, _bar_kwargs = bar_calls[0]
+    cluster_labels_arg, n_clusters_arg = bar_args
+    assert n_clusters_arg == result.n_clusters
+    assert len(cluster_labels_arg) == result.n_samples
+    scatter_kwargs = scatter_calls[0][1]
+    assert "pca_result" in scatter_kwargs
+    assert scatter_kwargs["pca_result"] is not None
+
+
+def test_internal_pca_receives_same_trait_selection(injected_ports, monkeypatch):
+    captured: dict = {}
+    import sleap_roots_analyze
+
+    real = sleap_roots_analyze.perform_pca_analysis
+
+    def _spy(data, *a, **k):
+        captured["columns"] = list(data.columns)
+        return real(data, *a, **k)
+
+    monkeypatch.setattr(sleap_roots_analyze, "perform_pca_analysis", _spy)
+
+    subset = _TRAITS[:3]
+    _run(
+        method="kmeans",
+        n_clusters=3,
+        trait_columns=subset,
+        include_plots=True,
+        plots=["create_cluster_scatter_pca"],
+    )
+    assert captured["columns"] == subset
+
+
+@pytest.mark.parametrize(
+    "method_kwargs",
+    [_METHOD_CALLS["kmeans"], _METHOD_CALLS["hierarchical"]],
+    ids=["kmeans", "hierarchical"],
+)
+def test_degenerate_internal_pca_is_assumption_violated_no_run_no_leaked_figures(
+    injected_ports, monkeypatch, method_kwargs
+):
+    """A failure inside the internal, non-persisted PCA call surfaces as
+    assumption_violated with no run committed and no leaked figures — exercised for
+    hierarchical specifically, the branch with no data_processed fallback available."""
+    import matplotlib.pyplot as plt
+    import sleap_roots_analyze
+
+    _reader, store = injected_ports
+
+    def _boom(*a, **k):
+        raise ValueError("degenerate selection for PCA")
+
+    monkeypatch.setattr(sleap_roots_analyze, "perform_pca_analysis", _boom)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            include_plots=True,
+            plots=["create_cluster_scatter_pca"],
+            **method_kwargs,
+        )
+    assert exc.value.code == "assumption_violated"
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+    assert plt.get_fignums() == []
+
+
+def test_figure_cleanup_get_fignums_empty_on_success(injected_ports):
+    import matplotlib.pyplot as plt
+
+    _run(method="kmeans", n_clusters=3, include_plots=True, plots=None)
+    assert plt.get_fignums() == []
+
+
+def test_figure_cleanup_get_fignums_empty_on_invalid_key(injected_ports):
+    import matplotlib.pyplot as plt
+
+    with pytest.raises(BloomMCPError):
+        _run(method="kmeans", n_clusters=3, include_plots=True, plots=["bad_key"])
+    assert plt.get_fignums() == []
+
+
+def test_figure_cleanup_on_partial_plotter_failure_no_run_committed(
+    injected_ports, monkeypatch
+):
+    """Regression: the SECOND of several requested plotters raising mid-generation must
+    not leak the figure(s) already produced by earlier successful plotters, and must not
+    commit a run — exercises the tool's real try/finally nesting end-to-end."""
+    import matplotlib.pyplot as plt
+
+    _reader, store = injected_ports
+    real = clustering_tool._clustering_plot_calls
+
+    def _boom(*a, **k):
+        raise RuntimeError("second plotter blew up")
+
+    def _patched(result_dict, result, frame, trait_cols):
+        calls = real(result_dict, result, frame, trait_cols)
+        calls["create_cluster_size_barplot"] = _boom
+        return calls
+
+    monkeypatch.setattr(clustering_tool, "_clustering_plot_calls", _patched)
+
+    with pytest.raises(BloomMCPError):
+        _run(
+            method="kmeans",
+            n_clusters=3,
+            include_plots=True,
+            plots=["create_cluster_scatter_pca", "create_cluster_size_barplot"],
+        )
+    assert plt.get_fignums() == []
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_default_path_never_executes_an_import_matplotlib_statement(
+    injected_ports, monkeypatch
+):
+    """Regression guard, corrected framing (mirrors umap_analysis's identical fix): this
+    does NOT prove matplotlib is absent from sys.modules — it is already resident via this
+    module's own top-level sleap_roots_analyze import (see the module docstring). What
+    this proves is narrower but still real: the include_plots=False path never itself
+    executes a fresh import matplotlib statement."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "matplotlib", None)
+    _run(method="kmeans", n_clusters=3)  # must not raise ImportError
+
+
+def test_plot_outputs_included_in_schema_round_trip(injected_ports):
+    result = _run(
+        method="kmeans",
+        n_clusters=3,
+        include_plots=True,
+        plots=["create_cluster_scatter_pca"],
+    )
+    again = ClusteringResult.model_validate(json.loads(result.model_dump_json()))
+    assert "create_cluster_scatter_pca.png" in again.outputs
+
+
+def test_create_cluster_size_barplot_on_gmm_single_component_collapse(injected_ports):
+    """GMM's BIC auto-select can collapse to n_clusters=1 (see
+    test_gmm_autoselect_may_collapse_to_one_component) — the bar plot must still succeed
+    with a single bar, not raise or silently omit the plot."""
+    result = _run(
+        method="gmm",
+        n_components=None,
+        include_plots=True,
+        plots=["create_cluster_size_barplot"],
+    )
+    assert result.n_clusters == 1
+    assert "create_cluster_size_barplot.png" in result.outputs
