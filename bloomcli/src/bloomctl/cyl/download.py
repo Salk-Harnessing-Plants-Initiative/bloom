@@ -3,7 +3,7 @@
 Cylinder-specific only: the scans.csv columns, the queries, the on-disk path layout, and the
 loop that walks a scan's frames. Everything about performing the download safely — atomic
 writes, resume, bounded concurrency, collision detection, progress and logging — is shared
-with the other instruments in `bloomctl/_download.py`.
+with the other scan methods in `bloomctl/_download.py`.
 
 Pure helpers (column mapping, paths) are separated from the supabase/storage I/O
 so the contract is unit-testable without a live server.
@@ -58,11 +58,11 @@ from .._storage import (
 from ..credentials import DEFAULT_PROFILE
 
 # Cylinder frames live in the `images` bucket. Passed explicitly on every fetch — the shared
-# storage helper has no default, so no command can read another instrument's bucket by omission.
+# storage helper has no default, so no command can read another method's bucket by omission.
 IMAGES_BUCKET = "images"
 
 # Stamped into the manifest so a plate download cannot resume into a cylinder directory.
-INSTRUMENT = "cyl"
+METHOD = "cyl"
 
 __all__ = [  # re-exported so callers and tests reach the mechanism through this module
     "BURST_DROP_FACTOR",
@@ -431,7 +431,7 @@ def download_images(
             on_progress("downloading", done, len(work), failed)
 
     # The bounded runner is shared: how many threads to start, and whether to bother with a
-    # pool at all, is the same question for every instrument.
+    # pool at all, is the same question for every method.
     fetched = fetch_all(work, _one, workers=workers, on_done=_tick)
 
     outcomes = iter(fetched)
@@ -632,7 +632,7 @@ def download(
             f"in one directory. Download into a new directory instead."
         )
 
-    mismatch = describe_manifest_mismatch(read_manifest(out), selector, instrument=INSTRUMENT)
+    mismatch = describe_manifest_mismatch(read_manifest(out), selector, method=METHOD)
     if mismatch:
         raise click.ClickException(
             f"{out} already holds a different download ({mismatch}). Give each selection its "
@@ -643,7 +643,7 @@ def download(
     # The writability probe ran before the metadata queries; the disk can fill in between.
     try:
         write_scans_csv(rows, csv_path)
-        write_manifest(out, selector, instrument=INSTRUMENT)
+        write_manifest(out, selector, method=METHOD)
     except OSError as exc:
         raise write_failed(Path(exc.filename or csv_path), exc) from exc
     click.echo(f"Wrote {len(rows)} scans -> {csv_path}")

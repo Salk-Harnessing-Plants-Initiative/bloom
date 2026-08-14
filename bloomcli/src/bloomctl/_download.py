@@ -1,13 +1,13 @@
-"""The download mechanism, shared by every instrument's download command.
+"""The download mechanism, shared by every scan method's download command.
 
-Nothing here names a database table or column, and nothing branches on which instrument is
+Nothing here names a database table or column, and nothing branches on which method is
 calling. What belongs in a command's own module: its queries, its CSV columns, its on-disk
 path layout, and the loop that walks its rows. What belongs here: everything about *doing*
 the download safely — atomic writes, resume, bounded concurrency, collision detection,
 progress and logging.
 
 That line is the rule for adding to this file. A change that needs to know a column name, or
-needs an ``if instrument == ...``, belongs in the caller instead.
+needs an ``if method == ...``, belongs in the caller instead.
 """
 
 from __future__ import annotations
@@ -101,11 +101,11 @@ def contained_dest(out_dir: Path, relative: str) -> Path:
 # can tell whether the frames already there belong to what it is about to download.
 MANIFEST_NAME = ".bloomctl-download.json"
 
-# Which command wrote the manifest, recorded alongside the selection rather than inside it.
-INSTRUMENT_KEY = "instrument"
+# Which scan method wrote the manifest, recorded alongside the selection rather than inside it.
+METHOD_KEY = "method"
 
-# Manifests written before the instrument was recorded can only have come from `cyl download`.
-UNSTAMPED_INSTRUMENT = "cyl"
+# Manifests written before the method was recorded can only have come from `cyl download`.
+UNSTAMPED_METHOD = "cyl"
 
 
 def read_manifest(out_dir: Path) -> dict[str, Any] | None:
@@ -118,10 +118,10 @@ def read_manifest(out_dir: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def write_manifest(out_dir: Path, identity: dict[str, Any], *, instrument: str) -> None:
+def write_manifest(out_dir: Path, identity: dict[str, Any], *, method: str) -> None:
     """Record what this directory holds, so a later run can check before resuming into it."""
     path = Path(out_dir) / MANIFEST_NAME
-    stamped = {INSTRUMENT_KEY: instrument, **identity}
+    stamped = {METHOD_KEY: method, **identity}
     body = json.dumps(stamped, indent=2, sort_keys=True, default=str) + "\n"
     atomic_write_bytes(path, body.encode("utf-8"))
 
@@ -147,7 +147,7 @@ def holds_an_unidentified_download(out_dir: Path) -> bool:
 
 
 def describe_manifest_mismatch(
-    existing: dict[str, Any] | None, selector: dict[str, Any], *, instrument: str
+    existing: dict[str, Any] | None, selector: dict[str, Any], *, method: str
 ) -> str:
     """List how this run's selection differs from the one the directory holds, or "" if it matches.
 
@@ -155,16 +155,16 @@ def describe_manifest_mismatch(
     selection here would leave two sets of images in one tree with a `scans.csv` describing
     only the newer one.
 
-    The instrument is compared first and on its own, because two instruments' selectors do not
+    The method is compared first and on its own, because two methods' selectors do not
     overlap: a manifest written by one carries none of the other's keys, so every key the
     incoming run knows about reads as absent and the two downloads look identical. Their ids
     are separate sequences too, so the same number means different rows.
     """
     if existing is None:
         return ""
-    was = existing.get(INSTRUMENT_KEY, UNSTAMPED_INSTRUMENT)
-    if was != instrument:
-        return f"{INSTRUMENT_KEY} was {was!r}, now {instrument!r}"
+    was = existing.get(METHOD_KEY, UNSTAMPED_METHOD)
+    if was != method:
+        return f"{METHOD_KEY} was {was!r}, now {method!r}"
     return "; ".join(
         f"{key} was {existing.get(key)!r}, now {value!r}"
         for key, value in selector.items()
@@ -426,7 +426,7 @@ def find_collisions(
     filesystem they are genuinely different files and are left alone.
 
     ``dest_of`` and ``describe`` come from the caller, so the path layout and the wording of
-    the clash stay with the instrument that owns them.
+    the clash stay with the method that owns them.
     """
     fold = filesystem_folds_case(Path(out_dir))
     seen: dict[str, tuple[str, Path]] = {}

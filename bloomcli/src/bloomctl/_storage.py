@@ -1,7 +1,7 @@
 """Storage helpers for the download commands: fetching objects and writing them to disk.
 
-Shared by every instrument. Nothing here knows which one is calling — the bucket is always
-supplied by the caller, so no default can send one instrument's download at another's bucket.
+Shared by every scan method. Nothing here knows which one is calling — the bucket is always
+supplied by the caller, so no default can send one method's download at another's bucket.
 
 The client refreshes its auth token on a background timer. A bucket handle captures the
 token it was created with, so a handle kept for a whole download stops working once that
@@ -95,7 +95,7 @@ def describe_storage_error(error: BaseException) -> StorageError:
 def download_object(client: Any, object_path: str, *, bucket: str) -> bytes:
     """Download one object's bytes from ``bucket``.
 
-    ``bucket`` is required rather than defaulted: each instrument keeps its images in its own
+    ``bucket`` is required rather than defaulted: each method keeps its images in its own
     bucket, and a default here would let a missing argument read the wrong one.
 
     Resolves the bucket handle on every call so a long run keeps working after the client
