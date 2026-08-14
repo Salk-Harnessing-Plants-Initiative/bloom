@@ -220,6 +220,25 @@ def test_degenerate_fit_is_structured_without_leaking(injected_ports, monkeypatc
     assert store.list_runs(_EXPERIMENT, "pca") == []  # nothing persisted
 
 
+def test_undeclared_delegate_raise_is_scrubbed(injected_ports, monkeypatch):
+    """bloom#664 item 2: a delegate exception type outside the `ValueError`-only
+    except clause above falls through undeclared to `internal_error` — pinned,
+    not just "doesn't leak" (mirrors the #660 qc_inspect/qc_clean/remove_outliers
+    pattern, closing the coverage gap for this tool)."""
+    _reader, store = injected_ports
+
+    def _boom(*a, **k):
+        raise RuntimeError("secret path /var/secrets/key and host db.internal")
+
+    monkeypatch.setattr(pca_analysis_tool, "perform_pca_analysis", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
+    msg = f"{exc.value.message} {exc.value.remedy}"
+    assert "/var" not in msg and "db.internal" not in msg
+    assert store.list_runs(_EXPERIMENT, "pca") == []
+
+
 # ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
 # (#640: pca_analysis's declared errors=(ExperimentReadError,) swallowed a CommitFailedError/
 # ManifestReadError from store.create_run()/commit() into a generic internal_error ref) ──
@@ -694,7 +713,8 @@ def test_figure_cleanup_get_fignums_empty_on_partial_plotter_failure(
 ):
     """10.8c — regression: the SECOND of several requested plotters raising mid-generation
     must not leak the figure(s) already produced by earlier successful plotters. Exercises
-    the tool's real try/finally nesting end-to-end (not just the _plots unit helpers)."""
+    the tool's real try/finally nesting end-to-end (not just the _plots unit helpers).
+    """
     import matplotlib.pyplot as plt
 
     real = pca_analysis_tool._pca_plot_calls
