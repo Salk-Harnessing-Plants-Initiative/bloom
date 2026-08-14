@@ -90,7 +90,9 @@ already establishes elsewhere, unchanged by this addition:
   `attempts` on every scan row in the batch, archives (dead-letters) the message, and runs the same
   run-completion aggregation check as `complete_cyl_pipeline_batch` — additionally setting
   `cyl_pipeline_runs.status` to `'failed'` if the run is fully settled and every one of its batches
-  failed.
+  failed. A call whose batch's scan rows were already marked `'failed'` by a prior call (the same
+  redelivery scenario `complete_cyl_pipeline_batch` guards against) is a no-op on the second call, not
+  a double-increment of `attempts` or an overwrite of `error_message`.
 
 #### Scenario: bloom_workflows can enqueue a batch
 
@@ -153,6 +155,13 @@ already establishes elsewhere, unchanged by this addition:
   earlier, successful call for the same `msg_id` (e.g. a redelivered-then-re-completed message)
 - **THEN** the second call does not raise, and the batch's scan rows and the run's status are
   unchanged from what the first call already set
+
+#### Scenario: Failing an already-failed batch a second time is a harmless no-op
+
+- **WHEN** `fail_cyl_pipeline_batch` is called for a batch whose scan rows were already marked
+  `'failed'` by an earlier call for the same `msg_id` (e.g. a redelivered-then-re-failed message)
+- **THEN** the second call does not raise, and `attempts`/`error_message`/`updated_at` are unchanged
+  from what the first call already set — not double-incremented or overwritten
 
 #### Scenario: EXECUTE is denied to anon, authenticated, PUBLIC, and every session role for every function
 
