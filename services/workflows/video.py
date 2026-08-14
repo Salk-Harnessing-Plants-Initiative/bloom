@@ -171,9 +171,10 @@ class RecordedVideo(NamedTuple):
 def _recorded_frames(client, scan_id: int) -> RecordedVideo:
     """What is recorded for this scan.
 
-    A lookup that *failed* is not an absence, and must not be reported as one: "no recorded
-    count" is what lets this run replace the stored video, so a transient error would hand
-    out that permission by accident. It raises instead.
+    A lookup that *failed* is not an absence, and must not be reported as one. Read as "no
+    row", a transient error sends the request down the branch for a video nobody has measured:
+    the stored video is kept whatever this run encoded, and a null count is written over the
+    real one. It raises instead.
     """
     if not VIDEO_TABLE:
         return RecordedVideo(row_exists=False, frames=None)

@@ -233,25 +233,29 @@ def test_generate_scan_video_500_when_no_signed_url(monkeypatch):
                 fh.write(b"\x00\x01")
 
     class _UploadBucket:
+        def __init__(self):
+            self.uploads = 0
+
         def download(self, _path):
             return _png_bytes()
 
         def upload(self, *a, **k):
-            pass
+            self.uploads += 1
 
         def create_signed_url(self, *a, **k):
             return None  # storage couldn't sign a URL
 
+    bucket = _UploadBucket()
+
     class _UploadClient:
-        # A real client answers the record lookup; a lookup that errors is now a 503, so a
-        # fake without this would fail here instead of reaching the case under test.
+        # A recorded count of 0, not an empty table: with nothing recorded the pre-encode gate
+        # keeps the stored video and returns before encoding, so this would never reach the
+        # upload whose signing failure it is written to test.
         def table(self, _name):
-            return _GenQuery([])
+            return _GenQuery([{"frames": 0}])
 
         @property
         def storage(self):
-            bucket = _UploadBucket()
-
             class _S:
                 def from_(self, _name):
                     return bucket
@@ -262,6 +266,8 @@ def test_generate_scan_video_500_when_no_signed_url(monkeypatch):
     with pytest.raises(HTTPException) as ei:
         video.generate_scan_video(_UploadClient(), 5)
     assert ei.value.status_code == 500
+    # The point of the test: the failure happens after the video was stored.
+    assert bucket.uploads == 1
 
 
 # --- I4 completeness signal + I5 re-encode guard (happy paths) ---------------
@@ -671,7 +677,9 @@ def test_an_already_null_row_is_not_rewritten_on_every_request(monkeypatch):
 
 
 def test_a_failed_record_lookup_does_not_read_as_no_record(monkeypatch):
-    """"Nothing recorded" is what permits an overwrite, so an error must not report it."""
+    """"Nothing recorded" sends the request down the unmeasured-video branch, where the stored
+    video is kept whatever was encoded and a null count is written over the real one. An error
+    must not be reported as that."""
     monkeypatch.setattr(video, "VIDEO_TABLE", "cyl_scan_videos")
 
     class _Broken:
