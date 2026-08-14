@@ -278,6 +278,12 @@ It is not a way to export one in parts: the limit is part of what a directory re
 selection, so a sample and a full download belong in separate directories. Samples are taken
 in scan-id order, so the same limit gives the same captures every time.
 
+A run that comes back with exactly as many scans as the limit warns that the newest captures
+were dropped. It cannot tell that case from an experiment holding exactly that many scans, so
+the warning is on the cautious side: if the count is one you recognise as the whole experiment,
+nothing is missing. Raising `--limit` needs a new directory, since the limit is part of the
+selection this one recorded.
+
 ```bash
 # a whole experiment, or just one plate from it
 bloomctl plate download ./gravi --experiment-id 12
