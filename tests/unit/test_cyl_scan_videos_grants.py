@@ -1,13 +1,14 @@
-"""An upsert needs UPDATE on every column it writes, including the conflict key.
+"""`cyl_scan_videos` is recorded through a wrapper, not a client-side upsert.
 
-`_record_video` writes `cyl_scan_videos` with `upsert(on_conflict="scan_id")`. PostgREST turns
-that into `ON CONFLICT (scan_id) DO UPDATE SET scan_id = ..., path = ..., frames = ...`, and
-Postgres checks SET-clause column privileges statically — so a column granted on INSERT but not
-on UPDATE fails the statement outright, conflict or not.
+`bloom_workflows` holds INSERT on (scan_id, path, frames) but UPDATE on (path, frames) only —
+scan_id is deliberately immutable, so a row cannot be repointed at another scan. PostgREST's
+`resolution=merge-duplicates` builds its DO UPDATE from every key in the payload, including the
+conflict key, and Postgres checks SET-clause privileges statically. An upsert therefore fails
+with 42501 whether or not a row conflicts, and `_record_video` swallows the error — which is
+how production came to hold zero rows against 84,748 stored videos.
 
-That is what happened: `scan_id` was granted on INSERT only, every write was refused with 42501,
-and `_record_video` swallowed the error. Production held zero rows against 84,748 stored videos
-until the table was backfilled by hand.
+`record_cyl_scan_video` is the fix: it matches on scan_id without writing it. These tests pin
+both halves — the wrapper exists, and the grant that would paper over the problem does not.
 """
 
 from __future__ import annotations
@@ -24,26 +25,50 @@ GRANT = re.compile(
 )
 
 
-def _granted_columns() -> dict[str, set[str]]:
-    """Columns granted for INSERT and for UPDATE, across every migration."""
-    granted: dict[str, set[str]] = {"insert": set(), "update": set()}
-    for path in sorted(MIGRATIONS.glob("*.sql")):
-        for verb, columns in GRANT.findall(path.read_text(encoding="utf-8")):
-            granted[verb.lower()] |= {c.strip() for c in columns.split(",")}
-    return granted
-
-
-def test_every_insertable_column_is_also_updatable():
-    granted = _granted_columns()
-
-    assert granted["insert"], "no column-level INSERT grant found for cyl_scan_videos"
-    missing = granted["insert"] - granted["update"]
-    assert not missing, (
-        f"{sorted(missing)} can be inserted but not updated, so the upsert in _record_video "
-        f"is refused with 42501 — and it swallows the error, so nothing is recorded"
+def _migration_text() -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(MIGRATIONS.glob("*.sql"))
     )
 
 
-def test_the_conflict_key_is_updatable():
-    """`scan_id` is the `on_conflict` target, so PostgREST always writes it in the SET clause."""
-    assert "scan_id" in _granted_columns()["update"]
+def _granted_columns() -> dict[str, set[str]]:
+    """Columns granted for INSERT and for UPDATE, across every migration."""
+    granted: dict[str, set[str]] = {"insert": set(), "update": set()}
+    for verb, columns in GRANT.findall(_migration_text()):
+        granted[verb.lower()] |= {c.strip() for c in columns.split(",")}
+    return granted
+
+
+def test_scan_id_is_never_made_updatable():
+    """Granting UPDATE on the conflict key is the fix this wrapper exists to avoid."""
+    assert "scan_id" not in _granted_columns()["update"], (
+        "scan_id must stay immutable — record videos through record_cyl_scan_video "
+        "instead of granting UPDATE on the conflict key"
+    )
+
+
+def test_the_recording_wrapper_exists():
+    text = _migration_text()
+    assert "CREATE OR REPLACE FUNCTION public.record_cyl_scan_video" in text
+
+
+def test_the_wrapper_does_not_write_the_conflict_key():
+    """`DO UPDATE SET` must touch path and frames only — never scan_id."""
+    text = _migration_text()
+    body = text.split("record_cyl_scan_video", 1)[1]
+    set_clause = re.search(r"DO UPDATE\s+SET(.*?);", body, re.IGNORECASE | re.DOTALL)
+    assert set_clause, "no DO UPDATE SET clause found for record_cyl_scan_video"
+    assert "scan_id" not in set_clause.group(1)
+
+
+def test_the_wrapper_is_not_reachable_by_untrusted_roles():
+    """It is SECURITY DEFINER on a table those roles cannot write, and sits under /rest/v1/rpc."""
+    text = _migration_text()
+    revoke = re.search(
+        r"REVOKE\s+EXECUTE\s+ON\s+FUNCTION\s+public\.record_cyl_scan_video[^;]*;",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    assert revoke, "EXECUTE on record_cyl_scan_video is never revoked from the default grantees"
+    for role in ("anon", "authenticated"):
+        assert role in revoke.group(0)

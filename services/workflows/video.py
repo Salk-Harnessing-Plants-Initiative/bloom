@@ -285,13 +285,22 @@ def _result(scan_id, vids, key, frames, frames_expected, truncated, regenerated)
 
 
 def _record_video(client, scan_id: int, result: dict):
-    """Upsert the scan -> video-path record (best-effort; one row per scan)."""
+    """Record the scan -> video-path row (best-effort; one row per scan).
+
+    Through a wrapper rather than an upsert: PostgREST builds its DO UPDATE from every key in
+    the payload, so it writes scan_id too, and bloom_workflows deliberately cannot update that
+    column. The wrapper matches on scan_id without setting it.
+    """
     if not VIDEO_TABLE:
         return
     try:
-        client.table(VIDEO_TABLE).upsert(
-            {"scan_id": scan_id, "path": result["path"], "frames": result.get("frames")},
-            on_conflict="scan_id",
+        client.rpc(
+            "record_cyl_scan_video",
+            {
+                "p_scan_id": scan_id,
+                "p_path": result["path"],
+                "p_frames": result.get("frames"),
+            },
         ).execute()
     except Exception as exc:
         # A failed record write shouldn't lose the already-generated video, but

@@ -36,6 +36,10 @@ class _Query:
         self.recorded["upsert"] = {"payload": payload, "on_conflict": on_conflict}
         return self
 
+    def rpc(self, name, params):
+        self.recorded["rpc"] = {"name": name, "params": params}
+        return self
+
     def execute(self):
         class _R:
             pass
@@ -53,6 +57,9 @@ class _Client:
     def table(self, name):
         self.last_table = name
         return self.q
+
+    def rpc(self, name, params):
+        return self.q.rpc(name, params)
 
 
 def test_scan_in_experiment_true():
@@ -73,21 +80,31 @@ def test_get_scan_images_capped_at_max():
     assert c.q.recorded["limit"] == video.MAX_IMAGES == 72
 
 
-def test_record_video_upserts_scan_and_path(monkeypatch):
+def test_record_video_calls_the_wrapper_with_scan_and_path(monkeypatch):
     monkeypatch.setattr(video, "VIDEO_TABLE", "cyl_scan_videos")
     c = _Client()
     video._record_video(c, 5, {"path": "cyl-videos/5.mp4", "frames": 72})
-    up = c.q.recorded["upsert"]
-    assert up["payload"] == {"scan_id": 5, "path": "cyl-videos/5.mp4", "frames": 72}
-    assert up["on_conflict"] == "scan_id"
-    assert c.last_table == "cyl_scan_videos"
+    call = c.q.recorded["rpc"]
+    assert call["name"] == "record_cyl_scan_video"
+    assert call["params"] == {
+        "p_scan_id": 5,
+        "p_path": "cyl-videos/5.mp4",
+        "p_frames": 72,
+    }
+
+
+def test_record_video_never_upserts_the_table_directly():
+    """An upsert writes scan_id into the SET clause, which bloom_workflows cannot update."""
+    c = _Client()
+    video._record_video(c, 5, {"path": "cyl-videos/5.mp4", "frames": 72})
+    assert "upsert" not in c.q.recorded
 
 
 def test_record_video_skipped_when_table_unset(monkeypatch):
     monkeypatch.setattr(video, "VIDEO_TABLE", None)
     c = _Client()
     video._record_video(c, 5, {"path": "cyl-videos/5.mp4", "frames": 72})
-    assert "upsert" not in c.q.recorded
+    assert "rpc" not in c.q.recorded
 
 
 # --- generate_scan_video failure paths (never upload a bad/absent video) -----
