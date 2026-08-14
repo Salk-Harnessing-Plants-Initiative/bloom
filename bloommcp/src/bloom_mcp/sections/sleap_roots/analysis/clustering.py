@@ -57,6 +57,7 @@ from bloom_mcp.data_access import (
     ExperimentFrame,
     ExperimentReadError,
 )
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._qc_shared import _finite_or_none, _validate_trait_subset
 
@@ -296,7 +297,7 @@ def _gmm_selected_scores(
 @as_mcp_tool(
     input_model=ClusteringParams,
     output_model=ClusteringResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def clustering(
     params: ClusteringParams, *, random_state: int, provenance: Provenance
