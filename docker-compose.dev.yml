@@ -582,6 +582,8 @@ services:
     # Pinned to the same tag as docker-compose.prod.yml. Behaviour that differs between
     # Postgres builds is otherwise invisible locally and only surfaces in the one CI job
     # that builds from the prod compose file. See issue #692.
+    # A skew here also means dev and prod ship different pgmq versions, whose function
+    # signatures are incompatible.
     #
     # Upgrading an existing checkout requires clearing TWO things once, or the container
     # restart-loops on `configuration file "/etc/postgresql/postgresql.conf" contains errors`:
