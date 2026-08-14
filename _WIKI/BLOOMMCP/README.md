@@ -160,7 +160,9 @@ The `get_scan_traits(experiment_id_, trait_name_, source_id_, run_id_)` RPC
 exposes the same selection (latest by default; pin a `source_id_`; group by
 `run_id_`). "Latest" = `max(source_id)` per scan; the rule lives once in
 `cyl_scan_traits_source` — see the `cyl-trait-read` spec and its migration for
-the definition (not restated here).
+the definition (not restated here). `is_latest` is a stored, indexed per-scan
+value (`cyl_scan_latest_source`, joined into the view), not a live per-query
+computation (bloom#637) — the rule itself is unchanged, only where it's computed.
 
 **Loading a whole experiment.** `get_scan_traits` is per-trait — one call per
 trait name. For a wide-pivot read (all of an experiment's traits at once),
@@ -181,7 +183,10 @@ sources = client.rpc("list_experiment_trait_sources", {"experiment_id_": 42}).ex
 `get_experiment_summary_counts(experiment_id_, source_id_, run_id_)` computes those counts server-side
 via one aggregate call; with all three arguments `NULL` it covers every experiment in a single round
 trip, same latest/`source_id`/`run_id` selection as `get_experiment_traits` — see the `cyl-trait-read`
-spec for the definition (not restated here).
+spec for the definition (not restated here). With no `source_id_`/`run_id_` pin, `n_plants` is always
+live but `n_traits` is read from a cache refreshed on a schedule (every ~10 min, not per write —
+bloom#637/bloom#656), so it can lag newly-written trait data by up to one refresh interval; a pinned
+call is fully live for both counts.
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.

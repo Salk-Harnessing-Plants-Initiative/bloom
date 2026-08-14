@@ -1,0 +1,59 @@
+name: Refresh cyl_experiment_trait_counts
+
+# bloom#637 / bloom#656 (fix-cyl-scan-traits-latest-rollup, design.md D5/D8): n_traits in
+# get_experiment_summary_counts's unpinned path is cached in cyl_experiment_trait_counts rather
+# than recomputed live (a full scan, 6.6s at prod scale, no shortcut available). The cache is
+# refreshed on a fixed schedule instead of a per-write trigger, because one write-back upload
+# inserts on the order of hundreds of trait rows in a loop -- a per-row trigger would fire that
+# many full-experiment recomputes for one upload.
+#
+# pg_cron isn't installed in this stack, so this schedule lives here instead -- a proposed
+# default per design.md's Open Questions (D8), not a confirmed operational decision. Calls the
+# refresh function as an ordinary PostgREST RPC (the same surface every other caller in this repo
+# uses), rather than SSH+psql, so it doesn't touch the "manual DB access is emergency-only"
+# deploy policy design.md's predecessor (PR #654) ran into for its own backfill.
+#
+# REQUIRES (not yet provisioned as of this workflow's addition -- see the PR description):
+#   - secrets.STAGING_API_URL: staging's public PostgREST base URL (no existing secret covers
+#     this; every other staging secret in this repo is consumed server-side by deploy.yml, not by
+#     a GitHub Action calling staging's API directly).
+#   - secrets.STAGING_SERVICE_ROLE_KEY: already exists (used by deploy.yml).
+#
+# If a workflows-service-hosted job is preferred instead of a GitHub Action (the other option
+# design.md D8 names), delete this file and file a follow-up issue against that service instead.
+
+on:
+  schedule:
+    # Every 10 minutes -- inside design.md's proposed 5-15 min window.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: refresh-cyl-experiment-trait-counts
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call refresh_cyl_experiment_trait_counts()
+        env:
+          STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
+          SERVICE_ROLE_KEY: ${{ secrets.STAGING_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "${STAGING_API_URL}" ] || [ -z "${SERVICE_ROLE_KEY}" ]; then
+            echo "::error::STAGING_API_URL and/or STAGING_SERVICE_ROLE_KEY not configured -- see this workflow's own header comment."
+            exit 1
+          fi
+          status=$(curl -s -o /tmp/refresh_response.json -w "%{http_code}" \
+            -X POST "${STAGING_API_URL}/rest/v1/rpc/refresh_cyl_experiment_trait_counts" \
+            -H "apikey: ${SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SERVICE_ROLE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          echo "HTTP ${status}"
+          cat /tmp/refresh_response.json
+          if [ "$status" != "200" ] && [ "$status" != "204" ]; then
+            echo "::error::refresh_cyl_experiment_trait_counts call failed (HTTP ${status})"
+            exit 1
+          fi
