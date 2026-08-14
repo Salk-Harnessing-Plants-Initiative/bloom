@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import csv
 
+import pytest
+
 import bloomctl.plate.download as pd
 
 SCAN = {
@@ -56,7 +58,7 @@ def test_plate_relative_dir_groups_by_wave_then_plate():
 def test_image_dest_names_the_file_by_cycle_and_capture():
     dest = pd.image_dest("/out", SCAN, IMAGE)
     assert dest.parent.as_posix().endswith("images/Wave3/PLATE-001")
-    assert dest.name == "c0000_2026-05-27T14-03-11+00-00.jpg"
+    assert dest.name == "2026-05-27T14-03-11+00-00_c0000.jpg"
 
 
 def test_a_continuous_session_sorts_in_capture_order():
@@ -72,6 +74,46 @@ def test_a_continuous_session_sorts_in_capture_order():
     ]
     assert names == sorted(names)
     assert len(set(names)) == 3
+
+
+def test_capture_order_survives_two_sessions_in_one_plate_directory():
+    """The case zero-padding cannot reach.
+
+    `cycle_number` restarts at 1 every session, and a directory is keyed by (wave, plate),
+    which spans sessions. Leading with the cycle interleaves the two time courses — day two's
+    cycle 1 lands between day one's cycles 1 and 2 — and a monotonic gravitropic response
+    still reads as a smooth curve afterwards. The wrong one.
+    """
+    names = [
+        pd.image_dest(
+            "/out",
+            {**SCAN, "session_id": session, "cycle_number": cycle, "capture_date": stamp},
+            IMAGE,
+        ).name
+        for session, cycle, stamp in [
+            (1, 1, "2026-05-01T09:10:00+00:00"),
+            (1, 2, "2026-05-01T09:20:00+00:00"),
+            (1, 3, "2026-05-01T09:30:00+00:00"),
+            (2, 1, "2026-05-02T09:10:00+00:00"),
+            (2, 2, "2026-05-02T09:20:00+00:00"),
+            (2, 3, "2026-05-02T09:30:00+00:00"),
+        ]
+    ]
+
+    assert names == sorted(names), "two sessions interleaved in one directory listing"
+    assert len(set(names)) == 6
+
+
+def test_a_single_mode_capture_sorts_by_time_not_ahead_of_every_cycle():
+    """A scan with no cycle has no prefix. Sorting those first would order by shape, not time."""
+    continuous = pd.image_dest(
+        "/out", {**SCAN, "cycle_number": 0, "capture_date": "2026-05-01T09:00:00+00:00"}, IMAGE
+    ).name
+    single = pd.image_dest(
+        "/out", {**SCAN, "cycle_number": None, "capture_date": "2026-05-03T09:00:00+00:00"}, IMAGE
+    ).name
+
+    assert [continuous, single] == sorted([continuous, single])
 
 
 def test_capture_order_survives_a_session_longer_than_nine_cycles():
@@ -262,3 +304,48 @@ def test_a_different_filter_is_reported_field_by_field():
     second = pd.download_selector(experiment_id=12, wave_number=4)
     mismatch = pd.describe_manifest_mismatch(first, second)
     assert "wave_number" in mismatch and "3" in mismatch and "4" in mismatch
+
+
+def test_a_failed_plates_csv_write_leaves_the_previous_one_intact(tmp_path, monkeypatch):
+    """The images survive a full disk; the metadata that makes them interpretable must too.
+
+    plates.csv is rewritten on every run, including a resume. Opening it for writing empties
+    it before the first row lands, so a failure there destroys the previous run's copy and
+    leaves a tree of images with nothing describing them.
+    """
+    import bloomctl._storage as storage
+
+    path = tmp_path / "plates.csv"
+    pd.write_plates_csv([{name: "first" for name in pd.CSV_COLUMNS}], path)
+    before = path.read_bytes()
+
+    def _no_space(dest, data):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(storage, "atomic_write_bytes", _no_space)
+    monkeypatch.setattr(pd, "atomic_write_bytes", _no_space)
+
+    with pytest.raises(OSError):
+        pd.write_plates_csv([{name: "second" for name in pd.CSV_COLUMNS}], path)
+
+    assert path.read_bytes() == before, "the previous run's metadata was destroyed"
+    assert not list(tmp_path.glob(".dl-*.tmp")), "left a temp file behind"
+
+
+def test_a_failed_sections_csv_write_leaves_the_previous_one_intact(tmp_path, monkeypatch):
+    import bloomctl._storage as storage
+
+    path = tmp_path / "plate_sections.csv"
+    pd.write_sections_csv([{name: "first" for name in pd.SECTION_COLUMNS}], path)
+    before = path.read_bytes()
+
+    def _no_space(dest, data):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(storage, "atomic_write_bytes", _no_space)
+    monkeypatch.setattr(pd, "atomic_write_bytes", _no_space)
+
+    with pytest.raises(OSError):
+        pd.write_sections_csv([{name: "second" for name in pd.SECTION_COLUMNS}], path)
+
+    assert path.read_bytes() == before

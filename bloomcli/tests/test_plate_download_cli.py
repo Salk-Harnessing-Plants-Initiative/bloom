@@ -309,6 +309,95 @@ def test_a_failed_section_query_says_the_csv_is_already_written(tmp_path, monkey
     assert (out / "plates.csv").exists(), "the CSV it mentions really is there"
 
 
+def test_a_full_disk_names_the_cause_and_does_not_cite_a_missing_log(tmp_path, monkeypatch):
+    """A full disk is exactly when the log write fails too.
+
+    Saying "see download_log.txt" then sends the reader to a file that was never written, at
+    the moment they most need it — and without naming the cause they run `df`, see free space
+    on quota-limited lab storage, and go looking for the wrong thing.
+    """
+    import bloomctl._download as shared
+
+    _signed_in(monkeypatch)
+    _one_scan(monkeypatch)
+
+    failed = shared.FrameResult(1, 0, "gravi/1.png", ok=False, error="No space left on device")
+    monkeypatch.setattr(
+        pd, "download_images", lambda *a, **k: shared.DownloadResult([failed], disk_full=True)
+    )
+
+    def _no_log(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(pd, "write_download_log", _no_log)
+
+    result = _run(str(tmp_path / "out"), "--experiment-id", "12")
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert "disk filled up or the storage quota was spent" in result.output
+    assert "download_log.txt" not in result.output.split("Could not write")[-1].split("\n")[1], (
+        "pointed at a log that was never written"
+    )
+
+
+def test_a_failed_metadata_write_names_the_file_and_the_cause(tmp_path, monkeypatch):
+    """Atomic writes keep the previous plates.csv intact; the user still has to be told why."""
+    import bloomctl.plate.download as plate_dl
+
+    _signed_in(monkeypatch)
+    _one_scan(monkeypatch)
+
+    def _no_space(rows, path):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(plate_dl, "write_plates_csv", _no_space)
+
+    result = _run(str(tmp_path / "out"), "--experiment-id", "12", "--meta-only")
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert "plates.csv" in result.output
+    assert "space" in result.output.lower()
+
+
+def test_a_capped_fetch_says_the_newest_captures_are_missing(tmp_path, monkeypatch):
+    """Ordered by scan_id, a cap drops the most recent captures across every plate at once.
+
+    That looks exactly like an experiment that stopped early, so silence is the one thing
+    this must not do.
+    """
+    _signed_in(monkeypatch)
+    monkeypatch.setattr(pd, "fetch_plate_scans", lambda *a, **k: [SCAN, SCAN, SCAN])
+    monkeypatch.setattr(pd, "fetch_plate_images", lambda c, ids: {1: IMAGE})
+    monkeypatch.setattr(pd, "fetch_plate_sections", lambda c, ids: [])
+
+    result = _run(str(tmp_path / "out"), "--experiment-id", "12", "--limit", "3", "--meta-only")
+
+    assert "capped at --limit 3" in result.output
+    assert "most recent captures are missing" in result.output
+
+
+def test_the_output_path_is_checked_before_anything_else_runs(tmp_path, monkeypatch):
+    """A mistyped or unmounted target must cost a second, not a whole metadata phase.
+
+    Without the check, `mkdir(parents=True)` on the way to plates.csv builds the missing tree
+    on the boot disk and fills it with an experiment meant for a drive that is not mounted.
+    """
+    reached = []
+    monkeypatch.setattr(
+        "bloomctl.credentials.load_credentials",
+        lambda *a, **k: reached.append("signed in") or CREDS,
+    )
+    unmounted = tmp_path / "not-mounted" / "run3"
+
+    result = _run(str(unmounted), "--experiment-id", "12")
+
+    assert result.exit_code != 0
+    assert not unmounted.exists(), "created the tree for a path that does not exist"
+    assert reached == [], "signed in before checking the path was usable"
+
+
 def test_empty_selection_names_the_filters(tmp_path, monkeypatch):
     _signed_in(monkeypatch)
     monkeypatch.setattr(pd, "fetch_plate_scans", lambda *a, **k: [])
@@ -416,7 +505,7 @@ def test_the_log_names_captures_not_frames(tmp_path, monkeypatch):
     _run(str(out), "--experiment-id", "12")
 
     log = (out / "download_log.txt").read_text()
-    assert "capture=" in log and "frame=" not in log
+    assert "capture=" in log and "frame" not in log
 
 
 def test_scans_without_images_are_called_out(tmp_path, monkeypatch):

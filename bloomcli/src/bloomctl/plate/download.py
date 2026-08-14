@@ -42,6 +42,7 @@ from .._download import (
     safe_component,
     selector_of,
     write_download_log,
+    write_failed,
     write_manifest,
 )
 from .._postgrest import fetch_in_batches
@@ -119,18 +120,21 @@ def plate_relative_dir(scan: dict[str, Any]) -> str:
 
 
 def capture_filename(scan: dict[str, Any], image: dict[str, Any]) -> str:
-    """Filename for one capture: cycle (when there is one) then the capture instant.
+    """Filename for one capture: the capture instant, then the cycle when there is one.
+
+    The instant leads because it is the only key that orders a directory correctly. The cycle
+    cannot: `cycle_number` restarts at 1 for every session, and a directory is keyed by
+    (wave, plate), which spans sessions — Bloom's own time-lapse renderer groups the same way
+    and orders by `capture_date` for exactly this reason. Leading with the cycle interleaves
+    two sessions' time courses into one listing, and a gravitropic response is monotonic, so
+    the result still looks like a smooth curve. It is the wrong curve, with nothing to show it.
+
+    Leading with the instant also settles two lesser cases: single-mode scans (no cycle) sort
+    among the continuous ones by time rather than ahead of them, and there is no width past
+    which padding stops working.
 
     `capture_date` alone is already unique per (experiment, plate) by
-    idx_gravi_scans_natural_key. The cycle prefix is for readability and ordering, not
-    uniqueness — and it is omitted for single-mode scans, which have no cycle.
-
-    The cycle is zero-padded because the prefix decides the sort: unpadded, `c10` sorts
-    between `c1` and `c2`, so a session of ten cycles or more reads out of order in a
-    directory listing, in ffmpeg's glob, and in ImageJ's image sequence import. A
-    gravitropic response is monotonic, so a reordered series still looks like a smooth
-    curve — it is just the wrong one, with nothing to show it. Four digits covers a
-    ten-minute cycle running for sixty-nine days.
+    idx_gravi_scans_natural_key, so the cycle is for readability, not uniqueness.
     """
     ext = Path(image["object_path"]).suffix.lstrip(".") or DEFAULT_EXTENSION
     # Swap the timestamp's colons for dashes before sanitising: `safe_component` would map
@@ -139,13 +143,13 @@ def capture_filename(scan: dict[str, Any], image: dict[str, Any]) -> str:
     stamp = safe_component(str(scan.get("capture_date")).replace(":", "-"))
     cycle = scan.get("cycle_number")
     if cycle is None:
-        prefix = ""
+        suffix = ""
     else:
         try:
-            prefix = f"c{int(cycle):04d}_"
-        except (TypeError, ValueError):  # not a number: keep it, unpadded, over dropping it
-            prefix = f"c{safe_component(cycle)}_"
-    return f"{prefix}{stamp}.{safe_component(ext)}"
+            suffix = f"_c{int(cycle):04d}"
+        except (TypeError, ValueError, OverflowError):  # keep it rather than drop it
+            suffix = f"_c{safe_component(cycle)}"
+    return f"{stamp}{suffix}.{safe_component(ext)}"
 
 
 def image_dest(out_dir: Path, scan: dict[str, Any], image: dict[str, Any]) -> Path:
@@ -658,6 +662,16 @@ def download(
             ),
         )
 
+    if len(scans) == limit:
+        # Hit the cap. Ordered by scan_id, which ascends with capture time, so the captures
+        # dropped are the most recent ones — across every plate at once. That reads exactly
+        # like an experiment that stopped early, which is why it has to be said out loud.
+        click.echo(
+            f"Warning: results capped at --limit {limit}; the most recent captures are "
+            f"missing. Narrow the selection, or raise --limit.",
+            err=True,
+        )
+
     if not scans:
         raise click.ClickException(
             "No scans matched, so there is nothing to download. Check the experiment and any "
@@ -694,8 +708,12 @@ def download(
         )
 
     csv_path = out / "plates.csv"
-    write_plates_csv(rows, csv_path)
-    write_manifest(out, selector)
+    # The writability probe ran before the metadata queries; the disk can fill in between.
+    try:
+        write_plates_csv(rows, csv_path)
+        write_manifest(out, selector)
+    except OSError as exc:
+        raise write_failed(Path(exc.filename or csv_path), exc) from exc
     click.echo(f"Wrote {len(rows)} scans -> {csv_path}")
 
     sections = build_section_rows(
@@ -706,7 +724,10 @@ def download(
     )
     if sections:
         sections_path = out / "plate_sections.csv"
-        write_sections_csv(sections, sections_path)
+        try:
+            write_sections_csv(sections, sections_path)
+        except OSError as exc:
+            raise write_failed(Path(exc.filename or sections_path), exc) from exc
         click.echo(f"Wrote {len(sections)} section rows -> {sections_path}")
 
     if meta_only:
@@ -733,9 +754,11 @@ def download(
         f"{result.ok:,}/{result.total:,} captures present in {out / 'images'} "
         f"({result.downloaded:,} downloaded this run, {result.skipped:,} already on disk)"
     )
+    logged = True
     try:
         write_download_log(result, log_path, noun=NOUN)
     except OSError as exc:
+        logged = False
         click.echo(f"Could not write {log_path.name}: {exc.strerror or exc}", err=True)
     else:
         click.echo(f"Log: {log_path}")
@@ -756,8 +779,14 @@ def download(
                 f"{result.scans_unlisted} scan(s) could not be listed at all "
                 f"(an unknown number of further captures is missing)"
             )
+        # Not "the disk filled up": shared lab storage is quota-limited, where the disk has
+        # plenty of space and `df` sends the reader off after the wrong thing entirely.
+        cause = "the disk filled up or the storage quota was spent; " if result.disk_full else ""
+        # A full disk is exactly when the log write fails, so pointing at a log that was never
+        # written sends the reader somewhere empty at the worst moment.
+        where = f" — see {log_path}" if logged else ""
         raise click.ClickException(
-            f"{'; '.join(problems)} — see {log_path}. "
+            f"{cause}{'; '.join(problems)}{where}. "
             "Re-running the same command retries only the captures still missing."
         )
 

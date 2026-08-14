@@ -302,14 +302,16 @@ out/
   images/
     Wave3/
       PLATE-001/
-        c0000_2026-05-27T14-03-11+00-00.jpg
-        c0001_2026-05-27T14-13-11+00-00.jpg
+        2026-05-27T14-03-11+00-00_c0000.jpg
+        2026-05-27T14-13-11+00-00_c0001.jpg
 ```
 
-The cycle prefix is dropped for single-mode scans, which have no cycle, and zero-padded
-otherwise so that lexical order matches capture order — unpadded, `c10` would sort between `c1`
-and `c2`. A gravitropism time series therefore reads correctly straight off a directory listing,
-and through ffmpeg's glob or ImageJ's image sequence import.
+The capture instant leads the filename, so lexical order is chronological order — a
+gravitropism time series reads correctly straight off a directory listing, and through
+ffmpeg's glob or ImageJ's image sequence import. The cycle trails it for readability and is
+dropped for single-mode scans, which have none. It cannot lead: `cycle_number` restarts at 1
+for every session, and a plate directory spans sessions, so ordering by cycle interleaves two
+time courses.
 
 `plate_sections.csv` is separate rather than more columns on `plates.csv`: a plate's sections are
 one-to-many and their plant QR codes one-to-many again, so folding them in would mean duplicating
